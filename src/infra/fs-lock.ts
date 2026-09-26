@@ -125,7 +125,12 @@ export function acquireSharedFileLockSync(path: string, busyTimeoutMs = 5_000): 
   }
 }
 
-export function attemptExclusiveFileLockSync(path: string): ExclusiveFileLockAttempt {
+/**
+ * A nonzero `busyTimeoutMs` blocks the calling thread while it waits. Throughout that wait SQLite holds PENDING,
+ * which refuses every new shared locker, so the wait drains the existing holders without starving behind new ones
+ * (measured across processes with node:sqlite on Node v26).
+ */
+export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): ExclusiveFileLockAttempt {
   let entry: ReturnType<typeof lstatSync>;
   try {
     entry = lstatSync(path);
@@ -136,12 +141,12 @@ export function attemptExclusiveFileLockSync(path: string): ExclusiveFileLockAtt
 
   let db: DatabaseSync;
   try {
-    db = new DatabaseSync(path, { timeout: 0 });
+    db = new DatabaseSync(path, { timeout: busyTimeoutMs });
   } catch (cause: unknown) {
     return { kind: 'unobservable', cause };
   }
   try {
-    db.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE');
+    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN EXCLUSIVE`);
     return { kind: 'acquired', lease: sqliteLockLease(db) };
   } catch (error: unknown) {
     try {

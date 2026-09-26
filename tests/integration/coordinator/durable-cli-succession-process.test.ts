@@ -776,6 +776,112 @@ describe('real-process durable-cli succession', () => {
     180_000,
   );
 
+  async function upgradeToSchemaChangingBuild(
+    home: string,
+    incumbentEnv: Record<string, string>,
+  ): Promise<Readonly<{ oldFixture: PluginFixture; newerFixture: PluginFixture; incumbentPid: number }>> {
+    const oldFixture = await createDurableFixture('0.0.1');
+    const newerFixture = await createDurableFixture(
+      '0.0.2',
+      'CREATE TABLE ac16_schema_generation (id INTEGER PRIMARY KEY);',
+    );
+    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, env: incumbentEnv });
+    coordinators.push(old);
+    const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    coordinators.push(contender);
+    expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
+    return { oldFixture, newerFixture, incumbentPid: incumbent.pid };
+  }
+
+  async function expectSchemaChangingSuccessorServes(home: string, incumbentPid: number): Promise<void> {
+    await waitForCondition(() => {
+      const discovery = readDiscoveryRecordForHome(home, 'prod');
+      return discovery !== null && discovery.version === '0.0.2' && discovery.pid !== incumbentPid;
+    }, 30_000);
+    const successor = readDiscoveryRecordForHome(home, 'prod');
+    if (successor === null) throw new Error('Successor discovery disappeared.');
+    successors.push({ pid: successor.pid, incarnation: probeProcessIncarnation(successor.pid) });
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    expect(resolveCurrentStore(runtime).epoch?.epoch).toBe('2');
+  }
+
+  it('drains a direct store reader that still holds the retiring epoch when protection begins', async () => {
+    assertBuildArtifactsAvailable();
+    const home = mkdtempSync(join(tmpdir(), 'coral-schema-opener-home-'));
+    roots.push(home);
+    mkdirSync(join(home, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    const { incumbentPid } = await upgradeToSchemaChangingBuild(home, {
+      CORAL_TEST_RETIREMENT_OPENER_LOCK: join(runtime.paths.coral.store.dbDir, 'epoch-1', '.lock'),
+      CORAL_TEST_RETIREMENT_OPENER_HOLD_MS: '200',
+    });
+
+    await expectSchemaChangingSuccessorServes(home, incumbentPid);
+  }, 180_000);
+
+  it('certifies retiring custody before the commit window so the window leaves the successor its time', async () => {
+    assertBuildArtifactsAvailable();
+    const home = mkdtempSync(join(tmpdir(), 'coral-schema-custody-home-'));
+    const projectRoot = mkdtempSync(join(tmpdir(), 'coral-schema-custody-work-'));
+    roots.push(home, projectRoot);
+    mkdirSync(join(home, '.claude'));
+    const prompt = join(projectRoot, 'prompt.txt');
+    writeFileSync(prompt, 'Leave a custody obligation behind.');
+    // Recorded process absence takes a full confirmation second to certify; the successor's own startup takes the
+    // rest of the window, so the attempt fits only when that certification ran before the window opened.
+    const oldFixture = await createDurableFixture('0.0.1');
+    const old = spawnCoordinator({
+      fixture: oldFixture,
+      home,
+      tempRoots: roots,
+      env: { CORAL_TEST_SUCCESSION_SERVING_DELAY_MS: '1600' },
+    });
+    coordinators.push(old);
+    const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    const jobId = launchedJobId(await runCli(oldFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']));
+    const jobState = join(projectRoot, '.durable-state', jobId);
+    await waitForCondition(() => existsSync(join(jobState, 'running')), 30_000);
+    const providerPid = Number(readFileSync(join(jobState, 'running'), 'utf8'));
+    providerChildren.push({ pid: providerPid, incarnation: probeProcessIncarnation(providerPid) });
+    const newerFixture = await createDurableFixture(
+      '0.0.2',
+      'CREATE TABLE ac16_schema_generation (id INTEGER PRIMARY KEY);',
+    );
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    coordinators.push(contender);
+    expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
+    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+    await waitForCondition(() => {
+      const intent = readUpgradeIntent(runDir);
+      return (
+        intent.kind === 'readable' &&
+        intent.intent.blockers.some((blocker) => blocker.reason.includes('blocking(format)'))
+      );
+    }, 30_000);
+
+    await abortDurableJob(oldFixture, home, projectRoot, jobId);
+
+    await expectSchemaChangingSuccessorServes(home, incumbent.pid);
+  }, 180_000);
+
+  it('retries a successor that missed its commit deadline until the upgrade serves', async () => {
+    assertBuildArtifactsAvailable();
+    const home = mkdtempSync(join(tmpdir(), 'coral-schema-retry-home-'));
+    roots.push(home);
+    mkdirSync(join(home, '.claude'));
+    const missedDeadline = join(home, 'missed-deadline');
+    const { incumbentPid } = await upgradeToSchemaChangingBuild(home, {
+      CORAL_TEST_SUCCESSION_MISS_DEADLINE_ONCE: missedDeadline,
+      CORAL_TEST_SUCCESSION_MISS_DEADLINE_MS: '4000',
+    });
+
+    await expectSchemaChangingSuccessorServes(home, incumbentPid);
+    expect(existsSync(missedDeadline)).toBe(true);
+    const intent = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
+    expect(intent.kind === 'readable' ? intent.intent.disposition : intent.kind).toBe('completed');
+  }, 180_000);
+
   it('defers a schema-changing successor until the old job settles and keeps that job addressable', async () => {
     assertBuildArtifactsAvailable();
     const home = mkdtempSync(join(tmpdir(), 'coral-schema-succession-home-'));

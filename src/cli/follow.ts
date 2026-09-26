@@ -29,7 +29,7 @@ import {
 } from '../coordinator/handoff-routing/runner.js';
 import { formatAbortResult, formatLaunch, formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
-import { getSharedReadCoralStore } from './read-store.js';
+import { openReadCoralStore, type ReadCoralStoreHandle } from './read-store.js';
 import { errorCodeToExit, WaitResumeError } from './errors.js';
 import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { mapWaitSubscriptionError } from './wait-stream-error.js';
@@ -134,17 +134,25 @@ function initialSerializedCursor(start: FollowStart): string | undefined {
   return start.kind === 'jobs' ? start.serializedCursor : undefined;
 }
 
+/** The handle closes before the wait subscribes, so no wait holds the epoch lock a succession must take. */
 function readJobStatuses(projectRoot: string, jobIds: readonly string[]): Map<string, JobStatus> {
+  let handle: ReadCoralStoreHandle;
   try {
-    const store = getSharedReadCoralStore(projectRoot, { announceMissing: false });
+    handle = openReadCoralStore(projectRoot);
+  } catch {
+    return new Map();
+  }
+  try {
     return new Map(
       jobIds.flatMap((jobId) => {
-        const status = store.jobs.detail(jobId)?.status;
+        const status = handle.store.jobs.detail(jobId)?.status;
         return status === undefined ? [] : [[jobId, status] as const];
       }),
     );
   } catch {
     return new Map();
+  } finally {
+    handle.close();
   }
 }
 

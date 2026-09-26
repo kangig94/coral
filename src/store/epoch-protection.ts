@@ -353,8 +353,23 @@ export function protectedDeletionResidues(
   return addresses;
 }
 
-/** A live opener must keep its legacy address until it closes. */
-export function protectStoreEpoch(runtime: StorePathRuntime, epoch: ResolvedStoreEpoch): ProtectedEpochAddress {
+/** An opener still held the epoch after the protector's drain: a later protection may find it released. */
+export class StoreEpochOpenerHeldError extends Error {
+  constructor(epochKey: string) {
+    super(`Epoch ${epochKey} cannot be protected while its opener is contended.`);
+    this.name = 'StoreEpochOpenerHeldError';
+  }
+}
+
+/**
+ * A live opener must keep its legacy address until it closes. `openerDrainMs` bounds how long protection waits
+ * for openers already holding the epoch; no new opener is admitted while it waits.
+ */
+export function protectStoreEpoch(
+  runtime: StorePathRuntime,
+  epoch: ResolvedStoreEpoch,
+  openerDrainMs = 0,
+): ProtectedEpochAddress {
   reconcileProtectedEpochs(runtime, epoch.storeRoot);
   const epochKey = readOrCreateEpochKey(runtime, epoch);
   const originalPath = dirname(epoch.path);
@@ -367,7 +382,8 @@ export function protectStoreEpoch(runtime: StorePathRuntime, epoch: ResolvedStor
     originalPath,
     protectedPath,
   });
-  const lease = attemptExclusiveFileLockSync(join(originalPath, '.lock'));
+  const lease = attemptExclusiveFileLockSync(join(originalPath, '.lock'), openerDrainMs);
+  if (lease.kind === 'contended') throw new StoreEpochOpenerHeldError(epochKey);
   if (lease.kind !== 'acquired')
     throw new Error(`Epoch ${epochKey} cannot be protected while its opener is ${lease.kind}.`);
   try {

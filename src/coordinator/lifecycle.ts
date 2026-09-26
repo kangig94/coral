@@ -104,7 +104,12 @@ import {
   type ResolvedStoreEpoch,
   type StoreEpochOptions,
 } from '../store/epoch.js';
-import { protectStoreEpoch, resolveProtectedEpoch, restoreProtectedEpoch } from '../store/epoch-protection.js';
+import {
+  protectStoreEpoch,
+  resolveProtectedEpoch,
+  restoreProtectedEpoch,
+  StoreEpochOpenerHeldError,
+} from '../store/epoch-protection.js';
 import { asDatabase, openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createRebindableStoreDatabase, type RebindableStoreDatabase } from '../store/rebindable-database.js';
 import {
@@ -136,7 +141,7 @@ import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../recovery
 import { RecoveryQuarantineStore } from '../recovery/quarantine.js';
 import { createCoordinatorSocketAddressClaim } from './socket-address-claim.js';
 import { currentSuccessionAttemptChild } from './succession/attempt-child.js';
-import type { SuccessionShutdownPort } from './succession/commit.js';
+import type { RetiringStoreProtection, SuccessionShutdownPort } from './succession/commit.js';
 import { NO_SUCCESSION_INTERPOSITION, type SuccessionInterposition } from './succession/interposition.js';
 import {
   completeWaiterLaunchedUpgrade,
@@ -927,7 +932,7 @@ export type LifecycleController = {
   getRecoveryRegistry(): RecoveryRegistry | null;
   parkProviderOperationMutations(signal?: AbortSignal): Promise<void>;
   adoptProviderOperationAdmission(admission: ProviderOperationMutationAdmission): void;
-  protectRetiringStore(epochKey: string): void;
+  protectRetiringStore(epochKey: string, openerDrainMs: number): RetiringStoreProtection;
   reopenRetiringStore(epochKey: string): void;
   /** Never returns: the process exits once the release sequence settles. */
   releaseAuthority(release: SuccessionRelease): Promise<never>;
@@ -2166,7 +2171,7 @@ export function createLifecycle(
     state.providerOperationMutationAdmission = admission;
   }
 
-  function protectRetiringStore(epochKey: string): void {
+  function protectRetiringStore(epochKey: string, openerDrainMs: number): RetiringStoreProtection {
     const expected = decodeResolvedStoreEpoch(runtime, epochKey);
     const handle = state.rebindableStoreDb;
     if (expected === undefined || expected.lineageKey === undefined || handle === null) {
@@ -2177,7 +2182,12 @@ export function createLifecycle(
       throw new Error('Retiring store changed before protection.');
     }
     handle.closeCurrent();
-    protectStoreEpoch(runtime, expected);
+    try {
+      protectStoreEpoch(runtime, expected, openerDrainMs);
+    } catch (error: unknown) {
+      if (error instanceof StoreEpochOpenerHeldError) return { kind: 'opener-held', reason: error.message };
+      throw error;
+    }
     const protectedEpoch = resolveProtectedEpoch(runtime, expected.storeRoot, expected.lineageKey);
     if (protectedEpoch === null || protectedEpoch.path === expected.path) {
       throw new Error('Retiring store has no protected address.');
@@ -2187,6 +2197,7 @@ export function createLifecycle(
       resolved: { path: protectedEpoch.path, epoch: protectedEpoch, epochCandidate: true },
     });
     handle.replace(asDatabase(readOnly));
+    return { kind: 'protected' };
   }
 
   function reopenRetiringStore(epochKey: string): void {

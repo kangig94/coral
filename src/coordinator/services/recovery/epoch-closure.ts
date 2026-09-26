@@ -79,6 +79,16 @@ export function closureCandidates(runtime: Runtime): ClosureCandidate[] {
   return [...canonical, ...protectedEpochs];
 }
 
+/**
+ * How a certification decides a recorded durable-cli process's absence. Reaping may wait out a disappearance;
+ * `confirmed-only` never waits and accepts only absence already confirmed. Confirmed absence stays decisive: an
+ * exact incarnation never returns, and an emptied group ceases to exist, so a later group reusing its id holds none
+ * of the recorded processes.
+ */
+type AbsenceProof =
+  | Readonly<{ kind: 'reap'; confirmed: Set<string> }>
+  | Readonly<{ kind: 'confirmed-only'; confirmed: ReadonlySet<string> }>;
+
 async function certifyCustody(
   runtime: Runtime,
   index: JobLocationIndex,
@@ -88,6 +98,7 @@ async function certifyCustody(
   signal: AbortSignal,
   closeProxySet?: CloseProxySet,
   jobEpochKey = candidate.epochKey,
+  absence: AbsenceProof = { kind: 'reap', confirmed: new Set() },
 ): Promise<Pick<EpochClosureEvidence, 'executionDischarge' | 'obligations' | 'reason'>> {
   if (!hasEpochCustodyCoverage(runtime, dirname(candidate.epoch.path), runtime.paths.coral.coordinator.runDir)) {
     return {
@@ -236,7 +247,10 @@ async function certifyCustody(
     }
     const identity = { pid: process.pid, incarnation: process.incarnation, processGroupId: process.processGroupId };
     let absenceConfirmed: boolean;
-    if (entry.intent.owner === 'durable-cli') {
+    const absenceKey = JSON.stringify([entry.intent.id, identity.pid, identity.incarnation, identity.processGroupId]);
+    if (entry.intent.owner === 'durable-cli' && absence.kind === 'confirmed-only') {
+      absenceConfirmed = absence.confirmed.has(absenceKey);
+    } else if (entry.intent.owner === 'durable-cli' && absence.kind === 'reap') {
       const clock = createMonotonicClock(closureClockScope, {
         readMilliseconds: () => runtime.time.monotonicNow(),
         sleep: (milliseconds) => runtime.time.sleep(milliseconds),
@@ -256,6 +270,7 @@ async function certifyCustody(
           },
         );
         absenceConfirmed = outcome.kind === 'containment-absent';
+        if (absenceConfirmed) absence.confirmed.add(absenceKey);
       } catch {
         absenceConfirmed = false;
       }
@@ -307,18 +322,61 @@ async function certifyCustody(
   return { executionDischarge: 'certified', obligations, reason: 'owners certified every recorded custody obligation' };
 }
 
-export async function certifyRetiringEpochCustody(
+async function certifyRetiringEpochCustody(
   runtime: Runtime,
   index: JobLocationIndex,
   epochKey: string,
   signal: AbortSignal,
+  absence: AbsenceProof,
 ): Promise<boolean> {
   const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
   const candidate = closureCandidates(runtime).find((entry) => entry.epochKey === lineageKey);
   if (candidate === undefined) return false;
   const entries = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
-  const settlement = await certifyCustody(runtime, index, candidate, entries, false, signal, undefined, epochKey);
+  const settlement = await certifyCustody(
+    runtime,
+    index,
+    candidate,
+    entries,
+    false,
+    signal,
+    undefined,
+    epochKey,
+    absence,
+  );
   return settlement.executionDischarge === 'certified';
+}
+
+/**
+ * Custody a retiring epoch discharged before its commit window opened. Only `certify` issues one; the window
+ * re-checks it with `confirm`, which never waits on a process and refuses any obligation `certify` did not discharge.
+ */
+export class RetiringCustodyCertificate {
+  readonly #epochKey: string;
+  readonly #confirmedAbsent: ReadonlySet<string>;
+
+  private constructor(epochKey: string, confirmedAbsent: ReadonlySet<string>) {
+    this.#epochKey = epochKey;
+    this.#confirmedAbsent = confirmedAbsent;
+  }
+
+  static async certify(
+    runtime: Runtime,
+    index: JobLocationIndex,
+    epochKey: string,
+    signal: AbortSignal,
+  ): Promise<RetiringCustodyCertificate | null> {
+    const confirmed = new Set<string>();
+    const certified = await certifyRetiringEpochCustody(runtime, index, epochKey, signal, { kind: 'reap', confirmed });
+    return certified ? new RetiringCustodyCertificate(epochKey, confirmed) : null;
+  }
+
+  confirm(runtime: Runtime, index: JobLocationIndex, signal: AbortSignal): Promise<boolean> {
+    return certifyRetiringEpochCustody(runtime, index, this.#epochKey, signal, {
+      kind: 'confirmed-only',
+      confirmed: this.#confirmedAbsent,
+    });
+  }
 }
 
 export async function settleSupersededEpochClosures(

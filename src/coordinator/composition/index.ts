@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { reconcileStartupCustody } from '../services/recovery/custody-reconciliation.js';
-import { certifyRetiringEpochCustody, settleSupersededEpochClosures } from '../services/recovery/epoch-closure.js';
+import { RetiringCustodyCertificate, settleSupersededEpochClosures } from '../services/recovery/epoch-closure.js';
 import { createEpochClosureRetryPlan } from '../services/recovery/epoch-closure-retry-plan.js';
 import { providerProxySetAddress } from '../services/provider-proxy-set/identity.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
@@ -1853,7 +1853,9 @@ export function createCoordinatorCore(
       certificate: (epochKey) => jobLocationIndex.certificate(epochKey),
       resultsReleased: (epochKey) => jobLocationIndex.resultsReleased(epochKey),
       recoverLocations: (epochKey) => recoverJobLocations(jobLocationIndex, epochKey, getProgressStore()),
-      certifyCustody: (epochKey, signal) => certifyRetiringEpochCustody(runtime, jobLocationIndex, epochKey, signal),
+      certifyCustody: (epochKey, signal) =>
+        RetiringCustodyCertificate.certify(runtime, jobLocationIndex, epochKey, signal),
+      confirmCustody: (certificate, signal) => certificate.confirm(runtime, jobLocationIndex, signal),
     },
     storeDb: () => getStoreServices().storeDb,
     startAttempt: ({ intent, preparation, recoveryBundleDir }) =>

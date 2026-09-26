@@ -18,7 +18,7 @@ import type { SuccessionDecision, SuccessionReconciler } from '#src/coordinator/
 import { createDisabledKbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
 import type { SuccessionRelease } from '#src/coordinator/shutdown.js';
 import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
-import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -50,6 +50,8 @@ afterEach(() => {
 type AttemptBehavior = Readonly<{
   /** Record an identity the reaper cannot verify, so the failed child's absence stays unproven. */
   unprovenIdentity?: boolean;
+  /** The successor neither serves nor holds, so the attempt ends only at its commit deadline. */
+  silent?: boolean;
 }>;
 
 function spawnIdleChild(): ChildProcess {
@@ -81,8 +83,9 @@ async function fakeAttempt(attemptId: string, epochKey: string, behavior: Attemp
     forwardConnections: () => () => undefined,
     drainIncumbentConnections: async () => undefined,
     setDeadline: async () => undefined,
-    // The successor's committed open fails: it reports a hold instead of serving.
+    // Unless silent, the successor's committed open fails: it reports a hold instead of serving.
     allowCommittedOpen: async () => {
+      if (behavior.silent === true) return;
       for (const callback of acknowledgments) callback({ kind: 'hold', reason: 'injected committed-open failure' });
     },
     abort: async () => undefined,
@@ -136,6 +139,7 @@ type Harness = Readonly<{
   adoptedAdmissions: number;
   launchFence: readonly boolean[];
   startedRecoveries: number;
+  retryNotifications: number;
   launch(): Promise<void>;
 }>;
 
@@ -144,6 +148,7 @@ async function harness(
     failingPoints: (point: SuccessionInterpositionPoint, recovery: boolean) => boolean;
     recoveryLaunch: 'fails' | 'starts';
     attempt?: AttemptBehavior;
+    pauseMs?: number;
   }>,
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'coral-succession-exits-'));
@@ -158,13 +163,14 @@ async function harness(
     adoptedAdmissions: 0,
     launchFence: [] as boolean[],
     startedRecoveries: 0,
+    retryNotifications: 0,
   };
   const writers: IncumbentWriterPorts = {
     parkProviderOperationMutations: async () => undefined,
     adoptProviderOperationAdmission: () => {
       state.adoptedAdmissions += 1;
     },
-    protectRetiringStore: () => undefined,
+    protectRetiringStore: () => ({ kind: 'protected' }),
     reopenRetiringStore: () => undefined,
     releaseAuthority: (release) => {
       state.releases.push(release);
@@ -187,7 +193,12 @@ async function harness(
       incarnation: () => probeProcessIncarnation(process.pid),
       build: { manifest: build, bundleDir: join(root, 'bridge') },
     },
-    reconciler: reconcilerStub,
+    reconciler: () => ({
+      ...reconcilerStub(),
+      notifyObligationChange: () => {
+        state.retryNotifications += 1;
+      },
+    }),
     writers: () => writers,
     kbDaemon: createDisabledKbDaemonSupervisor('test'),
     launchCoordinator: {
@@ -195,7 +206,7 @@ async function harness(
       beginSuccessionCommitWindow: (attemptId) => ({
         kind: 'paused',
         attemptId,
-        deadlineAtMs: runtime.time.now() + 10_000,
+        deadlineAtMs: runtime.time.now() + (options.pauseMs ?? 10_000),
       }),
       endSuccessionCommitWindow: () => true,
     },
@@ -214,7 +225,8 @@ async function harness(
       recoverLocations: () => {
         throw new Error('a same-format commit never recovers historical job locations');
       },
-      certifyCustody: async () => false,
+      certifyCustody: async () => null,
+      confirmCustody: async () => false,
     },
     storeDb: () => settled.db,
     startAttempt: async (input) => {
@@ -273,8 +285,16 @@ async function harness(
     get startedRecoveries() {
       return state.startedRecoveries;
     },
+    get retryNotifications() {
+      return state.retryNotifications;
+    },
     launch: () => committer.launchPrepared(written.intent, preparation),
   };
+}
+
+function retryCondition(runtime: Runtime): UpgradeIntent['retryCondition'] {
+  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  return observed.kind === 'readable' ? observed.intent.retryCondition : null;
 }
 
 function blockers(runtime: Runtime): readonly { owner: string; reason: string }[] {
@@ -295,7 +315,25 @@ describe('succession commit failure exits', () => {
     expect(test.releases).toEqual([]);
     expect(blockers(test.runtime).map(({ owner }) => owner)).toEqual(['succession-commit', 'succession-attempt-child']);
     expect(blockers(test.runtime)[0]?.reason).toContain('incumbent reclaimed');
+    expect(retryCondition(test.runtime)?.kind).toBe('target-change');
+    expect(test.retryNotifications).toBe(0);
     test.db.exec('CREATE TABLE served_after_reclaim (value TEXT)');
+  });
+
+  it('should retry the same target after its successor misses the commit deadline', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      attempt: { silent: true },
+      pauseMs: 3_000,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.retryNotifications === 1, 15_000);
+    expect(test.adoptedAdmissions).toBe(1);
+    expect(test.releases).toEqual([]);
+    expect(blockers(test.runtime)[0]?.reason).toContain('Successor missed its serving deadline');
+    expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
   });
 
   it('should reclaim in place after a same-build recovery child fails to start', async () => {
