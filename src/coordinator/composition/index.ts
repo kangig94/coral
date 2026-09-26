@@ -1005,6 +1005,7 @@ export function createCoordinatorCore(
     createExecutionService: defaults.createExecutionService,
     onProviderProxyLifecycleFatal,
     onProviderProxySlotReleased: () => notifySuccessionObligationChange(),
+    onProviderOperationRemoved: () => notifySuccessionObligationChange(),
   });
   adoptRepairedProviderOperation = services.adoptRepairedProviderOperation;
   releaseUnreadableProviderOperationStartupOwnership = services.releaseUnreadableProviderOperationStartupOwnership;

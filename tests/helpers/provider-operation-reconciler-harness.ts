@@ -108,6 +108,7 @@ export type ProviderOperationReconcilerHarnessOverrides = {
   disappearanceTerminalization?: ProviderProxyRecoveryProducerPorts['disappearance-terminalization'];
   time?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
   onError?: (message: string) => void;
+  onRecordRemoved?: () => void;
   beforeCommitOnce?: () => void;
   failCommitOnce?: boolean;
   binding?: (source: ProviderOperationBindingPort) => ProviderOperationBindingPort;
@@ -357,6 +358,7 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
       fatalErrors.push(error);
     },
     ...(overrides.onError === undefined ? {} : { onError: overrides.onError }),
+    ...(overrides.onRecordRemoved === undefined ? {} : { onRecordRemoved: overrides.onRecordRemoved }),
     time: {
       now: () => now,
       setTimeout: overrides.time?.setTimeout ?? (() => ({ unref: () => undefined })),

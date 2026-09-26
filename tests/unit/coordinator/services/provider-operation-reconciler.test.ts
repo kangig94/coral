@@ -986,6 +986,20 @@ describe('ProviderOperationReconciler publication', () => {
     expect(harness.startupOwnership.binding.reservationFor(settlement.operation.jobId)).toBeNull();
   });
 
+  it('reports a removed settled row only after the row is gone', async () => {
+    const settlement = providerOperationRecord('settlement-pending');
+    const rowsAtRemoval: unknown[] = [];
+    const harness = createHarness({
+      onRecordRemoved: () => rowsAtRemoval.push(readProviderOperation(harness.db, settlement.operation)),
+    });
+    insertProviderOperation(harness.db, settlement);
+
+    await harness.reconciler.reconcile(settlement, harness.authority);
+
+    expect(readProviderOperation(harness.db, settlement.operation)).toBeNull();
+    expect(rowsAtRemoval).toEqual([null]);
+  });
+
   it('retains a settled durable row when binding settlement is refused', async () => {
     const harness = createHarness({
       binding: (source) => ({

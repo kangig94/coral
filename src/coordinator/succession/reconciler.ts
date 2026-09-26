@@ -196,6 +196,8 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   const newAttemptId = options.newAttemptId ?? (() => options.runtime.ids.uuid());
   let disposed = false;
   let reconciling: Promise<SuccessionDecision> | null = null;
+  // A change that joins a running pass may postdate what that pass read, so it is owed one more pass.
+  let changedDuringReconcile = false;
   const launchedAttempts = new Set<string>();
   const notifyObligationChange = (): void => {
     if (disposed) return;
@@ -222,9 +224,15 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   queueMicrotask(notifyObligationChange);
 
   function reconcile(): Promise<SuccessionDecision> {
-    if (reconciling !== null) return reconciling;
+    if (reconciling !== null) {
+      changedDuringReconcile = true;
+      return reconciling;
+    }
     const pending = reconcilePending().finally(() => {
       reconciling = null;
+      if (!changedDuringReconcile) return;
+      changedDuringReconcile = false;
+      notifyObligationChange();
     });
     reconciling = pending;
     return pending;

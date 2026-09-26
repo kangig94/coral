@@ -360,6 +360,8 @@ type ProviderOperationReconcilerDeps = Readonly<{
   batchSize?: number;
   onFatal(error: ProviderOperationReconcilerFatalError): void;
   onError?: (message: string) => void;
+  /** A removed record is an obligation change its observers may be waiting on, so it is reported after the delete. */
+  onRecordRemoved?: () => void;
 }>;
 
 export type BeginProviderOperationPublication = Readonly<{
@@ -1290,7 +1292,7 @@ export class ProviderOperationReconciler
       let deleted: ReturnType<typeof deleteProviderOperation>;
       try {
         this.#assertActiveDrive();
-        deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+        deleted = this.#deleteRecord(record);
       } catch (error: unknown) {
         const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
         if (current === null) {
@@ -1319,7 +1321,7 @@ export class ProviderOperationReconciler
     let deleted: ReturnType<typeof deleteProviderOperation>;
     try {
       this.#assertActiveDrive();
-      deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+      deleted = this.#deleteRecord(record);
     } catch (error: unknown) {
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current === null) {
@@ -2492,13 +2494,19 @@ export class ProviderOperationReconciler
     return result.current;
   }
 
+  #deleteRecord(record: ProviderOperationRecord): ReturnType<typeof deleteProviderOperation> {
+    const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+    if (deleted.kind === 'deleted') this.#deps.onRecordRemoved?.();
+    return deleted;
+  }
+
   #deleteSettledOperation(
     record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
   ): ReturnType<typeof deleteProviderOperation> {
     this.#assertActiveDrive();
     this.#settleBindingOrThrow(record.operation);
     this.#releaseStartupAndRetireBindingOrThrow(record);
-    return deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+    return this.#deleteRecord(record);
   }
 
   #releaseStartupAndRetireBindingOrThrow(record: ProviderOperationRecord): void {

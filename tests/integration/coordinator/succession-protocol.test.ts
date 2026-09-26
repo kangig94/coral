@@ -157,6 +157,73 @@ describe('succession protocol', () => {
     }
   });
 
+  it('re-reconciles an obligation change that arrives during a pass instead of waiting for the retry cadence', async () => {
+    const target = fixture();
+    let blocked = true;
+    let observeStaleClassify!: () => void;
+    const staleClassifyEntered = new Promise<void>((resolve) => {
+      observeStaleClassify = resolve;
+    });
+    let releaseStaleClassify!: () => void;
+    const staleClassifyGate = new Promise<void>((resolve) => {
+      releaseStaleClassify = resolve;
+    });
+    const launchPrepared = vi.fn(async () => {});
+    const owner: SuccessionOwner = {
+      id: 'launch-admission',
+      classify: async () => {
+        const observedBlocked = blocked;
+        if (observedBlocked) {
+          observeStaleClassify();
+          await staleClassifyGate;
+          return { kind: 'blocking', reason: 'accepted job is running' };
+        }
+        return { kind: 'completed', reason: 'accepted job settled' };
+      },
+    };
+    const service = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: {
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      },
+      owners: [owner],
+      requiredOwners: [owner.id],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      launchPrepared,
+      retryIntervalMs: 3_600_000,
+    });
+    try {
+      expect(
+        await service.reconciler.request({
+          requestId: 'request',
+          target: { build: target.build, pluginRootLabel: target.pluginRoot },
+        }),
+      ).toMatchObject({ kind: 'registered' });
+      await staleClassifyEntered;
+
+      blocked = false;
+      service.reconciler.notifyObligationChange();
+      await Promise.resolve();
+      releaseStaleClassify();
+
+      await waitForCondition(() => launchPrepared.mock.calls.length === 1, 5_000);
+      expect(launchPrepared).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: 'request' }),
+        expect.objectContaining({ stage: 'prepared', receipts: [] }),
+      );
+    } finally {
+      service.reconciler.dispose();
+    }
+  });
+
   it('reports no incumbent commit capability when the registered target declares preparation only', async () => {
     const target = fixture();
     writeFileSync(target.declarationPath, JSON.stringify({ ...target.declaration, protocols: ['prepare'] }));

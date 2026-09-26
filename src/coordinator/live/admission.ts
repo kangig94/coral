@@ -539,7 +539,14 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       pool,
       cleanupHandles: this.cleanupHandles,
       cleanupRetentions: this.cleanupRetentions,
-      pendingLaunches: this.pendingDurableLaunches,
+      pendingLaunches: {
+        add: (launch: PendingDurableLaunch) => {
+          this.pendingDurableLaunches.add(launch);
+        },
+        delete: (launch: PendingDurableLaunch) => {
+          if (this.pendingDurableLaunches.delete(launch)) this.notifySuccessionObligationChange();
+        },
+      },
       releaseLaunch: (permit: LaunchPermit) => this.releaseLaunch(permit),
     };
     if (internalPermit !== null) {

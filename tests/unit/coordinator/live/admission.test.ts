@@ -1825,6 +1825,53 @@ describe('launch admission', () => {
     });
   });
 
+  it('notifies succession when a pending durable launch settles after its wrapper joins', async () => {
+    const base = createRealRuntime('prod');
+    let settleWrapper!: () => void;
+    const wrapperSettlement = new Promise<void>((resolve) => {
+      settleWrapper = resolve;
+    });
+    const launch = vi.fn((options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
+      options.onWrapperSpawned?.({
+        pid: TEST_PROVIDER_PID,
+        settled: wrapperSettlement,
+        requestTermination: () => ({
+          kind: 'signal-failed' as const,
+          pid: TEST_PROVIDER_PID,
+          signal: 'SIGTERM' as const,
+          reason: 'kill-port-returned-false' as const,
+        }),
+      });
+      return new Promise<never>(() => undefined);
+    });
+    const runtime: Runtime = {
+      ...base,
+      process: {
+        ...base.process,
+        durable: { ...base.process.durable, launch },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    const notify = vi.fn();
+    const unsubscribe = localCoordinator.subscribeSuccessionObligationChanges(notify);
+    void localCoordinator.spawnDurableJob({
+      provider: 'codex',
+      command: 'codex',
+      args: ['exec'],
+      jobDir: '/tmp/joined-pending-wrapper',
+      jobId: 'joined-pending-wrapper',
+    });
+    await vi.waitFor(() => expect(launch).toHaveBeenCalledOnce());
+    expect(localCoordinator.pendingDurableJobIds()).toEqual(['joined-pending-wrapper']);
+    notify.mockClear();
+
+    settleWrapper();
+
+    await vi.waitFor(() => expect(localCoordinator.pendingDurableLaunchCount()).toBe(0));
+    expect(notify).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
   it('closes the pending launch snapshot at the synchronous registration boundary', async () => {
     const base = createRealRuntime('prod');
     const controller = new AbortController();

@@ -302,7 +302,7 @@ type SpawnDurableJobTransportParams = {
   pool: LaunchPool;
   cleanupHandles: Map<symbol, DurableProcessCleanup>;
   cleanupRetentions: Map<DurableProcessCleanup, DurableProcessRetention>;
-  pendingLaunches: Set<PendingDurableLaunch>;
+  pendingLaunches: Readonly<{ add(launch: PendingDurableLaunch): void; delete(launch: PendingDurableLaunch): void }>;
   releaseLaunch: (permit: LaunchPermit) => LaunchRelease;
   ownership:
     | Readonly<{ kind: 'internal'; permit: LaunchPermit; abortRegistry: AbortRegistry }>

@@ -93,6 +93,7 @@ type CreateExecutionServicesDeps = {
     error: ProviderProxySetLifecycleFatalError | ProviderOperationReconcilerFatalError,
   ): void;
   onProviderProxySlotReleased?(): void;
+  onProviderOperationRemoved?(): void;
 };
 
 function listInstantiatedExecutionServices(services: ReadonlyMap<string, ProjectRequestPort>): ProjectRequestPort[] {
@@ -109,6 +110,7 @@ export function createExecutionServices({
   createExecutionService,
   onProviderProxyLifecycleFatal,
   onProviderProxySlotReleased,
+  onProviderOperationRemoved,
 }: CreateExecutionServicesDeps): {
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
@@ -370,6 +372,7 @@ export function createExecutionServices({
     time: runtime.time,
     onFatal: onProviderProxyLifecycleFatal,
     onError: (message) => backendLog.warn(message),
+    onRecordRemoved: () => onProviderOperationRemoved?.(),
   });
   const providerProxyLifecycle: ProviderProxySetLifecycle = new ProviderProxySetLifecycle({
     buildSetId: world.identity.buildSetId,
