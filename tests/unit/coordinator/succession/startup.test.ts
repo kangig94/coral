@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   completeWaiterLaunchedUpgrade,
   dischargeDeadSuccessionAttempt,
+  heldUnservedMint,
   openPreferredStoreEpoch,
   prepareCommittedSuccessorRecovery,
   publishAttemptServing,
@@ -19,11 +20,13 @@ import {
   type SuccessionStartupHold,
 } from '#src/coordinator/succession/startup.js';
 import type { SuccessionPreparation } from '#src/coordinator/succession/protocol.js';
+import { recordRetirementDisposition } from '#src/coordinator/succession/retirement-disposition.js';
 import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntentChange } from '#src/infra/upgrade-intent.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { encodeResolvedStoreEpoch, epochDirectory, settleStoreEpoch } from '#src/store/epoch.js';
+import { encodeResolvedStoreEpoch, epochDirectory, resolvedStoreEpoch, settleStoreEpoch } from '#src/store/epoch.js';
+import { protectStoreEpoch } from '#src/store/epoch-protection.js';
 import { createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import * as writerGeneration from '#src/store/succession-writer-generation.js';
 import {
@@ -78,6 +81,18 @@ async function exitedPid(): Promise<number> {
   await new Promise<void>((resolve) => child.once('exit', () => resolve()));
   if (child.pid === undefined) throw new Error('exited child has no pid');
   return child.pid;
+}
+
+/** A process that has exited, recorded with the incarnation it had, so its absence is decisive. */
+async function exitedIncarnation(): Promise<Readonly<{ pid: number; incarnation: ProcessIncarnation }>> {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  await new Promise<void>((resolve) => child.once('spawn', () => resolve()));
+  const incarnation = child.pid === undefined ? null : probeProcessIncarnation(child.pid);
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  child.kill('SIGKILL');
+  await exited;
+  if (child.pid === undefined || incarnation === null) throw new Error('exited child has no incarnation');
+  return { pid: child.pid, incarnation };
 }
 
 function preparation(attemptId: string, receipts: SuccessionPreparation['receipts'] = []): SuccessionPreparation {
@@ -396,7 +411,7 @@ describe('incomplete succession at startup', () => {
     });
   });
 
-  it('should hold a committed successor whose writer generation cannot be attributed, then abandon it', async () => {
+  it('should hold a committed successor whose writer generation cannot be attributed, then abandon it for good', async () => {
     const runtime = runtimeFixture();
     const format = currentCoralStoreFormat();
     const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
@@ -456,6 +471,49 @@ describe('incomplete succession at startup', () => {
     await expect(recoverAt('startup-3')).resolves.toEqual({ kind: 'none' });
     expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
       intent: { disposition: 'completed', completionReceipt: { attemptId: 'attempt-1' } },
+    });
+    // Nothing changes a completed intent, so the abandonment must outlive it: every later startup proceeds.
+    for (const startupId of ['startup-4', 'startup-5', 'startup-6']) {
+      await expect(recoverAt(startupId)).resolves.toEqual({ kind: 'none' });
+    }
+  });
+
+  it("should record the discard of an abandoned attempt's possible retirement mint", async () => {
+    const runtime = runtimeFixture();
+    const attemptId = runtime.ids.uuid();
+    const owner = { kind: 'incumbent' as const, instanceId: 'incumbent', pid: process.pid, incarnation: null };
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'request-1',
+      incumbent: { ...owner, version: '0.10.13', bundleHash: 'fedcba9876543210', flavor: 'prod' },
+      target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+      attemptId,
+      attemptOwner: owner,
+      attemptChild: { attemptId, ...(await exitedIncarnation()) },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      successionPreparation: preparation(attemptId),
+    });
+    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+    recordRetirementDisposition(runtime, {
+      version: 'v1',
+      attemptId,
+      incumbentEpochKey: 'epoch-key',
+      incumbentFingerprint: build.storeFormatFingerprint,
+      successorFingerprint: build.storeFormatFingerprint,
+      certificateRevision: 0,
+      certificateJobIds: [],
+      custodySettled: true,
+    });
+
+    await expect(holdOf(resolveAt(runtime, 'startup-1'))).resolves.toMatchObject({ kind: 'deaths-unproven' });
+    await expect(holdOf(resolveAt(runtime, 'startup-2'))).resolves.toMatchObject({ kind: 'deaths-unproven' });
+    await expect(resolveAt(runtime, 'startup-3')).resolves.toEqual({ kind: 'none' });
+
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { attemptId: null, unservedMintDiscard: { attemptId, incumbentEpochKey: 'epoch-key' } },
     });
   });
 
@@ -734,5 +792,9 @@ describe('recorded unserved mint discard at startup', () => {
     expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
       intent: { unservedMintDiscard: { attemptId: 'failed' } },
     });
+    // Beside its predecessor the mint is never read as the store; once that epoch is protected away, it would be.
+    expect(heldUnservedMint(runtime)).toBeNull();
+    protectStoreEpoch(runtime, resolvedStoreEpoch(realpathSync(runtime.paths.coral.store.dbDir), '1'));
+    expect(heldUnservedMint(runtime)).toMatchObject({ kind: 'unserved-mint-held', attemptId: 'failed' });
   });
 });

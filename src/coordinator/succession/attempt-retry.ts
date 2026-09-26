@@ -11,10 +11,12 @@ const TRANSIENT_RETRY_MAX_MS = 30_000;
 const TRANSIENT_RETRY_LIMIT = 6;
 
 type TransientRetry = NonNullable<UpgradeIntent['transientRetry']>;
+type ObligationRetry = NonNullable<UpgradeIntent['obligationRetry']>;
 
 export type FailedAttemptRetry = Readonly<{
   retryCondition: NonNullable<UpgradeIntent['retryCondition']>;
   transientRetry?: TransientRetry;
+  obligationRetry?: ObligationRetry;
 }>;
 
 /** A record for another target never delays or bounds the current target. */
@@ -23,10 +25,21 @@ function transientRetryOf(intent: UpgradeIntent): TransientRetry | null {
   return retry !== undefined && retry.targetKey === successionTargetKey(intent.target) ? retry : null;
 }
 
-/** When the intent's target may next launch an attempt; null when no transient backoff binds it. */
-export function transientRetryAtMs(intent: UpgradeIntent): number | null {
-  const retry = transientRetryOf(intent);
-  return retry === null ? null : Date.parse(retry.retryAfter);
+function obligationRetryOf(intent: UpgradeIntent): ObligationRetry | null {
+  const retry = intent.obligationRetry;
+  return retry !== undefined && retry !== null && retry.targetKey === successionTargetKey(intent.target) ? retry : null;
+}
+
+function backoffMs(failures: number): number {
+  return Math.min(TRANSIENT_RETRY_MAX_MS, TRANSIENT_RETRY_BASE_MS * 2 ** (failures - 1));
+}
+
+/** When the intent's target may next launch an attempt; null when no backoff binds it. */
+export function attemptRetryAtMs(intent: UpgradeIntent): number | null {
+  const backoffs = [transientRetryOf(intent), obligationRetryOf(intent)].flatMap((retry) =>
+    retry === null ? [] : [Date.parse(retry.retryAfter)],
+  );
+  return backoffs.length === 0 ? null : Math.max(...backoffs);
 }
 
 /**
@@ -43,12 +56,26 @@ export function failedAttemptRetry(
   if (retry.kind === 'target-change') {
     return { retryCondition: { kind: 'target-change', evidence: targetChangeEvidence } };
   }
+  if (retry.obligationChange === true) {
+    const changes = (obligationRetryOf(intent)?.changes ?? 0) + 1;
+    const obligationRetry = {
+      targetKey: successionTargetKey(intent.target),
+      changes,
+      retryAfter: new Date(nowMs + Math.max(retry.retryAfterMs, backoffMs(changes))).toISOString(),
+    };
+    return {
+      retryCondition: {
+        kind: 'obligation-change',
+        evidence: `an obligation change outdated the attempt; retries after ${obligationRetry.retryAfter}`,
+      },
+      obligationRetry,
+    };
+  }
   const failures = (transientRetryOf(intent)?.failures ?? 0) + 1;
-  const backoffMs = Math.min(TRANSIENT_RETRY_MAX_MS, TRANSIENT_RETRY_BASE_MS * 2 ** (failures - 1));
   const transientRetry = {
     targetKey: successionTargetKey(intent.target),
     failures,
-    retryAfter: new Date(nowMs + Math.max(retry.retryAfterMs, backoffMs)).toISOString(),
+    retryAfter: new Date(nowMs + Math.max(retry.retryAfterMs, backoffMs(failures))).toISOString(),
   };
   if (failures > TRANSIENT_RETRY_LIMIT) {
     return {

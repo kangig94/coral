@@ -34,12 +34,7 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
         cursor: {
           version: 'jobs.wait.v2',
           locations: { ...event.cursor.locations },
-          deliveredJobIds: [
-            ...new Set([
-              ...(isWaitCursorV2(cursor) ? (cursor.deliveredJobIds ?? []) : []),
-              ...(event.cursor.deliveredJobIds ?? []),
-            ]),
-          ],
+          deliveredJobIds: [...new Set([...(cursor.deliveredJobIds ?? []), ...(event.cursor.deliveredJobIds ?? [])])],
           positions: Object.fromEntries(
             Object.entries(event.cursor.positions).map(([key, seq]) => [
               key,
@@ -50,16 +45,22 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
         shouldRender: true,
       };
     }
-    if (isWaitCursorV2(cursor)) {
-      return { cursor, shouldRender: true };
+    // An event without an epoch comes from a coordinator the vector cursor was withheld from, which replays from its
+    // own start: dedupe restarts there, and a terminal already delivered stays delivered.
+    const legacy = isWaitCursorV2(cursor) ? legacyRenderCursor(cursor.deliveredJobIds) : cursor;
+    if (event.seq <= legacy.afterSeq || (event.type === 'terminal' && legacy.deliveredJobIds?.includes(event.jobId))) {
+      return { cursor: legacy, shouldRender: false };
     }
-    if (event.seq <= cursor.afterSeq) {
-      return { cursor, shouldRender: false };
-    }
-    return { cursor: { afterSeq: event.seq }, shouldRender: true };
+    return { cursor: { ...legacy, afterSeq: event.seq }, shouldRender: true };
   }
 
   return { cursor: 'cursor' in event && event.cursor ? event.cursor : cursor, shouldRender: true };
+}
+
+function legacyRenderCursor(deliveredJobIds: readonly string[] | undefined): Extract<WaitCursor, { afterSeq: number }> {
+  return deliveredJobIds === undefined || deliveredJobIds.length === 0
+    ? { afterSeq: 0 }
+    : { afterSeq: 0, deliveredJobIds: [...deliveredJobIds] };
 }
 
 // Every variant below but `interrupted` is `.passthrough()`, not `.strict()`: a coordinator newer than

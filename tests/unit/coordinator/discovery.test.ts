@@ -370,6 +370,89 @@ describe('coordinator discovery', () => {
   // The most common state of all, and it had no test: nothing had ever read a discovery file that simply is
   // not there. Every `missing` in this suite came from a mocked disposition, so the `ENOENT` guard could be
   // deleted — turning "no coordinator has recorded itself" into a throw — with the suite green.
+  function writeLegacyOnlyRecord(overrides: Record<string, unknown> = {}): void {
+    const paths = coordinatorPaths('prod');
+    mkdirSync(dirname(paths.legacyInfoFile), { recursive: true });
+    writeFileSync(
+      paths.legacyInfoFile,
+      JSON.stringify({
+        pid: process.pid,
+        port: 4312,
+        socketPath: paths.legacySocketPath,
+        bundleHash: 'bundle-legacy',
+        flavor: 'prod',
+        namespace: 'ns-legacy',
+        startedAt: 1_713_456_789_000,
+        token: 'token-legacy',
+        bootToken: 'boot-token-legacy',
+        version: '0.10.3',
+        instanceId: 'legacy-instance',
+        ...overrides,
+      }),
+      'utf-8',
+    );
+  }
+
+  // A legacy record says nothing trustworthy beyond the address it names: a stale one outlives its writer, and its
+  // pid is reused. Read as the coordinator, it skips startup recovery and tells a serving coordinator it was
+  // replaced.
+  it('does not read a legacy-only record as the coordinator', async () => {
+    makeHome();
+    writeLegacyOnlyRecord();
+    const { probeCoordinator, readBackendInfo } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    expect(probeCoordinator(runtime)).toEqual({ kind: 'absent' });
+    expect(readBackendInfo(runtime)).toBeNull();
+  });
+
+  it('reads a legacy-only record as the holder of the legacy address it names', async () => {
+    makeHome();
+    writeLegacyOnlyRecord();
+    const { probeCoordinatorAtAddress } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    expect(probeCoordinatorAtAddress(runtime, coordinatorPaths('prod').legacySocketPath)).toMatchObject({
+      kind: 'live',
+      record: { instanceId: 'legacy-instance', bootToken: 'boot-token-legacy' },
+    });
+    expect(probeCoordinatorAtAddress(runtime, coordinatorPaths('prod').socketPath)).toEqual({ kind: 'absent' });
+  });
+
+  // Shipped v0.10.0-v0.10.3 readers of the legacy record never send the shutdown token, so the mirror has no reason
+  // to carry a credential beyond what those readers use.
+  it('mirrors the legacy record without the shutdown token', async () => {
+    makeHome();
+    const { writeBackendInfo } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    writeBackendInfo(
+      {
+        pid: process.pid,
+        port: 4312,
+        socketPath: coordinatorPaths('prod').socketPath,
+        host: '127.0.0.1',
+        bundleHash: 'bundle-a',
+        flavor: 'prod',
+        namespace: 'ns-a',
+        startedAt: 1_713_456_789_000,
+        token: 'token-a',
+        bootToken: 'boot-token-a',
+        shutdownToken: 'shutdown-token-a',
+        version: '1.2.3',
+        instanceId: 'instance-a',
+      },
+      runtime,
+    );
+
+    const legacy = JSON.parse(readFileSync(coordinatorPaths('prod').legacyInfoFile, 'utf-8')) as Record<
+      string,
+      unknown
+    >;
+    expect(legacy).toMatchObject({ socketPath: coordinatorPaths('prod').legacySocketPath, bootToken: 'boot-token-a' });
+    expect(legacy).not.toHaveProperty('shutdownToken');
+  });
+
   it('reads an absent discovery file as missing, not as a failure', async () => {
     makeHome();
     const { readDiscoveryRecordDisposition } = await importDiscovery();

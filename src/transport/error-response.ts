@@ -10,7 +10,7 @@ import {
 export type TransportErrorResponse = {
   readonly message: string;
   readonly statusCode: number;
-  readonly data?: SerializedCoralSetupError;
+  readonly data?: SerializedCoralSetupError | Readonly<{ code: 'succession_writer_parked'; message: string }>;
   readonly body: Record<string, unknown>;
 };
 
@@ -90,11 +90,8 @@ const SUCCESSION_WRITER_PARKED_MESSAGE =
 
 export function buildTransportErrorResponse(error: unknown): TransportErrorResponse {
   if (error instanceof SuccessionWriterParkedError) {
-    return {
-      message: SUCCESSION_WRITER_PARKED_MESSAGE,
-      statusCode: 503,
-      body: { code: 'succession_writer_parked', message: SUCCESSION_WRITER_PARKED_MESSAGE },
-    };
+    const parked = { code: 'succession_writer_parked', message: SUCCESSION_WRITER_PARKED_MESSAGE } as const;
+    return { message: SUCCESSION_WRITER_PARKED_MESSAGE, statusCode: 503, data: parked, body: parked };
   }
   const setupError = serializeCoralSetupError(publicRecoveryQuarantineError(error) ?? error);
   if (setupError === null) {

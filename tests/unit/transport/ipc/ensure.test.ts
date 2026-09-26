@@ -2307,7 +2307,9 @@ describe('ipc ensure', () => {
     '(health-request-failed). No live recorded coordinator could be identified behind it, so Coral signaled ' +
     'nothing; retry the command.';
 
-  it('names a verified live unresponsive coordinator in labeled force-kill guidance', async () => {
+  // Force-kill guidance is the floor for a coordinator that cannot answer at all, so it needs both the contender's
+  // own refusal of an unverified holder and this invocation's continuous observation of silence behind it.
+  it('names a verified live coordinator silent across the whole window in labeled force-kill guidance', async () => {
     makeHome();
     vi.useFakeTimers();
     const root = createPluginRoot();
@@ -2318,15 +2320,64 @@ describe('ipc ensure', () => {
     mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
     mockState.spawn.mockReturnValue(child);
 
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const ensuredPromise = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), FORCE_KILL_UNANSWERED_WINDOW_MS + 400);
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS + 800);
+    const error = await ensuredPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(`action=kill -9 ${process.pid}`);
+  });
+
+  // A contender that refuses after a stall of a few seconds has not shown that the holder cannot answer: the
+  // stall may be a journal flush or a slow read, and the coordinator behind it is serving.
+  it('withholds force-kill guidance from an unverified-holder refusal after a stall shorter than the window', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { pid: process.pid, incarnation: incarnation! });
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ETIMEDOUT'));
+    mockState.spawn.mockReturnValue(child);
+
     const { ensure } = await importEnsure();
     const ensuredPromise = ensure('sessions.create', root).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(0);
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), 3_500);
+    await vi.advanceTimersByTimeAsync(4_000);
+    const error = await ensuredPromise;
+
+    expect(error).toMatchObject({ code: 'handoff_socket_holder_unverified' });
+    expect(JSON.stringify(error)).not.toContain('kill -9');
+  });
+
+  // Only an unverified-holder refusal says the contender itself could not get an answer. A contender that exited
+  // any other way conceded to, or raced, an incumbent that may have answered it.
+  it('withholds force-kill guidance after a contender exit that was not an unverified-holder refusal', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { pid: process.pid, incarnation: incarnation! });
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ETIMEDOUT'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const ensuredPromise = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS * 2);
     child.emit('exit', 0, null);
     await vi.advanceTimersByTimeAsync(0);
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(`action=kill -9 ${process.pid}`);
+    expect((error as Error).message).not.toContain('kill -9');
+    expect((error as Error).message).not.toMatch(/force-kill/i);
   });
 
   // A printed `kill -9` is run by whoever reads it, so it may name only a process proven to be the recorded

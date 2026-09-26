@@ -14,6 +14,7 @@ import {
   hasEpochCustodyCoverage,
   observeEpochClosure,
   recordEpochClosure,
+  setAsideUnreadableEpochClosure,
   type EpochClosureEvidence,
   type EpochClosureRecording,
 } from '../../../store/epoch-closure.js';
@@ -27,6 +28,8 @@ import {
 } from '../../../store/epoch.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { JobLocationIndex } from '../../../jobs/location-index.js';
+import { readUpgradeIntent } from '../../../infra/upgrade-intent.js';
+import { successionPreparationSchema } from '../../succession/protocol.js';
 import { readDurableCliControllerReceipts } from '../durable-cli-transfer.js';
 
 export type ClosureCandidate = Readonly<{ epoch: ResolvedStoreEpoch; epochKey: string; originalPath: string }>;
@@ -43,7 +46,7 @@ const REAP_DEADLINE_MS =
   2 * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS;
 
 /** The current epoch is never a closure candidate, including one a legacy build left without a lineage marker. */
-export function currentEpochLineageKey(runtime: Runtime): string | undefined {
+function currentEpochLineageKey(runtime: Runtime): string | undefined {
   const current = listStoreEpochs(runtime).find((entry) => entry.role === 'current');
   if (current === undefined || current.resolved === null) return undefined;
   try {
@@ -51,6 +54,37 @@ export function currentEpochLineageKey(runtime: Runtime): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Epochs no closure may certify: this process's own, the proven current one, which may belong to a successor that is
+ * still acquiring effects, and any an unfinished succession names. A closed record never reopens, so certifying an
+ * epoch while it can still gain obligations would discharge work that has not happened yet. Null means an unreadable
+ * intent may name any epoch, so nothing is certifiable.
+ */
+export function uncertifiableEpochKeys(
+  runtime: Runtime,
+  activeEpochKey: string | undefined,
+): ReadonlySet<string> | null {
+  const keys = new Set<string>();
+  if (activeEpochKey !== undefined) keys.add(activeEpochKey);
+  const current = currentEpochLineageKey(runtime);
+  if (current !== undefined) keys.add(current);
+  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  if (observed.kind === 'absent') return keys;
+  if (observed.kind !== 'readable') return null;
+  const named: string[] = [];
+  const discard = observed.intent.unservedMintDiscard;
+  if (discard !== null && discard !== undefined) named.push(discard.incumbentEpochKey);
+  if (observed.intent.disposition !== 'completed' && observed.intent.disposition !== 'closed') {
+    const preparation = successionPreparationSchema.safeParse(observed.intent.successionPreparation);
+    if (preparation.success) named.push(preparation.data.epochKey);
+  }
+  for (const epochKey of named) {
+    const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
+    if (lineageKey !== undefined) keys.add(lineageKey);
+  }
+  return keys;
 }
 
 export function closureCandidates(runtime: Runtime): ClosureCandidate[] {
@@ -421,7 +455,8 @@ export async function settleSupersededEpochClosures(
   closeProxySet?: CloseProxySet,
 ): Promise<EpochClosureEvidence[]> {
   const stateRoot = runtime.paths.coral.generation.dataRoot;
-  const selectedKey = activeEpochKey ?? currentEpochLineageKey(runtime);
+  const uncertifiable = uncertifiableEpochKeys(runtime, activeEpochKey);
+  if (uncertifiable === null) return [];
   const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
   const evidence: EpochClosureEvidence[] = [];
   const keepRecorded = (recording: EpochClosureRecording): void => {
@@ -437,7 +472,7 @@ export async function settleSupersededEpochClosures(
     );
   } catch {
     for (const candidate of candidates) {
-      if (candidate.epochKey === selectedKey) continue;
+      if (uncertifiable.has(candidate.epochKey)) continue;
       keepRecorded(
         recordEpochClosure(runtime, stateRoot, {
           version: 'v1',
@@ -456,13 +491,13 @@ export async function settleSupersededEpochClosures(
   for (const candidate of candidates) {
     if (signal?.aborted) break;
     if (subjectKey !== undefined && subjectKey !== candidate.epochKey) continue;
-    if (candidate.epochKey === selectedKey) continue;
+    if (uncertifiable.has(candidate.epochKey)) continue;
     const jobEpochKey = lineageJobEpochKey(
       candidate.epoch.canonicalStoreRoot ?? candidate.epoch.storeRoot,
       candidate.epochKey,
     );
     const read = observeEpochClosure(runtime, stateRoot, candidate.epochKey);
-    if (read.kind === 'unreadable') continue;
+    if (read.kind === 'unreadable' && !setAsideUnreadableEpochClosure(runtime, stateRoot, candidate.epochKey)) continue;
     const previous = read.kind === 'recorded' ? read.evidence : null;
     let dataOutcome: EpochClosureEvidence['dataOutcome'];
     try {

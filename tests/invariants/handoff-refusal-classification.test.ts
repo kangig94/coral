@@ -90,7 +90,6 @@ describe('handoff refusal classification ownership', () => {
     const approved = [
       'bindWithHandoff:handoff_socket_holder_unverified',
       'bindWithHandoff:handoff_socket_holder_unverified',
-      'bindWithHandoff:handoff_socket_holder_unverified',
     ];
 
     expect(handoffEscalationConstructionSites(source).sort()).toEqual(approved.sort());

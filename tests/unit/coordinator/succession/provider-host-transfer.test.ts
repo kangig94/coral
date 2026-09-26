@@ -574,7 +574,7 @@ describe('provider host transfer at the commit and after serving', () => {
     // A control reattachment reinstalls the identical grant, which the roles read as the controller taking it back.
     transferAuthorized = false;
 
-    await transfer.releaseForTransfer('attempt-1');
+    await transfer.releaseForTransfer('attempt-1', new AbortController().signal);
 
     expect(authorizedAtRelease).toEqual([true]);
   });
@@ -588,7 +588,9 @@ describe('provider host transfer at the commit and after serving', () => {
     await classify(transfer);
     grant = '44444444-4444-4444-8444-444444444444';
 
-    await expect(transfer.releaseForTransfer('attempt-1')).rejects.toThrow(/no longer authorizes/u);
+    await expect(transfer.releaseForTransfer('attempt-1', new AbortController().signal)).rejects.toThrow(
+      /no longer authorizes/u,
+    );
     expect(lifecycle.releaseControlForTransfer).not.toHaveBeenCalled();
   });
 });

@@ -181,11 +181,7 @@ export function readDiscoveryRecordDisposition(
  * wants `readDiscoveryRecordDisposition`, and keeping this private is what makes that the only door.
  */
 function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
-  const primary = readDiscoveryRecordDisposition(runtime);
-  const read =
-    primary.kind === 'missing'
-      ? readDiscoveryRecordDisposition(runtime, runtime.paths.coral.coordinator.legacyInfoFile)
-      : primary;
+  const read = readDiscoveryRecordDisposition(runtime);
   return read.kind === 'record' ? read.record : null;
 }
 
@@ -218,11 +214,24 @@ export type CoordinatorProbe =
  * subprocesses to derive a token this function discards.
  */
 export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
+  return probeDiscoveryRead(readDiscoveryRecordDisposition(runtime));
+}
+
+/**
+ * The legacy record is evidence only about the address it names. A v0.10.0-v0.10.3 coordinator publishes nothing
+ * else, but read for any other question a stale one names a pid nobody still holds: it would skip startup recovery
+ * and tell a serving coordinator it had been replaced.
+ */
+export function probeCoordinatorAtAddress(runtime: DiscoveryRuntime, socketPath: string): CoordinatorProbe {
   const primary = readDiscoveryRecordDisposition(runtime);
-  const read =
-    primary.kind === 'missing'
-      ? readDiscoveryRecordDisposition(runtime, runtime.paths.coral.coordinator.legacyInfoFile)
-      : primary;
+  if (primary.kind !== 'missing') return probeDiscoveryRead(primary);
+  const legacy = readDiscoveryRecordDisposition(runtime, runtime.paths.coral.coordinator.legacyInfoFile);
+  return legacy.kind === 'record' && legacy.record.socketPath === socketPath
+    ? probeDiscoveryRead(legacy)
+    : { kind: 'absent' };
+}
+
+function probeDiscoveryRead(read: DiscoveryRead): CoordinatorProbe {
   if (read.kind === 'missing') return { kind: 'absent' };
   if (read.kind === 'undecodable') {
     // Said out loud because it is otherwise invisible and its consequence arrives elsewhere: a contender that
@@ -247,8 +256,10 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
 
 export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryWriterRuntime): boolean {
   if (!writeDiscoveryRecord(info, runtime)) return false;
+  // Shipped v0.10.0-v0.10.3 readers of this record never send the shutdown token.
+  const { shutdownToken: _shutdownToken, ...legacyInfo } = info;
   return writeDiscoveryRecordAtPath(
-    { ...info, socketPath: runtime.paths.coral.coordinator.legacySocketPath },
+    { ...legacyInfo, socketPath: runtime.paths.coral.coordinator.legacySocketPath },
     runtime,
     runtime.paths.coral.coordinator.legacyInfoFile,
   );

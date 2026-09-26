@@ -7,7 +7,7 @@ import type { UsageSummary } from '../providers/contract.js';
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
 export type WaitCursor =
-  | { afterSeq: number }
+  | { afterSeq: number; deliveredJobIds?: string[] }
   | {
       version: 'jobs.wait.v2';
       positions: Record<string, number>;
@@ -38,7 +38,13 @@ export function isWaitCursor(value: unknown): value is WaitCursor {
           candidate.deliveredJobIds.every((jobId) => typeof jobId === 'string' && jobId.length > 0)))
     );
   }
-  return Number.isSafeInteger(candidate.afterSeq) && (candidate.afterSeq as number) >= 0;
+  return (
+    Number.isSafeInteger(candidate.afterSeq) &&
+    (candidate.afterSeq as number) >= 0 &&
+    (candidate.deliveredJobIds === undefined ||
+      (Array.isArray(candidate.deliveredJobIds) &&
+        candidate.deliveredJobIds.every((jobId) => typeof jobId === 'string' && jobId.length > 0)))
+  );
 }
 
 export function isWaitCursorV2(cursor: WaitCursor): cursor is Extract<WaitCursor, { version: 'jobs.wait.v2' }> {

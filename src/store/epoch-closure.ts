@@ -110,6 +110,22 @@ export function observeEpochClosure(
 }
 
 /**
+ * Moves an unreadable closure aside, bytes intact, so the epoch can be certified again from its custody evidence.
+ * Kept in place, it would retain the epoch with no event able to end the hold. False leaves it in place.
+ */
+export function setAsideUnreadableEpochClosure(runtime: Runtime, stateRoot: string, epochKey: string): boolean {
+  const path = closurePath(stateRoot, epochKey);
+  try {
+    runtime.storage.renameSync(path, `${path}.unreadable.${runtime.time.now()}.${runtime.ids.uuid()}`);
+    if (!runtime.storage.syncDirectoryDurableSync(dirname(path))) return false;
+  } catch {
+    return false;
+  }
+  writeAuditEvent('epoch_closure_record_set_aside', { epochKey }, 'warn');
+  return true;
+}
+
+/**
  * An unreadable closure may be another build's certified record, so it is never overwritten; it already reads as
  * unrecoverable-retained, which is the status every caller that meets it must leave in place.
  */

@@ -370,10 +370,12 @@ export function createStartupMintAuthorizer(
       // An unreadable patience record starts a fresh observation count.
     }
     const now = runtime.time.now();
+    // Startups racing each other observe the same evidence, so an observation counts once per interval, not per process.
     const repeated =
       previous !== null &&
-      previous.startupId === startupId &&
-      (previous.countedAt === undefined || now - previous.countedAt < RETIREMENT_PATIENCE_INTERVAL_MS)
+      (previous.countedAt === undefined
+        ? previous.startupId === startupId
+        : now - previous.countedAt < RETIREMENT_PATIENCE_INTERVAL_MS)
         ? previous
         : null;
     const attempts = repeated?.attempts ?? (previous?.attempts ?? 0) + 1;

@@ -2,7 +2,14 @@ import { createConnection, type Socket } from 'node:net';
 import { errorMessage } from '../../infra/error-format.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { createRealTimePort } from '../../infra/time.js';
-import { encode, decode, type IpcAuthMetadata, type JsonRpcEnvelope, type JsonRpcRequestEnvelope } from './json-rpc.js';
+import {
+  encode,
+  decode,
+  decodeIpcErrorData,
+  type IpcAuthMetadata,
+  type JsonRpcEnvelope,
+  type JsonRpcRequestEnvelope,
+} from './json-rpc.js';
 import { createLineFramer } from '../line-framing.js';
 import { isLifecycleRefusalResult, lifecycleRefusalResult } from '../lifecycle-refusal.js';
 import type { TimePort } from '../../infra/port-types.js';
@@ -61,16 +68,14 @@ export class IpcRpcError extends Error {
   readonly code: string | undefined;
 
   constructor(error: Extract<JsonRpcEnvelope, { kind: 'error' }>['error']) {
-    super(error.message, error.data === undefined ? undefined : { cause: error.data });
+    const data = decodeIpcErrorData(error.data);
+    super(error.message, data === undefined ? undefined : { cause: data });
     this.name = 'IpcRpcError';
     this.rpcCode = error.code;
-    this.data = error.data;
+    this.data = data;
     this.code =
-      typeof error.data === 'object' &&
-      error.data !== null &&
-      'code' in error.data &&
-      typeof error.data.code === 'string'
-        ? error.data.code
+      typeof data === 'object' && data !== null && 'code' in data && typeof data.code === 'string'
+        ? data.code
         : undefined;
   }
 }

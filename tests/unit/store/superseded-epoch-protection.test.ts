@@ -2,10 +2,12 @@ import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
+import * as epochProtection from '#src/store/epoch-protection.js';
 import {
+  discardCurrentStoreEpoch,
   epochDirectory,
   listStoreEpochs,
   retirementMintDisposition,
@@ -30,6 +32,7 @@ const build = {
 };
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -93,5 +96,59 @@ describe('superseded epoch protection', () => {
     const listed = listStoreEpochs(runtime).find((entry) => entry.epoch === '1');
     expect(listed).toMatchObject({ role: 'protected' });
     expect(listed?.protectionPending).toBeUndefined();
+  });
+
+  describe('an epoch awaiting protection when a later mint meets it', () => {
+    const protect = epochProtection.protectStoreEpoch;
+
+    /** Epoch 1 stays at its canonical address, recorded as pending, behind a current epoch 2. */
+    function pendingBehindCurrent(): Readonly<{ runtime: ReturnType<typeof createRealRuntime>; dbDir: string }> {
+      const root = mkdtempSync(join(tmpdir(), 'coral-superseded-protection-'));
+      roots.push(root);
+      const runtime = createRealRuntime('prod', { baseDir: root });
+      settleStoreEpoch(runtime, { storeFormat: format, build, authorizeMint: authorizeFixtureStoreMint }).db.close();
+      const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
+      const held = vi.spyOn(epochProtection, 'protectStoreEpoch').mockImplementation((_runtime, epoch) => {
+        throw new epochProtection.StoreEpochOpenerHeldError(`lineage:${epoch.epoch}`);
+      });
+      discardCurrentStoreEpoch(runtime, { storeFormat: format, build }).db.close();
+      held.mockRestore();
+      expect(listStoreEpochs(runtime)).toContainEqual(
+        expect.objectContaining({ epoch: '1', protectionPending: expect.any(String) as unknown }),
+      );
+      return { runtime, dbDir };
+    }
+
+    it('should publish past it when another process protected it after this mint observed it', () => {
+      const { runtime, dbDir } = pendingBehindCurrent();
+      vi.spyOn(epochProtection, 'protectStoreEpoch').mockImplementation((...args) => {
+        const [, epoch] = args;
+        // The incumbent's pending-protection retry moves the epoch first.
+        if (epoch.epoch === '1' && existsSync(epochDirectory(dbDir, '1'))) protect(...args);
+        return protect(...args);
+      });
+
+      const minted = discardCurrentStoreEpoch(runtime, { storeFormat: format, build });
+      minted.db.close();
+
+      expect(minted.store.epoch).toBe('3');
+      expect(listStoreEpochs(runtime).find((entry) => entry.epoch === '1')).toMatchObject({ role: 'protected' });
+    });
+
+    it('should publish past it when its protection keeps failing for another reason', () => {
+      const { runtime } = pendingBehindCurrent();
+      vi.spyOn(epochProtection, 'protectStoreEpoch').mockImplementation((...args) => {
+        if (args[1].epoch === '1') throw new Error('lineage marker is unreadable');
+        return protect(...args);
+      });
+
+      const minted = discardCurrentStoreEpoch(runtime, { storeFormat: format, build });
+      minted.db.close();
+
+      expect(minted.store.epoch).toBe('3');
+      expect(listStoreEpochs(runtime)).toContainEqual(
+        expect.objectContaining({ epoch: '1', protectionPending: 'lineage marker is unreadable' }),
+      );
+    });
   });
 });

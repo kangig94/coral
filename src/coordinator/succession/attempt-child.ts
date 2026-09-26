@@ -351,14 +351,19 @@ export async function receiveSuccessionAttemptChild(
   const pendingConnections: ParkedConnection[] = [];
   const stopParking: (() => void)[] = [];
   let releasing = false;
+  // Set by the commit window's deadline, which also ends every park; before it, the incumbent is still serving.
+  let windowOpen = false;
   const returnConnection = (connection: ParkedConnection): Promise<void> =>
     new Promise<void>((resolve) => {
       const { socket, ...addressed } = connection;
       ports.channel.sendHandle({ kind: 'connection', attemptId, ...addressed }, socket, () => resolve());
     });
-  /** Until serving, a connection waits here; once the attempt is being released it goes back to the incumbent. */
+  /**
+   * Inside the commit window a connection waits here until serving. Outside it, or once the attempt is being
+   * released, it goes back to the incumbent, which answers it.
+   */
   const park = (connection: ParkedConnection): void => {
-    if (releasing) void returnConnection(connection);
+    if (releasing || !windowOpen) void returnConnection(connection);
     else pendingConnections.push(connection);
   };
   const send = (message: AttemptMessage): void => {
@@ -410,6 +415,7 @@ export async function receiveSuccessionAttemptChild(
       return;
     }
     if (message.kind === 'deadline' && !serving && Number.isFinite(message.at)) {
+      windowOpen = true;
       ports.time.clearTimeout(deadlineTimer);
       deadlineTimer = ports.time.setTimeout(
         () => fail('Succession attempt exceeded its commit deadline'),
@@ -431,11 +437,16 @@ export async function receiveSuccessionAttemptChild(
         fail('Succession attempt cannot adopt compatibility listener');
         return;
       }
+      if (next.forwardConnections === undefined) {
+        fail('Succession attempt cannot park connections on an adopted listener');
+        return;
+      }
       if (next !== listener) listener.compatibilityListeners?.push(next);
-      const stop = next.forwardConnections?.((socket, pendingFrameBase64) => {
-        park({ socket, socketPath: message.socketPath, pendingFrameBase64 });
-      });
-      if (stop !== undefined) stopParking.push(stop);
+      stopParking.push(
+        next.forwardConnections((socket, pendingFrameBase64) => {
+          park({ socket, socketPath: message.socketPath, pendingFrameBase64 });
+        }),
+      );
       attachInheritedIpcServer(next, handle as NetServer, message.socketPath);
       adopted.set(message.socketPath, next);
       send({ kind: 'listener-accepted', attemptId, socketPath: message.socketPath });
@@ -446,11 +457,10 @@ export async function receiveSuccessionAttemptChild(
       adoptResolve?.();
       return;
     }
+    // A received connection reaches `park` only through its listener: a handle returned while still reading leaves
+    // the bytes it read in this process, and its request is lost.
     if (message.kind === 'connection' && handle !== undefined && adopted.has(message.socketPath)) {
-      const socket = handle as Socket;
-      socket.pause();
-      if (serving) adopted.get(message.socketPath)?.acceptSocket?.(socket, message.pendingFrameBase64);
-      else park({ socket, socketPath: message.socketPath, pendingFrameBase64: message.pendingFrameBase64 });
+      adopted.get(message.socketPath)?.acceptSocket?.(handle as Socket, message.pendingFrameBase64);
     }
   });
   send({ kind: 'child-online', attemptId });

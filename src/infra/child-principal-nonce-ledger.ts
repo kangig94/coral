@@ -3,6 +3,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { StoragePort } from './port-types.js';
 
+const GRANT_ID_PREFIX = 'child-principal-nonces:';
+/** Separates the attempt from the generation in a grant a recovered transfer records. */
+export const RECOVERY_GRANT_INFIX = ':recovery:';
+
 export function verifyChildPrincipalRecoveryGrant(
   storage: StoragePort,
   runDir: string,
@@ -11,7 +15,7 @@ export function verifyChildPrincipalRecoveryGrant(
   generation: number,
   checkpoint: number,
 ): boolean {
-  if (grantId !== `child-principal-nonces:${attemptId}`) return false;
+  if (grantId !== `${GRANT_ID_PREFIX}${attemptId}`) return false;
   try {
     const db = storage.openSqliteDatabaseSync(join(runDir, 'child-principal-nonces.v1.sqlite'), { readOnly: true });
     try {
@@ -131,7 +135,7 @@ export class ChildPrincipalNonceLedger {
   }
 
   prepareGrant(attemptId: string, generation: number): { grantId: string; checkpoint: number } | null {
-    const grantId = `child-principal-nonces:${attemptId}`;
+    const grantId = `${GRANT_ID_PREFIX}${attemptId}`;
     try {
       this.db.exec('BEGIN IMMEDIATE');
       if (this.generation() !== generation) {
@@ -158,6 +162,17 @@ export class ChildPrincipalNonceLedger {
         // A grant without a durable commit cannot authorize transfer.
       }
       return null;
+    }
+  }
+
+  /** Removes every grant recorded for an attempt outside `retainedAttemptIds`, recovery grants included. */
+  dischargeGrants(retainedAttemptIds: ReadonlySet<string>): void {
+    const grants = this.db.prepare('SELECT grant_id FROM child_principal_grant').all();
+    const remove = this.db.prepare('DELETE FROM child_principal_grant WHERE grant_id = ?');
+    for (const row of grants) {
+      const grantId = String(row.grant_id);
+      const attemptId = grantId.slice(GRANT_ID_PREFIX.length).split(RECOVERY_GRANT_INFIX)[0] ?? '';
+      if (grantId.startsWith(GRANT_ID_PREFIX) && !retainedAttemptIds.has(attemptId)) remove.run(grantId);
     }
   }
 

@@ -109,7 +109,7 @@ describe('succession protocol', () => {
   it('launches the prepared target after its final obligation settles without another contender', async () => {
     const target = fixture();
     let blocked = true;
-    const launchPrepared = vi.fn(async () => ({ settled: new Promise<void>(() => undefined) }));
+    const launchPrepared = vi.fn(async () => ({ settled: new Promise<never>(() => undefined) }));
     const owner: SuccessionOwner = {
       id: 'launch-admission',
       classify: async () =>
@@ -168,7 +168,7 @@ describe('succession protocol', () => {
     const staleClassifyGate = new Promise<void>((resolve) => {
       releaseStaleClassify = resolve;
     });
-    const launchPrepared = vi.fn(async () => ({ settled: new Promise<void>(() => undefined) }));
+    const launchPrepared = vi.fn(async () => ({ settled: new Promise<never>(() => undefined) }));
     const owner: SuccessionOwner = {
       id: 'launch-admission',
       classify: async () => {
@@ -691,7 +691,7 @@ describe('succession protocol', () => {
       launchPrepared: async (_intent, preparation) => {
         if (launched.length > 0) throw new Error('Another succession attempt is active.');
         launched.push(preparation.attemptId);
-        return { settled: new Promise<void>(() => undefined) };
+        return { settled: new Promise<never>(() => undefined) };
       },
     });
     try {

@@ -165,4 +165,37 @@ describe('succession owner preparation', () => {
       blockers: [{ owner: unavailable.id, reason: 'owner disposition unavailable' }],
     });
   });
+
+  it('records a skipped grant owner’s read-only blocker without classifying it', async () => {
+    const classify = vi.fn(async () => ({ kind: 'completed' as const, reason: 'no live sets' }));
+    const owners: SuccessionOwner[] = [
+      {
+        id: 'provider-operations',
+        recordsGrants: true,
+        classify: async () => ({ kind: 'blocking', reason: 'successor does not accept host control generation 1' }),
+      },
+      {
+        id: 'provider-proxy-sets',
+        recordsGrants: true,
+        inspectBlocker: () => 'successor does not accept host control generation 1',
+        classify,
+      },
+    ];
+
+    expect(
+      await prepareOwnerObligations(
+        owners,
+        'attempt',
+        capabilities,
+        owners.map((owner) => owner.id),
+      ),
+    ).toEqual({
+      kind: 'blocking',
+      blockers: [
+        { owner: 'provider-operations', reason: 'successor does not accept host control generation 1' },
+        { owner: 'provider-proxy-sets', reason: 'successor does not accept host control generation 1' },
+      ],
+    });
+    expect(classify).not.toHaveBeenCalled();
+  });
 });

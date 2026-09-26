@@ -44,6 +44,7 @@ import {
   reconcileProtectedEpochs,
   removeClosedProtectedEpoch,
   knownProtectedEpochAddresses,
+  observeProtectedEpochAddresses,
   observeProtectedEpoch,
   protectedEpochRemoved,
   resolveProtectedEpoch,
@@ -2046,6 +2047,7 @@ function mintNextEpoch(
 ): Readonly<{ kind: 'published'; lease: FileLockLease }> | Readonly<{ kind: 'contended' | 'swept' }> {
   reconcileProtectedEpochs(runtime, dbDir);
   const writerGeneration = observeSuccessionWriterGeneration(runtime);
+  const pendingProtections = readPendingProtections(runtime).filter((pending) => pending.storeRoot === dbDir);
   for (const observation of observeStoreEpochs(runtime.storage, dbDir)) {
     const directory = epochDirectory(dbDir, observation.epoch);
     const directoryProof = observeContainedDirectory(runtime.storage, dbDir, directory);
@@ -2056,11 +2058,19 @@ function mintNextEpoch(
       observation.epoch === supersedes &&
       (writerGeneration === null || (writerGeneration.storeRoot === dbDir && writerGeneration.epoch === supersedes));
     // A boot is never refused because an opener still holds a superseded epoch; the epoch is published past and
-    // protected later. An epoch that will not open is published past whatever kept it from protection.
+    // protected later. An epoch that will not open, or already awaits protection, is published past whatever kept
+    // it from protection, and one another process moved since it was observed needs nothing.
     try {
       protectStoreEpoch(runtime, resolvedStoreEpoch(dbDir, observation.epoch), SUPERSEDED_OPENER_DRAIN_MS);
     } catch (error: unknown) {
-      if (!unavailableWriterEpoch && !(error instanceof StoreEpochOpenerHeldError)) throw error;
+      if (observeStorePath(runtime.storage, directory) === 'absent') continue;
+      if (
+        !unavailableWriterEpoch &&
+        !(error instanceof StoreEpochOpenerHeldError) &&
+        !pendingProtections.some((pending) => pending.epoch === observation.epoch)
+      ) {
+        throw error;
+      }
       recordPendingProtection(runtime, dbDir, observation.epoch, errorMessage(error));
     }
   }
@@ -2173,10 +2183,12 @@ export async function mintRetiredStoreEpoch(
   let generation: SuccessionWriterGeneration;
   try {
     await beforeGenerationTransfer();
-    generation = advanceSuccessionWriterGeneration(runtime, expectedGeneration, {
-      storeRoot: dbDir,
-      epoch: successor,
-    });
+    generation = advanceSuccessionWriterGeneration(
+      runtime,
+      expectedGeneration,
+      { storeRoot: dbDir, epoch: successor },
+      attemptId,
+    );
   } catch (error: unknown) {
     published.lease();
     throw error;
@@ -2862,17 +2874,7 @@ export function listStoreEpochs(
       epochJson: { kind: 'unreadable' },
       resolved: null,
     });
-  let protectedAddresses: ReturnType<typeof knownProtectedEpochAddresses>;
-  try {
-    protectedAddresses = knownProtectedEpochAddresses(runtime, dbDir);
-  } catch {
-    try {
-      protectedAddresses = reconcileProtectedEpochs(runtime, dbDir);
-    } catch {
-      // see unrecognizedProtectedEpochs in src/store/epoch-protection.ts
-      protectedAddresses = [];
-    }
-  }
+  const protectedAddresses = observeProtectedEpochAddresses(runtime, dbDir);
   const protectedEpochs: StoreEpochListEntry[] = protectedAddresses.map((address) => {
     const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
     const protectedStoreRoot = dirname(address.protectedPath);

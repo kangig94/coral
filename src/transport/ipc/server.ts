@@ -9,6 +9,7 @@ import type { HttpHandlerPorts } from '../server-ports.js';
 import { formatZodError } from '../validation.js';
 import {
   encode,
+  encodeIpcErrorData,
   decode,
   type IpcAuthMetadata,
   type JsonRpcEnvelope,
@@ -136,7 +137,7 @@ function requestErrorResponse(
   return {
     kind: 'error',
     id,
-    error: buildJsonRpcError(-32603, message, data),
+    error: buildJsonRpcError(-32603, message, encodeIpcErrorData(data)),
   };
 }
 
@@ -954,12 +955,30 @@ async function dispatchFrame(
  * queued behind another converts are dropped with the parent's socket (19 of 20 burst-forwarded frames lost).
  * Stopped here, they stay in the kernel for the process the socket reaches.
  */
-function stopHandleReads(socket: Socket): void {
-  const handle = (socket as unknown as { _handle?: { reading?: boolean; readStop?: () => number } | null })._handle;
-  if (handle?.readStop === undefined) return;
+function stopHandleReads(socket: Socket): boolean {
+  const handle = (socket as unknown as { _handle?: { reading?: boolean; readStop?: unknown } | null })._handle;
+  if (typeof handle?.readStop !== 'function') return false;
   handle.reading = false;
   handle.readStop();
+  return true;
 }
+
+/**
+ * `read()` on a stopped handle re-arms it through `_read`, so the handle is stopped again before any tick can
+ * deliver bytes this process would then drop with its copy of the socket.
+ */
+function takeBufferedBytes(socket: Socket): Buffer {
+  if (socket.readableLength === 0) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  for (let chunk: unknown = socket.read(); chunk !== null; chunk = socket.read()) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer));
+  }
+  stopHandleReads(socket);
+  return Buffer.concat(chunks);
+}
+
+/** A socket whose reads cannot be stopped would lose its frame in transfer, so it is served where it is. */
+const UNSTOPPABLE_HANDLE_LOG = 'IPC socket handle cannot stop reading; serving it here instead of forwarding it\n';
 
 export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOptions = {}): IpcListener {
   return createTrackedIpcListener(rpcPorts, options, {
@@ -995,9 +1014,13 @@ function createTrackedIpcListener(
 
   const acceptSocket = (socket: Socket, pendingFrameBase64 = ''): void => {
     if (forwardAccepted !== null) {
-      socket.pause();
-      forwardAccepted(socket, pendingFrameBase64);
-      return;
+      if (stopHandleReads(socket)) {
+        socket.pause();
+        const pending = Buffer.concat([Buffer.from(pendingFrameBase64, 'base64'), takeBufferedBytes(socket)]);
+        forwardAccepted(socket, pending.toString('base64'));
+        return;
+      }
+      rpcPorts.identity.log(UNSTOPPABLE_HANDLE_LOG);
     }
     if (resources.sockets.size >= resources.maxOpenSockets) {
       rpcPorts.identity.log(
@@ -1063,8 +1086,11 @@ function createTrackedIpcListener(
 
     const transferPending = (): void => {
       if (forwardAccepted === null || socket.destroyed) return;
+      if (!stopHandleReads(socket)) {
+        rpcPorts.identity.log(UNSTOPPABLE_HANDLE_LOG);
+        return;
+      }
       socket.pause();
-      stopHandleReads(socket);
       socket.off('data', onData);
       socket.off('close', onClose);
       socket.off('error', onError);
@@ -1073,7 +1099,7 @@ function createTrackedIpcListener(
       resources.sockets.delete(socket);
       pendingSockets.delete(socket);
       releaseSocket(socket);
-      forwardAccepted(socket, pendingFrame.toString('base64'));
+      forwardAccepted(socket, Buffer.concat([pendingFrame, takeBufferedBytes(socket)]).toString('base64'));
     };
     pendingSockets.set(socket, transferPending);
 

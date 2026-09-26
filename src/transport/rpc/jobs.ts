@@ -55,7 +55,12 @@ export type JobsWaitFields = Readonly<{
  */
 export function jobsWaitRequest(fields: JobsWaitFields, extensions: readonly string[]): Record<string, unknown> {
   const waitV2 = extensions.includes('supportsWaitV2');
-  const cursor = fields.cursor === undefined || (!waitV2 && isWaitCursorV2(fields.cursor)) ? undefined : fields.cursor;
+  const cursor =
+    fields.cursor === undefined || (!waitV2 && isWaitCursorV2(fields.cursor))
+      ? undefined
+      : isWaitCursorV2(fields.cursor)
+        ? fields.cursor
+        : { afterSeq: fields.cursor.afterSeq };
   return {
     jobIds: [...fields.jobIds],
     projectRoot: fields.projectRoot,

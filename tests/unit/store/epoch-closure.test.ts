@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -49,6 +50,7 @@ import {
   recordEpochCustodyCoverage,
 } from '#src/store/epoch-closure.js';
 import { sha256Hex } from '#src/infra/hash.js';
+import { compareAndSwapUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
 import {
   knownProtectedEpochAddresses,
@@ -56,6 +58,7 @@ import {
   protectedStoreEpochRoot,
   reconcileProtectedEpochs,
   resolveProtectedEpoch,
+  restoreProtectedEpoch,
 } from '#src/store/epoch-protection.js';
 import {
   decodeResolvedStoreEpoch,
@@ -209,6 +212,50 @@ describe('epoch closure and protected addressing', () => {
     );
     expect(rendered).toContain(oldKey);
     expect(rendered).toContain(newKey);
+  });
+
+  it('lists an unpublished protected epoch without taking its lock or publishing its address', () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const old = resolvedStoreEpoch(root, '1');
+    const oldKey = readOrCreateEpochKey(runtime, old);
+    const lineage = oldKey.slice(0, oldKey.lastIndexOf(':'));
+    const moved = join(protectedStoreEpochRoot(root), lineage, 'epoch-1');
+    mkdirSync(dirname(moved), { recursive: true });
+    renameSync(dirname(old.path), moved);
+    publish(runtime, '2');
+
+    expect(listStoreEpochs(runtime).find((entry) => entry.epochKey === oldKey)).toMatchObject({ role: 'protected' });
+    expect(existsSync(join(protectedStoreEpochRoot(root), 'addresses'))).toBe(false);
+  });
+
+  it('restores a retiring epoch once a reader holding its lock lets go', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const old = resolvedStoreEpoch(root, '1');
+    const address = protectStoreEpoch(runtime, old);
+    const reader = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const { DatabaseSync } = require('node:sqlite');
+         const db = new DatabaseSync(process.argv[1], { readOnly: true });
+         db.exec('BEGIN; SELECT count(*) FROM sqlite_schema');
+         process.stdout.write('held\\n');
+         setTimeout(() => process.exit(0), 700);`,
+        join(address.protectedPath, '.lock'),
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+    await once(reader.stdout, 'data');
+
+    restoreProtectedEpoch(runtime, root, address.epochKey);
+
+    expect(existsSync(dirname(old.path))).toBe(true);
+    expect(existsSync(address.protectedPath)).toBe(false);
+    await once(reader, 'exit');
   });
 
   it('reports every superseded epoch closure to backend status and nothing once only the serving one remains', () => {
@@ -528,6 +575,119 @@ describe('epoch closure and protected addressing', () => {
       executionDischarge: 'certified',
       dataOutcome: 'retained',
     });
+  });
+
+  it("never certifies the proven current epoch while another epoch is this process's own", async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const incumbentKey = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '1'));
+    // A successor's retirement mint publishes the next epoch while the incumbent still serves the first.
+    publish(runtime, '2');
+    recordEpochCustodyCoverage(
+      runtime,
+      epochDirectory(root, '2'),
+      initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir),
+    );
+    const successorKey = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '2'));
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+
+    await settleSupersededEpochClosures(runtime, index, undefined, undefined, incumbentKey);
+
+    expect(observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, successorKey)).toEqual({
+      kind: 'absent',
+    });
+  });
+
+  it('never certifies the epoch an unfinished succession attempt retires', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    publish(runtime, '2');
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    recordEpochCustodyCoverage(runtime, epochDirectory(root, '1'), initializeCustodyLedger(runtime, runDir));
+    const retiring = resolvedStoreEpoch(root, '1');
+    const retiringKey = readOrCreateEpochKey(runtime, retiring);
+    const written = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent: {
+        instanceId: 'incumbent',
+        pid: process.pid,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: '/installed/coral' },
+      attemptId: 'attempt-1',
+      attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: process.pid, incarnation: null },
+      attemptChild: null,
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      successionPreparation: {
+        version: 'v1',
+        requestId: 'request-1',
+        attemptId: 'attempt-1',
+        incumbentInstanceId: 'incumbent',
+        incumbentPid: process.pid,
+        incumbentKey: 'incumbent-key',
+        targetKey: 'target-key',
+        capabilitiesKey: 'capabilities-key',
+        epochKey: encodeResolvedStoreEpoch(runtime, retiring),
+        admissionRevision: 0,
+        accepts: [],
+        receipts: [],
+        stage: 'prepared',
+        ready: null,
+      },
+    });
+    expect(written.kind).toBe('written');
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+
+    // The attempt child serves the next epoch; until it commits, the incumbent may still return to the retiring one.
+    await settleSupersededEpochClosures(
+      runtime,
+      index,
+      undefined,
+      undefined,
+      readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '2')),
+    );
+
+    expect(observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, retiringKey)).toEqual({
+      kind: 'absent',
+    });
+  });
+
+  it('sets an unreadable closure record aside and certifies the epoch again from its custody evidence', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    const stateRoot = runtime.paths.coral.generation.dataRoot;
+    publish(runtime, '1');
+    publish(runtime, '2');
+    recordEpochCustodyCoverage(
+      runtime,
+      epochDirectory(root, '1'),
+      initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir),
+    );
+    const key = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '1'));
+    mkdirSync(join(stateRoot, 'epoch-closure.v1'), { recursive: true });
+    const recordPath = join(stateRoot, 'epoch-closure.v1', `${sha256Hex(key)}.json`);
+    writeFileSync(recordPath, 'torn closure record');
+    const index = new JobLocationIndex(runtime, stateRoot);
+
+    await settleSupersededEpochClosures(runtime, index);
+
+    expect(observeEpochClosure(runtime, stateRoot, key)).toMatchObject({
+      kind: 'recorded',
+      evidence: { disposition: 'closed', executionDischarge: 'certified' },
+    });
+    const setAside = readdirSync(dirname(recordPath)).filter((name) => name.includes('.unreadable.'));
+    expect(setAside.map((name) => readFileSync(join(dirname(recordPath), name), 'utf8'))).toEqual([
+      'torn closure record',
+    ]);
   });
 
   it('closes execution only after the owner custody intent has proven absence', async () => {

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { createConnection, type Socket } from 'node:net';
+import { createConnection, createServer as createNetServer, type Server as NetServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -24,6 +24,8 @@ vi.mock('#src/transport/http/handler.js', async (importOriginal) => {
 
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
+import { buildErrorEnvelope } from '#src/cli/errors.js';
+import { SuccessionWriterParkedError } from '#src/store/db.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
@@ -77,6 +79,40 @@ async function withTestTimeout<T>(promise: Promise<T>, label: string, timeoutMs 
     if (timeout !== null) {
       clearTimeout(timeout);
     }
+  }
+}
+
+async function listenReadingServer(): Promise<{ server: NetServer; socketPath: string }> {
+  const server = createNetServer();
+  const socketPath = makeSocketPath();
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  return { server, socketPath };
+}
+
+function nextConnection(server: NetServer): Promise<Socket> {
+  return new Promise((resolve) => server.once('connection', resolve));
+}
+
+/** The error `data` exactly as it crosses the wire, before this build's client decodes it. */
+async function rawErrorData(socketPath: string, request: Record<string, unknown>): Promise<unknown> {
+  const socket = createConnection(socketPath);
+  try {
+    const line = await withTestTimeout(
+      new Promise<string>((resolve, reject) => {
+        let buffered = '';
+        socket.on('error', reject);
+        socket.on('data', (chunk) => {
+          buffered += chunk.toString();
+          const end = buffered.indexOf('\n');
+          if (end !== -1) resolve(buffered.slice(0, end));
+        });
+        socket.write(`${JSON.stringify({ kind: 'request', id: 'raw', ...request })}\n`);
+      }),
+      'raw error frame',
+    );
+    return (JSON.parse(line) as { error: { data?: unknown } }).error.data;
+  } finally {
+    socket.destroy();
   }
 }
 
@@ -493,6 +529,207 @@ describe('ipc server', () => {
     } finally {
       for (const client of clients) client.destroy();
       receiver.kill('SIGKILL');
+      await closeIpcServer(listener);
+    }
+  });
+
+  // A socket handed to `acceptSocket` by an inherited server or returned by an attempt child is already reading.
+  // Forwarded that way, the bytes its handle reads while the transfer is queued go down with this process's copy.
+  it('delivers every frame of reading sockets it forwards to another process in one burst', async () => {
+    const receiver = spawn(
+      process.execPath,
+      [
+        '-e',
+        `process.on('message', (message, socket) => {
+          let frame = Buffer.from(message.pending, 'base64');
+          const report = () => { if (frame.includes(10)) process.send({ frame: frame.toString() }); };
+          report();
+          socket.on('data', (chunk) => {
+            frame = Buffer.concat([frame, chunk]);
+            report();
+          });
+          socket.resume();
+        });
+        process.send({ online: true });`,
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+    );
+    const listener = createIpcServer(createPorts());
+    const readingServer = createNetServer();
+    const socketPath = makeSocketPath();
+    const clients: Socket[] = [];
+    try {
+      await new Promise<void>((resolve) => receiver.once('message', () => resolve()));
+      const frames: string[] = [];
+      receiver.on('message', (message: { frame: string }) => frames.push(message.frame));
+      listener.forwardConnections!((socket, pendingFrameBase64) => {
+        receiver.send({ pending: pendingFrameBase64 }, socket);
+      });
+      readingServer.on('connection', (socket) => listener.acceptSocket!(socket));
+      await new Promise<void>((resolve) => readingServer.listen(socketPath, resolve));
+      const count = 20;
+      for (let index = 0; index < count; index += 1) {
+        const client = createConnection(socketPath, () =>
+          client.write(`{"jsonrpc":"2.0","method":"transport.ping","id":"${index}"}\n`),
+        );
+        clients.push(client);
+        client.on('error', () => undefined);
+      }
+
+      await waitForCondition(() => frames.length === count, 'every forwarded frame delivered').catch(() => undefined);
+      expect([...frames].sort()).toEqual(
+        clients.map((_client, index) => `{"jsonrpc":"2.0","method":"transport.ping","id":"${index}"}\n`).sort(),
+      );
+    } finally {
+      for (const client of clients) client.destroy();
+      receiver.kill('SIGKILL');
+      await new Promise<void>((resolve) => readingServer.close(() => resolve()));
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('carries bytes already buffered on a socket it forwards', async () => {
+    const listener = createIpcServer(createPorts());
+    const { server, socketPath } = await listenReadingServer();
+    const client = createConnection(socketPath);
+    const forwarded: Socket[] = [];
+    const accepted = await nextConnection(server);
+    try {
+      accepted.pause();
+      const frame = '{"jsonrpc":"2.0","method":"transport.ping","id":"buffered"}\n';
+      client.write(frame);
+      await waitForCondition(() => accepted.readableLength === Buffer.byteLength(frame), 'frame buffered');
+      const received = new Promise<string>((resolve) => {
+        listener.forwardConnections!((socket, pendingFrameBase64) => {
+          forwarded.push(socket);
+          resolve(Buffer.from(pendingFrameBase64, 'base64').toString());
+        });
+      });
+      listener.acceptSocket!(accepted);
+
+      expect(await withTestTimeout(received, 'forwarded frame')).toBe(frame);
+    } finally {
+      accepted.destroy();
+      for (const socket of forwarded) socket.destroy();
+      client.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeIpcServer(listener);
+    }
+  });
+
+  // A handle this build cannot stop keeps reading after it is sent, so forwarding it loses its frame: the only
+  // safe owner left is this process.
+  it('serves a socket locally instead of forwarding it when its handle cannot stop reading', async () => {
+    const listener = createIpcServer(createPorts());
+    const { server, socketPath } = await listenReadingServer();
+    const client = createConnection(socketPath);
+    const forward = vi.fn();
+    const accepted = await nextConnection(server);
+    try {
+      (accepted as unknown as { _handle: { readStop?: unknown } })._handle.readStop = undefined;
+      listener.forwardConnections!(forward);
+      listener.acceptSocket!(accepted);
+      const reply = new Promise<string>((resolve) => client.once('data', (chunk) => resolve(chunk.toString())));
+      client.write('{"kind":"request","id":"local","method":"transport.ping"}\n');
+
+      expect(JSON.parse(await withTestTimeout(reply, 'local reply'))).toMatchObject({ id: 'local' });
+      expect(forward).not.toHaveBeenCalled();
+    } finally {
+      accepted.destroy();
+      client.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('keeps a pending socket local when its handle cannot stop reading', async () => {
+    const listener = createIpcServer(createPorts());
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    const observed = new Promise<Socket>((resolve) => {
+      listener.server.once('connection', (socket) => socket.once('data', () => resolve(socket)));
+    });
+    const client = createConnection(socketPath);
+    const forward = vi.fn();
+    let accepted: Socket | null = null;
+    try {
+      client.write('{"kind":"request",');
+      accepted = await observed;
+      (accepted as unknown as { _handle: { readStop?: unknown } })._handle.readStop = undefined;
+      listener.forwardConnections!(forward);
+      const reply = new Promise<string>((resolve) => client.once('data', (chunk) => resolve(chunk.toString())));
+      client.write('"id":"pending","method":"transport.ping"}\n');
+
+      expect(JSON.parse(await withTestTimeout(reply, 'local reply'))).toMatchObject({ id: 'pending' });
+      expect(forward).not.toHaveBeenCalled();
+    } finally {
+      accepted?.destroy();
+      client.destroy();
+      await closeIpcServer(listener);
+    }
+  });
+
+  // v0.10.5-v0.10.13 CLIs read only `data.code` on this path, receive no HTTP status, and exit 1 for a code they
+  // do not know; the codes each of them maps to exit 75 without a status include `transient`.
+  const SHIPPED_CLI_TRANSIENT_CODES = ['transient', 'backend_shutting_down', 'kb_disabled'];
+
+  it('carries a parked store writer to shipped CLIs as a transient code, and to this CLI as itself', async () => {
+    const ports = createPorts();
+    vi.mocked(ports.discuss.listSessions).mockImplementation(() => {
+      throw new SuccessionWriterParkedError(new Promise<void>(() => undefined));
+    });
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    const request = { method: 'discuss.session.list', params: {}, auth: { kind: 'boot', token: 'boot-token' } };
+    try {
+      const wire = await rawErrorData(socketPath, request);
+      expect(SHIPPED_CLI_TRANSIENT_CODES).toContain((wire as { code?: unknown } | undefined)?.code);
+
+      const error = await requestIpcMethod(socketPath, request.method, request.params, {
+        auth: { kind: 'boot', token: 'boot-token' },
+      }).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'succession_writer_parked' });
+      expect(buildErrorEnvelope(error)).toMatchObject({
+        envelope: { code: 'succession_writer_parked' },
+        exitCode: 75,
+      });
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it.each([
+    { detail: { kind: 'unresolved', epochKey: 'epoch-a' }, code: 'job_unresolved', shippedTransient: true, exit: 75 },
+    {
+      detail: { kind: 'outcome-unrecoverable', epochKey: 'epoch-a' },
+      code: 'job_outcome_unrecoverable',
+      shippedTransient: false,
+      exit: 1,
+    },
+  ])('answers $code in the form a shipped CLI exits on correctly', async ({ detail, code, shippedTransient, exit }) => {
+    const ports = createPorts();
+    vi.mocked(ports.jobs.detail).mockReturnValue(detail as never);
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    const projectRoot = mkdtempSync(join(tmpdir(), 'coral-ipc-server-project-'));
+    tempDirs.push(projectRoot);
+    await listenIpcServer(listener, socketPath);
+    const params = { jobId: 'job-unresolved-1', projectRoot };
+    try {
+      const wire = (await rawErrorData(socketPath, {
+        method: 'jobs.detail',
+        params,
+        auth: { kind: 'boot', token: 'boot-token' },
+      })) as { code?: unknown };
+      if (shippedTransient) expect(SHIPPED_CLI_TRANSIENT_CODES).toContain(wire.code);
+      else expect(wire.code).toBe(code);
+
+      const error = await requestIpcMethod(socketPath, 'jobs.detail', params, {
+        auth: { kind: 'boot', token: 'boot-token' },
+      }).catch((caught: unknown) => caught);
+      expect(buildErrorEnvelope(error)).toMatchObject({ envelope: { code }, exitCode: exit });
+    } finally {
       await closeIpcServer(listener);
     }
   });

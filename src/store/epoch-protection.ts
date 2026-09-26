@@ -1,8 +1,8 @@
 import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
 
-import { attemptExclusiveFileLockSync } from '../infra/fs-lock.js';
-import { readEpochKey, readOrCreateEpochKey } from './epoch-key.js';
+import { acquireSharedFileLockSync, attemptExclusiveFileLockSync } from '../infra/fs-lock.js';
+import { inspectEpochKey, readEpochKey, readOrCreateEpochKey } from './epoch-key.js';
 import { observeStorePath } from './path-observation.js';
 import type { ResolvedStoreEpoch } from './epoch.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -65,10 +65,59 @@ function observedAddress(
   }
 }
 
+/**
+ * A restore holds the protected epoch's lock across unlinking its address and moving it home; a restore waits this
+ * long for readers that hold it.
+ */
+const RESTORE_LOCK_WAIT_MS = 5_000;
+
 /** A protected directory is authoritative before its address record is published. */
 export function reconcileProtectedEpochs(
   runtime: StorePathRuntime,
   storeRoot: string,
+): readonly ProtectedEpochAddress[] {
+  return scanProtectedEpochs(runtime, storeRoot, (address) => writeAddress(runtime, address, storeRoot));
+}
+
+/**
+ * Every protected epoch, published or not, observed without taking a lock or publishing an address: a read-only
+ * surface may not contend with, or race, a restore that moves an epoch home.
+ */
+export function observeProtectedEpochAddresses(
+  runtime: Pick<Runtime, 'storage'>,
+  storeRoot: string,
+): readonly ProtectedEpochAddress[] {
+  let scanned: readonly ProtectedEpochAddress[];
+  try {
+    scanned = scanProtectedEpochs(runtime, storeRoot, null);
+  } catch {
+    // see unrecognizedProtectedEpochs in src/store/epoch-protection.ts
+    return [];
+  }
+  const directory = join(protectedStoreEpochRoot(storeRoot), 'addresses');
+  let names: string[];
+  try {
+    names = runtime.storage.readdirSync(directory);
+  } catch {
+    return scanned;
+  }
+  const published = names.flatMap((name) => {
+    if (!name.endsWith('.json')) return [];
+    const epochKey = Buffer.from(name.slice(0, -'.json'.length), 'base64url').toString('utf8');
+    try {
+      const address = observedAddress(runtime, storeRoot, epochKey);
+      return address === null || scanned.some((entry) => entry.epochKey === epochKey) ? [] : [address];
+    } catch {
+      return [];
+    }
+  });
+  return [...scanned, ...published];
+}
+
+function scanProtectedEpochs(
+  runtime: Pick<Runtime, 'storage'>,
+  storeRoot: string,
+  publish: ((address: ProtectedEpochAddress) => void) | null,
 ): readonly ProtectedEpochAddress[] {
   const root = protectedStoreEpochRoot(storeRoot);
   if (observeStorePath(runtime.storage, root) === 'absent') return [];
@@ -102,38 +151,62 @@ export function reconcileProtectedEpochs(
       if (match === null) continue;
       const epoch = match[1];
       const protectedPath = join(lineageRoot, name);
+      // Publishing holds the epoch's lock from observing the directory to writing its address, so a restore
+      // that moves the epoch home cannot leave an address naming a directory that is gone.
+      let release: (() => void) | null = null;
       try {
-        const observed = runtime.storage.lstatSync(protectedPath);
-        if (!observed.isDirectory() || observed.isSymbolicLink()) continue;
+        if (publish !== null) release = acquireSharedFileLockSync(join(protectedPath, '.lock'));
       } catch {
         continue;
       }
-      const epochKey = readEpochKey(runtime, { storeRoot: lineageRoot, epoch, path: join(protectedPath, 'store.db') });
-      if (epochKey === null) continue;
-      if (epochKey !== `${lineageId}:${epoch}`) continue;
-      const address = addressSchema.parse({
-        version: 'v1',
-        epochKey,
-        originalPath: join(storeRoot, name),
-        protectedPath,
-      });
-      let published: ProtectedEpochAddress | null;
       try {
-        published = observedAddress(runtime, storeRoot, epochKey);
-      } catch {
-        continue;
+        const address = observeProtectedCandidate(runtime, storeRoot, lineageId, name, epoch, protectedPath);
+        if (address === null) continue;
+        if (address.published === null) publish?.(address.address);
+        addresses.push(address.address);
+      } finally {
+        release?.();
       }
-      if (
-        published !== null &&
-        (published.originalPath !== address.originalPath || published.protectedPath !== protectedPath)
-      ) {
-        continue;
-      }
-      if (published === null) writeAddress(runtime, address, storeRoot);
-      addresses.push(address);
     }
   }
   return addresses;
+}
+
+/** Null when the directory is not a protected epoch this lineage names, or its published address disagrees. */
+function observeProtectedCandidate(
+  runtime: Pick<Runtime, 'storage'>,
+  storeRoot: string,
+  lineageId: string,
+  name: string,
+  epoch: string,
+  protectedPath: string,
+): Readonly<{ address: ProtectedEpochAddress; published: ProtectedEpochAddress | null }> | null {
+  try {
+    const observed = runtime.storage.lstatSync(protectedPath);
+    if (!observed.isDirectory() || observed.isSymbolicLink()) return null;
+  } catch {
+    return null;
+  }
+  const epochKey = inspectEpochKey(runtime, {
+    storeRoot: dirname(protectedPath),
+    epoch,
+    path: join(protectedPath, 'store.db'),
+  });
+  if (epochKey !== `${lineageId}:${epoch}`) return null;
+  const address = addressSchema.parse({ version: 'v1', epochKey, originalPath: join(storeRoot, name), protectedPath });
+  let published: ProtectedEpochAddress | null;
+  try {
+    published = observedAddress(runtime, storeRoot, epochKey);
+  } catch {
+    return null;
+  }
+  if (
+    published !== null &&
+    (published.originalPath !== address.originalPath || published.protectedPath !== protectedPath)
+  ) {
+    return null;
+  }
+  return { address, published };
 }
 
 export function unrecognizedProtectedEpochs(
@@ -428,7 +501,7 @@ export function restoreProtectedEpoch(runtime: Pick<Runtime, 'storage'>, storeRo
   ) {
     throw new Error('Retiring epoch cannot return to its canonical address.');
   }
-  const lock = attemptExclusiveFileLockSync(join(address.protectedPath, '.lock'));
+  const lock = attemptExclusiveFileLockSync(join(address.protectedPath, '.lock'), RESTORE_LOCK_WAIT_MS);
   if (lock.kind !== 'acquired') throw new Error(`Retiring epoch restoration is ${lock.kind}.`);
   try {
     runtime.storage.unlinkSync(addressPath(storeRoot, epochKey));

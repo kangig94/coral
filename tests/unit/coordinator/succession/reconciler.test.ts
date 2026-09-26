@@ -12,6 +12,38 @@ import { successionTargetKey } from '#src/coordinator/succession/protocol.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { SUCCESSION_CAPABILITY_VERSION } from '#src/infra/bundle-manifest-address.js';
+import type { SuccessionCapabilities } from '#src/coordinator/succession/protocol.js';
+import type { SuccessionOwner } from '#src/coordinator/succession/obligations.js';
+import type * as ProtocolModule from '#src/coordinator/succession/protocol.js';
+import type * as UpgradeIntentModule from '#src/infra/upgrade-intent.js';
+
+/** Plugin roots whose target validates and declares these capabilities, with no bundle on disk. */
+const installedTargets = vi.hoisted(() => new Map<string, unknown>());
+
+vi.mock('#src/infra/upgrade-intent.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UpgradeIntentModule>();
+  return {
+    ...actual,
+    revalidateUpgradeIntentTarget: (intent: UpgradeIntent, pluginRoot?: string) =>
+      installedTargets.has(intent.target.pluginRootLabel)
+        ? { kind: 'validated', target: {} }
+        : actual.revalidateUpgradeIntentTarget(intent, pluginRoot),
+  };
+});
+
+vi.mock('#src/coordinator/succession/protocol.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ProtocolModule>();
+  return {
+    ...actual,
+    readSuccessionCapabilities: (...args: Parameters<typeof actual.readSuccessionCapabilities>) => {
+      const declared = installedTargets.get(join(args[1], '..'));
+      return declared === undefined
+        ? actual.readSuccessionCapabilities(...args)
+        : { kind: 'declared', capabilities: declared };
+    },
+  };
+});
 
 const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
 
@@ -626,6 +658,274 @@ describe('succession reconciler', () => {
       expect(attempts[0]).toEqual(['retired-epoch', 'failed-retirement']);
     } finally {
       reconciler.dispose();
+    }
+  });
+});
+
+describe('succession reconciler over an installed target', () => {
+  const directories: string[] = [];
+  afterEach(() => {
+    installedTargets.clear();
+    for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function installedTarget(pluginRootLabel: string, version = build.version): UpgradeIntent['target'] {
+    const capabilities: SuccessionCapabilities = {
+      version: SUCCESSION_CAPABILITY_VERSION,
+      buildSetId: build.buildSetId,
+      bundleHash: build.bundleHash,
+      protocols: ['prepare', 'commit'],
+      accepts: [{ owner: 'durable-cli', generation: 1 }],
+    };
+    installedTargets.set(pluginRootLabel, capabilities);
+    return { build: { ...build, version }, pluginRootLabel };
+  }
+
+  function runDirectory(): string {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    return runDir;
+  }
+
+  function intentOf(runDir: string): UpgradeIntent {
+    const observed = readUpgradeIntent(runDir);
+    if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
+    return observed.intent;
+  }
+
+  /** An owner whose transferable classification records a grant per attempt, as durable-cli does. */
+  function grantingOwner(disposition: 'transferable' | 'blocking' = 'transferable') {
+    const granted = new Set<string>();
+    const classified: string[] = [];
+    const owner: SuccessionOwner = {
+      id: disposition === 'transferable' ? 'durable-cli' : 'child-principals',
+      recordsGrants: true,
+      dischargeGrants: (retained) => {
+        for (const attemptId of [...granted]) if (!retained.has(attemptId)) granted.delete(attemptId);
+      },
+      classify: async (attemptId) => {
+        classified.push(attemptId);
+        granted.add(attemptId);
+        return disposition === 'blocking'
+          ? { kind: 'blocking', reason: 'child nonce recovery grant could not be recorded' }
+          : {
+              kind: 'transferable',
+              reason: 'durable-cli runtime and custody evidence is recorded',
+              receipt: {
+                owner: 'durable-cli',
+                generation: 1,
+                attemptId,
+                receiptId: `durable-cli:${attemptId}`,
+                recoveryGrantId: `durable-cli:${attemptId}`,
+                payload: {},
+              },
+            };
+      },
+    };
+    return { owner, granted, classified };
+  }
+
+  it('should not classify an owner that records grants while another owner blocks', async () => {
+    const runDir = runDirectory();
+    const target = installedTarget('/installed/target');
+    const durableCli = grantingOwner();
+    const workflow: SuccessionOwner = {
+      id: 'workflow',
+      classify: async () => ({ kind: 'blocking', reason: 'workflow execution is coordinator-local' }),
+    };
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [durableCli.owner, workflow],
+      requiredOwners: ['durable-cli', 'workflow'],
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      retryIntervalMs: 60_000,
+    });
+    try {
+      await reconciler.request({ requestId: 'request-1', target });
+      for (let pass = 0; pass < 5; pass++) {
+        expect(await reconciler.reconcile()).toMatchObject({
+          kind: 'deferred',
+          blockers: [{ owner: 'workflow', reason: 'workflow execution is coordinator-local' }],
+        });
+      }
+      expect(durableCli.classified).toEqual([]);
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should discharge the grants of every attempt a blocked preparation left unnamed', async () => {
+    const runDir = runDirectory();
+    const target = installedTarget('/installed/target');
+    const durableCli = grantingOwner();
+    const childPrincipals = grantingOwner('blocking');
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [durableCli.owner, childPrincipals.owner],
+      requiredOwners: ['durable-cli', 'child-principals'],
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      retryIntervalMs: 60_000,
+    });
+    try {
+      await reconciler.request({ requestId: 'request-1', target });
+      for (let pass = 0; pass < 5; pass++) await reconciler.reconcile();
+      expect(durableCli.classified.length).toBeGreaterThanOrEqual(5);
+      expect(durableCli.granted.size).toBeLessThanOrEqual(1);
+      expect(childPrincipals.granted.size).toBeLessThanOrEqual(1);
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should queue a newer target behind a launched attempt that has not reached its commit window', async () => {
+    const runDir = runDirectory();
+    const target = installedTarget('/installed/target');
+    const launched: string[] = [];
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [],
+      requiredOwners: [],
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      retryIntervalMs: 60_000,
+      launchPrepared: async (_intent, preparation) => {
+        launched.push(preparation.attemptId);
+        return { settled: new Promise(() => undefined) };
+      },
+    });
+    try {
+      await reconciler.request({ requestId: 'request-1', target });
+      await waitForCondition(() => launched.length === 1, 5_000);
+      const newer = installedTarget('/installed/newer', '0.12.0');
+
+      expect(await reconciler.request({ requestId: 'request-2', target: newer })).toMatchObject({
+        kind: 'registered',
+      });
+      expect(intentOf(runDir)).toMatchObject({
+        requestId: 'request-1',
+        attemptId: launched[0],
+        nextTarget: { requestId: 'request-2', target: newer },
+      });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should clear a self-owned attempt whose commit ended without landing its clearing write, and adopt the target queued behind it', async () => {
+    const runDir = runDirectory();
+    const target = installedTarget('/installed/target');
+    let settle: (value: unknown) => void = () => undefined;
+    const settled = new Promise((resolve) => {
+      settle = resolve;
+    });
+    let committing: string | null = null;
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [],
+      requiredOwners: [],
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      retryIntervalMs: 60_000,
+      launchPrepared: async (intent, preparation) => {
+        const written = await compareAndSwapUpgradeIntent(runDir, intent.revision, {
+          ...intent,
+          disposition: 'attempting',
+          attemptDeadline: new Date(Date.now() + 5_000).toISOString(),
+        });
+        if (written.kind !== 'written') throw new Error(`attempting write was ${written.kind}`);
+        committing = preparation.attemptId;
+        return { settled } as Awaited<
+          ReturnType<NonNullable<Parameters<typeof createSuccessionReconciler>[0]['launchPrepared']>>
+        >;
+      },
+    });
+    try {
+      await reconciler.request({ requestId: 'request-1', target });
+      await waitForCondition(() => committing !== null, 5_000);
+      const newer = installedTarget('/installed/newer', '0.12.0');
+      await reconciler.request({ requestId: 'request-2', target: newer });
+      expect(intentOf(runDir)).toMatchObject({ disposition: 'attempting', nextTarget: { requestId: 'request-2' } });
+
+      // The commit reclaimed in place, but the write clearing its attempt failed.
+      settle({
+        kind: 'clear-owed',
+        attemptId: committing,
+        clear: (intent: UpgradeIntent): UpgradeIntent => ({
+          ...intent,
+          disposition: 'deferred',
+          attemptId: null,
+          attemptChild: null,
+          attemptOwner: null,
+          attemptDeadline: null,
+          successionPreparation: null,
+          blockers: [{ owner: 'succession-commit', reason: 'incumbent reclaimed after an injected failure' }],
+          retryCondition: { kind: 'target-change', evidence: 'successor committed-open failure' },
+        }),
+      });
+
+      await waitForCondition(() => intentOf(runDir).requestId === 'request-2', 5_000);
+      expect(intentOf(runDir)).toMatchObject({ target: newer, attemptId: expect.any(String) as unknown });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should refuse to prepare over or abort a same-build recovery attempt', async () => {
+    const runDir = runDirectory();
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent: serving,
+      target: { build, pluginRootLabel: '/missing/target' },
+      attemptId: 'recovery-attempt',
+      attemptOwner: { kind: 'incumbent', instanceId: serving.instanceId, pid: serving.pid, incarnation: null },
+      disposition: 'deferred',
+      blockers: [{ owner: 'succession-commit', reason: 'same-build recovery after a failed commit' }],
+      retryCondition: { kind: 'target-change', evidence: 'same-build recovery in progress' },
+      attemptDeadline: null,
+      completionReceipt: null,
+      recoveryAttemptId: 'recovery-attempt',
+      recoveryBuildSetId: build.buildSetId,
+      recoveryRetry: { kind: 'target-change' },
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    const coordinator = createSuccessionCoordinator({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [],
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      retryIntervalMs: 60_000,
+    });
+    try {
+      expect(await coordinator.dispatch(SUCCESSION_METHODS.prepare, { requestId: 'request-1' })).toMatchObject({
+        kind: 'refused',
+      });
+      expect(await coordinator.dispatch(SUCCESSION_METHODS.abort, { attemptId: 'recovery-attempt' })).toMatchObject({
+        kind: 'refused',
+      });
+      expect(intentOf(runDir)).toMatchObject({
+        revision: seeded.intent.revision,
+        attemptId: 'recovery-attempt',
+        recoveryAttemptId: 'recovery-attempt',
+      });
+    } finally {
+      coordinator.reconciler.dispose();
     }
   });
 });

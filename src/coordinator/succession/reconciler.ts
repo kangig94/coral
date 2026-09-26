@@ -24,7 +24,7 @@ import {
   type SuccessionReady,
 } from './protocol.js';
 import type { UnservedMintDiscard } from '../../store/epoch.js';
-import { failedAttemptRetry, recoveryRetryOf, transientRetryAtMs } from './attempt-retry.js';
+import { attemptRetryAtMs, failedAttemptRetry, recoveryRetryOf } from './attempt-retry.js';
 import {
   prepareOwnerObligations,
   recertifyUntransferableOwners,
@@ -68,8 +68,17 @@ export type SuccessionReconcilerOptions = Readonly<{
   retryIntervalMs?: number;
 }>;
 
+/**
+ * How a launched attempt's commit ended while this process lives. `clear-owed` carries the write that clears the
+ * attempt from the intent, which the commit could not land after reclaiming in place; until it lands, the intent
+ * still claims a commit that nothing supervises.
+ */
+export type SuccessionLaunchSettlement =
+  | Readonly<{ kind: 'settled' }>
+  | Readonly<{ kind: 'clear-owed'; attemptId: string; clear: (intent: UpgradeIntent) => UpgradeIntent }>;
+
 /** A launched attempt belongs to its commit until `settled`; nothing may prepare over or abort it before then. */
-export type SuccessionLaunch = Readonly<{ settled: Promise<void> }>;
+export type SuccessionLaunch = Readonly<{ settled: Promise<SuccessionLaunchSettlement> }>;
 
 export type SuccessionDecision =
   | Readonly<{ kind: 'registered'; intent: UpgradeIntent }>
@@ -160,6 +169,7 @@ function requestedIntent(
     recoveryAttemptId: null,
     recoveryBuildSetId: null,
     recoveryRetry: null,
+    obligationRetry: null,
     nextTarget: queued !== null && queued !== undefined && supersedes(queued.target, request.target) ? queued : null,
   };
 }
@@ -195,17 +205,35 @@ function endedUnder(intent: UpgradeIntent, self: IncumbentIdentity): boolean {
     : recordsSelf(intent.incumbent, self);
 }
 
-/** Startup reads a committing attempt or a same-build recovery grant as evidence of what may have been released. */
-function heldByCommit(intent: UpgradeIntent): boolean {
+/** A same-build recovery grant stands in for a failed commit; only that recovery, or startup, may clear it. */
+function holdsRecovery(intent: UpgradeIntent): boolean {
   return (
-    committing(intent) ||
-    (intent.attemptId !== null &&
-      intent.attemptOwner?.kind === 'incumbent' &&
-      intent.recoveryAttemptId === intent.attemptId)
+    intent.attemptId !== null &&
+    intent.attemptOwner?.kind === 'incumbent' &&
+    intent.recoveryAttemptId === intent.attemptId
   );
 }
 
+/** Startup reads a committing attempt or a same-build recovery grant as evidence of what may have been released. */
+function heldByCommit(intent: UpgradeIntent): boolean {
+  return committing(intent) || holdsRecovery(intent);
+}
+
+/** Every attempt whose grants the intent may still redeem, including those its preparation's receipts name. */
+function namedAttempts(intent: UpgradeIntent): string[] {
+  const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
+  return [
+    intent.attemptId,
+    intent.recoveryAttemptId,
+    intent.completionReceipt?.attemptId,
+    ...(preparation.success
+      ? [preparation.data.attemptId, ...preparation.data.receipts.map((receipt) => receipt.attemptId)]
+      : []),
+  ].filter((attemptId): attemptId is string => typeof attemptId === 'string');
+}
+
 const LAUNCH_IN_FLIGHT = 'launched attempt is settled only by its commit';
+const RECOVERY_HOLDS_INTENT = 'a same-build recovery attempt is settled only by its recovery or by startup';
 
 /** Reports why the serving incumbent has not adopted an intent another incumbent recorded. */
 const ADOPTION_BLOCKER_OWNER = 'succession-adoption';
@@ -320,6 +348,9 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   let changedDuringReconcile = false;
   // The committer supervises one attempt at a time, so a second preparation while one runs could never launch.
   let launchedAttempt: string | null = null;
+  let owedClear: Extract<SuccessionLaunchSettlement, { kind: 'clear-owed' }> | null = null;
+  // Reused while the intent's revision stands, so a decide run that repeats records nothing new.
+  let pendingAttempt: Readonly<{ requestId: string; revision: number; attemptId: string }> | null = null;
   let backoffWake: TimerHandle | null = null;
   const notifyObligationChange = (): void => {
     if (disposed) return;
@@ -387,6 +418,56 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     return { kind: 'deferred', reason: `unserved retirement mint was ${discarded.kind}` };
   }
 
+  function attemptFor(intent: UpgradeIntent): string {
+    if (pendingAttempt?.requestId !== intent.requestId || pendingAttempt.revision !== intent.revision) {
+      pendingAttempt = { requestId: intent.requestId, revision: intent.revision, attemptId: newAttemptId() };
+    }
+    return pendingAttempt.attemptId;
+  }
+
+  /** Grants survive only for attempts the intent names, the launched one, and the one being prepared. */
+  function dischargeUnnamedGrants(intent: UpgradeIntent): void {
+    const retained = new Set([
+      ...namedAttempts(intent),
+      ...(launchedAttempt === null ? [] : [launchedAttempt]),
+      ...(pendingAttempt === null ? [] : [pendingAttempt.attemptId]),
+    ]);
+    for (const owner of options.owners) {
+      try {
+        owner.dischargeGrants?.(retained);
+      } catch (error: unknown) {
+        options.onReconcileError?.(error);
+      }
+    }
+  }
+
+  /** Lands the clearing write a settled commit owed; its exit is the next pass, until the intent names another attempt. */
+  async function landOwedClear(
+    owed: Extract<SuccessionLaunchSettlement, { kind: 'clear-owed' }>,
+  ): Promise<SuccessionDecision | null> {
+    const outcome = await retryUpgradeIntentCas<boolean>(options.runDir, (observed) =>
+      observed.kind === 'readable' && observed.intent.attemptId === owed.attemptId
+        ? {
+            kind: 'write',
+            expectedRevision: observed.intent.revision,
+            change: owed.clear(observed.intent),
+            settle: () => true,
+          }
+        : { kind: 'settle', value: false },
+    );
+    if (outcome.kind !== 'settled') {
+      return {
+        kind: 'deferred',
+        reason: `a settled attempt's clearing write is owed (${outcome.kind === 'refused' ? outcome.problem : 'contended'})`,
+      };
+    }
+    owedClear = null;
+    if (!outcome.value) return null;
+    options.onIntentChanged?.();
+    notifyObligationChange();
+    return { kind: 'deferred', reason: 'a settled attempt was cleared from the upgrade intent' };
+  }
+
   function reconcile(): Promise<SuccessionDecision> {
     if (reconciling !== null) {
       changedDuringReconcile = true;
@@ -403,6 +484,10 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   }
 
   async function reconcilePending(): Promise<SuccessionDecision> {
+    if (!disposed && owedClear !== null) {
+      const owed = await landOwedClear(owedClear);
+      if (owed !== null) return owed;
+    }
     const observed = status();
     if (disposed || observed.kind !== 'readable') return { kind: 'deferred', reason: 'no active upgrade intent' };
     const { intent } = observed;
@@ -410,6 +495,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     if (discardHold !== null) return discardHold;
     const queued = intent.nextTarget ?? null;
     const self = options.incumbent();
+    if (endedUnder(intent, self)) dischargeUnnamedGrants(intent);
     if (intent.disposition === 'closed' || intent.disposition === 'completed') {
       return queued !== null && endedUnder(intent, self)
         ? adoptNextTarget(intent, queued)
@@ -436,12 +522,12 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     ) {
       return { kind: 'deferred', reason: 'successor target must change after failed attempt' };
     }
-    const retryAtMs = intent.attemptId === null ? transientRetryAtMs(intent) : null;
+    const retryAtMs = intent.attemptId === null ? attemptRetryAtMs(intent) : null;
     if (retryAtMs !== null && retryAtMs > options.runtime.time.now()) {
       wakeAt(retryAtMs);
       return {
         kind: 'deferred',
-        reason: `transient attempt failure backs off until ${new Date(retryAtMs).toISOString()}`,
+        reason: `failed attempt backs off until ${new Date(retryAtMs).toISOString()}`,
       };
     }
     if (options.commitAvailable !== true) {
@@ -486,10 +572,17 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if (aborted.kind !== 'aborted') return aborted;
       throw error;
     }
-    void launch.settled.finally(() => {
-      launchedAttempt = null;
-      notifyObligationChange();
-    });
+    void launch.settled
+      .then(
+        (settlement) => {
+          if (settlement.kind === 'clear-owed') owedClear = settlement;
+        },
+        () => undefined,
+      )
+      .finally(() => {
+        launchedAttempt = null;
+        notifyObligationChange();
+      });
     return { kind: 'deferred', reason: 'successor launch is awaiting readiness' };
   }
 
@@ -618,7 +711,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         if (
           current.attemptId !== null &&
           ((options.observeServing?.(current.attemptId) ?? null) !== null ||
-            (recordsSelf(current.incumbent, self) && heldByCommit(current)))
+            (recordsSelf(current.incumbent, self) && (heldByCommit(current) || current.attemptId === launchedAttempt)))
         ) {
           return queueBehindAttempt(current, input);
         }
@@ -695,6 +788,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if (committing(intent)) return settle({ kind: 'deferred', reason: 'succession attempt is committing' });
       if (intent.attemptId !== null && intent.attemptId === launchedAttempt)
         return settle({ kind: 'deferred', reason: LAUNCH_IN_FLIGHT });
+      if (holdsRecovery(intent)) return settle({ kind: 'refused', reason: RECOVERY_HOLDS_INTENT });
       const validated = revalidateUpgradeIntentTarget(intent);
       const declared =
         validated.kind === 'validated'
@@ -777,7 +871,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           return settle({ kind: 'prepared', preparation: existing });
         }
       }
-      const attemptId = newAttemptId();
+      const attemptId = attemptFor(intent);
       const obligations = await prepareOwnerObligations(
         options.owners,
         attemptId,
@@ -826,6 +920,8 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           reason: 'succession obligations block preparation',
           blockers,
         };
+        // A blocked attempt is never named, so the next pass prepares a fresh one and discharges this one's grants.
+        pendingAttempt = null;
         if (
           intent.disposition === 'deferred' &&
           intent.attemptId === null &&
@@ -958,6 +1054,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if ((options.observeServing?.(attemptId) ?? null) !== null) return settle(await commit(attemptId));
       if (committing(intent)) return settle({ kind: 'refused', reason: 'attempt is committing' });
       if (attemptId === launchedAttempt) return settle({ kind: 'refused', reason: LAUNCH_IN_FLIGHT });
+      if (holdsRecovery(intent)) return settle({ kind: 'refused', reason: RECOVERY_HOLDS_INTENT });
       return writeThen(
         intent,
         {

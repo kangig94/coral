@@ -1094,4 +1094,85 @@ describe('real-process durable-cli succession', () => {
     await queuedWaiter.completed;
     expect(queuedWaiter.stdout()).toMatch(/aborted/iu);
   }, 180_000);
+
+  it.each(['exits cleanly', 'is killed'] as const)(
+    'serves every later cold start of the target after a successor that carried a durable-cli receipt %s',
+    async (successorEnd) => {
+      assertBuildArtifactsAvailable();
+      const home = mkdtempSync(join(tmpdir(), 'coral-committed-cold-home-'));
+      const projectRoot = mkdtempSync(join(tmpdir(), 'coral-committed-cold-work-'));
+      roots.push(home, projectRoot);
+      mkdirSync(join(home, '.claude'));
+      const prompt = join(projectRoot, 'prompt.txt');
+      writeFileSync(prompt, 'Run across the upgrade, then finish.');
+      const oldFixture = await createDurableFixture('0.0.1');
+      const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots });
+      coordinators.push(old);
+      const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
+      const jobId = launchedJobId(await runCli(oldFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']));
+      const jobState = join(projectRoot, '.durable-state', jobId);
+      await waitForCondition(() => existsSync(join(jobState, 'running')), 30_000);
+      const providerPid = Number(readFileSync(join(jobState, 'running'), 'utf8'));
+      providerChildren.push({ pid: providerPid, incarnation: probeProcessIncarnation(providerPid) });
+      const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+      const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+      await waitForCondition(() => {
+        const bound = readCustodyLedger(runtime, runDir).find(
+          (entry) => entry.kind === 'bound' && entry.intent.operationId === jobId,
+        );
+        if (bound?.kind !== 'bound' || bound.binding.process === null) return false;
+        const db = openTestStoreDatabase({
+          storeFormat: { ...currentCoralStoreFormat(), productVersion: '0.0.1' },
+          path: resolveCurrentStore(runtime).path,
+          storage: runtime.storage,
+          readonly: true,
+        });
+        try {
+          return readDurableCliProcessRuntimeEvidence(db, jobId, bound.binding.process.pid).kind === 'current';
+        } finally {
+          db.close();
+        }
+      }, 30_000);
+
+      const newerFixture = await createDurableFixture('0.0.2');
+      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+      coordinators.push(contender);
+      expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
+      await waitForCondition(() => {
+        const discovery = readDiscoveryRecordForHome(home, 'prod');
+        const intent = readUpgradeIntent(runDir);
+        return (
+          discovery !== null &&
+          discovery.pid !== incumbent.pid &&
+          intent.kind === 'readable' &&
+          intent.intent.disposition === 'completed' &&
+          intent.intent.completionReceipt?.acceptedObligations.some((entry) => entry.owner === 'durable-cli') === true
+        );
+      }, 60_000);
+      const successor = readDiscoveryRecordForHome(home, 'prod');
+      if (successor === null) throw new Error('Durable successor did not serve.');
+      successors.push({ pid: successor.pid, incarnation: probeProcessIncarnation(successor.pid) });
+      await waitForProcessExit(old, 30_000);
+      await abortDurableJob(newerFixture, home, projectRoot, jobId);
+      process.kill(successor.pid, successorEnd === 'exits cleanly' ? 'SIGTERM' : 'SIGKILL');
+      await waitForCondition(() => observeProcessLiveness(successor.pid) === 'absent', 30_000);
+
+      // The first cold start retires the settled job's runtime record; the second must not need it.
+      for (const coldStart of [1, 2]) {
+        const target = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+        coordinators.push(target);
+        await waitForCondition(() => readDiscoveryRecordForHome(home, 'prod')?.pid === target.child.pid, 60_000).catch(
+          () => {
+            throw new Error(`Cold start ${coldStart} did not serve: ${target.output()}`);
+          },
+        );
+        if (successorEnd === 'exits cleanly') await stopCoordinator(target, 30_000);
+        else {
+          target.child.kill('SIGKILL');
+          await waitForProcessExit(target, 15_000);
+        }
+      }
+    },
+    240_000,
+  );
 });

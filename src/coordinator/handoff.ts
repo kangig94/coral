@@ -76,7 +76,7 @@ export interface HandoffOptions {
   desired: DesiredIncumbentIdentity;
   bindAttempt: () => Promise<HandoffBindResult>;
   runStartupRecovery: RunStartupRecoveryOrchestratorFn;
-  runtime: Pick<Runtime, 'time' | 'process' | 'env'>;
+  runtime: Pick<Runtime, 'time' | 'env'>;
   readVerifiedIncumbentFromDiscovery: (evidence: {
     socketPath: string;
     desired: DesiredIncumbentIdentity;
@@ -257,20 +257,8 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       throw new IncumbentMatchesError(opts.desired);
     }
 
-    if (health === null) {
-      const identity = opts.readVerifiedIncumbentFromDiscovery({
-        socketPath: opts.socketPath,
-        desired: opts.desired,
-        lastHealth: null,
-      });
-      if (identity !== null && opts.runtime.process.observeLiveness(identity.pid) === 'alive') {
-        throw new HandoffEscalationError({
-          code: 'handoff_socket_holder_unverified',
-          context: { stage: 'handoff-deadline', socketPath: opts.socketPath },
-        });
-      }
-    }
-
+    // An unanswered probe of a live holder is not a refusal: a stalled incumbent answers the next one, and only
+    // the deadline may turn continued silence into `handoff_socket_holder_unverified`.
     const pollMs = Math.min(SOCKET_BIND_POLL_MS, Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow()));
     if (pollMs > 0) {
       await opts.runtime.time.sleep(pollMs, opts.signal === undefined ? undefined : { signal: opts.signal });

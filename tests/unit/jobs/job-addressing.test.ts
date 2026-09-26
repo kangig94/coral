@@ -330,6 +330,78 @@ describe('job addressing', () => {
     expect(parseSerializedWaitCursor(serializeWaitCursor(advanced.cursor))).toEqual(advanced.cursor);
   });
 
+  // A coordinator without `supportsWaitV2` is sent no cursor, so it replays from its start in its own seq space; the
+  // vector cursor can neither dedupe that replay nor advance on it.
+  it('dedupes a legacy replay after the vector cursor was dropped, keeping delivered terminals delivered', () => {
+    const timing = {
+      origin: 'runtime' as const,
+      originAt: '2026-09-25T00:00:00.000Z',
+      emittedAt: '2026-09-25T00:00:01.000Z',
+      elapsedMs: 1000,
+    };
+    const dropped: WaitCursor = {
+      version: 'jobs.wait.v2',
+      locations: { done: 'lineage-new:8', live: 'lineage-new:8' },
+      positions: { 'lineage-new:8': 40 },
+      deliveredJobIds: ['done'],
+    };
+    const progress: WaitStreamEvent = { type: 'progress', jobId: 'live', seq: 3, message: 'working', timing };
+    const terminal = (jobId: string, seq: number): WaitStreamEvent => ({
+      type: 'terminal',
+      jobId,
+      seq,
+      remainingJobIds: [],
+      resultPath: `/results/${jobId}.json`,
+      result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+    });
+
+    const first = advanceWaitRenderCursor(dropped, progress);
+    expect(first.shouldRender).toBe(true);
+    const replayed = advanceWaitRenderCursor(first.cursor, progress);
+    expect(replayed.shouldRender).toBe(false);
+    expect(advanceWaitRenderCursor(replayed.cursor, terminal('done', 4)).shouldRender).toBe(false);
+    expect(advanceWaitRenderCursor(replayed.cursor, terminal('live', 5)).shouldRender).toBe(true);
+  });
+
+  it('keeps a terminal delivered before a dropped vector cursor delivered when a legacy cursor reconnects', async () => {
+    const { index } = fixture();
+    index.register('done', 'lineage-new:8', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {
+          yield {
+            type: 'terminal',
+            jobId: 'done',
+            seq: 4,
+            remainingJobIds: [],
+            resultPath: '/results/done.json',
+            result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+          } satisfies WaitStreamEvent;
+        },
+      },
+      () => false,
+      () => 'pending',
+    );
+
+    const stream = addressing.waitStream({
+      jobIds: ['done'],
+      cursor: { afterSeq: 0, deliveredJobIds: ['done'] },
+      supportsWaitV2: true,
+      timeoutSeconds: 1,
+    });
+
+    expect((await stream.next()).value).toMatchObject({ type: 'waiting' });
+    await stream.return(undefined);
+  });
+
   it('catches up progress from a live retained epoch with its own cursor position', async () => {
     const { index } = fixture();
     index.register('old-live', 'lineage-old:7', {

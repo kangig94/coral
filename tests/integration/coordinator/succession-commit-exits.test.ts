@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { cpSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,12 +21,14 @@ import type { SuccessionPreparation } from '#src/coordinator/succession/protocol
 import {
   createSuccessionReconciler,
   type SuccessionDecision,
+  type SuccessionLaunch,
   type SuccessionReconciler,
 } from '#src/coordinator/succession/reconciler.js';
 import { createDisabledKbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
 import type { SuccessionRelease } from '#src/coordinator/shutdown.js';
 import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -47,6 +49,8 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const roots: string[] = [];
 const children: ChildProcess[] = [];
+/** What the incumbent did to its attempt and its own admission, in order. */
+const commitEvents: string[] = [];
 const format = currentCoralStoreFormat();
 const build = {
   version: format.productVersion,
@@ -60,6 +64,7 @@ const build = {
 };
 
 afterEach(async () => {
+  commitEvents.splice(0);
   await Promise.all(children.splice(0).map((child) => terminateChildProcess(child, 'SIGKILL')));
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -79,6 +84,8 @@ type AttemptBehavior = Readonly<{
    * and takes it and records serving before it processes the incumbent's abort.
    */
   servesBeforeAbort?: Readonly<{ runtime: Runtime; epochKey: string; refusals: unknown[] }>;
+  /** Runs as the incumbent aborts the attempt, before it reaps the child. */
+  onAbort?: () => void;
 }>;
 
 function spawnIdleChild(): ChildProcess {
@@ -108,6 +115,7 @@ async function fakeAttempt(attemptId: string, epochKey: string, behavior: Attemp
     childIdentity: { pid, incarnation: recorded },
     transferListeners: async () => undefined,
     forwardConnections: () => () => {
+      commitEvents.push('stop-forwarding');
       const late = behavior.servesAfterIncumbentCheck;
       const generation = late === undefined ? null : observeSuccessionWriterGeneration(late.runtime);
       if (late === undefined || generation === null) return;
@@ -134,6 +142,8 @@ async function fakeAttempt(attemptId: string, epochKey: string, behavior: Attemp
       for (const callback of acknowledgments) callback({ kind: 'hold', reason: 'injected committed-open failure' });
     },
     abort: async () => {
+      commitEvents.push('abort');
+      behavior.onAbort?.();
       const racing = behavior.servesBeforeAbort;
       if (racing === undefined) return;
       try {
@@ -220,7 +230,7 @@ type Harness = Readonly<{
   startedRecoveries: number;
   retryNotifications: number;
   committer: SuccessionCommitter;
-  launch(): Promise<unknown>;
+  launch(): Promise<SuccessionLaunch>;
 }>;
 
 async function harness(
@@ -232,6 +242,8 @@ async function harness(
       | 'serves-after-incumbent-check'
       | 'serves-before-abort';
     pauseMs?: number;
+    /** Provider hosts the preparation hands over, in place of a commit that transfers none. */
+    providerHosts?: SuccessionCommitPorts['providerHosts'];
     /** What the reconciler answers when the successor reports readiness. */
     readiness?: SuccessionDecision;
     /** What the reconciler answers when the window re-certifies obligations before writers park. */
@@ -269,7 +281,9 @@ async function harness(
     retryNotifications: 0,
   };
   const writers: IncumbentWriterPorts = {
-    parkProviderOperationMutations: async () => undefined,
+    parkProviderOperationMutations: async () => {
+      commitEvents.push('park');
+    },
     adoptProviderOperationAdmission: () => {
       state.adoptedAdmissions += 1;
     },
@@ -318,12 +332,15 @@ async function harness(
       endSuccessionCommitWindow: () => true,
     },
     childPrincipals: { fenceAuthentication: () => undefined, reclaimAuthentication: () => true },
-    providerHosts: {
+    providerHosts: options.providerHosts ?? {
       transfersHosts: () => false,
       releaseForTransfer: async () => undefined,
       reclaimTransferred: () => undefined,
     },
-    setLaunchFenceActive: (active) => state.launchFence.push(active),
+    setLaunchFenceActive: (active) => {
+      commitEvents.push(`fence:${active}`);
+      state.launchFence.push(active);
+    },
     waitHandover: { abort: () => undefined, renew: () => undefined },
     liveJobIds: () => [],
     retiringEpoch: {
@@ -572,7 +589,7 @@ describe('succession commit failure exits', () => {
     await waitForCondition(() => test.retryNotifications === 1, 15_000);
     expect(test.adoptedAdmissions).toBe(1);
     expect(test.releases).toEqual([]);
-    expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
+    expect(retryCondition(test.runtime)?.kind).toBe('obligation-change');
     expect(blockers(test.runtime)[0]?.reason).toContain(
       'discuss: live discuss session retains coordinator-local state',
     );
@@ -588,7 +605,7 @@ describe('succession commit failure exits', () => {
     await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
     expect(test.startedRecoveries).toBe(1);
     expect(test.releases).toEqual([]);
-    expect(test.launchFence).toEqual([true, false]);
+    expect(test.launchFence).toEqual([true, true, false]);
     expect(blockers(test.runtime)[0]?.reason).toContain('incumbent reclaimed after same-build recovery launch failed');
   });
 
@@ -623,7 +640,7 @@ describe('succession commit failure exits', () => {
     await test.launch();
 
     await waitForCondition(() => test.retryNotifications === 1, 15_000);
-    expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
+    expect(retryCondition(test.runtime)?.kind).toBe('obligation-change');
     expect(blockers(test.runtime)[0]?.reason).toContain('outdated by an admission or epoch change');
   });
 
@@ -788,5 +805,143 @@ describe('succession commit failure exits', () => {
         unservedMintDiscard: { attemptId: test.attemptId, incumbentEpochKey: test.epochKey },
       },
     });
+  });
+
+  it('should fence launches before it waits on the failed successor, since the pause may end during that wait', async () => {
+    const test = await harness({ failingPoints: () => false, recoveryLaunch: 'fails' });
+    await test.launch();
+
+    await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
+    expect(commitEvents).toContain('fence:true');
+    expect(commitEvents.indexOf('fence:true')).toBeLessThan(commitEvents.indexOf('abort'));
+    expect(test.launchFence.at(-1)).toBe(false);
+  });
+
+  it('should hand the clearing write it could not land to the reconciler once the incumbent reclaimed', async () => {
+    let intentPath = '';
+    const test = await harness({
+      failingPoints: (point) => {
+        if (point === 'incumbent-reclaim') chmodSync(intentPath, 0o000);
+        return false;
+      },
+      recoveryLaunch: 'fails',
+    });
+    const runDir = test.runtime.paths.coral.coordinator.runDir;
+    intentPath = upgradeIntentPath(runDir);
+    const launched = await test.launch();
+    let settlement: Awaited<SuccessionLaunch['settled']>;
+    try {
+      settlement = await launched.settled;
+    } finally {
+      chmodSync(intentPath, 0o600);
+    }
+
+    expect(test.adoptedAdmissions).toBe(1);
+    expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { disposition: 'attempting' } });
+    if (settlement.kind !== 'clear-owed') throw new Error(`settlement was ${settlement.kind}`);
+    expect(settlement.attemptId).toBe(test.attemptId);
+    const observed = readUpgradeIntent(runDir);
+    if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
+    const cleared = settlement.clear(observed.intent);
+    expect(cleared).toMatchObject({ disposition: 'deferred', attemptId: null, attemptOwner: null });
+    expect(cleared.blockers[0]?.reason).toContain('incumbent reclaimed after');
+    expect(cleared.blockers[0]?.reason).toContain('injected committed-open failure');
+  });
+
+  it('should keep an unserved retirement mint on record when the write that would record it alone fails', async () => {
+    let intentPath = '';
+    const test = await harness({
+      failingPoints: (point) => {
+        if (point === 'incumbent-reclaim') chmodSync(intentPath, 0o600);
+        return false;
+      },
+      recoveryLaunch: 'fails',
+      targetFingerprint: `sha256:${'f'.repeat(64)}`,
+      certifyCustody: async () => ({}) as unknown as RetiringCustodyCertificate,
+      attempt: { onAbort: () => chmodSync(intentPath, 0o000) },
+    });
+    intentPath = upgradeIntentPath(test.runtime.paths.coral.coordinator.runDir);
+    const dbDir = realpathSync(test.runtime.paths.coral.store.dbDir);
+    const mint = epochDirectory(dbDir, '2');
+    cpSync(epochDirectory(dbDir, '1'), mint, { recursive: true });
+    writeFileSync(
+      join(mint, '.retirement-attempt.v1.json'),
+      `${JSON.stringify({ version: 'v1', attemptId: test.attemptId })}\n`,
+    );
+    const reader = createSharedFileLockSync(join(mint, '.lock'));
+    try {
+      await test.launch();
+      await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
+    } finally {
+      reader();
+      chmodSync(intentPath, 0o600);
+    }
+
+    await waitForCondition(() => {
+      const observed = readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir);
+      return observed.kind === 'readable' && observed.intent.attemptId === null;
+    }, 15_000);
+    expect(readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { unservedMintDiscard: { attemptId: test.attemptId, incumbentEpochKey: test.epochKey } },
+    });
+  });
+
+  it("should not spend the target's transient retries on a preparation an obligation change outdated", async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      readiness: { kind: 'stale', reason: 'preparation is stale', cause: 'obligation-change' },
+      priorTransientFailures: 6,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.retryNotifications === 1, 15_000);
+    const observed = readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
+    expect(observed.intent.retryCondition?.kind).toBe('obligation-change');
+    expect(observed.intent.transientRetry?.failures).toBe(6);
+  });
+
+  it("should bound the provider hosts' re-authorization at release by the commit deadline", async () => {
+    const releases: AbortSignal[] = [];
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      pauseMs: 3_000,
+      providerHosts: {
+        transfersHosts: () => true,
+        releaseForTransfer: (_attemptId: string, signal: AbortSignal) => {
+          releases.push(signal);
+          return new Promise<void>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('host re-authorization was cut off')));
+          });
+        },
+        reclaimTransferred: () => undefined,
+      },
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
+    expect(releases).toHaveLength(1);
+    expect(test.releases).toEqual([]);
+    expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
+    expect(blockers(test.runtime)[0]?.reason).toContain('host re-authorization was cut off');
+  });
+
+  it('should stop forwarding connections before incumbent shutdown aborts the attempt', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      attempt: { silent: true },
+    });
+    await test.launch();
+    await waitForCondition(() => {
+      const observed = readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir);
+      return observed.kind === 'readable' && observed.intent.disposition === 'attempting';
+    }, 15_000);
+
+    await test.committer.shutdown.settleUncommittedAttempt();
+    expect(commitEvents).toContain('stop-forwarding');
+    expect(commitEvents.indexOf('stop-forwarding')).toBeLessThan(commitEvents.indexOf('abort'));
   });
 });

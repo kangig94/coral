@@ -69,6 +69,12 @@ export const KERNEL_READY_DEADLINE_MS = 15_000;
  */
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
+/**
+ * A `kill -9` is run by whoever reads it, so it may name only a coordinator that cannot answer at all: silence
+ * must span this many consecutive health probes and this much time before a stall stops being the likelier story.
+ */
+const FORCE_KILL_UNANSWERED_PROBES = 3;
+export const FORCE_KILL_UNANSWERED_WINDOW_MS = 3 * HEALTH_TIMEOUT_MS;
 
 export type DesiredCoordinator = {
   version: string;
@@ -716,6 +722,24 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
   );
 }
 
+/** Consecutive unanswered readings of this wait; any other reading ends the run. */
+type UnansweredRun = Readonly<{ probes: number; since: number }>;
+
+function extendUnansweredRun(
+  run: UnansweredRun | null,
+  reading: CoordinatorHealthReading,
+  probeStartedAt: number,
+): UnansweredRun | null {
+  if (reading.kind !== 'unanswered') return null;
+  return run === null ? { probes: 1, since: probeStartedAt } : { probes: run.probes + 1, since: run.since };
+}
+
+function unansweredThroughWindow(run: UnansweredRun | null, now: number): run is UnansweredRun {
+  return (
+    run !== null && run.probes >= FORCE_KILL_UNANSWERED_PROBES && now - run.since >= FORCE_KILL_UNANSWERED_WINDOW_MS
+  );
+}
+
 /**
  * Each way the wait can end gets its own sentence, and only a decisive reading may say the coordinator stopped
  * before binding: a probe that never completed did not observe that, and a coordinator that is serving would
@@ -747,12 +771,11 @@ function endedStartupMessage(
         'as coordinator health.'
       );
     case 'unanswered': {
-      const pid = verifiedUnresponsivePid(info);
-      if (pid !== null) {
+      // The child stopped without refusing an unverified holder, so nothing here shows the holder cannot answer.
+      if (verifiedUnresponsivePid(info) !== null) {
         return (
-          'The spawned Coral coordinator stopped. The coordinator at this address cannot answer health requests; ' +
-          `its recorded process is still alive (${reading.cause}). Force-kill it to allow a fresh start.\n` +
-          `action=kill -9 ${pid}`
+          'The spawned Coral coordinator stopped, and the coordinator at this address did not answer this health ' +
+          `request (${reading.cause}); its recorded process is still alive, so it may be busy. Retry the command.`
         );
       }
       return (
@@ -764,6 +787,15 @@ function endedStartupMessage(
     default:
       return assertNever(reading);
   }
+}
+
+function forceKillUnresponsiveMessage(pid: number, run: UnansweredRun, now: number): string {
+  return (
+    'The spawned Coral coordinator refused to replace the coordinator at this address, which has answered none of ' +
+    `${run.probes} health requests over ${Math.round((now - run.since) / 1_000)} seconds while its recorded ` +
+    'process stays alive. Force-kill it to allow a fresh start.\n' +
+    `action=kill -9 ${pid}`
+  );
 }
 
 /**
@@ -786,12 +818,15 @@ async function waitForBackendReady(
   // What this wait produces is the successor to a draining incumbent, so no route's admission may end it on a
   // draining coordinator: that would hand back the incumbent as its own replacement.
   const admission: RouteLifecycleAdmission = 'running';
+  let unansweredRun: UnansweredRun | null = null;
 
   while (currentAttempt || timePort.now() < readyDeadline) {
     const info = readDiscoverySnapshot(paths);
+    const probeStartedAt = timePort.now();
     const observedReading = await readRawCoordinatorHealth(
       createIpcClient(info?.socketPath ?? expectedSocketPath, timePort),
     );
+    unansweredRun = extendUnansweredRun(unansweredRun, observedReading, probeStartedAt);
     const observedHealth = answeredHealth(observedReading);
     const observedPid: number | undefined = observedHealth?.pid ?? info?.pid;
     let servingIncumbent: ReadyCoordinatorEvidence | null = null;
@@ -835,15 +870,18 @@ async function waitForBackendReady(
     const startupError = matchingStartupError(paths, desired, waitContext, observedPid);
     if (startupError) {
       switch (startupError.kind) {
-        case 'documented':
+        case 'documented': {
+          const unresponsivePid = verifiedUnresponsivePid(info);
+          const now = timePort.now();
           if (
             startupError.code === 'handoff_socket_holder_unverified' &&
-            observedReading.kind === 'unanswered' &&
-            verifiedUnresponsivePid(info) !== null
+            unresponsivePid !== null &&
+            unansweredThroughWindow(unansweredRun, now)
           ) {
-            throw new BackendUnreachableError(endedStartupMessage({ kind: 'exited' }, observedReading, info));
+            throw new BackendUnreachableError(forceKillUnresponsiveMessage(unresponsivePid, unansweredRun, now));
           }
           throw new CoralSetupError(startupError);
+        }
         case 'self_authored':
           throw new CoralSetupError(startupError);
         case 'unrecognized_code':

@@ -75,6 +75,16 @@ export type SuccessionOwner = Readonly<{
    * target cannot accept is classified again for the same attempt inside its commit window, before writers park.
    */
   classify: (attemptId: string, capabilities: SuccessionCapabilities) => Promise<OwnerDisposition>;
+  /**
+   * Set when classifying acts outside this process on the attempt's behalf: it records a grant or authorizes a
+   * host. Such an owner is classified only once every other owner completes, so a preparation that blocks anyway
+   * leaves nothing behind for attempts no intent will name.
+   */
+  recordsGrants?: true;
+  /** Reports a known blocker without recording a grant when another owner already blocks preparation. */
+  inspectBlocker?: (capabilities: SuccessionCapabilities) => string | null;
+  /** Removes whatever this owner recorded for any attempt outside `retained`. */
+  dischargeGrants?: (retained: ReadonlySet<string>) => void;
 }>;
 
 export type ObligationPreparation =
@@ -94,7 +104,11 @@ export function certifySuccessionJobCoverage(
   return failures;
 }
 
-/** An undeclared owner or contract generation cannot authorize a transfer. */
+/**
+ * An undeclared owner or contract generation cannot authorize a transfer. Owners that record grants follow every
+ * other owner and only inspect known blockers once preparation is blocked. Job coverage is certified only when
+ * every owner was classified, since an owner left unclassified claims nothing.
+ */
 export async function prepareOwnerObligations(
   owners: readonly SuccessionOwner[],
   attemptId: string,
@@ -107,7 +121,23 @@ export async function prepareOwnerObligations(
   const receiptIds = new Set<string>();
   const seen = new Set<SuccessionOwnerId>();
   const claims = new Map<string, SuccessionOwnerId[]>();
-  for (const owner of owners) {
+  const ordered = [
+    ...owners.filter((owner) => owner.recordsGrants !== true),
+    ...owners.filter((owner) => owner.recordsGrants === true),
+  ];
+  const unavailable = requiredOwners.filter((required) => !owners.some((owner) => owner.id === required));
+  let classifiedEvery = true;
+  for (const owner of ordered) {
+    if (owner.recordsGrants === true && (blockers.length > 0 || unavailable.length > 0)) {
+      classifiedEvery = false;
+      try {
+        const reason = owner.inspectBlocker?.(capabilities);
+        if (reason) blockers.push({ owner: owner.id, reason });
+      } catch {
+        blockers.push({ owner: owner.id, reason: 'owner disposition unavailable' });
+      }
+      continue;
+    }
     if (seen.has(owner.id)) {
       blockers.push({ owner: owner.id, reason: 'duplicate owner disposition' });
       continue;
@@ -149,9 +179,8 @@ export async function prepareOwnerObligations(
       blockers.push({ owner: owner.id, reason: 'owner disposition unavailable' });
     }
   }
-  for (const owner of requiredOwners) {
-    if (!seen.has(owner)) blockers.push({ owner, reason: 'owner disposition unavailable' });
-  }
+  for (const owner of unavailable) blockers.push({ owner, reason: 'owner disposition unavailable' });
+  if (!classifiedEvery) return { kind: 'blocking', blockers };
   try {
     for (const reason of certifySuccessionJobCoverage(liveJobIds(), claims)) {
       blockers.push({ owner: 'jobs', reason });

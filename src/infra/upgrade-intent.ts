@@ -42,9 +42,11 @@ const incumbentIdentitySchema = z
   })
   .passthrough();
 
+const ATTEMPT_OWNER_KINDS = ['incumbent', 'waiter'] as const;
+
 const attemptOwnerSchema = z
   .object({
-    kind: z.enum(['incumbent', 'waiter']),
+    kind: z.enum(ATTEMPT_OWNER_KINDS),
     instanceId: z.string().min(1),
     pid: z.number().int().positive(),
     incarnation: processIncarnationSchema.nullable(),
@@ -58,9 +60,11 @@ const blockerSchema = z
   })
   .passthrough();
 
+const RETRY_CONDITION_KINDS = ['obligation-change', 'incumbent-retirement', 'target-change', 'attempt-expiry'] as const;
+
 const retryConditionSchema = z
   .object({
-    kind: z.enum(['obligation-change', 'incumbent-retirement', 'target-change', 'attempt-expiry']),
+    kind: z.enum(RETRY_CONDITION_KINDS),
     evidence: z.string().min(1),
   })
   .passthrough();
@@ -87,10 +91,17 @@ const servingReceiptSchema = z
 
 /**
  * What ends the hold a failed attempt leaves. A transient failure is retried after a backoff; a decisive one waits
- * for another target, because the same target would fail the same way.
+ * for another target, because the same target would fail the same way. A transient failure an obligation change
+ * caused is no evidence about the target, so it never counts toward the target's transient bound.
  */
 const attemptRetrySchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('transient'), retryAfterMs: z.number().int().nonnegative() }).passthrough(),
+  z
+    .object({
+      kind: z.literal('transient'),
+      retryAfterMs: z.number().int().nonnegative(),
+      obligationChange: z.boolean().optional(),
+    })
+    .passthrough(),
   z.object({ kind: z.literal('target-change') }).passthrough(),
 ]);
 
@@ -101,6 +112,15 @@ const transientRetrySchema = z
   .object({
     targetKey: z.string().min(1),
     failures: z.number().int().positive(),
+    retryAfter: z.string().datetime(),
+  })
+  .passthrough();
+
+/** Attempts of one target an obligation change outdated, and the earliest time its next attempt may launch. */
+const obligationRetrySchema = z
+  .object({
+    targetKey: z.string().min(1),
+    changes: z.number().int().positive(),
     retryAfter: z.string().datetime(),
   })
   .passthrough();
@@ -128,7 +148,9 @@ const unservedMintDiscardSchema = z
   })
   .passthrough();
 
-const upgradeIntentSchema = z
+const UPGRADE_INTENT_DISPOSITIONS = ['pending', 'deferred', 'attempting', 'completed', 'closed'] as const;
+
+const upgradeIntentFields = z
   .object({
     version: z.literal('v1'),
     requestId: z.string().min(1),
@@ -147,7 +169,7 @@ const upgradeIntentSchema = z
       .nullable()
       .optional(),
     attemptOwner: attemptOwnerSchema.nullable(),
-    disposition: z.enum(['pending', 'deferred', 'attempting', 'completed', 'closed']),
+    disposition: z.enum(UPGRADE_INTENT_DISPOSITIONS),
     blockers: z.array(blockerSchema),
     retryCondition: retryConditionSchema.nullable(),
     attemptDeadline: z.string().datetime().nullable(),
@@ -155,6 +177,7 @@ const upgradeIntentSchema = z
     // A retry record this build cannot read degrades to absent rather than corrupting the intent: losing it only
     // restarts the backoff count or keeps a recovery grant decisive, while a corrupt intent refuses the upgrade.
     transientRetry: transientRetrySchema.optional().catch(undefined),
+    obligationRetry: obligationRetrySchema.nullable().optional().catch(undefined),
     /** The failure a same-build recovery grant stands in for. */
     recoveryRetry: attemptRetrySchema.nullable().optional().catch(undefined),
     // Losing an unreadable next target only waits for its build to contend again.
@@ -162,65 +185,86 @@ const upgradeIntentSchema = z
     // Losing an unreadable discard leaves the mint in place, where store selection already declines to read it.
     unservedMintDiscard: unservedMintDiscardSchema.nullable().optional().catch(undefined),
   })
-  .passthrough()
-  .superRefine((intent, context) => {
-    if (intent.disposition === 'completed') {
-      if (
-        intent.completionReceipt === null ||
-        intent.attemptOwner === null ||
-        intent.completionReceipt.attemptId !== intent.attemptId
-      ) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['completionReceipt'],
-          message: 'Completion requires a serving receipt for the current attempt',
-        });
-      } else if (
-        intent.completionReceipt.successor.build.buildSetId !== intent.target.build.buildSetId ||
-        intent.completionReceipt.successor.build.version !== intent.target.build.version ||
-        intent.completionReceipt.successor.build.flavor !== intent.target.build.flavor ||
-        intent.completionReceipt.successor.build.storeFormatFingerprint !==
-          intent.target.build.storeFormatFingerprint ||
-        intent.completionReceipt.successor.build.bundleHash !== intent.target.build.bundleHash ||
-        intent.completionReceipt.successor.build.cliBundleHash !== intent.target.build.cliBundleHash ||
-        intent.completionReceipt.successor.build.claudeAppserverBundleHash !==
-          intent.target.build.claudeAppserverBundleHash ||
-        intent.completionReceipt.successor.build.durableWrapperBundleHash !==
-          intent.target.build.durableWrapperBundleHash
-      ) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['completionReceipt', 'successor', 'build'],
-          message: 'The serving successor must match the requested build',
-        });
-      } else if (
-        intent.completionReceipt.acceptedObligations.some(
-          (obligation) => obligation.controlGeneration !== intent.completionReceipt?.controlGeneration,
-        )
-      ) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['completionReceipt', 'acceptedObligations'],
-          message: 'Accepted obligations must be controlled by the serving generation',
-        });
-      } else if (
-        intent.attemptDeadline !== null &&
-        Date.parse(intent.completionReceipt.recordedAt) > Date.parse(intent.attemptDeadline)
-      ) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['completionReceipt', 'recordedAt'],
-          message: 'Serving must precede the attempt deadline',
-        });
-      }
-    } else if (intent.completionReceipt !== null) {
+  .passthrough();
+
+/**
+ * The same record with its decision vocabularies open. A value this build does not know was written by a newer
+ * build, which owns what it means: reading it as corrupt would claim a defect, and reading it as any known value
+ * would let this build decide, or overwrite, a state it cannot interpret.
+ */
+const newerVocabularySchema = upgradeIntentFields.extend({
+  disposition: z.string().min(1),
+  attemptOwner: attemptOwnerSchema.extend({ kind: z.string().min(1) }).nullable(),
+  retryCondition: retryConditionSchema.extend({ kind: z.string().min(1) }).nullable(),
+});
+
+function namesNewerVocabulary(value: unknown): boolean {
+  const parsed = newerVocabularySchema.safeParse(value);
+  if (!parsed.success) return false;
+  const { disposition, attemptOwner, retryCondition } = parsed.data;
+  return (
+    !(UPGRADE_INTENT_DISPOSITIONS as readonly string[]).includes(disposition) ||
+    (attemptOwner !== null && !(ATTEMPT_OWNER_KINDS as readonly string[]).includes(attemptOwner.kind)) ||
+    (retryCondition !== null && !(RETRY_CONDITION_KINDS as readonly string[]).includes(retryCondition.kind))
+  );
+}
+
+const upgradeIntentSchema = upgradeIntentFields.superRefine((intent, context) => {
+  if (intent.disposition === 'completed') {
+    if (
+      intent.completionReceipt === null ||
+      intent.attemptOwner === null ||
+      intent.completionReceipt.attemptId !== intent.attemptId
+    ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['completionReceipt'],
-        message: 'Only a completed intent may hold a serving receipt',
+        message: 'Completion requires a serving receipt for the current attempt',
+      });
+    } else if (
+      intent.completionReceipt.successor.build.buildSetId !== intent.target.build.buildSetId ||
+      intent.completionReceipt.successor.build.version !== intent.target.build.version ||
+      intent.completionReceipt.successor.build.flavor !== intent.target.build.flavor ||
+      intent.completionReceipt.successor.build.storeFormatFingerprint !== intent.target.build.storeFormatFingerprint ||
+      intent.completionReceipt.successor.build.bundleHash !== intent.target.build.bundleHash ||
+      intent.completionReceipt.successor.build.cliBundleHash !== intent.target.build.cliBundleHash ||
+      intent.completionReceipt.successor.build.claudeAppserverBundleHash !==
+        intent.target.build.claudeAppserverBundleHash ||
+      intent.completionReceipt.successor.build.durableWrapperBundleHash !== intent.target.build.durableWrapperBundleHash
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completionReceipt', 'successor', 'build'],
+        message: 'The serving successor must match the requested build',
+      });
+    } else if (
+      intent.completionReceipt.acceptedObligations.some(
+        (obligation) => obligation.controlGeneration !== intent.completionReceipt?.controlGeneration,
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completionReceipt', 'acceptedObligations'],
+        message: 'Accepted obligations must be controlled by the serving generation',
+      });
+    } else if (
+      intent.attemptDeadline !== null &&
+      Date.parse(intent.completionReceipt.recordedAt) > Date.parse(intent.attemptDeadline)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completionReceipt', 'recordedAt'],
+        message: 'Serving must precede the attempt deadline',
       });
     }
-  });
+  } else if (intent.completionReceipt !== null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['completionReceipt'],
+      message: 'Only a completed intent may hold a serving receipt',
+    });
+  }
+});
 
 export type UpgradeIntent = z.infer<typeof upgradeIntentSchema>;
 export type UpgradeIntentChange = Pick<
@@ -262,7 +306,7 @@ export type UpgradeIntentVisibility = Readonly<{
 
 const upgradeIntentVisibilitySchema = z.object({
   requestId: z.string().min(1),
-  disposition: z.enum(['pending', 'deferred', 'attempting', 'completed', 'closed']),
+  disposition: z.enum(UPGRADE_INTENT_DISPOSITIONS),
   phase: z.enum(['pending', 'prepared', 'ready', 'committing']),
   target: z.object({
     version: z.string().min(1),
@@ -359,7 +403,8 @@ function readUpgradeIntentAtPath(path: string): UpgradeIntentRead {
     return { kind: 'unsupported', version };
   }
   const parsed = upgradeIntentSchema.safeParse(value);
-  return parsed.success ? { kind: 'readable', intent: parsed.data } : { kind: 'corrupt' };
+  if (parsed.success) return { kind: 'readable', intent: parsed.data };
+  return namesNewerVocabulary(value) ? { kind: 'unsupported', version: value.version } : { kind: 'corrupt' };
 }
 
 /** Unknown generations and malformed records never authorize an overwrite. */

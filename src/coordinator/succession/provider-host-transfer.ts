@@ -146,7 +146,7 @@ export function providerHostRecoveryGrantVerifies(
  */
 export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Readonly<{
   owners: readonly [SuccessionOwner, SuccessionOwner];
-  releaseForTransfer(attemptId: string): Promise<void>;
+  releaseForTransfer(attemptId: string, signal: AbortSignal): Promise<void>;
   reclaimTransferred(): void;
   transfersHosts(preparation: SuccessionPreparation): boolean;
   verifyReceipts(preparation: SuccessionPreparation): readonly string[];
@@ -261,9 +261,9 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
     lifecycle: ProviderProxySetLifecycle,
     attemptId: string,
     transfer: Extract<HostTransferPreparation, { kind: 'transferable' }>,
+    signal: AbortSignal,
   ): Promise<void> {
     const successor = { generation: 'gen2' as const, flavor: ports.flavor, buildSetId: transfer.successorBuildSetId };
-    const signal = AbortSignal.timeout(PROXY_CONTROL_RPC_TIMEOUT_MS * 2);
     await Promise.all(
       transfer.sets.map(async (transferred) => {
         const set = lifecycle.liveSets().find((candidate) => namesTransferredSet(candidate.setIdentity, transferred));
@@ -280,8 +280,9 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
 
   /**
    * Until its grant is this build's, a host is redeemable by this build only while the served receipt survives,
-   * which nothing here controls; so the install is retried while this coordinator holds the set, and only a
-   * refusal ends it early.
+   * which nothing here controls; so the install is retried while this coordinator holds the set. A refusal ends it,
+   * and so does a control channel that closed, because this coordinator then holds the set no longer and its next
+   * holder redeems it afresh.
    */
   async function completeTransfer(identity: ProviderProxySetIdentity): Promise<void> {
     let delayMs = INSTALL_RETRY_BASE_MS;
@@ -300,6 +301,14 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
           ports.log(`Provider host refused this controller's recovery grant: ${installed.incident.role}\n`);
           return;
         }
+        if (
+          installed.kind === 'retryable' &&
+          installed.incident.exchange.kind === 'not-sent' &&
+          installed.incident.exchange.cause === 'connection-already-closed'
+        ) {
+          ports.log("Provider host control closed before its recovery grant became this controller's.\n");
+          return;
+        }
         pending = installed.kind;
       } catch (error: unknown) {
         pending = formatError(error);
@@ -315,6 +324,7 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
 
   const operationsOwner: SuccessionOwner = {
     id: PROVIDER_OPERATIONS_OWNER,
+    recordsGrants: true,
     classify: async (attemptId, capabilities): Promise<OwnerDisposition> => {
       const transfer = await prepare(attemptId, capabilities);
       if (transfer.kind === 'blocking') return { kind: 'blocking', reason: transfer.reason, jobIds: transfer.jobIds };
@@ -339,6 +349,22 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
 
   const setsOwner: SuccessionOwner = {
     id: PROVIDER_PROXY_SETS_OWNER,
+    recordsGrants: true,
+    inspectBlocker: (capabilities) => {
+      const sets = ports.lifecycle()?.liveSets() ?? [];
+      const scan = readProviderOperations(ports.db());
+      if (
+        sets.length === 0 &&
+        scan.records.length === 0 &&
+        scan.unreadableKeys.length === 0 &&
+        ports.localOperationJobIds().length === 0
+      )
+        return null;
+      if (ports.targetChangesStoreFormat()) return 'successor changes the store format';
+      return accepts(capabilities, PROVIDER_PROXY_SETS_OWNER, PROVIDER_PROXY_CONTROL_GENERATION)
+        ? null
+        : `successor does not accept host control generation ${PROVIDER_PROXY_CONTROL_GENERATION}`;
+    },
     classify: async (attemptId, capabilities): Promise<OwnerDisposition> => {
       const transfer = await prepare(attemptId, capabilities);
       if (transfer.kind === 'blocking') return { kind: 'blocking', reason: transfer.reason };
@@ -370,14 +396,15 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
 
   return {
     owners: [operationsOwner, setsOwner],
-    releaseForTransfer: async (attemptId) => {
+    releaseForTransfer: async (attemptId, signal) => {
       const lifecycle = ports.lifecycle();
       if (lifecycle === null) throw new Error('Provider proxy set lifecycle is unavailable at host release.');
       const transfer = prepared?.attemptId === attemptId ? await prepared.preparation : null;
       if (transfer?.kind !== 'transferable') {
         throw new Error('Provider host transfer was not prepared for this attempt.');
       }
-      await reauthorizeTransfer(lifecycle, attemptId, transfer);
+      await reauthorizeTransfer(lifecycle, attemptId, transfer, signal);
+      signal.throwIfAborted();
       const released = await lifecycle.releaseControlForTransfer(attemptId);
       const unreleased = transfer.sets.filter(
         (set) => !released.some((identity) => namesTransferredSet(identity, set)),

@@ -11,6 +11,7 @@ import { readOrCreateEpochKey } from '../../store/epoch-key.js';
 import {
   appendControllerReceipt,
   appendControllerRecoveryGrant,
+  dischargeControllerRecoveryGrants,
   readControllerReceipts,
   readControllerRecoveryGrant,
 } from '../../store/controller-receipt-records.js';
@@ -61,6 +62,15 @@ export function prepareDurableCliRecoveryGrant(
   const recorded = durableCliRecoveryGrantSchema.parse(grant);
   appendControllerRecoveryGrant(runtime, runDir, recorded.attemptId, JSON.stringify(recorded));
   return `durable-cli:${recorded.attemptId}`;
+}
+
+/** Removes the recovery grant of every attempt outside `retainedAttemptIds`. */
+export function dischargeDurableCliRecoveryGrants(
+  runtime: Pick<Runtime, 'storage'>,
+  runDir: string,
+  retainedAttemptIds: ReadonlySet<string>,
+): void {
+  dischargeControllerRecoveryGrants(runtime, runDir, retainedAttemptIds);
 }
 
 export function verifyDurableCliRecoveryGrant(
@@ -142,6 +152,42 @@ export function prepareDurableCliTransfer(
   return collectDurableCliTransfer(runtime, db, progressStore, runDir, epoch, [...jobIds].sort());
 }
 
+/**
+ * Re-verifies a receipt against runtime and custody for its unsettled jobs. A settled job has nothing left to transfer,
+ * and a dead committed successor's own cleanup may have retired its runtime record.
+ */
+export function verifyUnsettledDurableCliTransfer(
+  runtime: Runtime,
+  payload: unknown,
+  db: Database,
+  progressStore: Pick<JobStore, 'readRuntimeProjection'>,
+  runDir: string,
+  epoch: ResolvedStoreEpoch,
+  settled: (jobId: string) => boolean,
+): Readonly<{ transfer: DurableCliTransfer; liveJobIds: readonly string[] }> | null {
+  const parsed = decodeDurableCliTransfer(payload, epoch);
+  if (parsed === null) return null;
+  const ids = parsed.jobs.map((job) => job.jobId);
+  if (new Set(ids).size !== ids.length) return null;
+  const live = parsed.jobs.filter((job) => !settled(job.jobId));
+  const current = collectDurableCliTransfer(
+    runtime,
+    db,
+    progressStore,
+    runDir,
+    epoch,
+    live.map((job) => job.jobId),
+  );
+  if (current === null) return null;
+  return current.jobs.every(
+    (job, index) =>
+      job.custodyIntentId === live[index]?.custodyIntentId &&
+      JSON.stringify(job.runtimeMeta) === JSON.stringify(live[index]?.runtimeMeta),
+  )
+    ? { transfer: parsed, liveJobIds: live.map((job) => job.jobId) }
+    : null;
+}
+
 export function verifyDurableCliTransfer(
   runtime: Runtime,
   payload: unknown,
@@ -150,19 +196,9 @@ export function verifyDurableCliTransfer(
   runDir: string,
   epoch: ResolvedStoreEpoch,
 ): DurableCliTransfer | null {
-  const parsed = decodeDurableCliTransfer(payload, epoch);
-  if (parsed === null) return null;
-  const ids = parsed.jobs.map((job) => job.jobId);
-  if (new Set(ids).size !== ids.length) return null;
-  const current = collectDurableCliTransfer(runtime, db, progressStore, runDir, epoch, ids);
-  if (current === null) return null;
-  return current.jobs.every(
-    (job, index) =>
-      job.custodyIntentId === parsed.jobs[index]?.custodyIntentId &&
-      JSON.stringify(job.runtimeMeta) === JSON.stringify(parsed.jobs[index]?.runtimeMeta),
-  )
-    ? parsed
-    : null;
+  return (
+    verifyUnsettledDurableCliTransfer(runtime, payload, db, progressStore, runDir, epoch, () => false)?.transfer ?? null
+  );
 }
 
 const durableCliControllerReceiptSchema = z

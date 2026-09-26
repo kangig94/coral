@@ -139,3 +139,26 @@ export function encode(env: JsonRpcEnvelope): string {
 export function decode(wire: string): JsonRpcEnvelope {
   return parseEnvelope(JSON.parse(wire));
 }
+
+/**
+ * Retry-later codes that v0.10.5-v0.10.13 CLIs do not know. Those CLIs read only `data.code` on an IPC error, get no
+ * HTTP status there, and exit 1 for an unknown code, so each code crosses the wire as `transient` and keeps its own
+ * name in `specificCode`. A final code never joins this set: `transient` would tell a shipped CLI to retry it.
+ */
+const SHIPPED_TRANSIENT_ALIASED_CODES: ReadonlySet<string> = new Set([
+  'job_unresolved',
+  'succession_admission_paused',
+  'succession_writer_parked',
+]);
+
+export function encodeIpcErrorData(data: unknown): unknown {
+  if (typeof data !== 'object' || data === null || !('code' in data) || typeof data.code !== 'string') return data;
+  if (!SHIPPED_TRANSIENT_ALIASED_CODES.has(data.code)) return data;
+  return { ...data, code: 'transient', specificCode: data.code };
+}
+
+export function decodeIpcErrorData(data: unknown): unknown {
+  if (typeof data !== 'object' || data === null || !('specificCode' in data)) return data;
+  const { specificCode, ...rest } = data as Record<string, unknown>;
+  return typeof specificCode === 'string' ? { ...rest, code: specificCode } : data;
+}

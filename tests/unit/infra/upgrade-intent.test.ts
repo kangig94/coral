@@ -171,6 +171,47 @@ describe('upgrade intent', () => {
     expect(read.intent.recoveryRetry).toBeUndefined();
   });
 
+  it.each([
+    ['disposition', (stored: Record<string, unknown>) => ({ ...stored, disposition: 'handing-over' })],
+    [
+      'retry condition',
+      (stored: Record<string, unknown>) => ({ ...stored, retryCondition: { kind: 'host-release', evidence: 'x' } }),
+    ],
+    [
+      'attempt owner',
+      (stored: Record<string, unknown>) => ({
+        ...stored,
+        attemptId: 'attempt-1',
+        attemptOwner: { kind: 'supervisor', instanceId: 'supervisor', pid: 100, incarnation: null },
+      }),
+    ],
+  ])(
+    'should read an intent whose %s comes from a newer vocabulary as a newer build’s, and never overwrite it',
+    async (_field, newer) => {
+      const dir = runDir();
+      await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
+      const path = upgradeIntentPath(dir);
+      const written = JSON.stringify(newer(JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>));
+      writeFileSync(path, written);
+
+      expect(readUpgradeIntent(dir)).toEqual({ kind: 'unsupported', version: 'v1' });
+      await expect(compareAndSwapUpgradeIntent(dir, 0, pendingIntent('second'))).resolves.toEqual({
+        kind: 'unsupported',
+      });
+      expect(readFileSync(path, 'utf-8')).toBe(written);
+    },
+  );
+
+  it('should keep reading a record that breaks this build’s own invariants as corrupt', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
+    const path = upgradeIntentPath(dir);
+    const stored = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...stored, disposition: 'completed' }));
+
+    expect(readUpgradeIntent(dir)).toEqual({ kind: 'corrupt' });
+  });
+
   it('does not treat a stored plugin-root label as a validated launch target', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));

@@ -157,6 +157,28 @@ describe('bindWithHandoff', () => {
     expect(kill).not.toHaveBeenCalled();
   });
 
+  // A live holder that misses one probe may be stalled rather than dead; refusing on that first miss is what
+  // lets a waiting CLI print force-kill guidance against a coordinator that answers a moment later.
+  it('keeps probing a live holder that stalls once, and concedes when it answers', async () => {
+    healthProbe.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      version: '0.10.14',
+      bundleHash: 'incumbent',
+      flavor: 'prod',
+      namespace: 'incumbent',
+      status: 'ok',
+    });
+    const { handoff, kill } = options(async () => ({ kind: 'incumbent', reason: 'live-listener' }));
+
+    await expect(
+      bindWithHandoff({
+        ...handoff,
+        readVerifiedIncumbentFromDiscovery: () => ({ pid: 100, source: 'discovery', instanceId: 'incumbent' }),
+      }),
+    ).rejects.toBeInstanceOf(IncumbentMatchesError);
+    expect(healthProbe).toHaveBeenCalledTimes(2);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
   it('refuses an unresponsive live socket holder at the deadline without signaling', async () => {
     healthProbe.mockResolvedValue(null);
     const { handoff, kill } = options(async () => ({ kind: 'incumbent', reason: 'live-listener' }));

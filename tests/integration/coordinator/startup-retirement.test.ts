@@ -107,7 +107,9 @@ describe('startup mint authorizer', () => {
   });
 
   it('should keep two-startup patience when a job location names the unreadable epoch', () => {
-    const runtime = unreadableEpochRuntime();
+    const base = unreadableEpochRuntime();
+    let now = Date.now();
+    const runtime: Runtime = { ...base, time: { ...base.time, now: () => now } };
     const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
     const registerJob = (observation: StoreMintObservation): void => {
       if (observation.incumbent === null) throw new Error('Expected the unreadable epoch as incumbent.');
@@ -119,7 +121,29 @@ describe('startup mint authorizer', () => {
     };
 
     expect(startUp(runtime, index, 'startup-1', registerJob)).toBeNull();
+    now += 10_000;
     expect(startUp(runtime, index, 'startup-2')).toMatchObject({ kind: 'unopenable' });
+  });
+
+  it('should count startups racing within one patience interval as a single observation', () => {
+    const base = unreadableEpochRuntime();
+    let now = Date.now();
+    const runtime: Runtime = { ...base, time: { ...base.time, now: () => now } };
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const registerJob = (observation: StoreMintObservation): void => {
+      if (observation.incumbent === null) throw new Error('Expected the unreadable epoch as incumbent.');
+      index.register('job-in-unreadable-epoch', encodeResolvedStoreEpoch(runtime, observation.incumbent), {
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
+      });
+    };
+
+    expect(startUp(runtime, index, 'hook-spawn', registerJob)).toBeNull();
+    now += 100;
+    expect(startUp(runtime, index, 'cli-ensure-spawn')).toBeNull();
+    now += 10_000;
+    expect(startUp(runtime, index, 'cli-ensure-spawn')).toMatchObject({ kind: 'unopenable' });
   });
 
   it('should count one startup observing the unreadable epoch again once the patience interval has passed', () => {
@@ -147,7 +171,9 @@ describe('startup mint authorizer', () => {
     ['an executor that cannot identify as the controller mints at once', 71, ['unopenable']],
   ] as const)('should treat %s', (_label, executorExit, dispositions) => {
     assertBuildArtifactsAvailable();
-    const runtime = unreadableEpochRuntime();
+    const base = unreadableEpochRuntime();
+    let now = Date.now();
+    const runtime: Runtime = { ...base, time: { ...base.time, now: () => now } };
     const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
     const fixture = createPluginFixture(homes, { flavor: 'prod' });
     const manifest = JSON.parse(
@@ -168,6 +194,7 @@ describe('startup mint authorizer', () => {
 
     expect(startUp(runtime, index, 'startup-1', liveJobUnderRetainedController)?.kind ?? null).toBe(dispositions[0]);
     if (dispositions.length > 1) {
+      now += 10_000;
       expect(startUp(runtime, index, 'startup-2')?.kind ?? null).toBe(dispositions[1]);
     }
   });

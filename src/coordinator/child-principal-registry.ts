@@ -11,7 +11,7 @@ import {
   type RawPrincipalWire,
 } from '../security/principal-wire.js';
 import type { IdPort } from '../runtime/ports.js';
-import type { ChildPrincipalNonceLedger } from '../infra/child-principal-nonce-ledger.js';
+import { RECOVERY_GRANT_INFIX, type ChildPrincipalNonceLedger } from '../infra/child-principal-nonce-ledger.js';
 
 const CHILD_PRINCIPAL_TTL_MS = 24 * 60 * 60 * 1000;
 export const CHILD_PRINCIPAL_CAPABILITIES = [
@@ -267,7 +267,7 @@ export class ChildPrincipalRegistry {
       return false;
     }
     if (generation <= current) return false;
-    const grant = this.ledger.prepareGrant(`${attemptId}:recovery:${generation}`, current);
+    const grant = this.ledger.prepareGrant(`${attemptId}${RECOVERY_GRANT_INFIX}${generation}`, current);
     if (grant === null) return false;
     return this.adoptTransfer(
       {
@@ -280,6 +280,11 @@ export class ChildPrincipalRegistry {
       generation,
       nowMs,
     );
+  }
+
+  /** Removes the nonce grants of every attempt outside `retainedAttemptIds`. */
+  dischargeGrants(retainedAttemptIds: ReadonlySet<string>): void {
+    this.ledger?.dischargeGrants(retainedAttemptIds);
   }
 
   fenceAuthentication(): void {

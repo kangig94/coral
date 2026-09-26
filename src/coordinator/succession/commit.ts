@@ -37,7 +37,7 @@ import { failedAttemptRetry, TRANSIENT_RETRY_BASE_MS } from './attempt-retry.js'
 import { recordControllerOpen } from './controller-open.js';
 import type { SuccessionInterposition } from './interposition.js';
 import type { SuccessionPreparation } from './protocol.js';
-import type { SuccessionLaunch, SuccessionReconciler } from './reconciler.js';
+import type { SuccessionLaunch, SuccessionLaunchSettlement, SuccessionReconciler } from './reconciler.js';
 import { observeRetirementDisposition, recordRetirementDisposition } from './retirement-disposition.js';
 
 const ATTEMPT_READY_TIMEOUT_MS = 10_000;
@@ -58,11 +58,14 @@ const RETIRING_OPENER_DRAIN_MS = 500;
 /** A failure of one attempt's timing or contention, which a later attempt at the same target may overcome. */
 class TransientCommitFailure extends Error {
   readonly retryAfterMs: number;
+  /** An obligation change outdated the attempt, which says nothing about its target. */
+  readonly obligationChange: boolean;
 
-  constructor(message: string, retryAfterMs = TRANSIENT_RETRY_BASE_MS) {
+  constructor(message: string, retryAfterMs = TRANSIENT_RETRY_BASE_MS, obligationChange = false) {
     super(message);
     this.name = 'TransientCommitFailure';
     this.retryAfterMs = retryAfterMs;
+    this.obligationChange = obligationChange;
   }
 }
 
@@ -184,7 +187,8 @@ export type SuccessionCommitPorts = Readonly<{
    */
   providerHosts: Readonly<{
     transfersHosts(preparation: SuccessionPreparation): boolean;
-    releaseForTransfer(attemptId: string): Promise<void>;
+    /** Parked writers wait on it, so it must end by `signal`, which fires at the commit deadline. */
+    releaseForTransfer(attemptId: string, signal: AbortSignal): Promise<void>;
     reclaimTransferred(): void;
   }>;
   setLaunchFenceActive: (active: boolean) => void;
@@ -238,6 +242,8 @@ type FailedCommit = Readonly<{
   transfersChildPrincipals: boolean;
   pauseDeadlineAtMs: number;
   childHold: string | null;
+  /** Recorded only by the write that clears the attempt, so the attempt never clears without it. */
+  unservedMintDiscard: NonNullable<UpgradeIntent['unservedMintDiscard']> | null;
 }>;
 
 type CommitOutcome = Readonly<{ kind: 'serving'; attempt: SuccessionAttempt }> | FailedCommit;
@@ -272,10 +278,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
   const { runtime } = ports;
   const runDir = runtime.paths.coral.coordinator.runDir;
   let active: SuccessionAttempt | null = null;
-  let supervision: Promise<void> | null = null;
+  let supervision: Promise<SuccessionLaunchSettlement> | null = null;
   /** Aborted by shutdown; every wait of the active attempt that could outlast shutdown's patience observes it. */
   let attemptAbort = new AbortController();
   let pausedAttemptId: string | null = null;
+  let stopWindowForwarding: (() => void) | null = null;
 
   const updateAttempt = async (attemptId: string, change: (intent: UpgradeIntent) => UpgradeIntent): Promise<void> => {
     const outcome = await retryUpgradeIntentCas(runDir, (observed) => {
@@ -296,22 +303,33 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
   const recordBestEffort = async (
     attemptId: string,
     change: (intent: UpgradeIntent) => UpgradeIntent,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     try {
       await updateAttempt(attemptId, change);
+      return true;
     } catch (error: unknown) {
       ports.log(`Succession hold recording failed: ${formatError(error)}\n`);
+      return false;
     }
   };
+
+  /** A clearing write that fails is owed to the reconciler, which retries it while the intent names the attempt. */
+  const clearAttempt = async (
+    attemptId: string,
+    clear: (intent: UpgradeIntent) => UpgradeIntent,
+  ): Promise<SuccessionLaunchSettlement> =>
+    (await recordBestEffort(attemptId, clear)) ? { kind: 'settled' } : { kind: 'clear-owed', attemptId, clear };
 
   /**
    * Status for a failed attempt whose release is still running. `attempting` must stay until the write that clears
    * the attempt: startup reads it as the only evidence that something may already have been released.
    */
-  const recordReleasePending = (
+  const recordReleasePending = async (
     attemptId: string,
     status: Pick<UpgradeIntent, 'blockers' | 'retryCondition'>,
-  ): Promise<void> => recordBestEffort(attemptId, (intent) => ({ ...intent, ...status }));
+  ): Promise<void> => {
+    await recordBestEffort(attemptId, (intent) => ({ ...intent, ...status }));
+  };
 
   const incumbentOwner = (): NonNullable<UpgradeIntent['attemptOwner']> => {
     const { instanceId, pid, incarnation } = ports.reconciler().incumbent();
@@ -344,6 +362,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       throw new TransientCommitFailure(
         `Succession admission pause was ${pause.reason}.`,
         pause.reason === 'aggregate-budget-exhausted' ? SUCCESSION_PAUSE_ROLLING_WINDOW_MS : TRANSIENT_RETRY_BASE_MS,
+        pause.reason === 'stale-preparation',
       );
     }
     pausedAttemptId = attemptId;
@@ -435,7 +454,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
   /** An incumbent's own shutdown is no evidence against its target, so a failure alongside it decides nothing. */
   const retryAfterFailure = (error: unknown): AttemptRetry =>
     error instanceof TransientCommitFailure
-      ? { kind: 'transient', retryAfterMs: error.retryAfterMs }
+      ? {
+          kind: 'transient',
+          retryAfterMs: error.retryAfterMs,
+          ...(error.obligationChange ? { obligationChange: true } : {}),
+        }
       : attemptAbort.signal.aborted
         ? { kind: 'transient', retryAfterMs: TRANSIENT_RETRY_BASE_MS }
         : { kind: 'target-change' };
@@ -495,7 +518,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         recertified.kind === 'deferred' && recertified.blockers !== undefined
           ? recertified.blockers.map(({ owner, reason }) => `${owner}: ${reason}`).join('; ')
           : recertified.kind;
-      throw new TransientCommitFailure(`Succession obligations changed after preparation: ${blockers}`);
+      throw new TransientCommitFailure(
+        `Succession obligations changed after preparation: ${blockers}`,
+        TRANSIENT_RETRY_BASE_MS,
+        recertified.kind === 'deferred',
+      );
     } finally {
       runtime.time.clearTimeout(timeout);
     }
@@ -596,7 +623,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         receiptIds: [...ready.receiptIds],
       });
       if (reported.kind === 'stale' && reported.cause === 'obligation-change') {
-        throw new TransientCommitFailure('Succession preparation was outdated by an admission or epoch change.');
+        throw new TransientCommitFailure(
+          'Succession preparation was outdated by an admission or epoch change.',
+          TRANSIENT_RETRY_BASE_MS,
+          true,
+        );
       }
       if (reported.kind !== 'ready') throw new Error(`Succession readiness was ${reported.kind}.`);
     }
@@ -621,13 +652,25 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     return custody;
   }
 
-  function openCommitWindow(
+  /**
+   * The successor parks connections only once it holds this window's deadline, which ends its parking; before
+   * then it returns every connection it accepts, so this incumbent keeps answering while custody certifies.
+   */
+  async function openCommitWindow(
     attempt: SuccessionAttempt,
     preparation: SuccessionPreparation,
     recovery: RecoveryContext | null,
-  ): CommitWindow {
+  ): Promise<CommitWindow> {
     const pauseDeadlineAtMs = openPause(attempt.attemptId, preparation.admissionRevision);
+    const deadlineAt = pauseDeadlineAtMs - RECLAIM_RESERVE_MS;
+    try {
+      await attempt.setDeadline(deadlineAt);
+    } catch (error: unknown) {
+      closePause();
+      throw error;
+    }
     const stopForwarding = attempt.forwardConnections(ports.listener());
+    stopWindowForwarding = stopForwarding;
     // Only after forwarding starts: a wait that resubscribes must reach the successor, never this incumbent,
     // whose store reads fail once its writers park.
     ports.waitHandover.abort();
@@ -636,7 +679,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       preparation,
       recovering: recovery !== null,
       pauseDeadlineAtMs,
-      deadlineAt: pauseDeadlineAtMs - RECLAIM_RESERVE_MS,
+      deadlineAt,
       stopForwarding,
       writer: recovery?.writer ?? null,
       retirementStoreParked: recovery?.retirementStoreParked ?? false,
@@ -656,7 +699,6 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       disposition: 'attempting',
       attemptDeadline: new Date(deadlineAt).toISOString(),
     }));
-    await attempt.setDeadline(deadlineAt);
     const inspected = inspectCurrentStore(runtime);
     if (inspected.kind !== 'current' || encodeResolvedStoreEpoch(runtime, inspected.epoch) !== preparation.epochKey) {
       throw new TransientCommitFailure('Incumbent store epoch changed before writer park.');
@@ -678,7 +720,10 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     if (plan.transfersChildPrincipals) ports.childPrincipals.fenceAuthentication();
     if (!recovering && ports.providerHosts.transfersHosts(preparation)) {
       try {
-        await ports.providerHosts.releaseForTransfer(attempt.attemptId);
+        await ports.providerHosts.releaseForTransfer(
+          attempt.attemptId,
+          AbortSignal.timeout(Math.max(1, deadlineAt - runtime.time.now())),
+        );
       } catch (error: unknown) {
         // A host that cannot be handed over now decides nothing about the target.
         throw new TransientCommitFailure(`Provider hosts were not released for the successor: ${formatError(error)}`);
@@ -762,24 +807,24 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
   ): Promise<CommitOutcome> {
     const { attempt, preparation } = window;
     window.stopForwarding();
+    stopWindowForwarding = null;
     ports.waitHandover.renew();
     if (successorServesBeforeRefusal(window)) return { kind: 'serving', attempt };
+    // The admission pause ends on its own clock, which the reap below can outlast while writers stay parked.
+    if (window.writer !== null) ports.setLaunchFenceActive(true);
     const reason = formatError(failure);
     await recordReleasePending(attempt.attemptId, {
       blockers: [{ owner: 'succession-commit', reason }],
       retryCondition: { kind: 'attempt-expiry', evidence: 'incumbent writer reclaim' },
     });
     const childHold = await abortAndReap(attempt);
+    let unservedMintDiscard: FailedCommit['unservedMintDiscard'] = null;
     if (plan.formatChanging) {
       const discarded = discardUnservedRetirementMint(runtime, preparation.epochKey, attempt.attemptId);
       if (discarded.kind === 'serving') return { kind: 'serving', attempt };
       if (discarded.kind === 'held') {
         ports.log(`Unserved retirement mint could not be discarded yet: ${discarded.reason}\n`);
-        // Every later write of this intent spreads it, so the record outlives the attempt until a discard succeeds.
-        await recordBestEffort(attempt.attemptId, (intent) => ({
-          ...intent,
-          unservedMintDiscard: { attemptId: attempt.attemptId, incumbentEpochKey: preparation.epochKey },
-        }));
+        unservedMintDiscard = { attemptId: attempt.attemptId, incumbentEpochKey: preparation.epochKey };
       }
     }
     return {
@@ -793,6 +838,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       transfersChildPrincipals: plan.transfersChildPrincipals,
       pauseDeadlineAtMs: window.pauseDeadlineAtMs,
       childHold,
+      unservedMintDiscard,
     };
   }
 
@@ -822,10 +868,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         ...recovery,
         pauseDeadlineAtMs: runtime.time.now(),
         childHold: await abortAndReap(attempt),
+        unservedMintDiscard: null,
       };
     }
     const custody = plan.formatChanging ? await certifyRetiringCustody(preparation.epochKey) : null;
-    const window = openCommitWindow(attempt, preparation, recovery);
+    const window = await openCommitWindow(attempt, preparation, recovery);
     const unsubscribe = attempt.onAcknowledgment((acknowledgment) => {
       if (acknowledgment.kind === 'hold') window.hold = acknowledgment.reason;
     });
@@ -870,13 +917,20 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     if (retry.kind === 'transient') ports.reconciler().notifyObligationChange();
   }
 
-  /** Resumes this incumbent in place; false leaves its writers parked for a same-build successor. */
-  async function reclaimInPlace(failure: FailedCommit, recovering: boolean): Promise<boolean> {
+  const unservedMintOf = (failure: FailedCommit): Partial<UpgradeIntent> =>
+    failure.unservedMintDiscard === null ? {} : { unservedMintDiscard: failure.unservedMintDiscard };
+
+  /** Resumes this incumbent in place; null leaves its writers parked for a same-build successor. */
+  async function reclaimInPlace(
+    failure: FailedCommit,
+    recovering: boolean,
+  ): Promise<SuccessionLaunchSettlement | null> {
     const attemptId = failure.attempt?.attemptId ?? failure.preparation.attemptId;
     if (failure.writer === null) {
       closePause();
-      await recordBestEffort(attemptId, (intent) => ({
+      const settlement = await clearAttempt(attemptId, (intent) => ({
         ...intent,
+        ...unservedMintOf(failure),
         disposition: 'deferred',
         attemptId: null,
         attemptChild: null,
@@ -890,14 +944,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         ...failedAttemptRetry(intent, failure.retry, 'successor commit preparation failure', runtime.time.now()),
       }));
       wakeForRetry(failure.retry);
-      return true;
+      return settlement;
     }
     const writers = writersOrThrow();
     const writer = failure.writer;
     const pauseRemainingMs = failure.pauseDeadlineAtMs - runtime.time.now();
-    // The admission pause expires on its own clock; while writers stay parked past it, launches must be refused
-    // before any effect rather than fail against a parked writer.
-    if (!recovering && pauseRemainingMs < RECLAIM_RESERVE_MS) ports.setLaunchFenceActive(true);
     const observed = observeSuccessionWriterGeneration(runtime);
     const failedGeneration =
       observed !== null && observed.generation > writer.generation.generation ? observed : undefined;
@@ -914,7 +965,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       reclaimKbDaemonWriter: (generation, signal) => reclaimKbDaemonWriter(generation, signal, recovering),
       reportReclaimFailure: (reason) => ports.log(`Same-build writer recovery required: ${reason}\n`),
     });
-    if (reclaimed.kind !== 'reclaimed') return false;
+    if (reclaimed.kind !== 'reclaimed') return null;
     if (ports.incumbent.build !== null) {
       recordControllerOpen(
         runtime,
@@ -939,8 +990,9 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     ports.providerHosts.reclaimTransferred();
     ports.setLaunchFenceActive(false);
     closePause();
-    await recordBestEffort(attemptId, (intent) => ({
+    const settlement = await clearAttempt(attemptId, (intent) => ({
       ...intent,
+      ...unservedMintOf(failure),
       disposition: 'deferred',
       attemptId: null,
       attemptChild: null,
@@ -959,7 +1011,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     }));
     wakeForRetry(failure.retry);
     ports.log(`Succession attempt held and incumbent writer reclaimed: ${failure.reason}\n`);
-    return true;
+    return settlement;
   }
 
   /** Records the same-build recovery grant a relaunched child or the next startup of this build serves from. */
@@ -973,6 +1025,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     };
     await updateAttempt(failure.attempt?.attemptId ?? failure.preparation.attemptId, (intent) => ({
       ...intent,
+      ...unservedMintOf(failure),
       attemptId: recoveryPreparation.attemptId,
       attemptChild: null,
       attemptDeadline: null,
@@ -1012,6 +1065,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       ...recovery,
       pauseDeadlineAtMs: runtime.time.now(),
       childHold: attempt === null ? null : await abortAndReap(attempt),
+      unservedMintDiscard: failure.unservedMintDiscard,
     });
     try {
       recoveryPreparation = await recordRecoveryAttempt(failure);
@@ -1040,7 +1094,9 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     try {
       // A recovery child's failure never decides whether the target it stands in for may be retried.
       const outcome = await runCommit(attempt, recoveryPreparation, recovery);
-      return outcome.kind === 'failed' ? { ...outcome, retry: failure.retry } : outcome;
+      return outcome.kind === 'failed'
+        ? { ...outcome, retry: failure.retry, unservedMintDiscard: failure.unservedMintDiscard }
+        : outcome;
     } catch (error: unknown) {
       return failed(`same-build recovery failed: ${formatError(error)}`);
     }
@@ -1051,10 +1107,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
    * successor it launched serves, or the incumbent records a same-build recovery grant and exits so the next
    * startup of this build serves from it. A parked incumbent that stays alive is never one of them.
    */
-  async function settleFailedCommit(initial: FailedCommit): Promise<void> {
+  async function settleFailedCommit(initial: FailedCommit): Promise<SuccessionLaunchSettlement> {
     let failure = initial;
     for (let relaunches = 0; ; relaunches++) {
-      if (await reclaimInPlace(failure, relaunches > 0)) return;
+      const reclaimed = await reclaimInPlace(failure, relaunches > 0);
+      if (reclaimed !== null) return reclaimed;
       ports.setLaunchFenceActive(true);
       const writer = failure.writer;
       const bundleDir = ports.incumbent.build?.bundleDir;
@@ -1076,7 +1133,10 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     }
   }
 
-  async function superviseCommit(attempt: SuccessionAttempt, preparation: SuccessionPreparation): Promise<void> {
+  async function superviseCommit(
+    attempt: SuccessionAttempt,
+    preparation: SuccessionPreparation,
+  ): Promise<SuccessionLaunchSettlement> {
     let outcome: CommitOutcome;
     try {
       outcome = await runCommit(attempt, preparation, null);
@@ -1088,7 +1148,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         retryCondition: { kind: 'attempt-expiry', evidence: 'successor attempt exit' },
       });
       const childHold = await abortAndReap(attempt);
-      await recordBestEffort(attempt.attemptId, (current) => ({
+      const settlement = await clearAttempt(attempt.attemptId, (current) => ({
         ...current,
         disposition: 'deferred',
         attemptId: null,
@@ -1103,11 +1163,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         ...failedAttemptRetry(current, retry, 'successor readiness failure', runtime.time.now()),
       }));
       wakeForRetry(retry);
-      return;
+      return settlement;
     }
     if (outcome.kind === 'serving') return releaseToSuccessor(outcome.attempt);
     try {
-      await settleFailedCommit(outcome);
+      return await settleFailedCommit(outcome);
     } catch (error: unknown) {
       if (active !== null && observeSuccessionServing(runtime, active.attemptId) !== null) {
         return releaseToSuccessor(active);
@@ -1137,7 +1197,10 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     active = attempt;
     attemptAbort = new AbortController();
     const settled = superviseCommit(attempt, preparation)
-      .catch((error: unknown) => ports.log(`Succession commit supervision failed: ${formatError(error)}\n`))
+      .catch((error: unknown): SuccessionLaunchSettlement => {
+        ports.log(`Succession commit supervision failed: ${formatError(error)}\n`);
+        return { kind: 'settled' };
+      })
       .finally(() => {
         active = null;
         supervision = null;
@@ -1165,6 +1228,8 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       const attempt = active;
       if (attempt === null) return;
       attemptAbort.abort();
+      // A connection forwarded after the abort would bounce between the attempt returning it and this listener.
+      stopWindowForwarding?.();
       await attempt.abort().catch(() => {});
       await supervision;
     },

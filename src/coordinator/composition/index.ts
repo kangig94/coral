@@ -160,11 +160,12 @@ import {
 import { createSuccessionCommitter } from '../succession/commit.js';
 import { NO_SUCCESSION_INTERPOSITION } from '../succession/interposition.js';
 import {
+  dischargeDurableCliRecoveryGrants,
   prepareDurableCliTransfer,
   prepareDurableCliRecoveryGrant,
   decodeDurableCliTransfer,
+  verifyUnsettledDurableCliTransfer,
   recordDurableCliControllerReceipts,
-  verifyDurableCliTransfer,
   verifyDurableCliRecoveryGrant,
 } from '../services/durable-cli-transfer.js';
 import { decodeChildPrincipalTransfer } from '../child-principal-registry.js';
@@ -1736,6 +1737,9 @@ export function createCoordinatorCore(
     },
     {
       id: 'durable-cli',
+      recordsGrants: true,
+      dischargeGrants: (retained) =>
+        dischargeDurableCliRecoveryGrants(runtime, runtime.paths.coral.coordinator.runDir, retained),
       classify: async (attemptId) => {
         const jobIds = readSuccessionJobs().filter(
           (jobId) => getProgressStore().readRuntimeProjection(jobId)?.transport === 'durable-cli',
@@ -1863,6 +1867,8 @@ export function createCoordinatorCore(
     },
     {
       id: 'child-principals',
+      recordsGrants: true,
+      dischargeGrants: (retained) => world.childPrincipalRegistry.dischargeGrants(retained),
       classify: async (attemptId) => {
         const snapshot = world.childPrincipalRegistry.transferSnapshot(runtime.time.now());
         if (snapshot.entries.length === 0) return { kind: 'completed', reason: 'no live child handle' };
@@ -2384,16 +2390,24 @@ export function createCoordinatorCore(
       const accepted = new Set<string>();
       for (const receipt of preparation.receipts) {
         if (receipt.owner === 'durable-cli') {
-          const transfer = verifyDurableCliTransfer(
+          // A dead committed successor may have settled jobs its receipt names; a fresh commit re-verifies them all.
+          const verified = verifyUnsettledDurableCliTransfer(
             runtime,
             receipt.payload,
             getProgressStore().getDb(),
             getProgressStore(),
             runtime.paths.coral.coordinator.runDir,
             epoch,
+            (jobId) => {
+              if (committedSuccessorInstanceId === null) return false;
+              const status = getProgressStore().readStatus(jobId);
+              return status === null || isTerminalPhase(status.phase);
+            },
           );
-          if (transfer === null) throw new Error('Durable-cli receipt no longer matches runtime and custody.');
+          if (verified === null) throw new Error('Durable-cli receipt no longer matches runtime and custody.');
+          // The recovery grant authorizes control of live jobs; a receipt whose jobs all settled needs none.
           if (
+            (committedSuccessorInstanceId === null || verified.liveJobIds.length > 0) &&
             !verifyDurableCliRecoveryGrant(
               runtime,
               runtime.paths.coral.coordinator.runDir,
@@ -2401,11 +2415,11 @@ export function createCoordinatorCore(
               receipt.recoveryGrantId,
               preparation.epochKey,
               preparation.incumbentInstanceId,
-              transfer,
+              verified.transfer,
             )
           )
             throw new Error('Durable-cli recovery grant is unavailable or changed.');
-          for (const job of transfer.jobs) accepted.add(job.jobId);
+          for (const jobId of verified.liveJobIds) accepted.add(jobId);
         } else if (receipt.owner === 'child-principals') {
           if (decodeChildPrincipalTransfer(receipt.payload) === null) {
             throw new Error('Child-principal transfer receipt is invalid.');
@@ -2444,8 +2458,16 @@ export function createCoordinatorCore(
       }
       for (const receipt of preparation.receipts) {
         if (receipt.owner !== 'child-principals') continue;
-        const transfer = decodeChildPrincipalTransfer(receipt.payload);
-        if (transfer === null) throw new Error('Child-principal transfer receipt is invalid.');
+        const decoded = decodeChildPrincipalTransfer(receipt.payload);
+        if (decoded === null) throw new Error('Child-principal transfer receipt is invalid.');
+        // A dead committed successor's receipt may name principals of jobs that settled since; they authorize nothing.
+        const entries = decoded.entries.filter((entry) => {
+          if (accepted.has(entry.parentJobId)) return true;
+          const status = getProgressStore().readStatus(entry.parentJobId);
+          return status !== null && !isTerminalPhase(status.phase);
+        });
+        if (entries.length === 0) continue;
+        const transfer = { ...decoded, entries };
         const adopted = recovery
           ? world.childPrincipalRegistry.adoptRecoveredTransfer(
               transfer,

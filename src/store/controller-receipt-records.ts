@@ -1,6 +1,8 @@
 import { join } from 'node:path';
 import type { Runtime } from '../runtime/ports.js';
 
+const GRANT_SUFFIX = '.grant.json';
+
 function receiptDir(runDir: string): string {
   return join(runDir, 'controller-receipts.v1');
 }
@@ -64,7 +66,7 @@ export function readControllerRecoveryGrant(
   key: string,
 ): string | null {
   try {
-    return runtime.storage.readFileSync(join(receiptDir(runDir), `${key}.grant.json`), 'utf-8');
+    return runtime.storage.readFileSync(join(receiptDir(runDir), `${key}${GRANT_SUFFIX}`), 'utf-8');
   } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
     throw error;
@@ -96,4 +98,27 @@ export function readControllerReceipts(
         return { path, text: null };
       }
     });
+}
+
+/** Removes every recovery grant whose key is outside `retained`. */
+export function dischargeControllerRecoveryGrants(
+  runtime: Pick<Runtime, 'storage'>,
+  runDir: string,
+  retained: ReadonlySet<string>,
+): void {
+  const { storage } = runtime;
+  const dir = receiptDir(runDir);
+  let names: string[];
+  try {
+    names = storage.readdirSync(dir);
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
+    throw error;
+  }
+  const unnamed = names.filter(
+    (name) => name.endsWith(GRANT_SUFFIX) && !retained.has(name.slice(0, -GRANT_SUFFIX.length)),
+  );
+  if (unnamed.length === 0) return;
+  for (const name of unnamed) storage.rmSync(join(dir, name), { force: true });
+  if (!storage.syncDirectoryDurableSync(dir)) throw new Error('Controller receipt directory was not persisted.');
 }

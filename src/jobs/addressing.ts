@@ -233,8 +233,7 @@ export class JobAddressing {
       version: 'jobs.wait.v2',
       positions,
       locations: Object.fromEntries(locations.map((location) => [location.jobId, location.epochKey])),
-      deliveredJobIds:
-        request.cursor && isWaitCursorV2(request.cursor) ? [...(request.cursor.deliveredJobIds ?? [])] : [],
+      deliveredJobIds: [...(request.cursor?.deliveredJobIds ?? [])],
     };
   }
 

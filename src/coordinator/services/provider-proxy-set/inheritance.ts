@@ -8,6 +8,7 @@ import { PROXY_CONTROL_RPC_TIMEOUT_MS, type CoordinatorIdentity } from '../../..
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
 import type { Runtime } from '../../../runtime/ports.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import type { Database } from '../../../store/db.js';
 import { providerOperationMutationAdmission } from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
@@ -388,6 +389,7 @@ async function completeServedTransfer(
   authority: Pick<ProviderProxySetRecoveryAuthority, 'installRecoveryCredential'>,
   runtime: Pick<Runtime, 'time'>,
 ): Promise<void> {
+  let reportedFailure = false;
   for (let delayMs = INSTALL_RETRY_BASE_MS; ; delayMs = Math.min(delayMs * 2, INSTALL_RETRY_MAX_MS)) {
     await runtime.time.sleep(delayMs);
     let installed: Awaited<ReturnType<typeof authority.installRecoveryCredential>> | null;
@@ -396,7 +398,17 @@ async function completeServedTransfer(
     } catch {
       installed = null;
     }
-    if (installed?.kind === 'installed' || installed?.kind === 'refused') return;
+    if (installed === null && !reportedFailure) {
+      backendLog.warn('Provider host recovery grant install failed after a served transfer; retrying.');
+      reportedFailure = true;
+    }
+    if (installed?.kind === 'installed') return;
+    if (installed?.kind === 'refused') {
+      backendLog.warn(
+        `Provider ${installed.incident.role} refused this controller's recovery grant after a served transfer.`,
+      );
+      return;
+    }
     if (
       installed?.kind === 'retryable' &&
       installed.incident.exchange.kind === 'not-sent' &&
