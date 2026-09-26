@@ -141,7 +141,12 @@ import {
   observeSuccessionServing,
   observeSuccessionWriterGeneration,
 } from '../../store/succession-writer-generation.js';
-import { readUpgradeIntent, upgradeIntentProblem, visibleUpgradeIntent } from '../../infra/upgrade-intent.js';
+import {
+  readUpgradeIntent,
+  upgradeIntentProblem,
+  visibleUpgradeIntent,
+  type UpgradeIntent,
+} from '../../infra/upgrade-intent.js';
 import { createRealSuccessionAttemptPorts } from '../../runtime/succession-attempt.js';
 import { currentSuccessionAttemptChild, startSuccessionAttempt } from '../succession/attempt-child.js';
 import {
@@ -1817,19 +1822,22 @@ export function createCoordinatorCore(
       },
     },
   ];
+  const successionIncumbent = (): UpgradeIntent['incumbent'] => ({
+    instanceId: identity.instanceId,
+    pid: world.backendPid,
+    incarnation: readSelfIncarnation(),
+    version: identity.version,
+    bundleHash: identity.bundleHash,
+    flavor: identity.flavor,
+  });
   const successionCommitter = createSuccessionCommitter({
     runtime,
     log: world.log,
     listener: () => ipcServer,
     incumbent: {
       instanceId: identity.instanceId,
-      pid: world.backendPid,
-      version: identity.version,
-      bundleHash: identity.bundleHash,
-      flavor: identity.flavor,
       pluginRoot: identity.pluginRoot,
       storeFormatFingerprint: options.storeFormat.fingerprint,
-      incarnation: readSelfIncarnation,
       build:
         strictHealthIdentity.ok && strictHealthBundleDir !== null
           ? { manifest: strictHealthIdentity.manifest, bundleDir: strictHealthBundleDir }
@@ -1872,14 +1880,7 @@ export function createCoordinatorCore(
   const succession = createSuccessionCoordinator({
     runtime,
     runDir: runtime.paths.coral.coordinator.runDir,
-    incumbent: {
-      instanceId: identity.instanceId,
-      pid: world.backendPid,
-      incarnation: readSelfIncarnation(),
-      version: identity.version,
-      bundleHash: identity.bundleHash,
-      flavor: identity.flavor,
-    },
+    incumbent: successionIncumbent,
     owners: successionOwners,
     liveJobIds: readSuccessionJobs,
     storeFormatFingerprint: options.storeFormat.fingerprint,
@@ -2514,6 +2515,7 @@ export function createCoordinatorCore(
     removeBackendInfoIfOwnerFn: defaults.removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn: defaults.cleanupStaleJobsFn,
     readSelfIncarnationFn: readSelfIncarnation,
+    successionIncumbent,
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     settlePendingLaunchesFn: defaults.settlePendingLaunchesFn,
     terminateRegisteredChildrenFn: defaults.terminateRegisteredChildrenFn,

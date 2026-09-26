@@ -68,8 +68,11 @@ describe('transport error response', () => {
 
     expect(response).toMatchObject({
       statusCode: 503,
-      body: { code: 'succession_writer_parked', message: expect.stringContaining('Retry shortly') as unknown },
+      body: { code: 'succession_writer_parked' },
     });
+    // The park can land after a mutation took effect, so the remediation never tells the caller to repeat it blindly.
+    expect(response.body.message).not.toMatch(/retry/i);
+    expect(response.body.message).toContain('before repeating a request that changes state');
     expect(errorCodeToExit('succession_writer_parked', response.statusCode)).toBe(75);
   });
 });

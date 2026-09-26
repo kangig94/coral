@@ -29,6 +29,7 @@ import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { ProviderProxyAuthorityRegistry } from './live/provider-proxy/authority.js';
 import type { Runtime } from '../runtime/ports.js';
 import { type ProcessIncarnation } from '../infra/node-process.js';
+import type { UpgradeIntent } from '../infra/upgrade-intent.js';
 import {
   describeStartupReconciliationIncident,
   type ProviderOperationReconcilerStopDisposition,
@@ -871,6 +872,8 @@ export type LifecycleDeps = {
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void | BackendInfoRemovalResult;
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
   readonly readSelfIncarnationFn: () => ProcessIncarnation | null;
+  /** This process's identity in the upgrade intent; the succession reconciler writes it from the same source. */
+  readonly successionIncumbent: () => UpgradeIntent['incumbent'];
   readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   readonly settlePendingLaunchesFn: SettlePendingLaunchesFn;
   readonly terminateRegisteredChildrenFn: TerminateRegisteredChildrenFn;
@@ -1612,14 +1615,7 @@ async function runLifecycleStartup({
     }
     const deadAttemptId = pendingDeadAttempt?.attemptId ?? retiredDeadAttemptId;
     if (deadAttemptId !== null) {
-      await dischargeDeadSuccessionAttempt(runtime, deadAttemptId, {
-        instanceId,
-        pid: backendPid,
-        incarnation: deps.readSelfIncarnationFn(),
-        version,
-        bundleHash,
-        flavor,
-      });
+      await dischargeDeadSuccessionAttempt(runtime, deadAttemptId, deps.successionIncumbent());
     }
 
     runtimeState.components.register(createRecoveryComponent(storeServices.storeDb));

@@ -81,9 +81,12 @@ function publicRecoveryQuarantineError(error: unknown): CoralSetupError | null {
   }
 }
 
-/** A parked writer is a succession commit in progress, never a fault: its caller must be told to retry. */
+/**
+ * A parked writer is a succession commit in progress, never a fault. The park can land after a mutation took effect,
+ * so the caller must not be told to repeat the request blindly.
+ */
 const SUCCESSION_WRITER_PARKED_MESSAGE =
-  'The coordinator store writer is parked while an upgrade commits. Retry shortly; the serving coordinator answers once the commit settles.';
+  'The coordinator store writer was parked by an upgrade commit while this request ran, so whether the request took effect is not known. A read can be repeated once the commit settles; before repeating a request that changes state, read whether it already took effect.';
 
 export function buildTransportErrorResponse(error: unknown): TransportErrorResponse {
   if (error instanceof SuccessionWriterParkedError) {

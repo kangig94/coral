@@ -155,6 +155,22 @@ describe('upgrade intent', () => {
     await expect(compareAndSwapUpgradeIntent(dir, 1, pendingIntent('third'))).resolves.toEqual({ kind: 'unsupported' });
   });
 
+  it('should read a retry record of a newer shape as absent instead of refusing the intent', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
+    const path = upgradeIntentPath(dir);
+    const stored = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    stored.transientRetry = { targetKey: 'target', failures: 'many', retryAfter: 'later' };
+    stored.recoveryRetry = { kind: 'future-kind' };
+    writeFileSync(path, JSON.stringify(stored));
+
+    const read = readUpgradeIntent(dir);
+    expect(read.kind).toBe('readable');
+    if (read.kind !== 'readable') return;
+    expect(read.intent.transientRetry).toBeUndefined();
+    expect(read.intent.recoveryRetry).toBeUndefined();
+  });
+
   it('does not treat a stored plugin-root label as a validated launch target', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));

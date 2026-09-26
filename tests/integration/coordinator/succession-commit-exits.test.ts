@@ -101,9 +101,21 @@ async function fakeAttempt(attemptId: string, epochKey: string, behavior: Attemp
   };
 }
 
+function incumbentIdentity(): UpgradeIntent['incumbent'] {
+  return {
+    instanceId: 'incumbent',
+    pid: process.pid,
+    incarnation: probeProcessIncarnation(process.pid),
+    version: build.version,
+    bundleHash: build.bundleHash,
+    flavor: build.flavor,
+  };
+}
+
 function reconcilerStub(readiness?: SuccessionDecision): SuccessionReconciler {
   const deferred: SuccessionDecision = { kind: 'deferred', reason: 'test reconciler' };
   return {
+    incumbent: incumbentIdentity,
     request: async () => deferred,
     prepare: async () => deferred,
     reportReady: async (report) =>
@@ -197,13 +209,8 @@ async function harness(
     listener: () => listener,
     incumbent: {
       instanceId: 'incumbent',
-      pid: process.pid,
-      version: build.version,
-      bundleHash: build.bundleHash,
-      flavor: build.flavor,
       pluginRoot: root,
       storeFormatFingerprint: format.fingerprint,
-      incarnation: () => probeProcessIncarnation(process.pid),
       build: { manifest: build, bundleDir: join(root, 'bridge') },
     },
     reconciler: () => ({
@@ -258,14 +265,7 @@ async function harness(
   const targetFingerprint = options.targetFingerprint ?? format.fingerprint;
   const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
     requestId: 'request-1',
-    incumbent: {
-      instanceId: 'incumbent',
-      pid: process.pid,
-      incarnation: probeProcessIncarnation(process.pid),
-      version: build.version,
-      bundleHash: build.bundleHash,
-      flavor: build.flavor,
-    },
+    incumbent: incumbentIdentity(),
     target: { build: { ...build, storeFormatFingerprint: targetFingerprint }, pluginRootLabel: root },
     attemptId: preparation.attemptId,
     attemptOwner: {
@@ -345,6 +345,35 @@ describe('succession commit failure exits', () => {
     expect(retryCondition(test.runtime)?.kind).toBe('target-change');
     expect(test.retryNotifications).toBe(0);
     test.db.exec('CREATE TABLE served_after_reclaim (value TEXT)');
+  });
+
+  it('should keep the attempt attempting until the write that clears it, while its release still runs', async () => {
+    const observedAtReclaim: (UpgradeIntent | null)[] = [];
+    let runDir = '';
+    const test = await harness({
+      failingPoints: (point) => {
+        if (point === 'incumbent-reclaim') {
+          const observed = readUpgradeIntent(runDir);
+          observedAtReclaim.push(observed.kind === 'readable' ? observed.intent : null);
+        }
+        return false;
+      },
+      recoveryLaunch: 'fails',
+    });
+    runDir = test.runtime.paths.coral.coordinator.runDir;
+    await test.launch();
+
+    await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
+    expect(observedAtReclaim).toHaveLength(1);
+    expect(observedAtReclaim[0]).toMatchObject({
+      disposition: 'attempting',
+      attemptId: expect.any(String) as unknown,
+      blockers: [{ owner: 'succession-commit' }],
+    });
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      kind: 'readable',
+      intent: { disposition: 'deferred', attemptId: null },
+    });
   });
 
   it('should retry the same target after its successor misses the commit deadline', async () => {

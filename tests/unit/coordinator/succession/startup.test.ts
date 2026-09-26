@@ -291,6 +291,83 @@ describe('incomplete succession at startup', () => {
     });
   });
 
+  describe('an attempt its incumbent prepared but never began committing', () => {
+    async function seedPreparedAttempt(runtime: Runtime, owner: OwnerRecord): Promise<void> {
+      const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+        requestId: 'request-1',
+        incumbent: {
+          instanceId: 'incumbent',
+          ...owner,
+          version: '0.10.13',
+          bundleHash: 'fedcba9876543210',
+          flavor: 'prod',
+        },
+        target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+        attemptId: 'prepared-attempt',
+        attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', ...owner },
+        attemptChild: null,
+        disposition: 'pending',
+        blockers: [],
+        retryCondition: null,
+        attemptDeadline: null,
+        completionReceipt: null,
+        successionPreparation: preparation('prepared-attempt', [
+          {
+            owner: 'durable-cli',
+            generation: 1,
+            attemptId: 'prepared-attempt',
+            receiptId: 'durable-cli:prepared-attempt',
+            recoveryGrantId: 'durable-cli:prepared-attempt',
+            payload: null,
+          },
+        ]),
+      });
+      if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+    }
+
+    it('should retire it once its incumbent is proven gone, without verifying grants it never transferred', async () => {
+      const runtime = runtimeFixture();
+      await seedPreparedAttempt(runtime, { pid: await exitedPid(), incarnation: null });
+
+      await expect(resolveAt(runtime, 'startup-1')).resolves.toEqual({
+        kind: 'retire',
+        attemptId: 'prepared-attempt',
+      });
+    });
+
+    it('should hold without spending patience while its incumbent is observed alive', async () => {
+      const runtime = runtimeFixture();
+      const incarnation = probeProcessIncarnation(process.pid);
+      if (incarnation === null) throw new Error('this process has no readable incarnation');
+      await seedPreparedAttempt(runtime, { pid: process.pid, incarnation });
+
+      for (const startupId of ['startup-1', 'startup-2', 'startup-3', 'startup-4']) {
+        expect(await holdOf(resolveAt(runtime, startupId))).toEqual({
+          kind: 'deaths-unproven',
+          attemptId: 'prepared-attempt',
+          alive: true,
+        });
+      }
+    });
+
+    it('should hold an unproven death under patience, then abandon the attempt', async () => {
+      const runtime = runtimeFixture();
+      await seedPreparedAttempt(runtime, { pid: process.pid, incarnation: null });
+
+      expect(await holdOf(resolveAt(runtime, 'startup-1'))).toEqual({
+        kind: 'deaths-unproven',
+        attemptId: 'prepared-attempt',
+        alive: false,
+      });
+      await holdOf(resolveAt(runtime, 'startup-2'));
+      await expect(resolveAt(runtime, 'startup-3')).resolves.toEqual({ kind: 'none' });
+      expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+        kind: 'readable',
+        intent: { attemptId: null, successionPreparation: null, disposition: 'deferred' },
+      });
+    });
+  });
+
   it('should hold a committed successor whose writer generation cannot be attributed, then abandon it', async () => {
     const runtime = runtimeFixture();
     const format = currentCoralStoreFormat();

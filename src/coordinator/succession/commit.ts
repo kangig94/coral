@@ -1,9 +1,14 @@
 import { formatError } from '../../infra/error-format.js';
 import type { StrictBundleManifest } from '../../infra/bundle-manifest.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
+import { probeProcessIncarnation } from '../../infra/node-process.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import { gracefulKillByPid } from '../../infra/process-supervision.js';
-import { readUpgradeIntent, retryUpgradeIntentCas, type UpgradeIntent } from '../../infra/upgrade-intent.js';
+import {
+  readUpgradeIntent,
+  retryUpgradeIntentCas,
+  type AttemptRetry,
+  type UpgradeIntent,
+} from '../../infra/upgrade-intent.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
 import {
@@ -32,7 +37,7 @@ import { SUCCESSION_PAUSE_ROLLING_WINDOW_MS, type LaunchCoordinator } from '../l
 import type { RetiringCustodyCertificate } from '../services/recovery/epoch-closure.js';
 import type { SuccessionRelease } from '../shutdown.js';
 import type { AttemptAcknowledgment, SuccessionAttempt } from './attempt-child.js';
-import { failedAttemptRetry, recoveryRetryOf, TRANSIENT_RETRY_BASE_MS, type AttemptRetry } from './attempt-retry.js';
+import { failedAttemptRetry, recoveryRetryOf, TRANSIENT_RETRY_BASE_MS } from './attempt-retry.js';
 import { recordControllerOpen } from './controller-open.js';
 import type { SuccessionInterposition } from './interposition.js';
 import type { SuccessionPreparation } from './protocol.js';
@@ -161,15 +166,11 @@ export type SuccessionCommitPorts = Readonly<{
   runtime: Runtime;
   log: (message: string) => void;
   listener: () => IpcListener;
+  /** The identity this incumbent writes into the intent comes only from `reconciler().incumbent()`. */
   incumbent: Readonly<{
     instanceId: string;
-    pid: number;
-    version: string;
-    bundleHash: string;
-    flavor: UpgradeIntent['incumbent']['flavor'];
     pluginRoot: string;
     storeFormatFingerprint: string;
-    incarnation: () => ProcessIncarnation | null;
     /** Absent when this build cannot prove its own identity, which forbids relaunching itself. */
     build: Readonly<{ manifest: StrictBundleManifest; bundleDir: string }> | null;
   }>;
@@ -305,6 +306,20 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     } catch (error: unknown) {
       ports.log(`Succession hold recording failed: ${formatError(error)}\n`);
     }
+  };
+
+  /**
+   * Status for a failed attempt whose release is still running. `attempting` must stay until the write that clears
+   * the attempt: startup reads it as the only evidence that something may already have been released.
+   */
+  const recordReleasePending = (
+    attemptId: string,
+    status: Pick<UpgradeIntent, 'blockers' | 'retryCondition'>,
+  ): Promise<void> => recordBestEffort(attemptId, (intent) => ({ ...intent, ...status }));
+
+  const incumbentOwner = (): NonNullable<UpgradeIntent['attemptOwner']> => {
+    const { instanceId, pid, incarnation } = ports.reconciler().incumbent();
+    return { kind: 'incumbent', instanceId, pid, incarnation };
   };
 
   const writersOrThrow = (): IncumbentWriterPorts => {
@@ -713,12 +728,10 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     window.stopForwarding();
     ports.waitHandover.renew();
     const reason = formatError(failure);
-    await recordBestEffort(attempt.attemptId, (intent) => ({
-      ...intent,
-      disposition: 'deferred',
+    await recordReleasePending(attempt.attemptId, {
       blockers: [{ owner: 'succession-commit', reason }],
       retryCondition: { kind: 'attempt-expiry', evidence: 'incumbent writer reclaim' },
-    }));
+    });
     const childHold = await abortAndReap(attempt);
     if (plan.formatChanging) {
       try {
@@ -918,12 +931,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       attemptId: recoveryPreparation.attemptId,
       attemptChild: null,
       attemptDeadline: null,
-      attemptOwner: {
-        kind: 'incumbent',
-        instanceId: ports.incumbent.instanceId,
-        pid: ports.incumbent.pid,
-        incarnation: ports.incumbent.incarnation(),
-      },
+      attemptOwner: incumbentOwner(),
       recoveryAttemptId: recoveryPreparation.attemptId,
       recoveryBuildSetId: ports.incumbent.build?.manifest.buildSetId ?? null,
       recoveryRetry: failure.retry,
@@ -1030,12 +1038,10 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     } catch (error: unknown) {
       const reason = formatError(error);
       const retry = retryAfterFailure(error);
-      await recordBestEffort(attempt.attemptId, (current) => ({
-        ...current,
-        disposition: 'deferred',
+      await recordReleasePending(attempt.attemptId, {
         blockers: [{ owner: 'succession-prepare', reason }],
         retryCondition: { kind: 'attempt-expiry', evidence: 'successor attempt exit' },
-      }));
+      });
       const childHold = await abortAndReap(attempt);
       await recordBestEffort(attempt.attemptId, (current) => ({
         ...current,
@@ -1097,14 +1103,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     if (recovery) {
       await updateAttempt(attemptId, (intent) => ({
         ...intent,
-        incumbent: {
-          instanceId: ports.incumbent.instanceId,
-          pid: ports.incumbent.pid,
-          incarnation: ports.incumbent.incarnation(),
-          version: ports.incumbent.version,
-          bundleHash: ports.incumbent.bundleHash,
-          flavor: ports.incumbent.flavor,
-        },
+        incumbent: ports.reconciler().incumbent(),
         attemptId: null,
         attemptChild: null,
         attemptOwner: null,

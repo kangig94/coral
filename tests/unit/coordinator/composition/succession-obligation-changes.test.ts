@@ -26,7 +26,7 @@ describe('succession obligation change wiring', () => {
     const reconciler = createSuccessionReconciler({
       runtime,
       runDir,
-      incumbent,
+      incumbent: () => incumbent,
       owners: [],
       epochKey: () => null,
       admissionRevision: () => 0,

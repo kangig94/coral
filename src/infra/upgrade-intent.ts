@@ -85,6 +85,26 @@ const servingReceiptSchema = z
   })
   .passthrough();
 
+/**
+ * What ends the hold a failed attempt leaves. A transient failure is retried after a backoff; a decisive one waits
+ * for another target, because the same target would fail the same way.
+ */
+const attemptRetrySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('transient'), retryAfterMs: z.number().int().nonnegative() }).passthrough(),
+  z.object({ kind: z.literal('target-change') }).passthrough(),
+]);
+
+export type AttemptRetry = z.infer<typeof attemptRetrySchema>;
+
+/** Transient failures one target has spent in total, and the earliest time its next attempt may launch. */
+const transientRetrySchema = z
+  .object({
+    targetKey: z.string().min(1),
+    failures: z.number().int().positive(),
+    retryAfter: z.string().datetime(),
+  })
+  .passthrough();
+
 const upgradeIntentSchema = z
   .object({
     version: z.literal('v1'),
@@ -114,6 +134,11 @@ const upgradeIntentSchema = z
     retryCondition: retryConditionSchema.nullable(),
     attemptDeadline: z.string().datetime().nullable(),
     completionReceipt: servingReceiptSchema.nullable(),
+    // A retry record this build cannot read degrades to absent rather than corrupting the intent: losing it only
+    // restarts the backoff count or keeps a recovery grant decisive, while a corrupt intent refuses the upgrade.
+    transientRetry: transientRetrySchema.optional().catch(undefined),
+    /** The failure a same-build recovery grant stands in for. */
+    recoveryRetry: attemptRetrySchema.nullable().optional().catch(undefined),
   })
   .passthrough()
   .superRefine((intent, context) => {

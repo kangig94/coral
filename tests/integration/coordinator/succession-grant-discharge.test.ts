@@ -4,11 +4,10 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { AttemptRetry } from '#src/coordinator/succession/attempt-retry.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
-import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { compareAndSwapUpgradeIntent, readUpgradeIntent, type AttemptRetry } from '#src/infra/upgrade-intent.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { encodeResolvedStoreEpoch, inspectCurrentStore } from '#src/store/epoch.js';
 import {
@@ -184,5 +183,78 @@ describe('succession restart grant discharge', () => {
     const upgraded = readDiscoveryRecordForHome(home, 'prod');
     if (upgraded !== null) handedOffPids.push(upgraded.pid);
     await waitForCondition(() => observeProcessLiveness(restarted.pid) === 'absent', 30_000);
+  });
+});
+
+describe('succession attempt prepared by an incumbent that died before committing', () => {
+  it('retires the prepared attempt at startup so the upgrade then applies unattended', async () => {
+    assertBuildArtifactsAvailable();
+    const home = mkdtempSync(join(tmpdir(), 'coral-succession-prepared-'));
+    roots.push(home);
+    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+    const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots });
+    coordinators.push(old);
+    const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    if (initial.instanceId === undefined) throw new Error('Incumbent discovery has no instance id.');
+    await stopCoordinator(old);
+
+    // What a reconciler pass leaves once `prepare` is recorded and before the commit records `attempting`.
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    const current = inspectCurrentStore(runtime);
+    if (current.kind !== 'current') throw new Error(`incumbent store is ${current.kind}`);
+    const incumbentBuild = manifestOf(oldFixture);
+    const owner = { instanceId: initial.instanceId, pid: initial.pid, incarnation: null };
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'request-1',
+      incumbent: {
+        ...owner,
+        version: incumbentBuild.version,
+        bundleHash: incumbentBuild.bundleHash,
+        flavor: incumbentBuild.flavor,
+      },
+      target: { build: manifestOf(newerFixture), pluginRootLabel: newerFixture.root },
+      attemptId: 'prepared-attempt',
+      attemptOwner: { kind: 'incumbent', ...owner },
+      attemptChild: null,
+      disposition: 'pending',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      successionPreparation: {
+        version: 'v1',
+        requestId: 'request-1',
+        attemptId: 'prepared-attempt',
+        incumbentInstanceId: initial.instanceId,
+        incumbentPid: initial.pid,
+        incumbentKey: 'dead-incumbent',
+        targetKey: 'prepared-target',
+        capabilitiesKey: 'prepared-capabilities',
+        epochKey: encodeResolvedStoreEpoch(runtime, current.epoch),
+        admissionRevision: 0,
+        accepts: [],
+        receipts: [],
+        stage: 'prepared',
+        ready: null,
+      },
+    });
+    if (written.kind !== 'written') throw new Error(`prepared attempt seed was ${written.kind}`);
+
+    const restarted = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots });
+    coordinators.push(restarted);
+    try {
+      await waitForCondition(
+        () => readDiscoveryRecordForHome(home, 'prod')?.bundleHash === newerFixture.bundleHash,
+        30_000,
+      );
+    } catch (error) {
+      throw new Error(
+        `The upgrade did not apply after the prepared attempt was retired: ${JSON.stringify(readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir))}`,
+        { cause: error },
+      );
+    }
+    const upgraded = readDiscoveryRecordForHome(home, 'prod');
+    if (upgraded !== null) handedOffPids.push(upgraded.pid);
   });
 });

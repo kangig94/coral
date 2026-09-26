@@ -843,6 +843,14 @@ function createLifecycleHarness(
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: options.cleanupStaleJobsFn ?? (() => {}),
       readSelfIncarnationFn: () => null,
+      successionIncumbent: () => ({
+        instanceId: 'test-coordinator',
+        pid: process.pid,
+        incarnation: null,
+        version: '0.0.0',
+        bundleHash: 'test-bundle',
+        flavor: 'prod',
+      }),
       markJobsAsErrorFn: options.markJobsAsErrorFn ?? (() => {}),
       settlePendingLaunchesFn: options.settlePendingLaunchesFn ?? (() => ({ kind: 'all-pending-launches-settled' })),
       terminateRegisteredChildrenFn:

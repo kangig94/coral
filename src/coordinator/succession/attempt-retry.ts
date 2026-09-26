@@ -1,44 +1,26 @@
-import { z } from 'zod';
-
-import type { UpgradeIntent } from '../../infra/upgrade-intent.js';
+import type { AttemptRetry, UpgradeIntent } from '../../infra/upgrade-intent.js';
 import { successionTargetKey } from './protocol.js';
 
 export const TRANSIENT_RETRY_BASE_MS = 1_000;
 const TRANSIENT_RETRY_MAX_MS = 30_000;
-/** Consecutive transient failures one target may spend before it waits like a decisive failure. */
+/**
+ * Transient failures one target may spend in total before it waits like a decisive failure. Only a target change
+ * restarts the count: an attempt's one success is completion, which ends the target, so no success can separate
+ * two failures of it, and a bound that restarts on anything else would not bound the target.
+ */
 const TRANSIENT_RETRY_LIMIT = 6;
 
-/**
- * What ends the hold a failed attempt leaves. A transient failure is retried after a backoff; a decisive one waits
- * for another target, because the same target would fail the same way.
- */
-const attemptRetrySchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('transient'), retryAfterMs: z.number().int().nonnegative() }).passthrough(),
-  z.object({ kind: z.literal('target-change') }).passthrough(),
-]);
-
-export type AttemptRetry = z.infer<typeof attemptRetrySchema>;
-
-/** Consecutive transient failures of one target, and the earliest time its next attempt may launch. */
-const transientRetrySchema = z
-  .object({
-    targetKey: z.string().min(1),
-    failures: z.number().int().positive(),
-    retryAfter: z.string().datetime(),
-  })
-  .passthrough();
-
-type TransientRetry = z.infer<typeof transientRetrySchema>;
+type TransientRetry = NonNullable<UpgradeIntent['transientRetry']>;
 
 export type FailedAttemptRetry = Readonly<{
   retryCondition: NonNullable<UpgradeIntent['retryCondition']>;
   transientRetry?: TransientRetry;
 }>;
 
-/** A record for another target, or one this build cannot read, never delays or bounds the current target. */
+/** A record for another target never delays or bounds the current target. */
 function transientRetryOf(intent: UpgradeIntent): TransientRetry | null {
-  const parsed = transientRetrySchema.safeParse(intent.transientRetry);
-  return parsed.success && parsed.data.targetKey === successionTargetKey(intent.target) ? parsed.data : null;
+  const retry = intent.transientRetry;
+  return retry !== undefined && retry.targetKey === successionTargetKey(intent.target) ? retry : null;
 }
 
 /** When the intent's target may next launch an attempt; null when no transient backoff binds it. */
@@ -72,7 +54,7 @@ export function failedAttemptRetry(
     return {
       retryCondition: {
         kind: 'target-change',
-        evidence: `${TRANSIENT_RETRY_LIMIT} consecutive transient attempt failures exhausted this target's retries`,
+        evidence: `${TRANSIENT_RETRY_LIMIT} transient attempt failures exhausted this target's retries`,
       },
       transientRetry,
     };
@@ -80,7 +62,7 @@ export function failedAttemptRetry(
   return {
     retryCondition: {
       kind: 'attempt-expiry',
-      evidence: `transient attempt failure ${failures} of ${TRANSIENT_RETRY_LIMIT}; retries after ${transientRetry.retryAfter}`,
+      evidence: `transient attempt failure ${failures} of ${TRANSIENT_RETRY_LIMIT} this target may spend; retries after ${transientRetry.retryAfter}`,
     },
     transientRetry,
   };
@@ -88,6 +70,5 @@ export function failedAttemptRetry(
 
 /** The failure a same-build recovery stands in for; a grant without one keeps its target decisive. */
 export function recoveryRetryOf(intent: UpgradeIntent): AttemptRetry {
-  const parsed = attemptRetrySchema.safeParse(intent.recoveryRetry);
-  return parsed.success ? parsed.data : { kind: 'target-change' };
+  return intent.recoveryRetry ?? { kind: 'target-change' };
 }

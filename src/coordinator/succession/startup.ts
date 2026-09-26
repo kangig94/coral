@@ -254,7 +254,7 @@ export type DeadAttemptRecovery = Readonly<{
 export type IncompleteSuccessionResolution =
   | Readonly<{ kind: 'none' }>
   | Readonly<{ kind: 'recover'; attempt: DeadAttemptRecovery; preferredEpochKey: string | null }>
-  /** A dead attempt that transferred nothing; ordinary startup serves and then discharges it. */
+  /** A dead attempt that released or transferred nothing; ordinary startup serves and then discharges it. */
   | Readonly<{ kind: 'retire'; attemptId: string }>
   | Readonly<{ kind: 'handoff'; target: ValidatedHandoffTarget }>
   | Readonly<{ kind: 'hold'; hold: SuccessionStartupHold }>;
@@ -390,16 +390,25 @@ export async function resolveIncompleteSuccessionAtStartup(
   // A waiter-owned attempt carries no receipts or grants; the target's own startup decides it.
   const attemptId = intent.attemptId;
   if (
-    intent.disposition !== 'attempting' ||
     intent.attemptOwner?.kind !== 'incumbent' ||
     attemptId === null ||
     observeSuccessionServing(runtime, attemptId) !== null
   ) {
     return { kind: 'none' };
   }
-  const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
   const owner = intent.attemptOwner;
   const child = intent.attemptChild;
+  if (intent.disposition === 'pending' || intent.disposition === 'deferred') {
+    // Before `attempting` nothing was released, and the prepared grants are reachable only through this attempt,
+    // so retiring it is enough. Its child may already hold the incumbent's listeners, so it must be proven gone too.
+    const unproven = deathsUnproven(
+      attemptId,
+      child !== undefined && child !== null && child.attemptId === attemptId ? [owner, child] : [owner],
+    );
+    return unproven === null ? { kind: 'retire', attemptId } : holdOrAbandon(unproven);
+  }
+  if (intent.disposition !== 'attempting') return { kind: 'none' };
+  const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
   if (!preparation.success || child === undefined || child === null) {
     return holdOrAbandon({ kind: 'attempt-record-unreadable', attemptId });
   }

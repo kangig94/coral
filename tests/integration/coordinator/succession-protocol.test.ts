@@ -72,14 +72,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [{ id: 'launch-admission', classify: async () => ({ kind: 'completed', reason: 'idle' }) }],
       requiredOwners: ['launch-admission'],
       liveJobIds: () => liveJobs,
@@ -120,14 +120,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [owner],
       requiredOwners: [owner.id],
       epochKey: () => 'epoch-one',
@@ -184,14 +184,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [owner],
       requiredOwners: [owner.id],
       epochKey: () => 'epoch-one',
@@ -230,14 +230,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [{ id: 'launch-admission', classify: async () => ({ kind: 'completed', reason: 'idle' }) }],
       requiredOwners: ['launch-admission'],
       epochKey: () => 'epoch-one',
@@ -273,14 +273,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [],
       epochKey: () => 'epoch-one',
       admissionRevision: () => 0,
@@ -309,14 +309,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [owner],
       requiredOwners: [owner.id],
       epochKey: () => 'epoch-one',
@@ -348,14 +348,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [owner],
       requiredOwners: [owner.id],
       epochKey: () => 'epoch-one',
@@ -420,14 +420,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [owner],
       requiredOwners: [owner.id],
       epochKey: () => epoch,
@@ -526,14 +526,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [{ id: 'launch-admission', classify: async () => ({ kind: 'completed', reason: 'empty' }) }],
       requiredOwners: ['launch-admission'],
       epochKey: () => 'epoch-one',
@@ -554,14 +554,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '2.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [],
       epochKey: () => 'epoch-one',
       admissionRevision: () => 0,
@@ -593,14 +593,14 @@ describe('succession protocol', () => {
     const service = createSuccessionCoordinator({
       runtime,
       runDir: target.runDir,
-      incumbent: {
+      incumbent: () => ({
         instanceId: 'incumbent',
         pid: 100,
         incarnation: null,
         version: '1.0.0',
         bundleHash: 'old-bundle',
         flavor: 'prod',
-      },
+      }),
       owners: [],
       requiredOwners: [],
       epochKey: () => 'epoch-one',
