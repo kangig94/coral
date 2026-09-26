@@ -946,7 +946,9 @@ function waiterServingEligible(intent: UpgradeIntent, attemptId: string): boolea
   );
 }
 
-async function reconcileServedAttempt(runtime: Runtime): Promise<'none' | 'completed' | 'unattributable'> {
+async function reconcileServedAttempt(
+  runtime: Runtime,
+): Promise<'none' | 'completed' | Readonly<{ kind: 'unattributable'; attemptId: string; revision: number }>> {
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
   if (observed.kind !== 'readable') return 'none';
   const { intent } = observed;
@@ -959,11 +961,12 @@ async function reconcileServedAttempt(runtime: Runtime): Promise<'none' | 'compl
   const attemptId = intent.attemptId;
   const serving = observeSuccessionServing(runtime, attemptId);
   if (serving === null || intent.recoveryAttemptId === attemptId) return 'none';
+  const unattributable = { kind: 'unattributable', attemptId, revision: intent.revision } as const;
   if (
     !Number.isFinite(Date.parse(serving.recordedAt)) ||
     (intent.attemptDeadline !== null && Date.parse(serving.recordedAt) > Date.parse(intent.attemptDeadline))
   )
-    return 'unattributable';
+    return unattributable;
 
   const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
   const incumbentAttempt = intent.attemptOwner?.kind === 'incumbent';
@@ -996,7 +999,7 @@ async function reconcileServedAttempt(runtime: Runtime): Promise<'none' | 'compl
       (prepared.epochKey !== serving.epochKey &&
         (retirement.kind !== 'recorded' || retirement.disposition.incumbentEpochKey !== prepared.epochKey))
     )
-      return 'unattributable';
+      return unattributable;
     pid = prepared.ready.successorPid;
     incarnation = child?.attemptId === intent.attemptId && child.pid === pid ? child.incarnation : null;
     acceptedObligations = prepared.receipts.map((ownerReceipt) => ({
@@ -1005,7 +1008,7 @@ async function reconcileServedAttempt(runtime: Runtime): Promise<'none' | 'compl
       controlGeneration: serving.controlGeneration,
     }));
   } else {
-    if (intent.attemptOwner?.kind !== 'waiter' || waiterChild === null) return 'unattributable';
+    if (intent.attemptOwner?.kind !== 'waiter' || waiterChild === null) return unattributable;
     pid = waiterChild.pid;
     incarnation = waiterChild.incarnation;
     acceptedObligations = [];
@@ -1043,7 +1046,8 @@ async function reconcileServedAttempt(runtime: Runtime): Promise<'none' | 'compl
       settle: () => true,
     };
   });
-  return outcome.kind === 'settled' && outcome.value ? 'completed' : 'unattributable';
+  if (outcome.kind !== 'settled') return unattributable;
+  return outcome.value ? 'completed' : 'none';
 }
 
 export async function prepareCommittedSuccessorRecovery(
@@ -1055,18 +1059,20 @@ export async function prepareCommittedSuccessorRecovery(
 ): Promise<CommittedSuccessorRecovery> {
   const served = await reconcileServedAttempt(runtime);
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-  if (served === 'unattributable') {
-    const attemptId = observed.kind === 'readable' ? observed.intent.attemptId : null;
-    if (attemptId !== null) {
-      const hold = {
-        kind: 'committed-successor-unattributable',
-        attemptId,
-        reason: 'served attempt has no attributable receipt',
-      } as const;
-      return (await exhaustStartupPatience(runtime, identity.instanceId, hold))
-        ? { kind: 'none' }
-        : { kind: 'hold', hold };
-    }
+  if (
+    typeof served === 'object' &&
+    observed.kind === 'readable' &&
+    observed.intent.attemptId === served.attemptId &&
+    observed.intent.revision === served.revision
+  ) {
+    const hold = {
+      kind: 'committed-successor-unattributable',
+      attemptId: served.attemptId,
+      reason: 'served attempt has no attributable receipt',
+    } as const;
+    return (await exhaustStartupPatience(runtime, identity.instanceId, hold))
+      ? { kind: 'none' }
+      : { kind: 'hold', hold };
   }
   if (observed.kind !== 'readable' || observed.intent.disposition !== 'completed') return { kind: 'none' };
   const intent = observed.intent;

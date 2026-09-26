@@ -495,6 +495,57 @@ describe('historical job readers', () => {
     expect(index.certificate('lineage-old:7')).toBeNull();
   });
 
+  it('keeps a launch-only job unresolved when its journal contains a terminal outside the projection inventory', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      1,
+      '2026-09-25T00:00:00.000Z',
+      'job.launch.requested',
+      'job',
+      'projection-lost',
+      Buffer.from(
+        JSON.stringify({
+          projectRoot: '/workspace/project',
+          jobKind: 'provider',
+          request: { cwd: '/workspace/project' },
+        }),
+      ),
+    );
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      2,
+      '2026-09-25T00:00:01.000Z',
+      'job.terminal.recorded',
+      'job',
+      'projection-lost',
+      Buffer.from(JSON.stringify({ terminal: { content: 'finished', outcome: { kind: 'completed' }, durationMs: 1 } })),
+    );
+    db.close();
+
+    const index = new JobLocationIndex(runtime, root);
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    expect(
+      seedHistoricalEpoch(runtime, index, epoch, 'lineage-old:7', fingerprints[0], join(root, 'results'), storage),
+    ).toMatchObject({ kind: 'uncertified' });
+
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+      () => 'decided',
+    );
+
+    expect(addressing.detail('projection-lost')).toEqual({
+      kind: 'unresolved',
+      jobId: 'projection-lost',
+      epochKey: 'lineage-old:7',
+    });
+  });
+
   it('serves a seeded older terminal after its eligible database root is removed', () => {
     const { root, epochDir, db } = fixture(fingerprints[0]);
     db.prepare(

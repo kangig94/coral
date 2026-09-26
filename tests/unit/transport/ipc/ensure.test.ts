@@ -2357,6 +2357,29 @@ describe('ipc ensure', () => {
     expect(JSON.stringify(error)).not.toContain('action=kill -9');
   });
 
+  it('emits force-kill guidance after a replacement holder stays silent for a full new window', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { pid: process.pid, incarnation: incarnation!, instanceId: 'holder-a' });
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const ensured = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(
+      () => writeDiscovery(root, { pid: process.pid, incarnation: incarnation!, instanceId: 'holder-b' }),
+      FORCE_KILL_UNANSWERED_WINDOW_MS - 200,
+    );
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), FORCE_KILL_UNANSWERED_WINDOW_MS * 2 + 400);
+
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS * 2 + 800);
+
+    await expect(ensured).resolves.toHaveProperty('message', expect.stringContaining(`action=kill -9 ${process.pid}`));
+  });
+
   // A contender that refuses after a stall of a few seconds has not shown that the holder cannot answer: the
   // stall may be a journal flush or a slow read, and the coordinator behind it is serving.
   it('withholds force-kill guidance from an unverified-holder refusal after a stall shorter than the window', async () => {

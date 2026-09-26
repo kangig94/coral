@@ -22,6 +22,7 @@ import { observeStorePath } from './path-observation.js';
 import {
   advanceSuccessionWriterGeneration,
   assertSuccessionAttemptMayAdvance,
+  withSuccessionAttemptMayAdvance,
   handbackSuccessionWriterGeneration,
   joinSuccessionWriterGeneration,
   observeSuccessionWriterGeneration,
@@ -1617,14 +1618,38 @@ async function removeAbandonedStoreDirectory(
     const markerPath = join(path, '.coral-closed-reaping.v1.json');
     const markerProof = await observeContainedRegularFileAsync(runtime.storage, path, markerPath, root);
     if (markerProof.kind === 'disproven') {
+      const lockPath = join(path, STORE_LOCK_FILE_NAME);
+      const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
+      if (lock.kind === 'unobservable') return 'unobservable';
+      let release: FileLockLease | undefined;
+      if (lock.kind === 'proven') {
+        const attempt = attemptExclusiveFileLockSync(lockPath);
+        if (attempt.kind === 'contended') return 'locked';
+        if (attempt.kind === 'malformed') return 'unobservable';
+        if (attempt.kind === 'unobservable') {
+          auditSweepFailure(lockPath, attempt.cause);
+          return 'target-failed';
+        }
+        release = attempt.lease;
+      }
       const retained = join(dbDir, `${RETAINED_REAPING_DIRECTORY_PREFIX}${runtime.ids.uuid()}`);
+      let outcome: LockedRemoval | 'retained';
       try {
         runtime.storage.renameSync(path, retained);
-        return runtime.storage.syncDirectoryDurableSync(dbDir) ? 'retained' : 'target-failed';
+        outcome = runtime.storage.syncDirectoryDurableSync(dbDir) ? 'retained' : 'target-failed';
       } catch (error: unknown) {
         auditSweepFailure(path, error);
-        return 'target-failed';
+        outcome = 'target-failed';
       }
+      if (release !== undefined) {
+        try {
+          release();
+        } catch (error: unknown) {
+          auditSweepFailure(lockPath, error);
+          return 'lock-release-failed';
+        }
+      }
+      return outcome;
     }
     if (markerProof.kind !== 'proven' || resultsReleased === undefined) return 'unobservable';
     try {
@@ -2041,7 +2066,7 @@ function readPendingProtections(runtime: Pick<Runtime, 'paths' | 'storage'>): re
         return [{ storeRoot: value.storeRoot, epoch: value.epoch, reason: value.reason, recordedAt: value.recordedAt }];
       }
     } catch {
-      // An unreadable record hides nothing: the epoch it names is still listed at its canonical address.
+      // The record filename still identifies its canonical epoch for the next protection retry.
     }
     return [];
   });
@@ -2097,11 +2122,25 @@ function retryPendingProtections(runtime: Runtime, storeRoot: string, openEpoch:
     const directory = epochDirectory(storeRoot, pending.epoch);
     if (observeStorePath(runtime.storage, directory) === 'absent') {
       clearPendingProtection(runtime, storeRoot, pending.epoch);
-      continue;
     }
+  }
+  let pendingNames: ReadonlySet<string>;
+  try {
+    pendingNames = new Set(runtime.storage.readdirSync(pendingProtectionDirectory(runtime)));
+  } catch {
+    return;
+  }
+  for (const observation of observeStoreEpochs(runtime.storage, storeRoot)) {
+    if (
+      observation.proof.kind !== 'proven' ||
+      compareEpoch(observation.epoch, openEpoch) >= 0 ||
+      !pendingNames.has(basename(pendingProtectionPath(runtime, storeRoot, observation.epoch)))
+    )
+      continue;
+    const directory = epochDirectory(storeRoot, observation.epoch);
     try {
-      protectStoreEpoch(runtime, resolvedStoreEpoch(storeRoot, pending.epoch));
-      clearPendingProtection(runtime, storeRoot, pending.epoch);
+      protectStoreEpoch(runtime, resolvedStoreEpoch(storeRoot, observation.epoch));
+      clearPendingProtection(runtime, storeRoot, observation.epoch);
     } catch (error: unknown) {
       if (!(error instanceof StoreEpochOpenerHeldError)) auditSweepFailure(directory, error);
     }
@@ -2115,7 +2154,7 @@ function mintNextEpoch(
   supersedes: StoreEpoch | null,
   successor: StoreEpoch,
   classification: StoreEpochClassification,
-  retirementAttemptId?: string,
+  retirement?: Readonly<{ attemptId: string; expectedGeneration: SuccessionWriterGeneration }>,
 ): Readonly<{ kind: 'published'; lease: FileLockLease }> | Readonly<{ kind: 'contended' | 'swept' }> {
   reconcileProtectedEpochs(runtime, dbDir);
   const writerGeneration = observeSuccessionWriterGeneration(runtime);
@@ -2193,10 +2232,10 @@ function mintNextEpoch(
       metadataFor(supersedes, classification, options.build, new Date(runtime.time.now()).toISOString()),
     );
     if (
-      retirementAttemptId !== undefined &&
+      retirement !== undefined &&
       !runtime.storage.writeAtomicDurableSync(
         join(mint, RETIREMENT_ATTEMPT_FILE_NAME),
-        `${JSON.stringify({ version: 'v1', attemptId: retirementAttemptId })}\n`,
+        `${JSON.stringify({ version: 'v1', attemptId: retirement.attemptId })}\n`,
         { encoding: 'utf8', mode: 0o600 },
       )
     )
@@ -2204,10 +2243,14 @@ function mintNextEpoch(
     const ledgerId = initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
     recordEpochCustodyCoverage(runtime, mint, ledgerId);
     try {
-      runtime.storage.renameSync(mint, epochDirectory(dbDir, successor));
-      if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
-        throw new Error(`Failed to durably sync store epoch root '${dbDir}'.`);
-      }
+      const publish = () => {
+        runtime.storage.renameSync(mint, epochDirectory(dbDir, successor));
+        if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
+          throw new Error(`Failed to durably sync store epoch root '${dbDir}'.`);
+        }
+      };
+      if (retirement === undefined) publish();
+      else withSuccessionAttemptMayAdvance(runtime, retirement.expectedGeneration, retirement.attemptId, publish);
       leaseTransferred = true;
       return { kind: 'published', lease: mintLease };
     } catch (error: unknown) {
@@ -2251,7 +2294,10 @@ export async function mintRetiredStoreEpoch(
   }
   const successor = successorEpoch(expected.epoch);
   assertSuccessionAttemptMayAdvance(runtime, expectedGeneration, attemptId);
-  const published = mintNextEpoch(runtime, options, dbDir, expected.epoch, successor, classification, attemptId);
+  const published = mintNextEpoch(runtime, options, dbDir, expected.epoch, successor, classification, {
+    attemptId,
+    expectedGeneration,
+  });
   if (published.kind !== 'published') throw new Error(`Retirement mint was ${published.kind}.`);
   let generation: SuccessionWriterGeneration;
   try {

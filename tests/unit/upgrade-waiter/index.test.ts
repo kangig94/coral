@@ -11,6 +11,7 @@ import {
   type UpgradeIntent,
   type UpgradeIntentChange,
 } from '#src/infra/upgrade-intent.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const build = {
   version: '0.11.0',
@@ -41,6 +42,32 @@ function pendingIntent(): UpgradeIntentChange {
     blockers: [],
     retryCondition: { kind: 'incumbent-retirement', evidence: 'idle exit' },
     attemptDeadline: null,
+    completionReceipt: null,
+  };
+}
+
+function expiredAttempt(): UpgradeIntentChange {
+  return {
+    requestId: 'request-1',
+    incumbent: {
+      instanceId: 'legacy',
+      pid: 1234,
+      incarnation: null,
+      version: '0.10.13',
+      bundleHash: 'fedcba9876543210',
+      flavor: 'prod',
+    },
+    target: { build, pluginRootLabel: '/installed/target' },
+    attemptId: 'expired-attempt',
+    attemptOwner: { kind: 'waiter', instanceId: 'expired-waiter', pid: 2222, incarnation: null },
+    attemptChild: { attemptId: 'expired-attempt', pid: 3333, incarnation: testIncarnation('expired-target') },
+    disposition: 'deferred',
+    blockers: [{ owner: 'waiter', reason: 'target did not report serving before attempt deadline' }],
+    retryCondition: {
+      kind: 'incumbent-retirement',
+      evidence: 'legacy incumbent retired; successor attempt expired',
+    },
+    attemptDeadline: '2026-09-25T00:00:00.000Z',
     completionReceipt: null,
   };
 }
@@ -282,5 +309,83 @@ describe('upgrade waiter', () => {
       kind: 'readable',
       intent: { attemptOwner: null, target: { pluginRootLabel: '/installed/newer' } },
     });
+  });
+
+  it('reclaims an expired attempt when its recorded target is decisively absent', async () => {
+    const dir = runDir();
+    const seeded = await compareAndSwapUpgradeIntent(dir, null, expiredAttempt());
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+
+    const realPorts = createRealUpgradeWaiterPorts();
+    const ids = ['replacement-waiter', 'replacement-attempt'];
+    const launch = vi.fn(async (intent, attemptId) => {
+      const completed = await compareAndSwapUpgradeIntent(dir, intent.revision, {
+        ...intent,
+        attemptChild: null,
+        disposition: 'completed',
+        completionReceipt: {
+          kind: 'serving',
+          attemptId,
+          successor: { instanceId: 'replacement-target', pid: 4444, incarnation: null, build },
+          epochKey: 'epoch-1:lineage-1',
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: '2026-09-25T00:00:01.000Z',
+        },
+      });
+      expect(completed.kind).toBe('written');
+    });
+
+    await expect(
+      runUpgradeWaiter({
+        runDir: dir,
+        socketPath: '/unused.sock',
+        targetRoot: '/installed/target',
+        validateTarget: () => true,
+        observeRetirement: async () => 'retired',
+        launchTarget: launch,
+        ports: {
+          ...realPorts,
+          pid: 4444,
+          uuid: () => ids.shift() ?? 'unexpected-id',
+          processIncarnation: () => null,
+          processLiveness: () => 'absent',
+          pathAbsent: () => true,
+          time: { now: () => Date.parse('2026-09-25T00:00:01.000Z'), sleep: async () => {} },
+        },
+      }),
+    ).resolves.toEqual({ kind: 'completed' });
+
+    expect(launch).toHaveBeenCalledOnce();
+    expect(readUpgradeIntent(dir)).toMatchObject({
+      kind: 'readable',
+      intent: { disposition: 'completed', attemptId: 'replacement-attempt' },
+    });
+  });
+
+  it('keeps an expired recorded target when its death cannot be proven', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, expiredAttempt());
+    const ports = createRealUpgradeWaiterPorts();
+    const launch = vi.fn(async () => undefined);
+
+    expect(
+      await runUpgradeWaiter({
+        runDir: dir,
+        socketPath: '/unused.sock',
+        targetRoot: '/installed/target',
+        validateTarget: () => true,
+        observeRetirement: async () => 'retired',
+        launchTarget: launch,
+        ports: {
+          ...ports,
+          processIncarnation: () => null,
+          processLiveness: () => 'unknown',
+          time: { now: () => Date.parse('2026-09-25T00:00:01.000Z'), sleep: async () => {} },
+        },
+      }),
+    ).toEqual({ kind: 'lease-held' });
+    expect(launch).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(dir)).toMatchObject({ intent: { attemptId: 'expired-attempt' } });
   });
 });

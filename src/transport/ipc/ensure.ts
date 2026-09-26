@@ -829,12 +829,10 @@ async function waitForBackendReady(
   // draining coordinator: that would hand back the incumbent as its own replacement.
   const admission: RouteLifecycleAdmission = 'running';
   let unansweredRun: UnansweredRun | null = null;
-  let firstObservedHolder: string | null | undefined;
 
   while (currentAttempt || timePort.now() < readyDeadline) {
     const info = readDiscoverySnapshot(paths);
     const holder = recordedHolderIdentity(info);
-    if (firstObservedHolder === undefined) firstObservedHolder = holder;
     const address = info?.socketPath ?? expectedSocketPath;
     const probeStartedAt = timePort.now();
     const observedReading = await readRawCoordinatorHealth(createIpcClient(address, timePort));
@@ -885,8 +883,7 @@ async function waitForBackendReady(
         case 'documented': {
           const latestInfo = readDiscoverySnapshot(paths);
           const sameHolder =
-            firstObservedHolder !== null &&
-            firstObservedHolder === holder &&
+            holder !== null &&
             holder === recordedHolderIdentity(latestInfo) &&
             unansweredRun?.holder === holder &&
             unansweredRun?.address === address;

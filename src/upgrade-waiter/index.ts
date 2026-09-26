@@ -68,14 +68,14 @@ function socketReleased(socketPath: string): Promise<boolean> {
   });
 }
 
-/** A recorded incumbent without an incarnation is judged by its pid alone, which only ever proves absence. */
-export function observeRecordedIncumbent(
+/** Without a matching incarnation, only observed PID absence permits release. */
+export function observeRecordedProcess(
   ports: Pick<UpgradeWaiterPorts, 'processIncarnation' | 'processLiveness'>,
-  incumbent: UpgradeIntent['incumbent'],
+  recorded: Pick<UpgradeIntent['incumbent'], 'pid' | 'incarnation'>,
 ): ProcessLiveness {
-  const current = incumbent.incarnation === null ? null : ports.processIncarnation(incumbent.pid);
-  if (current !== null) return current === incumbent.incarnation ? 'alive' : 'absent';
-  return ports.processLiveness(incumbent.pid);
+  const current = recorded.incarnation === null ? null : ports.processIncarnation(recorded.pid);
+  if (current !== null) return current === recorded.incarnation ? 'alive' : 'absent';
+  return ports.processLiveness(recorded.pid);
 }
 
 /** Only ping and health may poll a legacy incumbent; catalog requests renew its idle timer. */
@@ -92,9 +92,9 @@ async function observeNaturalRetirement(
       incarnation?: string;
     }>({ timeoutMs: 1_000 });
     if (sameIncumbent(intent, ping)) return 'serving';
-    return observeRecordedIncumbent(ports, intent.incumbent) === 'absent' ? 'replaced' : 'unknown';
+    return observeRecordedProcess(ports, intent.incumbent) === 'absent' ? 'replaced' : 'unknown';
   } catch {
-    if (observeRecordedIncumbent(ports, intent.incumbent) !== 'absent') return 'unknown';
+    if (observeRecordedProcess(ports, intent.incumbent) !== 'absent') return 'unknown';
     if (!ports.pathAbsent(join(runDir, 'coordinator.json'))) return 'unknown';
     return (await socketReleased(socketPath)) ? 'retired' : 'unknown';
   }
@@ -182,12 +182,28 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       return { kind: 'closed' };
     }
     requestId = intent.requestId;
+    const child = intent.attemptChild;
     if (
       intent.disposition === 'deferred' &&
       intent.attemptId !== null &&
-      intent.attemptChild?.attemptId === intent.attemptId
+      child !== null &&
+      child !== undefined &&
+      child.attemptId === intent.attemptId
     ) {
-      return { kind: 'lease-held' };
+      if (intent.attemptDeadline === null || Date.parse(intent.attemptDeadline) > now()) {
+        return { kind: 'lease-held' };
+      }
+      if (observeRecordedProcess(ports, child) !== 'absent') return { kind: 'lease-held' };
+      const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+        ...intent,
+        attemptId: null,
+        attemptOwner: null,
+        attemptChild: null,
+        attemptDeadline: null,
+      });
+      if (released.kind === 'conflict') continue;
+      if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
+      continue;
     }
     if (!validate(intent)) {
       if (launched) return { kind: 'target-unavailable' };

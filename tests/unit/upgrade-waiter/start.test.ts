@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { requestLegacyUpgrade } from '#src/upgrade-waiter/start.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 
 const incumbent = {
   instanceId: 'legacy',
@@ -194,5 +195,78 @@ describe('legacy upgrade request', () => {
       }),
     ).toEqual({ kind: 'refused', reason: 'pending intent names another incumbent', disposition: 'deferred' });
     expect(startWaiter).not.toHaveBeenCalled();
+  });
+
+  it('keeps an expired attempt while its recorded target may still serve', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    const retired = { ...incumbent, instanceId: 'retired', pid: await exitedPid() };
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('test process has no incarnation');
+    expect(
+      await compareAndSwapUpgradeIntent(runDir, null, {
+        requestId: 'retired-request',
+        incumbent: retired,
+        target: { build, pluginRootLabel: '/installed/target' },
+        attemptId: 'expired-attempt',
+        attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: 2222, incarnation: null },
+        attemptChild: { attemptId: 'expired-attempt', pid: process.pid, incarnation },
+        disposition: 'deferred',
+        blockers: [{ owner: 'waiter', reason: 'target did not report serving before attempt deadline' }],
+        retryCondition: { kind: 'incumbent-retirement', evidence: 'successor attempt expired' },
+        attemptDeadline: '2026-09-24T00:00:00.000Z',
+        completionReceipt: null,
+      }),
+    ).toMatchObject({ kind: 'written' });
+    const startWaiter = vi.fn(async () => ({ kind: 'started' as const, pid: 5678 }));
+
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        startWaiter,
+      }),
+    ).toEqual({ kind: 'refused', reason: 'pending intent names another incumbent', disposition: 'deferred' });
+    expect(startWaiter).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { attemptId: 'expired-attempt' } });
+  });
+
+  it('keeps a recorded target when the same incumbent requests a newer build', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('test process has no incarnation');
+    expect(
+      await compareAndSwapUpgradeIntent(runDir, null, {
+        requestId: 'active-request',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        attemptId: 'active-attempt',
+        attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: 2222, incarnation: null },
+        attemptChild: { attemptId: 'active-attempt', pid: process.pid, incarnation },
+        disposition: 'attempting',
+        blockers: [],
+        retryCondition: null,
+        attemptDeadline: '2026-09-24T00:00:00.000Z',
+        completionReceipt: null,
+      }),
+    ).toMatchObject({ kind: 'written' });
+    const startWaiter = vi.fn(async () => ({ kind: 'started' as const, pid: 5678 }));
+
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build: { ...build, version: '0.12.0' }, pluginRootLabel: '/installed/newer' },
+        startWaiter,
+      }),
+    ).toMatchObject({ kind: 'refused', disposition: 'deferred' });
+    expect(startWaiter).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: { requestId: 'active-request', attemptId: 'active-attempt' },
+    });
   });
 });

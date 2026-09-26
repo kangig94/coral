@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,13 +8,17 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import * as epochProtection from '#src/store/epoch-protection.js';
 import {
   discardCurrentStoreEpoch,
+  encodeResolvedStoreEpoch,
   epochDirectory,
+  epochPath,
   listStoreEpochs,
+  mintRetiredStoreEpoch,
   retirementMintDisposition,
   settleStoreEpoch,
   sweepStoreEpochsPostReady,
 } from '#src/store/epoch.js';
 import { createSharedFileLockSync } from '#src/infra/fs-lock.js';
+import { joinSuccessionWriterGeneration, refuseSuccessionAttempt } from '#src/store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { authorizeFixtureStoreMint } from '#tests/helpers/store-db.js';
 
@@ -37,6 +41,51 @@ afterEach(() => {
 });
 
 describe('superseded epoch protection', () => {
+  it('does not publish when refusal arrives after authorization but before publication', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-retirement-mint-refusal-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const settled = settleStoreEpoch(runtime, {
+      storeFormat: format,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
+    settled.db.close();
+    const expected = joinSuccessionWriterGeneration(runtime, settled.store).generation;
+    const epochKey = encodeResolvedStoreEpoch(runtime, settled.store);
+    const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
+    epochProtection.protectStoreEpoch(runtime, settled.store);
+    const attemptId = 'refused-at-retirement-publication';
+    const write = runtime.storage.writeAtomicDurableSync;
+    let refusalRecorded = false;
+    let published = false;
+    vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, ...args) => {
+      if (!refusalRecorded && path.endsWith('.retirement-attempt.v1.json')) {
+        refusalRecorded = true;
+        refuseSuccessionAttempt(runtime, attemptId);
+      }
+      return write(path, ...args);
+    });
+    const rename = runtime.storage.renameSync;
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((from, to) => {
+      if (to === epochDirectory(dbDir, '2')) published = true;
+      return rename(from, to);
+    });
+    const newerFormat = {
+      ...format,
+      productVersion: '0.11.0',
+      fingerprint: `sha256:${'0'.repeat(64)}` as const,
+    };
+
+    await expect(
+      mintRetiredStoreEpoch(runtime, { storeFormat: newerFormat, build }, epochKey, attemptId, expected, () => {}),
+    ).rejects.toThrow();
+
+    expect(refusalRecorded).toBe(true);
+    expect(published).toBe(false);
+    expect(existsSync(epochDirectory(dbDir, '2'))).toBe(false);
+  });
+
   it('should protect an epoch that will not open before publishing its successor when nothing holds it', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-superseded-protection-'));
     roots.push(root);
@@ -96,6 +145,43 @@ describe('superseded epoch protection', () => {
     const listed = listStoreEpochs(runtime).find((entry) => entry.epoch === '1');
     expect(listed).toMatchObject({ role: 'protected' });
     expect(listed?.protectionPending).toBeUndefined();
+  });
+
+  it('retries a readable canonical epoch when its deferred-protection record is unreadable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-pending-protection-unreadable-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const initial = settleStoreEpoch(runtime, {
+      storeFormat: format,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
+    initial.db.close();
+    const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
+    chmodSync(epochPath(dbDir, '1'), 0o000);
+    const opener = createSharedFileLockSync(join(epochDirectory(dbDir, '1'), '.lock'));
+    let successor: ReturnType<typeof settleStoreEpoch>;
+    try {
+      successor = settleStoreEpoch(runtime, {
+        storeFormat: format,
+        build,
+        startupBusyTimeoutMs: 1,
+        authorizeMint: ({ incumbent, observedEpochCount }) =>
+          incumbent === null && observedEpochCount > 0 ? retirementMintDisposition('unopenable', null) : null,
+      });
+      successor.db.close();
+      const pendingDir = join(runtime.paths.coral.generation.dataRoot, 'store-epoch-protection-pending.v1');
+      const pending = readdirSync(pendingDir).at(0);
+      if (pending === undefined) throw new Error('Deferred protection was not recorded.');
+      writeFileSync(join(pendingDir, pending), '{');
+    } finally {
+      opener();
+    }
+
+    await sweepStoreEpochsPostReady(runtime, successor.store);
+
+    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
+    expect(listStoreEpochs(runtime)).toContainEqual(expect.objectContaining({ epoch: '1', role: 'protected' }));
   });
 
   it('should refuse publication when a held epoch cannot be recorded for later protection', () => {

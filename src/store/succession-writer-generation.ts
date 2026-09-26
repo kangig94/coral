@@ -374,12 +374,13 @@ export function advanceSuccessionWriterGeneration(
   }
 }
 
-/** A refused attempt cannot publish a retirement mint before attempting the guarded writer advance. */
-export function assertSuccessionAttemptMayAdvance(
+/** Keep retirement publication ordered with refusal on the writer-generation guard. */
+export function withSuccessionAttemptMayAdvance<T>(
   runtime: Runtime,
   expected: SuccessionWriterGeneration,
   attemptId: string,
-): void {
+  publish: () => T,
+): T {
   const location = ensureGuard(runtime);
   const release = exclusiveGuard(runtime, location.guard);
   try {
@@ -392,9 +393,18 @@ export function assertSuccessionAttemptMayAdvance(
       throw new Error(`Succession writer generation ${expected.generation} cannot advance.`);
     }
     assertNotRefused(current, attemptId);
+    return publish();
   } finally {
     release();
   }
+}
+
+export function assertSuccessionAttemptMayAdvance(
+  runtime: Runtime,
+  expected: SuccessionWriterGeneration,
+  attemptId: string,
+): void {
+  withSuccessionAttemptMayAdvance(runtime, expected, attemptId, () => {});
 }
 
 export function recordSuccessionServing(

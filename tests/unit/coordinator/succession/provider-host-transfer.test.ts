@@ -418,6 +418,62 @@ describe('accepted controller transfer', () => {
     await completing;
   });
 
+  it('accepts the completed host receipt after the old serving marker is cleared', async () => {
+    const runtime = runtimeFor();
+    const capsule = capsuleFor(runtime, INCUMBENT_BUILD);
+    await preparedTransfer(runtime);
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('expected a readable intent');
+    const preparation = successionPreparationSchema.parse(observed.intent.successionPreparation);
+    const setsReceipt = preparation.receipts.find((receipt) => receipt.owner === 'provider-proxy-sets');
+    if (setsReceipt === undefined) throw new Error('expected the host receipt');
+    const completed = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      observed.intent.revision,
+      {
+        ...observed.intent,
+        disposition: 'completed',
+        completionReceipt: {
+          kind: 'serving',
+          attemptId: preparation.attemptId,
+          successor: {
+            instanceId: 'successor',
+            pid: 2,
+            incarnation: null,
+            build: observed.intent.target.build,
+          },
+          epochKey: preparation.epochKey,
+          controlGeneration: 2,
+          acceptedObligations: [
+            { owner: 'provider-proxy-sets', receiptId: setsReceipt.receiptId, controlGeneration: 2 },
+          ],
+          recordedAt: new Date().toISOString(),
+        },
+      },
+    );
+    expect(completed.kind).toBe('written');
+
+    expect(acceptedControllerTransferHandsCapsule(runtime, SUCCESSOR_BUILD, null, capsule)).toBe('served');
+    expect(acceptedControllerTransferHandsCapsule(runtime, INCUMBENT_BUILD, null, capsule)).toBe('not-accepted');
+    const servingIntent = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (servingIntent.kind !== 'readable' || servingIntent.intent.completionReceipt === null) {
+      throw new Error('expected a completed intent');
+    }
+    const changed = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      servingIntent.intent.revision,
+      {
+        ...servingIntent.intent,
+        completionReceipt: {
+          ...servingIntent.intent.completionReceipt,
+          acceptedObligations: [],
+        },
+      },
+    );
+    expect(changed.kind).toBe('written');
+    expect(acceptedControllerTransferHandsCapsule(runtime, SUCCESSOR_BUILD, null, capsule)).toBe('not-accepted');
+  });
+
   it('holds an accepted host when its restart evidence cannot be written durably', async () => {
     const runtime = runtimeFor();
     const capsule = capsuleFor(runtime, INCUMBENT_BUILD);
@@ -575,6 +631,42 @@ describe('provider host transfer across a failed attempt', () => {
     expect(reader(true).verifyReceipts(preparation, true)).toEqual([]);
     expect(() => reader(false).verifyReceipts(preparation, true)).toThrow(/no longer matches/u);
   });
+
+  it('does not retain a settled operation behind a vanished transfer host during committed recovery', async () => {
+    const runtime = runtimeFor();
+    const preparation = await preparedIntent(runtime, SUCCESSOR_BUILD);
+    let jobSettled = true;
+    const settledRecovery = createProviderHostTransfer({
+      runtime,
+      flavor: 'prod',
+      buildSetId: SUCCESSOR_BUILD,
+      lifecycle: () => lifecycleWith([]),
+      db: () => databaseWith([]),
+      jobSettled: () => jobSettled,
+      localOperationJobIds: () => [],
+      hostRootRetained: () => true,
+      attemptId: () => null,
+      targetChangesStoreFormat: () => false,
+      log: () => undefined,
+    });
+
+    expect(settledRecovery.verifyReceipts(preparation, true)).toEqual([]);
+    const identity = providerProxySetIdentityFromRecord(executing());
+    const capsulePath = currentHandoffCapsulePath(
+      {
+        generation: 'gen2',
+        flavor: 'prod',
+        buildSetId: identity.buildSetId,
+        hostFingerprint: identity.hostFingerprint,
+        proxyInstanceId: identity.proxyInstanceId,
+      },
+      { baseDir: dirname(runtime.paths.coral.generation.root) },
+    );
+    runtime.storage.unlinkSync(capsulePath);
+    expect(settledRecovery.verifyReceipts(preparation, true)).toEqual([]);
+    jobSettled = false;
+    expect(() => settledRecovery.verifyReceipts(preparation, true)).toThrow(/recovery grants are unavailable/u);
+  });
 });
 
 describe('provider host transfer at the commit and after serving', () => {
@@ -629,6 +721,27 @@ describe('provider host transfer at the commit and after serving', () => {
     await transferOver(runtimeFor(), lifecycleWith([host]), record).completeTransfers();
 
     expect(install).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops a refused grant retry when the host leaves during its backoff', async () => {
+    const record = executing();
+    let live = true;
+    const install = vi.fn(async () => {
+      live = false;
+      return { kind: 'refused', incident: { role: 'guardian' } };
+    });
+    const host = {
+      ...hostFor(record, authorized),
+      installRecoveryCredential: install,
+    } as unknown as DurableProviderProxyOperationAuthority;
+    const lifecycle = {
+      liveSets: () => (live ? [host] : []),
+      authorityFor: () => host,
+    } as unknown as ProviderProxySetLifecycle;
+
+    await transferOver(runtimeFor(), lifecycle, record).completeTransfers();
+
+    expect(install).toHaveBeenCalledOnce();
   });
 
   it('stops installing once the host is no longer this coordinator’s', async () => {

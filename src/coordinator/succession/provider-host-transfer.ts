@@ -1,6 +1,6 @@
 import { formatError } from '../../infra/error-format.js';
 import type { JsonValue } from '../../infra/json-value.js';
-import { readUpgradeIntent } from '../../infra/upgrade-intent.js';
+import { readUpgradeIntent, type UpgradeIntent } from '../../infra/upgrade-intent.js';
 import { PROVIDER_PROXY_CONTROL_GENERATION } from '../../provider-proxy/controller-succession.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '../../provider-proxy/protocol.js';
 import type { RedeemableHandoffCapsule } from '../../provider-proxy/handoff-capsule.js';
@@ -97,7 +97,24 @@ function receiptOf(
   return preparation.receipts.find((receipt) => receipt.owner === owner) ?? null;
 }
 
-/** A pre-serving transfer is valid only for its running attempt; a later controller needs a serving record. */
+function completedTransferServed(
+  intent: UpgradeIntent,
+  attemptId: string,
+  receiptId: string,
+  ownBuildSetId: string,
+): boolean {
+  return (
+    intent.disposition === 'completed' &&
+    intent.attemptId === attemptId &&
+    intent.completionReceipt?.attemptId === attemptId &&
+    intent.completionReceipt.successor.build.buildSetId === ownBuildSetId &&
+    intent.completionReceipt.acceptedObligations.some(
+      (obligation) => obligation.owner === PROVIDER_PROXY_SETS_OWNER && obligation.receiptId === receiptId,
+    )
+  );
+}
+
+/** A pre-serving transfer is valid only for its running attempt; a later controller needs durable serving evidence. */
 export function acceptedControllerTransferHandsCapsule(
   runtime: Runtime,
   ownBuildSetId: string,
@@ -110,9 +127,11 @@ export function acceptedControllerTransferHandsCapsule(
     if (preparation.success) {
       const receipt = receiptOf(preparation.data, PROVIDER_PROXY_SETS_OWNER);
       const transfer = receipt === null ? null : decodeProviderProxyControllerTransfer(receipt.payload);
-      if (transfer !== null && controllerTransferHandsCapsuleTo(transfer, capsule, ownBuildSetId)) {
+      if (receipt !== null && transfer !== null && controllerTransferHandsCapsuleTo(transfer, capsule, ownBuildSetId)) {
         const attemptId = preparation.data.attemptId;
-        const served = observeSuccessionServing(runtime, attemptId) !== null;
+        const served =
+          observeSuccessionServing(runtime, attemptId) !== null ||
+          completedTransferServed(observed.intent, attemptId, receipt.receiptId, ownBuildSetId);
         if (!served && runningAttemptId !== attemptId) return 'not-accepted';
         if (recordPendingGrantTransfer(runtime, capsule, ownBuildSetId, attemptId).kind !== 'recorded') {
           return 'unconfirmed';
@@ -123,7 +142,15 @@ export function acceptedControllerTransferHandsCapsule(
   }
   const pending = readPendingGrantTransfer(runtime, capsule, ownBuildSetId);
   if (pending.kind === 'unreadable') return 'unconfirmed';
-  return pending.kind === 'recorded' && observeSuccessionServing(runtime, pending.attemptId) !== null
+  if (pending.kind !== 'recorded') return 'not-accepted';
+  return observeSuccessionServing(runtime, pending.attemptId) !== null ||
+    (observed.kind === 'readable' &&
+      completedTransferServed(
+        observed.intent,
+        pending.attemptId,
+        `${PROVIDER_PROXY_SETS_OWNER}:${pending.attemptId}`,
+        ownBuildSetId,
+      ))
     ? 'served'
     : 'not-accepted';
 }
@@ -447,6 +474,23 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
       if (transfer === null || reader === null) {
         throw new Error('Provider host transfer receipt does not name this successor.');
       }
+      const operations = operationsReceipt === null ? null : decodeProviderOperationTransfer(operationsReceipt.payload);
+      if (
+        operationsReceipt !== null &&
+        (operations === null || operationsReceipt.recoveryGrantId !== setsReceipt.recoveryGrantId)
+      ) {
+        throw new Error('Provider operation receipt no longer matches the saga journal.');
+      }
+      const unsettledOperations =
+        operations === null || !committedSuccessorServed
+          ? operations
+          : {
+              ...operations,
+              operations: operations.operations.filter((entry) => !ports.jobSettled(entry.operation.jobId)),
+            };
+      if (committedSuccessorServed && (operationsReceipt === null || unsettledOperations?.operations.length === 0)) {
+        return [];
+      }
       const successorServes =
         committedSuccessorServed || observeSuccessionServing(ports.runtime, preparation.attemptId) !== null;
       if (
@@ -461,14 +505,6 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
         throw new Error('Provider host recovery grants are unavailable or changed.');
       }
       if (operationsReceipt === null) return [];
-      const operations = decodeProviderOperationTransfer(operationsReceipt.payload);
-      const unsettledOperations =
-        operations === null || !committedSuccessorServed
-          ? operations
-          : {
-              ...operations,
-              operations: operations.operations.filter((entry) => !ports.jobSettled(entry.operation.jobId)),
-            };
       const jobIds =
         unsettledOperations === null
           ? null
@@ -478,7 +514,7 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
               transfer,
               !committedSuccessorServed && successorServes,
             );
-      if (jobIds === null || operationsReceipt.recoveryGrantId !== setsReceipt.recoveryGrantId) {
+      if (jobIds === null) {
         throw new Error('Provider operation receipt no longer matches the saga journal.');
       }
       return jobIds;

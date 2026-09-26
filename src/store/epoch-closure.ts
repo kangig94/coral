@@ -25,7 +25,10 @@ const closureSchema = z
     reason: z.string().min(1),
     observedAtMs: z.number().int().nonnegative(),
   })
-  .passthrough();
+  .passthrough()
+  .refine((evidence) => (evidence.disposition === 'closed') === (evidence.executionDischarge === 'certified'), {
+    message: 'Execution discharge must agree with the closure disposition.',
+  });
 const coverageSchema = z
   .object({
     version: z.literal('v1'),
@@ -139,9 +142,6 @@ export function recordEpochClosure(
   input: EpochClosureEvidence,
 ): EpochClosureRecording {
   const evidence = closureSchema.parse(input);
-  if ((evidence.disposition === 'closed') !== (evidence.executionDischarge === 'certified')) {
-    throw new Error('Execution discharge must agree with the closure disposition.');
-  }
   const read = observeEpochClosure(runtime, stateRoot, evidence.epochKey);
   if (read.kind === 'unreadable') return read;
   const existing = read.kind === 'recorded' ? read.evidence : null;

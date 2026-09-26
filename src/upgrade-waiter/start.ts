@@ -11,7 +11,7 @@ import {
   type UpgradeIntentProblem,
 } from '../infra/upgrade-intent.js';
 import { createRealUpgradeWaiterPorts, type UpgradeWaiterPorts } from '../runtime/upgrade-waiter.js';
-import { CONTENDER_DEFERRAL_OWNER, observeRecordedIncumbent } from './index.js';
+import { CONTENDER_DEFERRAL_OWNER, observeRecordedProcess } from './index.js';
 
 const WAITER_CLAIM_TIMEOUT_MS = 5_000;
 const WAITER_CLAIM_POLL_MS = 50;
@@ -104,7 +104,11 @@ function retiredIncumbentSupersession(
   ) {
     return 'attempt-held';
   }
-  return observeRecordedIncumbent(ports, intent.incumbent) === 'absent' ? 'replaceable' : 'incumbent-not-proven-gone';
+  const child = intent.attemptChild;
+  if (child?.attemptId === intent.attemptId && observeRecordedProcess(ports, child) !== 'absent') {
+    return 'attempt-held';
+  }
+  return observeRecordedProcess(ports, intent.incumbent) === 'absent' ? 'replaceable' : 'incumbent-not-proven-gone';
 }
 
 /** A newer generation's intent belongs to the build that wrote it; one this build cannot read at all is an error. */
@@ -180,6 +184,14 @@ export async function requestLegacyUpgrade(
           settle: () => registered,
         };
       }
+    }
+    if (
+      open &&
+      current !== null &&
+      current.attemptChild?.attemptId === current.attemptId &&
+      observeRecordedProcess(ports, current.attemptChild) !== 'absent'
+    ) {
+      return refuse('recorded successor may still serve', 'deferred');
     }
     const requestId = ports.uuid();
     return {

@@ -644,6 +644,35 @@ describe('ipc server', () => {
     }
   });
 
+  it('completes a carried partial frame with bytes received after hand-back', async () => {
+    const listener = createIpcServer(createPorts());
+    const { server, socketPath } = await listenReadingServer();
+    const client = createConnection(socketPath);
+    const accepted = await nextConnection(server);
+    try {
+      const response = new Promise<string>((resolve, reject) => {
+        let received = '';
+        client.on('error', reject);
+        client.on('data', (chunk) => {
+          received += chunk.toString();
+          if (received.includes('\n')) resolve(received);
+        });
+      });
+      listener.acceptSocket!(
+        accepted,
+        Buffer.from('{"kind":"request","method":"transport.ping","id":"split"').toString('base64'),
+      );
+      client.write('}\n');
+
+      await expect(withTestTimeout(response, 'carried partial request')).resolves.toContain('split');
+    } finally {
+      accepted.destroy();
+      client.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeIpcServer(listener);
+    }
+  });
+
   // A handle this build cannot stop keeps reading after it is sent, so forwarding it loses its frame: the only
   // safe owner left is this process.
   it('serves a socket locally instead of forwarding it when its handle cannot stop reading', async () => {

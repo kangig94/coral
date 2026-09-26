@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  closeServedIntentAtCleanExit,
   completeWaiterLaunchedUpgrade,
   dischargeDeadSuccessionAttempt,
   heldUnservedMint,
@@ -40,6 +41,7 @@ import {
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { SuccessionAttemptChild } from '#src/coordinator/succession/attempt-child.js';
 import { authorizeFixtureStoreMint } from '#tests/helpers/store-db.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const roots: string[] = [];
 const build = {
@@ -1273,5 +1275,175 @@ describe('recorded unserved mint discard at startup', () => {
     expect(heldUnservedMint(runtime)).toBeNull();
     protectStoreEpoch(runtime, resolvedStoreEpoch(realpathSync(runtime.paths.coral.store.dbDir), '1'));
     expect(heldUnservedMint(runtime)).toMatchObject({ kind: 'unserved-mint-held', attemptId: 'failed' });
+  });
+});
+
+describe('served attempt reconciliation', () => {
+  it('does not charge a newer attempt for a serving receipt it lost a race to reconcile', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-red-r5-reconciliation-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const format = currentCoralStoreFormat();
+    const build = {
+      version: format.productVersion,
+      buildSetId: '00000000-0000-4000-8000-000000000001',
+      flavor: 'prod' as const,
+      storeFormatFingerprint: format.fingerprint,
+      bundleHash: '0123456789abcdef',
+      cliBundleHash: '0123456789abcdef',
+      claudeAppserverBundleHash: '0123456789abcdef',
+      durableWrapperBundleHash: '0123456789abcdef',
+    };
+    const store = settleStoreEpoch(runtime, {
+      storeFormat: format,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
+    store.db.close();
+    const writer = writerGeneration.joinSuccessionWriterGeneration(runtime, store.store);
+    const epochKey = encodeResolvedStoreEpoch(runtime, store.store);
+    const oldAttemptId = 'served-attempt';
+    const target = { build, pluginRootLabel: '/installed/target' };
+    const seeded = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'old-request',
+      incumbent: {
+        instanceId: 'legacy',
+        pid: 1234,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target,
+      attemptId: oldAttemptId,
+      attemptOwner: { kind: 'waiter', instanceId: 'old-waiter', pid: 2222, incarnation: null },
+      attemptChild: { attemptId: oldAttemptId, pid: 3333, incarnation: testIncarnation('old-target') },
+      disposition: 'deferred',
+      blockers: [{ owner: 'waiter', reason: 'target did not report serving before attempt deadline' }],
+      retryCondition: { kind: 'incumbent-retirement', evidence: 'legacy incumbent retired; successor attempt expired' },
+      attemptDeadline: new Date(Date.now() + 60_000).toISOString(),
+      completionReceipt: null,
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    writerGeneration.recordSuccessionServing(runtime, writer.generation, {
+      attemptId: oldAttemptId,
+      epochKey,
+      successorInstanceId: 'old-target',
+      controlGeneration: writer.generation.generation,
+      recordedAt: new Date().toISOString(),
+    });
+
+    const observeServing = writerGeneration.observeSuccessionServing;
+    let observations = 0;
+    vi.spyOn(writerGeneration, 'observeSuccessionServing').mockImplementation((...args) => {
+      const serving = observeServing(...args);
+      if (++observations === 2) {
+        const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+        if (observed.kind !== 'readable') throw new Error('old intent disappeared');
+        writeFileSync(
+          upgradeIntentPath(runtime.paths.coral.coordinator.runDir),
+          JSON.stringify({
+            ...observed.intent,
+            revision: observed.intent.revision + 1,
+            requestId: 'new-request',
+            attemptId: 'new-attempt',
+            attemptOwner: { kind: 'incumbent', instanceId: 'new-incumbent', pid: 4444, incarnation: null },
+            attemptChild: null,
+            disposition: 'attempting',
+            blockers: [],
+            retryCondition: null,
+            completionReceipt: null,
+          }),
+        );
+      }
+      return serving;
+    });
+
+    await expect(
+      prepareCommittedSuccessorRecovery(
+        runtime,
+        { pluginRoot: '/installed/target', instanceId: 'restart' },
+        format,
+        build,
+        () => false,
+      ),
+    ).resolves.toEqual({ kind: 'none' });
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      kind: 'readable',
+      intent: { requestId: 'new-request', attemptId: 'new-attempt', blockers: [] },
+    });
+  });
+});
+
+describe('served intent clean exit', () => {
+  it('closes a served intent while preserving newer additive fields', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-red-r5-clean-exit-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const build = {
+      version: '0.11.0',
+      buildSetId: '00000000-0000-4000-8000-000000000001',
+      flavor: 'prod' as const,
+      storeFormatFingerprint: `sha256:${'0'.repeat(64)}`,
+      bundleHash: '0123456789abcdef',
+      cliBundleHash: '0123456789abcdef',
+      claudeAppserverBundleHash: '0123456789abcdef',
+      durableWrapperBundleHash: '0123456789abcdef',
+    };
+    const seeded = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'request-1',
+      incumbent: {
+        instanceId: 'old-incumbent',
+        pid: 1111,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'served-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: 2222, incarnation: null },
+      attemptChild: null,
+      disposition: 'completed',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: {
+        kind: 'serving',
+        attemptId: 'served-attempt',
+        successor: { instanceId: 'serving-instance', pid: 3333, incarnation: null, build },
+        epochKey: 'epoch-1:lineage-1',
+        controlGeneration: 1,
+        acceptedObligations: [],
+        recordedAt: '2026-09-25T00:00:00.000Z',
+      },
+      newerWriterStatus: { generation: 2, retained: true },
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+
+    await closeServedIntentAtCleanExit(runtime, 'serving-instance', {
+      instanceId: 'serving-instance',
+      pid: 3333,
+      incarnation: null,
+      version: build.version,
+      bundleHash: build.bundleHash,
+      flavor: build.flavor,
+    });
+
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      kind: 'readable',
+      intent: {
+        disposition: 'closed',
+        incumbent: { instanceId: 'serving-instance' },
+        attemptId: null,
+        attemptOwner: null,
+        attemptChild: null,
+        attemptDeadline: null,
+        completionReceipt: null,
+        blockers: [],
+        retryCondition: null,
+        newerWriterStatus: { generation: 2, retained: true },
+      },
+    });
   });
 });

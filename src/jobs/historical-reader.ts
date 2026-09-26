@@ -416,6 +416,7 @@ export function refreshHistoricalEpoch(
     const requested = new Set(jobIds);
     for (const row of reader(db)) {
       if (!requested.has(row.job_id)) continue;
+      requested.delete(row.job_id);
       const location = index.read(row.job_id);
       if (location === null || location.epochKey !== epochKey || location.disposition === 'terminal') continue;
       const detail = historicalDetail(row, readEvents(db, row.job_id));
@@ -428,6 +429,9 @@ export function refreshHistoricalEpoch(
       const markdown = content.length > 0 ? `${content}\n` : `${describeTerminalOutcome(detail.exit.outcome)}\n`;
       const resultPath = writeResultArtifact(source.storage, source.jobsRoot, row.job_id, markdown);
       index.recordTerminal(row.job_id, detail, resultPath, terminal.seq);
+    }
+    for (const jobId of requested) {
+      if (readEvents(db, jobId).some((event) => event.type === 'job.terminal.recorded')) return 'unreadable';
     }
     return 'read';
   } catch {

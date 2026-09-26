@@ -148,6 +148,7 @@ function predatesCustodyCoverage(runtime: Runtime, candidate: ClosureCandidate):
     Date.parse(observed.epochJson.value.publishedAt) < startMs &&
     epochs.some(
       (entry) =>
+        entry.resolved?.storeRoot === candidate.epoch.storeRoot &&
         entry.epochJson.kind === 'valid' &&
         BigInt(entry.epoch) > BigInt(candidate.epoch.epoch) &&
         Date.parse(entry.epochJson.value.publishedAt) < startMs,

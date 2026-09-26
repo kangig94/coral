@@ -59,6 +59,14 @@ import { insertProviderOperation } from '#src/store/provider-operation-journal.j
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { compareAndSwapUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { acceptedControllerTransferHandsCapsule } from '#src/coordinator/succession/provider-host-transfer.js';
+import {
+  advanceSuccessionWriterGeneration,
+  joinSuccessionWriterGeneration,
+  observeSuccessionServing,
+  recordSuccessionServing,
+} from '#src/store/succession-writer-generation.js';
 import {
   attemptProviderProxySetInheritance as attemptProviderProxySetInheritanceWithRequiredContainment,
   classifyProviderProxySetInheritance,
@@ -83,10 +91,7 @@ import {
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
-import {
-  readPendingGrantTransfer,
-  recordPendingGrantTransfer,
-} from '#src/coordinator/services/provider-proxy-set/pending-grant-transfer.js';
+import { recordPendingGrantTransfer } from '#src/coordinator/services/provider-proxy-set/pending-grant-transfer.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -923,10 +928,67 @@ describe('attemptProviderProxySetInheritance', () => {
       ).toEqual({
         kind: 'recorded',
       });
+      const store = { storeRoot: isolatedRuntime.paths.coral.generation.root, epoch: 'epoch-1' };
+      const epochKey = JSON.stringify({ ...store, path: join(store.storeRoot, store.epoch) });
+      const writer = joinSuccessionWriterGeneration(isolatedRuntime, store);
+      recordSuccessionServing(isolatedRuntime, writer.generation, {
+        attemptId: 'attempt-1',
+        epochKey,
+        successorInstanceId: 'successor',
+        controlGeneration: writer.generation.generation,
+        recordedAt: new Date().toISOString(),
+      });
+      const build = {
+        version: '0.11.0',
+        buildSetId: COORDINATOR_IDENTITY.buildSetId,
+        flavor: 'prod' as const,
+        storeFormatFingerprint: `sha256:${'0'.repeat(64)}`,
+        bundleHash: '0123456789abcdef',
+        cliBundleHash: '0123456789abcdef',
+        claudeAppserverBundleHash: '0123456789abcdef',
+        durableWrapperBundleHash: '0123456789abcdef',
+      };
+      const written = await compareAndSwapUpgradeIntent(isolatedRuntime.paths.coral.coordinator.runDir, null, {
+        requestId: 'request-1',
+        incumbent: {
+          instanceId: 'incumbent',
+          pid: 1,
+          incarnation: null,
+          version: '0.10.13',
+          bundleHash: 'fedcba9876543210',
+          flavor: 'prod',
+        },
+        target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+        attemptId: 'attempt-1',
+        attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: 1, incarnation: null },
+        attemptChild: null,
+        disposition: 'completed',
+        blockers: [],
+        retryCondition: null,
+        attemptDeadline: null,
+        successionPreparation: null,
+        completionReceipt: {
+          kind: 'serving',
+          attemptId: 'attempt-1',
+          successor: { instanceId: 'successor', pid: 2, incarnation: null, build },
+          epochKey,
+          controlGeneration: writer.generation.generation,
+          acceptedObligations: [
+            {
+              owner: 'provider-proxy-sets',
+              receiptId: 'provider-proxy-sets:attempt-1',
+              controlGeneration: writer.generation.generation,
+            },
+          ],
+          recordedAt: new Date().toISOString(),
+        },
+      });
+      expect(written.kind).toBe('written');
+      advanceSuccessionWriterGeneration(isolatedRuntime, writer.generation, store);
+      expect(observeSuccessionServing(isolatedRuntime, 'attempt-1')).toBeNull();
       const restartedAcceptance = () =>
-        readPendingGrantTransfer(isolatedRuntime, capsule, COORDINATOR_IDENTITY.buildSetId).kind === 'recorded'
-          ? ('served' as const)
-          : ('not-accepted' as const);
+        acceptedControllerTransferHandsCapsule(isolatedRuntime, COORDINATOR_IDENTITY.buildSetId, null, capsule);
+      expect(restartedAcceptance()).toBe('served');
       const outcome = await attemptProviderProxySetInheritance(
         loc,
         unusedDb,
