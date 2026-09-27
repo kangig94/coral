@@ -97,8 +97,8 @@ function activeWrite(retrySubject: RecoverySubject = subject()) {
   };
 }
 
-function createRegistry(behavior: RetryBehavior): RecoverySourceRegistry {
-  const registry = createRecoverySourceRegistry();
+function createRegistry(behavior: RetryBehavior, retryDeadlineMs?: number): RecoverySourceRegistry {
+  const registry = createRecoverySourceRegistry(retryDeadlineMs);
   registry.register<Envelope, string>(boundary, (retrySubject) => ({
     source: defineRecoverySource({
       boundary,
@@ -178,6 +178,13 @@ describe('recovery quarantine retry service', () => {
     key: 'subject-1',
     revision: 'revision-1',
   } as const;
+
+  it('bounds a recovery source that ignores cancellation', async () => {
+    const registry = createRegistry({ readEnvelope: () => envelope, settle: () => new Promise<never>(() => {}) }, 20);
+    await expect(service('coordinator-1', registry).clear(request)).rejects.toThrow(
+      'Recovery source retry deadline exceeded',
+    );
+  });
 
   it('should keep the runtime registry equal to every manifest boundary', () => {
     boundaryRoot = mkdtempSync(join(tmpdir(), 'coral-recovery-boundaries-'));

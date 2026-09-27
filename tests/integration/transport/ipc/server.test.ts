@@ -426,12 +426,10 @@ afterEach(() => {
 describe('ipc server', () => {
   it('returns the cancellation disposition when a unary handler obeys the lease abort', async () => {
     const ports = createPorts();
-    const shutdown = vi.fn();
     ports.admin.beginRequestLease = createRequestLeaseOwner({
       time: createRealTimePort(),
       begin: vi.fn(),
       end: vi.fn(),
-      shutdown,
       timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
     }).begin;
     ports.kb.readSearch = vi.fn(
@@ -456,22 +454,19 @@ describe('ipc server', () => {
         code: 'request_deadline_exceeded',
         context: { method: 'kb.entries.search', requestId: 'raw', outcome: 'cancelled' },
       });
-      expect(shutdown).not.toHaveBeenCalled();
     } finally {
       await closeIpcServer(listener);
     }
   });
 
-  it('returns a typed deadline error and directly requests shutdown for a never-settling unary operation', async () => {
+  it('returns a typed deadline error without stopping unrelated work for a never-settling unary operation', async () => {
     const ports = createPorts();
-    const shutdown = vi.fn();
     const begin = vi.fn();
     const end = vi.fn();
     const leases = createRequestLeaseOwner({
       time: createRealTimePort(),
       begin,
       end,
-      shutdown,
       timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
     });
     ports.admin.beginRequestLease = leases.begin;
@@ -489,7 +484,6 @@ describe('ipc server', () => {
         code: 'request_deadline_exceeded',
         context: { method: SUCCESSION_METHODS.status, requestId: 'raw', outcome: 'unknown' },
       });
-      expect(shutdown).toHaveBeenCalledTimes(1);
       expect(begin).toHaveBeenCalledTimes(1);
       expect(end).not.toHaveBeenCalled();
     } finally {

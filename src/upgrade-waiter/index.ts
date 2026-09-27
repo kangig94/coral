@@ -311,7 +311,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     const deadline = intent.attemptDeadline === null ? 0 : Date.parse(intent.attemptDeadline);
     if (attemptId === null) {
       if (
-        (intent.attemptOwner !== null && deadline > now()) ||
+        (intent.attemptOwner !== null && (deadline > now() || intent.attemptSpawnPending === true)) ||
         (intent.disposition === 'attempting' && intent.attemptId !== null && !child && deadline > now()) ||
         (child !== null && child !== undefined && observeRecordedProcess(ports, child) !== 'absent')
       )
@@ -319,6 +319,9 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       attemptId = ports.uuid();
     } else if (intent.attemptId !== attemptId || intent.attemptOwner?.instanceId !== instanceId) {
       return { kind: 'superseded' };
+    }
+    if (intent.attemptSpawnPending === true && !launched) {
+      return { kind: 'unobservable', reason: 'target spawn outcome is unresolved' };
     }
     if (launched && deadline <= now()) {
       const recordedChild = intent.attemptChild?.attemptId === attemptId;
@@ -352,6 +355,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
         attemptId,
         attemptOwner: { kind: 'waiter', instanceId, pid: ports.pid, incarnation },
         attemptChild: null,
+        attemptSpawnPending: false,
         attemptDeadline: new Date(now() + LEASE_MS).toISOString(),
         retryCondition: { kind: 'incumbent-retirement', evidence: 'waiting for verified idle retirement' },
       });
@@ -372,35 +376,54 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       if (claimed.kind === 'conflict') continue;
       if (claimed.kind !== 'written') return { kind: 'unobservable', reason: claimed.kind };
       if (newerInstalledTarget(claimed.intent)) continue;
+      const current = readUpgradeIntent(options.runDir);
+      if (current.kind !== 'readable') return { kind: 'unobservable', reason: current.kind };
+      if (
+        current.intent.attemptId !== attemptId ||
+        current.intent.attemptOwner?.instanceId !== instanceId ||
+        current.intent.disposition !== 'attempting' ||
+        current.intent.attemptDeadline === null ||
+        Date.parse(current.intent.attemptDeadline) <= now()
+      )
+        continue;
+      if (!validate(current.intent)) continue;
+      const spawning = await compareAndSwapUpgradeIntent(options.runDir, current.intent.revision, {
+        ...current.intent,
+        attemptSpawnPending: true,
+      });
+      if (spawning.kind === 'conflict') continue;
+      if (spawning.kind !== 'written') return { kind: 'unobservable', reason: spawning.kind };
       try {
-        launchedPid = (await launch(claimed.intent, attemptId)) ?? null;
-        if (launchedPid !== null) {
-          const childIncarnation = ports.processIncarnation(launchedPid);
-          for (;;) {
-            const observedChild = readUpgradeIntent(options.runDir);
-            if (observedChild.kind !== 'readable') break;
-            const current = observedChild.intent;
-            if (current.attemptId !== attemptId || current.attemptOwner?.instanceId !== instanceId) break;
-            if (current.attemptChild !== null && current.attemptChild !== undefined) break;
-            const recorded = await compareAndSwapUpgradeIntent(options.runDir, current.revision, {
-              ...current,
-              attemptChild: { attemptId, pid: launchedPid, incarnation: childIncarnation },
-            });
-            if (recorded.kind === 'conflict') continue;
-            break;
-          }
+        launchedPid = (await launch(spawning.intent, attemptId)) ?? null;
+        for (;;) {
+          const observedChild = readUpgradeIntent(options.runDir);
+          if (observedChild.kind !== 'readable') break;
+          const latest = observedChild.intent;
+          if (latest.attemptId !== attemptId || latest.attemptOwner?.instanceId !== instanceId) break;
+          const recorded = await compareAndSwapUpgradeIntent(options.runDir, latest.revision, {
+            ...latest,
+            attemptSpawnPending: false,
+            attemptChild:
+              latest.attemptChild ??
+              (launchedPid === null
+                ? null
+                : { attemptId, pid: launchedPid, incarnation: ports.processIncarnation(launchedPid) }),
+          });
+          if (recorded.kind === 'conflict') continue;
+          break;
         }
       } catch {
-        const released = await compareAndSwapUpgradeIntent(options.runDir, claimed.intent.revision, {
-          ...claimed.intent,
+        const released = await compareAndSwapUpgradeIntent(options.runDir, spawning.intent.revision, {
+          ...spawning.intent,
           disposition: 'deferred',
           blockers: [{ owner: 'waiter', reason: 'target process could not be started' }],
           retryCondition: { kind: 'incumbent-retirement', evidence: 'legacy incumbent retired; target spawn failed' },
           attemptId: null,
           attemptOwner: null,
+          attemptSpawnPending: false,
           attemptDeadline: null,
         });
-        if (released.kind === 'conflict') continue;
+        if (released.kind === 'conflict') return { kind: 'unobservable', reason: 'target spawn outcome changed' };
         if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
         attemptId = null;
         launched = false;

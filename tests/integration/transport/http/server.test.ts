@@ -2508,7 +2508,6 @@ describe('execution backend server', () => {
 
     it('returns a typed deadline when an HTTP unary handler never settles', async () => {
       const { deps } = createHttpHandlerDeps();
-      const shutdown = vi.fn();
       let inflight = 0;
       deps.admin.beginRequestLease = createRequestLeaseOwner({
         time: runtime.time,
@@ -2518,7 +2517,6 @@ describe('execution backend server', () => {
         end: () => {
           inflight -= 1;
         },
-        shutdown,
         timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
       }).begin;
       deps.kb.readSearch = vi.fn(() => new Promise<never>(() => {}));
@@ -2529,8 +2527,29 @@ describe('execution backend server', () => {
         });
         expect(response.status).toBe(503);
         await expect(response.json()).resolves.toMatchObject({ code: 'request_deadline_exceeded' });
-        expect(shutdown).toHaveBeenCalledOnce();
         expect(inflight).toBe(1);
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('bounds an HTTP KB restart that never settles', async () => {
+      const { deps } = createHttpHandlerDeps();
+      deps.admin.beginRequestLease = createRequestLeaseOwner({
+        time: runtime.time,
+        begin: deps.admin.beginRequest,
+        end: deps.admin.endRequest,
+        timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+      }).begin;
+      deps.admin.restartKbDaemon = vi.fn(() => new Promise<never>(() => {}));
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const response = await fetch(`${started.baseUrl}/admin/kb/restart`, {
+          method: 'POST',
+          headers: { 'X-Coral-Shutdown-Token': 'test-shutdown-token' },
+        });
+        expect(response.status).toBe(503);
+        await expect(response.json()).resolves.toMatchObject({ code: 'request_deadline_exceeded' });
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2549,7 +2568,6 @@ describe('execution backend server', () => {
         time: runtime.time,
         begin: deps.admin.beginRequest,
         end: deps.admin.endRequest,
-        shutdown: vi.fn(),
       }).begin;
       deps.kb.readSearch = vi.fn(async () => domainSuccess({ results: [] }));
       const originalEnd = ServerResponse.prototype.end;
@@ -5924,7 +5942,7 @@ describe('execution backend server', () => {
         instanceId: 'execution-backend-instance-1',
         kbDaemon: daemonHealth,
       });
-      expect(kbDaemonSupervisor.restart).toHaveBeenCalledWith('http-admin');
+      expect(kbDaemonSupervisor.restart).toHaveBeenCalledWith('http-admin', expect.any(AbortSignal));
       const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
       expect(
         messages.some(
@@ -6007,7 +6025,7 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(listActiveKbJobs).toHaveBeenCalledTimes(1);
-    expect(restart).toHaveBeenCalledWith('http-admin');
+    expect(restart).toHaveBeenCalledWith('http-admin', expect.any(AbortSignal));
     expect(listActiveKbJobs.mock.invocationCallOrder[0]).toBeLessThan(restart.mock.invocationCallOrder[0]);
     expect(exit.listener).not.toBeNull();
 

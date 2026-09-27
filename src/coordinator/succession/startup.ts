@@ -1455,12 +1455,16 @@ export async function recordWaiterLaunchedChild(
       if (
         intent.attemptChild.attemptId === attemptId &&
         intent.attemptChild.pid === pid &&
-        intent.attemptChild.incarnation === null
+        (intent.attemptChild.incarnation === null || intent.attemptSpawnPending === true)
       ) {
         return {
           kind: 'write',
           expectedRevision: intent.revision,
-          change: { ...intent, attemptChild: { attemptId, pid, incarnation } },
+          change: {
+            ...intent,
+            attemptSpawnPending: false,
+            attemptChild: { attemptId, pid, incarnation },
+          },
           settle: () => true,
         };
       }
@@ -1475,7 +1479,7 @@ export async function recordWaiterLaunchedChild(
     return {
       kind: 'write',
       expectedRevision: intent.revision,
-      change: { ...intent, attemptChild: { attemptId, pid, incarnation } },
+      change: { ...intent, attemptSpawnPending: false, attemptChild: { attemptId, pid, incarnation } },
       settle: () => true,
     };
   });

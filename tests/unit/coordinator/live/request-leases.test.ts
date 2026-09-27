@@ -16,10 +16,33 @@ afterEach(() => {
 });
 
 describe('coordinator request leases', () => {
-  it('aborts never-settling unary work and invokes shutdown without waiting for inflight to clear', async () => {
+  it('lets a live provider job reach a terminal result beside a stalled unary request', async () => {
+    vi.useFakeTimers();
+    let finishJob!: (outcome: 'completed' | 'terminated') => void;
+    const providerJob = new Promise<'completed' | 'terminated'>((resolve) => {
+      finishJob = resolve;
+      setTimeout(() => resolve('completed'), 60);
+    });
+    const leaseOptions = {
+      begin: () => {},
+      end: () => {},
+      time: createRealTimePort(),
+      timing,
+      shutdown: () => finishJob('terminated'),
+    };
+    const owner = createRequestLeaseOwner(leaseOptions);
+    const request = owner
+      .begin('coordinator.recovery_quarantine.clear', 'request-provider')
+      .run(() => new Promise<never>(() => {}));
+    const rejection = expect(request).rejects.toMatchObject({ code: 'request_deadline_exceeded' });
+    await vi.advanceTimersByTimeAsync(60);
+    await rejection;
+    await expect(providerJob).resolves.toBe('completed');
+  });
+
+  it('aborts never-settling unary work without ending unrelated coordinator execution', async () => {
     vi.useFakeTimers();
     let inflight = 0;
-    const shutdown = vi.fn();
     const owner = createRequestLeaseOwner({
       begin: () => {
         inflight += 1;
@@ -27,7 +50,6 @@ describe('coordinator request leases', () => {
       end: () => {
         inflight -= 1;
       },
-      shutdown,
       time: createRealTimePort(),
       timing,
     });
@@ -49,7 +71,6 @@ describe('coordinator request leases', () => {
     expect(inflight).toBe(1);
     await vi.advanceTimersByTimeAsync(10);
     await rejection;
-    expect(shutdown).toHaveBeenCalledTimes(1);
     expect(inflight).toBe(1);
   });
 
@@ -58,7 +79,6 @@ describe('coordinator request leases', () => {
     const owner = createRequestLeaseOwner({
       begin: () => {},
       end: () => {},
-      shutdown: vi.fn(),
       time: createRealTimePort(),
       timing,
     });
@@ -77,12 +97,10 @@ describe('coordinator request leases', () => {
   it('reports cancelled when the request owner obeys the abort', async () => {
     vi.useFakeTimers();
     const end = vi.fn();
-    const shutdown = vi.fn();
     const owner = createRequestLeaseOwner({
       time: createRealTimePort(),
       begin: () => {},
       end,
-      shutdown,
       timing,
     });
     const result = owner.begin('jobs.detail', 'request-3').run(
@@ -106,17 +124,14 @@ describe('coordinator request leases', () => {
     await vi.advanceTimersByTimeAsync(40);
     await rejection;
     expect(end).toHaveBeenCalledOnce();
-    expect(shutdown).not.toHaveBeenCalled();
   });
 
   it('reports continuing when work completes after its deadline', async () => {
     vi.useFakeTimers();
-    const shutdown = vi.fn();
     const owner = createRequestLeaseOwner({
       time: createRealTimePort(),
       begin: () => {},
       end: () => {},
-      shutdown,
       timing,
     });
     let finish: (() => void) | undefined;
@@ -133,6 +148,5 @@ describe('coordinator request leases', () => {
     await vi.advanceTimersByTimeAsync(40);
     finish?.();
     await rejection;
-    expect(shutdown).not.toHaveBeenCalled();
   });
 });

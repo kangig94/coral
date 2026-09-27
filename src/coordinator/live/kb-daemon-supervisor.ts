@@ -112,7 +112,7 @@ export interface KbDaemonSupervisor {
   parkWriterTurn?(signal?: AbortSignal): Promise<void>;
   reclaimWriterTurn?(generation: SuccessionWriterGeneration, signal?: AbortSignal): Promise<void>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbDaemonHealthSnapshot>;
-  restart(reason?: string): Promise<KbDaemonHealthSnapshot>;
+  restart(reason?: string, signal?: AbortSignal): Promise<KbDaemonHealthSnapshot>;
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<KbDaemonDisposalSettlement>;
 }
 
@@ -1293,14 +1293,16 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       }
     },
     stop: async (reason, stopOptions) => (await runExclusive(() => stopNow(reason, stopOptions?.signal))).snapshot,
-    restart: (reason = 'restart') =>
+    restart: (reason = 'restart', signal) =>
       runExclusive(async () => {
+        signal?.throwIfAborted();
         if (disposed) {
           return read();
         }
         requestRecoveryEnabled = true;
         phase = 'restarting';
-        void (await stopNow(reason));
+        void (await stopNow(reason, signal));
+        signal?.throwIfAborted();
         if (daemonProcess !== null) {
           return read();
         }

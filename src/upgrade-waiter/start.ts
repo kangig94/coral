@@ -50,6 +50,11 @@ export async function startUpgradeWaiter(
     if (owner?.kind !== 'waiter') break;
     const liveness = observeRecordedProcess(ports, owner);
     const leaseExpired = intent.attemptDeadline !== null && Date.parse(intent.attemptDeadline) <= ports.time.now();
+    if (intent.attemptSpawnPending === true) {
+      return liveness === 'alive'
+        ? { kind: 'existing', pid: owner.pid }
+        : { kind: 'unavailable', reason: 'target spawn outcome is unresolved' };
+    }
     if (!leaseExpired && liveness === 'alive') return { kind: 'existing', pid: owner.pid };
     if (!leaseExpired && liveness !== 'absent') {
       return { kind: 'unavailable', reason: 'recorded waiter death is unproven' };
@@ -266,6 +271,7 @@ export async function requestLegacyUpgrade(
         target: options.target,
         attemptId: null,
         attemptChild: null,
+        attemptSpawnPending: false,
         attemptOwner: null,
         disposition: 'pending',
         blockers: [],

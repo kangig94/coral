@@ -39,7 +39,7 @@ interface AdminControlPort {
   };
   requestDrain(reason: 'replaced'): void;
   probeKbDaemon?(): Promise<TransportKbDaemonHealthSnapshot>;
-  restartKbDaemon?(reason: string): Promise<TransportKbDaemonHealthSnapshot>;
+  restartKbDaemon?(reason: string, signal?: AbortSignal): Promise<TransportKbDaemonHealthSnapshot>;
 }
 
 /**

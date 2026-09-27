@@ -3,6 +3,7 @@ import { runCoordinatorSentinel } from '#src/runtime/sentinel.js';
 const executable = process.argv[2];
 if (executable === undefined) throw new Error('Missing coordinator fixture');
 void runCoordinatorSentinel(executable, [], {
+  fixtureRelaunch: process.argv[3] !== 'no-fixture-relaunch',
   timing:
     process.argv[3] === 'slow'
       ? { challengeMs: 100, schedulingGapMs: 5_000, lapseMs: 42_000, graceMs: 500 }

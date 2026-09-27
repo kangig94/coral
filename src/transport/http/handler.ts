@@ -1266,7 +1266,8 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
       pattern: compilePathPattern(transportLocalRoutes[2].path),
       handle: async (req, res) => {
         req.resume();
-        if (!deps.admin.restartKbDaemon) {
+        const restartKbDaemon = deps.admin.restartKbDaemon;
+        if (!restartKbDaemon) {
           sendJson(res, 501, { code: 'not_implemented', message: 'KB daemon supervisor is not available' });
           return;
         }
@@ -1282,8 +1283,22 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
           },
           'warn',
         );
-        const kbDaemon = await deps.admin.restartKbDaemon('http-admin');
-        sendJson(res, 200, { status: 'ok', instanceId: deps.identity.instanceId, kbDaemon });
+        const lease = deps.admin.beginRequestLease?.('transport.kb.restart', randomUUID());
+        if (lease === undefined) deps.admin.beginRequest();
+        try {
+          const kbDaemon =
+            lease === undefined
+              ? await restartKbDaemon('http-admin')
+              : await lease.run((signal) => restartKbDaemon('http-admin', signal));
+          sendJson(res, 200, { status: 'ok', instanceId: deps.identity.instanceId, kbDaemon });
+        } catch (error: unknown) {
+          if (!res.writableEnded && !res.headersSent) {
+            const response = buildTransportErrorResponse(error);
+            sendJson(res, response.statusCode, response.body);
+          }
+        } finally {
+          if (lease === undefined) deps.admin.endRequest();
+        }
       },
     },
     {

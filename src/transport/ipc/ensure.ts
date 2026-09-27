@@ -788,10 +788,8 @@ function deferredWaiterClaim(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
   incumbent: ReadyCoordinatorEvidence,
-  childPid: number | undefined,
   now: number,
 ): Readonly<{ kind: 'claimed' | 'unproven' }> {
-  if (childPid === undefined) return { kind: 'unproven' };
   const observed = readUpgradeIntent(paths.runDir);
   if (observed.kind !== 'readable') return { kind: 'unproven' };
   const intent = observed.intent;
@@ -804,10 +802,9 @@ function deferredWaiterClaim(
     intent.target.build.bundleHash === desired.bundleHash &&
     intent.target.build.flavor === desired.flavor &&
     intent.attemptOwner?.kind === 'waiter' &&
-    intent.attemptOwner.pid === childPid &&
-    observeProcessLiveness(childPid) === 'alive' &&
+    observeProcessLiveness(intent.attemptOwner.pid) === 'alive' &&
     (intent.attemptOwner.incarnation === null ||
-      probeProcessIncarnation(childPid) === intent.attemptOwner.incarnation) &&
+      probeProcessIncarnation(intent.attemptOwner.pid) === intent.attemptOwner.incarnation) &&
     intent.attemptDeadline !== null &&
     Date.parse(intent.attemptDeadline) > now &&
     intent.retryCondition?.kind === 'incumbent-retirement';
@@ -918,8 +915,8 @@ async function observeBackendReady(
         if (lineage.kind === 'proven-current-attempt') {
           return servingIncumbent;
         }
-        // The contender remains detached and owns the recorded waiter lease; the CLI need not wait for its exit.
-        if (deferredWaiterClaim(paths, desired, servingIncumbent, waitContext.pid, timePort.now()).kind === 'claimed') {
+        // A live waiter owns the matching intent; the CLI need not wait for the contender sentinel to exit.
+        if (deferredWaiterClaim(paths, desired, servingIncumbent, timePort.now()).kind === 'claimed') {
           return servingIncumbent;
         }
       }

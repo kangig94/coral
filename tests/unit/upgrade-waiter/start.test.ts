@@ -236,6 +236,37 @@ describe('legacy upgrade request', () => {
     expect(launchDetached).toHaveBeenCalledOnce();
   });
 
+  it('does not replace an expired waiter while its spawn result is unresolved', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    const now = Date.now();
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'waiting-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'spawning-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'spawning-waiter', pid: process.pid, incarnation: null },
+      attemptChild: null,
+      attemptSpawnPending: true,
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(now - 1).toISOString(),
+      completionReceipt: null,
+    });
+    const launchDetached = vi.fn(async () => process.pid);
+
+    await expect(
+      startUpgradeWaiter({
+        runDir,
+        socketPath: '/legacy.sock',
+        targetRoot: '/installed/target',
+        ports: { ...createRealUpgradeWaiterPorts(), launchDetached },
+      }),
+    ).resolves.toEqual({ kind: 'existing', pid: process.pid });
+    expect(launchDetached).not.toHaveBeenCalled();
+  });
+
   it.each([0, -1])('replaces an unrecorded target attempt at deadline offset %i ms', async (offset) => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);

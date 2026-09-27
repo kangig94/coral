@@ -1307,6 +1307,7 @@ describe('waiter-launched upgrade completion', () => {
     if (observed.kind !== 'readable') throw new Error('intent disappeared');
     await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
       ...observed.intent,
+      attemptSpawnPending: true,
       attemptChild: { attemptId: 'waiter-attempt', pid: process.pid, incarnation: null },
     });
     const incarnation = probeProcessIncarnation(process.pid);
@@ -1316,7 +1317,10 @@ describe('waiter-launched upgrade completion', () => {
 
     await expect(recordWaiterLaunchedChild(runtime, current, process.pid, incarnation)).resolves.toBe(true);
     expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
-      intent: { attemptChild: { attemptId: 'waiter-attempt', pid: process.pid, incarnation } },
+      intent: {
+        attemptSpawnPending: false,
+        attemptChild: { attemptId: 'waiter-attempt', pid: process.pid, incarnation },
+      },
     });
   });
 

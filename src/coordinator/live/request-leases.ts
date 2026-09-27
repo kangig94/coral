@@ -44,7 +44,6 @@ export function createRequestLeaseOwner(
   options: Readonly<{
     begin(): void;
     end(): void;
-    shutdown(): void;
     time: TimePort;
     timing?: RequestLeaseTiming;
   }>,
@@ -79,7 +78,6 @@ export function createRequestLeaseOwner(
         controller.abort(deadlineError('unknown'));
         grace = time.setTimeout(() => {
           if (settled) return;
-          options.shutdown();
           rejectUnsettled?.(deadlineError('unknown'));
         }, timing.settleMs);
       };

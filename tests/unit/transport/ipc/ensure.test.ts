@@ -2134,7 +2134,7 @@ describe('ipc ensure', () => {
     await expect(ensuredPromise).resolves.toMatchObject({ instanceId: 'foreign-incumbent' });
   });
 
-  it('returns the incumbent after two waiter launches fail while the contender keeps waiting', async () => {
+  it('returns the incumbent for a live inline waiter whose coordinator PID differs from its sentinel PID', async () => {
     makeHome();
     vi.useFakeTimers();
     const root = createPluginRoot();
@@ -2156,7 +2156,7 @@ describe('ipc ensure', () => {
     });
     let spawned = false;
     let executorSettled = false;
-    const child = spawnedChild(process.pid);
+    const child = spawnedChild(process.pid + 1);
     const startWaiter = vi.fn(async () => ({ kind: 'unavailable' as const, reason: 'waiter did not claim' }));
     const runWaiter = vi.fn(async () => {
       const observed = readUpgradeIntent(paths.runDir);

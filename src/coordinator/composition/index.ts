@@ -1278,9 +1278,10 @@ export function createCoordinatorCore(
   };
   const kbDaemonSupervisorWithTrackedShutdown: KbDaemonSupervisor = {
     ...kbDaemonSupervisor,
-    restart: async (reason) => {
-      await trackActiveDaemonKbJobs(reason ?? 'restart');
-      return kbDaemonSupervisor.restart(reason);
+    restart: async (reason, signal) => {
+      await trackActiveDaemonKbJobs(reason ?? 'restart', signal);
+      signal?.throwIfAborted();
+      return kbDaemonSupervisor.restart(reason, signal);
     },
     dispose: async (reason, disposeOptions) => {
       await trackActiveDaemonKbJobs(reason ?? 'dispose', disposeOptions?.signal);
@@ -2001,9 +2002,6 @@ export function createCoordinatorCore(
     time: runtime.time,
     begin: () => world.idleTimer.beginRequest(),
     end: () => world.idleTimer.endRequest(),
-    shutdown: () => {
-      void lifecycleController?.shutdown('sigterm');
-    },
   });
 
   const httpHandlerDeps: HttpHandlerPorts = {
@@ -2031,7 +2029,7 @@ export function createCoordinatorCore(
       requestDrain: control.requestDrain,
       decideLegacyShutdown: control.decideLegacyShutdown,
       probeKbDaemon: () => kbDaemonSupervisor.probe(),
-      restartKbDaemon: (reason) => kbDaemonSupervisorWithTrackedShutdown.restart(reason),
+      restartKbDaemon: (reason, signal) => kbDaemonSupervisorWithTrackedShutdown.restart(reason, signal),
     },
     health: {
       read: () => {

@@ -8,6 +8,7 @@ import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import { createPluginFixture } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
@@ -22,6 +23,70 @@ function alive(pid: number): boolean {
 }
 
 describe('real coordinator recovery through its sentinel', () => {
+  it('relaunches from a retained build after the installed root disappears', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-sentinel-removed-root-'));
+    roots.push(home);
+    const fixture = createPluginFixture(roots, { flavor: 'prod', backend: 'sentinel-freeze' });
+    const sentinelPath = join(fixture.root, 'bridge', 'coral-sentinel.cjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/sentinel-harness.ts', import.meta.url))],
+      outfile: sentinelPath,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'cjs',
+      external: ['node:*'],
+    });
+    const paths = coordinatorPaths('prod', { baseDir: join(home, '.coral') });
+    const manifest = JSON.parse(
+      readFileSync(join(fixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
+    ) as {
+      buildSetId: string;
+    };
+    const retained = join(home, '.coral', 'gen2', 'builds', manifest.buildSetId);
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: paths.runDir };
+    delete env.CORAL_CHILD;
+    delete env.CORAL_CHILD_PRINCIPAL_HANDLE;
+    delete env.CORAL_JOB_ID;
+    delete env.CORAL_SESSION_ID;
+    const first = spawn(process.execPath, [sentinelPath, join(fixture.root, 'bridge', 'coral-backend.cjs')], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    let originalPid: number | null = null;
+    let replacementPid: number | null = null;
+    try {
+      await waitForCondition(() => existsSync(paths.infoFile) && existsSync(retained), 20_000);
+      originalPid = (JSON.parse(readFileSync(paths.infoFile, 'utf8')) as { pid: number }).pid;
+      rmSync(fixture.root, { recursive: true, force: true });
+      first.send({ kind: 'freeze-coordinator' });
+      await waitForCondition(() => first.exitCode !== null, 10_000);
+      await waitForCondition(() => {
+        if (!existsSync(paths.infoFile)) return false;
+        const current = JSON.parse(readFileSync(paths.infoFile, 'utf8')) as { pid: number };
+        if (current.pid === originalPid || !alive(current.pid)) return false;
+        replacementPid = current.pid;
+        return true;
+      }, 20_000);
+      await waitForCondition(() =>
+        readdirSync(join(paths.runDir, 'coordinator-sentinel.v1')).some((name) => {
+          const record = JSON.parse(readFileSync(join(paths.runDir, 'coordinator-sentinel.v1', name), 'utf8')) as {
+            state?: string;
+            coordinatorPid?: number;
+          };
+          return record.state === 'relaunched' && record.coordinatorPid === replacementPid;
+        }),
+      );
+      expect(replacementPid).not.toBeNull();
+    } finally {
+      if (first.exitCode === null) first.kill('SIGKILL');
+      if (originalPid !== null && alive(originalPid)) process.kill(originalPid, 'SIGKILL');
+      if (replacementPid !== null && alive(replacementPid)) process.kill(replacementPid, 'SIGTERM');
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('relaunches a serving coordinator after successive wedges with no later invocation', async () => {
     const tempRoots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-sentinel-alone-home-'));

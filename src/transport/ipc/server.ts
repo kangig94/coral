@@ -834,7 +834,8 @@ async function dispatchFrame(
     }
 
     if (operationalSpec.dispatch.kind === 'kb-restart') {
-      if (!rpcPorts.admin.restartKbDaemon) {
+      const restartKbDaemon = rpcPorts.admin.restartKbDaemon;
+      if (!restartKbDaemon) {
         await finishUnaryResponse(
           requestErrorResponse(request.id, KB_RESTART_UNAVAILABLE_RESPONSE.message, KB_RESTART_UNAVAILABLE_RESPONSE),
         );
@@ -849,8 +850,13 @@ async function dispatchFrame(
         },
         'warn',
       );
+      const lease = rpcPorts.admin.beginRequestLease?.(request.method, String(request.id));
+      if (lease === undefined) startRequest();
       try {
-        const kbDaemon = await rpcPorts.admin.restartKbDaemon('ipc-admin');
+        const kbDaemon =
+          lease === undefined
+            ? await restartKbDaemon('ipc-admin')
+            : await lease.run((signal) => restartKbDaemon('ipc-admin', signal));
         await finishUnaryResponse({
           kind: 'response',
           id: request.id,
@@ -862,6 +868,8 @@ async function dispatchFrame(
           const response = buildTransportErrorResponse(error);
           await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
         }
+      } finally {
+        if (lease === undefined) finishRequest();
       }
       return;
     }

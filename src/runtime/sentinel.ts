@@ -1,10 +1,19 @@
 import { spawn, type ChildProcess, type SendHandle } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { Server, Socket } from 'node:net';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createConnection, Server, Socket } from 'node:net';
 import { constants as osConstants } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
+import {
+  readBoundedAdjacentManifest,
+  strictBundleManifestSchema,
+  type StrictBundleManifest,
+} from '../infra/bundle-manifest.js';
+import { createForeignTargetValidator } from '../infra/handoff-target.js';
+import { socketPathForRunDir } from '../infra/path/index.js';
+import { createPluginRegistry } from '../infra/plugin-registry.js';
+import { compareProductVersions } from '../infra/product-version.js';
 import { SENTINEL_TIMING, validSentinelTiming, type SentinelTiming } from '../infra/sentinel-timing.js';
 
 export type SentinelMessage =
@@ -56,17 +65,115 @@ function writeSentinelRecord(runDir: string | undefined, id: string, record: Rea
   }
 }
 
+function validatedBuild(root: string): StrictBundleManifest | null {
+  const bundleDir = join(root, 'bridge');
+  const adjacent = readBoundedAdjacentManifest(bundleDir);
+  if (!adjacent.ok) return null;
+  const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
+  if (!parsed.success || createForeignTargetValidator()(bundleDir, parsed.data).kind !== 'validated') return null;
+  if (!existsSync(join(bundleDir, 'coral-sentinel.cjs')) || !existsSync(join(bundleDir, 'coral-backend.cjs')))
+    return null;
+  return parsed.data;
+}
+
+function relaunchRoots(runDir: string, original: StrictBundleManifest | null): string[] {
+  let installedRoots: string[];
+  try {
+    installedRoots = createPluginRegistry().installedPluginRoots('coral');
+  } catch {
+    installedRoots = [];
+  }
+  const installed = installedRoots
+    .map((root) => ({ root, manifest: validatedBuild(root) }))
+    .filter((entry): entry is { root: string; manifest: StrictBundleManifest } => entry.manifest !== null)
+    .filter((entry) => original === null || entry.manifest.flavor === original.flavor)
+    .sort((a, b) => compareProductVersions(b.manifest.version, a.manifest.version))
+    .map((entry) => entry.root);
+  if (original !== null) {
+    const retained = join(dirname(runDir), 'builds', original.buildSetId);
+    if (
+      validatedBuild(retained) !== null &&
+      createForeignTargetValidator()(join(retained, 'bridge'), original).kind === 'validated'
+    )
+      installed.push(retained);
+  }
+  return [...new Set(installed)];
+}
+
+async function replacementServing(
+  runDir: string,
+  flavor: StrictBundleManifest['flavor'],
+  pid: number,
+): Promise<boolean> {
+  try {
+    const discovery = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as {
+      pid?: unknown;
+      bootToken?: unknown;
+    };
+    if (discovery.pid !== pid) return false;
+    if (typeof discovery.bootToken !== 'string') return false;
+    const socketPath = socketPathForRunDir(runDir, flavor, { platform: process.platform });
+    return await new Promise<boolean>((resolve) => {
+      const socket = createConnection(socketPath);
+      let received = '';
+      let settled = false;
+      const finish = (serving: boolean): void => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        resolve(serving);
+      };
+      socket.setTimeout(500, () => finish(false));
+      socket.once('error', () => finish(false));
+      socket.once('close', () => finish(false));
+      socket.once('connect', () => {
+        socket.write(
+          `${JSON.stringify({ kind: 'request', id: 1, method: 'transport.health', auth: { kind: 'boot', token: discovery.bootToken } })}\n`,
+        );
+      });
+      socket.on('data', (chunk: Buffer) => {
+        received += chunk.toString('utf8');
+        if (received.length > 64 * 1024) return finish(false);
+        const newline = received.indexOf('\n');
+        if (newline === -1) return;
+        try {
+          const response = JSON.parse(received.slice(0, newline)) as {
+            kind?: string;
+            id?: number;
+            result?: { pid?: number; status?: string };
+          };
+          finish(
+            response.kind === 'response' &&
+              response.id === 1 &&
+              response.result?.pid === pid &&
+              (response.result.status === 'ok' || response.result.status === 'running'),
+          );
+        } catch {
+          finish(false);
+        }
+      });
+    });
+  } catch {
+    return false;
+  }
+}
+
 /** The parent-held ChildProcess is the only signal authority for this incarnation. */
 export async function runCoordinatorSentinel(
   executable: string,
   args: readonly string[],
-  options: Readonly<{ timing?: SentinelTiming; onChild?: (child: ChildProcess) => void }> = {},
+  options: Readonly<{
+    timing?: SentinelTiming;
+    onChild?: (child: ChildProcess) => void;
+    fixtureRelaunch?: boolean;
+  }> = {},
 ): Promise<number> {
   const timing = options.timing ?? SENTINEL_TIMING;
   if (!validSentinelTiming(timing)) throw new Error('Invalid coordinator sentinel timing');
   const id = randomUUID();
   const startedAt = Date.now();
   const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
+  const originalManifest = validatedBuild(dirname(dirname(executable)));
   const record = (state: string, fields: Record<string, unknown> = {}): void => {
     writeSentinelRecord(runDir, id, {
       version: 1,
@@ -126,7 +233,6 @@ export async function runCoordinatorSentinel(
     outstanding = null;
     escalationAt = null;
     killed = false;
-    wedgeTermination = false;
   };
   const tick = (): void => {
     const now = Date.now();
@@ -151,8 +257,7 @@ export async function runCoordinatorSentinel(
       if (child.pid !== undefined && childIsUninterruptible(child.pid)) reset(now);
       else {
         record('terminating', { coordinatorPid: child.pid, lastAnswer, schedulingGaps });
-        wedgeTermination = true;
-        child.kill('SIGTERM');
+        wedgeTermination = child.kill('SIGTERM') || wedgeTermination;
         escalationAt = now;
       }
       return;
@@ -173,7 +278,6 @@ export async function runCoordinatorSentinel(
         outstanding = null;
         escalationAt = null;
         killed = false;
-        wedgeTermination = false;
       }
       return;
     }
@@ -230,23 +334,90 @@ export async function runCoordinatorSentinel(
       delete recoveryEnv.CORAL_STARTUP_ATTEMPT_ID;
       delete recoveryEnv.CORAL_STARTUP_STARTED_AT;
       delete recoveryEnv.CORAL_SUCCESSION_ATTEMPT_ID;
-      const replacement = spawn(process.execPath, [process.argv[1], executable, ...args], {
-        cwd: process.cwd(),
-        detached: true,
-        env: recoveryEnv,
-        stdio: ['ignore', 'inherit', 'inherit'],
-      });
-      const launched = await new Promise<boolean>((resolve) => {
-        replacement.once('spawn', () => resolve(true));
-        replacement.once('error', (error) => {
-          record('relaunch-failed', { error: String(error) });
-          resolve(false);
-        });
-      });
-      if (launched) {
-        record('relaunched', { replacementSentinelPid: replacement.pid });
-        replacement.unref();
+      const roots = relaunchRoots(runDir, originalManifest);
+      const candidates: { sentinel: string; backend: string; manifest: StrictBundleManifest | null }[] = roots.flatMap(
+        (root) => {
+          const manifest = validatedBuild(root);
+          return manifest === null
+            ? []
+            : [
+                {
+                  sentinel: join(root, 'bridge', 'coral-sentinel.cjs'),
+                  backend: join(root, 'bridge', 'coral-backend.cjs'),
+                  manifest,
+                },
+              ];
+        },
+      );
+      if (options.fixtureRelaunch && existsSync(process.argv[1]) && existsSync(executable)) {
+        candidates.push({ sentinel: process.argv[1], backend: executable, manifest: null });
       }
+      if (candidates.length === 0)
+        record('relaunch-unavailable', { reason: 'no validated installed or retained build' });
+      for (let attempt = 0; attempt < 3 && candidates.length > 0; attempt += 1) {
+        const candidate = candidates[attempt % candidates.length];
+        if (candidate === undefined) break;
+        if (!existsSync(candidate.sentinel) || !existsSync(candidate.backend)) continue;
+        if (candidate.manifest !== null && validatedBuild(dirname(dirname(candidate.backend))) === null) continue;
+        const replacement = spawn(process.execPath, [candidate.sentinel, candidate.backend, ...args], {
+          cwd: process.cwd(),
+          detached: true,
+          env: recoveryEnv,
+          stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        });
+        let childPid: number | null = null;
+        let fixtureReady = false;
+        let spawnError: Error | null = null;
+        replacement.once('error', (error) => {
+          spawnError = error;
+        });
+        replacement.on('message', (message: unknown) => {
+          if (typeof message !== 'object' || message === null || !('kind' in message)) return;
+          if (message.kind === 'coral-sentinel-child' && 'pid' in message && typeof message.pid === 'number')
+            childPid = message.pid;
+          if (message.kind === 'ready') fixtureReady = true;
+        });
+        const deadline = Date.now() + 15_000;
+        while (
+          Date.now() < deadline &&
+          replacement.exitCode === null &&
+          replacement.signalCode === null &&
+          spawnError === null
+        ) {
+          if (
+            childPid !== null &&
+            (candidate.manifest === null
+              ? fixtureReady
+              : await replacementServing(runDir, candidate.manifest.flavor, childPid))
+          ) {
+            record('relaunched', {
+              replacementSentinelPid: replacement.pid,
+              coordinatorPid: childPid,
+              root: dirname(dirname(candidate.backend)),
+            });
+            replacement.disconnect();
+            replacement.unref();
+            return exitCode;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 200));
+        }
+        if (spawnError === null && replacement.exitCode === null && replacement.signalCode === null) {
+          record('relaunch-unconfirmed', {
+            replacementSentinelPid: replacement.pid,
+            root: dirname(dirname(candidate.backend)),
+          });
+          replacement.disconnect();
+          replacement.unref();
+          return exitCode;
+        }
+        record('relaunch-failed', {
+          root: dirname(dirname(candidate.backend)),
+          childExitCode: replacement.exitCode,
+          ...(spawnError === null ? {} : { error: String(spawnError) }),
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      }
+      if (candidates.length > 0) record('relaunch-unavailable', { reason: 'all bounded attempts failed' });
     }
     return exitCode;
   });
