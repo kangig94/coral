@@ -14,16 +14,20 @@ import { jobPhaseSchema } from './phase.js';
 import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
 
-const subjectSchema = z.object({
-  projectRoot: z.string().min(1),
-  workDir: z.string().nullable(),
-  jobKind: z.enum(['provider', 'workflow', 'kb']),
-});
-const controllerSchema = z.object({
-  buildSetId: z.string().min(1),
-  instanceId: z.string().min(1),
-  controlGeneration: z.number().int().nonnegative(),
-});
+const subjectSchema = z
+  .object({
+    projectRoot: z.string().min(1),
+    workDir: z.string().nullable(),
+    jobKind: z.enum(['provider', 'workflow', 'kb']),
+  })
+  .passthrough();
+const controllerSchema = z
+  .object({
+    buildSetId: z.string().min(1),
+    instanceId: z.string().min(1),
+    controlGeneration: z.number().int().nonnegative(),
+  })
+  .passthrough();
 const locationIdentitySchema = z.object({
   version: z.literal('v1'),
   jobId: z.string().min(1),
@@ -242,6 +246,7 @@ export class JobLocationIndex {
       const location: StoredJobLocation = {
         ...current,
         subject: {
+          ...current.subject,
           projectRoot: detail.status.projectRoot,
           workDir: detail.status.workDir,
           jobKind: detail.status.jobKind,

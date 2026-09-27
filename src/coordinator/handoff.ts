@@ -1,5 +1,6 @@
 import type { Runtime } from '../runtime/ports.js';
 import { compareProductVersions } from '../infra/product-version.js';
+import { waiterExecutableReady } from '../infra/handoff-target.js';
 import { readUpgradeIntent, type UpgradeIntent } from '../infra/upgrade-intent.js';
 import { requestIpcMethod } from '../transport/ipc/client.js';
 import { SUCCESSION_METHODS } from '../infra/succession-address.js';
@@ -98,6 +99,7 @@ export async function requestUpgradeFromContender(
     requestId: string;
     time: Runtime['time'];
     request?: (socketPath: string, method: string, params: unknown, options: unknown) => Promise<unknown>;
+    waiterReady?: (pluginRoot: string) => boolean;
     startLegacy: (
       options: Readonly<{
         runDir: string;
@@ -119,6 +121,9 @@ export async function requestUpgradeFromContender(
     }
   } catch {
     return { kind: 'refused', reason: 'build version is invalid', disposition: 'error' };
+  }
+  if (!(options.waiterReady ?? waiterExecutableReady)(target.pluginRootLabel)) {
+    return { kind: 'refused', reason: 'waiter bundle is unavailable', disposition: 'error' };
   }
   if (incumbent.bootToken !== undefined) {
     try {

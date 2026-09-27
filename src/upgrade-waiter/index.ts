@@ -148,6 +148,14 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     }
     const intent = observed.intent;
     if (
+      requestId === null &&
+      intent.target.pluginRootLabel !== options.targetRoot &&
+      intent.nextTarget?.target.pluginRootLabel === options.targetRoot
+    ) {
+      await sleep(pollMs);
+      continue;
+    }
+    if (
       intent.target.pluginRootLabel !== options.targetRoot ||
       (requestId !== null && intent.requestId !== requestId)
     ) {

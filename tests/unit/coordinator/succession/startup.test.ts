@@ -491,48 +491,51 @@ describe('incomplete succession at startup', () => {
     });
   });
 
-  it('should hold an unserved transfer whose recovery grants do not verify', async () => {
-    const runtime = runtimeFixture();
-    const dead = await exitedPid();
-    const childIncarnation = 'recorded-child-incarnation';
-    if (!isProcessIncarnation(childIncarnation)) throw new Error('child incarnation is not well-formed');
-    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
-      requestId: 'request-1',
-      incumbent: {
-        instanceId: 'incumbent',
-        pid: dead,
-        incarnation: null,
-        version: '0.10.13',
-        bundleHash: 'fedcba9876543210',
-        flavor: 'prod',
-      },
-      target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
-      attemptId: 'attempt-1',
-      attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: dead, incarnation: null },
-      attemptChild: { attemptId: 'attempt-1', pid: dead, incarnation: childIncarnation },
-      disposition: 'attempting',
-      blockers: [],
-      retryCondition: null,
-      attemptDeadline: null,
-      completionReceipt: null,
-      successionPreparation: preparation('attempt-1', [
-        {
-          owner: 'durable-cli',
-          generation: 1,
-          attemptId: 'attempt-1',
-          receiptId: 'durable-cli:attempt-1',
-          recoveryGrantId: 'grant-1',
-          payload: null,
+  it.each(['attempting', 'deferred'] as const)(
+    'holds an unserved %s transfer whose recovery grants do not verify',
+    async (disposition) => {
+      const runtime = runtimeFixture();
+      const dead = await exitedPid();
+      const childIncarnation = 'recorded-child-incarnation';
+      if (!isProcessIncarnation(childIncarnation)) throw new Error('child incarnation is not well-formed');
+      const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+        requestId: 'request-1',
+        incumbent: {
+          instanceId: 'incumbent',
+          pid: dead,
+          incarnation: null,
+          version: '0.10.13',
+          bundleHash: 'fedcba9876543210',
+          flavor: 'prod',
         },
-      ]),
-    });
-    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+        target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+        attemptId: 'attempt-1',
+        attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: dead, incarnation: null },
+        attemptChild: { attemptId: 'attempt-1', pid: dead, incarnation: childIncarnation },
+        disposition,
+        blockers: [],
+        retryCondition: null,
+        attemptDeadline: null,
+        completionReceipt: null,
+        successionPreparation: preparation('attempt-1', [
+          {
+            owner: 'durable-cli',
+            generation: 1,
+            attemptId: 'attempt-1',
+            receiptId: 'durable-cli:attempt-1',
+            recoveryGrantId: 'grant-1',
+            payload: null,
+          },
+        ]),
+      });
+      if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
 
-    expect(await holdOf(resolveAt(runtime, 'startup-1'))).toEqual({
-      kind: 'recovery-grants-unverified',
-      attemptId: 'attempt-1',
-    });
-  });
+      expect(await holdOf(resolveAt(runtime, 'startup-1'))).toEqual({
+        kind: 'recovery-grants-unverified',
+        attemptId: 'attempt-1',
+      });
+    },
+  );
 
   it('should retire a dead attempt that transferred nothing, and discharge it once this startup serves', async () => {
     const runtime = runtimeFixture();

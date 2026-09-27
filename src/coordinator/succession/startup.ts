@@ -655,9 +655,15 @@ export async function resolveIncompleteSuccessionAtStartup(
   }
   const owner = intent.attemptOwner;
   const child = intent.attemptChild;
-  if (intent.disposition === 'pending' || intent.disposition === 'deferred') {
-    // Before `attempting` nothing was released, and the prepared grants are reachable only through this attempt,
-    // so retiring it is enough. Its child may already hold the incumbent's listeners, so it must be proven gone too.
+  const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
+  const retirement = observeRetirementDisposition(runtime, attemptId);
+  const transferEvidence =
+    retirement.kind === 'recorded' ||
+    (child !== null &&
+      child !== undefined &&
+      ((preparation.success && preparation.data.receipts.length > 0) || retirement.kind === 'unreadable'));
+  if ((intent.disposition === 'pending' || intent.disposition === 'deferred') && !transferEvidence) {
+    // With no durable transfer evidence, retiring the dead attempt releases its prepared grants.
     const unproven = deathsUnproven(
       attemptId,
       child !== undefined && child !== null && child.attemptId === attemptId ? [owner, child] : [owner],
@@ -668,8 +674,7 @@ export async function resolveIncompleteSuccessionAtStartup(
         : retireArchived(attemptId)
       : holdOrAbandon(unproven);
   }
-  if (intent.disposition !== 'attempting') return { kind: 'none' };
-  const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
+  if (intent.disposition !== 'attempting' && !transferEvidence) return { kind: 'none' };
   if (!preparation.success || child === undefined || child === null) {
     return holdOrAbandon({ kind: 'attempt-record-unreadable', attemptId });
   }

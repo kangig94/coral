@@ -85,6 +85,21 @@ describe('historical job readers', () => {
     expect(address.protectedPath).not.toBe(epochDir);
   });
 
+  it('refreshes from the protected address when protection moves a seeded epoch later', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    db.close();
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    const epochKey = readOrCreateEpochKey(runtime, epoch);
+    const index = new JobLocationIndex(runtime, root);
+    expect(
+      seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprints[0], join(root, 'results'), storage).kind,
+    ).toBe('uncertified');
+
+    protectStoreEpoch(runtime, epoch);
+
+    expect(refreshHistoricalEpoch(index, epochKey, ['job-1'])).toBe('read');
+  });
+
   it('never rebinds a deleted protected lineage to a new epoch with the same number', () => {
     const { root, epochDir, db } = fixture(fingerprints[0]);
     db.close();

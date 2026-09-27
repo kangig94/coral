@@ -91,6 +91,61 @@ describe('upgrade waiter', () => {
     for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
+  it('waits for its queued target to be adopted before claiming and launching', async () => {
+    const dir = runDir();
+    const queued = { build: { ...build, version: '0.12.0' }, pluginRootLabel: '/installed/queued' };
+    await compareAndSwapUpgradeIntent(dir, null, {
+      ...pendingIntent(),
+      nextTarget: { requestId: 'queued-request', target: queued },
+    });
+    let now = Date.parse('2026-09-25T00:00:00.000Z');
+    let adopted = false;
+    const launch = vi.fn(async (intent: UpgradeIntent, attemptId: string) => {
+      expect(adopted).toBe(true);
+      const written = await compareAndSwapUpgradeIntent(dir, intent.revision, {
+        ...intent,
+        disposition: 'completed',
+        completionReceipt: {
+          kind: 'serving',
+          attemptId,
+          successor: { instanceId: 'successor', pid: 5678, incarnation: null, build: queued.build },
+          epochKey: 'epoch-1:lineage-1',
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date(now).toISOString(),
+        },
+      });
+      expect(written.kind).toBe('written');
+    });
+    const result = await runUpgradeWaiter({
+      runDir: dir,
+      socketPath: '/unused.sock',
+      targetRoot: queued.pluginRootLabel,
+      validateTarget: () => true,
+      observeRetirement: async () => 'retired',
+      launchTarget: launch,
+      ports: waiterPorts(
+        () => now,
+        async (ms) => {
+          now += ms;
+          if (adopted) return;
+          adopted = true;
+          const current = readUpgradeIntent(dir);
+          if (current.kind !== 'readable') throw new Error('intent disappeared');
+          const written = await compareAndSwapUpgradeIntent(dir, current.intent.revision, {
+            ...current.intent,
+            requestId: 'queued-request',
+            target: queued,
+            nextTarget: null,
+          });
+          expect(written.kind).toBe('written');
+        },
+      ),
+    });
+    expect(result).toEqual({ kind: 'completed' });
+    expect(launch).toHaveBeenCalledOnce();
+  });
+
   it('launches after verified retirement without another contender and waits for serving', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent());

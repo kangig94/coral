@@ -91,7 +91,6 @@ type HistoricalReader = (db: SqliteDatabasePort) => Projection[];
 type HistoricalEpochSource = {
   readonly runtime: Pick<Runtime, 'storage' | 'ids' | 'env'>;
   readonly originalEpoch: ResolvedStoreEpoch;
-  epoch: ResolvedStoreEpoch | null;
   readonly fingerprint: string;
   readonly jobsRoot: string;
   readonly storage: StoragePort;
@@ -250,7 +249,7 @@ export function seedHistoricalEpoch(
   certifyRetiredEpoch = false,
 ): HistoricalSeedResult {
   const sources = historicalSources.get(index) ?? new Map<string, HistoricalEpochSource>();
-  const source: HistoricalEpochSource = { runtime, originalEpoch: epoch, epoch: null, fingerprint, jobsRoot, storage };
+  const source: HistoricalEpochSource = { runtime, originalEpoch: epoch, fingerprint, jobsRoot, storage };
   sources.set(epochKey, source);
   historicalSources.set(index, sources);
   for (const known of knownJobs) {
@@ -270,7 +269,6 @@ export function seedHistoricalEpoch(
       reason: 'protected-epoch-address-unreadable',
     };
   }
-  source.epoch = addressedEpoch;
   const reader = readers[fingerprint];
   const dbPath = addressedEpoch.path;
   if (reader === undefined || !storage.existsSync(dbPath)) {
@@ -389,29 +387,27 @@ export function refreshHistoricalEpoch(
     );
     if (seeded.kind === 'unrecoverable-retained') return 'unreadable';
   }
-  if (source.epoch === null) {
-    try {
-      const { runtime, originalEpoch } = source;
-      const lineageKey =
-        decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey ?? originalEpoch.lineageKey ?? epochKey;
-      source.epoch =
-        observeProtectedEpoch(
-          { storage: source.storage },
-          originalEpoch.canonicalStoreRoot ?? originalEpoch.storeRoot,
-          lineageKey,
-        ) ?? originalEpoch;
-    } catch {
-      return 'unreadable';
-    }
+  let addressedEpoch: ResolvedStoreEpoch;
+  try {
+    const { runtime, originalEpoch } = source;
+    const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey ?? originalEpoch.lineageKey ?? epochKey;
+    addressedEpoch =
+      observeProtectedEpoch(
+        { storage: source.storage },
+        originalEpoch.canonicalStoreRoot ?? originalEpoch.storeRoot,
+        lineageKey,
+      ) ?? originalEpoch;
+  } catch {
+    return 'unreadable';
   }
   const reader = readers[source.fingerprint];
-  const dbPath = source.epoch.path;
+  const dbPath = addressedEpoch.path;
   if (reader === undefined || !source.storage.existsSync(dbPath)) return 'unreadable';
 
   let releaseLock: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
-    releaseLock = acquireSharedFileLockSync(join(dirname(source.epoch.path), STORE_LOCK_FILE_NAME), 0);
+    releaseLock = acquireSharedFileLockSync(join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME), 0);
     db = source.storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
     const requested = new Set(jobIds);
     for (const row of reader(db)) {

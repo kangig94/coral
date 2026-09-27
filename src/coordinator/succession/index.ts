@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { SUCCESSION_METHODS } from '../../infra/succession-address.js';
 import {
   readSuccessionCapabilities,
+  successionTargetKey,
   successionAbortSchema,
   successionCommitSchema,
   successionPrepareSchema,
@@ -27,12 +28,17 @@ export function createSuccessionCoordinator(options: SuccessionReconcilerOptions
         const parsed = successionRequestSchema.safeParse(params);
         if (!parsed.success) return { kind: 'refused', reason: 'invalid succession request' };
         const decision = await reconciler.request(parsed.data);
+        const queued =
+          decision.kind === 'registered' &&
+          decision.intent.nextTarget !== null &&
+          decision.intent.nextTarget !== undefined &&
+          successionTargetKey(decision.intent.nextTarget.target) === successionTargetKey(parsed.data.target);
         const targetCapabilities =
           decision.kind === 'registered'
             ? readSuccessionCapabilities(
                 options.runtime,
-                join(decision.intent.target.pluginRootLabel, 'bridge'),
-                decision.intent.target.build,
+                join(parsed.data.target.pluginRootLabel, 'bridge'),
+                parsed.data.target.build,
               )
             : null;
         return decision.kind === 'registered'
@@ -40,6 +46,7 @@ export function createSuccessionCoordinator(options: SuccessionReconcilerOptions
               ...decision,
               incumbentCanCommit:
                 options.commitAvailable === true &&
+                !queued &&
                 targetCapabilities?.kind === 'declared' &&
                 targetCapabilities.capabilities.protocols.includes('commit'),
             }

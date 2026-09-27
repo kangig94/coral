@@ -14,7 +14,7 @@ import {
   type UpgradeIntentProblem,
 } from '../infra/upgrade-intent.js';
 import { createRealUpgradeWaiterPorts, type UpgradeWaiterPorts } from '../runtime/upgrade-waiter.js';
-import { CONTENDER_DEFERRAL_OWNER, observeRecordedProcess } from './index.js';
+import { CONTENDER_DEFERRAL_OWNER, observeRecordedProcess, runUpgradeWaiter } from './index.js';
 
 const WAITER_CLAIM_TIMEOUT_MS = 5_000;
 const WAITER_CLAIM_POLL_MS = 50;
@@ -147,10 +147,12 @@ export async function requestLegacyUpgrade(
     target: UpgradeIntent['target'];
     ports?: UpgradeWaiterPorts;
     startWaiter?: typeof startUpgradeWaiter;
+    runWaiter?: typeof runUpgradeWaiter;
   }>,
 ): Promise<LegacyUpgradeStart> {
   const ports = options.ports ?? createRealUpgradeWaiterPorts();
   const startWaiter = options.startWaiter ?? startUpgradeWaiter;
+  const runWaiter = options.runWaiter ?? runUpgradeWaiter;
   try {
     if (
       options.target.build.flavor !== options.incumbent.flavor ||
@@ -160,10 +162,13 @@ export async function requestLegacyUpgrade(
   } catch {
     return { kind: 'refused', reason: 'build version is invalid', disposition: 'error' };
   }
+  if (options.startWaiter === undefined && !waiterExecutableReady(options.target.pluginRootLabel)) {
+    return { kind: 'refused', reason: 'waiter bundle is unavailable', disposition: 'error' };
+  }
 
   type Registration =
     | Extract<LegacyUpgradeStart, { kind: 'refused' }>
-    | Readonly<{ kind: 'registered'; requestId: string; targetRoot: string }>;
+    | Readonly<{ kind: 'registered'; requestId: string; targetRoot: string; queued?: boolean }>;
   const refuse = (reason: string, disposition: LegacyUpgradeRefusal) =>
     ({ kind: 'settle', value: { kind: 'refused', reason, disposition } }) as const;
   const outcome = await retryUpgradeIntentCas<Registration>(options.runDir, (observed) => {
@@ -178,6 +183,22 @@ export async function requestLegacyUpgrade(
       current.incumbent.incarnation === options.incumbent.incarnation;
     if (open && !namesIncumbent && retiredIncumbentSupersession(ports, current) !== 'replaceable') {
       return refuse('pending intent names another incumbent', 'deferred');
+    }
+    if (
+      open &&
+      namesIncumbent &&
+      current.nextTarget?.target.pluginRootLabel === options.target.pluginRootLabel &&
+      current.nextTarget.target.build.buildSetId === options.target.build.buildSetId
+    ) {
+      return {
+        kind: 'settle',
+        value: {
+          kind: 'registered',
+          requestId: current.nextTarget.requestId,
+          targetRoot: options.target.pluginRootLabel,
+          queued: true,
+        },
+      };
     }
     if (open && namesIncumbent) {
       let targetOrder: number;
@@ -277,6 +298,43 @@ export async function requestLegacyUpgrade(
   }
   const registration = outcome.value;
   if (registration.kind === 'refused') return registration;
+  const runInline = async (): Promise<LegacyUpgradeStart> => {
+    for (;;) {
+      const result = await runWaiter({
+        runDir: options.runDir,
+        socketPath: options.socketPath,
+        targetRoot: registration.targetRoot,
+        ports,
+      });
+      if (result.kind === 'completed' || result.kind === 'closed') {
+        return { kind: 'handled', requestId: registration.requestId, result: { kind: result.kind } };
+      }
+      if (result.kind === 'superseded') {
+        return { kind: 'refused', reason: 'upgrade intent was superseded', disposition: 'redundant' };
+      }
+      if (result.kind === 'target-unavailable' || result.kind === 'unobservable') {
+        return {
+          kind: 'refused',
+          reason: result.kind === 'unobservable' ? result.reason : 'target became unavailable while waiting',
+          disposition: 'error',
+        };
+      }
+      const current = readUpgradeIntent(options.runDir);
+      if (
+        current.kind === 'readable' &&
+        current.intent.attemptOwner?.kind === 'waiter' &&
+        observeRecordedProcess(ports, current.intent.attemptOwner) === 'alive'
+      ) {
+        return {
+          kind: 'waiting',
+          requestId: registration.requestId,
+          waiter: { kind: 'existing', pid: current.intent.attemptOwner.pid },
+        };
+      }
+      await ports.time.sleep(WAITER_RETRY_MS);
+    }
+  };
+  if (registration.queued) return runInline();
   let lastFailure: string | null = null;
   let failures = 0;
   for (;;) {
@@ -310,7 +368,7 @@ export async function requestLegacyUpgrade(
       lastFailure = waiter.reason;
     }
     if (++failures >= WAITER_START_MAX_FAILURES) {
-      return { kind: 'refused', reason: waiter.reason, disposition: 'deferred' };
+      return runInline();
     }
     await ports.time.sleep(WAITER_RETRY_MS);
   }
@@ -334,7 +392,6 @@ export async function recordContenderDeferral(runDir: string, reason: string): P
       expectedRevision: observed.intent.revision,
       change: {
         ...observed.intent,
-        disposition: 'deferred',
         blockers: [...observed.intent.blockers.filter((entry) => entry.owner !== blocker.owner), blocker],
       },
       settle: () => undefined,

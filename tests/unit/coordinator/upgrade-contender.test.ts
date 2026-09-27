@@ -51,6 +51,7 @@ describe('contender upgrade request', () => {
       target: { build, pluginRootLabel: '/installed/target' },
       requestId: 'request-1',
       time: createRealTimePort(),
+      waiterReady: () => true,
       startLegacy,
     };
     return { options, startLegacy, startWaiter, runDir };
@@ -71,6 +72,22 @@ describe('contender upgrade request', () => {
       kind: 'readable',
       intent: { incumbent: { instanceId: 'incumbent' }, retryCondition: { kind: 'incumbent-retirement' } },
     });
+  });
+
+  it('rejects a target without a waiter before asking an incumbent to register it', async () => {
+    const { options, startLegacy, runDir } = fixture();
+    const request = vi.fn(async () => ({ kind: 'registered', incumbentCanCommit: true }));
+
+    expect(
+      await requestUpgradeFromContender({
+        ...options,
+        waiterReady: () => false,
+        request,
+      }),
+    ).toEqual({ kind: 'refused', reason: 'waiter bundle is unavailable', disposition: 'error' });
+    expect(request).not.toHaveBeenCalled();
+    expect(startLegacy).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(runDir)).toEqual({ kind: 'absent' });
   });
 
   it('starts a waiter when a responding incumbent cannot commit the target', async () => {

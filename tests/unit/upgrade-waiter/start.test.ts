@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { requestLegacyUpgrade, startUpgradeWaiter } from '#src/upgrade-waiter/start.js';
+import { recordContenderDeferral, requestLegacyUpgrade, startUpgradeWaiter } from '#src/upgrade-waiter/start.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { createRealUpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
@@ -643,7 +643,7 @@ describe('legacy upgrade request', () => {
     });
   });
 
-  it('returns a visible deferral after repeated waiter claim failures', async () => {
+  it('keeps the contender running the waiter after two detached claim failures', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);
     installedTargets.add('/installed/target');
@@ -659,6 +659,7 @@ describe('legacy upgrade request', () => {
       })
       .mockRejectedValueOnce(new Error('unbounded third launch'));
     const realPorts = createRealUpgradeWaiterPorts();
+    const runWaiter = vi.fn(async () => ({ kind: 'completed' as const }));
 
     expect(
       await requestLegacyUpgrade({
@@ -667,20 +668,18 @@ describe('legacy upgrade request', () => {
         incumbent,
         target: { build, pluginRootLabel: '/installed/target' },
         startWaiter,
+        runWaiter,
         ports: { ...realPorts, time: { now: () => Date.now(), sleep: async () => undefined } },
       }),
-    ).toEqual({
-      kind: 'refused',
-      reason: 'waiter did not claim the intent before the startup deadline',
-      disposition: 'deferred',
-    });
+    ).toMatchObject({ kind: 'handled', result: { kind: 'completed' } });
     expect(startWaiter).toHaveBeenCalledTimes(2);
+    expect(runWaiter).toHaveBeenCalledOnce();
     expect(readUpgradeIntent(runDir)).toMatchObject({
-      intent: { disposition: 'deferred', blockers: [{ owner: 'upgrade-contender' }] },
+      intent: { disposition: 'pending', blockers: [{ owner: 'upgrade-contender' }] },
     });
   });
 
-  it('defers a valid backend target whose waiter bundle is missing', async () => {
+  it('refuses a target with no waiter executable before recording an intent', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);
     installedTargets.add('/installed/target');
@@ -699,15 +698,9 @@ describe('legacy upgrade request', () => {
           time: { now: () => Date.now(), sleep: async () => undefined },
         },
       }),
-    ).toEqual({ kind: 'refused', reason: 'waiter bundle is unavailable', disposition: 'deferred' });
+    ).toEqual({ kind: 'refused', reason: 'waiter bundle is unavailable', disposition: 'error' });
     expect(launchDetached).not.toHaveBeenCalled();
-    expect(readUpgradeIntent(runDir)).toMatchObject({
-      intent: {
-        disposition: 'deferred',
-        retryCondition: { kind: 'incumbent-retirement' },
-        blockers: [{ owner: 'upgrade-contender', reason: 'waiter bundle is unavailable' }],
-      },
-    });
+    expect(readUpgradeIntent(runDir)).toEqual({ kind: 'absent' });
     waiterTargets.add('/installed/target');
     launchDetached.mockImplementation(async () => {
       const observed = readUpgradeIntent(runDir);
@@ -735,6 +728,67 @@ describe('legacy upgrade request', () => {
         },
       }),
     ).toMatchObject({ kind: 'waiting', waiter: { kind: 'started', pid: process.pid } });
+  });
+
+  it('records a contender blocker without changing an active incumbent attempt', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'active-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'active-attempt',
+      attemptOwner: { kind: 'incumbent', instanceId: incumbent.instanceId, pid: incumbent.pid, incarnation: null },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+    });
+
+    await recordContenderDeferral(runDir, 'waiter launch failed');
+
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: { disposition: 'attempting', attemptId: 'active-attempt', blockers: [{ owner: 'upgrade-contender' }] },
+    });
+  });
+
+  it('keeps a queued legacy target under an inline waiter across the active handover', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    const queued = { build: { ...build, version: '0.12.0' }, pluginRootLabel: '/installed/queued' };
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'active-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'active-attempt',
+      attemptOwner: { kind: 'incumbent', instanceId: incumbent.instanceId, pid: incumbent.pid, incarnation: null },
+      attemptChild: { attemptId: 'active-attempt', pid: process.pid, incarnation: null },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      nextTarget: { requestId: 'queued-request', target: queued },
+    });
+    const runWaiter = vi.fn(async () => ({ kind: 'completed' as const }));
+    const startWaiter = vi.fn(async () => ({ kind: 'started' as const, pid: 5678 }));
+
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: queued,
+        startWaiter,
+        runWaiter,
+      }),
+    ).toMatchObject({ kind: 'handled', requestId: 'queued-request' });
+    expect(runWaiter).toHaveBeenCalledWith(expect.objectContaining({ targetRoot: queued.pluginRootLabel }));
+    expect(startWaiter).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: { requestId: 'active-request', nextTarget: { requestId: 'queued-request' }, disposition: 'attempting' },
+    });
   });
 
   it('should refuse to replace an intent whose recorded incumbent may still be alive', async () => {

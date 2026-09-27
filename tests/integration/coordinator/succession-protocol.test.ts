@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createSuccessionCoordinator } from '#src/coordinator/succession/index.js';
+import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { readSuccessionCapabilities } from '#src/coordinator/succession/protocol.js';
 import type { SuccessionOwner } from '#src/coordinator/succession/obligations.js';
@@ -66,6 +67,65 @@ afterEach(() => {
 });
 
 describe('succession protocol', () => {
+  it('reports the queued contender target capability rather than the active attempt target', async () => {
+    const active = fixture();
+    const queued = fixture();
+    const queuedBuild = { ...queued.build, version: '3.0.0' };
+    writeFileSync(join(queued.bridge, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(queuedBuild));
+    unlinkSync(queued.declarationPath);
+    const incumbent = {
+      instanceId: 'incumbent',
+      pid: process.pid,
+      incarnation: null,
+      version: '1.0.0',
+      bundleHash: 'old-bundle',
+      flavor: 'prod' as const,
+    };
+    await compareAndSwapUpgradeIntent(active.runDir, null, {
+      requestId: 'active-request',
+      incumbent,
+      target: { build: active.build, pluginRootLabel: active.pluginRoot },
+      attemptId: 'active-attempt',
+      attemptOwner: { kind: 'incumbent', instanceId: incumbent.instanceId, pid: incumbent.pid, incarnation: null },
+      attemptChild: { attemptId: 'active-attempt', pid: process.pid, incarnation: null },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+    });
+    const service = createSuccessionCoordinator({
+      runtime,
+      runDir: active.runDir,
+      incumbent: () => incumbent,
+      owners: [],
+      requiredOwners: [],
+      epochKey: () => 'active-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+    });
+    try {
+      const response = await service.dispatch(SUCCESSION_METHODS.request, {
+        requestId: 'queued-request',
+        target: { build: queuedBuild, pluginRootLabel: queued.pluginRoot },
+      });
+      expect(response).toMatchObject({ kind: 'registered', incumbentCanCommit: false });
+      expect(
+        await service.dispatch(SUCCESSION_METHODS.request, {
+          requestId: 'retry-request',
+          target: { build: queuedBuild, pluginRootLabel: queued.pluginRoot },
+        }),
+      ).toMatchObject({ kind: 'registered', incumbentCanCommit: false });
+      expect(readUpgradeIntent(active.runDir)).toMatchObject({
+        intent: {
+          nextTarget: { requestId: 'queued-request', target: { pluginRootLabel: queued.pluginRoot } },
+        },
+      });
+    } finally {
+      service.reconciler.dispose();
+    }
+  });
+
   it('defers a format-changing successor while a job is live and prepares after settlement', async () => {
     const target = fixture();
     let liveJobs = ['job-in-old-epoch'];
