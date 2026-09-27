@@ -18,6 +18,7 @@ import { retainedBuildRoot } from '../../infra/retained-build-root.js';
 import { upgradeIntentPath } from '../../infra/path/index.js';
 import {
   readUpgradeIntent,
+  parseUpgradeIntentSnapshot,
   retryUpgradeIntentCas,
   revalidateUpgradeIntentTarget,
   type UpgradeIntent,
@@ -43,9 +44,11 @@ import {
 } from '../../store/startup-store-routing.js';
 import {
   advanceSuccessionWriterGeneration,
+  generationForWaiterServing,
   handbackSuccessionWriterGeneration,
   joinSuccessionWriterGeneration,
   observeSuccessionServing,
+  observeCurrentSuccessionServing,
   observeSuccessionWriterGeneration,
   recordSuccessionServing,
   type SuccessionWriterGeneration,
@@ -256,7 +259,14 @@ async function exhaustStartupPatience(
   const previous = readStartupPatience(runtime, subject);
   if (previous !== null && previous.startups >= SUCCESSION_STARTUP_PATIENCE) {
     const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-    if (hold.attemptId !== null && !(observed.kind === 'readable' && observed.intent.disposition === 'completed')) {
+    if (
+      hold.attemptId !== null &&
+      !(
+        observed.kind === 'readable' &&
+        observed.intent.attemptId === hold.attemptId &&
+        observed.intent.disposition === 'completed'
+      )
+    ) {
       const recorded = await recordStartupHold(runtime, hold.attemptId, hold, previous.startups, true);
       if (recorded === 'released') clearStartupPatience(runtime, subject);
     }
@@ -327,10 +337,36 @@ async function recordStartupHold(
   const outcome = await retryUpgradeIntentCas<'released' | 'retained'>(
     runtime.paths.coral.coordinator.runDir,
     (observed) => {
-      if (observed.kind !== 'readable' || observed.intent.attemptId !== attemptId) {
+      if (observed.kind !== 'readable') {
         return { kind: 'settle', value: 'released' };
       }
       const blocker = { owner: 'succession-startup', reason };
+      if (observed.intent.attemptId !== attemptId) {
+        const archived = observed.intent.supersededAttempts;
+        const [first, ...remaining] = Array.isArray(archived) ? archived : [];
+        const prior = parseUpgradeIntentSnapshot(first);
+        if (prior?.attemptId !== attemptId) {
+          return { kind: 'settle', value: 'released' };
+        }
+        const abandoned = Array.isArray(observed.intent.abandonedSupersededAttempts)
+          ? observed.intent.abandonedSupersededAttempts
+          : [];
+        return {
+          kind: 'write',
+          expectedRevision: observed.intent.revision,
+          change: {
+            ...observed.intent,
+            blockers: [...observed.intent.blockers.filter((entry) => entry.owner !== blocker.owner), blocker],
+            ...(exhausted
+              ? {
+                  supersededAttempts: remaining,
+                  abandonedSupersededAttempts: [...abandoned, { ...prior, abandonmentReason: reason }],
+                }
+              : {}),
+          },
+          settle: () => (exhausted ? 'released' : 'retained'),
+        };
+      }
       const releases = exhausted && observed.intent.disposition !== 'completed';
       return {
         kind: 'write',
@@ -492,7 +528,18 @@ export async function resolveIncompleteSuccessionAtStartup(
     return (await exhaustStartupPatience(runtime, options.startupId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
   }
   if (observed.kind !== 'readable') return { kind: 'none' };
-  const intent = observed.intent;
+  const archived = observed.intent.supersededAttempts;
+  const prior = Array.isArray(archived) && archived.length > 0 ? parseUpgradeIntentSnapshot(archived[0]) : null;
+  if (Array.isArray(archived) && archived.length > 0 && prior === null) {
+    const hold = {
+      kind: 'unreadable-intent',
+      attemptId: null,
+      source: 'corrupt',
+      fingerprint: startupIntentFingerprint(runtime),
+    } as const;
+    return (await exhaustStartupPatience(runtime, options.startupId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
+  }
+  const intent = prior ?? observed.intent;
   const holdOrAbandon = async (hold: SuccessionStartupHold): Promise<IncompleteSuccessionResolution> => {
     if (!(await exhaustStartupPatience(runtime, options.startupId, hold))) return { kind: 'hold', hold };
     backendLog.warn(`Abandoned an incomplete succession attempt for ordinary startup: ${describeStartupHold(hold)}`);
@@ -706,6 +753,17 @@ export async function dischargeDeadSuccessionAttempt(
   incumbent: UpgradeIntent['incumbent'],
 ): Promise<void> {
   const outcome = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) => {
+    if (observed.kind === 'readable' && Array.isArray(observed.intent.supersededAttempts)) {
+      const [first, ...remaining] = observed.intent.supersededAttempts;
+      if (parseUpgradeIntentSnapshot(first)?.attemptId === attemptId) {
+        return {
+          kind: 'write',
+          expectedRevision: observed.intent.revision,
+          change: { ...observed.intent, supersededAttempts: remaining },
+          settle: () => undefined,
+        };
+      }
+    }
     if (
       observed.kind !== 'readable' ||
       observed.intent.attemptId !== attemptId ||
@@ -1373,10 +1431,21 @@ export async function completeWaiterLaunchedUpgrade(
     if (intent.attemptDeadline !== null && Date.parse(recordedAt) > Date.parse(intent.attemptDeadline)) {
       return unchanged;
     }
-    const generation = observeSuccessionWriterGeneration(runtime);
+    let generation = observeSuccessionWriterGeneration(runtime);
     if (generation === null) return unchanged;
     let serving: ReturnType<typeof recordSuccessionServing>;
     try {
+      const previous = observeCurrentSuccessionServing(runtime);
+      if (previous !== null && previous.attemptId !== attemptId) {
+        if (observeRecordedDeaths([intent.incumbent]) !== 'absent') {
+          throw new Error('Previous serving owner is not proven gone after legacy retirement.');
+        }
+        const writer = joinSuccessionWriterGeneration(runtime, openedStore);
+        writer.park();
+        generation = generationForWaiterServing(runtime, generation, attemptId, previous.attemptId);
+        writer.rebind(generation);
+        writer.unpark();
+      }
       serving = recordSuccessionServing(runtime, generation, {
         attemptId,
         epochKey,

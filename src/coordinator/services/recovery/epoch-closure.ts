@@ -23,7 +23,11 @@ import {
   type EpochClosureEvidence,
   type EpochClosureRecording,
 } from '../../../store/epoch-closure.js';
-import { knownProtectedEpochAddresses, reconcileProtectedEpochs } from '../../../store/epoch-protection.js';
+import {
+  knownProtectedEpochAddresses,
+  reconcileProtectedEpochs,
+  type ProtectedEpochAddress,
+} from '../../../store/epoch-protection.js';
 import { readOrCreateEpochKey } from '../../../store/epoch-key.js';
 import {
   decodeResolvedStoreEpoch,
@@ -35,9 +39,27 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type { JobLocationIndex } from '../../../jobs/location-index.js';
 import { readUpgradeIntent } from '../../../infra/upgrade-intent.js';
 import { successionPreparationSchema } from '../../succession/protocol.js';
+import { latestControllerOpen } from '../../succession/controller-open.js';
 import { readDurableCliControllerReceipts } from '../durable-cli-transfer.js';
 
 export type ClosureCandidate = Readonly<{ epoch: ResolvedStoreEpoch; epochKey: string; originalPath: string }>;
+
+export function selectProtectedPredecessorFromControllers(
+  runtime: Runtime,
+  storeRoot: string,
+  addresses: readonly ProtectedEpochAddress[],
+): string | null {
+  const observed: { address: ProtectedEpochAddress; controlGeneration: number }[] = [];
+  for (const address of addresses) {
+    const controller = latestControllerOpen(runtime, lineageJobEpochKey(storeRoot, address.epochKey));
+    if (controller.latest === null || controller.unreadable.length > 0) return null;
+    observed.push({ address, controlGeneration: controller.latest.controlGeneration });
+  }
+  observed.sort((left, right) => right.controlGeneration - left.controlGeneration);
+  return observed.length > 1 && observed[0].controlGeneration > observed[1].controlGeneration
+    ? observed[0].address.epochKey
+    : null;
+}
 export type CloseProxySet = (
   proxyInstanceId: string,
   guardian: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,

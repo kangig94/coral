@@ -4,6 +4,7 @@ import { UPGRADE_WAITER_BUNDLE_FILE } from '../infra/bundle-manifest-address.js'
 import type { LegacyUpgradeRefusal, LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { compareProductVersions } from '../infra/product-version.js';
+import { waiterExecutableReady } from '../infra/handoff-target.js';
 import {
   compareAndSwapUpgradeIntent,
   readUpgradeIntent,
@@ -18,6 +19,7 @@ import { CONTENDER_DEFERRAL_OWNER, observeRecordedProcess } from './index.js';
 const WAITER_CLAIM_TIMEOUT_MS = 5_000;
 const WAITER_CLAIM_POLL_MS = 50;
 const WAITER_RETRY_MS = 2_000;
+const WAITER_START_MAX_FAILURES = 2;
 
 export type UpgradeWaiterStart =
   | Readonly<{ kind: 'started' | 'existing'; pid: number }>
@@ -64,6 +66,9 @@ export async function startUpgradeWaiter(
     }
     observed = readUpgradeIntent(options.runDir);
   }
+  if (!waiterExecutableReady(options.targetRoot)) {
+    return { kind: 'unavailable', reason: 'waiter bundle is unavailable' };
+  }
   let pid: number | null;
   try {
     pid = await ports.launchDetached(join(options.targetRoot, 'bridge', UPGRADE_WAITER_BUNDLE_FILE), [
@@ -99,8 +104,7 @@ export async function startUpgradeWaiter(
 
 /**
  * An intent recorded against an incumbent that is proven gone can never be released by that incumbent, so the one
- * now serving may replace it — unless an attempt may still act on it: an incumbent-owned attempt belongs to startup
- * recovery, and a live waiter's attempt ends only with its lease.
+ * now serving may replace it — unless an attempt may still act on it. Its evidence is retained for startup recovery.
  */
 function retiredIncumbentSupersession(
   ports: UpgradeWaiterPorts,
@@ -108,7 +112,7 @@ function retiredIncumbentSupersession(
 ): 'replaceable' | 'attempt-held' | 'incumbent-not-proven-gone' {
   const owner = intent.attemptOwner;
   if (
-    owner?.kind === 'incumbent' ||
+    (owner?.kind === 'incumbent' && observeRecordedProcess(ports, owner) !== 'absent') ||
     (owner?.kind === 'waiter' &&
       intent.attemptDeadline !== null &&
       Date.parse(intent.attemptDeadline) > ports.time.now() &&
@@ -216,6 +220,10 @@ export async function requestLegacyUpgrade(
       return refuse('recorded successor may still serve', 'deferred');
     }
     const requestId = ports.uuid();
+    const earlier = Array.isArray(current?.supersededAttempts) ? current.supersededAttempts : [];
+    const snapshot = current === null ? null : { ...current };
+    if (snapshot !== null) delete snapshot.supersededAttempts;
+    const supersededAttempts = current?.attemptId === null || snapshot === null ? earlier : [...earlier, snapshot];
     return {
       kind: 'write',
       expectedRevision: current?.revision ?? null,
@@ -224,12 +232,23 @@ export async function requestLegacyUpgrade(
         incumbent: options.incumbent,
         target: options.target,
         attemptId: null,
+        attemptChild: null,
         attemptOwner: null,
         disposition: 'pending',
         blockers: [],
         retryCondition: { kind: 'incumbent-retirement', evidence: 'waiting for verified natural retirement' },
         attemptDeadline: null,
         completionReceipt: null,
+        successionPreparation: null,
+        recoveryAttemptId: null,
+        recoveryBuildSetId: null,
+        recoveryGrantAttemptId: null,
+        recoveryRetry: null,
+        transientRetry: undefined,
+        obligationRetry: null,
+        nextTarget: null,
+        unservedMintDiscard: null,
+        ...(supersededAttempts.length === 0 ? {} : { supersededAttempts }),
       },
       settle: () => ({ kind: 'registered', requestId, targetRoot: options.target.pluginRootLabel }),
     };
@@ -247,6 +266,7 @@ export async function requestLegacyUpgrade(
   const registration = outcome.value;
   if (registration.kind === 'refused') return registration;
   let lastFailure: string | null = null;
+  let failures = 0;
   for (;;) {
     const observed = readUpgradeIntent(options.runDir);
     if (observed.kind !== 'readable') {
@@ -277,6 +297,9 @@ export async function requestLegacyUpgrade(
       await recordContenderDeferral(options.runDir, waiter.reason);
       lastFailure = waiter.reason;
     }
+    if (++failures >= WAITER_START_MAX_FAILURES) {
+      return { kind: 'refused', reason: waiter.reason, disposition: 'deferred' };
+    }
     await ports.time.sleep(WAITER_RETRY_MS);
   }
 }
@@ -299,6 +322,7 @@ export async function recordContenderDeferral(runDir: string, reason: string): P
       expectedRevision: observed.intent.revision,
       change: {
         ...observed.intent,
+        disposition: 'deferred',
         blockers: [...observed.intent.blockers.filter((entry) => entry.owner !== blocker.owner), blocker],
       },
       settle: () => undefined,

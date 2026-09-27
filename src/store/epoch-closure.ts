@@ -148,6 +148,16 @@ export function recordEpochClosure(
   if (existing?.disposition === 'closed' && evidence.disposition !== 'closed') {
     return { kind: 'recorded', evidence: existing };
   }
+  const updated: EpochClosureEvidence = {
+    ...existing,
+    ...evidence,
+    obligations: evidence.obligations.map((obligation) => ({
+      ...existing?.obligations.find(
+        (previous) => previous.owner === obligation.owner && previous.intentId === obligation.intentId,
+      ),
+      ...obligation,
+    })),
+  };
   const path = closurePath(stateRoot, evidence.epochKey);
   const parent = dirname(path);
   runtime.storage.mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -155,7 +165,7 @@ export function recordEpochClosure(
   const stage = `${path}.stage.${runtime.env.pid()}.${runtime.ids.uuid()}`;
   const fd = runtime.storage.openSync(stage, 'wx', 0o600);
   try {
-    const bytes = Buffer.from(`${JSON.stringify(evidence)}\n`);
+    const bytes = Buffer.from(`${JSON.stringify(updated)}\n`);
     runtime.storage.writeSync(fd, bytes, 0, bytes.length, null);
     runtime.storage.fdatasyncSync(fd);
   } finally {
@@ -179,7 +189,7 @@ export function recordEpochClosure(
       resultRetention: evidence.dataOutcome,
     });
   }
-  return { kind: 'recorded', evidence };
+  return { kind: 'recorded', evidence: updated };
 }
 
 export function closureCapability(

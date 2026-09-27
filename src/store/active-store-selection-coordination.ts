@@ -72,6 +72,7 @@ export type ActiveStoreSelectionProtocolOptions = {
   readonly storeFormat: StoreFormatDescription;
   readonly currentSelection: ActiveStoreSelection;
   readonly authorizeMint?: StoreEpochOptions['authorizeMint'];
+  readonly selectProtectedPredecessor?: StoreEpochOptions['selectProtectedPredecessor'];
   readonly dependencies: ActiveStoreSelectionProtocolDependencies;
 };
 
@@ -199,6 +200,7 @@ async function settleActiveStore(
     startupBusyTimeoutMs: options.startupBusyTimeoutMs,
     steadyStateBusyTimeoutMs: options.steadyStateBusyTimeoutMs,
     authorizeMint: options.authorizeMint,
+    selectProtectedPredecessor: options.selectProtectedPredecessor,
   });
   try {
     if (initialTransition !== null && adoption !== null) {

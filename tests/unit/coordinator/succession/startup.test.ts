@@ -489,6 +489,134 @@ describe('incomplete succession at startup', () => {
     });
   });
 
+  it('recovers a superseded dead attempt without clearing the replacement waiter intent', async () => {
+    const runtime = runtimeFixture();
+    const dead = await exitedPid();
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'old-request',
+      incumbent: {
+        instanceId: 'old-incumbent',
+        pid: dead,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+      attemptId: 'old-attempt',
+      attemptOwner: { kind: 'incumbent', instanceId: 'old-incumbent', pid: dead, incarnation: null },
+      attemptChild: null,
+      disposition: 'pending',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      successionPreparation: preparation('old-attempt'),
+    });
+    if (written.kind !== 'written') throw new Error('old attempt was not recorded');
+    const replaced = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      written.intent.revision,
+      {
+        ...written.intent,
+        requestId: 'new-request',
+        attemptId: 'new-attempt',
+        attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: process.pid, incarnation: null },
+        disposition: 'attempting',
+        attemptDeadline: new Date(Date.now() + 30_000).toISOString(),
+        supersededAttempts: [written.intent],
+      },
+    );
+    if (replaced.kind !== 'written') throw new Error('replacement waiter was not recorded');
+
+    await expect(resolveAt(runtime, 'startup-1')).resolves.toEqual({ kind: 'retire', attemptId: 'old-attempt' });
+    await dischargeDeadSuccessionAttempt(runtime, 'old-attempt', replaced.intent.incumbent);
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: {
+        requestId: 'new-request',
+        attemptId: 'new-attempt',
+        attemptOwner: { kind: 'waiter' },
+        supersededAttempts: [],
+      },
+    });
+  });
+
+  it('keeps a superseded recovery hold visible on the replacement intent', async () => {
+    const runtime = runtimeFixture();
+    const dead = await exitedPid();
+    const childIncarnation = 'recorded-child-incarnation';
+    if (!isProcessIncarnation(childIncarnation)) throw new Error('child incarnation is not well-formed');
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'old-request',
+      incumbent: {
+        instanceId: 'old-incumbent',
+        pid: dead,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+      attemptId: 'old-attempt',
+      attemptOwner: { kind: 'incumbent', instanceId: 'old-incumbent', pid: dead, incarnation: null },
+      attemptChild: { attemptId: 'old-attempt', pid: dead, incarnation: childIncarnation },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      successionPreparation: preparation('old-attempt', [
+        {
+          owner: 'durable-cli',
+          generation: 1,
+          attemptId: 'old-attempt',
+          receiptId: 'durable-cli:old-attempt',
+          recoveryGrantId: 'grant-1',
+          payload: null,
+        },
+      ]),
+    });
+    if (written.kind !== 'written') throw new Error('old attempt was not recorded');
+    const replaced = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      written.intent.revision,
+      {
+        ...written.intent,
+        requestId: 'new-request',
+        attemptId: null,
+        attemptOwner: null,
+        attemptChild: null,
+        disposition: 'pending',
+        supersededAttempts: [written.intent],
+      },
+    );
+    if (replaced.kind !== 'written') throw new Error('replacement was not recorded');
+
+    await expect(holdOf(resolveAt(runtime, 'startup-1'))).resolves.toMatchObject({
+      kind: 'recovery-grants-unverified',
+      attemptId: 'old-attempt',
+    });
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: {
+        requestId: 'new-request',
+        supersededAttempts: [{ attemptId: 'old-attempt' }],
+        blockers: [{ owner: 'succession-startup', reason: expect.stringContaining('recovery grants') }],
+      },
+    });
+    await expect(holdOf(resolveAt(runtime, 'startup-2'))).resolves.toMatchObject({
+      kind: 'recovery-grants-unverified',
+    });
+    await expect(resolveAt(runtime, 'startup-3')).resolves.toEqual({ kind: 'none' });
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: {
+        requestId: 'new-request',
+        supersededAttempts: [],
+        abandonedSupersededAttempts: [{ attemptId: 'old-attempt' }],
+        blockers: [{ owner: 'succession-startup', reason: expect.stringContaining('abandoned after 3 startups') }],
+      },
+    });
+  });
+
   describe('an attempt its incumbent prepared but never began committing', () => {
     async function seedPreparedAttempt(runtime: Runtime, owner: OwnerRecord): Promise<void> {
       const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
@@ -961,8 +1089,68 @@ describe('waiter-launched upgrade completion', () => {
     if (incarnation === null) throw new Error('this process has no observable incarnation');
     const complete = () =>
       completeWaiterLaunchedUpgrade(runtime, current, settled.store, 'target', process.pid, incarnation);
-    return { runtime, complete, revision: written.intent.revision };
+    return { runtime, complete, store: settled.store, revision: written.intent.revision };
   }
+
+  it('advances past an earlier serving generation when the retired incumbent is gone', async () => {
+    const { runtime, complete, store } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('intent disappeared');
+    const retired = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      observed.intent.revision,
+      {
+        ...observed.intent,
+        incumbent: { ...observed.intent.incumbent, pid: await exitedPid() },
+      },
+    );
+    if (retired.kind !== 'written') throw new Error('retired incumbent was not recorded');
+    const generation = writerGeneration.observeSuccessionWriterGeneration(runtime);
+    if (generation === null) throw new Error('writer generation disappeared');
+    const writer = joinSuccessionWriterGeneration(runtime, store);
+    const oldServing = writerGeneration.recordSuccessionServing(runtime, generation, {
+      attemptId: 'earlier-attempt',
+      epochKey: encodeResolvedStoreEpoch(runtime, store),
+      successorInstanceId: 'earlier-successor',
+      controlGeneration: generation.generation,
+      recordedAt: '2026-09-24T00:00:00.000Z',
+    });
+
+    await complete();
+
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { disposition: 'completed', completionReceipt: { attemptId: 'waiter-attempt' } },
+    });
+    expect(writerGeneration.observePriorSuccessionServing(runtime, 'earlier-attempt')).toEqual(oldServing);
+    expect(writerGeneration.observeSuccessionServing(runtime, 'waiter-attempt')?.controlGeneration).toBe(
+      generation.generation + 1,
+    );
+    expect(() => writer.assertCurrent()).not.toThrow();
+  });
+
+  it('holds an earlier serving generation while the recorded incumbent is alive', async () => {
+    const { runtime, complete, store } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('intent disappeared');
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('this process has no incarnation');
+    await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
+      ...observed.intent,
+      incumbent: { ...observed.intent.incumbent, pid: process.pid, incarnation },
+    });
+    const generation = writerGeneration.observeSuccessionWriterGeneration(runtime);
+    if (generation === null) throw new Error('writer generation disappeared');
+    writerGeneration.recordSuccessionServing(runtime, generation, {
+      attemptId: 'earlier-attempt',
+      epochKey: encodeResolvedStoreEpoch(runtime, store),
+      successorInstanceId: 'earlier-successor',
+      controlGeneration: generation.generation,
+      recordedAt: '2026-09-24T00:00:00.000Z',
+    });
+
+    await expect(complete()).rejects.toThrow('waiter serving record has no completion receipt');
+    expect(writerGeneration.observeSuccessionWriterGeneration(runtime)).toEqual(generation);
+  });
 
   it('should leave an attempt whose deadline passed to its waiter instead of failing the serving target', async () => {
     const { runtime, complete, revision } = await waiterAttempt('2026-09-24T23:59:30.000Z');

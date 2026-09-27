@@ -274,6 +274,12 @@ const upgradeIntentSchema = upgradeIntentFields.superRefine((intent, context) =>
 });
 
 export type UpgradeIntent = z.infer<typeof upgradeIntentSchema>;
+
+/** Superseded attempts retain the same durable shape as an active intent. */
+export function parseUpgradeIntentSnapshot(value: unknown): UpgradeIntent | null {
+  const parsed = upgradeIntentSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
 export type UpgradeIntentChange = Pick<
   UpgradeIntent,
   | 'requestId'

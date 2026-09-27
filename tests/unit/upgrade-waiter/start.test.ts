@@ -9,8 +9,17 @@ import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } fr
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { createRealUpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
 import type * as UpgradeIntentModule from '#src/infra/upgrade-intent.js';
+import type * as HandoffTargetModule from '#src/infra/handoff-target.js';
 
 const installedTargets = vi.hoisted(() => new Set<string>());
+const waiterTargets = vi.hoisted(() => new Set<string>());
+vi.mock('#src/infra/handoff-target.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof HandoffTargetModule>();
+  return {
+    ...actual,
+    waiterExecutableReady: (root: string) => waiterTargets.has(root) || actual.waiterExecutableReady(root),
+  };
+});
 vi.mock('#src/infra/upgrade-intent.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UpgradeIntentModule>();
   return {
@@ -54,6 +63,7 @@ describe('legacy upgrade request', () => {
   afterEach(() => {
     for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
     installedTargets.clear();
+    waiterTargets.clear();
   });
 
   it.each(['0.11.0', '0.10.50'])(
@@ -95,6 +105,7 @@ describe('legacy upgrade request', () => {
   it('reclaims a proven-dead waiter lease before its deadline when no attempt child is live', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);
+    waiterTargets.add('/installed/target');
     const deadPid = await exitedPid();
     await compareAndSwapUpgradeIntent(runDir, null, {
       requestId: 'waiting-request',
@@ -230,6 +241,7 @@ describe('legacy upgrade request', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);
     installedTargets.add('/installed/target');
+    waiterTargets.add('/installed/target');
     const realPorts = createRealUpgradeWaiterPorts();
     let now = Date.now();
     let launches = 0;
@@ -274,6 +286,7 @@ describe('legacy upgrade request', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);
     installedTargets.add('/installed/target');
+    waiterTargets.add('/installed/target');
     const launchDetached = vi.fn(async () => {
       installedTargets.delete('/installed/target');
       return null;
@@ -425,6 +438,140 @@ describe('legacy upgrade request', () => {
       }),
     ).toMatchObject({ kind: 'waiting' });
     expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { incumbent: { instanceId: 'legacy' } } });
+  });
+
+  it('starts a waiter for a replacement legacy incumbent after the old incumbent and child die', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    const deadPid = await exitedPid();
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'dead-attempt-request',
+      incumbent: { ...incumbent, instanceId: 'retired', pid: deadPid },
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'dead-attempt',
+      attemptOwner: { kind: 'incumbent', instanceId: 'retired', pid: deadPid, incarnation: null },
+      attemptChild: { attemptId: 'dead-attempt', pid: deadPid, incarnation: probeProcessIncarnation(process.pid)! },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      successionPreparation: { attemptId: 'dead-attempt', stage: 'prepared', receipts: [] },
+    });
+    const startWaiter = vi.fn(async () => ({ kind: 'started' as const, pid: 5678 }));
+
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        startWaiter,
+      }),
+    ).toMatchObject({ kind: 'waiting' });
+    expect(startWaiter).toHaveBeenCalledOnce();
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: {
+        incumbent: { instanceId: 'legacy' },
+        attemptChild: null,
+        successionPreparation: null,
+        supersededAttempts: [{ successionPreparation: { attemptId: 'dead-attempt' } }],
+      },
+    });
+  });
+
+  it('returns a visible deferral after repeated waiter claim failures', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    installedTargets.add('/installed/target');
+    const startWaiter = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'unavailable',
+        reason: 'waiter did not claim the intent before the startup deadline',
+      })
+      .mockResolvedValueOnce({
+        kind: 'unavailable',
+        reason: 'waiter did not claim the intent before the startup deadline',
+      })
+      .mockRejectedValueOnce(new Error('unbounded third launch'));
+    const realPorts = createRealUpgradeWaiterPorts();
+
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        startWaiter,
+        ports: { ...realPorts, time: { now: () => Date.now(), sleep: async () => undefined } },
+      }),
+    ).toEqual({
+      kind: 'refused',
+      reason: 'waiter did not claim the intent before the startup deadline',
+      disposition: 'deferred',
+    });
+    expect(startWaiter).toHaveBeenCalledTimes(2);
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: { disposition: 'deferred', blockers: [{ owner: 'upgrade-contender' }] },
+    });
+  });
+
+  it('defers a valid backend target whose waiter bundle is missing', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    installedTargets.add('/installed/target');
+    const realPorts = createRealUpgradeWaiterPorts();
+    const launchDetached = vi.fn(async () => process.pid);
+
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        ports: {
+          ...realPorts,
+          launchDetached,
+          time: { now: () => Date.now(), sleep: async () => undefined },
+        },
+      }),
+    ).toEqual({ kind: 'refused', reason: 'waiter bundle is unavailable', disposition: 'deferred' });
+    expect(launchDetached).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: {
+        disposition: 'deferred',
+        retryCondition: { kind: 'incumbent-retirement' },
+        blockers: [{ owner: 'upgrade-contender', reason: 'waiter bundle is unavailable' }],
+      },
+    });
+    waiterTargets.add('/installed/target');
+    launchDetached.mockImplementation(async () => {
+      const observed = readUpgradeIntent(runDir);
+      if (observed.kind !== 'readable') throw new Error('intent disappeared');
+      const claimed = await compareAndSwapUpgradeIntent(runDir, observed.intent.revision, {
+        ...observed.intent,
+        blockers: [],
+        attemptId: 'retried-attempt',
+        attemptOwner: { kind: 'waiter', instanceId: 'retried-waiter', pid: process.pid, incarnation: null },
+        attemptDeadline: new Date(Date.now() + 30_000).toISOString(),
+      });
+      if (claimed.kind !== 'written') throw new Error('waiter did not claim');
+      return process.pid;
+    });
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        ports: {
+          ...realPorts,
+          launchDetached,
+          time: { now: () => Date.now(), sleep: async () => undefined },
+        },
+      }),
+    ).toMatchObject({ kind: 'waiting', waiter: { kind: 'started', pid: process.pid } });
   });
 
   it('should refuse to replace an intent whose recorded incumbent may still be alive', async () => {

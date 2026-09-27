@@ -131,6 +131,7 @@ import {
 import { validateForeignHandoffTarget } from './handoff-routing/runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import { RETIREMENT_PATIENCE_INTERVAL_MS } from './services/startup-retirement.js';
+import { selectProtectedPredecessorFromControllers } from './services/recovery/epoch-closure.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { SystemProviderScope } from '../infra/provider-scope.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
@@ -1409,6 +1410,12 @@ async function runLifecycleStartup({
           options: {
             storeFormat: deps.storeFormat,
             startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+            selectProtectedPredecessor: (addresses) =>
+              selectProtectedPredecessorFromControllers(
+                runtime,
+                runtime.storage.realpathSync(runtime.paths.coral.store.dbDir),
+                addresses,
+              ),
             ...(authorizeStartupMint === undefined
               ? {}
               : {

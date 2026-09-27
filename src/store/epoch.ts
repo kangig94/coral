@@ -52,6 +52,7 @@ import {
   protectedEpochRemoved,
   resolveProtectedEpoch,
   unrecognizedProtectedEpochs,
+  type ProtectedEpochAddress,
 } from './epoch-protection.js';
 
 export const STORE_DATABASE_FILE_NAME = 'store.db';
@@ -196,6 +197,7 @@ export type StoreEpochOptions = Readonly<{
   steadyStateBusyTimeoutMs?: number;
   deferProductVersionRaise?: boolean;
   authorizeMint?: (observation: StoreMintObservation) => StoreMintDisposition | null;
+  selectProtectedPredecessor?: (addresses: readonly ProtectedEpochAddress[]) => string | null;
 }>;
 
 export type StoreMintObservation = Readonly<{
@@ -1891,6 +1893,7 @@ export async function sweepStoreEpochsPostReady(
     return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
   }
   let complete = reaping.complete;
+  let unobservableEpoch = false;
   if (options.resultsReleased !== undefined) {
     let observations: readonly StoreEpochObservation[];
     try {
@@ -1902,7 +1905,14 @@ export async function sweepStoreEpochsPostReady(
     for (const epoch of garbageStoreEpochs(proven)) {
       if (signal?.aborted) return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
       const resolved = resolvedStoreEpoch(dbDir, epoch);
-      const epochKey = readOrCreateEpochKey(runtime, resolved);
+      let epochKey: string;
+      try {
+        epochKey = readOrCreateEpochKey(runtime, resolved);
+      } catch (error: unknown) {
+        auditSweepFailure(resolved.path, error);
+        unobservableEpoch = true;
+        continue;
+      }
       if (
         closureCapability(runtime, runtime.paths.coral.generation.dataRoot, epochKey) === null ||
         !options.resultsReleased(lineageJobEpochKey(dbDir, epochKey))
@@ -1960,7 +1970,7 @@ export async function sweepStoreEpochsPostReady(
     ? 'lock-release-failed'
     : !complete
       ? 'deletion-failed'
-      : reaping.unobservableResidue
+      : reaping.unobservableResidue || unobservableEpoch
         ? 'unobservable-metadata'
         : reaping.liveHolder
           ? 'live-holder'
@@ -2649,27 +2659,15 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
     const observations = observeStoreEpochs(runtime.storage, dbDir);
     const current = currentProvenEpoch(observations);
     const protectedAddresses = knownProtectedEpochAddresses(runtime, dbDir);
-    const latestProtected =
+    const selectedKey =
       current === null
-        ? [...protectedAddresses].sort((left, right) => {
-            const leftEpoch = BigInt(left.epochKey.slice(left.epochKey.lastIndexOf(':') + 1));
-            const rightEpoch = BigInt(right.epochKey.slice(right.epochKey.lastIndexOf(':') + 1));
-            return leftEpoch < rightEpoch ? 1 : leftEpoch > rightEpoch ? -1 : 0;
-          })[0]
-        : undefined;
-    if (
-      latestProtected !== undefined &&
-      protectedAddresses.some(
-        (address) =>
-          address !== latestProtected &&
-          address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1) ===
-            latestProtected.epochKey.slice(latestProtected.epochKey.lastIndexOf(':') + 1),
-      )
-    ) {
-      throw new Error('Protected epochs have an ambiguous latest numeric predecessor.');
-    }
+        ? protectedAddresses.length === 1
+          ? protectedAddresses[0].epochKey
+          : (options.selectProtectedPredecessor?.(protectedAddresses) ?? null)
+        : null;
+    const selectedProtected = protectedAddresses.find((address) => address.epochKey === selectedKey);
     const protectedIncumbent =
-      latestProtected === undefined ? null : resolveProtectedEpoch(runtime, dbDir, latestProtected.epochKey);
+      selectedProtected === undefined ? null : resolveProtectedEpoch(runtime, dbDir, selectedProtected.epochKey);
     const shouldReobserve = hasHigherUnobservableCandidate(observations, current);
     let classification = absentClassification(observations);
     if (current !== null) {
@@ -2763,7 +2761,11 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
         throw new Error('Store epoch mint disposition does not match the observed predecessor.');
       }
     }
-    const successor = selectSuccessor(runtime, dbDir, predecessor?.epoch ?? null);
+    const highestProtectedEpoch = protectedAddresses.reduce<StoreEpoch | null>((highest, address) => {
+      const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
+      return highest === null || compareEpoch(epoch, highest) > 0 ? epoch : highest;
+    }, null);
+    const successor = selectSuccessor(runtime, dbDir, predecessor?.epoch ?? highestProtectedEpoch);
     const published = mintNextEpoch(
       runtime,
       options,

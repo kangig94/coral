@@ -34,7 +34,11 @@ declare const committedServing: unique symbol;
 export type CommittedSuccessionServing = SuccessionServingRecord & Readonly<{ [committedServing]: true }>;
 
 type SuccessionWriterRecord = SuccessionWriterGeneration &
-  Readonly<{ serving?: SuccessionServingRecord; refusedAttemptIds?: readonly string[] }>;
+  Readonly<{
+    serving?: SuccessionServingRecord;
+    priorServings?: readonly SuccessionServingRecord[];
+    refusedAttemptIds?: readonly string[];
+  }>;
 
 /** Why an attempt the incumbent failed can no longer take the writer generation. */
 export class SuccessionAttemptRefusedError extends Error {
@@ -127,6 +131,40 @@ function validServing(value: unknown, generation: SuccessionWriterGeneration): v
   }
 }
 
+function validPriorServing(value: unknown, current: SuccessionWriterGeneration): value is SuccessionServingRecord {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('epochKey' in value) ||
+    typeof value.epochKey !== 'string' ||
+    !('controlGeneration' in value) ||
+    typeof value.controlGeneration !== 'number' ||
+    !Number.isSafeInteger(value.controlGeneration) ||
+    value.controlGeneration < 1 ||
+    value.controlGeneration >= current.generation
+  ) {
+    return false;
+  }
+  try {
+    const epoch: unknown = JSON.parse(value.epochKey);
+    return (
+      typeof epoch === 'object' &&
+      epoch !== null &&
+      'storeRoot' in epoch &&
+      typeof epoch.storeRoot === 'string' &&
+      'epoch' in epoch &&
+      typeof epoch.epoch === 'string' &&
+      validServing(value, {
+        generation: value.controlGeneration,
+        storeRoot: epoch.storeRoot,
+        epoch: epoch.epoch,
+      })
+    );
+  } catch {
+    return false;
+  }
+}
+
 function readGeneration(runtime: Runtime, record: string): SuccessionWriterRecord | null {
   let raw: string;
   try {
@@ -154,6 +192,13 @@ function readGeneration(runtime: Runtime, record: string): SuccessionWriterRecor
     if (!validServing(value.serving, value as SuccessionWriterGeneration)) {
       throw new Error(`Invalid succession serving record: ${record}`);
     }
+  }
+  if (
+    'priorServings' in value &&
+    (!Array.isArray(value.priorServings) ||
+      !value.priorServings.every((serving) => validPriorServing(serving, value as SuccessionWriterGeneration)))
+  ) {
+    throw new Error(`Invalid prior succession serving records: ${record}`);
   }
   if (
     'refusedAttemptIds' in value &&
@@ -366,6 +411,7 @@ export function advanceSuccessionWriterGeneration(
     }
     if (attemptId !== undefined) assertNotRefused(current, attemptId);
     const next = { ...current, generation: current.generation + 1, storeRoot: store.storeRoot, epoch: store.epoch };
+    if (current.serving !== undefined) next.priorServings = [...(current.priorServings ?? []), current.serving];
     delete next.serving;
     writeGeneration(runtime, location.record, next);
     return next;
@@ -475,6 +521,53 @@ export function observeSuccessionServing(runtime: Runtime, attemptId: string): S
   const location = paths(runtime);
   const current = readGeneration(runtime, location.record);
   return current?.serving?.attemptId === attemptId ? current.serving : null;
+}
+
+export function observePriorSuccessionServing(runtime: Runtime, attemptId: string): SuccessionServingRecord | null {
+  const location = paths(runtime);
+  const current = readGeneration(runtime, location.record);
+  return current?.priorServings?.find((serving) => serving.attemptId === attemptId) ?? null;
+}
+
+export function observeCurrentSuccessionServing(runtime: Runtime): SuccessionServingRecord | null {
+  const location = paths(runtime);
+  return readGeneration(runtime, location.record)?.serving ?? null;
+}
+
+/** A waiter may take a fresh same-epoch turn after its recorded legacy incumbent has retired. */
+export function generationForWaiterServing(
+  runtime: Runtime,
+  expected: SuccessionWriterGeneration,
+  attemptId: string,
+  previousAttemptId: string,
+): SuccessionWriterGeneration {
+  const location = ensureGuard(runtime);
+  const release = exclusiveGuard(runtime, location.guard);
+  try {
+    const current = readGeneration(runtime, location.record);
+    if (
+      current?.generation !== expected.generation ||
+      current.storeRoot !== expected.storeRoot ||
+      current.epoch !== expected.epoch
+    ) {
+      throw new Error(`Succession writer generation ${expected.generation} cannot advance.`);
+    }
+    assertNotRefused(current, attemptId);
+    if (current.serving?.attemptId === attemptId) return expected;
+    if (current.serving?.attemptId !== previousAttemptId) {
+      throw new Error('Previous succession serving changed before waiter generation advance.');
+    }
+    const next = {
+      ...current,
+      generation: current.generation + 1,
+      priorServings: [...(current.priorServings ?? []), current.serving],
+    };
+    delete next.serving;
+    writeGeneration(runtime, location.record, next);
+    return { generation: next.generation, storeRoot: next.storeRoot, epoch: next.epoch };
+  } finally {
+    release();
+  }
 }
 
 export function observeSuccessionWriterGeneration(runtime: Runtime): SuccessionWriterGeneration | null {

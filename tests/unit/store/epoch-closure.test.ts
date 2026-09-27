@@ -27,11 +27,13 @@ import {
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import {
   RetiringCustodyCertificate,
+  selectProtectedPredecessorFromControllers,
   settleSupersededEpochClosures,
 } from '#src/coordinator/services/recovery/epoch-closure.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { recordControllerOpen } from '#src/coordinator/succession/controller-open.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import {
@@ -70,6 +72,7 @@ import {
   listStoreEpochs,
   openExactStoreEpoch,
   resolvedStoreEpoch,
+  retirementMintDisposition,
   settleStoreEpoch,
   storeEpochLockPath,
   sweepStoreEpochsPostReady,
@@ -175,6 +178,132 @@ describe('epoch closure and protected addressing', () => {
     writeFileSync(path, '{"version":');
     expect(observeEpochClosure(runtime, stateRoot, 'lineage:1')).toEqual({ kind: 'unreadable', path });
     expect(closureCapability(runtime, stateRoot, 'lineage:1')).toBeNull();
+  });
+
+  it('retains future closure and obligation fields when refreshing status', () => {
+    const runtime = harness();
+    const stateRoot = runtime.paths.coral.generation.dataRoot;
+    mkdirSync(stateRoot, { recursive: true });
+    const evidence = {
+      version: 'v1' as const,
+      epochKey: 'lineage:1',
+      disposition: 'unrecoverable-retained' as const,
+      dataOutcome: 'unknown' as const,
+      executionDischarge: 'undecidable' as const,
+      obligations: [
+        {
+          owner: 'durable-cli',
+          intentId: '00000000-0000-4000-8000-000000000001',
+          outcome: 'absent' as const,
+          evidence: 'pending',
+        },
+      ],
+      reason: 'custody undecidable',
+      observedAtMs: 1,
+    };
+    recordEpochClosure(runtime, stateRoot, evidence);
+    const path = join(stateRoot, 'epoch-closure.v1', `${sha256Hex(evidence.epochKey)}.json`);
+    const stored = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(
+      path,
+      `${JSON.stringify({
+        ...stored,
+        futureRetentionProof: { generation: 2 },
+        obligations: [{ ...evidence.obligations[0], futureObligationProof: 'retained' }],
+      })}\n`,
+    );
+
+    recordEpochClosure(runtime, stateRoot, {
+      ...evidence,
+      dataOutcome: 'retained',
+      obligations: [{ ...evidence.obligations[0], outcome: 'terminal' }],
+      observedAtMs: 2,
+    });
+
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({
+      futureRetentionProof: { generation: 2 },
+      dataOutcome: 'retained',
+      obligations: [{ outcome: 'terminal', futureObligationProof: 'retained' }],
+    });
+  });
+
+  it('reaches a fresh epoch after two protected lineages reuse the same number', () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const firstKey = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '1'));
+    protectStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
+    publish(runtime, '1');
+    const secondKey = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '1'));
+    protectStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
+    expect(secondKey).not.toBe(firstKey);
+
+    const settled = settleStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      selectProtectedPredecessor: (addresses) => selectProtectedPredecessorFromControllers(runtime, root, addresses),
+      authorizeMint: ({ incumbent, observedEpochCount }) =>
+        incumbent === null && observedEpochCount === 2 ? retirementMintDisposition('unopenable', null) : null,
+    });
+    settled.db.close();
+
+    expect(settled.store.epoch).toBe('2');
+    expect(knownProtectedEpochAddresses(runtime, root).map((address) => address.epochKey)).toEqual(
+      expect.arrayContaining([firstKey, secondKey]),
+    );
+  });
+
+  it('uses unique controller evidence to choose a protected lineage across epoch numbers', () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '2');
+    const older = resolvedStoreEpoch(root, '2');
+    const olderKey = encodeResolvedStoreEpoch(runtime, older);
+    recordControllerOpen(runtime, olderKey, 'older', null, '/plugin', build, 1);
+    protectStoreEpoch(runtime, older);
+    publish(runtime, '1');
+    const newer = resolvedStoreEpoch(root, '1');
+    const newerKey = encodeResolvedStoreEpoch(runtime, newer);
+    recordControllerOpen(runtime, newerKey, 'newer', null, '/plugin', build, 2);
+    protectStoreEpoch(runtime, newer);
+
+    const settled = settleStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      selectProtectedPredecessor: (addresses) => selectProtectedPredecessorFromControllers(runtime, root, addresses),
+    });
+    settled.db.close();
+
+    expect(settled.store.lineageKey).toBe((JSON.parse(newerKey) as { lineageKey: string }).lineageKey);
+    expect(settled.store.epoch).toBe('1');
+  });
+
+  it('returns unobservable metadata when an old epoch lock is malformed', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    for (const epoch of ['1', '2', '3']) publish(runtime, epoch);
+    const old = resolvedStoreEpoch(root, '1');
+    const closureKey = readOrCreateEpochKey(runtime, old);
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    expect(index.certify(encodeResolvedStoreEpoch(runtime, old), 0)).not.toBeNull();
+    recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
+      version: 'v1',
+      epochKey: closureKey,
+      disposition: 'closed',
+      dataOutcome: 'retained',
+      executionDischarge: 'certified',
+      obligations: [],
+      reason: 'every recorded obligation was settled',
+      observedAtMs: 1,
+    });
+    writeFileSync(storeEpochLockPath(root, '1'), 'not a sqlite lock');
+
+    await expect(
+      sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
+        resultsReleased: (epochKey) => index.resultsReleased(epochKey),
+      }),
+    ).resolves.toBe('unobservable-metadata');
+    expect(existsSync(epochDirectory(root, '1'))).toBe(true);
   });
 
   it('retains an unprovable earlier epoch while publishing a successor', () => {
