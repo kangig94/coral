@@ -210,6 +210,8 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
   let sawIncumbent = false;
   let sawDrainingReply = false;
   let sawCapacityRefusal = false;
+  let unansweredProbes = 0;
+  let lastAnswerAt = opts.runtime.time.monotonicNow();
 
   while (true) {
     opts.signal?.throwIfAborted();
@@ -261,6 +263,7 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
     }
 
     let health: IncumbentHealth | null;
+    let capacityRefused = false;
     try {
       health = await probeIncumbent({
         socketPath: opts.socketPath,
@@ -269,10 +272,25 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       });
     } catch (error: unknown) {
       if (!(error instanceof IpcRpcError && error.code === 'too_many_ipc_connections')) throw error;
+      capacityRefused = true;
       sawCapacityRefusal = true;
+      sawDrainingReply = false;
+      unansweredProbes = 0;
+      lastAnswerAt = opts.runtime.time.monotonicNow();
       health = null;
     }
-    if (health?.status === 'draining') sawDrainingReply = true;
+    if (health?.status === 'draining') {
+      sawDrainingReply = true;
+      sawCapacityRefusal = false;
+      unansweredProbes = 0;
+      lastAnswerAt = opts.runtime.time.monotonicNow();
+    } else if (health === null && !capacityRefused) {
+      unansweredProbes += 1;
+      if (unansweredProbes >= 2 && opts.runtime.time.monotonicNow() - lastAnswerAt >= BigInt(SOCKET_BIND_POLL_MS * 2)) {
+        sawDrainingReply = false;
+        sawCapacityRefusal = false;
+      }
+    }
     if (health !== null && health.status !== 'draining') {
       if (
         health.version !== undefined &&

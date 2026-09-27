@@ -9,7 +9,7 @@ import type { Runtime } from '../runtime/ports.js';
 import { decodeResolvedStoreEpoch, STORE_LOCK_FILE_NAME, type ResolvedStoreEpoch } from '../store/epoch.js';
 import { observeProtectedEpoch } from '../store/epoch-protection.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
-import { type JobLocationIndex, type JobLocationSubject } from './location-index.js';
+import { hasReadableTerminalDetail, type JobLocationIndex, type JobLocationSubject } from './location-index.js';
 import { describeTerminalOutcome } from './outcome.js';
 import {
   jobKindSchema,
@@ -414,7 +414,12 @@ export function refreshHistoricalEpoch(
       if (!requested.has(row.job_id)) continue;
       requested.delete(row.job_id);
       const location = index.read(row.job_id);
-      if (location === null || location.epochKey !== epochKey || location.disposition === 'terminal') continue;
+      if (
+        location === null ||
+        location.epochKey !== epochKey ||
+        (location.disposition === 'terminal' && hasReadableTerminalDetail(location))
+      )
+        continue;
       const detail = historicalDetail(row, readEvents(db, row.job_id));
       const terminal = [...detail.events].reverse().find((event) => event.type === 'terminal');
       if (!isTerminalPhase(detail.status.phase) || detail.exit === null || terminal === undefined) {

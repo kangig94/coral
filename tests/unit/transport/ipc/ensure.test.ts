@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { coordinatorPaths, v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { requestLegacyUpgrade } from '#src/upgrade-waiter/start.js';
 import { createRealUpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
@@ -44,6 +44,7 @@ const mockState = vi.hoisted(() => ({
   ownerLiveness: null as ProcessLiveness | null,
   ownerIncarnationUnprobeable: false,
   validUpgradeTargetRoot: null as string | null,
+  localInterfaces: null as ReturnType<typeof NodeOs.networkInterfaces> | null,
 }));
 
 vi.mock('#src/infra/upgrade-intent.js', async (loadOriginal) => {
@@ -87,6 +88,7 @@ vi.mock('node:os', async () => {
     ...actual,
     homedir: () => mockState.home,
     platform: () => mockState.platform,
+    networkInterfaces: () => mockState.localInterfaces ?? actual.networkInterfaces(),
   };
 });
 
@@ -130,8 +132,8 @@ vi.mock('#src/transport/ipc/server.js', () => ({
 
 const tempRoots: string[] = [];
 
-function makeHome(): string {
-  const root = mkdtempSync(join(tmpdir(), 'coral-ipc-ensure-home-'));
+function makeHome(deep = false): string {
+  const root = mkdtempSync(join(tmpdir(), `coral-ipc-ensure-home-${deep ? 'x'.repeat(100) : ''}-`));
   tempRoots.push(root);
   mockState.home = root;
   return root;
@@ -167,6 +169,7 @@ function writeDiscovery(
     pid: number;
     port: number;
     host: string;
+    bindHost: string;
     token: string;
     bootToken: string | null;
     shutdownToken: string | null;
@@ -189,6 +192,7 @@ function writeDiscovery(
       pid: overrides.pid ?? process.pid,
       port: overrides.port ?? 4100,
       host: overrides.host ?? '127.0.0.1',
+      bindHost: overrides.bindHost ?? '127.0.0.1',
       socketPath: overrides.socketPath ?? socketPath(root, flavor),
       token: overrides.token ?? 'test-token',
       ...(overrides.bootToken === null ? {} : { bootToken: overrides.bootToken ?? 'test-boot-token' }),
@@ -309,6 +313,7 @@ beforeEach(() => {
   mockState.strictIdentity = { ok: false, reason: 'embedded_identity_unavailable' };
   mockState.ownerLiveness = null;
   mockState.ownerIncarnationUnprobeable = false;
+  mockState.localInterfaces = null;
   mockState.validUpgradeTargetRoot = null;
 });
 
@@ -2488,7 +2493,153 @@ describe('ipc ensure', () => {
     });
   });
 
-  it('does not accept HTTP health for another coordinator as the recorded holder', async () => {
+  it('withholds force-kill for an answering holder on the long-path compatibility socket', async () => {
+    makeHome(true);
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const paths = coordinatorPaths('prod');
+    const addresses = v0109CoordinatorSocketGuardSetForRunDir(paths.runDir, 'prod', {
+      platform: process.platform,
+      configuredTempDirectory: process.env.TMPDIR,
+      systemTempDirectory: tmpdir(),
+    });
+    if (addresses.kind !== 'guarded-addresses' || addresses.paths[0] === undefined) {
+      throw new Error('Expected a long-path compatibility socket.');
+    }
+    const holderSocketPath = addresses.paths[0];
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { socketPath: holderSocketPath, incarnation: incarnation! });
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    const http = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'ok',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'existing-coordinator',
+          namespace: pluginRootNamespace(root),
+          pid: process.pid,
+          incarnation,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const result = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(
+      () =>
+        writeStartupSentinel(root, spawnedAttemptId(), {
+          context: { stage: 'handoff-deadline', socketPath: holderSocketPath },
+        }),
+      FORCE_KILL_UNANSWERED_WINDOW_MS + 400,
+    );
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS + 800);
+
+    expect(await result).toMatchObject({ code: 'handoff_socket_holder_unverified' });
+    expect(JSON.stringify(await result)).not.toContain('kill -9');
+    expect(http).toHaveBeenCalledWith('http://127.0.0.1:4100/health?detailed=1', expect.any(Object));
+  });
+
+  it('checks the local bind when the advertised host is unreachable', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { host: 'unreachable.example', bindHost: '127.0.0.1', incarnation: incarnation! });
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const address = url instanceof Request ? url.url : url instanceof URL ? url.href : url;
+      if (address.includes('unreachable.example')) throw createErrnoError('ENETUNREACH');
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'existing-coordinator',
+          namespace: pluginRootNamespace(root),
+          pid: process.pid,
+          incarnation,
+        }),
+        { status: 200 },
+      );
+    });
+
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const result = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), FORCE_KILL_UNANSWERED_WINDOW_MS + 400);
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS + 800);
+
+    expect(await result).toMatchObject({ code: 'handoff_socket_holder_unverified' });
+    expect(JSON.stringify(await result)).not.toContain('kill -9');
+    expect(http).toHaveBeenCalledWith('http://127.0.0.1:4100/health?detailed=1', expect.any(Object));
+  });
+
+  it('checks every local interface when the holder binds all IPv4 addresses', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { host: 'unreachable.example', bindHost: '0.0.0.0', incarnation: incarnation! });
+    mockState.localInterfaces = {
+      lo: [
+        {
+          address: '127.0.0.1',
+          netmask: '255.0.0.0',
+          family: 'IPv4',
+          mac: '00:00:00:00:00:00',
+          internal: true,
+          cidr: '127.0.0.1/8',
+        },
+      ],
+      eth0: [
+        {
+          address: '192.0.2.10',
+          netmask: '255.255.255.0',
+          family: 'IPv4',
+          mac: '00:00:00:00:00:01',
+          internal: false,
+          cidr: '192.0.2.10/24',
+        },
+      ],
+    };
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const address = url instanceof Request ? url.url : url instanceof URL ? url.href : url;
+      if (address.includes('127.0.0.1')) throw createErrnoError('ECONNREFUSED');
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'existing-coordinator',
+          namespace: pluginRootNamespace(root),
+          pid: process.pid,
+          incarnation,
+        }),
+        { status: 200 },
+      );
+    });
+
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const result = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), FORCE_KILL_UNANSWERED_WINDOW_MS + 400);
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS + 800);
+
+    expect(await result).toMatchObject({ code: 'handoff_socket_holder_unverified' });
+    expect(http).toHaveBeenCalledWith('http://192.0.2.10:4100/health?detailed=1', expect.any(Object));
+  });
+
+  it('does not identify another local HTTP responder as the recorded holder', async () => {
     makeHome();
     vi.useFakeTimers();
     const root = createPluginRoot();
@@ -2518,7 +2669,8 @@ describe('ipc ensure', () => {
     setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), FORCE_KILL_UNANSWERED_WINDOW_MS + 400);
     await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS + 800);
 
-    expect(((await result) as Error).message).toContain(`action=kill -9 ${process.pid}`);
+    expect(await result).toMatchObject({ code: 'handoff_socket_holder_unverified' });
+    expect(JSON.stringify(await result)).not.toContain(`action=kill -9 ${process.pid}`);
   });
 
   it('resets silence when the recorded holder identity changes', async () => {

@@ -203,6 +203,89 @@ describe('historical job readers', () => {
     });
   }
 
+  it('repairs unreadable terminal detail from a retained epoch before releasing its result', async () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    db.prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'finished',
+      JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
+      'completed',
+      JSON.stringify({ progressFaults: [] }),
+      'session-1',
+      'claude',
+      '/workspace/project',
+      'old-namespace',
+      null,
+      'provider',
+      null,
+      null,
+      null,
+      null,
+      '2026-09-25T00:00:00.000Z',
+      12,
+    );
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      11,
+      '2026-09-25T00:00:00.000Z',
+      'job.launch.requested',
+      'job',
+      'finished',
+      Buffer.from(
+        JSON.stringify({
+          projectRoot: '/workspace/project',
+          jobKind: 'provider',
+          request: { cwd: '/workspace/project' },
+        }),
+      ),
+    );
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      12,
+      '2026-09-25T00:00:10.000Z',
+      'job.terminal.recorded',
+      'job',
+      'finished',
+      Buffer.from(
+        JSON.stringify({ terminal: { content: 'finished result', outcome: { kind: 'completed' }, durationMs: 10000 } }),
+      ),
+    );
+    db.close();
+    const epochKey = 'lineage-old:7';
+    const index = new JobLocationIndex(runtime, root);
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    expect(
+      seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprints[0], join(root, 'results'), storage, [], true)
+        .kind,
+    ).toBe('complete');
+    const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from('finished').toString('base64url')}.json`);
+    const location = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    const detail = location.detail as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...location, detail: { ...detail, exit: null } }));
+    expect(index.read('finished')?.detail.kind).toBe('recorded');
+    expect(index.resultsReleased(epochKey)).toBe(false);
+    expect(refreshHistoricalEpoch(index, epochKey, ['finished'])).toBe('read');
+    expect(index.resultsReleased(epochKey)).toBe(true);
+    writeFileSync(path, JSON.stringify({ ...location, detail: { futureFormat: true } }));
+
+    expect(index.resultsReleased(epochKey)).toBe(false);
+    expect(refreshHistoricalEpoch(index, epochKey, ['finished'])).toBe('read');
+    expect(index.read('finished')?.detail.kind).toBe('recorded');
+    expect(index.resultsReleased(epochKey)).toBe(true);
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+      () => 'decided',
+    );
+    expect(addressing.detail('finished')).toMatchObject({ status: { phase: 'completed' } });
+    const stream = addressing.waitStream({ jobIds: ['finished'], supportsWaitV2: true });
+    expect((await stream.next()).value).toMatchObject({ type: 'terminal', jobId: 'finished' });
+    await stream.return(undefined);
+  });
+
   it('keeps a retired epoch certified when a later refresh cannot read its store', () => {
     const { root, epochDir, db } = fixture(fingerprints[0]);
     db.close();

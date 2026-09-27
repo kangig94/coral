@@ -4,6 +4,7 @@ import { bindWithHandoff, HandoffEscalationError, UpgradeWaiterUnavailableError 
 import { createRealTimePort } from '#src/infra/time.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { IncumbentMatchesError, probeIncumbent } from '#src/transport/ipc/handoff.js';
+import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 vi.mock('#src/transport/ipc/handoff.js', async (loadOriginal) => ({
   ...(await loadOriginal<object>()),
@@ -185,5 +186,48 @@ describe('bindWithHandoff', () => {
 
     await expect(bindWithHandoff(handoff)).rejects.toBeInstanceOf(HandoffEscalationError);
     expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('classifies a holder that drains once then remains silent as unverified', async () => {
+    healthProbe
+      .mockResolvedValueOnce({
+        version: '0.10.13',
+        bundleHash: 'incumbent',
+        flavor: 'prod',
+        namespace: 'incumbent',
+        status: 'draining',
+      })
+      .mockResolvedValue(null);
+    const { handoff } = options(async () => ({ kind: 'incumbent', reason: 'live-listener' }));
+
+    await expect(bindWithHandoff(handoff)).rejects.toMatchObject({ code: 'handoff_socket_holder_unverified' });
+  });
+
+  it('keeps the drain timeout while the holder continues answering draining', async () => {
+    healthProbe.mockResolvedValue({
+      version: '0.10.13',
+      bundleHash: 'incumbent',
+      flavor: 'prod',
+      namespace: 'incumbent',
+      status: 'draining',
+    });
+    const { handoff } = options(async () => ({ kind: 'incumbent', reason: 'live-listener' }));
+
+    await expect(bindWithHandoff(handoff)).rejects.toMatchObject({ code: 'handoff_administrative_drain_timeout' });
+  });
+
+  it('clears an earlier connection-cap refusal after sustained silence', async () => {
+    healthProbe
+      .mockRejectedValueOnce(
+        new IpcRpcError({
+          code: -32603,
+          message: 'Too many IPC connections',
+          data: { code: 'too_many_ipc_connections' },
+        }),
+      )
+      .mockResolvedValue(null);
+    const { handoff } = options(async () => ({ kind: 'incumbent', reason: 'live-listener' }));
+
+    await expect(bindWithHandoff(handoff)).rejects.toMatchObject({ code: 'handoff_socket_holder_unverified' });
   });
 });

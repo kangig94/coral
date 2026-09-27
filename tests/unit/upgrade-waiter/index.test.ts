@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +13,7 @@ import {
   type UpgradeIntentChange,
 } from '#src/infra/upgrade-intent.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { CLI_BUNDLE_FILE, CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 
 const build = {
   version: '0.11.0',
@@ -89,6 +91,90 @@ describe('upgrade waiter', () => {
 
   afterEach(() => {
     for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('releases its lease when a newer validated installed build appears without a new intent', async () => {
+    const dir = runDir();
+    const a = join(dir, 'installed-a');
+    const b = join(dir, 'installed-b');
+    const bundle = 'installed bundle';
+    const hash = createHash('sha256').update(bundle).digest('hex').slice(0, 16);
+    for (const [root, version] of [
+      [a, '0.11.0'],
+      [b, '0.12.0'],
+    ] as const) {
+      const bridge = join(root, 'bridge');
+      mkdirSync(bridge, { recursive: true });
+      for (const name of [
+        'coral-backend.cjs',
+        CLI_BUNDLE_FILE,
+        'coral-claude-appserver.cjs',
+        'coral-durable-wrapper.cjs',
+      ]) {
+        writeFileSync(join(bridge, name), bundle);
+      }
+      writeFileSync(
+        join(bridge, CURRENT_STRICT_BUNDLE_MANIFEST_FILE),
+        JSON.stringify({
+          ...build,
+          version,
+          bundleHash: hash,
+          cliBundleHash: hash,
+          claudeAppserverBundleHash: hash,
+          durableWrapperBundleHash: hash,
+        }),
+      );
+    }
+    const registryPath = join(dir, 'installed_plugins.json');
+    const registry = (roots: string[]) =>
+      writeFileSync(
+        registryPath,
+        JSON.stringify({
+          version: 1,
+          plugins: { 'coral@test': roots.map((installPath) => ({ installPath })) },
+        }),
+      );
+    registry([a]);
+    const previousRegistry = process.env.CORAL_PLUGIN_REGISTRY;
+    process.env.CORAL_PLUGIN_REGISTRY = registryPath;
+    try {
+      await compareAndSwapUpgradeIntent(dir, null, {
+        ...pendingIntent(),
+        target: { build, pluginRootLabel: a },
+      });
+      let now = Date.parse('2026-09-25T00:00:00.000Z');
+      let installedB = false;
+      const launch = vi.fn(async () => undefined);
+      const result = await runUpgradeWaiter({
+        runDir: dir,
+        socketPath: '/unused.sock',
+        targetRoot: a,
+        validateTarget: () => true,
+        observeRetirement: async () => 'retired',
+        launchTarget: launch,
+        ports: waiterPorts(
+          () => now,
+          async (ms) => {
+            now += ms;
+            if (!installedB) {
+              registry([a, b]);
+              installedB = true;
+            }
+          },
+        ),
+      });
+
+      expect(result).toEqual({ kind: 'superseded' });
+      expect(launch).not.toHaveBeenCalled();
+      const observed = readUpgradeIntent(dir);
+      expect(observed.kind).toBe('readable');
+      if (observed.kind === 'readable') {
+        expect(observed.intent).toMatchObject({ requestId: 'request-1', attemptId: null, attemptOwner: null });
+      }
+    } finally {
+      if (previousRegistry === undefined) delete process.env.CORAL_PLUGIN_REGISTRY;
+      else process.env.CORAL_PLUGIN_REGISTRY = previousRegistry;
+    }
   });
 
   it('waits for its queued target to be adopted before claiming and launching', async () => {

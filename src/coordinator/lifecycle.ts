@@ -774,7 +774,7 @@ export async function listen(
   server: Server,
   bindHost: string,
   advertiseHost?: string,
-): Promise<{ port: number; host: string }> {
+): Promise<{ port: number; host: string; bindHost: string }> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, bindHost, () => {
@@ -784,7 +784,7 @@ export async function listen(
         reject(new Error('Backend server failed to bind to a TCP port'));
         return;
       }
-      resolve({ port: address.port, host: resolveClientHost(bindHost, advertiseHost) });
+      resolve({ port: address.port, host: resolveClientHost(bindHost, advertiseHost), bindHost: address.address });
     });
   });
 }
@@ -908,7 +908,7 @@ export type LifecycleDeps = {
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   readonly hooks: LifecycleHooks;
   readonly closeServerFn: (server: Server) => Promise<void>;
-  readonly listenFn: (server: Server) => Promise<{ port: number; host: string }>;
+  readonly listenFn: (server: Server) => Promise<{ port: number; host: string; bindHost?: string }>;
   readonly ipcServer?: IpcListener;
   readonly closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
   readonly listenIpcFn?: (
@@ -1153,6 +1153,7 @@ async function runLifecycleStartup({
   const signal = startupAbort.signal;
   let port = 0;
   let host = '';
+  let localBindHost: string | undefined;
   let startedAt = 0;
   let waiterServingCompleted = false;
   let waiterDiscoveryPublished = false;
@@ -1622,7 +1623,7 @@ async function runLifecycleStartup({
 
     // Ordinary startup binds HTTP and signals kernel-ready before recovery so the CLI can return promptly.
     // A waiter-launched target binds HTTP before its serving receipt, with admission still fenced.
-    if (!waiterLaunchedChild) ({ port, host } = await listenFn(server));
+    if (!waiterLaunchedChild) ({ port, host, bindHost: localBindHost } = await listenFn(server));
     signal.throwIfAborted();
     runtimeState.setStartedAt(now());
     startedAt = runtimeState.getStartedAt();
@@ -1631,6 +1632,7 @@ async function runLifecycleStartup({
         pid: backendPid,
         port,
         host,
+        ...(localBindHost === undefined ? {} : { bindHost: localBindHost }),
         socketPath,
         token: identity.token,
         bootToken: identity.bootToken,
@@ -1827,7 +1829,7 @@ async function runLifecycleStartup({
       if (committedRecovery !== null || openedStore === null) {
         throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
       }
-      ({ port, host } = await listenFn(server));
+      ({ port, host, bindHost: localBindHost } = await listenFn(server));
       signal.throwIfAborted();
       await completeWaiterLaunchedUpgrade(
         runtime,

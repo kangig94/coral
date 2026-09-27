@@ -25,6 +25,7 @@ export interface CoordinatorDiscoveryRecord {
   bootToken: string;
   shutdownToken?: string;
   host?: string;
+  bindHost?: string;
   version?: string;
   instanceId?: string;
   processStartedAt?: number;
@@ -75,6 +76,7 @@ const coordinatorDiscoveryRecordSchema = z
     bootToken: nonEmptyStringSchema,
     shutdownToken: nonEmptyStringSchema.optional(),
     host: nonEmptyStringSchema.optional(),
+    bindHost: nonEmptyStringSchema.optional(),
     version: nonEmptyStringSchema.optional(),
     instanceId: nonEmptyStringSchema.optional(),
     processStartedAt: positiveIntegerSchema.optional(),

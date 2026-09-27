@@ -24,6 +24,7 @@ type InstalledPluginsFile = z.infer<typeof installedPluginsFileSchema>;
 
 export type PluginRegistry = {
   discoverPluginRoot(namespace: string): string | null;
+  installedPluginRoots(namespace: string): string[];
 };
 
 export type PluginRegistryDeps = {
@@ -120,5 +121,14 @@ export function createPluginRegistry(deps?: PluginRegistryDeps): PluginRegistry 
     return null;
   }
 
-  return { discoverPluginRoot };
+  function installedPluginRoots(namespace: string): string[] {
+    const registry = loadInstalledPlugins();
+    if (!registry) return [];
+    return Object.entries(registry.plugins)
+      .filter(([key]) => key.split('@', 1)[0] === namespace)
+      .flatMap(([, entries]) => entries.map((entry) => entry.installPath))
+      .filter((path) => storage.existsSync(path));
+  }
+
+  return { discoverPluginRoot, installedPluginRoots };
 }

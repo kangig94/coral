@@ -8,6 +8,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
@@ -110,6 +111,7 @@ export type VerifiedBackendInfo = {
   bootToken: string;
   shutdownToken?: string;
   host: string;
+  bindHost?: string;
   version: string;
   instanceId: string;
   incarnation?: ProcessIncarnation;
@@ -315,6 +317,7 @@ const verifiedBackendInfoSchema = z
     bootToken: nonEmptyStringSchema,
     shutdownToken: nonEmptyStringSchema.optional(),
     host: nonEmptyStringSchema,
+    bindHost: nonEmptyStringSchema.optional(),
     version: nonEmptyStringSchema,
     instanceId: nonEmptyStringSchema,
     incarnation: processIncarnationSchema.optional(),
@@ -734,7 +737,20 @@ type UnansweredRun = Readonly<{ probes: number; since: number; address: string; 
 function recordedHolderIdentity(info: VerifiedBackendInfo | null): string | null {
   return info === null
     ? null
-    : JSON.stringify([info.socketPath, info.pid, info.incarnation, info.instanceId, info.bootToken, info.startedAt]);
+    : JSON.stringify([
+        info.socketPath,
+        info.pid,
+        info.incarnation,
+        info.instanceId,
+        info.bootToken,
+        info.startedAt,
+        info.port,
+        info.bindHost,
+        info.version,
+        info.bundleHash,
+        info.flavor,
+        info.namespace,
+      ]);
 }
 
 function extendUnansweredRun(
@@ -773,24 +789,48 @@ function verifiedUnresponsivePid(info: VerifiedBackendInfo | null): number | nul
 async function answersAuthenticatedHttpHealth(
   paths: CoordinatorPaths,
   info: VerifiedBackendInfo,
-  expectedSocketPath: string,
-): Promise<boolean> {
-  if (info.socketPath !== expectedSocketPath) return false;
-  try {
-    const response = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
-      headers: { 'X-Coral-Boot-Token': info.bootToken },
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-    });
-    if (response.status !== 200) return false;
-    const health = parseRawCoordinatorHealth(await response.json());
-    return (
-      health !== null &&
-      discoveryMatchesExistingIncumbent(info, expectedSocketPath, existingIncumbentIdentity(health)) &&
-      recordedHolderIdentity(info) === recordedHolderIdentity(readDiscoverySnapshot(paths))
-    );
-  } catch {
-    return false;
+  observedSocketPath: string,
+): Promise<'answering' | 'silent' | 'unknown'> {
+  if (info.socketPath !== observedSocketPath || info.bindHost === undefined) {
+    return 'unknown';
   }
+  const hosts = new Set(
+    info.bindHost === '0.0.0.0' ? ['127.0.0.1'] : info.bindHost === '::' ? ['::1', '127.0.0.1'] : [info.bindHost],
+  );
+  if (info.bindHost === '0.0.0.0' || info.bindHost === '::') {
+    for (const addresses of Object.values(networkInterfaces())) {
+      for (const address of addresses ?? []) {
+        if (address.family === 'IPv4' || (info.bindHost === '::' && address.family === 'IPv6')) {
+          hosts.add(address.address);
+        }
+      }
+    }
+  }
+  if ([...hosts].some((host) => host.includes('%'))) return 'unknown';
+  let unidentifiedResponse = false;
+  for (const host of hosts) {
+    try {
+      const localHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+      const response = await fetch(`http://${localHost}:${info.port}/health?detailed=1`, {
+        headers: { 'X-Coral-Boot-Token': info.bootToken },
+        signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+      });
+      unidentifiedResponse = true;
+      if (response.status !== 200) continue;
+      const health = parseRawCoordinatorHealth(await response.json());
+      if (
+        health !== null &&
+        discoveryMatchesExistingIncumbent(info, observedSocketPath, existingIncumbentIdentity(health)) &&
+        recordedHolderIdentity(info) === recordedHolderIdentity(readDiscoverySnapshot(paths))
+      )
+        return 'answering';
+    } catch {
+      // Other local bind addresses may still reach this holder.
+    }
+  }
+  return !unidentifiedResponse && recordedHolderIdentity(info) === recordedHolderIdentity(readDiscoverySnapshot(paths))
+    ? 'silent'
+    : 'unknown';
 }
 
 function endedStartupMessage(
@@ -957,7 +997,7 @@ async function waitForBackendReady(
             unresponsivePid !== null &&
             unansweredThroughWindow(unansweredRun, now) &&
             latestInfo !== null &&
-            !(await answersAuthenticatedHttpHealth(paths, latestInfo, expectedSocketPath))
+            (await answersAuthenticatedHttpHealth(paths, latestInfo, unansweredRun.address)) === 'silent'
           ) {
             throw new BackendUnreachableError(forceKillUnresponsiveMessage(unresponsivePid, unansweredRun, now));
           }

@@ -10,7 +10,7 @@ import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import { usageSummarySchema } from '../providers/contract.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
-import { jobPhaseSchema } from './phase.js';
+import { isTerminalPhase, jobPhaseSchema } from './phase.js';
 import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
 
@@ -109,6 +109,25 @@ function viewLocation(stored: StoredJobLocation): JobLocation {
   if (raw === undefined) return { ...identity, detail: { kind: 'absent' } };
   const parsed = storedJobDetailSchema.safeParse(raw);
   return { ...identity, detail: parsed.success ? { kind: 'recorded', value: parsed.data } : { kind: 'unreadable' } };
+}
+
+export function hasReadableTerminalDetail(location: JobLocation): boolean {
+  if (
+    location.disposition !== 'terminal' ||
+    location.terminalSeq === undefined ||
+    location.detail.kind !== 'recorded'
+  ) {
+    return false;
+  }
+  const { status, events, exit } = location.detail.value;
+  return (
+    status.jobId === location.jobId &&
+    isTerminalPhase(status.phase) &&
+    exit !== null &&
+    events.some(
+      (event) => event.type === 'terminal' && event.jobId === location.jobId && event.seq === location.terminalSeq,
+    )
+  );
 }
 export type JobLocationSubject = Readonly<{ projectRoot: string; workDir: string | null; jobKind: JobKind }>;
 export type JobLocationController = z.infer<typeof controllerSchema>;
@@ -387,7 +406,9 @@ export class JobLocationIndex {
       const locations = this.locationsFor(epochKey);
       if (this.unknownLocationHold(epochKey) !== null) return null;
       if (this.unreadableLocationsFor(epochKey).length > 0) return null;
-      if (locations.some((location) => location.disposition !== 'terminal')) return null;
+      if (locations.some((location) => !hasReadableTerminalDetail(location))) {
+        return null;
+      }
       const revision =
         optionalJson(this.runtime, this.epochPath(epochKey, 'revision.v1.json'), revisionSchema)?.revision ?? 0;
       const certificate = certificateSchema.parse({
@@ -414,7 +435,9 @@ export class JobLocationIndex {
     if (certificate === null) return false;
     return certificate.jobIds.every((jobId) => {
       const location = this.read(jobId);
-      if (location?.disposition !== 'terminal' || location.resultPath === undefined) return false;
+      if (location === null || !hasReadableTerminalDetail(location) || location.resultPath === undefined) {
+        return false;
+      }
       try {
         const fd = this.runtime.storage.openSync(location.resultPath, 'r');
         try {

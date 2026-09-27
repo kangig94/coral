@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
 
 const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
 const directories: string[] = [];
@@ -16,11 +17,61 @@ function fixture(): { root: string; index: JobLocationIndex } {
   return { root, index: new JobLocationIndex(runtime, root) };
 }
 
+function terminalDetail(jobId: string): JobDetailResponse {
+  const result = { content: 'done', outcome: { kind: 'completed' as const }, durationMs: 1 };
+  return {
+    status: {
+      jobId,
+      owner: { kind: 'provider-session', id: 'session-1' },
+      sessionId: 'session-1',
+      provider: 'claude',
+      projectRoot: '/workspace/project',
+      workDir: canonicalWorkDirWireSchema.parse('/workspace/project'),
+      backendNamespace: 'test',
+      jobKind: 'provider',
+      phase: 'completed',
+      updatedAt: '2026-09-25T00:00:00.000Z',
+      result,
+    },
+    events: [{ type: 'terminal', jobId, sessionId: 'session-1', seq: 2, ts: '2026-09-25T00:00:00.000Z', result }],
+    readiness: 'ready',
+    exit: { ...result, diagnostics: { progressFaults: [] }, endTime: '2026-09-25T00:00:00.000Z' },
+  };
+}
+
 afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 describe('job location additive records', () => {
+  it('requires readable terminal detail both to certify and to release results', () => {
+    const { root, index } = fixture();
+    const epochKey = 'lineage-1:1';
+    const jobId = 'job-1';
+    const resultPath = join(root, 'result.md');
+    writeFileSync(resultPath, 'done\n');
+    index.register(jobId, epochKey, {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    index.recordTerminal(jobId, terminalDetail(jobId), resultPath, 2);
+    expect(index.certify(epochKey, 2)).not.toBeNull();
+    expect(index.resultsReleased(epochKey)).toBe(true);
+
+    const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+    const record = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(path, `${JSON.stringify({ ...record, detail: { futureFormat: true } })}\n`);
+
+    expect(index.read(jobId)?.detail.kind).toBe('unreadable');
+    expect(index.certify(epochKey, 2)).toBeNull();
+    expect(index.resultsReleased(epochKey)).toBe(false);
+
+    writeFileSync(path, `${JSON.stringify({ ...record, detail: { ...terminalDetail(jobId), exit: null } })}\n`);
+    expect(index.read(jobId)?.detail.kind).toBe('recorded');
+    expect(index.certify(epochKey, 2)).toBeNull();
+    expect(index.resultsReleased(epochKey)).toBe(false);
+  });
   it('preserves a newer nested subject field while recording an unresolved outcome', () => {
     const { root, index } = fixture();
     index.register('job-1', 'lineage-1:1', {

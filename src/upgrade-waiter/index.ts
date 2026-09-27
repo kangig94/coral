@@ -2,6 +2,10 @@ import { createConnection } from 'node:net';
 import { join } from 'node:path';
 
 import type { ProcessLiveness } from '../infra/node-process.js';
+import { readBoundedAdjacentManifest, strictBundleManifestSchema } from '../infra/bundle-manifest.js';
+import { createForeignTargetValidator } from '../infra/handoff-target.js';
+import { createPluginRegistry } from '../infra/plugin-registry.js';
+import { compareProductVersions } from '../infra/product-version.js';
 import {
   compareAndSwapUpgradeIntent,
   readUpgradeIntent,
@@ -112,6 +116,20 @@ async function launchInstalledTarget(
   return pid;
 }
 
+function newerInstalledTarget(intent: UpgradeIntent): boolean {
+  const roots = createPluginRegistry().installedPluginRoots('coral');
+  for (const root of roots) {
+    const bundleDir = join(root, 'bridge');
+    const adjacent = readBoundedAdjacentManifest(bundleDir);
+    if (!adjacent.ok) continue;
+    const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
+    if (!parsed.success || parsed.data.flavor !== intent.target.build.flavor) continue;
+    if (compareProductVersions(parsed.data.version, intent.target.build.version) <= 0) continue;
+    if (createForeignTargetValidator()(bundleDir, parsed.data).kind === 'validated') return true;
+  }
+  return false;
+}
+
 /** An unanswered probe never authorizes retirement or target launch. */
 export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<UpgradeWaiterResult> {
   const { ports } = options;
@@ -193,6 +211,22 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     }
     requestId = intent.requestId;
     const child = intent.attemptChild;
+    if (!launched && newerInstalledTarget(intent)) {
+      if (attemptId !== null && intent.attemptId === attemptId && intent.attemptOwner?.instanceId === instanceId) {
+        const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+          ...intent,
+          disposition: 'pending',
+          attemptId: null,
+          attemptOwner: null,
+          attemptChild: null,
+          attemptDeadline: null,
+          retryCondition: { kind: 'target-change', evidence: 'a newer installed build superseded the target' },
+        });
+        if (released.kind === 'conflict') continue;
+        if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
+      }
+      return { kind: 'superseded' };
+    }
     if (!validate(intent)) {
       const ownsAttempt =
         attemptId !== null && intent.attemptId === attemptId && intent.attemptOwner?.instanceId === instanceId;
@@ -317,6 +351,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     }
     const retirement = launched ? null : await observe(intent);
     if (retirement === 'retired') {
+      if (newerInstalledTarget(intent)) continue;
       if (!validate(intent)) continue;
       const claimed = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
         ...intent,
@@ -325,6 +360,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       });
       if (claimed.kind === 'conflict') continue;
       if (claimed.kind !== 'written') return { kind: 'unobservable', reason: claimed.kind };
+      if (newerInstalledTarget(claimed.intent)) continue;
       try {
         launchedPid = (await launch(claimed.intent, attemptId)) ?? null;
         if (launchedPid !== null) {
