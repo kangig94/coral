@@ -15,9 +15,10 @@ import {
 } from '../infra/upgrade-intent.js';
 import type { UpgradeWaiterPorts } from '../runtime/upgrade-waiter.js';
 import { createIpcClient } from '../transport/ipc/client.js';
-import { observePendingSpawn } from './pending-spawn.js';
+import { observePendingSpawn, pendingSpawnMayBeReleased } from './pending-spawn.js';
 
 const LEASE_MS = 30_000;
+const STARTUP_MS = 180_000;
 
 /** Names what a contender deferred for; the waiter that claims the intent is what that deferral waited on. */
 export const CONTENDER_DEFERRAL_OWNER = 'upgrade-contender';
@@ -332,7 +333,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
           if (attached.kind !== 'written') return { kind: 'unobservable', reason: attached.kind };
           continue;
         }
-        if (spawn !== 'absent') return { kind: 'lease-held' };
+        if (!pendingSpawnMayBeReleased(spawn, deadline, now())) return { kind: 'lease-held' };
         const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
           ...intent,
           attemptId: null,
@@ -429,6 +430,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
         ...current.intent,
         attemptSpawnPending: true,
         attemptSpawnNonce: spawnNonce,
+        attemptDeadline: new Date(now() + STARTUP_MS).toISOString(),
       });
       if (spawning.kind === 'conflict') continue;
       if (spawning.kind !== 'written') return { kind: 'unobservable', reason: spawning.kind };

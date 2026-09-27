@@ -1147,11 +1147,11 @@ describe('incomplete succession at startup', () => {
 });
 
 describe('waiter-launched upgrade completion', () => {
-  async function waiterAttempt(attemptDeadline: string) {
+  async function waiterAttempt(attemptDeadline: string, elapsedStartupMs = 0) {
     const format = currentCoralStoreFormat();
     const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
     const base = runtimeFixture();
-    let now = Date.parse('2026-09-25T00:00:00.000Z');
+    let now = Date.parse('2026-09-25T00:00:00.000Z') + elapsedStartupMs;
     const runtime: Runtime = {
       ...base,
       time: { ...base.time, now: () => (now += 1) },
@@ -1194,6 +1194,14 @@ describe('waiter-launched upgrade completion', () => {
       completeWaiterLaunchedUpgrade(runtime, current, settled.store, 'target', process.pid, incarnation);
     return { runtime, complete, store: settled.store, revision: written.intent.revision };
   }
+
+  it('records serving after 95 seconds of startup recovery within the launch deadline', async () => {
+    const { runtime, complete } = await waiterAttempt('2026-09-25T00:03:00.000Z', 95_000);
+    await complete();
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { disposition: 'completed', completionReceipt: { attemptId: 'waiter-attempt' } },
+    });
+  });
 
   it('advances past an earlier serving generation when the retired incumbent is gone', async () => {
     const { runtime, complete, store } = await waiterAttempt('2026-09-25T00:00:30.000Z');

@@ -1,6 +1,15 @@
 import { spawn, type ChildProcess, type SendHandle } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import { createConnection, Server, Socket } from 'node:net';
 import { constants as osConstants } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -53,17 +62,41 @@ function closeRelayedHandle(handle: unknown): void {
   else if (handle instanceof Socket) handle.destroy();
 }
 
-function writeSentinelRecord(runDir: string | undefined, id: string, record: Readonly<Record<string, unknown>>): void {
-  if (runDir === undefined || !isAbsolute(runDir)) return;
+function writeSentinelRecord(
+  runDir: string | undefined,
+  id: string,
+  record: Readonly<Record<string, unknown>>,
+): boolean {
+  if (runDir === undefined || !isAbsolute(runDir)) return false;
   const directory = join(runDir, 'coordinator-sentinel.v1');
   try {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const path = join(directory, `${id}.json`);
     const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    const file = openSync(temporary, 'r');
+    try {
+      fsyncSync(file);
+    } finally {
+      closeSync(file);
+    }
     renameSync(temporary, path);
+    const parent = openSync(directory, 'r');
+    try {
+      fsyncSync(parent);
+    } finally {
+      closeSync(parent);
+    }
+    const runDirectory = openSync(runDir, 'r');
+    try {
+      fsyncSync(runDirectory);
+    } finally {
+      closeSync(runDirectory);
+    }
+    return true;
   } catch (error: unknown) {
     process.stderr.write(`Coordinator sentinel could not record ${String(record.state)}: ${String(error)}\n`);
+    return false;
   }
 }
 
@@ -102,31 +135,43 @@ function relaunchRoots(runDir: string, original: StrictBundleManifest | null): s
   return [...new Set(installed)];
 }
 
-function waiterAttemptMatches(
+function waiterAttemptDisposition(
   runDir: string,
   attemptId: string,
   spawnNonce: string,
   originalPid: number,
   originalIncarnation: ProcessIncarnation,
   build: StrictBundleManifest | null,
-): boolean {
+): 'attempting' | 'completed' | null {
   const observed = readUpgradeIntent(runDir);
-  if (observed.kind !== 'readable') return false;
+  if (observed.kind !== 'readable') return null;
   const intent = observed.intent;
-  return (
-    intent.disposition === 'attempting' &&
-    intent.attemptId === attemptId &&
-    intent.attemptSpawnNonce === spawnNonce &&
-    intent.attemptOwner?.kind === 'waiter' &&
+  if (
+    intent.attemptId !== attemptId ||
+    intent.attemptSpawnNonce !== spawnNonce ||
+    intent.attemptOwner?.kind !== 'waiter' ||
+    (build !== null &&
+      (intent.target.build.buildSetId !== build.buildSetId || intent.target.build.bundleHash !== build.bundleHash))
+  )
+    return null;
+  if (intent.disposition === 'completed') {
+    const receipt = intent.completionReceipt;
+    return receipt?.kind === 'serving' &&
+      receipt.attemptId === attemptId &&
+      receipt.successor.pid === originalPid &&
+      receipt.successor.incarnation === originalIncarnation
+      ? 'completed'
+      : null;
+  }
+  return intent.disposition === 'attempting' &&
     (intent.attemptDeadline === null || Date.now() < Date.parse(intent.attemptDeadline)) &&
-    (build === null ||
-      (intent.target.build.buildSetId === build.buildSetId && intent.target.build.bundleHash === build.bundleHash)) &&
     (intent.attemptChild === null ||
       intent.attemptChild === undefined ||
       (intent.attemptChild.attemptId === attemptId &&
         intent.attemptChild.pid === originalPid &&
         intent.attemptChild.incarnation === originalIncarnation))
-  );
+    ? 'attempting'
+    : null;
 }
 
 async function rebindWaiterAttempt(
@@ -142,7 +187,7 @@ async function rebindWaiterAttempt(
   const outcome = await retryUpgradeIntentCas(runDir, (observed) => {
     if (
       observed.kind !== 'readable' ||
-      !waiterAttemptMatches(runDir, attemptId, spawnNonce, originalPid, originalIncarnation, build)
+      waiterAttemptDisposition(runDir, attemptId, spawnNonce, originalPid, originalIncarnation, build) !== 'attempting'
     )
       return { kind: 'settle', value: false };
     return {
@@ -234,8 +279,8 @@ export async function runCoordinatorSentinel(
   const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
   const originalManifest = validatedBuild(dirname(dirname(executable)));
   let coordinatorIdentity: { coordinatorPid: number; coordinatorIncarnation: ProcessIncarnation | null } | null = null;
-  const record = (state: string, fields: Record<string, unknown> = {}): void => {
-    writeSentinelRecord(runDir, id, {
+  const record = (state: string, fields: Record<string, unknown> = {}): boolean => {
+    return writeSentinelRecord(runDir, id, {
       version: 1,
       sentinelId: id,
       sentinelPid: process.pid,
@@ -250,7 +295,51 @@ export async function runCoordinatorSentinel(
       ...fields,
     });
   };
-  record('prepared');
+  if (!record('prepared')) return 1;
+  const waiterAttemptId = process.env.CORAL_WAITER_LAUNCHED;
+  if (waiterAttemptId !== undefined && !options.fixtureRelaunch) {
+    // This CAS races recovery's missing-record release; only its winner may proceed with a spawn.
+    const spawnNonce = process.env.CORAL_WAITER_SPAWN_NONCE;
+    if (runDir === undefined || !isAbsolute(runDir) || spawnNonce === undefined) {
+      record('spawn-fenced');
+      return 1;
+    }
+    const authorized = await retryUpgradeIntentCas(runDir, (observed) => {
+      if (observed.kind !== 'readable') return { kind: 'settle', value: false };
+      const intent = observed.intent;
+      const replacingPid = Number(process.env.CORAL_SENTINEL_REPLACING_PID);
+      const replacingIncarnation = processIncarnationSchema.safeParse(process.env.CORAL_SENTINEL_REPLACING_INCARNATION);
+      const replacing = Number.isSafeInteger(replacingPid) && replacingPid > 0 && replacingIncarnation.success;
+      if (
+        intent.disposition !== 'attempting' ||
+        intent.attemptId !== waiterAttemptId ||
+        intent.attemptSpawnNonce !== spawnNonce ||
+        (!replacing && intent.attemptSpawnPending !== true) ||
+        (replacing &&
+          waiterAttemptDisposition(
+            runDir,
+            waiterAttemptId,
+            spawnNonce,
+            replacingPid,
+            replacingIncarnation.data,
+            originalManifest,
+          ) !== 'attempting') ||
+        intent.attemptDeadline === null ||
+        Date.parse(intent.attemptDeadline) <= Date.now()
+      )
+        return { kind: 'settle', value: false };
+      return {
+        kind: 'write',
+        expectedRevision: intent.revision,
+        change: intent,
+        settle: () => true,
+      };
+    });
+    if (authorized.kind !== 'settled' || !authorized.value) {
+      record('spawn-fenced');
+      return 1;
+    }
+  }
   const child = spawn(process.execPath, [executable, ...args], {
     cwd: process.cwd(),
     env: { ...process.env, CORAL_SENTINEL_ID: id },
@@ -428,14 +517,14 @@ export async function runCoordinatorSentinel(
       const attemptId = recoveryEnv.CORAL_STARTUP_ATTEMPT_ID;
       const spawnNonce = recoveryEnv.CORAL_WAITER_SPAWN_NONCE;
       const originalChildIdentity = coordinatorIdentity;
-      const preserveWaiterAttempt =
+      const waiterDisposition =
         runDir !== undefined &&
         attemptId !== undefined &&
         spawnNonce !== undefined &&
         recoveryEnv.CORAL_WAITER_LAUNCHED === attemptId &&
         originalChildIdentity !== null &&
         originalChildIdentity.coordinatorIncarnation !== null &&
-        waiterAttemptMatches(
+        waiterAttemptDisposition(
           runDir,
           attemptId,
           spawnNonce,
@@ -443,12 +532,12 @@ export async function runCoordinatorSentinel(
           originalChildIdentity.coordinatorIncarnation,
           originalManifest,
         );
-      if (attemptId !== undefined && recoveryEnv.CORAL_WAITER_LAUNCHED === attemptId && !preserveWaiterAttempt) {
+      if (attemptId !== undefined && recoveryEnv.CORAL_WAITER_LAUNCHED === attemptId && !waiterDisposition) {
         record('relaunch-unavailable', { reason: 'waiter attempt is no longer current' });
         return exitCode;
       }
       if (
-        preserveWaiterAttempt &&
+        waiterDisposition === 'attempting' &&
         originalChildIdentity !== null &&
         originalChildIdentity.coordinatorIncarnation !== null
       ) {
@@ -483,8 +572,14 @@ export async function runCoordinatorSentinel(
       }
       if (candidates.length === 0)
         record('relaunch-unavailable', { reason: 'no validated installed or retained build' });
-      for (let attempt = 0; attempt < 3 && candidates.length > 0; attempt += 1) {
-        const candidate = candidates[attempt % candidates.length];
+      const firstAttempts =
+        candidates.length === 0 ? [] : Array.from({ length: 3 }, (_, index) => candidates[index % candidates.length]);
+      const retainedRoot =
+        originalManifest === null ? null : join(dirname(runDir), 'builds', originalManifest.buildSetId);
+      const retained = candidates.find((candidate) => dirname(dirname(candidate.backend)) === retainedRoot);
+      const attempts =
+        retained !== undefined && !firstAttempts.includes(retained) ? [...firstAttempts, retained] : firstAttempts;
+      for (const candidate of attempts) {
         if (candidate === undefined) break;
         if (!existsSync(candidate.sentinel) || !existsSync(candidate.backend)) continue;
         if (candidate.manifest !== null && validatedBuild(dirname(dirname(candidate.backend))) === null) continue;

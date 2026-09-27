@@ -38,6 +38,7 @@ function launch(): Readonly<{
   exited: Promise<void>;
 }> {
   const sentinel = spawn(process.execPath, [sentinelBundle, childFixture], {
+    env: { ...process.env, CORAL_SENTINEL_RUN_DIR: root },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   sentinels.push(sentinel);

@@ -1,5 +1,14 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +32,88 @@ function alive(pid: number): boolean {
 }
 
 describe('real coordinator recovery through its sentinel', () => {
+  it('tries the retained build after three installed builds fail', async () => {
+    const tempRoots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-sentinel-retained-fallback-'));
+    tempRoots.push(home);
+    const installed = ['0.10.16', '0.10.15', '0.10.14'].map((version) =>
+      createPluginFixture(tempRoots, { flavor: 'prod', backend: 'sentinel-freeze', version }),
+    );
+    const original = createPluginFixture(tempRoots, { flavor: 'prod', backend: 'sentinel-freeze' });
+    const paths = coordinatorPaths('prod', { baseDir: join(home, '.coral') });
+    const manifest = JSON.parse(
+      readFileSync(join(original.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
+    ) as { buildSetId: string };
+    const retained = join(home, '.coral', 'gen2', 'builds', manifest.buildSetId);
+    mkdirSync(join(retained, '..'), { recursive: true });
+    renameSync(original.root, retained);
+    const sentinelPath = join(retained, 'bridge', 'coral-sentinel.cjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/sentinel-harness.ts', import.meta.url))],
+      outfile: sentinelPath,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'cjs',
+      external: ['node:*'],
+    });
+    const registry = join(home, 'installed.json');
+    writeFileSync(
+      registry,
+      JSON.stringify({ plugins: { 'coral@fixture': installed.map(({ root }) => ({ installPath: root })) } }),
+    );
+    const env = {
+      ...process.env,
+      HOME: home,
+      TMPDIR: home,
+      CORAL_SENTINEL_RUN_DIR: paths.runDir,
+      CORAL_PLUGIN_REGISTRY: registry,
+      CORAL_FIXTURE_FAIL_INSTALLED_ROOTS: installed.map(({ root }) => root).join(':'),
+    };
+    const first = spawn(process.execPath, [sentinelPath, join(retained, 'bridge', 'coral-backend.cjs')], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    let firstPid: number | null = null;
+    let replacementPid: number | null = null;
+    try {
+      await waitForCondition(() => existsSync(paths.infoFile), 20_000);
+      firstPid = (JSON.parse(readFileSync(paths.infoFile, 'utf8')) as { pid: number }).pid;
+      first.send({ kind: 'freeze-coordinator' });
+      await waitForCondition(() => first.exitCode !== null, 20_000);
+      await waitForCondition(() => {
+        if (!existsSync(paths.infoFile)) return false;
+        const current = JSON.parse(readFileSync(paths.infoFile, 'utf8')) as { pid: number };
+        if (current.pid === firstPid || !alive(current.pid)) return false;
+        replacementPid = current.pid;
+        return true;
+      }, 30_000);
+      const records = readdirSync(join(paths.runDir, 'coordinator-sentinel.v1')).map(
+        (name) =>
+          JSON.parse(readFileSync(join(paths.runDir, 'coordinator-sentinel.v1', name), 'utf8')) as {
+            state: string;
+            root?: string;
+            executable?: string;
+            exitCode?: number;
+          },
+      );
+      for (const failed of installed)
+        expect(records).toContainEqual(
+          expect.objectContaining({
+            state: 'exited',
+            executable: join(failed.root, 'bridge', 'coral-backend.cjs'),
+            exitCode: 1,
+          }),
+        );
+      expect(records).toContainEqual(expect.objectContaining({ state: 'relaunched', root: retained }));
+    } finally {
+      if (first.exitCode === null) first.kill('SIGKILL');
+      if (firstPid !== null && alive(firstPid)) process.kill(firstPid, 'SIGKILL');
+      if (replacementPid !== null && alive(replacementPid)) process.kill(replacementPid, 'SIGTERM');
+      for (const path of tempRoots.reverse()) rmSync(path, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it('relaunches from a retained build after the installed root disappears', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-sentinel-removed-root-'));

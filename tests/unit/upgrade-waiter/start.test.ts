@@ -282,7 +282,7 @@ describe('legacy upgrade request', () => {
       disposition: 'attempting',
       blockers: [],
       retryCondition: null,
-      attemptDeadline: new Date(Date.now() - 1).toISOString(),
+      attemptDeadline: new Date(Date.now() - 30_001).toISOString(),
       completionReceipt: null,
     });
     const launchDetached = vi.fn(async () => {

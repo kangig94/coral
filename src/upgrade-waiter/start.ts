@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { observePendingSpawn } from './pending-spawn.js';
+import { observePendingSpawn, pendingSpawnMayBeReleased } from './pending-spawn.js';
 
 import { UPGRADE_WAITER_BUNDLE_FILE } from '../infra/bundle-manifest-address.js';
 import type { LegacyUpgradeRefusal, LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
@@ -73,7 +73,8 @@ export async function startUpgradeWaiter(
         observed = readUpgradeIntent(options.runDir);
         continue;
       }
-      if (spawn !== 'absent') return { kind: 'unavailable', reason: 'target spawn outcome is unresolved' };
+      if (!pendingSpawnMayBeReleased(spawn, Date.parse(intent.attemptDeadline ?? ''), ports.time.now()))
+        return { kind: 'unavailable', reason: 'target spawn outcome is unresolved' };
     }
     if (!leaseExpired && liveness === 'alive') return { kind: 'existing', pid: owner.pid };
     if (!leaseExpired && liveness !== 'absent') {

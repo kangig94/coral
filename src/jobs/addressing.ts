@@ -202,7 +202,16 @@ export class JobAddressing {
     if (
       request.supportsWaitV2 !== true &&
       cursor === undefined &&
-      locations.some((location) => location !== null && location.epochKey !== activeEpochKey)
+      locations.some(
+        (location) =>
+          location !== null &&
+          location.epochKey !== activeEpochKey &&
+          (location.disposition !== 'terminal' ||
+            location.terminalSeq === undefined ||
+            location.resultPath === undefined ||
+            location.detail.kind !== 'recorded' ||
+            location.detail.value.exit === null),
+      )
     ) {
       return {
         code: 'wait_epoch_unsupported',
@@ -363,7 +372,11 @@ export class JobAddressing {
           if (latest === null) continue;
           const terminal = this.terminalFromLocation(latest, request.jobIds, cursor);
           if (terminal !== null) {
-            yield terminal;
+            if (request.supportsWaitV2 === true) yield terminal;
+            else {
+              const { version, epochKey, cursor: eventCursor, ...legacy } = terminal;
+              yield legacy;
+            }
             return;
           }
         }

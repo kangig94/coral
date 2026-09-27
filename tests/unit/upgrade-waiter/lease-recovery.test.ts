@@ -125,6 +125,54 @@ describe('upgrade waiter lease recovery', () => {
     for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
   });
 
+  it('keeps an identified target eligible through a 95 second startup recovery', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-upgrade-slow-startup-'));
+    directories.push(runDir);
+    await compareAndSwapUpgradeIntent(runDir, null, pendingIntent());
+    let currentTime = Date.parse('2026-09-25T00:00:00.000Z');
+    let launchedAt: number | null = null;
+    let polls = 0;
+    const result = await runUpgradeWaiter({
+      runDir,
+      socketPath: '/unused.sock',
+      targetRoot: '/installed/target',
+      validateTarget: () => true,
+      observeRetirement: async () => 'retired',
+      launchTarget: async () => {
+        launchedAt = currentTime;
+        return process.pid;
+      },
+      ports: {
+        ...waiterPorts(() => currentTime, ['waiter', 'attempt', 'nonce']),
+        time: {
+          now: () => currentTime,
+          sleep: async () => {
+            currentTime += 10_000;
+            if (++polls > 20) throw new Error('startup never completed');
+            if (launchedAt === null || currentTime - launchedAt < 95_000) return;
+            const observed = readUpgradeIntent(runDir);
+            if (observed.kind !== 'readable') throw new Error('intent disappeared');
+            expect(Date.parse(observed.intent.attemptDeadline ?? '')).toBeGreaterThan(currentTime);
+            await compareAndSwapUpgradeIntent(runDir, observed.intent.revision, {
+              ...observed.intent,
+              disposition: 'completed',
+              completionReceipt: {
+                kind: 'serving',
+                attemptId: 'attempt',
+                successor: { instanceId: 'target', pid: process.pid, incarnation: null, build },
+                epochKey: 'lineage:epoch-1',
+                controlGeneration: 1,
+                acceptedObligations: [],
+                recordedAt: new Date(currentTime).toISOString(),
+              },
+            });
+          },
+        },
+      },
+    });
+    expect(result).toEqual({ kind: 'completed' });
+  });
+
   it('does not start a target after its expired attempt was replaced during a scheduler pause', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-red-upgrade-waiter-'));
     directories.push(runDir);
@@ -249,7 +297,7 @@ describe('upgrade waiter lease recovery', () => {
     });
 
     attemptPause.crashOnPending = false;
-    currentTime += 30_001;
+    currentTime += 210_001;
     const secondLaunch = vi.fn(async (intent: UpgradeIntent, attemptId: string, nonce: string) => {
       expect(nonce).toBe('second-nonce');
       const completed = await compareAndSwapUpgradeIntent(runDir, intent.revision, {

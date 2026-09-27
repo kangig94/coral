@@ -227,7 +227,7 @@ describe('job addressing', () => {
     expect(index.read('queued-without-effect')?.disposition).toBe('active-owner');
   });
 
-  it('validates epoch-bound cursors and chooses the first historical terminal in request order', async () => {
+  it('validates epoch-bound cursors and serves historical terminals to cursorless v1 waits', async () => {
     const { root, index } = fixture();
     const resultPath = join(root, 'old.md');
     writeFileSync(resultPath, 'result\n');
@@ -260,6 +260,12 @@ describe('job addressing', () => {
     );
     const jobIds = ['live', 'older-b', 'older-a'];
     expect(addressing.validateWait({ jobIds, cursor: { afterSeq: 2 } })?.code).toBe('wait_cursor_epoch_required');
+    expect(addressing.validateWait({ jobIds: ['older-b'] })).toBeNull();
+    const legacyTerminal = (await addressing.waitStream({ jobIds: ['older-b'] }).next()).value;
+    expect(legacyTerminal).toMatchObject({ type: 'terminal', jobId: 'older-b', resultPath });
+    expect(legacyTerminal).not.toHaveProperty('version');
+    expect(legacyTerminal).not.toHaveProperty('epochKey');
+    expect(legacyTerminal).not.toHaveProperty('cursor');
     const cursor: WaitCursor = {
       version: 'jobs.wait.v2',
       locations: { live: 'lineage-new:8', 'older-b': 'lineage-old:7', 'older-a': 'lineage-old:7' },

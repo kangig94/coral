@@ -9,12 +9,20 @@ type SpawnObservation =
   | 'absent'
   | 'alive'
   | 'unknown'
+  | 'missing'
   | Readonly<{ kind: 'child'; pid: number; incarnation: ProcessIncarnation }>;
+
+const MISSING_SPAWN_SETTLE_MS = 30_000;
+
+/** A missing record remains unknown until the deadline plus 30 seconds; the sentinel's pre-spawn CAS fences a concurrent release. */
+export function pendingSpawnMayBeReleased(spawn: SpawnObservation, deadline: number, now: number): boolean {
+  return spawn === 'absent' || (spawn === 'missing' && now >= deadline + MISSING_SPAWN_SETTLE_MS);
+}
 
 /** Sentinel records identify a launched target even if its waiter died before recording the child in the intent. */
 export function observePendingSpawn(
   runDir: string,
-  intent: UpgradeIntent,
+  intent: Pick<UpgradeIntent, 'attemptId' | 'attemptSpawnNonce'>,
   ports: Pick<UpgradeWaiterPorts, 'processIncarnation' | 'processLiveness'>,
 ): SpawnObservation {
   const directory = join(runDir, 'coordinator-sentinel.v1');
@@ -22,8 +30,10 @@ export function observePendingSpawn(
   try {
     entries = readdirSync(directory);
   } catch (error: unknown) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'unknown';
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unknown';
   }
+  let matched = false;
+  let unknown = false;
   for (const entry of entries) {
     if (!entry.endsWith('.json')) continue;
     let record: Record<string, unknown>;
@@ -39,12 +49,15 @@ export function observePendingSpawn(
         record.spawnNonce !== intent.attemptSpawnNonce)
     )
       continue;
-    if (record.state === 'exited') continue;
+    matched = true;
+    let childAbsent = false;
     if (typeof record.coordinatorPid === 'number' && record.coordinatorPid > 0) {
       const currentIncarnation = ports.processIncarnation(record.coordinatorPid);
       const childLiveness = ports.processLiveness(record.coordinatorPid);
-      if (childLiveness === 'unknown') return 'unknown';
-      if (childLiveness === 'alive' && currentIncarnation === null) return 'unknown';
+      if (childLiveness === 'unknown' || (childLiveness === 'alive' && currentIncarnation === null)) {
+        unknown = true;
+        continue;
+      }
       if (
         childLiveness === 'alive' &&
         currentIncarnation !== null &&
@@ -52,13 +65,19 @@ export function observePendingSpawn(
       ) {
         return { kind: 'child', pid: record.coordinatorPid, incarnation: currentIncarnation };
       }
+      childAbsent = childLiveness === 'absent' || currentIncarnation !== record.coordinatorIncarnation;
     }
-    if (typeof record.sentinelPid !== 'number' || record.sentinelPid <= 0) return 'unknown';
+    if (typeof record.sentinelPid !== 'number' || record.sentinelPid <= 0) {
+      unknown = true;
+      continue;
+    }
     const incarnation = record.sentinelIncarnation;
     const currentIncarnation = typeof incarnation === 'string' ? ports.processIncarnation(record.sentinelPid) : null;
-    if (currentIncarnation !== null && currentIncarnation !== incarnation) continue;
-    const liveness = ports.processLiveness(record.sentinelPid);
-    if (liveness !== 'absent') return liveness;
+    const sentinelAbsent = currentIncarnation !== null && currentIncarnation !== incarnation;
+    const liveness = sentinelAbsent ? 'absent' : ports.processLiveness(record.sentinelPid);
+    if (liveness === 'alive') return 'alive';
+    if (liveness === 'unknown' || (!childAbsent && record.state !== 'exited' && record.state !== 'spawn-fenced'))
+      unknown = true;
   }
-  return 'absent';
+  return unknown ? 'unknown' : matched ? 'absent' : 'missing';
 }
