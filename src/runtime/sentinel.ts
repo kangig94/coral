@@ -120,11 +120,13 @@ export async function runCoordinatorSentinel(
   let killed = false;
   let channelAvailable = true;
   let schedulingGaps = 0;
+  let wedgeTermination = false;
   const reset = (now: number): void => {
     lastAnswer = now;
     outstanding = null;
     escalationAt = null;
     killed = false;
+    wedgeTermination = false;
   };
   const tick = (): void => {
     const now = Date.now();
@@ -149,6 +151,7 @@ export async function runCoordinatorSentinel(
       if (child.pid !== undefined && childIsUninterruptible(child.pid)) reset(now);
       else {
         record('terminating', { coordinatorPid: child.pid, lastAnswer, schedulingGaps });
+        wedgeTermination = true;
         child.kill('SIGTERM');
         escalationAt = now;
       }
@@ -170,6 +173,7 @@ export async function runCoordinatorSentinel(
         outstanding = null;
         escalationAt = null;
         killed = false;
+        wedgeTermination = false;
       }
       return;
     }
@@ -206,7 +210,7 @@ export async function runCoordinatorSentinel(
   process.on('disconnect', () => {
     if (child.connected) child.send({ kind: 'coral-sentinel-upstream-disconnected' } satisfies SentinelMessage);
   });
-  return exited.then(({ code, signal }) => {
+  return exited.then(async ({ code, signal }) => {
     clearInterval(interval);
     const exitCode = code ?? (signal === null ? 1 : 128 + osConstants.signals[signal]);
     record('exited', {
@@ -220,6 +224,30 @@ export async function runCoordinatorSentinel(
     });
     if (child.connected) child.disconnect();
     if (process.connected) process.disconnect();
+    if (wedgeTermination && runDir !== undefined && isAbsolute(runDir) && process.argv[1] !== undefined) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+      const recoveryEnv = { ...process.env };
+      delete recoveryEnv.CORAL_STARTUP_ATTEMPT_ID;
+      delete recoveryEnv.CORAL_STARTUP_STARTED_AT;
+      delete recoveryEnv.CORAL_SUCCESSION_ATTEMPT_ID;
+      const replacement = spawn(process.execPath, [process.argv[1], executable, ...args], {
+        cwd: process.cwd(),
+        detached: true,
+        env: recoveryEnv,
+        stdio: ['ignore', 'inherit', 'inherit'],
+      });
+      const launched = await new Promise<boolean>((resolve) => {
+        replacement.once('spawn', () => resolve(true));
+        replacement.once('error', (error) => {
+          record('relaunch-failed', { error: String(error) });
+          resolve(false);
+        });
+      });
+      if (launched) {
+        record('relaunched', { replacementSentinelPid: replacement.pid });
+        replacement.unref();
+      }
+    }
     return exitCode;
   });
 }

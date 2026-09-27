@@ -22,6 +22,88 @@ function alive(pid: number): boolean {
 }
 
 describe('real coordinator recovery through its sentinel', () => {
+  it('relaunches a serving coordinator after successive wedges with no later invocation', async () => {
+    const tempRoots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-sentinel-alone-home-'));
+    tempRoots.push(home);
+    const fixture = createPluginFixture(tempRoots, { flavor: 'prod', backend: 'sentinel-freeze' });
+    const sentinelPath = join(fixture.root, 'bridge', 'coral-sentinel.cjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/sentinel-harness.ts', import.meta.url))],
+      outfile: sentinelPath,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'cjs',
+      external: ['node:*'],
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      TMPDIR: home,
+      CORAL_SENTINEL_RUN_DIR: coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir,
+    };
+    delete env.CORAL_CHILD;
+    delete env.CORAL_CHILD_PRINCIPAL_HANDLE;
+    delete env.CORAL_JOB_ID;
+    delete env.CORAL_SESSION_ID;
+    const first = spawn(process.execPath, [sentinelPath, join(fixture.root, 'bridge', 'coral-backend.cjs'), 'fast'], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    const discovery = coordinatorPaths('prod', { baseDir: join(home, '.coral') });
+    let originalPid: number | null = null;
+    let replacementPid: number | null = null;
+    let replacementBootToken: string | null = null;
+    let nextPid: number | null = null;
+    try {
+      await waitForCondition(() => existsSync(discovery.infoFile), 20_000);
+      originalPid = (JSON.parse(readFileSync(discovery.infoFile, 'utf8')) as { pid: number }).pid;
+      first.send({ kind: 'freeze-coordinator' });
+      await waitForCondition(() => first.exitCode !== null, 10_000);
+      await waitForCondition(() => {
+        if (!existsSync(discovery.infoFile)) return false;
+        const current = JSON.parse(readFileSync(discovery.infoFile, 'utf8')) as { pid: number; bootToken: string };
+        if (current.pid === originalPid || !alive(current.pid)) return false;
+        replacementPid = current.pid;
+        replacementBootToken = current.bootToken;
+        return true;
+      }, 15_000);
+      expect(originalPid === null ? true : alive(originalPid)).toBe(false);
+      expect(replacementPid).not.toBeNull();
+      const health = await createIpcClient(discovery.socketPath, undefined, {
+        kind: 'boot',
+        token: replacementBootToken ?? '',
+      }).health<{ status: string }>();
+      expect(['ok', 'running']).toContain(health.status);
+      const firstReplacementPid = replacementPid;
+      if (firstReplacementPid === null) throw new Error('Replacement coordinator was not observed');
+      process.kill(firstReplacementPid, 'SIGSTOP');
+      await waitForCondition(() => {
+        if (!existsSync(discovery.infoFile)) return false;
+        const current = JSON.parse(readFileSync(discovery.infoFile, 'utf8')) as { pid: number; bootToken: string };
+        if (current.pid === firstReplacementPid || !alive(current.pid)) return false;
+        nextPid = current.pid;
+        replacementBootToken = current.bootToken;
+        return true;
+      }, 15_000);
+      expect(alive(firstReplacementPid)).toBe(false);
+      const nextHealth = await createIpcClient(discovery.socketPath, undefined, {
+        kind: 'boot',
+        token: replacementBootToken ?? '',
+      }).health<{ status: string }>();
+      expect(['ok', 'running']).toContain(nextHealth.status);
+    } finally {
+      if (first.exitCode === null) first.kill('SIGKILL');
+      if (originalPid !== null && alive(originalPid)) process.kill(originalPid, 'SIGKILL');
+      if (replacementPid !== null && alive(replacementPid)) process.kill(replacementPid, 'SIGKILL');
+      const pidToStop = nextPid ?? replacementPid;
+      if (pidToStop !== null && alive(pidToStop)) process.kill(pidToStop, 'SIGTERM');
+      if (pidToStop !== null) await waitForCondition(() => !alive(pidToStop), 10_000).catch(() => undefined);
+      for (const path of tempRoots.reverse()) rmSync(path, { recursive: true, force: true });
+    }
+  }, 35_000);
+
   it('shuts down a coordinator when its parent sentinel dies', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-sentinel-parent-death-'));
@@ -80,7 +162,7 @@ describe('real coordinator recovery through its sentinel', () => {
     }
   }, 45_000);
 
-  it('ends a blocked coordinator and lets a waiting CLI reach its replacement', async () => {
+  it('replaces a blocked coordinator after its first contender exhausts the bind budget', async () => {
     const tempRoots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-sentinel-recovery-home-'));
     tempRoots.push(home);
@@ -96,12 +178,17 @@ describe('real coordinator recovery through its sentinel', () => {
       external: ['node:*'],
     });
     const backend = join(fixture.root, 'bridge', 'coral-backend.cjs');
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, TMPDIR: home };
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      TMPDIR: home,
+      CORAL_SENTINEL_RUN_DIR: coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir,
+    };
     delete env.CORAL_CHILD;
     delete env.CORAL_CHILD_PRINCIPAL_HANDLE;
     delete env.CORAL_JOB_ID;
     delete env.CORAL_SESSION_ID;
-    const first = spawn(process.execPath, [sentinelPath, backend], {
+    const first = spawn(process.execPath, [sentinelPath, backend, 'slow'], {
       env,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
@@ -148,21 +235,39 @@ describe('real coordinator recovery through its sentinel', () => {
       cli.stderr?.on('data', (part: Buffer) => {
         output += part.toString();
       });
-      await new Promise<void>((resolve) => first.once('exit', () => resolve()));
+      await waitForCondition(() => existsSync(discovery.startupErrorFile), 40_000).catch((error: unknown) => {
+        throw new Error(
+          `${String(error)}; CLI exit=${cli?.exitCode}; CLI output=${output}; sentinel output=${firstOutput}`,
+        );
+      });
+      const refusal = JSON.parse(readFileSync(discovery.startupErrorFile, 'utf8')) as { error: { code: string } };
+      expect(refusal.error.code).toBe('handoff_socket_holder_unverified');
+      expect(alive(original.pid)).toBe(true);
+      await waitForCondition(() => first.exitCode !== null, 20_000).catch((error: unknown) => {
+        throw new Error(
+          `${String(error)}; CLI exit=${cli?.exitCode}; CLI output=${output}; sentinel output=${firstOutput}`,
+        );
+      });
       expect(alive(original.pid)).toBe(false);
       await waitForCondition(() => {
         if (!existsSync(discovery.infoFile)) return false;
         const current = JSON.parse(readFileSync(discovery.infoFile, 'utf8')) as { pid: number };
         return current.pid !== original.pid && alive(current.pid);
-      }, 20_000).catch((error: unknown) => {
+      }, 50_000).catch((error: unknown) => {
         throw new Error(
           `${String(error)}; CLI exit=${cli?.exitCode}; CLI output=${output}; sentinel output=${firstOutput}`,
         );
       });
-      const cliExit = await new Promise<number | null>((resolve) => cli?.once('exit', (code) => resolve(code)));
+      const cliExit =
+        cli.exitCode ?? (await new Promise<number | null>((resolve) => cli?.once('exit', (code) => resolve(code))));
       expect(cliExit, output).toBe(0);
-      const replacement = JSON.parse(readFileSync(discovery.infoFile, 'utf8')) as { pid: number };
+      const replacement = JSON.parse(readFileSync(discovery.infoFile, 'utf8')) as { pid: number; bootToken: string };
       expect(replacement.pid).not.toBe(original.pid);
+      const replacementHealth = await createIpcClient(discovery.socketPath, undefined, {
+        kind: 'boot',
+        token: replacement.bootToken,
+      }).health<{ env?: Record<string, string> }>();
+      expect(replacementHealth.env?.CORAL_STARTUP_ATTEMPT_ID).toBeTruthy();
       process.kill(replacement.pid, 'SIGTERM');
       await waitForCondition(() => !alive(replacement.pid), 10_000);
     } finally {
@@ -171,5 +276,5 @@ describe('real coordinator recovery through its sentinel', () => {
       if (firstPid !== null && alive(firstPid)) process.kill(firstPid, 'SIGKILL');
       for (const path of tempRoots.reverse()) rmSync(path, { recursive: true, force: true });
     }
-  }, 60_000);
+  }, 110_000);
 });

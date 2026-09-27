@@ -2536,6 +2536,64 @@ describe('execution backend server', () => {
       }
     });
 
+    it('keeps a committed HTTP response counted until its buffered bytes finish during shutdown', async () => {
+      const { deps } = createHttpHandlerDeps();
+      let inflight = 0;
+      deps.admin.beginRequest = () => {
+        inflight += 1;
+      };
+      deps.admin.endRequest = () => {
+        inflight -= 1;
+      };
+      deps.admin.beginRequestLease = createRequestLeaseOwner({
+        time: runtime.time,
+        begin: deps.admin.beginRequest,
+        end: deps.admin.endRequest,
+        shutdown: vi.fn(),
+      }).begin;
+      deps.kb.readSearch = vi.fn(async () => domainSuccess({ results: [] }));
+      const originalEnd = ServerResponse.prototype.end;
+      const pendingFlush: { run?: () => void } = {};
+      const endSpy = vi.spyOn(ServerResponse.prototype, 'end').mockImplementation(function (
+        this: ServerResponse,
+        ...args: Parameters<ServerResponse['end']>
+      ) {
+        if (this.req?.url?.startsWith('/kb/entries')) {
+          pendingFlush.run = () => {
+            originalEnd.apply(this, args);
+          };
+          return this;
+        }
+        return originalEnd.apply(this, args);
+      });
+      const started = await startHttpHandlerServer(deps);
+      const request = fetch(`${started.baseUrl}/kb/entries?q=held`, {
+        headers: { 'X-Coral-Backend-Token': 'test-token' },
+      });
+      try {
+        await vi.waitFor(() => expect(pendingFlush.run).toBeDefined());
+        let shutdownClosedConnections = false;
+        const shutdown = vi
+          .waitFor(() => expect(inflight).toBe(0))
+          .then(() => {
+            started.server.closeAllConnections();
+            shutdownClosedConnections = true;
+          });
+        expect(inflight).toBe(1);
+        expect(shutdownClosedConnections).toBe(false);
+        pendingFlush.run?.();
+        const response = await request;
+        await expect(response.json()).resolves.toEqual({ results: [] });
+        await shutdown;
+        expect(shutdownClosedConnections).toBe(true);
+      } finally {
+        pendingFlush.run?.();
+        endSpy.mockRestore();
+        await request.catch(() => undefined);
+        await _closeHttpServer(started.server);
+      }
+    });
+
     it('cleans up passive SSE subscriptions when an event write hits backpressure', async () => {
       type TestServerResponseWrite = (this: ServerResponse, ...args: unknown[]) => boolean;
       const originalWrite = ServerResponse.prototype.write as TestServerResponseWrite;

@@ -1416,6 +1416,10 @@ export function createHttpHandler(
             : {}),
         });
         if (lease !== undefined) {
+          deps.admin.beginRequest();
+          runOnResponseDone(res, () => {
+            deps.admin.endRequest();
+          });
           try {
             await lease.run((signal) =>
               catalogMatch.route.handle(req, res, parsedUrl, catalogMatch.pathParams, signal),

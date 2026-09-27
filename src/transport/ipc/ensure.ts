@@ -827,6 +827,32 @@ async function waitForBackendReady(
   timePort: TimePort,
   waitContext: BackendReadyWaitContext,
   expectedSocketPath: string = paths.socketPath,
+  recoveryBackendBin?: string,
+): Promise<ReadyCoordinatorEvidence> {
+  const keepAlive = timePort.setTimeout(() => undefined, Math.max(SENTINEL_RECOVERY_BUDGET_MS, timeoutMs));
+  try {
+    return await observeBackendReady(
+      paths,
+      desired,
+      timeoutMs,
+      timePort,
+      waitContext,
+      expectedSocketPath,
+      recoveryBackendBin,
+    );
+  } finally {
+    timePort.clearTimeout(keepAlive);
+  }
+}
+
+async function observeBackendReady(
+  paths: CoordinatorPaths,
+  desired: DesiredCoordinator,
+  timeoutMs: number,
+  timePort: TimePort,
+  waitContext: BackendReadyWaitContext,
+  expectedSocketPath: string,
+  recoveryBackendBin?: string,
 ): Promise<ReadyCoordinatorEvidence> {
   const waitStartedAt = timePort.now();
   let recoveryBudgetMs =
@@ -834,11 +860,12 @@ async function waitForBackendReady(
       ? SENTINEL_RECOVERY_BUDGET_MS
       : Math.max(timeoutMs, LEGACY_RECOVERY_BUDGET_MS);
   let terminalOutcome: SpawnedCoordinatorTerminal | null = null;
+  let refusedHolder: VerifiedBackendInfo | null = null;
+  let freshContenderStarted = false;
   // A draining incumbent cannot serve this wait. An authenticated running legacy incumbent can serve it when
   // this attempt has durably claimed responsibility for the upgrade wait.
   const admission: RouteLifecycleAdmission = 'running';
   let monitoring: 'available' | 'unavailable' | 'unknown' = 'unknown';
-
   while (timePort.now() - waitStartedAt < recoveryBudgetMs) {
     const info = readDiscoverySnapshot(paths);
     const address = info?.socketPath ?? expectedSocketPath;
@@ -901,6 +928,7 @@ async function waitForBackendReady(
     const startupError = matchingStartupError(paths, desired, waitContext, observedPid);
     const recoveringHolder =
       startupError?.kind === 'documented' && startupError.code === 'handoff_socket_holder_unverified';
+    if (recoveringHolder && info?.sentinel !== undefined && refusedHolder === null) refusedHolder = info;
     if (recoveringHolder && terminalOutcome !== null && monitoring !== 'available') {
       recoveryBudgetMs = Math.min(recoveryBudgetMs, LEGACY_RECOVERY_BUDGET_MS);
     }
@@ -924,7 +952,7 @@ async function waitForBackendReady(
           return assertNever(startupError);
       }
     }
-    if (terminalOutcome !== null && !recoveringHolder) {
+    if (terminalOutcome !== null && !recoveringHolder && refusedHolder === null) {
       // Attempt lineage governs only a live child: while the exact child runs, a coordinator that cannot be
       // tied to it may be someone else's and must not end the wait. Once that child is terminal and left no
       // refusal of its own, the question is the one `reuseServingIncumbent` answers before any spawn — is an
@@ -943,8 +971,36 @@ async function waitForBackendReady(
       }
       throw new BackendUnreachableError(endedStartupMessage(terminalOutcome, observedReading, info));
     }
-    if (terminalOutcome !== null && recoveringHolder && servingIncumbent !== null) {
+    if (terminalOutcome !== null && (recoveringHolder || refusedHolder !== null) && servingIncumbent !== null) {
       return servingIncumbent;
+    }
+
+    if (
+      terminalOutcome !== null &&
+      refusedHolder !== null &&
+      !freshContenderStarted &&
+      recoveryBackendBin !== undefined &&
+      recoveryBudgetMs - (timePort.now() - waitStartedAt) >= KERNEL_READY_DEADLINE_MS &&
+      recordedProcessObservation(refusedHolder) === 'absent' &&
+      (info === null ||
+        (info.instanceId === refusedHolder.instanceId &&
+          info.pid === refusedHolder.pid &&
+          info.incarnation === refusedHolder.incarnation)) &&
+      (await probeSocketReleased(expectedSocketPath))
+    ) {
+      const spawned = spawnCoordinator(recoveryBackendBin, paths);
+      waitContext = {
+        kind: 'current-attempt',
+        attemptId: spawned.attemptId,
+        spawnedAt: spawned.spawnedAt,
+        pid: spawned.pid,
+        terminal: spawned.terminal,
+        sentinel: spawned.sentinel,
+      };
+      freshContenderStarted = true;
+      terminalOutcome = null;
+      refusedHolder = null;
+      continue;
     }
 
     const pollMs = Math.max(1, Math.min(STARTUP_POLL_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt)));
@@ -1124,14 +1180,22 @@ async function spawnTopLevelCoordinator(
   timePort: TimePort,
 ): Promise<EnsuredIpcClient> {
   const spawned = spawnCoordinator(backendBin, paths);
-  const ready = await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, timePort, {
-    kind: 'current-attempt',
-    attemptId: spawned.attemptId,
-    spawnedAt: spawned.spawnedAt,
-    pid: spawned.pid,
-    terminal: spawned.terminal,
-    sentinel: spawned.sentinel,
-  });
+  const ready = await waitForBackendReady(
+    paths,
+    desired,
+    KERNEL_READY_DEADLINE_MS,
+    timePort,
+    {
+      kind: 'current-attempt',
+      attemptId: spawned.attemptId,
+      spawnedAt: spawned.spawnedAt,
+      pid: spawned.pid,
+      terminal: spawned.terminal,
+      sentinel: spawned.sentinel,
+    },
+    paths.socketPath,
+    backendBin,
+  );
   return summarizeBackend(ready.info, ready.health, timePort, 'boot');
 }
 

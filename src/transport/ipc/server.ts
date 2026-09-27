@@ -954,7 +954,7 @@ async function dispatchFrame(
       declaresHandover(request) ? null : rpcPorts.jobs.waitHandoverSignal(),
     );
   } catch (error: unknown) {
-    if (subscriptionController?.signal.aborted || socket.destroyed) {
+    if (socket.destroyed) {
       return;
     }
     rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);

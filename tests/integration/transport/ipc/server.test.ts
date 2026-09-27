@@ -424,6 +424,44 @@ afterEach(() => {
 });
 
 describe('ipc server', () => {
+  it('returns the cancellation disposition when a unary handler obeys the lease abort', async () => {
+    const ports = createPorts();
+    const shutdown = vi.fn();
+    ports.admin.beginRequestLease = createRequestLeaseOwner({
+      time: createRealTimePort(),
+      begin: vi.fn(),
+      end: vi.fn(),
+      shutdown,
+      timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+    }).begin;
+    ports.kb.readSearch = vi.fn(
+      (request: { abortSignal?: AbortSignal }) =>
+        new Promise<never>((_, reject) => {
+          request.abortSignal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), {
+            once: true,
+          });
+        }),
+    );
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(
+        rawErrorData(socketPath, {
+          method: 'kb.entries.search',
+          params: { q: 'blocked' },
+          auth: { kind: 'boot', token: 'boot-token' },
+        }),
+      ).resolves.toMatchObject({
+        code: 'request_deadline_exceeded',
+        context: { method: 'kb.entries.search', requestId: 'raw', outcome: 'cancelled' },
+      });
+      expect(shutdown).not.toHaveBeenCalled();
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
   it('returns a typed deadline error and directly requests shutdown for a never-settling unary operation', async () => {
     const ports = createPorts();
     const shutdown = vi.fn();
