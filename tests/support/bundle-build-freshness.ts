@@ -37,6 +37,7 @@ const bundleFreshnessReceiptSchema = z
     outputs: z
       .object({
         backend: outputSchema('clients/build/coral-backend.cjs'),
+        sentinel: outputSchema('clients/build/coral-sentinel.cjs'),
         cli: outputSchema('clients/build/coral-cli'),
         claudeAppserver: outputSchema('clients/build/coral-claude-appserver.cjs'),
         durableWrapper: outputSchema('clients/build/coral-durable-wrapper.cjs'),
@@ -57,6 +58,7 @@ export type BundleFreshnessReceiptV1 = Readonly<{
   inputs: readonly string[];
   outputs: Readonly<{
     backend: Readonly<{ path: 'clients/build/coral-backend.cjs'; sha256: string }>;
+    sentinel: Readonly<{ path: 'clients/build/coral-sentinel.cjs'; sha256: string }>;
     cli: Readonly<{ path: 'clients/build/coral-cli'; sha256: string }>;
     claudeAppserver: Readonly<{ path: 'clients/build/coral-claude-appserver.cjs'; sha256: string }>;
     durableWrapper: Readonly<{ path: 'clients/build/coral-durable-wrapper.cjs'; sha256: string }>;

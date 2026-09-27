@@ -27,6 +27,7 @@ import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
+import { createRequestLeaseOwner } from '#src/coordinator/live/request-leases.js';
 
 import { makeEvent } from '#src/discuss/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
@@ -982,11 +983,14 @@ describe('execution backend server', () => {
     });
 
     expect(kbResponse.status).toBe(503);
-    expect(kbDaemonSupervisor.readKb).toHaveBeenCalledWith({
-      method: 'readSearch',
-      args: { query: 'alpha' },
-      ctx: expectedDaemonPrincipalContext(),
-    });
+    expect(kbDaemonSupervisor.readKb).toHaveBeenCalledWith(
+      {
+        method: 'readSearch',
+        args: { query: 'alpha' },
+        ctx: expectedDaemonPrincipalContext(),
+      },
+      { signal: expect.any(AbortSignal) },
+    );
   });
 
   it('keeps CORAL_KB_ENABLE=0 on the explicit disabled KB daemon runtime path', async () => {
@@ -2498,6 +2502,36 @@ describe('execution backend server', () => {
         release.resolve();
         await request.catch(() => undefined);
         idleTimer.stopWatching();
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('returns a typed deadline when an HTTP unary handler never settles', async () => {
+      const { deps } = createHttpHandlerDeps();
+      const shutdown = vi.fn();
+      let inflight = 0;
+      deps.admin.beginRequestLease = createRequestLeaseOwner({
+        time: runtime.time,
+        begin: () => {
+          inflight += 1;
+        },
+        end: () => {
+          inflight -= 1;
+        },
+        shutdown,
+        timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+      }).begin;
+      deps.kb.readSearch = vi.fn(() => new Promise<never>(() => {}));
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const response = await fetch(`${started.baseUrl}/kb/entries?q=held`, {
+          headers: { 'X-Coral-Backend-Token': 'test-token' },
+        });
+        expect(response.status).toBe(503);
+        await expect(response.json()).resolves.toMatchObject({ code: 'request_deadline_exceeded' });
+        expect(shutdown).toHaveBeenCalledOnce();
+        expect(inflight).toBe(1);
+      } finally {
         await _closeHttpServer(started.server);
       }
     });

@@ -81,10 +81,11 @@ function spawnBackend(pluginRoot) {
     // to this spawn. Every minter of this variable draws from one namespace in which no two attempts may
     // collide, so it has to be unique across processes without coordination — `randomUUID` is CSPRNG-backed
     // and satisfies that. See `spawnCoordinator` in `src/transport/ipc/ensure.ts`.
-    const child = spawn(process.execPath, [backendBin], {
+    const sentinel = join(pluginRoot, 'bridge', 'coral-sentinel.cjs');
+    const child = spawn(process.execPath, existsSync(sentinel) ? [sentinel, backendBin] : [backendBin], {
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
-      env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID() },
+      env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID(), CORAL_SENTINEL_RUN_DIR: runDir },
     });
     // A spawn failure is reported asynchronously as 'error'; unheard, it would throw past every catch here.
     child.on('error', () => {});

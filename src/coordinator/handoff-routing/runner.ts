@@ -1237,13 +1237,19 @@ async function executeResolvedHandoff(
             }
           : undefined;
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : CLI_BUNDLE_FILE;
-      const childArguments = [join(execution.bundleDir, executable), ...delegatedArguments(operation)];
+      const target = join(execution.bundleDir, executable);
+      const sentinel = join(execution.bundleDir, 'coral-sentinel.cjs');
+      const childArguments =
+        operation.kind === 'backend-startup' && runtime.storage.existsSync(sentinel)
+          ? [sentinel, target, ...delegatedArguments(operation)]
+          : [target, ...delegatedArguments(operation)];
       const spawnOptions: SpawnOptions = {
         cwd: runtime.env.cwd(),
         env: {
           ...runtime.env.fullSnapshot(),
           [CLI_HANDOFF_GUARD_ENV]: '1',
           ...(startup === undefined ? {} : { CORAL_STARTUP_ATTEMPT_ID: startup.expectedAttemptId }),
+          ...(startup === undefined ? {} : { CORAL_SENTINEL_RUN_DIR: runtime.paths.coral.coordinator.runDir }),
         },
         stdio: 'inherit',
         ...(operation.kind === 'backend-startup' ? { detached: true } : {}),

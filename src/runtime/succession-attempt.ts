@@ -1,12 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import type { Socket } from 'node:net';
 import { join } from 'node:path';
 
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
+import { composeCoralPaths } from '../infra/path/index.js';
+import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createRealTimePort } from '../infra/time.js';
 import type { TimePort } from '../infra/port-types.js';
 
-export type SuccessionAttemptProcess = ChildProcess;
+export type SuccessionAttemptProcess = ChildProcess & { coordinatorPid?: Promise<number> };
 
 export interface SuccessionAttemptPorts {
   readonly time: TimePort;
@@ -26,14 +29,46 @@ export interface SuccessionAttemptPorts {
 }
 
 export function createRealSuccessionAttemptPorts(): SuccessionAttemptPorts {
+  let upstreamConnected = true;
   return {
     time: createRealTimePort(),
-    spawn: (bundleDir, attemptId) =>
-      spawn(process.execPath, [join(bundleDir, 'coral-backend.cjs')], {
+    spawn: (bundleDir, attemptId) => {
+      const backend = join(bundleDir, 'coral-backend.cjs');
+      const sentinel = join(bundleDir, 'coral-sentinel.cjs');
+      const supervised = existsSync(sentinel);
+      const child: SuccessionAttemptProcess = spawn(process.execPath, supervised ? [sentinel, backend] : [backend], {
         cwd: process.cwd(),
-        env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: attemptId, CORAL_SUCCESSION_ATTEMPT_ID: attemptId },
+        env: {
+          ...process.env,
+          CORAL_STARTUP_ATTEMPT_ID: attemptId,
+          CORAL_SUCCESSION_ATTEMPT_ID: attemptId,
+          CORAL_SENTINEL_RUN_DIR: composeCoralPaths(resolveBuildFlavor(process.env)).coordinator.runDir,
+        },
         stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-      }),
+      });
+      if (supervised) {
+        child.coordinatorPid = new Promise<number>((resolve, reject) => {
+          const onMessage = (message: unknown): void => {
+            if (
+              typeof message === 'object' &&
+              message !== null &&
+              'kind' in message &&
+              message.kind === 'coral-sentinel-child' &&
+              'pid' in message &&
+              typeof message.pid === 'number' &&
+              Number.isSafeInteger(message.pid)
+            ) {
+              child.off('message', onMessage);
+              resolve(message.pid);
+            }
+          };
+          child.on('message', onMessage);
+          child.once('error', reject);
+          child.once('exit', () => reject(new Error('Succession sentinel exited before its coordinator spawned')));
+        });
+      }
+      return child;
+    },
     processIncarnation: (pid) => probeProcessIncarnation(pid),
     env: (name) => process.env[name],
     channel: {
@@ -41,7 +76,7 @@ export function createRealSuccessionAttemptPorts(): SuccessionAttemptPorts {
         return process.send !== undefined && process.channel !== undefined;
       },
       get connected() {
-        return process.connected;
+        return process.connected && upstreamConnected;
       },
       send: (message, callback) => {
         if (callback === undefined) process.send?.(message);
@@ -53,7 +88,20 @@ export function createRealSuccessionAttemptPorts(): SuccessionAttemptPorts {
       },
       on: (event, listener) => {
         if (event === 'message') process.on('message', listener);
-        else process.on('disconnect', listener);
+        else {
+          process.on('disconnect', listener);
+          process.on('message', (message: unknown) => {
+            if (
+              typeof message === 'object' &&
+              message !== null &&
+              'kind' in message &&
+              message.kind === 'coral-sentinel-upstream-disconnected'
+            ) {
+              upstreamConnected = false;
+              (listener as () => void)();
+            }
+          });
+        }
       },
       fail: (serving) => {
         process.exitCode = 1;

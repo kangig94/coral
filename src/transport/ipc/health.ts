@@ -89,6 +89,7 @@ export async function readIdentityCheckedAuthenticatedHealth<THealth>(
   expectedIdentity: CoordinatorHealthIdentity | null,
   timePort: TimePort,
   decode: (value: unknown) => DecodedHealth<THealth> | null,
+  timeoutMs = HEALTH_TIMEOUT_MS,
 ): Promise<AuthenticatedHealthObservation<THealth>> {
   const discoveryIdentity = discoveryRecordIdentity(record);
   if (expectedIdentity === null || discoveryIdentity === null) {
@@ -104,7 +105,7 @@ export async function readIdentityCheckedAuthenticatedHealth<THealth>(
   let reply: unknown;
   try {
     const client = createIpcClient(record.socketPath, timePort, { kind: 'boot', token: record.bootToken });
-    reply = await client.health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
+    reply = await client.health<unknown>({ timeoutMs });
   } catch {
     return { kind: 'unavailable', cause: 'transport-failure' };
   }

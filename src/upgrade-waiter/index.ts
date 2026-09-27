@@ -1,4 +1,5 @@
 import { createConnection } from 'node:net';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { ProcessLiveness } from '../infra/node-process.js';
@@ -107,11 +108,21 @@ async function launchInstalledTarget(
   ports: UpgradeWaiterPorts,
   intent: UpgradeIntent,
   attemptId: string,
+  runDir: string,
 ): Promise<number> {
-  const pid = await ports.launchDetached(join(intent.target.pluginRootLabel, 'bridge', 'coral-backend.cjs'), [], {
-    CORAL_STARTUP_ATTEMPT_ID: attemptId,
-    CORAL_WAITER_LAUNCHED: attemptId,
-  });
+  const backend = join(intent.target.pluginRootLabel, 'bridge', 'coral-backend.cjs');
+  const sentinel = join(intent.target.pluginRootLabel, 'bridge', 'coral-sentinel.cjs');
+  const supervised = existsSync(sentinel);
+  const pid = await ports.launchDetached(
+    supervised ? sentinel : backend,
+    supervised ? [backend] : [],
+    {
+      CORAL_STARTUP_ATTEMPT_ID: attemptId,
+      CORAL_WAITER_LAUNCHED: attemptId,
+      CORAL_SENTINEL_RUN_DIR: runDir,
+    },
+    supervised,
+  );
   if (pid === null) throw new Error('Upgrade target process could not be started.');
   return pid;
 }
@@ -140,7 +151,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     ((intent: UpgradeIntent) => observeNaturalRetirement(ports, options.runDir, options.socketPath, intent));
   const launch =
     options.launchTarget ??
-    ((intent: UpgradeIntent, attemptId: string) => launchInstalledTarget(ports, intent, attemptId));
+    ((intent: UpgradeIntent, attemptId: string) => launchInstalledTarget(ports, intent, attemptId, options.runDir));
   const validate =
     options.validateTarget ?? ((intent: UpgradeIntent) => revalidateUpgradeIntentTarget(intent).kind === 'validated');
   const pollMs = options.pollMs ?? POLL_MS;

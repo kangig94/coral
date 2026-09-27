@@ -83,7 +83,7 @@
 
     Two consequences that are not obvious. **Holding is not the safe default.** A process that retains authority because it cannot prove an obligation discharged is often the thing preventing the obligation's real owner from acting — an enforcer that renews while its holder is alive, a successor that cannot bind a socket the holder still owns. Releasing and exiting loses what a `kill -9` would have lost anyway, and loses less than holding, because holding also loses every cleanup that would have succeeded. **And a surface reports; it does not solicit.** Offering a destructive remedy — contain this, abandon that — to a reader who cannot make that judgement is worse than offering nothing: it will be run. Where the system cannot decide by itself, it says what it is waiting for and when it will stop waiting, and it decides at that point.
 
-    Force-kill guidance is the accepted floor, and only for a coordinator that cannot answer at all. It is an instruction emitted to a reader, never a silent park.
+    A coordinator-owned sentinel is the floor for a coordinator that cannot answer at all: it observes the event loop and ends its own exact child after a bounded lapse, without asking a reader to act.
 
     This is a UX principle before it is an architectural one. It changes what a finding *is*: the question is not "can a person read this message" but "does this let the LLM act correctly, and does it put nothing new in front of the end user".
 

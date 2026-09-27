@@ -33,6 +33,7 @@ import { storePaths } from '#src/infra/path/store.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
+const sourceSentinelBundle = join(process.cwd(), 'clients', 'build', 'coral-sentinel.cjs');
 const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli');
 const sourceClaudeAppserverBundle = join(process.cwd(), 'clients', 'build', 'coral-claude-appserver.cjs');
 const sourceDurableWrapperBundle = join(process.cwd(), 'clients', 'build', 'coral-durable-wrapper.cjs');
@@ -41,6 +42,7 @@ const sourceManifestPath = join(process.cwd(), 'clients', 'build', CURRENT_STRIC
 const sourceSuccessionCapabilitiesPath = join(process.cwd(), 'clients', 'build', SUCCESSION_CAPABILITIES_FILE);
 const requiredBuildArtifacts = [
   sourceBackendBundle,
+  sourceSentinelBundle,
   sourceCliBundle,
   sourceClaudeAppserverBundle,
   sourceDurableWrapperBundle,
@@ -67,17 +69,21 @@ function readSourceManifest(buildDir: string | null): SourceManifest {
   ) as SourceManifest;
 }
 
-let successionInterpositionBundle: string | null = null;
+const interpositionBundles = new Map<'succession-interposition' | 'sentinel-freeze', string>();
 
 /**
  * Builds the succession interposition entry point with the bridge build's embedded identity, so a fixture that
  * ships it differs from the bridge backend only in the fault plan it reads from its environment.
  */
-function buildSuccessionInterpositionBundle(manifest: SourceManifest): string {
-  if (successionInterpositionBundle !== null && existsSync(successionInterpositionBundle)) {
-    return successionInterpositionBundle;
+function buildInterpositionBundle(
+  manifest: SourceManifest,
+  kind: 'succession-interposition' | 'sentinel-freeze',
+): string {
+  const cached = interpositionBundles.get(kind);
+  if (cached !== undefined && existsSync(cached)) {
+    return cached;
   }
-  const outfile = join(mkdtempSync(join(tmpdir(), 'coral-succession-interposition-')), 'coral-backend.cjs');
+  const outfile = join(mkdtempSync(join(tmpdir(), `coral-${kind}-`)), 'coral-backend.cjs');
   const embeddedIdentity = {
     version: manifest.version,
     buildSetId: manifest.buildSetId,
@@ -85,7 +91,7 @@ function buildSuccessionInterpositionBundle(manifest: SourceManifest): string {
     storeFormatFingerprint: manifest.storeFormatFingerprint,
   };
   buildSync({
-    entryPoints: [fileURLToPath(new URL('./fixtures/succession-interposition-backend.ts', import.meta.url))],
+    entryPoints: [fileURLToPath(new URL(`./fixtures/${kind}-backend.ts`, import.meta.url))],
     outfile,
     bundle: true,
     platform: 'node',
@@ -110,7 +116,7 @@ function buildSuccessionInterpositionBundle(manifest: SourceManifest): string {
       'import.meta.url': '__importMetaUrl',
     },
   });
-  successionInterpositionBundle = outfile;
+  interpositionBundles.set(kind, outfile);
   return outfile;
 }
 
@@ -156,6 +162,14 @@ export type SpawnedCoordinator = {
   output(): string;
 };
 
+export function shippedCliEnvironment(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith('CORAL_')) delete environment[name];
+  }
+  return { ...environment, ...overrides };
+}
+
 export function buildArtifactsAvailable(): boolean {
   return requiredBuildArtifacts.every((path) => existsSync(path));
 }
@@ -176,7 +190,7 @@ export function createPluginFixture(
     bundleHash?: string;
     version?: string;
     /** Ships a backend whose succession protocol follows the fault plan in its environment. */
-    backend?: 'succession-interposition';
+    backend?: 'succession-interposition' | 'sentinel-freeze';
     /** Declares the owner acceptances the bridge build ships, instead of accepting no transferred obligation. */
     accepts?: 'bundled';
     /** Builds the fixture from another build's `clients/build` instead of this tree's. */
@@ -208,6 +222,7 @@ export function createPluginFixture(
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
   const backendPath = join(root, 'bridge', 'coral-backend.cjs');
+  const sentinelPath = join(root, 'bridge', 'coral-sentinel.cjs');
   const cliPath = join(root, 'bridge', 'coral-cli');
   const claudeAppserverPath = join(root, 'bridge', 'coral-claude-appserver.cjs');
   const durableWrapperPath = join(root, 'bridge', 'coral-durable-wrapper.cjs');
@@ -226,11 +241,14 @@ export function createPluginFixture(
     );
   };
   copyBundle(
-    options.backend === 'succession-interposition'
-      ? buildSuccessionInterpositionBundle(sourceManifest)
+    options.backend !== undefined
+      ? buildInterpositionBundle(sourceManifest, options.backend)
       : sourceBundle('coral-backend.cjs'),
     backendPath,
   );
+  if (existsSync(sourceBundle('coral-sentinel.cjs'))) {
+    copyBundle(sourceBundle('coral-sentinel.cjs'), sentinelPath);
+  }
   if (options.bundleHash !== undefined) {
     appendFileSync(backendPath, `\n// fixture ${options.bundleHash}\n`);
   }
@@ -477,20 +495,30 @@ export function spawnCoordinator(options: {
   env?: Record<string, string>;
   backendPath?: string;
   triggerPipe?: boolean;
+  supervised?: boolean;
 }): SpawnedCoordinator {
   const scratchCwd = mkdtempSync(join(tmpdir(), 'coral-coordinator-cwd-'));
   options.tempRoots.push(scratchCwd);
 
-  const child = spawn('node', [options.backendPath ?? join(options.fixture.root, 'bridge', 'coral-backend.cjs')], {
-    cwd: scratchCwd,
-    env: {
-      ...process.env,
-      HOME: options.home,
-      TMPDIR: options.home,
-      ...options.env,
+  const backend = options.backendPath ?? join(options.fixture.root, 'bridge', 'coral-backend.cjs');
+  const child = spawn(
+    'node',
+    options.supervised ? [join(options.fixture.root, 'bridge', 'coral-sentinel.cjs'), backend] : [backend],
+    {
+      cwd: scratchCwd,
+      env: {
+        ...process.env,
+        HOME: options.home,
+        TMPDIR: options.home,
+        ...options.env,
+      },
+      stdio: options.supervised
+        ? ['ignore', 'pipe', 'pipe', 'ipc']
+        : options.triggerPipe
+          ? ['ignore', 'pipe', 'pipe', 'pipe']
+          : ['ignore', 'pipe', 'pipe'],
     },
-    stdio: options.triggerPipe ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
-  });
+  );
 
   let stdout = '';
   let stderr = '';

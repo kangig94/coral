@@ -30,6 +30,13 @@ interface AdminControlPort {
   admitTopLevelLaunch?(): boolean;
   beginRequest(): void;
   endRequest(): void;
+  beginRequestLease?(
+    method: string,
+    requestId: string,
+    identity?: { jobId?: string; operationId?: string },
+  ): {
+    run<T>(execute: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  };
   requestDrain(reason: 'replaced'): void;
   probeKbDaemon?(): Promise<TransportKbDaemonHealthSnapshot>;
   restartKbDaemon?(reason: string): Promise<TransportKbDaemonHealthSnapshot>;
@@ -337,6 +344,7 @@ export type HealthSnapshot = {
   flavor: 'prod' | 'dev';
   namespace: string;
   instanceId: string;
+  sentinel?: { version: 1; id: string };
   /**
    * Serving process pid. Required for handoff to revalidate the signal
    * target via `probeProcessIncarnation(pid)` before SIGTERM/SIGKILL.

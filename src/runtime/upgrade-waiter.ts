@@ -27,6 +27,7 @@ export interface UpgradeWaiterPorts {
     entryPoint: string,
     args: readonly string[],
     env?: Readonly<Record<string, string>>,
+    coordinator?: boolean,
   ): Promise<number | null>;
 }
 
@@ -46,18 +47,36 @@ export function createRealUpgradeWaiterPorts(): UpgradeWaiterPorts {
         return error instanceof Error && 'code' in error && error.code === 'ENOENT';
       }
     },
-    launchDetached: (entryPoint, args, env) =>
+    launchDetached: (entryPoint, args, env, coordinator = false) =>
       new Promise((resolve) => {
         const child = spawn(process.execPath, [entryPoint, ...args], {
           detached: true,
-          stdio: 'ignore',
+          stdio: coordinator ? ['ignore', 'ignore', 'ignore', 'ipc'] : 'ignore',
           env: { ...process.env, ...env },
         });
         child.once('error', () => resolve(null));
         child.once('spawn', () => {
           child.unref();
-          resolve(child.pid ?? null);
+          if (!coordinator) resolve(child.pid ?? null);
         });
+        if (coordinator) {
+          child.once('message', (message: unknown) => {
+            if (
+              typeof message !== 'object' ||
+              message === null ||
+              !('kind' in message) ||
+              message.kind !== 'coral-sentinel-child' ||
+              !('pid' in message) ||
+              typeof message.pid !== 'number'
+            ) {
+              resolve(null);
+            } else {
+              resolve(message.pid);
+            }
+            child.disconnect();
+          });
+          child.once('exit', () => resolve(null));
+        }
       }),
   };
 }

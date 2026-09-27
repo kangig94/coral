@@ -70,6 +70,30 @@ async function assertAddressClaimed(socketPath: string): Promise<void> {
 }
 
 describe('real-process succession commit', () => {
+  it('transfers listeners with a sentinel on the incumbent and successor', async () => {
+    assertBuildArtifactsAvailable();
+    const home = mkdtempSync(join(tmpdir(), 'coral-sentinel-succession-'));
+    roots.push(home);
+    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, supervised: true });
+    coordinators.push(old);
+    const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    expect(initial.sentinel?.id).toBeTypeOf('string');
+
+    const newFixture = createPluginFixture(roots, { flavor: 'prod' });
+    const contender = spawnCoordinator({ fixture: newFixture, home, tempRoots: roots, supervised: true });
+    coordinators.push(contender);
+    await waitForProcessExit(contender, 30_000);
+    await waitForCondition(() => readDiscoveryRecordForHome(home, 'prod')?.pid !== initial.pid, 30_000);
+    await waitForProcessExit(old, 30_000);
+    const successor = readDiscoveryRecordForHome(home, 'prod');
+    if (successor === null) throw new Error('Successor did not publish discovery');
+    expect(successor.sentinel?.id).toBeTypeOf('string');
+    expect(successor.sentinel?.id).not.toBe(initial.sentinel?.id);
+    await assertAddressClaimed(successor.socketPath);
+    successorPids.push({ pid: successor.pid, incarnation: probeProcessIncarnation(successor.pid) });
+  });
+
   it.each([
     ['ordinary', {}],
     ['dropped serving acknowledgment', { CORAL_TEST_SUCCESSION_DROP_SERVING_ACK: '1' }],
@@ -252,7 +276,11 @@ describe('real-process succession commit', () => {
     await waitForCondition(() => {
       const discovery = readDiscoveryRecordForHome(home, 'prod');
       return discovery !== null && discovery.pid !== committed.pid && discovery.bundleHash === newerFixture.bundleHash;
-    }, 60_000);
+    }, 60_000).catch((error: unknown) => {
+      throw new Error(
+        `${String(error)}; recovery output: ${recovery.output()}; intent: ${JSON.stringify(readUpgradeIntent(runDir))}`,
+      );
+    });
     const recovered = readDiscoveryRecordForHome(home, 'prod');
     if (recovered === null) throw new Error('Committed recovery discovery was not published.');
     expect(recovered.pid).not.toBe(initial.pid);

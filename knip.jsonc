@@ -1,9 +1,10 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  // Coral is esbuild-bundled from three process entrypoints (see scripts/build-server.mjs);
+  // Coral is esbuild-bundled from process entrypoints (see scripts/build-server.mjs);
   // it has no package.json "main"/"bin" pointing at src, so entrypoints are declared here.
   "entry": [
     "src/coordinator/bootstrap.ts",
+    "src/runtime/sentinel-main.ts",
     "src/cli/bootstrap.ts",
     "src/providers/claude/appserver/server.ts",
     "src/upgrade-waiter/main.ts",

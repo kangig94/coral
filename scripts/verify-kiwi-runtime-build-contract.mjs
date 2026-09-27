@@ -22,6 +22,7 @@ const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const buildDir = resolve(repoRoot, process.argv[2] ?? 'clients/build');
 const expectedBuildFiles = new Set([
   'coral-backend.cjs',
+  'coral-sentinel.cjs',
   CLI_BUNDLE_FILE,
   LEGACY_CLI_BUNDLE_FILE,
   'coral-claude-appserver.cjs',

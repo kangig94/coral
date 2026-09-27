@@ -1,8 +1,9 @@
 import { formatError } from '../../infra/error-format.js';
 import type { StrictBundleManifest } from '../../infra/bundle-manifest.js';
-import { probeProcessIncarnation } from '../../infra/node-process.js';
+import { observeProcessLiveness, probeProcessIncarnation } from '../../infra/node-process.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import { gracefulKillByPid } from '../../infra/process-supervision.js';
+import { SENTINEL_TIMING } from '../../infra/sentinel-timing.js';
 import {
   readUpgradeIntent,
   retryUpgradeIntentCas,
@@ -421,8 +422,39 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     ) {
       throw new Error('Failed successor identity does not match the durable attempt record.');
     }
-    if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) return { kind: 'observed-absent' };
     const { pid, incarnation } = attempt.childIdentity;
+    if (attempt.child.coordinatorPid !== undefined) {
+      if (attempt.child.exitCode === null && attempt.child.signalCode === null) {
+        await new Promise<void>((resolve, reject) => {
+          let settled = false;
+          const onExit = (): void => finish(null);
+          const timeout = runtime.time.setTimeout(
+            () => finish(new Error('Succession sentinel did not retire its child within its grace')),
+            SENTINEL_TIMING.graceMs + 5_000,
+          );
+          const finish = (error: Error | null): void => {
+            if (settled) return;
+            settled = true;
+            runtime.time.clearTimeout(timeout);
+            attempt.child.off('exit', onExit);
+            if (error === null) resolve();
+            else reject(error);
+          };
+          attempt.child.once('exit', onExit);
+          if (attempt.child.connected) {
+            attempt.child.send({ kind: 'coral-sentinel-retire-child' }, (error) => {
+              if (error !== null) finish(error);
+            });
+          }
+        });
+      }
+      const observed = probeProcessIncarnation(pid);
+      if (observeProcessLiveness(pid) === 'absent' || (observed !== null && observed !== incarnation)) {
+        return { kind: 'observed-absent' };
+      }
+      throw new Error('Succession sentinel exited before its coordinator was proven absent.');
+    }
+    if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) return { kind: 'observed-absent' };
     if (probeProcessIncarnation(pid) !== incarnation) {
       throw new Error('Failed successor identity cannot be verified for reaping.');
     }

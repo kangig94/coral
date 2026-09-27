@@ -84,6 +84,11 @@ export type SuccessionAttempt = Readonly<{
   onAcknowledgment(listener: (acknowledgment: AttemptAcknowledgment) => void): () => void;
 }>;
 
+function retireAttemptChild(child: SuccessionAttemptProcess): void {
+  if (child.coordinatorPid === undefined) child.kill();
+  else child.send({ kind: 'coral-sentinel-retire-child' });
+}
+
 export async function startSuccessionAttempt(options: {
   ports: SuccessionAttemptPorts;
   intent: UpgradeIntent;
@@ -111,6 +116,7 @@ export async function startSuccessionAttempt(options: {
     child.once('spawn', resolve);
     child.once('error', reject);
   });
+  const coordinatorPid = await (child.coordinatorPid ?? Promise.resolve(child.pid));
 
   try {
     return await createSuccessionAttemptChannel(
@@ -121,9 +127,10 @@ export async function startSuccessionAttempt(options: {
       bootToken,
       preparation,
       recoveryBundleDir !== undefined,
+      coordinatorPid,
     );
   } catch (error: unknown) {
-    child.kill();
+    retireAttemptChild(child);
     throw error;
   }
 }
@@ -136,9 +143,10 @@ export async function createSuccessionAttemptChannel(
   bootToken: string,
   preparation: Pick<SuccessionPreparation, 'epochKey' | 'receipts'>,
   recovery = false,
+  coordinatorPid = child.pid,
 ): Promise<SuccessionAttempt> {
   const claim = listeningClaim(listener);
-  const pid = child.pid;
+  const pid = coordinatorPid;
   if (pid === undefined) throw new Error('Succession attempt child has no process identity');
   let incarnation: ProcessIncarnation | null = null;
   for (let retry = 0; retry < 5 && incarnation === null; retry++) {
@@ -146,7 +154,7 @@ export async function createSuccessionAttemptChannel(
     if (incarnation === null) await ports.time.sleep(20);
   }
   if (incarnation === null) {
-    child.kill();
+    retireAttemptChild(child);
     throw new Error('Succession attempt child incarnation could not be recorded');
   }
   const received = new Set<string>();

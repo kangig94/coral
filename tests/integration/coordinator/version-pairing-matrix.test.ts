@@ -32,6 +32,7 @@ import {
   probeCoordinatorSocket,
   readDiscoveryRecordForHome,
   SHIPPED_RELEASE_TAGS,
+  shippedCliEnvironment,
   spawnCoordinator,
   stopCoordinator,
   terminateChildProcess,
@@ -147,7 +148,7 @@ async function runShippedStatus(
   const fixture = createShippedPluginFixture(roots, tag);
   const child = spawn(process.execPath, [fixture.cliPath, 'backend', 'status'], {
     cwd: home,
-    env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root },
+    env: shippedCliEnvironment({ HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -185,13 +186,12 @@ async function launchShippedJob(
   writeFileSync(prompt, `${expected} compatibility fixture job.`);
   const child = spawn(process.execPath, [shipped.cliPath, 'codex', '-i', prompt, '-d'], {
     cwd: projectRoot,
-    env: {
-      ...process.env,
+    env: shippedCliEnvironment({
       HOME: home,
       TMPDIR: home,
       CLAUDE_PLUGIN_ROOT: shipped.root,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
-    },
+    }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -259,7 +259,7 @@ async function runJobDetail(
 ): Promise<{ code: number | null; output: string }> {
   const child = spawn(process.execPath, [cliPath, 'jobs', 'detail', jobId], {
     cwd: projectRoot,
-    env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: dirname(dirname(cliPath)) },
+    env: shippedCliEnvironment({ HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: dirname(dirname(cliPath)) }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -407,7 +407,7 @@ describe('AC18 first-release version pairing', () => {
       const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
       const shutdown = spawn(process.execPath, [shipped.cliPath, 'backend', 'shutdown'], {
         cwd: home,
-        env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: shipped.root },
+        env: shippedCliEnvironment({ HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: shipped.root }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       shutdown.stdout.resume();

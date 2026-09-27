@@ -328,6 +328,7 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
   pid: number;
   incarnation?: ProcessIncarnation;
   jobsWaitExtensions: readonly string[];
+  sentinel?: { version: 1; id: string };
 } {
   const health = rpcPorts.health.read();
   return {
@@ -339,6 +340,7 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
     instanceId: health.instanceId,
     pid: health.pid,
     ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
+    ...(health.sentinel === undefined ? {} : { sentinel: health.sentinel }),
     jobsWaitExtensions: JOBS_WAIT_EXTENSIONS,
   };
 }
@@ -813,17 +815,20 @@ async function dispatchFrame(
     }
 
     if (operationalSpec.dispatch.kind === 'succession') {
-      startRequest();
+      const lease = rpcPorts.admin.beginRequestLease?.(request.method, String(request.id));
+      if (lease === undefined) startRequest();
       try {
-        const result = rpcPorts.admin.succession
-          ? await rpcPorts.admin.succession(request.method, request.params ?? {})
-          : { kind: 'refused', reason: 'succession protocol unavailable' };
+        const execute = async (): Promise<unknown> =>
+          rpcPorts.admin.succession
+            ? rpcPorts.admin.succession(request.method, request.params ?? {})
+            : { kind: 'refused', reason: 'succession protocol unavailable' };
+        const result = lease === undefined ? await execute() : await lease.run(execute);
         await finishUnaryResponse({ kind: 'response', id: request.id, result });
       } catch (error: unknown) {
         const response = buildTransportErrorResponse(error);
         await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
       } finally {
-        finishRequest();
+        if (lease === undefined) finishRequest();
       }
       return;
     }
@@ -884,16 +889,29 @@ async function dispatchFrame(
     await finishUnaryResponse(validationErrorResponse(request.id, parsed.error));
     return;
   }
-  if (entry.spec.kind === 'unary') startRequest();
+  const requestIdentity = parsed.data as { jobId?: unknown; operationId?: unknown };
+  const lease =
+    entry.spec.kind === 'unary'
+      ? rpcPorts.admin.beginRequestLease?.(request.method, String(request.id), {
+          ...(typeof requestIdentity.jobId === 'string' ? { jobId: requestIdentity.jobId } : {}),
+          ...(typeof requestIdentity.operationId === 'string' ? { operationId: requestIdentity.operationId } : {}),
+        })
+      : undefined;
+  if (entry.spec.kind === 'unary' && lease === undefined) startRequest();
 
   let subscriptionController: AbortController | null = null;
   const abortDispatchOnClose = (): void => {
     subscriptionController?.abort(new Error('IPC client disconnected'));
   };
   try {
-    subscriptionController = new AbortController();
+    const controller = new AbortController();
+    subscriptionController = controller;
     socket.once('close', abortDispatchOnClose);
-    const invocation = await entry.dispatch(parsed.data, principal, subscriptionController.signal);
+    const dispatch = async (signal: AbortSignal) => {
+      signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+      return entry.dispatch(parsed.data, principal, controller.signal);
+    };
+    const invocation = lease === undefined ? await dispatch(controller.signal) : await lease.run(dispatch);
     if (invocation.kind === 'unsupported-method') {
       await finishUnaryResponse(methodNotFoundResponse(request.id));
       return;
@@ -946,7 +964,7 @@ async function dispatchFrame(
     }
   } finally {
     socket.off('close', abortDispatchOnClose);
-    finishRequest();
+    if (lease === undefined) finishRequest();
   }
 }
 

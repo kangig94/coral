@@ -28,6 +28,7 @@ describe('upgrade waiter bundle', () => {
       capabilities: { protocols: ['prepare', 'commit'] },
     });
     expect(packageFiles).toContain(`clients/bridge/${UPGRADE_WAITER_BUNDLE_FILE}`);
+    expect(packageFiles).toContain('clients/bridge/coral-sentinel.cjs');
     expect(packageFiles).toContain(`clients/bridge/${SUCCESSION_CAPABILITIES_FILE}`);
   });
 });

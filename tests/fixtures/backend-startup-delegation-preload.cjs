@@ -38,6 +38,7 @@ if (
   delete ambientEnvironment.NODE_OPTIONS;
   delete ambientEnvironment.CORAL_STARTUP_ATTEMPT_ID;
   delete ambientEnvironment.CORAL_STARTUP_STARTED_AT;
+  delete ambientEnvironment.CORAL_SENTINEL_ID;
   const ambient = spawn(process.execPath, [ambientBackend], {
     detached: true,
     env: ambientEnvironment,

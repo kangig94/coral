@@ -280,7 +280,10 @@ function logStartupHandoffPublicationIncident(incident: HandoffPublicationIncide
 }
 
 /** Seams only a test harness entry point supplies; the shipped entry point passes none. */
-export type BackendHarness = Readonly<{ successionInterposition?: SuccessionInterposition }>;
+export type BackendHarness = Readonly<{
+  successionInterposition?: SuccessionInterposition;
+  afterReady?: () => void;
+}>;
 
 export async function main(harness: BackendHarness = {}): Promise<number> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
@@ -337,6 +340,48 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
     throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
   }
 
+  let shutdownAfterSentinelLoss: (() => void) | null = null;
+  let sentinelArm: Promise<void> | null = null;
+  if (process.env.CORAL_SENTINEL_ID !== undefined) {
+    const sentinelId = process.env.CORAL_SENTINEL_ID;
+    sentinelArm = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Coordinator sentinel did not arm before startup')), 30_000);
+      const onArm = (message: unknown): void => {
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          'kind' in message &&
+          message.kind === 'coral-sentinel-armed' &&
+          'id' in message &&
+          message.id === sentinelId
+        ) {
+          clearTimeout(timeout);
+          process.off('message', onArm);
+          resolve();
+        }
+      };
+      process.on('message', onArm);
+      process.send?.({ kind: 'coral-sentinel-hello', id: sentinelId });
+    });
+    process.on('message', (message: unknown) => {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'kind' in message &&
+        message.kind === 'coral-sentinel-challenge' &&
+        'id' in message &&
+        Number.isSafeInteger(message.id)
+      ) {
+        process.send?.({ kind: 'coral-sentinel-answer', id: message.id });
+      }
+    });
+    process.on('disconnect', () => {
+      if (shutdownAfterSentinelLoss === null) bootstrapProbeExitGate.requestExit(1);
+      else shutdownAfterSentinelLoss();
+    });
+  }
+  if (sentinelArm !== null) await sentinelArm;
+
   const successionAttempt = await receiveSuccessionAttemptChild(createRealSuccessionAttemptPorts());
   installSuccessionAttemptChild(successionAttempt);
 
@@ -375,6 +420,9 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
         bootstrapProbeExitGate.requestExit(1);
       },
     });
+    shutdownAfterSentinelLoss = () => {
+      void coordinator.shutdown('sigterm').catch(() => {});
+    };
 
     const handleShutdownSignal = createCoordinatorShutdownSignalHandler({
       shutdown: coordinator.shutdown,
@@ -385,6 +433,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
     process.on('SIGINT', () => handleShutdownSignal('sigint'));
 
     const info = await coordinator.start();
+    harness.afterReady?.();
     backendLog.info(`Running on ${info.host}:${info.port}`);
     return 0;
   } catch (error: unknown) {
@@ -450,6 +499,10 @@ export function runBackendMain(harness: BackendHarness = {}): void {
     .then((code) => {
       if (code !== 0) {
         bootstrapProbeExitGate.requestExit(code);
+      } else {
+        // A contender that conceded has no server to keep it alive. The private sentinel channel must not
+        // turn that normal return into a process that lives only to answer heartbeats.
+        process.channel?.unref();
       }
     })
     .catch((error: unknown) => {

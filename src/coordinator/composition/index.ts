@@ -54,6 +54,7 @@ import {
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
+import { createRequestLeaseOwner } from '../live/request-leases.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import {
   providerHostEvictResponseSchema,
@@ -1996,6 +1997,15 @@ export function createCoordinatorCore(
     onReconcileError: (error) => world.log(`Succession reconciliation failed: ${formatError(error)}\n`),
   });
 
+  const requestLeases = createRequestLeaseOwner({
+    time: runtime.time,
+    begin: () => world.idleTimer.beginRequest(),
+    end: () => world.idleTimer.endRequest(),
+    shutdown: () => {
+      void lifecycleController?.shutdown('sigterm');
+    },
+  });
+
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
     time: runtime.time,
@@ -2014,6 +2024,7 @@ export function createCoordinatorCore(
       beginRequest: () => {
         world.idleTimer.beginRequest();
       },
+      beginRequestLease: requestLeases.begin,
       endRequest: () => {
         world.idleTimer.endRequest();
       },
@@ -2186,6 +2197,7 @@ export function createCoordinatorCore(
           diagnostics.launchReleaseDispositions !== undefined ||
           diagnostics.launchReclamations !== undefined;
 
+        const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
         return {
           status: coarseStatus,
           ...(succession === null ? {} : { succession }),
@@ -2203,6 +2215,7 @@ export function createCoordinatorCore(
           namespace: identity.namespace,
           instanceId: identity.instanceId,
           pid: world.backendPid,
+          ...(sentinelId === undefined ? {} : { sentinel: { version: 1 as const, id: sentinelId } }),
           ...(incarnation !== null ? { incarnation } : {}),
           uptimeMs: identity.now() - runtimeState.getStartedAt(),
           active: world.launchCoordinator.active,

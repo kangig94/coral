@@ -510,6 +510,7 @@ describe('cli errors', () => {
         'coordinator_socket_dir_unverified',
         'legacy_source_writer_observation_unknown',
         'handoff_socket_holder_unverified',
+        'coordinator_recovering',
       ];
       const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
       const { expansionExitCode } = await import('#src/cli/commands/expansion.js');

@@ -24,6 +24,7 @@ const INPUTS = [
 ] as const;
 const OUTPUTS = {
   backend: 'clients/build/coral-backend.cjs',
+  sentinel: 'clients/build/coral-sentinel.cjs',
   cli: 'clients/build/coral-cli',
   claudeAppserver: 'clients/build/coral-claude-appserver.cjs',
   durableWrapper: 'clients/build/coral-durable-wrapper.cjs',
@@ -59,6 +60,7 @@ function createFreshBuildFixture(): string {
     inputs: [...INPUTS],
     outputs: {
       backend: { path: OUTPUTS.backend, sha256: sha256(`output:${OUTPUTS.backend}`) },
+      sentinel: { path: OUTPUTS.sentinel, sha256: sha256(`output:${OUTPUTS.sentinel}`) },
       cli: { path: OUTPUTS.cli, sha256: sha256(`output:${OUTPUTS.cli}`) },
       claudeAppserver: {
         path: OUTPUTS.claudeAppserver,

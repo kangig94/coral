@@ -145,6 +145,8 @@ export type DocumentedCoralSetupErrorCode =
   | 'handoff_socket_holder_unverified'
   | 'handoff_administrative_drain_timeout'
   | 'handoff_ipc_capacity_timeout'
+  | 'coordinator_recovering'
+  | 'request_deadline_exceeded'
   | 'user_cancelled';
 
 export type HandoffRefusalCode = Extract<DocumentedCoralSetupErrorCode, `handoff_${string}`>;
@@ -760,7 +762,22 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation:
       'No live coordinator could be verified behind this socket, so Coral signaled nothing. Retry the command.',
     exitCode: 75,
+    retryable: true,
     observation: 'not_observed',
+  },
+  coordinator_recovering: {
+    userMessage: (context) =>
+      `Coral coordinator is recovering (monitoring: ${stringContextValue(context, 'monitoring', 'unknown')}).`,
+    remediation: 'Retry the command; Coral will check whether a coordinator is serving.',
+    exitCode: 75,
+    retryable: true,
+    observation: 'not_observed',
+  },
+  request_deadline_exceeded: {
+    userMessage: (context) =>
+      `Request ${stringContextValue(context, 'requestId', 'unknown')} exceeded its deadline (${stringContextValue(context, 'outcome', 'unknown')}).`,
+    remediation: 'Read the operation state before retrying a request that may have changed it.',
+    exitCode: 75,
   },
   handoff_administrative_drain_timeout: {
     userMessage: (context) =>

@@ -274,10 +274,8 @@ describe('real backend-startup delegation', () => {
         expect(observeProcessLiveness(discovery.pid)).toBe('alive');
       } else if (mode === 'refusal') {
         expect(status).toBe(75);
-        expect(run.stderr()).toContain('[code=handoff_socket_holder_unverified]');
-        expect(run.stderr()).toContain(
-          `Handoff refused for socket ${files.socketPath}: the address remained bound without an answering coordinator.`,
-        );
+        expect(run.stderr()).toContain('[code=coordinator_recovering]');
+        expect(run.stderr()).toContain('monitoring: unknown');
       } else {
         // The delegated child's own terminal is not a fact about why the coordinator is unreachable: 23 is
         // the code the crash fixture exits with and SIGTERM the signal the signal fixture raises. The code
@@ -295,7 +293,7 @@ describe('real backend-startup delegation', () => {
     120_000,
   );
 
-  it('keeps the original delegation pending until a second-hop refusal reaches the operator', async () => {
+  it('reuses an authenticated serving coordinator after a second-hop refusal', async () => {
     assertBuildArtifactsAvailable();
     const home = mkdtempSync(join(tmpdir(), 'coral-transitive-delegation-home-'));
     roots.push(home);
@@ -380,11 +378,8 @@ describe('real backend-startup delegation', () => {
     expect(observations(observationPath)).toContainEqual(
       expect.objectContaining({ event: 'released', mode: 'refusal', requestedAddress: files.socketPath }),
     );
-    expect(status).toBe(75);
-    expect(run.stderr()).toContain('[code=handoff_socket_holder_unverified]');
-    expect(run.stderr()).toContain(
-      `Handoff refused for socket ${files.socketPath}: the address remained bound without an answering coordinator.`,
-    );
+    expect(status).toBe(0);
+    expect(run.stderr()).not.toContain('[code=coordinator_recovering]');
 
     // The first hop is published by the detached backend the CLI spawned, which outlives it, so the CLI's
     // exit does not order that write.

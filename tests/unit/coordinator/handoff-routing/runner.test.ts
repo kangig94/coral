@@ -911,7 +911,12 @@ describe('handoff-routing/runner', () => {
     expect(mockState.health).not.toHaveBeenCalled();
     expect(mockState.spawn).toHaveBeenCalledWith(process.execPath, [join(bundleDir, 'coral-backend.cjs')], {
       cwd: '/handoff/cwd',
-      env: { CORAL_BASE_ENV: 'preserved', [GUARD_ENV]: '1', CORAL_STARTUP_ATTEMPT_ID: 'delegation-attempt' },
+      env: {
+        CORAL_BASE_ENV: 'preserved',
+        [GUARD_ENV]: '1',
+        CORAL_STARTUP_ATTEMPT_ID: 'delegation-attempt',
+        CORAL_SENTINEL_RUN_DIR: '/handoff/run',
+      },
       stdio: 'inherit',
       detached: true,
     });

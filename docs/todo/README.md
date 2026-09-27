@@ -64,8 +64,8 @@ already happened on decisive evidence and left no proof of itself.
 `provider-operation-unreadable` boundary and revision-checked discard path shipped. Its unattended exit
 has to be re-decided under principle 12. It and `coordinator-process-disposition` are adjacent, not joint.
 `darwin-signal-authority` does **not** close with
-`kb-daemon-independent-containment` or `wedged-coordinator-self-drain`: it is about the authority to
-signal a correctly identified target, they are about there being no party left to signal at all.
+`kb-daemon-independent-containment`: it is about authority to signal a correctly identified target,
+while the KB daemon entry asks who retains custody when the coordinator dies.
 
 **What the 0.10.9..main diff made cheap at the time.** Twenty-one commits across 315 files, dominated by a new
 handoff-routing subsystem, a provable build identity, the coordinator socket address, the file-mode
@@ -91,11 +91,7 @@ release and code-warmth ordering above remains the record of why the previous ta
 | 4 | `coordinator-process-disposition` | `RecoveryRegistry.abort` in `src/jobs/reconcile/registry.ts` can release custody before process absence. Audit runtime-bearing terminal paths and retain custody until absence or transfer is proved. |
 | 5 | `hook-unit-tests-reach-the-real-coral-home` | `runHook` in `tests/unit/hooks/_helpers.ts` inherits the developer's `HOME`; a test spawn can reach a live coordinator. Isolate the fixture home. |
 
-**Not yet, and why it is not laziness.** `wedged-coordinator-self-drain` **was observed on 2026-08-23** and
-its start condition is met — a coordinator held in uninterruptible sleep on an ext4 journal commit, long
-enough that a provider control lease lapsed and the reaper terminated healthy jobs. The cause is a third one
-neither half of that entry was designed against, so what it now asks for is which half the observed cause
-argues for, not another reproduction. `proxy-set-acquisition`'s clock-drift symptom
+`proxy-set-acquisition`'s clock-drift symptom
 closed with #324, the same fix that closed the coordinator's own paths; what is left is a narrower
 identity-check decision and acquisition/refusal status reporting, not a reproduction. `cli-terminal-width-layout` and `export-lifetime` wait on
 product decisions, not on code.
@@ -191,13 +187,12 @@ successor, the second can supply a stuck fence, and the third is the CLI answer 
 | [`kb-daemon-independent-containment.md`](./kb-daemon-independent-containment.md) | The KB daemon's terminal window works only while its own event loop turns, parent escalation dies with the coordinator, and detached descendants have no recorded containment. Give the daemon and the children it launches one independently enforced lifetime, then prove it with a process-level test. |
 | [`darwin-signal-authority.md`](./darwin-signal-authority.md) | Provider-host admission supports Darwin; record-only signalling remains fail-closed. The remaining cheap partial is to verify whether `ps` honours `TZ=UTC` and, if so, use it to remove the scheduled DST alias. That does not solve NTP or one-second collisions. |
 | [`coordinator-process-disposition.md`](./coordinator-process-disposition.md) | `registerRunningRecovery` in `src/coordinator/services/recovery/actions.ts` now reaps a durable carrier before binding-fault settlement or keeps registry custody on a hold. `RecoveryRegistry.abort` in `src/jobs/reconcile/registry.ts` still removes accepted-abort custody before absence, and other runtime-bearing terminalization paths lack a general process-disposition obligation. |
-| [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md)         | Every self-termination path Coral has is scheduled by the process it is meant to end. The 6h idle drain is tidiness for a healthy daemon, not a liveness backstop — reading it as one is what produced this entry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md) | Current coordinators have a parent sentinel and bounded request leases. Shipped legacy coordinators cannot be retrofitted with a parent; decide whether an external service manager is warranted while those builds remain in use. |
 | [`project-source-undecidable.md`](./project-source-undecidable.md)               | **Lifetime-durable half closed 2026-08-18; a per-interval identity flip remains.** `resolveProjectSource` returns one `string` for "no git remote" and "the probe could not be run", and `projectData` derives a KB memo directory from it — so a call made while a mount is stalled files a memo where later reads do not look. Only an answered probe is cached now; an unanswered one is held with an expiry, so a recovered system self-heals — and one root can therefore resolve two different ways inside one process, which `discuss/shell/recovery.ts` persists as `sourceId` and then rejects the row over. Closing it means a disposition in a port return type every consumer assumes always has a value. |
 
 `darwin-signal-authority` records the platform boundary for identity-safe teardown.
-`kb-daemon-independent-containment` and `wedged-coordinator-self-drain` are about there being **no party left**
-to signal at all, so a fix for either still has to satisfy that authority rule. The KB daemon has a supervising
-parent that can accept custody; a wedged coordinator is the top of the tree, so its answer leaves the codebase.
+`kb-daemon-independent-containment` still needs an owner when its supervising coordinator dies.
+The coordinator now runs as the sentinel's child, with a private heartbeat and exact child-process signal authority.
 [`coordinator-process-disposition`](./coordinator-process-disposition.md) and
 [`abort-answered-by-the-registry-not-the-saga-row`](./abort-answered-by-the-registry-not-the-saga-row.md) share registry
 abort custody: an accepted stop cannot release the last owner before process absence or verified transfer.
@@ -236,8 +231,7 @@ session abort.
 [`discovery-withdrawal-is-unbounded-on-the-exit-path`](./discovery-withdrawal-is-unbounded-on-the-exit-path.md),
 [`ensure-waits-less-than-the-drain-it-waits-for`](./ensure-waits-less-than-the-drain-it-waits-for.md), and
 [`explicit-drain-waits-behind-inflight-gate`](./explicit-drain-waits-behind-inflight-gate.md) share the
-decision about who may end a coordinator that cannot end itself with
-[`wedged-coordinator-self-drain`](./wedged-coordinator-self-drain.md). If withdrawal moves to reader
+decision about withdrawal and drain ownership. If withdrawal moves to reader
 expiry, use the shared stale-record reader in
 [`missing-discovery-record-disposition`](./missing-discovery-record-disposition.md). The capsule-retirement
 entries ask the related question of what may retire a capsule when no observation decides.

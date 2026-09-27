@@ -11,6 +11,7 @@ import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../helpers/provider-credentials.j
 import {
   coordinatorFilesForHome,
   createShippedPluginFixture,
+  shippedCliEnvironment,
   spawnCoordinator,
   stopCoordinator,
   terminateChildProcess,
@@ -244,7 +245,7 @@ describe('legacy transport.shutdown at a new incumbent', () => {
       const shutdownsBeforeCli = decideLegacyShutdown.mock.calls.length;
 
       const cli = spawn(process.execPath, [fixture.cliPath, 'jobs', 'detail', 'missing-job'], {
-        env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root },
+        env: shippedCliEnvironment({ HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       liveChildren.push(cli);

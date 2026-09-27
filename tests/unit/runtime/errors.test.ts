@@ -73,7 +73,7 @@ const HANDOFF_REFUSAL_CASES = [
       'No live coordinator could be verified behind this socket, so Coral signaled nothing. Retry the command.',
     exitCode: 75,
     observation: 'not_observed',
-    retryable: false,
+    retryable: true,
   },
   {
     init: {
@@ -186,7 +186,7 @@ describe('CoralSetupError', () => {
     });
 
     expect(documentedCoralSetupErrorExitCode(socketHolder.code)).toBe(75);
-    expect(isRetryableCoralSetupError(socketHolder)).toBe(false);
+    expect(isRetryableCoralSetupError(socketHolder)).toBe(true);
     for (const code of ['handoff_administrative_drain_timeout', 'handoff_ipc_capacity_timeout'] as const) {
       const refusal = documentedCoralSetupError(code, { stage: 'handoff-deadline', socketPath: '/tmp/coral.sock' });
       expect(documentedCoralSetupErrorExitCode(refusal.code)).toBe(75);

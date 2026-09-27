@@ -202,6 +202,10 @@ describe('process kills escalate SIGTERM→SIGKILL', () => {
 // Migrating one to a sanctioned helper removes its entry.
 const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
   [
+    'src/runtime/sentinel.ts',
+    'the detached parent alone holds the exact ChildProcess handle and escalates only that unreaped coordinator child',
+  ],
+  [
     'src/providers/claude/appserver/controller.ts',
     'pre-existing Claude appserver child-shutdown escalation (two call sites: shutdown() and the replacement-child path), not yet migrated to gracefulKill',
   ],

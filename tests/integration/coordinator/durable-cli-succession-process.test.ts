@@ -624,7 +624,7 @@ describe('real-process durable-cli succession', () => {
     expect(await runCli(oldFixture, home, projectRoot, ['jobs', 'detail', jobId])).toMatch(/aborted/iu);
   }, 180_000);
 
-  it('retains an uncertified old epoch when its recovery build is missing', async () => {
+  it('retains an old epoch with terminal job evidence when its recovery build is missing', async () => {
     assertBuildArtifactsAvailable();
     const home = mkdtempSync(join(tmpdir(), 'coral-schema-unopenable-home-'));
     const projectRoot = mkdtempSync(join(tmpdir(), 'coral-schema-unopenable-work-'));
@@ -670,7 +670,7 @@ describe('real-process durable-cli succession', () => {
     expect(newer.child.exitCode).toBeNull();
     expect(resolveCurrentStore(runtime).epoch?.epoch).toBe('2');
     expect(new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot).read(jobId)?.disposition).toBe(
-      'unresolved',
+      'terminal',
     );
     expect(
       observeEpochClosure(

@@ -367,6 +367,12 @@ describe('coordinator discovery', () => {
       kind: 'record',
       record: { namespace: 'ns-d', token: 'token-d', storeEpoch: '7' },
     });
+
+    writeFileSync(infoPath, JSON.stringify({ ...written, sentinel: { version: 2, id: 'future' } }), 'utf-8');
+    expect(readDiscoveryRecordDisposition(runtime)).toMatchObject({
+      kind: 'record',
+      record: { namespace: 'ns-d', token: 'token-d', sentinel: undefined },
+    });
   });
 
   // The most common state of all, and it had no test: nothing had ever read a discovery file that simply is

@@ -1,5 +1,5 @@
 import type { ProcessIncarnation } from '../../infra/node-process.js';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z, type ZodError } from 'zod';
 import {
@@ -28,6 +28,7 @@ import { formatZodError } from '../validation.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';
 import { domainResultToHttp } from '../response.js';
 import { lifecycleRefusalResult } from '../lifecycle-refusal.js';
+import { buildTransportErrorResponse } from '../error-response.js';
 import { subscribeAll } from './sse-subscribe.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { createRealTimePort } from '../../infra/time.js';
@@ -568,6 +569,7 @@ type ProjectedCatalogBackedHttpRoute = CatalogBackedHttpRoute & {
     res: ServerResponse,
     parsedUrl: URL,
     pathParams: Record<string, string>,
+    signal?: AbortSignal,
   ) => Promise<void>;
 };
 
@@ -741,7 +743,9 @@ async function handleCatalogUnaryRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) throw signal.reason;
   if (
     isRecord(request) &&
     Object.prototype.hasOwnProperty.call(request, 'providerScope') &&
@@ -764,7 +768,8 @@ async function handleCatalogUnaryRoute(
     return;
   }
 
-  const result = await executeCatalogRequest(spec, request, deps, principal);
+  const result = await executeCatalogRequest(spec, request, deps, principal, signal);
+  if (signal?.aborted) throw signal.reason;
   if (result.kind === 'lifecycle-refused') {
     sendJson(res, 503, lifecycleRefusalResult);
     return;
@@ -971,18 +976,19 @@ export function httpAdapter(
   return {
     ...route,
     pattern: compilePathPattern(route.path),
-    handle: async (req, res, parsedUrl, pathParams) => {
+    handle: async (req, res, parsedUrl, pathParams, signal) => {
       const parsed = await parseCatalogRequest(spec, req, res, parsedUrl, pathParams, rpcPorts.time);
       if (parsed === REQUEST_PARSE_FAILED) {
         return;
       }
+      if (signal?.aborted) throw signal.reason;
 
       if (spec.kind === 'subscription') {
         await handleCatalogSubscriptionRoute(spec, parsed, req, res, rpcPorts);
         return;
       }
 
-      await handleCatalogUnaryRoute(spec, parsed, req, res, rpcPorts);
+      await handleCatalogUnaryRoute(spec, parsed, req, res, rpcPorts, signal);
     },
   };
 }
@@ -1403,6 +1409,25 @@ export function createHttpHandler(
     const catalogMatch = matchRoute(coordinatorRoutes, req.method, parsedUrl.pathname);
     if (catalogMatch) {
       if (catalogMatch.route.spec.kind === 'unary') {
+        const lease = deps.admin.beginRequestLease?.(catalogMatch.route.spec.name, randomUUID(), {
+          ...(typeof catalogMatch.pathParams.jobId === 'string' ? { jobId: catalogMatch.pathParams.jobId } : {}),
+          ...(typeof catalogMatch.pathParams.operationId === 'string'
+            ? { operationId: catalogMatch.pathParams.operationId }
+            : {}),
+        });
+        if (lease !== undefined) {
+          try {
+            await lease.run((signal) =>
+              catalogMatch.route.handle(req, res, parsedUrl, catalogMatch.pathParams, signal),
+            );
+          } catch (error: unknown) {
+            if (!res.writableEnded && !res.headersSent) {
+              const response = buildTransportErrorResponse(error);
+              sendJson(res, response.statusCode, response.body);
+            }
+          }
+          return;
+        }
         deps.admin.beginRequest();
         runOnResponseDone(res, () => {
           deps.admin.endRequest();

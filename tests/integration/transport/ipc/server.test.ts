@@ -57,6 +57,8 @@ import { domainSuccess } from '#src/transport/tool-result.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { ChildPrincipalNonceLedger } from '#src/infra/child-principal-nonce-ledger.js';
 import { testPrincipal } from '#tests/helpers/principal.js';
+import { createRequestLeaseOwner } from '#src/coordinator/live/request-leases.js';
+import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
 
 const tempDirs: string[] = [];
 
@@ -422,6 +424,41 @@ afterEach(() => {
 });
 
 describe('ipc server', () => {
+  it('returns a typed deadline error and directly requests shutdown for a never-settling unary operation', async () => {
+    const ports = createPorts();
+    const shutdown = vi.fn();
+    const begin = vi.fn();
+    const end = vi.fn();
+    const leases = createRequestLeaseOwner({
+      time: createRealTimePort(),
+      begin,
+      end,
+      shutdown,
+      timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+    });
+    ports.admin.beginRequestLease = leases.begin;
+    ports.admin.succession = () => new Promise<never>(() => {});
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    try {
+      const error = await rawErrorData(socketPath, {
+        method: SUCCESSION_METHODS.status,
+        params: {},
+        auth: { kind: 'boot', token: 'boot-token' },
+      });
+      expect(error).toMatchObject({
+        code: 'request_deadline_exceeded',
+        context: { method: SUCCESSION_METHODS.status, requestId: 'raw', outcome: 'unknown' },
+      });
+      expect(shutdown).toHaveBeenCalledTimes(1);
+      expect(begin).toHaveBeenCalledTimes(1);
+      expect(end).not.toHaveBeenCalled();
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
   it('serves and closes the same IPC surface at compatibility addresses', async () => {
     const ports = createPorts();
     const listener = createIpcServer(ports);

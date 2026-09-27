@@ -161,6 +161,13 @@ const backendBuild = await esbuild.build({
   metafile: true,
 });
 
+const sentinelBuild = await esbuild.build({
+  ...sharedOpts,
+  entryPoints: ['src/runtime/sentinel-main.ts'],
+  outfile: 'clients/build/coral-sentinel.cjs',
+  metafile: true,
+});
+
 const backendBundle = readFileSync('clients/build/coral-backend.cjs');
 for (const fragmentPath of ['core.md', 'tools.md']) {
   if (!backendBundle.includes(Buffer.from(JSON.stringify(fragmentPath)))) {
@@ -310,6 +317,7 @@ const receiptInputs = [
   ...new Set(
     [
       ...Object.keys(backendBuild.metafile.inputs),
+      ...Object.keys(sentinelBuild.metafile.inputs),
       ...Object.keys(cliBuild.metafile.inputs),
       ...Object.keys(claudeAppserverBuild.metafile.inputs),
       ...Object.keys(durableWrapperBuild.metafile.inputs),
@@ -320,6 +328,7 @@ const receiptInputs = [
 ].sort();
 const receiptOutputs = {
   backend: { path: 'clients/build/coral-backend.cjs' },
+  sentinel: { path: 'clients/build/coral-sentinel.cjs' },
   cli: { path: `clients/build/${CLI_BUNDLE_FILE}` },
   claudeAppserver: { path: 'clients/build/coral-claude-appserver.cjs' },
   durableWrapper: { path: 'clients/build/coral-durable-wrapper.cjs' },
@@ -355,6 +364,7 @@ if (release) {
   mkdirSync(bridgeDir, { recursive: true });
   const bridgeFiles = [
     'coral-backend.cjs',
+    'coral-sentinel.cjs',
     CLI_BUNDLE_FILE,
     LEGACY_CLI_BUNDLE_FILE,
     'coral-claude-appserver.cjs',

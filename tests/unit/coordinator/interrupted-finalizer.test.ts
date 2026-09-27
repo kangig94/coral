@@ -131,10 +131,11 @@ function createHarness(
     return releaseExact(permit);
   });
   const mkdirSync = vi.fn(() => order.push('artifact-mkdir'));
-  const writeAtomicSync = vi.fn(() => {
+  const writeAtomicDurableSync = vi.fn(() => {
     order.push('artifact-write');
     return true;
   });
+  const syncDirectoryDurableSync = vi.fn(() => true);
 
   return {
     order,
@@ -149,7 +150,7 @@ function createHarness(
       runtime: {
         time: { now: () => Date.parse('2026-07-22T00:01:00.000Z') },
         paths: { coral: { exports: { jobsRoot: '/jobs' } } },
-        storage: { mkdirSync, writeAtomicSync },
+        storage: { mkdirSync, writeAtomicDurableSync, syncDirectoryDurableSync },
       },
       sessionManager: { recordArtifactHandleAtomic, finalizeJobContinuityAtomic },
       abortRegistry: { remove },

@@ -73,7 +73,7 @@ describe('succession obligation change wiring', () => {
       await vi.waitFor(() =>
         expect(readUpgradeIntent(runDir)).toMatchObject({
           kind: 'readable',
-          intent: { disposition: 'deferred', retryCondition: { kind: 'target-change' } },
+          intent: { disposition: 'closed', retryCondition: null },
         }),
       );
     } finally {

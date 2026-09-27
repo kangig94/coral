@@ -1628,6 +1628,7 @@ async function runLifecycleStartup({
     runtimeState.setStartedAt(now());
     startedAt = runtimeState.getStartedAt();
     const publishDiscovery = (): void => {
+      const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
       const discoveryPublished = writeBackendInfoFn({
         pid: backendPid,
         port,
@@ -1643,6 +1644,7 @@ async function runLifecycleStartup({
         namespace,
         instanceId,
         startedAt,
+        ...(sentinelId === undefined ? {} : { sentinel: { version: 1 as const, id: sentinelId } }),
         ...(openedStore === null ? {} : { storeEpoch: openedStore.epoch }),
       });
       if (discoveryPublished === false) throw new Error('Coordinator discovery publication failed.');

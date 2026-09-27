@@ -6,10 +6,9 @@ declare const __VERSION__: string;
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { networkInterfaces } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { createRealRuntime } from '../../runtime/real.js';
@@ -46,6 +45,7 @@ import type { TransportRuntimeComponentStatus } from '../server-ports.js';
 import type { TimePort } from '../../infra/port-types.js';
 import {
   CoralSetupError,
+  documentedCoralSetupError,
   readOperatorFacingCoralSetupError,
   resolveSetupErrorAuthorship,
   type OperatorFacingCoralSetupError,
@@ -71,12 +71,8 @@ export const KERNEL_READY_DEADLINE_MS = 15_000;
  */
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
-/**
- * A `kill -9` is run by whoever reads it, so it may name only a coordinator that cannot answer at all: silence
- * must span this many consecutive health probes and this much time before a stall stops being the likelier story.
- */
-const FORCE_KILL_UNANSWERED_PROBES = 3;
-export const FORCE_KILL_UNANSWERED_WINDOW_MS = 3 * HEALTH_TIMEOUT_MS;
+export const SENTINEL_RECOVERY_BUDGET_MS = 660_000;
+export const LEGACY_RECOVERY_BUDGET_MS = 30_000;
 
 export type DesiredCoordinator = {
   version: string;
@@ -97,6 +93,7 @@ export type RawCoordinatorHealth = {
   components?: TransportRuntimeComponentStatus[];
   env?: Readonly<Record<string, string>>;
   jobsWaitExtensions?: readonly string[];
+  sentinel?: { version: 1; id: string };
 };
 
 export type VerifiedBackendInfo = {
@@ -115,6 +112,7 @@ export type VerifiedBackendInfo = {
   version: string;
   instanceId: string;
   incarnation?: ProcessIncarnation;
+  sentinel?: { version: 1; id: string };
 };
 
 export type EnsuredIpcClient = IpcClient & {
@@ -136,6 +134,7 @@ type SpawnedCoordinator = {
   readonly spawnedAt: number;
   readonly pid: number | undefined;
   readonly terminal: Promise<SpawnedCoordinatorTerminal>;
+  readonly sentinel: boolean;
 };
 
 /**
@@ -153,6 +152,7 @@ type BackendReadyWaitContext =
       readonly spawnedAt: number;
       readonly pid: number | undefined;
       readonly terminal: Promise<SpawnedCoordinatorTerminal>;
+      readonly sentinel: boolean;
     }
   | { readonly kind: 'existing-starting' };
 
@@ -300,6 +300,10 @@ const rawCoordinatorHealthSchema = z
     env: z.record(z.string()).optional(),
     // An unreadable advertisement is no advertisement: it may withhold an extension, never reject the coordinator.
     jobsWaitExtensions: z.array(z.string()).optional().catch(undefined),
+    sentinel: z
+      .object({ version: z.literal(1), id: z.string().min(1) })
+      .optional()
+      .catch(undefined),
   })
   .passthrough();
 
@@ -321,6 +325,10 @@ const verifiedBackendInfoSchema = z
     version: nonEmptyStringSchema,
     instanceId: nonEmptyStringSchema,
     incarnation: processIncarnationSchema.optional(),
+    sentinel: z
+      .object({ version: z.literal(1), id: z.string().min(1) })
+      .optional()
+      .catch(undefined),
   })
   // Same record `readDiscoveryRecord` parses in infra/backend-discovery.ts, re-validated here with a
   // narrower (all-required) shape — tolerant for the same reason: a future writer's extra field must not
@@ -371,13 +379,12 @@ type CoordinatorHealthReading =
 async function readRawCoordinatorHealth(
   client: IpcClient,
   request: 'ping' | 'health' = 'ping',
+  timeoutMs = HEALTH_TIMEOUT_MS,
 ): Promise<CoordinatorHealthReading> {
   let reply: unknown;
   try {
     reply =
-      request === 'ping'
-        ? await client.ping<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS })
-        : await client.health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
+      request === 'ping' ? await client.ping<unknown>({ timeoutMs }) : await client.health<unknown>({ timeoutMs });
   } catch (error: unknown) {
     if (error instanceof IpcRpcError && error.code === 'too_many_ipc_connections') {
       return { kind: 'unusable', cause: 'ipc-capacity-refusal' };
@@ -656,18 +663,21 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
   }
 
   try {
-    const child = spawn(process.execPath, [backendBin], {
+    const sentinel = join(dirname(backendBin), 'coral-sentinel.cjs');
+    const supervised = existsSync(sentinel);
+    const child = spawn(process.execPath, supervised ? [sentinel, backendBin] : [backendBin], {
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
       env: {
         ...process.env,
         CORAL_STARTUP_ATTEMPT_ID: attemptId,
         CORAL_STARTUP_STARTED_AT: String(spawnedAt),
+        CORAL_SENTINEL_RUN_DIR: paths.runDir,
       },
     });
     const terminal = observeSpawnedCoordinatorTerminal(child);
     child.unref();
-    return { attemptId, spawnedAt, pid: child.pid, terminal };
+    return { attemptId, spawnedAt, pid: child.pid, terminal, sentinel: supervised };
   } finally {
     if (typeof stderr === 'number') {
       closeSync(stderr);
@@ -731,106 +741,16 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
   );
 }
 
-/** Consecutive unanswered readings of one recorded holder; any other reading ends the run. */
-type UnansweredRun = Readonly<{ probes: number; since: number; address: string; holder: string | null }>;
-
-function recordedHolderIdentity(info: VerifiedBackendInfo | null): string | null {
-  return info === null
-    ? null
-    : JSON.stringify([
-        info.socketPath,
-        info.pid,
-        info.incarnation,
-        info.instanceId,
-        info.bootToken,
-        info.startedAt,
-        info.port,
-        info.bindHost,
-        info.version,
-        info.bundleHash,
-        info.flavor,
-        info.namespace,
-      ]);
-}
-
-function extendUnansweredRun(
-  run: UnansweredRun | null,
-  reading: CoordinatorHealthReading,
-  probeStartedAt: number,
-  address: string,
-  holder: string | null,
-): UnansweredRun | null {
-  if (reading.kind !== 'unanswered') return null;
-  return run === null || run.address !== address || run.holder !== holder
-    ? { probes: 1, since: probeStartedAt, address, holder }
-    : { ...run, probes: run.probes + 1 };
-}
-
-function unansweredThroughWindow(run: UnansweredRun | null, now: number): run is UnansweredRun {
-  return (
-    run !== null && run.probes >= FORCE_KILL_UNANSWERED_PROBES && now - run.since >= FORCE_KILL_UNANSWERED_WINDOW_MS
-  );
-}
-
 /**
  * Each way the wait can end gets its own sentence, and only a decisive reading may say the coordinator stopped
  * before binding: a probe that never completed did not observe that, and a coordinator that is serving would
  * answer the same way to a dropped request.
  */
-function verifiedUnresponsivePid(info: VerifiedBackendInfo | null): number | null {
-  return info !== null &&
-    info.incarnation !== undefined &&
-    probeProcessIncarnation(info.pid) === info.incarnation &&
-    observeProcessLiveness(info.pid) === 'alive'
-    ? info.pid
-    : null;
-}
-
-async function answersAuthenticatedHttpHealth(
-  paths: CoordinatorPaths,
-  info: VerifiedBackendInfo,
-  observedSocketPath: string,
-): Promise<'answering' | 'silent' | 'unknown'> {
-  if (info.socketPath !== observedSocketPath || info.bindHost === undefined) {
-    return 'unknown';
-  }
-  const hosts = new Set(
-    info.bindHost === '0.0.0.0' ? ['127.0.0.1'] : info.bindHost === '::' ? ['::1', '127.0.0.1'] : [info.bindHost],
-  );
-  if (info.bindHost === '0.0.0.0' || info.bindHost === '::') {
-    for (const addresses of Object.values(networkInterfaces())) {
-      for (const address of addresses ?? []) {
-        if (address.family === 'IPv4' || (info.bindHost === '::' && address.family === 'IPv6')) {
-          hosts.add(address.address);
-        }
-      }
-    }
-  }
-  if ([...hosts].some((host) => host.includes('%'))) return 'unknown';
-  let unidentifiedResponse = false;
-  for (const host of hosts) {
-    try {
-      const localHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
-      const response = await fetch(`http://${localHost}:${info.port}/health?detailed=1`, {
-        headers: { 'X-Coral-Boot-Token': info.bootToken },
-        signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-      });
-      unidentifiedResponse = true;
-      if (response.status !== 200) continue;
-      const health = parseRawCoordinatorHealth(await response.json());
-      if (
-        health !== null &&
-        discoveryMatchesExistingIncumbent(info, observedSocketPath, existingIncumbentIdentity(health)) &&
-        recordedHolderIdentity(info) === recordedHolderIdentity(readDiscoverySnapshot(paths))
-      )
-        return 'answering';
-    } catch {
-      // Other local bind addresses may still reach this holder.
-    }
-  }
-  return !unidentifiedResponse && recordedHolderIdentity(info) === recordedHolderIdentity(readDiscoverySnapshot(paths))
-    ? 'silent'
-    : 'unknown';
+function recordedProcessObservation(info: VerifiedBackendInfo | null): 'alive' | 'absent' | 'unknown' {
+  if (info?.incarnation === undefined) return 'unknown';
+  const observed = probeProcessIncarnation(info.pid);
+  if (observed === null) return observeProcessLiveness(info.pid) === 'absent' ? 'absent' : 'unknown';
+  return observed === info.incarnation ? observeProcessLiveness(info.pid) : 'absent';
 }
 
 function endedStartupMessage(
@@ -851,30 +771,17 @@ function endedStartupMessage(
       );
     case 'unanswered': {
       // The child stopped without refusing an unverified holder, so nothing here shows the holder cannot answer.
-      if (verifiedUnresponsivePid(info) !== null) {
+      if (recordedProcessObservation(info) === 'alive') {
         return (
           'The spawned Coral coordinator stopped, and the coordinator at this address did not answer this health ' +
           `request (${reading.cause}); its recorded process is still alive, so it may be busy. Retry the command.`
         );
       }
-      return (
-        'The spawned Coral coordinator stopped, and this address does not answer health requests ' +
-        `(${reading.cause}). No live recorded coordinator could be identified behind it, so Coral signaled ` +
-        'nothing; retry the command.'
-      );
+      return `The spawned Coral coordinator stopped, and this address does not answer health requests (${reading.cause}); recorded process observation is ${recordedProcessObservation(info)}. Retry the command.`;
     }
     default:
       return assertNever(reading);
   }
-}
-
-function forceKillUnresponsiveMessage(pid: number, run: UnansweredRun, now: number): string {
-  return (
-    'The spawned Coral coordinator refused to replace the coordinator at this address, which has answered none of ' +
-    `${run.probes} health requests over ${Math.round((now - run.since) / 1_000)} seconds while its recorded ` +
-    'process stays alive. Force-kill it to allow a fresh start.\n' +
-    `action=kill -9 ${pid}`
-  );
 }
 
 function deferredWaiterClaim(
@@ -921,22 +828,32 @@ async function waitForBackendReady(
   waitContext: BackendReadyWaitContext,
   expectedSocketPath: string = paths.socketPath,
 ): Promise<ReadyCoordinatorEvidence> {
-  const currentAttempt = waitContext.kind === 'current-attempt';
-  const readyDeadline = timePort.now() + timeoutMs;
+  const waitStartedAt = timePort.now();
+  let recoveryBudgetMs =
+    waitContext.kind === 'current-attempt' && waitContext.sentinel
+      ? SENTINEL_RECOVERY_BUDGET_MS
+      : Math.max(timeoutMs, LEGACY_RECOVERY_BUDGET_MS);
   let terminalOutcome: SpawnedCoordinatorTerminal | null = null;
   // A draining incumbent cannot serve this wait. An authenticated running legacy incumbent can serve it when
   // this attempt has durably claimed responsibility for the upgrade wait.
   const admission: RouteLifecycleAdmission = 'running';
-  let unansweredRun: UnansweredRun | null = null;
+  let monitoring: 'available' | 'unavailable' | 'unknown' = 'unknown';
 
-  while (currentAttempt || timePort.now() < readyDeadline) {
+  while (timePort.now() - waitStartedAt < recoveryBudgetMs) {
     const info = readDiscoverySnapshot(paths);
-    const holder = recordedHolderIdentity(info);
     const address = info?.socketPath ?? expectedSocketPath;
-    const probeStartedAt = timePort.now();
-    const observedReading = await readRawCoordinatorHealth(createIpcClient(address, timePort));
-    unansweredRun = extendUnansweredRun(unansweredRun, observedReading, probeStartedAt, address, holder);
+    const remainingMs = recoveryBudgetMs - (timePort.now() - waitStartedAt);
+    const observedReading = await readRawCoordinatorHealth(
+      createIpcClient(address, timePort),
+      'ping',
+      Math.max(1, Math.min(HEALTH_TIMEOUT_MS, remainingMs)),
+    );
     const observedHealth = answeredHealth(observedReading);
+    monitoring = info === null ? 'unknown' : info.sentinel !== undefined ? 'available' : 'unavailable';
+    if (info?.sentinel !== undefined || observedHealth?.sentinel !== undefined) {
+      recoveryBudgetMs = SENTINEL_RECOVERY_BUDGET_MS;
+      monitoring = 'available';
+    }
     const observedPid: number | undefined = observedHealth?.pid ?? info?.pid;
     let servingIncumbent: ReadyCoordinatorEvidence | null = null;
     if (
@@ -953,6 +870,7 @@ async function waitForBackendReady(
           const health = parseRawCoordinatorHealth(value);
           return health === null ? null : { health, identity: existingIncumbentIdentity(health) };
         },
+        Math.max(1, Math.min(HEALTH_TIMEOUT_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt))),
       );
       if (
         authenticatedHealth.kind === 'health' &&
@@ -981,27 +899,16 @@ async function waitForBackendReady(
     }
 
     const startupError = matchingStartupError(paths, desired, waitContext, observedPid);
+    const recoveringHolder =
+      startupError?.kind === 'documented' && startupError.code === 'handoff_socket_holder_unverified';
+    if (recoveringHolder && terminalOutcome !== null && monitoring !== 'available') {
+      recoveryBudgetMs = Math.min(recoveryBudgetMs, LEGACY_RECOVERY_BUDGET_MS);
+    }
     if (startupError) {
       switch (startupError.kind) {
         case 'documented': {
-          const latestInfo = readDiscoverySnapshot(paths);
-          const sameHolder =
-            holder !== null &&
-            holder === recordedHolderIdentity(latestInfo) &&
-            unansweredRun?.holder === holder &&
-            unansweredRun?.address === address;
-          const unresponsivePid = sameHolder ? verifiedUnresponsivePid(latestInfo) : null;
-          const now = timePort.now();
-          if (
-            startupError.code === 'handoff_socket_holder_unverified' &&
-            unresponsivePid !== null &&
-            unansweredThroughWindow(unansweredRun, now) &&
-            latestInfo !== null &&
-            (await answersAuthenticatedHttpHealth(paths, latestInfo, unansweredRun.address)) === 'silent'
-          ) {
-            throw new BackendUnreachableError(forceKillUnresponsiveMessage(unresponsivePid, unansweredRun, now));
-          }
-          throw new CoralSetupError(startupError);
+          if (!recoveringHolder) throw new CoralSetupError(startupError);
+          break;
         }
         case 'self_authored':
           throw new CoralSetupError(startupError);
@@ -1017,7 +924,7 @@ async function waitForBackendReady(
           return assertNever(startupError);
       }
     }
-    if (terminalOutcome !== null) {
+    if (terminalOutcome !== null && !recoveringHolder) {
       // Attempt lineage governs only a live child: while the exact child runs, a coordinator that cannot be
       // tied to it may be someone else's and must not end the wait. Once that child is terminal and left no
       // refusal of its own, the question is the one `reuseServingIncumbent` answers before any spawn — is an
@@ -1030,27 +937,24 @@ async function waitForBackendReady(
       // to may still be in `starting`, which is not a serving status and so cannot produce a serving incumbent
       // here.
       if (mayInvocationBeServedByIncumbent(observedHealth, admission)) {
-        return waitForBackendReady(
-          paths,
-          desired,
-          timeoutMs,
-          timePort,
-          { kind: 'existing-starting' },
-          expectedSocketPath,
-        );
+        waitContext = { kind: 'existing-starting' };
+        terminalOutcome = null;
+        continue;
       }
       throw new BackendUnreachableError(endedStartupMessage(terminalOutcome, observedReading, info));
     }
+    if (terminalOutcome !== null && recoveringHolder && servingIncumbent !== null) {
+      return servingIncumbent;
+    }
 
-    if (waitContext.kind === 'current-attempt') {
-      terminalOutcome = await Promise.race([waitContext.terminal, timePort.sleep(STARTUP_POLL_MS).then(() => null)]);
+    const pollMs = Math.max(1, Math.min(STARTUP_POLL_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt)));
+    if (waitContext.kind === 'current-attempt' && terminalOutcome === null) {
+      terminalOutcome = await Promise.race([waitContext.terminal, timePort.sleep(pollMs).then(() => null)]);
     } else {
-      await timePort.sleep(STARTUP_POLL_MS);
+      await timePort.sleep(pollMs);
     }
   }
-  throw new BackendUnreachableError(
-    'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.',
-  );
+  throw documentedCoralSetupError('coordinator_recovering', { monitoring });
 }
 
 /**
@@ -1226,6 +1130,7 @@ async function spawnTopLevelCoordinator(
     spawnedAt: spawned.spawnedAt,
     pid: spawned.pid,
     terminal: spawned.terminal,
+    sentinel: spawned.sentinel,
   });
   return summarizeBackend(ready.info, ready.health, timePort, 'boot');
 }

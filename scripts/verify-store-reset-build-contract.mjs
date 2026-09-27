@@ -19,6 +19,7 @@ if (!targetArgument) {
 const targetDir = resolve(targetArgument);
 const requiredBundleFiles = [
   'coral-backend.cjs',
+  'coral-sentinel.cjs',
   CLI_BUNDLE_FILE,
   LEGACY_CLI_BUNDLE_FILE,
   'coral-claude-appserver.cjs',
