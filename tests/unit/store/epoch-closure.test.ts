@@ -1313,6 +1313,49 @@ describe('epoch closure and protected addressing', () => {
     ]);
   });
 
+  it('retains an unknown closure generation instead of certifying it with an older reader', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    const stateRoot = runtime.paths.coral.generation.dataRoot;
+    publish(runtime, '1');
+    publish(runtime, '2');
+    recordEpochCustodyCoverage(
+      runtime,
+      epochDirectory(root, '1'),
+      initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir),
+    );
+    const key = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '1'));
+    const closureDir = join(stateRoot, 'epoch-closure.v1');
+    const path = join(closureDir, `${sha256Hex(key)}.json`);
+    mkdirSync(closureDir, { recursive: true });
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 'v2',
+        epochKey: key,
+        disposition: 'unrecoverable-retained',
+        executionDischarge: 'undecidable',
+        dataOutcome: 'unknown',
+        obligations: [],
+        reason: 'a newer build owns this closure generation',
+        observedAtMs: 1,
+      }),
+    );
+
+    await settleSupersededEpochClosures(runtime, new JobLocationIndex(runtime, stateRoot));
+
+    expect(observeEpochClosure(runtime, stateRoot, key)).toEqual({ kind: 'unsupported', path, version: 'v2' });
+    expect(closureCapability(runtime, stateRoot, key)).toBeNull();
+    expect(listStoreEpochs(runtime)).toContainEqual(
+      expect.objectContaining({
+        epochKey: key,
+        closureDisposition: 'unrecoverable-retained',
+        closureReason: 'unsupported closure generation v2',
+      }),
+    );
+    expect(readdirSync(closureDir)).toEqual([`${sha256Hex(key)}.json`]);
+  });
+
   it('closes execution only after the owner custody intent has proven absence', async () => {
     const runtime = harness();
     const root = runtime.paths.coral.store.dbDir;

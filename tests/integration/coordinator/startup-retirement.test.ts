@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -88,6 +88,45 @@ function startUp(
 }
 
 describe('startup mint authorizer', () => {
+  it('keeps an unavailable current epoch as the mint predecessor and waits for inventory', () => {
+    const home = mkdtempSync(join(tmpdir(), 'coral-unavailable-predecessor-'));
+    homes.push(home);
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    openSettledTestStoreDb(runtime).close();
+    const current = inspectCurrentStore(runtime);
+    if (current.kind !== 'current') throw new Error('Expected a current epoch.');
+    chmodSync(current.epoch.path, 0o000);
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    let observed: StoreMintObservation | null = null;
+
+    expect(
+      startUp(runtime, index, 'startup-1', (observation) => {
+        observed = observation;
+      }),
+    ).toBeNull();
+
+    expect(observed).toMatchObject({
+      incumbent: { epoch: current.epoch.epoch },
+      classification: { kind: 'unavailable' },
+    });
+    expect(index.unknownLocationHold(encodeResolvedStoreEpoch(runtime, current.epoch))).not.toBeNull();
+  });
+
+  it('treats failed inventory with no known locations as unknown work', () => {
+    const runtime = unreadableEpochRuntime();
+    const current = inspectCurrentStore(runtime);
+    if (current.kind !== 'current') throw new Error('Expected a current epoch.');
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const open = runtime.storage.openSqliteDatabaseSync;
+    vi.spyOn(runtime.storage, 'openSqliteDatabaseSync').mockImplementation((path, options) => {
+      if (path === current.epoch.path && options?.readOnly) throw new Error('injected inventory failure');
+      return open(path, options);
+    });
+
+    expect(startUp(runtime, index, 'startup-1')).toBeNull();
+    expect(index.locationsFor(encodeResolvedStoreEpoch(runtime, current.epoch))).toEqual([]);
+    expect(index.unknownLocationHold(encodeResolvedStoreEpoch(runtime, current.epoch))).not.toBeNull();
+  });
   it.each(['missing', 'unreadable'] as const)(
     'retains a %s-metadata epoch with a durable running job before minting',
     (metadata) => {
@@ -273,7 +312,9 @@ describe('startup mint authorizer', () => {
     'hands a holding job to its verified retained controller despite another lineage hold when the root is available: %s',
     (rootAvailable) => {
       assertBuildArtifactsAvailable();
-      const runtime = unreadableEpochRuntime();
+      const base = unreadableEpochRuntime();
+      let now = Date.now();
+      const runtime: Runtime = { ...base, time: { ...base.time, now: () => now } };
       const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
       const fixture = createPluginFixture(homes, { flavor: 'prod' });
       const manifest = JSON.parse(
@@ -347,19 +388,29 @@ describe('startup mint authorizer', () => {
       const handoff = prepareRetainedControllerHandoff(runtime, index, currentCoralStoreFormat());
       expect(handoff === null).toBe(!rootAvailable);
       if (rootAvailable) expect(handoff?.epochKey).toBe(epochKey);
-      else expect(startUp(runtime, index, 'startup-without-retained-root')).toMatchObject({ kind: 'unopenable' });
+      else {
+        expect(startUp(runtime, index, 'startup-without-retained-root')).toBeNull();
+        now += 10_000;
+        expect(startUp(runtime, index, 'startup-without-retained-root-retry')).toMatchObject({ kind: 'unopenable' });
+      }
     },
   );
 
-  it('should mint over an unreadable epoch on the first startup when nothing records work against it', () => {
-    const runtime = unreadableEpochRuntime();
+  it('waits before minting when an unreadable epoch has no known job records', () => {
+    const base = unreadableEpochRuntime();
+    let now = Date.now();
+    const runtime: Runtime = { ...base, time: { ...base.time, now: () => now } };
     const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
 
-    expect(startUp(runtime, index, 'startup-1')).toMatchObject({ kind: 'unopenable' });
+    expect(startUp(runtime, index, 'startup-1')).toBeNull();
+    now += 10_000;
+    expect(startUp(runtime, index, 'startup-2')).toMatchObject({ kind: 'unopenable' });
   });
 
   it('should mint over an unreadable epoch whose closure record is unreadable instead of failing startup', () => {
-    const runtime = unreadableEpochRuntime();
+    const base = unreadableEpochRuntime();
+    let now = Date.now();
+    const runtime: Runtime = { ...base, time: { ...base.time, now: () => now } };
     const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
     const stateRoot = runtime.paths.coral.generation.dataRoot;
     let lineageKey: string | null = null;
@@ -371,7 +422,9 @@ describe('startup mint authorizer', () => {
       writeFileSync(join(stateRoot, 'epoch-closure.v1', `${sha256Hex(lineageKey)}.json`), 'not a closure record');
     };
 
-    expect(startUp(runtime, index, 'startup-1', corruptClosure)).toMatchObject({ kind: 'unopenable' });
+    expect(startUp(runtime, index, 'startup-1', corruptClosure)).toBeNull();
+    now += 10_000;
+    expect(startUp(runtime, index, 'startup-2')).toMatchObject({ kind: 'unopenable' });
     expect(lineageKey).not.toBeNull();
     expect(observeEpochClosure(runtime, stateRoot, lineageKey ?? '')).toMatchObject({ kind: 'unreadable' });
   });
@@ -438,7 +491,7 @@ describe('startup mint authorizer', () => {
 
   it.each([
     ['a transient executor failure waits out bounded patience', 73, [null, 'unopenable']],
-    ['an executor that cannot identify as the controller mints at once', 71, ['unopenable']],
+    ['an executor that cannot identify as the controller waits out bounded patience', 71, [null, 'unopenable']],
   ] as const)('should treat %s', (_label, executorExit, dispositions) => {
     assertBuildArtifactsAvailable();
     const base = unreadableEpochRuntime();

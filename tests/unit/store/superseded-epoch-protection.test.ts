@@ -1,4 +1,14 @@
-import { chmodSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,12 +25,14 @@ import {
   mintRetiredStoreEpoch,
   retirementMintDisposition,
   settleStoreEpoch,
+  storeEpochLockPath,
   sweepStoreEpochsPostReady,
 } from '#src/store/epoch.js';
 import { createSharedFileLockSync } from '#src/infra/fs-lock.js';
+import { sha256Hex } from '#src/infra/hash.js';
 import { joinSuccessionWriterGeneration, refuseSuccessionAttempt } from '#src/store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { authorizeFixtureStoreMint } from '#tests/helpers/store-db.js';
+import { authorizeFixtureStoreMint, openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
 const format = currentCoralStoreFormat();
@@ -92,6 +104,7 @@ describe('superseded epoch protection', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const settled = settleStoreEpoch(runtime, { storeFormat: format, build, authorizeMint: authorizeFixtureStoreMint });
     settled.db.close();
+    encodeResolvedStoreEpoch(runtime, settled.store);
     const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
     const unopenable = join(epochDirectory(dbDir, '1'), 'store.db');
     chmodSync(unopenable, 0o000);
@@ -100,8 +113,8 @@ describe('superseded epoch protection', () => {
       storeFormat: format,
       build,
       startupBusyTimeoutMs: 1,
-      authorizeMint: ({ incumbent, observedEpochCount }) =>
-        incumbent === null && observedEpochCount > 0 ? retirementMintDisposition('unopenable', null) : null,
+      authorizeMint: ({ incumbent, incumbentEpochKey }) =>
+        incumbent === null ? null : retirementMintDisposition('unopenable', incumbentEpochKey),
     });
     successor.db.close();
 
@@ -116,6 +129,7 @@ describe('superseded epoch protection', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const settled = settleStoreEpoch(runtime, { storeFormat: format, build, authorizeMint: authorizeFixtureStoreMint });
     settled.db.close();
+    encodeResolvedStoreEpoch(runtime, settled.store);
     const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
     chmodSync(join(epochDirectory(dbDir, '1'), 'store.db'), 0o000);
     const opener = createSharedFileLockSync(join(epochDirectory(dbDir, '1'), '.lock'));
@@ -125,8 +139,8 @@ describe('superseded epoch protection', () => {
         storeFormat: format,
         build,
         startupBusyTimeoutMs: 1,
-        authorizeMint: ({ incumbent, observedEpochCount }) =>
-          incumbent === null && observedEpochCount > 0 ? retirementMintDisposition('unopenable', null) : null,
+        authorizeMint: ({ incumbent, incumbentEpochKey }) =>
+          incumbent === null ? null : retirementMintDisposition('unopenable', incumbentEpochKey),
       });
       successor.db.close();
 
@@ -147,7 +161,7 @@ describe('superseded epoch protection', () => {
     expect(listed?.protectionPending).toBeUndefined();
   });
 
-  it('retries a readable canonical epoch when its deferred-protection record is unreadable', async () => {
+  it('retains a canonical epoch when its pending-protection record cannot be decoded', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-pending-protection-unreadable-'));
     roots.push(root);
     const runtime = createRealRuntime('prod', { baseDir: root });
@@ -157,6 +171,7 @@ describe('superseded epoch protection', () => {
       authorizeMint: authorizeFixtureStoreMint,
     });
     initial.db.close();
+    encodeResolvedStoreEpoch(runtime, initial.store);
     const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
     chmodSync(epochPath(dbDir, '1'), 0o000);
     const opener = createSharedFileLockSync(join(epochDirectory(dbDir, '1'), '.lock'));
@@ -166,8 +181,8 @@ describe('superseded epoch protection', () => {
         storeFormat: format,
         build,
         startupBusyTimeoutMs: 1,
-        authorizeMint: ({ incumbent, observedEpochCount }) =>
-          incumbent === null && observedEpochCount > 0 ? retirementMintDisposition('unopenable', null) : null,
+        authorizeMint: ({ incumbent, incumbentEpochKey }) =>
+          incumbent === null ? null : retirementMintDisposition('unopenable', incumbentEpochKey),
       });
       successor.db.close();
       const pendingDir = join(runtime.paths.coral.generation.dataRoot, 'store-epoch-protection-pending.v1');
@@ -180,8 +195,52 @@ describe('superseded epoch protection', () => {
 
     await sweepStoreEpochsPostReady(runtime, successor.store);
 
-    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
-    expect(listStoreEpochs(runtime)).toContainEqual(expect.objectContaining({ epoch: '1', role: 'protected' }));
+    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(true);
+    expect(listStoreEpochs(runtime)).toContainEqual(expect.objectContaining({ epoch: '1', role: 'preserved' }));
+  });
+
+  it('preserves an unsupported pending-protection generation during a sweep', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-pending-protection-generation-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true });
+    const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
+    for (const epoch of ['1', '2']) {
+      const directory = epochDirectory(dbDir, epoch);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(storeEpochLockPath(dbDir, epoch), '');
+      openTestStoreDatabase({ path: epochPath(dbDir, epoch), storage: runtime.storage, storeFormat: format }).close();
+      writeFileSync(
+        join(directory, 'epoch.json'),
+        JSON.stringify({
+          supersedes: null,
+          classification: { kind: 'absent' },
+          build,
+          publishedAt: '2026-09-25T00:00:00.000Z',
+        }),
+      );
+    }
+    const pendingDir = join(runtime.paths.coral.generation.dataRoot, 'store-epoch-protection-pending.v1');
+    const pendingPath = join(pendingDir, `${sha256Hex(epochDirectory(dbDir, '1'))}.json`);
+    mkdirSync(pendingDir, { recursive: true });
+    writeFileSync(
+      pendingPath,
+      JSON.stringify({
+        version: 'v2',
+        storeRoot: dbDir,
+        epoch: '1',
+        reason: 'newer owner',
+        recordedAt: '2026-09-25T00:00:00.000Z',
+        futureReleaseCondition: 'controller-receipt-v2',
+      }),
+    );
+
+    await sweepStoreEpochsPostReady(runtime, { storeRoot: dbDir, epoch: '2', path: epochPath(dbDir, '2') });
+
+    expect(JSON.parse(readFileSync(pendingPath, 'utf8'))).toMatchObject({
+      version: 'v2',
+      futureReleaseCondition: 'controller-receipt-v2',
+    });
   });
 
   it('should refuse publication when a held epoch cannot be recorded for later protection', () => {

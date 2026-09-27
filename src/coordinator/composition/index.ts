@@ -29,7 +29,7 @@ import { JobAddressing } from '../../jobs/addressing.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createJobLocationRecoveryRetryPlan, recoverJobLocations } from '../../jobs/location-recovery.js';
-import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
+import { retryUnknownHistoricalEpochs, seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../services/startup-retirement.js';
 import { recordControllerOpen, recordControllerServing } from '../succession/controller-open.js';
 import { controllerRecoveryTarget } from '../services/retained-epoch-executor.js';
@@ -2354,8 +2354,6 @@ export function createCoordinatorCore(
           )
             continue;
           const historicalKey = encodeResolvedStoreEpoch(runtime, historical.resolved);
-          const closure = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, historical.epochKey);
-          if (closure.kind === 'recorded' && closure.evidence.disposition === 'unrecoverable-retained') continue;
           const fingerprint =
             historical.epochJson.kind === 'valid' ? historical.epochJson.value.build.storeFormatFingerprint : '';
           void seedHistoricalEpoch(
@@ -2536,6 +2534,7 @@ export function createCoordinatorCore(
         storeEpochSweepTimer = runtime.time.setTimeout(() => {
           storeEpochSweepTimer = null;
           void (async () => {
+            retryUnknownHistoricalEpochs(jobLocationIndex);
             await settleSupersededEpochClosures(
               runtime,
               jobLocationIndex,

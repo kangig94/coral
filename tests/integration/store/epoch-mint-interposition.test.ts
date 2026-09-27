@@ -377,13 +377,12 @@ it('gives the deciding lock attempt a full timeout after the retry window expire
   const clock = withVirtualRetryClock(runtime);
   interposition.failReadLockAttempts = Number.MAX_SAFE_INTEGER;
 
-  const settled = settleStoreEpoch(clock.runtime, mintOptions);
-
-  expect(settled.store.epoch).toBe('2');
+  expect(() => settleStoreEpoch(clock.runtime, mintOptions)).toThrow(
+    'Store epoch mint cannot identify its unavailable predecessor.',
+  );
   expect(clock.sleptMs()).toBe(STORE_EPOCH_OPEN_RETRY_BUDGET_MS);
   expect(interposition.readLockBusyTimeouts).toEqual(currentEpochAttemptTimeouts());
   expect(interposition.readLockBusyTimeouts.every((timeout) => timeout !== undefined && timeout > 0)).toBe(true);
-  settled.db.close();
 });
 
 it('keeps sequential lock and store SQLite waits inside the total retry budget', () => {

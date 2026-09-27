@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
@@ -40,10 +40,30 @@ function terminalDetail(jobId: string): JobDetailResponse {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 describe('job location additive records', () => {
+  it('does not release a certified result whose existing artifact cannot be synced', () => {
+    const { root, index } = fixture();
+    const epochKey = 'lineage-1:1';
+    const jobId = 'job-1';
+    const resultPath = join(root, 'result.md');
+    writeFileSync(resultPath, 'done\n');
+    index.register(jobId, epochKey, {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    index.recordTerminal(jobId, terminalDetail(jobId), resultPath, 2);
+    expect(index.certify(epochKey, 2)).not.toBeNull();
+    vi.spyOn(runtime.storage, 'fdatasyncSync').mockImplementation(() => {
+      throw new Error('sync failed');
+    });
+
+    expect(index.resultsReleased(epochKey)).toBe(false);
+  });
   it('requires readable terminal detail both to certify and to release results', () => {
     const { root, index } = fixture();
     const epochKey = 'lineage-1:1';

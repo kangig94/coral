@@ -84,6 +84,7 @@ function closurePath(stateRoot: string, epochKey: string): string {
 export type EpochClosureRead =
   | Readonly<{ kind: 'recorded'; evidence: EpochClosureEvidence }>
   | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unsupported'; path: string; version: string }>
   | Readonly<{ kind: 'unreadable'; path: string }>;
 
 export function observeEpochClosure(
@@ -105,6 +106,15 @@ export function observeEpochClosure(
     value = JSON.parse(raw) as unknown;
   } catch {
     return { kind: 'unreadable', path };
+  }
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'version' in value &&
+    typeof value.version === 'string' &&
+    value.version !== 'v1'
+  ) {
+    return { kind: 'unsupported', path, version: value.version };
   }
   const parsed = closureSchema.safeParse(value);
   return parsed.success && parsed.data.epochKey === epochKey
@@ -134,6 +144,7 @@ export function setAsideUnreadableEpochClosure(runtime: Runtime, stateRoot: stri
  */
 export type EpochClosureRecording =
   | Readonly<{ kind: 'recorded'; evidence: EpochClosureEvidence }>
+  | Readonly<{ kind: 'unsupported'; path: string; version: string }>
   | Readonly<{ kind: 'unreadable'; path: string }>;
 
 export function recordEpochClosure(
@@ -143,7 +154,7 @@ export function recordEpochClosure(
 ): EpochClosureRecording {
   const evidence = closureSchema.parse(input);
   const read = observeEpochClosure(runtime, stateRoot, evidence.epochKey);
-  if (read.kind === 'unreadable') return read;
+  if (read.kind === 'unreadable' || read.kind === 'unsupported') return read;
   const existing = read.kind === 'recorded' ? read.evidence : null;
   if (existing?.disposition === 'closed' && evidence.disposition !== 'closed') {
     return { kind: 'recorded', evidence: existing };

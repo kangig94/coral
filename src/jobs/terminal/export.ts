@@ -21,14 +21,18 @@ export function resultPathFor(jobsRoot: string, jobId: string): string {
 }
 
 export function writeResultArtifact(
-  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
+  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicDurableSync' | 'syncDirectoryDurableSync'>,
   jobsRoot: string,
   jobId: string,
   markdown: string,
 ): string {
   const targetPath = resultPathFor(jobsRoot, jobId);
   storage.mkdirSync(dirname(targetPath), { recursive: true });
-  if (!storage.writeAtomicSync(targetPath, markdown, { encoding: 'utf-8' })) {
+  if (
+    !storage.writeAtomicDurableSync(targetPath, markdown, { encoding: 'utf-8' }) ||
+    !storage.syncDirectoryDurableSync(jobsRoot) ||
+    !storage.syncDirectoryDurableSync(dirname(jobsRoot))
+  ) {
     throw new Error(`Failed to write result artifact for ${jobId}`);
   }
   return targetPath;
@@ -141,7 +145,7 @@ function materializeResultMarkdown(
   db: Database,
   jobId: string,
   jobsRoot: string,
-  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
+  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicDurableSync' | 'syncDirectoryDurableSync'>,
   ctx: StoreReadContext,
 ): string {
   const markdown = buildResultMarkdown(db, jobId, ctx);
@@ -153,13 +157,35 @@ export function ensureResultMarkdownArtifact(
   db: Database,
   jobId: string,
   jobsRoot: string,
-  storage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeAtomicSync'>,
+  storage: Pick<
+    StoragePort,
+    | 'existsSync'
+    | 'mkdirSync'
+    | 'writeAtomicDurableSync'
+    | 'syncDirectoryDurableSync'
+    | 'openSync'
+    | 'fdatasyncSync'
+    | 'closeSync'
+  >,
   ctx: StoreReadContext,
 ): string {
   const targetPath = resultPathFor(jobsRoot, jobId);
   if (storage.existsSync(targetPath)) {
     const projection = readProjectionJobRow(db, jobId);
     if (projection === null || projection.parent_workflow_job_id === null) {
+      const fd = storage.openSync(targetPath, 'r');
+      try {
+        storage.fdatasyncSync(fd);
+      } finally {
+        storage.closeSync(fd);
+      }
+      if (
+        !storage.syncDirectoryDurableSync(dirname(targetPath)) ||
+        !storage.syncDirectoryDurableSync(jobsRoot) ||
+        !storage.syncDirectoryDurableSync(dirname(jobsRoot))
+      ) {
+        throw new Error(`Failed to sync result artifact for ${jobId}`);
+      }
       return targetPath;
     }
   }

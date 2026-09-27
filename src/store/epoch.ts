@@ -2076,7 +2076,7 @@ function readPendingProtections(runtime: Pick<Runtime, 'paths' | 'storage'>): re
         return [{ storeRoot: value.storeRoot, epoch: value.epoch, reason: value.reason, recordedAt: value.recordedAt }];
       }
     } catch {
-      // The record filename still identifies its canonical epoch for the next protection retry.
+      // An undecodable record is retained for its writer to resolve.
     }
     return [];
   });
@@ -2134,17 +2134,16 @@ function retryPendingProtections(runtime: Runtime, storeRoot: string, openEpoch:
       clearPendingProtection(runtime, storeRoot, pending.epoch);
     }
   }
-  let pendingNames: ReadonlySet<string>;
-  try {
-    pendingNames = new Set(runtime.storage.readdirSync(pendingProtectionDirectory(runtime)));
-  } catch {
-    return;
-  }
+  const pendingEpochs = new Set(
+    readPendingProtections(runtime)
+      .filter((pending) => pending.storeRoot === storeRoot)
+      .map((pending) => pending.epoch),
+  );
   for (const observation of observeStoreEpochs(runtime.storage, storeRoot)) {
     if (
       observation.proof.kind !== 'proven' ||
       compareEpoch(observation.epoch, openEpoch) >= 0 ||
-      !pendingNames.has(basename(pendingProtectionPath(runtime, storeRoot, observation.epoch)))
+      !pendingEpochs.has(observation.epoch)
     )
       continue;
     const directory = epochDirectory(storeRoot, observation.epoch);
@@ -2756,10 +2755,25 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
         : null;
     const predecessor = current === null ? protectedIncumbent : resolvedStoreEpoch(dbDir, current.epoch);
     const incumbent =
-      classification.kind === 'unavailable'
-        ? null
-        : (predecessor ?? (unprovenCurrent === null ? null : resolvedStoreEpoch(dbDir, unprovenCurrent.epoch)));
-    const incumbentEpochKey = incumbent === null ? null : encodeResolvedStoreEpoch(runtime, incumbent);
+      predecessor ?? (unprovenCurrent === null ? null : resolvedStoreEpoch(dbDir, unprovenCurrent.epoch));
+    let incumbentEpochKey: string | null = null;
+    if (incumbent !== null) {
+      if (classification.kind === 'unavailable') {
+        incumbentEpochKey = inspectResolvedStoreEpochKey(runtime, incumbent);
+        if (incumbentEpochKey === null) {
+          try {
+            incumbentEpochKey = encodeResolvedStoreEpoch(runtime, incumbent);
+          } catch {
+            // A missing lineage marker cannot be created while its opener remains unavailable.
+          }
+        }
+      } else {
+        incumbentEpochKey = encodeResolvedStoreEpoch(runtime, incumbent);
+      }
+    }
+    if (incumbent !== null && incumbentEpochKey === null) {
+      throw new Error('Store epoch mint cannot identify its unavailable predecessor.');
+    }
     const disposition =
       options.authorizeMint?.({
         incumbent,
@@ -3007,7 +3021,7 @@ export function listStoreEpochs(
       const read =
         epochKey === null ? null : observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, epochKey);
       const closure = read?.kind === 'recorded' ? read.evidence : null;
-      const closureUnreadable = read?.kind === 'unreadable';
+      const closureUnreadable = read?.kind === 'unreadable' || read?.kind === 'unsupported';
       return {
         epoch,
         address: resolved?.path ?? epochDirectory(dbDir, epoch),
@@ -3016,7 +3030,8 @@ export function listStoreEpochs(
           closure?.disposition ?? (resolved === null || closureUnreadable ? 'unrecoverable-retained' : 'pending'),
         dataOutcome: closure?.dataOutcome ?? (closureUnreadable ? 'unreadable' : 'unknown'),
         custodyState: closureUnreadable ? 'undecidable' : custodyState(epochKey, closure),
-        closureReason: closure?.reason ?? null,
+        closureReason:
+          closure?.reason ?? (read?.kind === 'unsupported' ? `unsupported closure generation ${read.version}` : null),
         ...(protectionPending === undefined ? {} : { protectionPending }),
         role:
           observation.proof.kind === 'unobservable'
@@ -3059,7 +3074,7 @@ export function listStoreEpochs(
     const publicationReason = metadata.kind === 'valid' ? metadata.value.classification : unavailableClassification();
     const read = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey);
     const closure = read.kind === 'recorded' ? read.evidence : null;
-    const closureUnreadable = read.kind === 'unreadable';
+    const closureUnreadable = read.kind === 'unreadable' || read.kind === 'unsupported';
     const role: StoreEpochListEntry['role'] = addressPresent
       ? 'protected'
       : closure?.disposition === 'closed' && protectedEpochRemoved(runtime, address)
@@ -3075,7 +3090,8 @@ export function listStoreEpochs(
       dataOutcome: closure?.dataOutcome ?? (closureUnreadable || role === 'unobservable' ? 'unreadable' : 'unknown'),
       custodyState:
         closureUnreadable || role === 'unobservable' ? 'undecidable' : custodyState(address.epochKey, closure),
-      closureReason: closure?.reason ?? null,
+      closureReason:
+        closure?.reason ?? (read.kind === 'unsupported' ? `unsupported closure generation ${read.version}` : null),
       bytes: addressPresent ? epochBytes(runtime.storage, protectedStoreRoot, epoch) : null,
       publicationReason,
       supersededStoreVersion:

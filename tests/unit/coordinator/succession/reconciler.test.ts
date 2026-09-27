@@ -230,7 +230,7 @@ describe('succession reconciler', () => {
     }
   });
 
-  it('reconciles a registered intent and does not rewrite an unchanged hold on retry', async () => {
+  it('closes a registered intent after a repeated validation failure and confirmed missing root', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
     directories.push(runDir);
     const onIntentChanged = vi.fn();
@@ -279,13 +279,17 @@ describe('succession reconciler', () => {
       expect(await reconciler.reconcile()).toMatchObject({ kind: 'refused' });
       expect(readUpgradeIntent(runDir)).toMatchObject({
         kind: 'readable',
-        intent: { revision: first.intent.revision },
+        intent: {
+          revision: first.intent.revision + 1,
+          disposition: 'closed',
+          blockers: [{ owner: 'target', reason: 'target build no longer validates' }],
+        },
       });
     } finally {
       reconciler.dispose();
     }
     expect(unsubscribe).toHaveBeenCalledOnce();
-    expect(onIntentChanged).toHaveBeenCalledTimes(2);
+    expect(onIntentChanged).toHaveBeenCalledTimes(3);
   });
 
   it.each(['transient', 'obligation'] as const)(

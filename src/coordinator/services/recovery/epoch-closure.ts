@@ -662,6 +662,7 @@ export async function settleSupersededEpochClosures(
       candidate.epochKey,
     );
     const read = observeEpochClosure(runtime, stateRoot, candidate.epochKey);
+    if (read.kind === 'unsupported') continue;
     if (read.kind === 'unreadable' && !setAsideUnreadableEpochClosure(runtime, stateRoot, candidate.epochKey)) continue;
     const previous = read.kind === 'recorded' ? read.evidence : null;
     let dataOutcome: EpochClosureEvidence['dataOutcome'];

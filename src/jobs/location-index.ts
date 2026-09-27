@@ -442,7 +442,13 @@ export class JobLocationIndex {
         const fd = this.runtime.storage.openSync(location.resultPath, 'r');
         try {
           const artifact = this.runtime.storage.fstatSync(fd, { bigint: true });
-          return artifact.isFile() && artifact.size > 0n;
+          if (!artifact.isFile() || artifact.size === 0n) return false;
+          this.runtime.storage.fdatasyncSync(fd);
+          const directory = dirname(location.resultPath);
+          return (
+            this.runtime.storage.syncDirectoryDurableSync(directory) &&
+            this.runtime.storage.syncDirectoryDurableSync(dirname(directory))
+          );
         } finally {
           this.runtime.storage.closeSync(fd);
         }

@@ -20,7 +20,7 @@ import {
   type StoreMintDisposition,
   type StoreMintObservation,
 } from '../../store/epoch.js';
-import { observeEpochClosure, recordEpochClosure } from '../../store/epoch-closure.js';
+import { recordEpochClosure } from '../../store/epoch-closure.js';
 import { readEpochKey } from '../../store/epoch-key.js';
 import { observeProtectedEpoch } from '../../store/epoch-protection.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
@@ -334,8 +334,6 @@ export function createStartupMintAuthorizer(
       )
         continue;
       const historicalKey = encodeResolvedStoreEpoch(runtime, historical.resolved);
-      const closure = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, historical.epochKey);
-      if (closure.kind === 'recorded' && closure.evidence.disposition === 'unrecoverable-retained') continue;
       const fingerprint =
         historical.epochJson.kind === 'valid' ? historical.epochJson.value.build.storeFormatFingerprint : '';
       void seedHistoricalEpoch(
@@ -352,25 +350,28 @@ export function createStartupMintAuthorizer(
     if (incumbent === null) {
       return retirementMintDisposition(observation.observedEpochCount === 0 ? 'initial' : 'unopenable', null);
     }
-    const epochKey = encodeResolvedStoreEpoch(runtime, incumbent);
+    const epochKey = observation.incumbentEpochKey;
+    if (epochKey === null) return null;
     const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
     if (lineageKey === undefined) return null;
     const unprovenIncumbent = observation.classification.kind === 'absent';
     const recoveredFingerprint = unprovenIncumbent
       ? seedUnprovenIncumbentJobs(runtime, index, incumbent, epochKey)
       : '';
+    const incumbentMetadata = listStoreEpochs(runtime).find(
+      (entry) => entry.resolved?.path === incumbent.path,
+    )?.epochJson;
     const fingerprint =
       'storedFingerprint' in observation.classification &&
       typeof observation.classification.storedFingerprint === 'string'
         ? observation.classification.storedFingerprint
-        : recoveredFingerprint;
+        : recoveredFingerprint ||
+          (incumbentMetadata?.kind === 'valid' ? incumbentMetadata.value.build.storeFormatFingerprint : '');
     const knownLocations = index.locationsFor(epochKey);
     const knownJobs = knownLocations.map((location) => ({
       jobId: location.jobId,
       subject: location.subject,
     }));
-    // Liveness is judged from locations known before this startup marks its own unresolved holds.
-    const knownLive = knownLocations.some((location) => location.disposition !== 'terminal');
     const priorController = latestControllerOpen(runtime, epochKey);
     const needsRetainedExecutor =
       (priorController.latest !== null || priorController.unreadable.length > 0) && !index.resultsReleased(epochKey);
@@ -449,9 +450,6 @@ export function createStartupMintAuthorizer(
     if (executorSettled && seeded.kind === 'complete' && custodySettled && index.resultsReleased(epochKey)) {
       return retirementMintDisposition('retired', epochKey);
     }
-    const liveHistory =
-      (seeded.kind === 'unrecoverable-retained' && seeded.reason === 'known-jobs-unresolved') ||
-      (executor.kind === 'no-capable-root' && knownLive);
     const attemptsPath = join(
       runtime.paths.coral.coordinator.runDir,
       'retirement-patience.v1',
@@ -487,9 +485,10 @@ export function createStartupMintAuthorizer(
       throw new Error('Retirement patience could not be recorded durably.');
     const holdsNoWork =
       index.locationsFor(epochKey).length === 0 &&
+      index.unknownLocationHold(epochKey) === null &&
       !custodyNamesEpoch &&
       !controllerReceiptsMayNameEpoch(runtime, epochKey, lineageKey);
-    if ((!liveHistory || unprovenIncumbent) && !holdsNoWork && attempts < UNOPENABLE_STARTUP_ATTEMPTS) return null;
+    if (!holdsNoWork && attempts < UNOPENABLE_STARTUP_ATTEMPTS) return null;
     // An unreadable closure already retains the epoch visibly, so the mint proceeds without overwriting it.
     void recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
       version: 'v1',

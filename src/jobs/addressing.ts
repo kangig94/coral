@@ -1,7 +1,7 @@
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
 import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
-import { hasHistoricalSource, refreshHistoricalEpoch } from './historical-reader.js';
+import { hasHistoricalSource, refreshHistoricalEpoch, retryUnknownHistoricalEpochs } from './historical-reader.js';
 import { type JobLocationIndex, type JobLocation } from './location-index.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse, JobProgressEvent } from './records.js';
@@ -73,6 +73,9 @@ export class JobAddressing {
   private location(jobId: string): JobLocation | null {
     const existing = this.locations.read(jobId);
     if (existing !== null) return existing;
+    retryUnknownHistoricalEpochs(this.locations);
+    const recovered = this.locations.read(jobId);
+    if (recovered !== null) return recovered;
     const detail = this.active.detail(jobId);
     const epochKey = this.active.epochKey();
     if (detail === null || epochKey === null) return null;

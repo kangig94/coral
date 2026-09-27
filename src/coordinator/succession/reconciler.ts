@@ -826,6 +826,21 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           intent.blockers[0].reason === targetFailure &&
           intent.retryCondition?.kind === 'target-change'
         ) {
+          if (intent.nextTarget === null || intent.nextTarget === undefined) {
+            let missingRoot = false;
+            try {
+              options.runtime.storage.statSync(intent.target.pluginRootLabel);
+            } catch (error: unknown) {
+              missingRoot = error instanceof Error && 'code' in error && error.code === 'ENOENT';
+            }
+            if (missingRoot) {
+              return writeThen(
+                intent,
+                { ...intent, disposition: 'closed', retryCondition: null, successionPreparation: null },
+                { kind: 'refused', reason: targetFailure },
+              );
+            }
+          }
           return settle({ kind: 'refused', reason: targetFailure });
         }
         return writeThen(

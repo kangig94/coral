@@ -6,7 +6,11 @@ import { newRawDatabase } from '../../helpers/test-db.js';
 
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 import { JobAddressing } from '../../../src/jobs/addressing.js';
-import { refreshHistoricalEpoch, seedHistoricalEpoch } from '../../../src/jobs/historical-reader.js';
+import {
+  refreshHistoricalEpoch,
+  retryUnknownHistoricalEpochs,
+  seedHistoricalEpoch,
+} from '../../../src/jobs/historical-reader.js';
 import { readOrCreateEpochKey } from '../../../src/store/epoch-key.js';
 import { protectStoreEpoch, protectedStoreEpochRoot } from '../../../src/store/epoch-protection.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
@@ -47,6 +51,57 @@ afterEach(() => {
 });
 
 describe('historical job readers', () => {
+  it('retries an unknown inventory on lookup and on the serving cadence', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      1,
+      '2026-09-25T00:00:00.000Z',
+      'job.launch.requested',
+      'job',
+      'recovered',
+      Buffer.from(
+        JSON.stringify({
+          projectRoot: '/workspace/project',
+          jobKind: 'provider',
+          request: { cwd: '/workspace/project' },
+        }),
+      ),
+    );
+    db.close();
+    let readable = false;
+    const flakyStorage = {
+      ...storage,
+      openSqliteDatabaseSync: (...args: Parameters<typeof storage.openSqliteDatabaseSync>) => {
+        if (!readable) throw new Error('inventory unavailable');
+        return storage.openSqliteDatabaseSync(...args);
+      },
+    };
+    const index = new JobLocationIndex(runtime, root);
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    const key = 'lineage-old:7';
+    expect(
+      seedHistoricalEpoch(runtime, index, epoch, key, fingerprints[0], join(root, 'results'), flakyStorage).kind,
+    ).toBe('unrecoverable-retained');
+    expect(index.read('recovered')).toBeNull();
+    readable = true;
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'active',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+      () => 'pending',
+    );
+
+    expect(addressing.detail('recovered')).toMatchObject({ kind: 'unresolved', jobId: 'recovered' });
+    expect(index.unknownLocationHold(key)).toBeNull();
+    index.holdUnknownLocations(key, 'retry cadence');
+    retryUnknownHistoricalEpochs(index);
+    expect(index.unknownLocationHold(key)).toBeNull();
+  });
   it('reads a retained epoch with a WAL sidecar under its shared lock', () => {
     const { root, epochDir, db } = fixture(fingerprints[0]);
     db.exec(

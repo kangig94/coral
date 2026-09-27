@@ -96,6 +96,24 @@ type HistoricalEpochSource = {
   readonly storage: StoragePort;
 };
 const historicalSources = new WeakMap<JobLocationIndex, Map<string, HistoricalEpochSource>>();
+export function retryUnknownHistoricalEpochs(index: JobLocationIndex): void {
+  for (const [epochKey, source] of historicalSources.get(index) ?? []) {
+    try {
+      if (index.unknownLocationHold(epochKey) === null) continue;
+      void seedHistoricalEpoch(
+        source.runtime,
+        index,
+        source.originalEpoch,
+        epochKey,
+        source.fingerprint,
+        source.jobsRoot,
+        source.storage,
+      );
+    } catch {
+      // Another held epoch can still be retried on this pass.
+    }
+  }
+}
 export type KnownHistoricalJob = Readonly<{ jobId: string; subject: JobLocationSubject }>;
 export type HistoricalSeedResult =
   | Readonly<{ kind: 'complete'; jobIds: readonly string[] }>
