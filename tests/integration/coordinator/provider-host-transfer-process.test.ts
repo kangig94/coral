@@ -328,6 +328,100 @@ async function capsuleNamesController(home: string, fixture: PluginFixture): Pro
 }
 
 describe('real-process provider host transfer', () => {
+  it('keeps a live job controllable after a sentinel-less backend crashes', async () => {
+    assertBuildArtifactsAvailable();
+    const world = createTransferWorld();
+    const fixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14', accepts: 'bundled' });
+    rmSync(join(fixture.root, 'bridge', 'coral-sentinel.cjs'));
+    const runDir = coordinatorPaths('prod', { baseDir: join(world.home, '.coral') }).runDir;
+    const harness = join(world.home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisor = spawn(process.execPath, [harness, join(fixture.root, 'bridge', 'coral-backend.cjs')], {
+      env: {
+        ...process.env,
+        HOME: world.home,
+        TMPDIR: world.home,
+        ...world.env,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_FIXTURE_REAL_BACKEND: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    supervisor.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+    supervisor.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+    const launch = new CoordinatorLaunchRecord(runDir);
+    try {
+      const original = await waitForDiscoveryRecord(world.home, 'prod', 20_000);
+      const jobId = launchedJobId(await runCli(fixture, world, ['codex', '-i', world.prompt, '--detach']));
+      await waitForCondition(() => existsSync(join(world.state, 'job-running')), 60_000);
+      const codexPid = Number(readFileSync(join(world.state, 'job-running'), 'utf8'));
+      const codexIncarnation = await observedIncarnation(codexPid);
+      if (codexIncarnation !== null) hostProcesses.push({ pid: codexPid, incarnation: codexIncarnation });
+      let found: ReturnType<typeof readOnlyCapsule> = null;
+      await waitForCondition(() => (found = readOnlyCapsule(world.home)) !== null, 30_000);
+      if (found === null) throw new Error('Live job has no provider capsule');
+      const hosts = recordHostProcesses((found as NonNullable<ReturnType<typeof readOnlyCapsule>>).capsule);
+      const waiter = startCli(fixture, world, ['wait', 'jobs', jobId, '--verbose']);
+      await waitForCondition(() => waiter.stdout().includes('before-transfer'), 30_000);
+      process.kill(original.pid, 'SIGKILL');
+      await waitForCondition(() => {
+        const current = readDiscoveryRecordForHome(world.home, 'prod');
+        return current !== null && current.pid !== original.pid && launch.read().launch?.phase === 'serving';
+      }, 25_000);
+      expect(hostsAlive(hosts), output).toBe(true);
+      const resumedWaiter = startCli(fixture, world, ['wait', 'jobs', jobId, '--verbose']);
+      writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
+      await waitForCondition(() => resumedWaiter.stdout().includes('after-transfer'), 30_000);
+      writeFileSync(join(world.state, 'release-job'), 'released');
+      expect(await resumedWaiter.completed, resumedWaiter.output()).toBe(0);
+      expect(await runCli(fixture, world, ['jobs', 'detail', jobId])).toMatch(/completed/iu);
+    } finally {
+      const childPid = launch.read().launch?.child?.pid;
+      launch.close();
+      if (supervisor.exitCode === null) supervisor.kill('SIGTERM');
+      if (childPid !== undefined && observeProcessLiveness(childPid) === 'alive') process.kill(childPid, 'SIGKILL');
+    }
+  }, 180_000);
+
+  it('preserves a live provider job when its supervisor disappears', async () => {
+    assertBuildArtifactsAvailable();
+    const world = createTransferWorld();
+    const { oldFixture, old, incumbentPid, jobId, hosts } = await startProxiedJob(world);
+    if (old.child.pid === undefined) throw new Error('Supervisor has no PID');
+    process.kill(old.child.pid, 'SIGKILL');
+    await waitForCondition(() => observeProcessLiveness(incumbentPid) === 'absent', 20_000);
+    expect(hostsAlive(hosts)).toBe(true);
+
+    const replacement = spawnCoordinator({
+      fixture: oldFixture,
+      home: world.home,
+      tempRoots: roots,
+      env: world.env,
+      supervised: true,
+    });
+    coordinators.push(replacement);
+    await waitForCondition(() => {
+      const discovery = readDiscoveryRecordForHome(world.home, 'prod');
+      return discovery !== null && discovery.pid !== incumbentPid;
+    }, 30_000);
+    const waiter = startCli(oldFixture, world, ['wait', 'jobs', jobId, '--verbose']);
+    writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
+    await waitForCondition(() => waiter.stdout().includes('after-transfer'), 60_000);
+    writeFileSync(join(world.state, 'release-job'), 'released');
+    expect(await waiter.completed, waiter.output()).toBe(0);
+    expect(await runCli(oldFixture, world, ['jobs', 'detail', jobId])).toMatch(/completed/iu);
+    expect(hostsAlive(hosts)).toBe(true);
+  }, 180_000);
+
   it('recovers the retained controller before a newer installed build while its host is live', async () => {
     assertBuildArtifactsAvailable();
     const world = createTransferWorld();
@@ -372,6 +466,9 @@ describe('real-process provider host transfer', () => {
       oldPid = original.pid;
       const jobId = launchedJobId(await runCli(oldFixture, world, ['codex', '-i', world.prompt, '--detach']));
       await waitForCondition(() => existsSync(join(world.state, 'job-running')), 60_000);
+      const codexPid = Number(readFileSync(join(world.state, 'job-running'), 'utf8'));
+      const codexIncarnation = await observedIncarnation(codexPid);
+      if (codexIncarnation !== null) hostProcesses.push({ pid: codexPid, incarnation: codexIncarnation });
       let found: ReturnType<typeof readOnlyCapsule> = null;
       await waitForCondition(() => (found = readOnlyCapsule(world.home)) !== null, 30_000);
       if (found === null) throw new Error('The job did not start a provider host.');

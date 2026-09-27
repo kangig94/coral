@@ -175,6 +175,7 @@ async function runHandoff(
 function createBundle(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-handoff-runner-'));
   roots.push(root);
+  process.argv[1] = join(root, 'coral-backend.cjs');
   writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf8');
   writeFileSync(join(root, 'coral-sentinel.cjs'), 'handoff runner supervisor fixture', 'utf8');
   writeFileSync(join(root, 'coral-cli'), cliBundle, 'utf8');
@@ -288,7 +289,10 @@ beforeEach(() => {
   }) as typeof process.stdout.write);
 });
 
+const invokingExecutable = process.argv[1];
+
 afterEach(() => {
+  process.argv[1] = invokingExecutable;
   if (originalGuard === undefined) {
     delete process.env[GUARD_ENV];
   } else {
@@ -875,7 +879,10 @@ describe('handoff-routing/runner', () => {
 
   it('keeps backend-startup delegation pending past the former liveness point until authenticated readiness', async () => {
     process.env[GUARD_ENV] = 'not-a-cli-guard';
-    const bundleDir = roots[0];
+    const currentBundleDir = roots[0];
+    const bundleDir = createBundle();
+    process.argv[1] = join(currentBundleDir, 'coral-backend.cjs');
+    rmSync(join(bundleDir, 'coral-sentinel.cjs'));
     const target = validatedTarget(bundleDir);
     let child: ChildProcess | undefined;
     let releasePoll: (() => void) | undefined;
@@ -912,7 +919,7 @@ describe('handoff-routing/runner', () => {
     expect(mockState.health).not.toHaveBeenCalled();
     expect(mockState.spawn).toHaveBeenCalledWith(
       process.execPath,
-      [join(bundleDir, 'coral-sentinel.cjs'), join(bundleDir, 'coral-backend.cjs')],
+      [join(currentBundleDir, 'coral-sentinel.cjs'), join(bundleDir, 'coral-backend.cjs')],
       {
         cwd: '/handoff/cwd',
         env: {

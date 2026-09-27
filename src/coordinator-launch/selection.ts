@@ -16,8 +16,7 @@ export function validatedBuild(root: string): StrictBundleManifest | null {
   if (!adjacent.ok) return null;
   const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
   if (!parsed.success || createForeignTargetValidator()(bundleDir, parsed.data).kind !== 'validated') return null;
-  if (!existsSync(join(bundleDir, 'coral-sentinel.cjs')) || !existsSync(join(bundleDir, 'coral-backend.cjs')))
-    return null;
+  if (!existsSync(join(bundleDir, 'coral-backend.cjs'))) return null;
   return parsed.data;
 }
 

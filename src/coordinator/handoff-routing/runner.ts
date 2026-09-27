@@ -1238,9 +1238,9 @@ async function executeResolvedHandoff(
           : undefined;
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : CLI_BUNDLE_FILE;
       const target = join(execution.bundleDir, executable);
-      const sentinel = join(execution.bundleDir, 'coral-sentinel.cjs');
+      const sentinel = join(dirname(process.argv[1] ?? ''), 'coral-sentinel.cjs');
       if (operation.kind === 'backend-startup' && !runtime.storage.existsSync(sentinel))
-        throw new Error('The selected build has no coordinator supervisor executable.');
+        throw new Error('The current build has no coordinator supervisor executable.');
       const childArguments =
         operation.kind === 'backend-startup'
           ? [sentinel, target, ...delegatedArguments(operation)]

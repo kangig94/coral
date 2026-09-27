@@ -1,0 +1,210 @@
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { build } from 'esbuild';
+import { describe, expect, it } from 'vitest';
+
+import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { createPluginFixture, createShippedPluginFixture } from '#tests/integration/coordinator/helpers.js';
+import { validatedBuild } from '#src/coordinator-launch/selection.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
+
+function fixtureBuildSetId(root: string): string {
+  return (
+    JSON.parse(readFileSync(join(root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8')) as {
+      buildSetId: string;
+    }
+  ).buildSetId;
+}
+
+describe('namespace supervisor controller selection', () => {
+  it('admits a shipped backend using the current supervisor', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-shipped-supervisor-'));
+    roots.push(home);
+    const shipped = createShippedPluginFixture(roots, 'v0.10.13');
+    expect(validatedBuild(shipped.root)).not.toBeNull();
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisor = spawn(process.execPath, [harness, join(shipped.root, 'bridge', 'coral-backend.cjs')], {
+      env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+      stdio: 'ignore',
+    });
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
+      expect(record.read().launch?.buildSetId).toBe(fixtureBuildSetId(shipped.root));
+      expect(record.read().attempt).toBeNull();
+      const discovery = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as { pid: number };
+      expect(discovery.pid).toBe(record.read().launch?.child?.pid);
+    } finally {
+      const childPid = record.read().launch?.child?.pid;
+      record.close();
+      if (supervisor.exitCode === null) supervisor.kill('SIGTERM');
+      if (childPid !== undefined) {
+        try {
+          process.kill(childPid, 'SIGKILL');
+        } catch {
+          // The child may already have exited.
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('rejects rollback and accepts a newer request while its child is starting', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-starting-requests-'));
+    roots.push(home);
+    const older = createPluginFixture(roots, { flavor: 'prod', version: '0.10.13' });
+    const current = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14', backend: 'sentinel-freeze' });
+    const newer = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisor = spawn(process.execPath, [harness, join(current.root, 'bridge', 'coral-backend.cjs')], {
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_FIXTURE_FAIL_INSTALLED_ROOTS: current.root,
+        CORAL_FIXTURE_FAIL_AFTER_MS: '10000',
+      },
+      stdio: 'ignore',
+    });
+    const record = new CoordinatorLaunchRecord(runDir);
+    let cli: ReturnType<typeof spawn> | null = null;
+    try {
+      await waitForCondition(() => record.read().launch?.phase === 'admitted', 10_000);
+      const rollback = record.request(join(older.root, 'bridge', 'coral-backend.cjs'), fixtureBuildSetId(older.root));
+      const runningCli = spawn(process.execPath, [join(newer.root, 'bridge', 'coral-cli'), 'backend', 'start'], {
+        cwd: home,
+        env: {
+          ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('CORAL_'))),
+          HOME: home,
+          TMPDIR: home,
+          CLAUDE_PLUGIN_ROOT: newer.root,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      cli = runningCli;
+      let cliOutput = '';
+      runningCli.stdout?.on('data', (chunk: Buffer) => (cliOutput += chunk.toString()));
+      runningCli.stderr?.on('data', (chunk: Buffer) => (cliOutput += chunk.toString()));
+      try {
+        await waitForCondition(() => {
+          const requests = record.read().requests;
+          return (
+            requests.find((entry) => entry.id === rollback.id)?.status === 'unavailable' &&
+            requests.find((entry) => entry.buildSetId === fixtureBuildSetId(newer.root))?.status === 'accepted'
+          );
+        }, 5_000);
+      } catch (error: unknown) {
+        throw new Error(`Starting request was not accepted: ${JSON.stringify({ state: record.read(), cliOutput })}`, {
+          cause: error,
+        });
+      }
+      expect(record.read().launch?.buildSetId).toBe(fixtureBuildSetId(current.root));
+      await waitForCondition(() => runningCli.exitCode !== null, 20_000);
+      expect(runningCli.exitCode, cliOutput).toBe(0);
+    } finally {
+      const childPid = record.read().launch?.child?.pid;
+      record.close();
+      if (cli !== null && cli.exitCode === null) cli.kill('SIGKILL');
+      if (supervisor.exitCode === null) supervisor.kill('SIGTERM');
+      if (childPid !== undefined) {
+        try {
+          process.kill(childPid, 'SIGKILL');
+        } catch {
+          // The child may already have exited.
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('marks a persisted request unavailable after its target disappears', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-missing-target-'));
+    roots.push(home);
+    const original = createPluginFixture(roots, { flavor: 'prod', version: '0.10.13' });
+    const missing = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
+    const baseDir = join(home, '.coral');
+    const runDir = coordinatorPaths('prod', { baseDir }).runDir;
+    const initialRecord = new CoordinatorLaunchRecord(runDir);
+    const missingRequest = initialRecord.request(
+      join(missing.root, 'bridge', 'coral-backend.cjs'),
+      fixtureBuildSetId(missing.root),
+    );
+    initialRecord.close();
+    rmSync(missing.root, { recursive: true, force: true });
+    const registry = join(home, 'installed.json');
+    writeFileSync(registry, JSON.stringify({ plugins: { 'coral@fixture': [{ installPath: original.root }] } }));
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisor = spawn(process.execPath, [harness, join(original.root, 'bridge', 'coral-backend.cjs')], {
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_PLUGIN_REGISTRY: registry,
+      },
+      stdio: 'ignore',
+    });
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      expect(record.read().requests.find((request) => request.id === missingRequest.id)?.status).toBe('unavailable');
+      const childPid = record.read().launch?.child?.pid;
+      if (childPid === undefined) throw new Error('Serving child has no PID');
+      process.kill(childPid, 'SIGINT');
+      await waitForCondition(() => supervisor.exitCode !== null, 15_000);
+      expect(supervisor.exitCode).toBe(0);
+    } finally {
+      const childPid = record.read().launch?.child?.pid;
+      record.close();
+      if (supervisor.exitCode === null) supervisor.kill('SIGTERM');
+      if (childPid !== undefined) {
+        try {
+          process.kill(childPid, 'SIGKILL');
+        } catch {
+          // The child may already have exited.
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});

@@ -55,7 +55,9 @@ export type CoordinatorLaunchState = Readonly<{
   launch: LaunchReservation | null;
   attempt: LaunchReservation | null;
   requests: readonly LaunchRequest[];
-  hold?: Readonly<{ kind: 'no-eligible-build'; controller: string }>;
+  hold?:
+    | Readonly<{ kind: 'no-eligible-build'; controller: string }>
+    | Readonly<{ kind: 'target-indeterminate'; requestId: string }>;
 }>;
 
 export const LAUNCH_OWNER_LEASE_MS = 10 * 60_000;
@@ -234,7 +236,23 @@ export class CoordinatorLaunchRecord {
 
   clearHold(owner: LaunchOwner, now: number): void {
     this.#change((state) => {
-      if (!this.#current(state, owner, now) || state.hold === undefined) return { state, result: undefined };
+      if (!this.#current(state, owner, now) || state.hold?.kind !== 'no-eligible-build')
+        return { state, result: undefined };
+      return { state: { ...state, hold: undefined }, result: undefined };
+    });
+  }
+
+  holdTarget(owner: LaunchOwner, requestId: string, now: number): void {
+    this.#change((state) => {
+      if (!this.#current(state, owner, now)) return { state, result: undefined };
+      return { state: { ...state, hold: { kind: 'target-indeterminate', requestId } }, result: undefined };
+    });
+  }
+
+  clearTargetHold(owner: LaunchOwner, now: number): void {
+    this.#change((state) => {
+      if (!this.#current(state, owner, now) || state.hold?.kind !== 'target-indeterminate')
+        return { state, result: undefined };
       return { state: { ...state, hold: undefined }, result: undefined };
     });
   }
@@ -263,6 +281,19 @@ export class CoordinatorLaunchRecord {
       );
       if (!requests.some((request) => request.id === requestId && request.status === 'completed'))
         return { state, result: false };
+      return { state: { ...state, requests }, result: true };
+    });
+  }
+
+  unavailable(owner: LaunchOwner, requestId: string, now: number): boolean {
+    return this.#change((state) => {
+      if (!this.#current(state, owner, now)) return { state, result: false };
+      const request = state.requests.find((entry) => entry.id === requestId);
+      if (request === undefined || (request.status !== 'recorded' && request.status !== 'accepted'))
+        return { state, result: false };
+      const requests = state.requests.map((entry) =>
+        entry.id === requestId ? { ...entry, status: 'unavailable' as const } : entry,
+      );
       return { state: { ...state, requests }, result: true };
     });
   }

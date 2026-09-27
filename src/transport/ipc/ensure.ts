@@ -810,7 +810,8 @@ function supervisorAcceptedUpgrade(
     )
       return 'unproven';
     return state.requests.some((request) => {
-      if (request.status !== 'accepted' || request.acceptedEpoch !== owner.epoch) return false;
+      if (request.status !== 'recorded' && (request.status !== 'accepted' || request.acceptedEpoch !== owner.epoch))
+        return false;
       const adjacent = readBoundedAdjacentManifest(dirname(request.executable));
       if (!adjacent.ok) return false;
       const parsed = strictBundleManifestSchema.safeParse(adjacent.value);

@@ -421,7 +421,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
       },
     });
     shutdownAfterSentinelLoss = () => {
-      void coordinator.shutdown('sigterm').catch(() => {});
+      bootstrapProbeExitGate.requestExit(1);
     };
 
     const handleShutdownSignal = createCoordinatorShutdownSignalHandler({
@@ -429,7 +429,10 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
       recordExitCode: bootstrapProbeExitGate.recordExitCode,
       onRepeatedSignal: () => backendLog.warn('Repeated shutdown signal received; eventual safe exit is now nonzero.'),
     });
-    process.on('SIGTERM', () => handleShutdownSignal('sigterm'));
+    process.on('SIGTERM', () => {
+      if (process.env.CORAL_LAUNCH_ADMISSION === '1') bootstrapProbeExitGate.requestExit(1);
+      else handleShutdownSignal('sigterm');
+    });
     process.on('SIGINT', () => handleShutdownSignal('sigint'));
 
     const info = await coordinator.start();

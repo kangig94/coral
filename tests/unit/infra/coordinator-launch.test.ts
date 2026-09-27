@@ -15,6 +15,35 @@ afterEach(() => {
 });
 
 describe('coordinator launch admission', () => {
+  it('fences an unavailable receipt to the current owner epoch', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-unavailable-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    const incarnation = (value: string) => value as ProcessIncarnation;
+    const first = record.acquire(
+      { id: 'first', process: { pid: 1, incarnation: incarnation('first') }, buildSetId: 'A' },
+      1_000,
+    );
+    if (first === null) throw new Error('first owner was not admitted');
+    const request = record.request('/missing/backend', 'B');
+    const second = record.acquire(
+      { id: 'second', process: { pid: 2, incarnation: incarnation('second') }, buildSetId: 'A' },
+      1_000 + LAUNCH_OWNER_LEASE_MS + 1,
+    );
+    if (second === null) throw new Error('replacement owner was not admitted');
+    expect(record.unavailable(first, request.id, second.leaseUntil - 1)).toBe(false);
+    expect(record.read().requests[0]?.status).toBe('recorded');
+    record.holdTarget(second, request.id, second.leaseUntil - 1);
+    expect(record.read().hold).toEqual({ kind: 'target-indeterminate', requestId: request.id });
+    record.clearHold(second, second.leaseUntil - 1);
+    expect(record.read().hold).toEqual({ kind: 'target-indeterminate', requestId: request.id });
+    expect(record.unavailable(second, request.id, second.leaseUntil - 1)).toBe(true);
+    expect(record.read().requests[0]?.status).toBe('unavailable');
+    record.clearTargetHold(second, second.leaseUntil - 1);
+    expect(record.read().hold).toBeUndefined();
+    record.close();
+  });
+
   it('revokes a live stalled holder before child admission and preserves an already admitted child', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-record-'));
     roots.push(runDir);
