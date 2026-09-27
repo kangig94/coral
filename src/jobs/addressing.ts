@@ -282,7 +282,7 @@ export class JobAddressing {
       seq: location.terminalSeq,
       epochKey: location.epochKey,
       cursor: this.snapshotCursor(cursor),
-      remainingJobIds: requested.filter((jobId) => jobId !== location.jobId),
+      remainingJobIds: requested.filter((jobId) => !cursor.deliveredJobIds?.includes(jobId)),
       resultPath: location.resultPath,
       result: { content, outcome, durationMs },
       usage: exit.diagnostics.usage,
@@ -432,7 +432,7 @@ export class JobAddressing {
             epochKey: activeEpochKey,
             cursor: this.snapshotCursor(cursor),
             ...(event.type === 'terminal'
-              ? { remainingJobIds: request.jobIds.filter((jobId) => jobId !== event.jobId) }
+              ? { remainingJobIds: request.jobIds.filter((jobId) => !cursor.deliveredJobIds?.includes(jobId)) }
               : {}),
           };
           if (event.type === 'terminal') return;
@@ -443,7 +443,10 @@ export class JobAddressing {
       }
       yield {
         type: 'waiting',
-        waitingJobIds: [...request.jobIds],
+        waitingJobIds:
+          request.supportsWaitV2 === true
+            ? request.jobIds.filter((jobId) => !cursor.deliveredJobIds?.includes(jobId))
+            : [...request.jobIds],
         ...(request.supportsWaitV2 === true ? { cursor: this.snapshotCursor(cursor) } : {}),
         ...(carrierUnknownJobIds.length === 0 ? {} : { carrierUnknownJobIds: [...carrierUnknownJobIds] }),
       };

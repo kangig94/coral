@@ -195,6 +195,79 @@ describe('legacy upgrade request', () => {
     expect(launchDetached).toHaveBeenCalledOnce();
   });
 
+  it('reclaims an expired live waiter lease when no attempt child may serve', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    waiterTargets.add('/installed/target');
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'waiting-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'stalled-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'stalled-waiter', pid: process.pid, incarnation: null },
+      disposition: 'pending',
+      blockers: [],
+      retryCondition: { kind: 'incumbent-retirement', evidence: 'waiting' },
+      attemptDeadline: new Date(Date.now() - 1).toISOString(),
+      completionReceipt: null,
+    });
+    const launchDetached = vi.fn(async () => {
+      const observed = readUpgradeIntent(runDir);
+      if (observed.kind !== 'readable') throw new Error('intent disappeared');
+      expect(observed.intent.attemptOwner).toBeNull();
+      const claimed = await compareAndSwapUpgradeIntent(runDir, observed.intent.revision, {
+        ...observed.intent,
+        attemptId: 'replacement-attempt',
+        attemptOwner: { kind: 'waiter', instanceId: 'replacement', pid: process.pid, incarnation: null },
+        attemptDeadline: new Date(Date.now() + 30_000).toISOString(),
+      });
+      expect(claimed.kind).toBe('written');
+      return process.pid;
+    });
+
+    await expect(
+      startUpgradeWaiter({
+        runDir,
+        socketPath: '/legacy.sock',
+        targetRoot: '/installed/target',
+        ports: { ...createRealUpgradeWaiterPorts(), launchDetached },
+      }),
+    ).resolves.toEqual({ kind: 'started', pid: process.pid });
+    expect(launchDetached).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an expired live waiter lease while its recorded attempt child may serve', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('test process has no incarnation');
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'waiting-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'live-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'stalled-waiter', pid: process.pid, incarnation },
+      attemptChild: { attemptId: 'live-attempt', pid: process.pid, incarnation },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(Date.now() - 1).toISOString(),
+      completionReceipt: null,
+    });
+    const launchDetached = vi.fn(async () => process.pid);
+
+    await expect(
+      startUpgradeWaiter({
+        runDir,
+        socketPath: '/legacy.sock',
+        targetRoot: '/installed/target',
+        ports: { ...createRealUpgradeWaiterPorts(), launchDetached },
+      }),
+    ).resolves.toEqual({ kind: 'unavailable', reason: 'recorded attempt child may still serve' });
+    expect(launchDetached).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { attemptId: 'live-attempt' } });
+  });
+
   it("keeps a dead waiter's lease while its recorded attempt child is alive", async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);

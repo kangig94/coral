@@ -183,8 +183,10 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     requestId = intent.requestId;
     const child = intent.attemptChild;
     if (!validate(intent)) {
-      if (attemptId !== null && intent.attemptId === attemptId) {
-        const childMayServe = child?.attemptId === attemptId && observeRecordedProcess(ports, child) !== 'absent';
+      const ownsAttempt =
+        attemptId !== null && intent.attemptId === attemptId && intent.attemptOwner?.instanceId === instanceId;
+      const childMayServe = child !== null && child !== undefined && observeRecordedProcess(ports, child) !== 'absent';
+      if (ownsAttempt && (launched || childMayServe)) {
         const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
           ...intent,
           disposition: 'deferred',
@@ -197,8 +199,24 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
         });
         if (released.kind === 'conflict') continue;
         if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
+        return { kind: 'target-unavailable' };
       }
-      return { kind: 'target-unavailable' };
+      if ((!ownsAttempt && intent.attemptOwner !== null) || childMayServe) {
+        return { kind: 'target-unavailable' };
+      }
+      const closed = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+        ...intent,
+        disposition: 'closed',
+        blockers: [{ owner: 'target', reason: 'target root no longer validates' }],
+        retryCondition: null,
+        attemptId: null,
+        attemptOwner: null,
+        attemptChild: null,
+        attemptDeadline: null,
+      });
+      if (closed.kind === 'conflict') continue;
+      if (closed.kind !== 'written') return { kind: 'unobservable', reason: closed.kind };
+      return { kind: 'closed' };
     }
     if (
       intent.disposition === 'deferred' &&
@@ -234,8 +252,9 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     const deadline = intent.attemptDeadline === null ? 0 : Date.parse(intent.attemptDeadline);
     if (attemptId === null) {
       if (
-        intent.attemptOwner !== null &&
-        (deadline > now() || observeRecordedProcess(ports, intent.attemptOwner) !== 'absent')
+        (intent.attemptOwner !== null && deadline > now()) ||
+        (intent.disposition === 'attempting' && intent.attemptId !== null && !child) ||
+        (child !== null && child !== undefined && observeRecordedProcess(ports, child) !== 'absent')
       )
         return { kind: 'lease-held' };
       attemptId = ports.uuid();
@@ -271,6 +290,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
         blockers: intent.blockers.filter((entry) => entry.owner !== CONTENDER_DEFERRAL_OWNER),
         attemptId,
         attemptOwner: { kind: 'waiter', instanceId, pid: ports.pid, incarnation },
+        attemptChild: null,
         attemptDeadline: new Date(now() + LEASE_MS).toISOString(),
         retryCondition: { kind: 'incumbent-retirement', evidence: 'waiting for verified idle retirement' },
       });

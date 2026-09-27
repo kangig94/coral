@@ -276,9 +276,21 @@ describe('job addressing', () => {
       type: 'terminal',
       jobId: 'older-b',
       epochKey: 'lineage-old:7',
+      remainingJobIds: ['live', 'older-a'],
       cursor: { positions: { 'lineage-new:8': 5, 'lineage-old:7': 12 } },
     });
     await stream.return(undefined);
+    const waitingStream = addressing.waitStream({
+      jobIds,
+      cursor: (first.value as { cursor: WaitCursor }).cursor,
+      supportsWaitV2: true,
+      timeoutSeconds: 0,
+    });
+    expect((await waitingStream.next()).value).toMatchObject({
+      type: 'waiting',
+      waitingJobIds: ['live', 'older-a'],
+    });
+    await waitingStream.return(undefined);
     const resumedStream = addressing.waitStream({
       jobIds,
       cursor: (first.value as { cursor: WaitCursor }).cursor,
@@ -290,6 +302,7 @@ describe('job addressing', () => {
       type: 'terminal',
       jobId: 'older-a',
       epochKey: 'lineage-old:7',
+      remainingJobIds: ['live'],
       cursor: {
         positions: { 'lineage-new:8': 5, 'lineage-old:7': 12 },
         deliveredJobIds: ['older-b', 'older-a'],
@@ -301,6 +314,59 @@ describe('job addressing', () => {
     const finalStream = addressing.waitStream({ jobIds: ['older-a'], cursor: pruned, supportsWaitV2: true });
     expect((await finalStream.next()).value).toMatchObject({ type: 'terminal', jobId: 'older-a' });
     await finalStream.return(undefined);
+  });
+
+  it('excludes delivered historical jobs from an active v2 terminal remaining list', async () => {
+    const { root, index } = fixture();
+    const resultPath = join(root, 'old.md');
+    writeFileSync(resultPath, 'result\n');
+    index.register('old', 'lineage-old:7', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    index.recordTerminal('old', detail('old', 'completed'), resultPath, 12);
+    index.register('active', 'lineage-new:8', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {
+          yield {
+            type: 'terminal',
+            jobId: 'active',
+            seq: 13,
+            remainingJobIds: ['old'],
+            resultPath: '/results/active.json',
+            result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+          } satisfies WaitStreamEvent;
+        },
+      },
+      () => false,
+      () => 'pending',
+    );
+    const stream = addressing.waitStream({
+      jobIds: ['old', 'active'],
+      supportsWaitV2: true,
+      cursor: {
+        version: 'jobs.wait.v2',
+        locations: { old: 'lineage-old:7', active: 'lineage-new:8' },
+        positions: { 'lineage-old:7': 12, 'lineage-new:8': 0 },
+        deliveredJobIds: ['old'],
+      },
+    });
+    expect((await stream.next()).value).toMatchObject({
+      type: 'terminal',
+      jobId: 'active',
+      remainingJobIds: [],
+    });
+    await stream.return(undefined);
   });
 
   it('advances only the event epoch while serializing all positions', () => {

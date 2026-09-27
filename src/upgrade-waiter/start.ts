@@ -49,8 +49,14 @@ export async function startUpgradeWaiter(
     const owner = intent.attemptOwner;
     if (owner?.kind !== 'waiter') break;
     const liveness = observeRecordedProcess(ports, owner);
-    if (liveness === 'alive') return { kind: 'existing', pid: owner.pid };
-    if (liveness !== 'absent') return { kind: 'unavailable', reason: 'recorded waiter death is unproven' };
+    const leaseExpired = intent.attemptDeadline !== null && Date.parse(intent.attemptDeadline) <= ports.time.now();
+    if (!leaseExpired && liveness === 'alive') return { kind: 'existing', pid: owner.pid };
+    if (!leaseExpired && liveness !== 'absent') {
+      return { kind: 'unavailable', reason: 'recorded waiter death is unproven' };
+    }
+    if (intent.disposition === 'attempting' && intent.attemptId !== null && !intent.attemptChild) {
+      return { kind: 'unavailable', reason: 'unrecorded attempt child may still serve' };
+    }
     if (intent.attemptChild && observeRecordedProcess(ports, intent.attemptChild) !== 'absent') {
       return { kind: 'unavailable', reason: 'recorded attempt child may still serve' };
     }

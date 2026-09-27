@@ -87,7 +87,7 @@ function startUp(
 
 describe('startup mint authorizer', () => {
   it.each([true, false])(
-    'should hand a holding job to its verified retained controller when the root is available: %s',
+    'hands a holding job to its verified retained controller despite another lineage hold when the root is available: %s',
     (rootAvailable) => {
       assertBuildArtifactsAvailable();
       const runtime = unreadableEpochRuntime();
@@ -128,6 +128,17 @@ describe('startup mint authorizer', () => {
         epochKey: lineageKey,
         owner: 'provider-operation',
         operationId: 'pending-publication',
+        capsule: null,
+        bindWithinMs: 1_000,
+        nowMs: runtime.time.now(),
+      });
+      recordCustodyIntent(runtime, runtime.paths.coral.coordinator.runDir, {
+        effect: 'process-spawn',
+        epoch: join(runtime.paths.coral.store.dbDir, 'epoch-999'),
+        epochKey: 'unrelated-lineage',
+        owner: 'job',
+        operationId: 'other-job',
+        jobId: 'other-job',
         capsule: null,
         bindWithinMs: 1_000,
         nowMs: runtime.time.now(),
