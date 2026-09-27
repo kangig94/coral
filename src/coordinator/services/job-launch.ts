@@ -12,6 +12,7 @@ import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { assertNever } from '../../infra/error-format.js';
+import { throwIfRequestAborted } from '../../infra/request-lease-identity.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
 import {
@@ -94,12 +95,15 @@ export class JobLaunchService {
     providerName: string,
     input: JobLaunchRequest,
     ctx: InvocationContext,
+    signal?: AbortSignal,
   ): Promise<ProviderSessionLaunchDecision> {
+    throwIfRequestAborted(signal);
     if (!this.deps.providerRegistry.get(providerName)) {
       return refuseLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
 
     const bound = await this.bindInvocationProfile(providerName, ctx, 'launch');
+    throwIfRequestAborted(signal);
     if ('status' in bound) return bound;
 
     let resolvedAgent: ReturnType<typeof resolveAgentLaunchProfile> | null = null;
@@ -137,7 +141,8 @@ export class JobLaunchService {
         error instanceof Error ? error.message : String(error),
       );
     }
-    const preflightDecision = await runProviderPreflight(bound, preflightRuntime);
+    const preflightDecision = await runProviderPreflight(bound, preflightRuntime, signal);
+    throwIfRequestAborted(signal);
     switch (preflightDecision.kind) {
       case 'satisfied':
         break;
@@ -149,6 +154,7 @@ export class JobLaunchService {
         return assertNever(preflightDecision);
     }
 
+    throwIfRequestAborted(signal);
     const session = this.deps.sessionManager.prepare({
       binding: bound.envelope,
       name,
@@ -178,6 +184,7 @@ export class JobLaunchService {
       coralEnv: effectiveCoralEnv,
     };
 
+    throwIfRequestAborted(signal);
     return this.launchOrRefuse(() =>
       this.deps.launchOrchestrator.launchInitialProviderJob(bound, session, request, {
         owner: input.owner ?? { kind: 'provider-session', id: session.sessionId },

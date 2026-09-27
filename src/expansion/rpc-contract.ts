@@ -317,11 +317,20 @@ export const readBindingResultSchema = z
 export type ReadBindingResult = z.infer<typeof readBindingResultSchema>;
 
 export interface ExpansionRequestPort {
-  equipExpansion(request: EquipExpansionRequest, principal: Principal): Promise<EquipExpansionResult>;
-  unequipExpansion(request: UnequipExpansionRequest, principal: Principal): Promise<UnequipExpansionResult>;
+  equipExpansion(
+    request: EquipExpansionRequest,
+    principal: Principal,
+    signal?: AbortSignal,
+  ): Promise<EquipExpansionResult>;
+  unequipExpansion(
+    request: UnequipExpansionRequest,
+    principal: Principal,
+    signal?: AbortSignal,
+  ): Promise<UnequipExpansionResult>;
   removeExpansionCatalog(
     request: RemoveExpansionCatalogRequest,
     principal: Principal,
+    signal?: AbortSignal,
   ): Promise<RemoveExpansionCatalogResult>;
   listExpansion(request: ListExpansionRequest, principal: Principal): Promise<ListExpansionResult>;
   readBinding(request: ReadBindingRequest, principal: Principal): Promise<ReadBindingResult>;

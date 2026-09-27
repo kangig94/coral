@@ -7,6 +7,7 @@ import * as discussOperations from './operations.js';
 import { getWatchState } from './registry.js';
 import { seedPersonas } from '../persona/seed.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import { identifyDurableRequest, throwIfRequestAborted } from '../../infra/request-lease-identity.js';
 
 function toolValidationError(error: { message: string }): DiscussToolResult {
   return discussToolError('invalid_request', error.message);
@@ -59,13 +60,25 @@ async function executeDiscussStart(
   args: DiscussStartArgs,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
+  signal?: AbortSignal,
 ): Promise<DiscussToolResult> {
   try {
     const ctx = helpers.getDiscussContext(context);
     const sessionId = ctx.runtime.ids.uuid();
-    await discussOperations.startDiscussSession(ctx, sessionId, args.topic, args.agents, args.config ?? {}, context);
+    identifyDurableRequest(signal, { operationId: sessionId });
+    throwIfRequestAborted(signal);
+    await discussOperations.startDiscussSession(
+      ctx,
+      sessionId,
+      args.topic,
+      args.agents,
+      args.config ?? {},
+      context,
+      signal,
+    );
     return discussToolSuccess({ session: sessionId });
   } catch (error: unknown) {
+    if (signal?.aborted) throw error;
     return handleDiscussOperationError(error);
   }
 }
@@ -162,13 +175,14 @@ export async function handleDiscussStart(
   args: unknown,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
+  signal?: AbortSignal,
 ): Promise<DiscussToolResult> {
   const parsed = discussStartSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);
   }
 
-  return executeDiscussStart(parsed.data, context, helpers);
+  return executeDiscussStart(parsed.data, context, helpers, signal);
 }
 
 export async function handleDiscussAbort(

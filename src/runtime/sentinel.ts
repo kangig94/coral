@@ -15,7 +15,8 @@ import { socketPathForRunDir } from '../infra/path/index.js';
 import { createPluginRegistry } from '../infra/plugin-registry.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import { SENTINEL_TIMING, validSentinelTiming, type SentinelTiming } from '../infra/sentinel-timing.js';
-import { probeProcessIncarnation } from '../infra/node-process.js';
+import { probeProcessIncarnation, processIncarnationSchema, type ProcessIncarnation } from '../infra/node-process.js';
+import { readUpgradeIntent, retryUpgradeIntentCas } from '../infra/upgrade-intent.js';
 
 export type SentinelMessage =
   | { kind: 'coral-sentinel-hello'; id: string }
@@ -101,6 +102,63 @@ function relaunchRoots(runDir: string, original: StrictBundleManifest | null): s
   return [...new Set(installed)];
 }
 
+function waiterAttemptMatches(
+  runDir: string,
+  attemptId: string,
+  spawnNonce: string,
+  originalPid: number,
+  originalIncarnation: ProcessIncarnation,
+  build: StrictBundleManifest | null,
+): boolean {
+  const observed = readUpgradeIntent(runDir);
+  if (observed.kind !== 'readable') return false;
+  const intent = observed.intent;
+  return (
+    intent.disposition === 'attempting' &&
+    intent.attemptId === attemptId &&
+    intent.attemptSpawnNonce === spawnNonce &&
+    intent.attemptOwner?.kind === 'waiter' &&
+    (intent.attemptDeadline === null || Date.now() < Date.parse(intent.attemptDeadline)) &&
+    (build === null ||
+      (intent.target.build.buildSetId === build.buildSetId && intent.target.build.bundleHash === build.bundleHash)) &&
+    (intent.attemptChild === null ||
+      intent.attemptChild === undefined ||
+      (intent.attemptChild.attemptId === attemptId &&
+        intent.attemptChild.pid === originalPid &&
+        intent.attemptChild.incarnation === originalIncarnation))
+  );
+}
+
+async function rebindWaiterAttempt(
+  runDir: string,
+  attemptId: string,
+  spawnNonce: string,
+  originalPid: number,
+  originalIncarnation: ProcessIncarnation,
+  replacementPid: number,
+  replacementIncarnation: ProcessIncarnation,
+  build: StrictBundleManifest | null,
+): Promise<boolean> {
+  const outcome = await retryUpgradeIntentCas(runDir, (observed) => {
+    if (
+      observed.kind !== 'readable' ||
+      !waiterAttemptMatches(runDir, attemptId, spawnNonce, originalPid, originalIncarnation, build)
+    )
+      return { kind: 'settle', value: false };
+    return {
+      kind: 'write',
+      expectedRevision: observed.intent.revision,
+      change: {
+        ...observed.intent,
+        attemptSpawnPending: false,
+        attemptChild: { attemptId, pid: replacementPid, incarnation: replacementIncarnation },
+      },
+      settle: () => true,
+    };
+  });
+  return outcome.kind === 'settled' && outcome.value;
+}
+
 async function replacementServing(
   runDir: string,
   flavor: StrictBundleManifest['flavor'],
@@ -175,7 +233,7 @@ export async function runCoordinatorSentinel(
   const startedAt = Date.now();
   const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
   const originalManifest = validatedBuild(dirname(dirname(executable)));
-  let coordinatorIdentity: { coordinatorPid: number; coordinatorIncarnation: string | null } | null = null;
+  let coordinatorIdentity: { coordinatorPid: number; coordinatorIncarnation: ProcessIncarnation | null } | null = null;
   const record = (state: string, fields: Record<string, unknown> = {}): void => {
     writeSentinelRecord(runDir, id, {
       version: 1,
@@ -226,8 +284,33 @@ export async function runCoordinatorSentinel(
     child.once('error', () => resolve(false));
   });
   if (!spawned || child.pid === undefined) return 1;
-  if (coordinatorIdentity?.coordinatorIncarnation === null) {
-    coordinatorIdentity.coordinatorIncarnation = probeProcessIncarnation(child.pid);
+  if (coordinatorIdentity === null) return 1;
+  coordinatorIdentity.coordinatorIncarnation ??= probeProcessIncarnation(child.pid);
+  const replacingPid = Number(process.env.CORAL_SENTINEL_REPLACING_PID);
+  const replacingIncarnation = processIncarnationSchema.safeParse(process.env.CORAL_SENTINEL_REPLACING_INCARNATION);
+  if (Number.isSafeInteger(replacingPid) && replacingPid > 0 && replacingIncarnation.success) {
+    const rebound =
+      runDir !== undefined &&
+      isAbsolute(runDir) &&
+      process.env.CORAL_STARTUP_ATTEMPT_ID !== undefined &&
+      process.env.CORAL_WAITER_SPAWN_NONCE !== undefined &&
+      coordinatorIdentity.coordinatorIncarnation !== null &&
+      (await rebindWaiterAttempt(
+        runDir,
+        process.env.CORAL_STARTUP_ATTEMPT_ID,
+        process.env.CORAL_WAITER_SPAWN_NONCE,
+        replacingPid,
+        replacingIncarnation.data,
+        child.pid,
+        coordinatorIdentity.coordinatorIncarnation,
+        originalManifest,
+      ));
+    if (!rebound) {
+      record('replacement-fenced', { coordinatorPid: child.pid });
+      child.kill('SIGKILL');
+      await exited;
+      return 1;
+    }
   }
   record('armed', { coordinatorPid: child.pid });
   armed = true;
@@ -246,8 +329,6 @@ export async function runCoordinatorSentinel(
   const reset = (now: number): void => {
     lastAnswer = now;
     outstanding = null;
-    escalationAt = null;
-    killed = false;
   };
   const tick = (): void => {
     const now = Date.now();
@@ -259,7 +340,7 @@ export async function runCoordinatorSentinel(
     if (child.exitCode !== null || child.signalCode !== null) return;
     if (escalationAt !== null) {
       if (!killed && now - escalationAt >= timing.graceMs) {
-        if (child.pid !== undefined && childIsUninterruptible(child.pid)) reset(now);
+        if (child.pid !== undefined && childIsUninterruptible(child.pid)) return;
         else {
           record('killing', { coordinatorPid: child.pid, lastAnswer, schedulingGaps });
           child.kill('SIGKILL');
@@ -291,8 +372,6 @@ export async function runCoordinatorSentinel(
       if (message.kind === 'coral-sentinel-answer' && message.id === outstanding) {
         lastAnswer = Date.now();
         outstanding = null;
-        escalationAt = null;
-        killed = false;
       }
       return;
     }
@@ -346,9 +425,42 @@ export async function runCoordinatorSentinel(
     if (wedgeTermination && runDir !== undefined && isAbsolute(runDir) && process.argv[1] !== undefined) {
       await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
       const recoveryEnv = { ...process.env };
-      delete recoveryEnv.CORAL_STARTUP_ATTEMPT_ID;
-      delete recoveryEnv.CORAL_WAITER_LAUNCHED;
-      delete recoveryEnv.CORAL_WAITER_SPAWN_NONCE;
+      const attemptId = recoveryEnv.CORAL_STARTUP_ATTEMPT_ID;
+      const spawnNonce = recoveryEnv.CORAL_WAITER_SPAWN_NONCE;
+      const originalChildIdentity = coordinatorIdentity;
+      const preserveWaiterAttempt =
+        runDir !== undefined &&
+        attemptId !== undefined &&
+        spawnNonce !== undefined &&
+        recoveryEnv.CORAL_WAITER_LAUNCHED === attemptId &&
+        originalChildIdentity !== null &&
+        originalChildIdentity.coordinatorIncarnation !== null &&
+        waiterAttemptMatches(
+          runDir,
+          attemptId,
+          spawnNonce,
+          originalChildIdentity.coordinatorPid,
+          originalChildIdentity.coordinatorIncarnation,
+          originalManifest,
+        );
+      if (attemptId !== undefined && recoveryEnv.CORAL_WAITER_LAUNCHED === attemptId && !preserveWaiterAttempt) {
+        record('relaunch-unavailable', { reason: 'waiter attempt is no longer current' });
+        return exitCode;
+      }
+      if (
+        preserveWaiterAttempt &&
+        originalChildIdentity !== null &&
+        originalChildIdentity.coordinatorIncarnation !== null
+      ) {
+        recoveryEnv.CORAL_SENTINEL_REPLACING_PID = String(originalChildIdentity.coordinatorPid);
+        recoveryEnv.CORAL_SENTINEL_REPLACING_INCARNATION = originalChildIdentity.coordinatorIncarnation;
+      } else {
+        delete recoveryEnv.CORAL_STARTUP_ATTEMPT_ID;
+        delete recoveryEnv.CORAL_WAITER_LAUNCHED;
+        delete recoveryEnv.CORAL_WAITER_SPAWN_NONCE;
+        delete recoveryEnv.CORAL_SENTINEL_REPLACING_PID;
+        delete recoveryEnv.CORAL_SENTINEL_REPLACING_INCARNATION;
+      }
       delete recoveryEnv.CORAL_STARTUP_STARTED_AT;
       delete recoveryEnv.CORAL_SUCCESSION_ATTEMPT_ID;
       const roots = relaunchRoots(runDir, originalManifest);

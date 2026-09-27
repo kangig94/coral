@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -427,6 +428,7 @@ describe('ipc server', () => {
   it('returns the cancellation disposition when a unary handler obeys the lease abort', async () => {
     const ports = createPorts();
     ports.admin.beginRequestLease = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       time: createRealTimePort(),
       begin: vi.fn(),
       end: vi.fn(),
@@ -464,6 +466,7 @@ describe('ipc server', () => {
     const begin = vi.fn();
     const end = vi.fn();
     const leases = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       time: createRealTimePort(),
       begin,
       end,
@@ -482,10 +485,10 @@ describe('ipc server', () => {
       });
       expect(error).toMatchObject({
         code: 'request_deadline_exceeded',
-        context: { method: SUCCESSION_METHODS.status, requestId: 'raw', outcome: 'unknown' },
+        context: { method: SUCCESSION_METHODS.status, requestId: 'raw', outcome: 'continuing' },
       });
       expect(begin).toHaveBeenCalledTimes(1);
-      expect(end).not.toHaveBeenCalled();
+      expect(end).toHaveBeenCalledOnce();
     } finally {
       await closeIpcServer(listener);
     }

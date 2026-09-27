@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRequestLeaseOwner, type RequestLeaseTiming } from '#src/coordinator/live/request-leases.js';
@@ -30,6 +31,7 @@ describe('coordinator request leases', () => {
       jobRunning = false;
     }, 61_000);
     const owner = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       time,
       timing,
       begin: () => idleTimer.beginRequest(),
@@ -56,6 +58,7 @@ describe('coordinator request leases', () => {
     const drained = vi.fn();
     idleTimer.startWatching(() => true, drained);
     const owner = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       time,
       begin: () => idleTimer.beginRequest(),
       end: () => idleTimer.endRequest(),
@@ -78,6 +81,7 @@ describe('coordinator request leases', () => {
     const retired = vi.fn();
     idleTimer.startWatching(() => true, retired);
     const owner = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       time,
       timing,
       begin: () => idleTimer.beginRequest(),
@@ -92,12 +96,13 @@ describe('coordinator request leases', () => {
     idleTimer.stopWatching();
   });
 
-  it('records a continuing request before releasing its count, once only', async () => {
+  it('reconciles an abandoned request to its terminal outcome', async () => {
     vi.useFakeTimers();
     let finish!: () => void;
     let inflight = 0;
     const recorded = vi.fn();
     const owner = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       time: createRealTimePort(),
       timing,
       begin: () => {
@@ -118,6 +123,7 @@ describe('coordinator request leases', () => {
     await vi.advanceTimersByTimeAsync(50);
     await rejected;
     expect(recorded).toHaveBeenCalledWith({
+      recordId: expect.any(String),
       method: 'jobs.detail',
       requestId: 'request-late',
       startedAt: expect.any(String),
@@ -128,7 +134,14 @@ describe('coordinator request leases', () => {
     finish();
     await vi.advanceTimersByTimeAsync(0);
     expect(inflight).toBe(0);
-    expect(recorded).toHaveBeenCalledOnce();
+    expect(recorded).toHaveBeenLastCalledWith({
+      recordId: expect.any(String),
+      method: 'jobs.detail',
+      requestId: 'request-late',
+      startedAt: expect.any(String),
+      outcome: 'completed',
+      identity: { jobId: 'job-1' },
+    });
   });
   it('lets a live provider job reach a terminal result beside a stalled unary request', async () => {
     vi.useFakeTimers();
@@ -138,6 +151,7 @@ describe('coordinator request leases', () => {
       setTimeout(() => resolve('completed'), 60);
     });
     const leaseOptions = {
+      newRecordId: randomUUID,
       begin: () => {},
       end: () => {},
       time: createRealTimePort(),
@@ -158,6 +172,7 @@ describe('coordinator request leases', () => {
     vi.useFakeTimers();
     let inflight = 0;
     const owner = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       begin: () => {
         inflight += 1;
       },
@@ -191,6 +206,7 @@ describe('coordinator request leases', () => {
   it('keeps the one-hour KB mutation allowance', async () => {
     vi.useFakeTimers();
     const owner = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       begin: () => {},
       end: () => {},
       time: createRealTimePort(),
@@ -212,6 +228,7 @@ describe('coordinator request leases', () => {
     vi.useFakeTimers();
     const end = vi.fn();
     const owner = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       time: createRealTimePort(),
       begin: () => {},
       end,
@@ -240,27 +257,28 @@ describe('coordinator request leases', () => {
     expect(end).toHaveBeenCalledOnce();
   });
 
-  it('reports continuing when work completes after its deadline', async () => {
+  it('returns the completed outcome when work settles during the deadline grace', async () => {
     vi.useFakeTimers();
+    const recorded = vi.fn();
     const owner = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       time: createRealTimePort(),
       begin: () => {},
       end: () => {},
+      abandon: recorded,
       timing,
     });
-    let finish: (() => void) | undefined;
+    let finish: ((value: string) => void) | undefined;
     const result = owner.begin('jobs.detail', 'request-4').run(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<string>((resolve) => {
           finish = resolve;
         }),
     );
-    const rejection = expect(result).rejects.toMatchObject({
-      code: 'request_deadline_exceeded',
-      context: { outcome: 'continuing' },
-    });
+    const completion = expect(result).resolves.toBe('accepted');
     await vi.advanceTimersByTimeAsync(40);
-    finish?.();
-    await rejection;
+    finish?.('accepted');
+    await completion;
+    expect(recorded).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'completed' }));
   });
 });

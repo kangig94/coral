@@ -14,7 +14,11 @@ import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
-import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import {
+  compareAndSwapUpgradeIntent,
+  readCompletedSuccessionReceipts,
+  readUpgradeIntent,
+} from '#src/infra/upgrade-intent.js';
 import { requestLegacyUpgrade } from '#src/upgrade-waiter/start.js';
 import { createRealUpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
@@ -764,24 +768,25 @@ describe('ipc ensure', () => {
       expect(mockState.spawn).not.toHaveBeenCalled();
     });
 
-    it('follows the exact successor named by a completed serving receipt', async () => {
-      makeHome();
-      vi.useFakeTimers();
-      const root = createPluginRoot();
-      setCompleteChildEnv();
-      writeDiscovery(root, { instanceId: 'parent-coordinator' });
-      const successorBuild = {
-        version: '0.5.3',
-        buildSetId: 'next-build',
-        flavor: 'prod' as const,
-        storeFormatFingerprint: 'same-format',
-        bundleHash: 'new-hash',
-        cliBundleHash: 'new-cli',
-        claudeAppserverBundleHash: 'new-appserver',
-        durableWrapperBundleHash: 'new-wrapper',
-      };
-      mockState.health
-        .mockResolvedValueOnce({
+    it.each([false, true])(
+      'follows a committed successor after discovery changes first, with a later request: %s',
+      async (replaceCompletedIntent) => {
+        makeHome();
+        vi.useFakeTimers();
+        const root = createPluginRoot();
+        setCompleteChildEnv();
+        writeDiscovery(root, { instanceId: 'parent-coordinator' });
+        const successorBuild = {
+          version: '0.5.3',
+          buildSetId: 'next-build',
+          flavor: 'prod' as const,
+          storeFormatFingerprint: 'same-format',
+          bundleHash: 'new-hash',
+          cliBundleHash: 'new-cli',
+          claudeAppserverBundleHash: 'new-appserver',
+          durableWrapperBundleHash: 'new-wrapper',
+        };
+        const parentHealth = {
           status: 'starting',
           version: '0.5.2',
           bundleHash: 'test-hash',
@@ -789,72 +794,125 @@ describe('ipc ensure', () => {
           instanceId: 'parent-coordinator',
           namespace: pluginRootNamespace(root),
           pid: process.pid,
-        })
-        .mockResolvedValue({
-          status: 'ok',
-          version: successorBuild.version,
-          bundleHash: successorBuild.bundleHash,
-          flavor: 'prod',
-          instanceId: 'committed-successor',
-          namespace: 'successor-namespace',
-          pid: process.pid,
-        });
-      setTimeout(() => {
-        writeFileSync(
-          upgradeIntentPath(coordinatorPaths('prod').runDir),
-          JSON.stringify({
-            version: 'v1',
-            requestId: 'upgrade-1',
-            revision: 1,
-            incumbent: {
-              instanceId: 'parent-coordinator',
-              pid: process.pid,
-              incarnation: null,
-              version: '0.5.2',
-              bundleHash: 'test-hash',
-              flavor: 'prod',
-            },
-            target: { pluginRootLabel: root, build: successorBuild },
-            attemptId: 'attempt-1',
-            attemptOwner: { kind: 'incumbent', instanceId: 'parent-coordinator', pid: process.pid, incarnation: null },
-            disposition: 'completed',
-            blockers: [],
-            retryCondition: null,
-            attemptDeadline: '2099-01-01T00:01:00.000Z',
-            completionReceipt: {
-              kind: 'serving',
-              attemptId: 'attempt-1',
-              successor: {
+        } as const;
+        mockState.health
+          .mockResolvedValueOnce(parentHealth)
+          .mockResolvedValueOnce(parentHealth)
+          .mockResolvedValueOnce(parentHealth)
+          .mockResolvedValue({
+            status: 'ok',
+            version: successorBuild.version,
+            bundleHash: successorBuild.bundleHash,
+            flavor: 'prod',
+            instanceId: 'committed-successor',
+            namespace: 'successor-namespace',
+            pid: process.pid,
+          });
+        const transitioned = new Promise<void>((resolve) =>
+          setTimeout(() => {
+            writeFileSync(
+              upgradeIntentPath(coordinatorPaths('prod').runDir),
+              JSON.stringify({
+                version: 'v1',
+                requestId: 'upgrade-1',
+                revision: 1,
+                incumbent: {
+                  instanceId: 'parent-coordinator',
+                  pid: process.pid,
+                  incarnation: null,
+                  version: '0.5.2',
+                  bundleHash: 'test-hash',
+                  flavor: 'prod',
+                },
+                target: { pluginRootLabel: root, build: successorBuild },
+                attemptId: 'attempt-1',
+                attemptOwner: {
+                  kind: 'incumbent',
+                  instanceId: 'parent-coordinator',
+                  pid: process.pid,
+                  incarnation: null,
+                },
+                disposition: 'completed',
+                blockers: [],
+                retryCondition: null,
+                attemptDeadline: '2099-01-01T00:01:00.000Z',
+                completionReceipt: {
+                  kind: 'serving',
+                  attemptId: 'attempt-1',
+                  successor: {
+                    instanceId: 'committed-successor',
+                    pid: process.pid,
+                    incarnation: null,
+                    build: successorBuild,
+                  },
+                  epochKey: 'epoch-1:lineage-1',
+                  controlGeneration: 2,
+                  acceptedObligations: [],
+                  recordedAt: '2099-01-01T00:00:00.000Z',
+                },
+              }),
+            );
+            void (async () => {
+              if (replaceCompletedIntent) {
+                const observed = readUpgradeIntent(coordinatorPaths('prod').runDir);
+                if (observed.kind !== 'readable') throw new Error('Missing completed intent');
+                const written = await compareAndSwapUpgradeIntent(
+                  coordinatorPaths('prod').runDir,
+                  observed.intent.revision,
+                  {
+                    ...observed.intent,
+                    requestId: 'upgrade-2',
+                    incumbent: {
+                      instanceId: 'committed-successor',
+                      pid: process.pid,
+                      incarnation: null,
+                      version: successorBuild.version,
+                      bundleHash: successorBuild.bundleHash,
+                      flavor: 'prod',
+                    },
+                    target: {
+                      pluginRootLabel: root,
+                      build: { ...successorBuild, version: '0.5.4', buildSetId: 'third-build' },
+                    },
+                    attemptId: null,
+                    attemptChild: null,
+                    attemptOwner: null,
+                    disposition: 'pending',
+                    blockers: [],
+                    retryCondition: null,
+                    attemptDeadline: null,
+                    completionReceipt: null,
+                  },
+                );
+                expect(written.kind).toBe('written');
+              }
+              writeDiscovery(root, {
                 instanceId: 'committed-successor',
-                pid: process.pid,
-                incarnation: null,
-                build: successorBuild,
-              },
-              epochKey: 'epoch-1:lineage-1',
-              controlGeneration: 2,
-              acceptedObligations: [],
-              recordedAt: '2099-01-01T00:00:00.000Z',
-            },
-          }),
+                version: successorBuild.version,
+                bundleHash: successorBuild.bundleHash,
+                namespace: 'successor-namespace',
+              });
+              resolve();
+            })();
+          }, 100),
         );
-        writeDiscovery(root, {
-          instanceId: 'committed-successor',
-          version: successorBuild.version,
-          bundleHash: successorBuild.bundleHash,
-          namespace: 'successor-namespace',
-        });
-      }, 100);
 
-      const { ensure } = await importEnsure();
-      const result = ensure('sessions.create', root);
-      await vi.advanceTimersByTimeAsync(400);
-      expect((await result).instanceId).toBe('committed-successor');
-      expect(mockState.spawn).not.toHaveBeenCalled();
-      expect(mockState.shutdown).not.toHaveBeenCalled();
-    });
+        const { ensure } = await importEnsure();
+        const result = ensure('sessions.create', root);
+        await vi.advanceTimersByTimeAsync(800);
+        await transitioned;
+        expect((await result).instanceId).toBe('committed-successor');
+        expect(readCompletedSuccessionReceipts(coordinatorPaths('prod').runDir)).toHaveLength(
+          replaceCompletedIntent ? 1 : 0,
+        );
+        expect(mockState.spawn).not.toHaveBeenCalled();
+        expect(mockState.shutdown).not.toHaveBeenCalled();
+      },
+    );
 
     it('rejects stale discovery even when health is ready', async () => {
       makeHome();
+      vi.useFakeTimers();
       const root = createPluginRoot();
       setCompleteChildEnv();
       writeDiscovery(root, { instanceId: 'stale-coordinator' });
@@ -868,8 +926,9 @@ describe('ipc ensure', () => {
       });
 
       const { ensure } = await importEnsure();
-
-      await expect(ensure('sessions.create', root)).rejects.toThrow('discovery does not match the observed parent');
+      const result = ensure('sessions.create', root).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(15_200);
+      expect(((await result) as Error).message).toContain('discovery does not match the observed parent');
       expect(mockState.shutdown).not.toHaveBeenCalled();
       expect(mockState.spawn).not.toHaveBeenCalled();
     });
@@ -2534,6 +2593,58 @@ describe('ipc ensure', () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(UNREACHABLE_AFTER_CHILD_STOPPED);
     expect(readFileSync(coordinatorPaths('prod').startupErrorFile, 'utf-8')).toContain('another-attempt');
+  });
+
+  it('waits for a sentinel replacement that becomes healthy after its 15-second confirmation window', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    writeFileSync(join(root, 'bridge', 'coral-sentinel.cjs'), '');
+    const child = spawnedChild();
+    const startedAt = Date.now();
+    let attemptId = '';
+    mockState.health.mockImplementation(async () => {
+      if (Date.now() - startedAt < 16_000) throw createErrnoError('ECONNREFUSED');
+      return {
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'late-replacement',
+        namespace: pluginRootNamespace(root),
+        pid: process.pid,
+        env: { CORAL_STARTUP_ATTEMPT_ID: attemptId },
+        sentinel: { version: 1, id: 'replacement' },
+      };
+    });
+    mockState.spawn.mockImplementation((_command, _args, options) => {
+      attemptId = (options as { env: Record<string, string> }).env.CORAL_STARTUP_ATTEMPT_ID;
+      setTimeout(() => {
+        const directory = join(coordinatorPaths('prod').runDir, 'coordinator-sentinel.v1');
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(
+          join(directory, 'unconfirmed.json'),
+          JSON.stringify({
+            state: 'relaunch-unconfirmed',
+            sentinelPid: child.pid,
+            attemptId,
+            replacementSentinelPid: 23_456,
+          }),
+        );
+        child.emit('exit', 1, null);
+      }, 100);
+      setTimeout(
+        () => writeDiscovery(root, { instanceId: 'late-replacement', sentinel: { version: 1, id: 'replacement' } }),
+        16_000,
+      );
+      return child;
+    });
+
+    const { ensure } = await importEnsure();
+    const result = ensure('sessions.create', root);
+    await vi.advanceTimersByTimeAsync(16_200);
+    expect((await result).instanceId).toBe('late-replacement');
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a live current attempt waiting past every elapsed-time budget without spawning a competitor', async () => {

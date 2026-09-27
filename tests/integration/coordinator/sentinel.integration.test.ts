@@ -109,16 +109,14 @@ describe('coordinator sentinel process', () => {
     expect(alive(pid)).toBe(false);
   }, 15_000);
 
-  it('cancels escalation when the child answers after SIGTERM', async () => {
+  it('keeps escalation after the child answers following SIGTERM', async () => {
     const launched = launch();
     const pid = await launched.childPid;
     await launched.ready;
     launched.sentinel.send({ kind: 'pause-answers' });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(alive(pid)).toBe(true);
-    launched.sentinel.send({ kind: 'exit' });
     await launched.exited;
     expect(alive(pid)).toBe(false);
+    expect(launched.sentinel.exitCode).toBe(137);
   }, 10_000);
 
   it('ends its coordinator after parent-pipe EOF', async () => {

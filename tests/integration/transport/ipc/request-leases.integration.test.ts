@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -73,6 +74,7 @@ describe('IPC request leases', () => {
   it('bounds a never-settling KB daemon restart request', async () => {
     const serverPorts = ports();
     serverPorts.admin.beginRequestLease = createRequestLeaseOwner({
+      newRecordId: randomUUID,
       time: createRealTimePort(),
       begin: serverPorts.admin.beginRequest,
       end: serverPorts.admin.endRequest,
@@ -101,7 +103,7 @@ describe('IPC request leases', () => {
         expect(outcome.error).toBeInstanceOf(IpcRpcError);
         expect(outcome.error).toMatchObject({ code: 'request_deadline_exceeded' });
       }
-      expect(serverPorts.admin.endRequest).not.toHaveBeenCalled();
+      expect(serverPorts.admin.endRequest).toHaveBeenCalledOnce();
     } finally {
       await closeIpcServer(listener);
     }

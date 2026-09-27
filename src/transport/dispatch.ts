@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
@@ -18,6 +19,7 @@ import {
   type Decision,
 } from '../security/policy/authorize.js';
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
+import { identifyDurableRequest, throwIfRequestAborted } from '../infra/request-lease-identity.js';
 import { isRecord } from '../infra/json.js';
 import type { RecoveryQuarantineClearRequest } from '../recovery/source-registry.js';
 import type { UnreadableProviderOperationDiscardRequest } from '../recovery/unreadable-provider-operation.js';
@@ -718,6 +720,7 @@ type AuthorizedCatalogRequest = Readonly<{
 }>;
 
 function dispatchCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  throwIfRequestAborted(context.abortSignal);
   if (context.spec.name.startsWith('jobs.')) return executeJobsCatalogRequest(context);
   if (context.spec.name.startsWith('discuss.')) return executeDiscussCatalogRequest(context);
   if (context.spec.name.startsWith('kb.')) return executeKnowledgeBaseCatalogRequest(context);
@@ -852,6 +855,7 @@ async function executeProviderHostEvictCatalogRequest({
   request,
   canonicalRequest,
   rpcPorts,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const providerHosts = rpcPorts.providerHosts;
   if (providerHosts === undefined) {
@@ -865,7 +869,7 @@ async function executeProviderHostEvictCatalogRequest({
       request as ProviderHostSelectorRequest,
       canonicalRequest.authorizationRoot,
     );
-    return unary(providerHostEvictResponseSchema.parse(await providerHosts.evict(selector)));
+    return unary(providerHostEvictResponseSchema.parse(await providerHosts.evict(selector, abortSignal)));
   } catch (error: unknown) {
     if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
     const failure = providerHostAdministrationFailure(error);
@@ -894,6 +898,7 @@ async function executeCreateSessionCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as Record<string, unknown> & { provider: string; prompt: string };
   const recovering = ensureLaunchFenceInactive(rpcPorts);
@@ -908,14 +913,20 @@ async function executeCreateSessionCatalogRequest({
   const ctx = buildBodyInvocationContext(parsed, projectRoot, rpcPorts, principal);
   if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
+  throwIfRequestAborted(abortSignal);
+  const jobId = abortSignal === undefined ? undefined : randomUUID();
+  if (jobId !== undefined) identifyDurableRequest(abortSignal, { jobId });
+
   const decision = await rpcPorts.sessions.start(
     parsed.provider,
     {
       prompt: parsed.prompt,
+      ...(jobId === undefined ? {} : { jobId }),
       ...(typeof parsed.agent === 'string' ? { agent: parsed.agent } : {}),
       ...createSessionInputFields(parsed, cwd),
     },
     ctx,
+    abortSignal,
   );
   return unaryHttp(launchToHttp(decision, 201));
 }
@@ -925,6 +936,7 @@ async function executeWorkflowCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as Record<string, unknown>;
   const recovering = ensureLaunchFenceInactive(rpcPorts);
@@ -960,7 +972,8 @@ async function executeWorkflowCatalogRequest({
     ...(typeof rawWorkflowCommand.owner === 'string' ? { owner: rawWorkflowCommand.owner } : {}),
     workDir,
   };
-  const result = await rpcPorts.workflows.execute(workflowCommand, ctx);
+  throwIfRequestAborted(abortSignal);
+  const result = await rpcPorts.workflows.execute(workflowCommand, ctx, abortSignal);
   if (result.kind === 'invalid_request') {
     return unaryHttp(domainResultToHttp(invalidRequestResult(result.message, result.detail)));
   }
@@ -973,25 +986,26 @@ async function executeExpansionCatalogRequest({
   request,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   switch (spec.name) {
     case 'coordinator.equipExpansion': {
       const parsed = request as { name: string };
-      return unary(await rpcPorts.expansion.equipExpansion(parsed, principal));
+      return unary(await rpcPorts.expansion.equipExpansion(parsed, principal, abortSignal));
     }
 
     case 'coordinator.unequipExpansion': {
       const parsed = request as { name: string };
       const name = decodePathSegment(parsed.name);
       if (name === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid expansion name')));
-      return unary(await rpcPorts.expansion.unequipExpansion({ name }, principal));
+      return unary(await rpcPorts.expansion.unequipExpansion({ name }, principal, abortSignal));
     }
 
     case 'coordinator.removeExpansionCatalog': {
       const parsed = request as { name: string };
       const name = decodePathSegment(parsed.name);
       if (name === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid expansion name')));
-      return unary(await rpcPorts.expansion.removeExpansionCatalog({ name }, principal));
+      return unary(await rpcPorts.expansion.removeExpansionCatalog({ name }, principal, abortSignal));
     }
 
     case 'coordinator.listExpansion':
@@ -1203,6 +1217,7 @@ async function executeDiscussSessionCreateCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as Record<string, unknown>;
   const recovering = ensureLaunchFenceInactive(rpcPorts);
@@ -1220,7 +1235,8 @@ async function executeDiscussSessionCreateCatalogRequest({
     );
   }
 
-  return unaryDomain(await rpcPorts.discuss.start(stripTransportContextKeys(parsed), ctx), 201);
+  throwIfRequestAborted(abortSignal);
+  return unaryDomain(await rpcPorts.discuss.start(stripTransportContextKeys(parsed), ctx, abortSignal), 201);
 }
 
 async function executeDiscussSessionDetailCatalogRequest({
@@ -1385,6 +1401,7 @@ async function executeKnowledgeBaseNoteCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   switch (spec.name) {
     case 'kb.note.read': {
@@ -1399,7 +1416,7 @@ async function executeKnowledgeBaseNoteCatalogRequest({
       const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      return unaryDomain(await rpcPorts.kb.createNote(stripTransportContextKeys(parsed), ctx), 201);
+      return unaryDomain(await rpcPorts.kb.createNote(stripTransportContextKeys(parsed), ctx, abortSignal), 201);
     }
 
     case 'kb.note.update': {
@@ -1410,7 +1427,7 @@ async function executeKnowledgeBaseNoteCatalogRequest({
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.updateNote({ ...args, note: slug }, ctx)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.updateNote({ ...args, note: slug }, ctx, abortSignal)));
     }
 
     case 'kb.note.delete': {
@@ -1422,6 +1439,7 @@ async function executeKnowledgeBaseNoteCatalogRequest({
           await rpcPorts.kb.deleteNote(
             slug,
             maybeBuildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal),
+            abortSignal,
           ),
         ),
       );
@@ -1438,6 +1456,7 @@ async function executeKnowledgeBaseSourceCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   switch (spec.name) {
     case 'kb.source.list':
@@ -1455,7 +1474,7 @@ async function executeKnowledgeBaseSourceCatalogRequest({
       const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      const result = await rpcPorts.kb.createSource(stripTransportContextKeys(parsed), ctx);
+      const result = await rpcPorts.kb.createSource(stripTransportContextKeys(parsed), ctx, abortSignal);
       const response = domainResultToHttp(result);
       if (!result.ok) {
         return unaryHttp(response);
@@ -1477,6 +1496,7 @@ async function executeKnowledgeBaseSourceCatalogRequest({
           await rpcPorts.kb.deleteSource(
             slug,
             maybeBuildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal),
+            abortSignal,
           ),
         ),
       );
@@ -1525,12 +1545,13 @@ async function executeKnowledgeBaseWikiCreateCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as Record<string, unknown>;
   const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
   if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-  return unaryDomain(await rpcPorts.kb.createWiki(stripTransportContextKeys(parsed), ctx), 201);
+  return unaryDomain(await rpcPorts.kb.createWiki(stripTransportContextKeys(parsed), ctx, abortSignal), 201);
 }
 
 async function executeKnowledgeBaseWikiRewriteCatalogRequest(
@@ -1539,7 +1560,13 @@ async function executeKnowledgeBaseWikiRewriteCatalogRequest(
   const prepared = prepareKnowledgeBaseWikiMutation(context);
   if (!prepared.ok) return prepared.execution;
   return unaryHttp(
-    domainResultToHttp(await context.rpcPorts.kb.rewriteWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx)),
+    domainResultToHttp(
+      await context.rpcPorts.kb.rewriteWiki(
+        { ...prepared.args, slug: prepared.slug },
+        prepared.ctx,
+        context.abortSignal,
+      ),
+    ),
   );
 }
 
@@ -1549,7 +1576,9 @@ async function executeKnowledgeBaseWikiLinkCatalogRequest(
   const prepared = prepareKnowledgeBaseWikiMutation(context);
   if (!prepared.ok) return prepared.execution;
   return unaryHttp(
-    domainResultToHttp(await context.rpcPorts.kb.linkWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx)),
+    domainResultToHttp(
+      await context.rpcPorts.kb.linkWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx, context.abortSignal),
+    ),
   );
 }
 
@@ -1559,7 +1588,13 @@ async function executeKnowledgeBaseWikiUnlinkCatalogRequest(
   const prepared = prepareKnowledgeBaseWikiMutation(context);
   if (!prepared.ok) return prepared.execution;
   return unaryHttp(
-    domainResultToHttp(await context.rpcPorts.kb.unlinkWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx)),
+    domainResultToHttp(
+      await context.rpcPorts.kb.unlinkWiki(
+        { ...prepared.args, slug: prepared.slug },
+        prepared.ctx,
+        context.abortSignal,
+      ),
+    ),
   );
 }
 
@@ -1569,7 +1604,9 @@ async function executeKnowledgeBaseWikiCiteCatalogRequest(
   const prepared = prepareKnowledgeBaseWikiMutation(context);
   if (!prepared.ok) return prepared.execution;
   return unaryHttp(
-    domainResultToHttp(await context.rpcPorts.kb.citeWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx)),
+    domainResultToHttp(
+      await context.rpcPorts.kb.citeWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx, context.abortSignal),
+    ),
   );
 }
 
@@ -1578,7 +1615,10 @@ async function executeKnowledgeBaseWikiAdoptCatalogRequest(
 ): Promise<CatalogRequestExecution> {
   const prepared = prepareKnowledgeBaseWikiMutation(context);
   if (!prepared.ok) return prepared.execution;
-  return unaryDomain(await context.rpcPorts.kb.adoptWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx), 201);
+  return unaryDomain(
+    await context.rpcPorts.kb.adoptWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx, context.abortSignal),
+    201,
+  );
 }
 
 async function executeKnowledgeBaseWikiDeleteCatalogRequest({
@@ -1586,6 +1626,7 @@ async function executeKnowledgeBaseWikiDeleteCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as Record<string, unknown> & { slug: string };
   const slug = decodePathSegment(parsed.slug);
@@ -1595,6 +1636,7 @@ async function executeKnowledgeBaseWikiDeleteCatalogRequest({
       await rpcPorts.kb.deleteWiki(
         slug,
         maybeBuildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal),
+        abortSignal,
       ),
     ),
   );
@@ -1648,11 +1690,12 @@ async function executeKnowledgeBaseCommunityCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   switch (spec.name) {
     case 'kb.wake_up': {
       const parsed = request as Record<string, unknown>;
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.wakeUp(parsed, principal)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.wakeUp(parsed, principal, abortSignal)));
     }
 
     case 'kb.community.read': {
@@ -1681,6 +1724,7 @@ async function executeKnowledgeBaseCommunityCatalogRequest({
           await rpcPorts.kb.setCommunitySummary(
             { ...stripTransportContextKeys(parsed), slug },
             maybeBuildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal),
+            abortSignal,
           ),
         ),
       );
@@ -1697,6 +1741,7 @@ async function executeKnowledgeBaseMemoCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   switch (spec.name) {
     case 'kb.memo.list': {
@@ -1729,7 +1774,7 @@ async function executeKnowledgeBaseMemoCatalogRequest({
 
       const args = stripTransportContextKeys(parsed);
       const memoArgs = ctx.coralEnv.CORAL_OWNER === undefined ? args : { ...args, owner: ctx.coralEnv.CORAL_OWNER };
-      return unaryDomain(await rpcPorts.kb.createMemo(memoArgs, ctx), 201);
+      return unaryDomain(await rpcPorts.kb.createMemo(memoArgs, ctx, abortSignal), 201);
     }
 
     case 'kb.memo.delete': {
@@ -1751,6 +1796,7 @@ async function executeKnowledgeBaseMemoCatalogRequest({
               ...(parsed.all === undefined ? {} : { all: parsed.all }),
             },
             ctx,
+            abortSignal,
           ),
         ),
       );
@@ -1767,6 +1813,7 @@ async function executeKnowledgeBasePrinciplesCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   switch (spec.name) {
     case 'kb.principles.list': {
@@ -1799,6 +1846,7 @@ async function executeKnowledgeBasePrinciplesCatalogRequest({
           await rpcPorts.kb.reindex(
             { async: parsed.async === true },
             maybeBuildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal),
+            abortSignal,
           ),
         ),
       );

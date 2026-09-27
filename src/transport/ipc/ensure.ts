@@ -6,7 +6,17 @@ declare const __VERSION__: string;
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -55,7 +65,7 @@ import {
 import { assertNever } from '../../infra/error-format.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
 import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
-import { readUpgradeIntent } from '../../infra/upgrade-intent.js';
+import { readCompletedSuccessionReceipts, readUpgradeIntent } from '../../infra/upgrade-intent.js';
 export const STARTUP_POLL_MS = 200;
 /**
  * Time budget for an already-starting incumbent to reach a usable lifecycle phase (kernel-ready or running).
@@ -842,6 +852,33 @@ async function waitForBackendReady(
   }
 }
 
+function hasUnconfirmedSentinelRelaunch(
+  paths: CoordinatorPaths,
+  sentinelPid: number | undefined,
+  attemptId: string,
+): boolean {
+  if (sentinelPid === undefined) return false;
+  const directory = join(paths.runDir, 'coordinator-sentinel.v1');
+  try {
+    return readdirSync(directory).some((name) => {
+      if (!name.endsWith('.json')) return false;
+      try {
+        const record = JSON.parse(readFileSync(join(directory, name), 'utf8')) as Record<string, unknown>;
+        return (
+          record.state === 'relaunch-unconfirmed' &&
+          record.sentinelPid === sentinelPid &&
+          record.attemptId === attemptId &&
+          typeof record.replacementSentinelPid === 'number'
+        );
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
 async function observeBackendReady(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
@@ -857,6 +894,7 @@ async function observeBackendReady(
       ? SENTINEL_RECOVERY_BUDGET_MS
       : Math.max(timeoutMs, LEGACY_RECOVERY_BUDGET_MS);
   let terminalOutcome: SpawnedCoordinatorTerminal | null = null;
+  let unconfirmedRelaunch = false;
   let refusedHolder: VerifiedBackendInfo | null = null;
   let freshContenderStarted = false;
   // A draining incumbent cannot serve this wait. An authenticated running legacy incumbent can serve it when
@@ -966,6 +1004,16 @@ async function observeBackendReady(
         terminalOutcome = null;
         continue;
       }
+      if (waitContext.kind === 'current-attempt' && waitContext.sentinel) {
+        unconfirmedRelaunch ||= hasUnconfirmedSentinelRelaunch(paths, waitContext.pid, waitContext.attemptId);
+      }
+      if (unconfirmedRelaunch) {
+        monitoring = 'available';
+        await timePort.sleep(
+          Math.max(1, Math.min(STARTUP_POLL_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt))),
+        );
+        continue;
+      }
       throw new BackendUnreachableError(endedStartupMessage(terminalOutcome, observedReading, info));
     }
     if (terminalOutcome !== null && (recoveringHolder || refusedHolder !== null) && servingIncumbent !== null) {
@@ -996,6 +1044,7 @@ async function observeBackendReady(
       };
       freshContenderStarted = true;
       terminalOutcome = null;
+      unconfirmedRelaunch = false;
       refusedHolder = null;
       continue;
     }
@@ -1016,6 +1065,35 @@ async function observeBackendReady(
  * sentinels, requests shutdown, waits for release, or follows a replacement
  * instance.
  */
+function hasCommittedSuccessionReceipt(
+  runDir: string,
+  incumbent: ReturnType<typeof existingIncumbentIdentity>,
+  successor: RawCoordinatorHealth,
+): boolean {
+  const observed = readUpgradeIntent(runDir);
+  const current =
+    observed.kind === 'readable' &&
+    observed.intent.disposition === 'completed' &&
+    observed.intent.completionReceipt !== null
+      ? [{ incumbent: observed.intent.incumbent, receipt: observed.intent.completionReceipt }]
+      : [];
+  return [...current, ...readCompletedSuccessionReceipts(runDir)].some(
+    ({ incumbent: prior, receipt }) =>
+      prior.instanceId === incumbent.instanceId &&
+      prior.version === incumbent.version &&
+      prior.bundleHash === incumbent.bundleHash &&
+      prior.flavor === incumbent.flavor &&
+      (incumbent.pid === undefined || prior.pid === incumbent.pid) &&
+      (incumbent.incarnation === undefined || prior.incarnation === incumbent.incarnation) &&
+      receipt.successor.instanceId === successor.instanceId &&
+      receipt.successor.pid === successor.pid &&
+      receipt.successor.build.version === successor.version &&
+      receipt.successor.build.bundleHash === successor.bundleHash &&
+      receipt.successor.build.flavor === successor.flavor &&
+      (receipt.successor.incarnation === null || receipt.successor.incarnation === successor.incarnation),
+  );
+}
+
 async function waitForExistingIncumbentReady(
   paths: CoordinatorPaths,
   socketPath: string,
@@ -1026,6 +1104,7 @@ async function waitForExistingIncumbentReady(
   let incumbent = existingIncumbentIdentity(initialHealth);
   const deadline = timePort.now() + timeoutMs;
   let health: RawCoordinatorHealth | null = initialHealth;
+  let discoveryChanged = false;
 
   while (timePort.now() < deadline) {
     if (health === null) {
@@ -1035,34 +1114,26 @@ async function waitForExistingIncumbentReady(
       throw childCoordinatorUnavailable('the observed parent coordinator is draining');
     }
     if (!identityMatchesExistingIncumbent(health, incumbent)) {
-      const observed = readUpgradeIntent(paths.runDir);
-      const receipt =
-        observed.kind === 'readable' && observed.intent.disposition === 'completed'
-          ? observed.intent.completionReceipt
-          : null;
-      if (
-        receipt === null ||
-        observed.kind !== 'readable' ||
-        observed.intent.incumbent.instanceId !== incumbent.instanceId ||
-        observed.intent.incumbent.version !== incumbent.version ||
-        observed.intent.incumbent.bundleHash !== incumbent.bundleHash ||
-        observed.intent.incumbent.flavor !== incumbent.flavor ||
-        (incumbent.pid !== undefined && observed.intent.incumbent.pid !== incumbent.pid) ||
-        receipt.successor.instanceId !== health.instanceId ||
-        receipt.successor.pid !== health.pid ||
-        receipt.successor.build.version !== health.version ||
-        receipt.successor.build.bundleHash !== health.bundleHash ||
-        receipt.successor.build.flavor !== health.flavor ||
-        (receipt.successor.incarnation !== null && receipt.successor.incarnation !== health.incarnation)
-      ) {
+      if (!hasCommittedSuccessionReceipt(paths.runDir, incumbent, health)) {
+        if (discoveryChanged) {
+          await timePort.sleep(STARTUP_POLL_MS);
+          health = answeredHealth(await readRawCoordinatorHealth(createIpcClient(socketPath, timePort)));
+          continue;
+        }
         throw childCoordinatorUnavailable('the coordinator identity changed while the child was connecting');
       }
       incumbent = existingIncumbentIdentity(health);
+      discoveryChanged = false;
     }
 
     const info = readDiscoverySnapshot(paths);
     if (info !== null && !discoveryMatchesExistingIncumbent(info, socketPath, incumbent)) {
-      throw childCoordinatorUnavailable('coordinator discovery does not match the observed parent');
+      if (info.socketPath !== socketPath || info.instanceId === incumbent.instanceId)
+        throw childCoordinatorUnavailable('coordinator discovery does not match the observed parent');
+      discoveryChanged = true;
+      await timePort.sleep(STARTUP_POLL_MS);
+      health = answeredHealth(await readRawCoordinatorHealth(createIpcClient(socketPath, timePort)));
+      continue;
     }
     // A child may neither start nor replace a coordinator, so no route's admission may let a draining parent
     // serve it: the refusal it would then carry names an exit the child cannot take.
@@ -1074,7 +1145,11 @@ async function waitForExistingIncumbentReady(
     health = answeredHealth(await readRawCoordinatorHealth(createIpcClient(socketPath, timePort)));
   }
 
-  throw childCoordinatorUnavailable('timed out waiting for the observed parent coordinator to become ready');
+  throw childCoordinatorUnavailable(
+    discoveryChanged
+      ? 'coordinator discovery does not match the observed parent'
+      : 'timed out waiting for the observed parent coordinator to become ready',
+  );
 }
 
 function resolvePluginRoot(pluginRoot?: string): string {

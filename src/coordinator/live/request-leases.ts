@@ -1,6 +1,7 @@
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
 import { backendLog } from '../../infra/backend-log.js';
+import { durableRequestIdentity } from '../../infra/request-lease-identity.js';
 
 export type RequestLease = Readonly<{
   run<T>(execute: (signal: AbortSignal) => Promise<T>): Promise<T>;
@@ -12,10 +13,11 @@ export type RequestLeaseIdentity = Readonly<{
 }>;
 
 export type AbandonedRequest = Readonly<{
+  recordId: string;
   method: string;
   requestId: string;
   startedAt: string;
-  outcome: 'continuing';
+  outcome: 'continuing' | 'completed' | 'failed' | 'cancelled';
   identity?: RequestLeaseIdentity;
 }>;
 
@@ -54,6 +56,7 @@ export function createRequestLeaseOwner(
     begin(): void;
     end(): void;
     abandon?(request: AbandonedRequest): void;
+    newRecordId(): string;
     time: TimePort;
     timing?: RequestLeaseTiming;
   }>,
@@ -65,7 +68,10 @@ export function createRequestLeaseOwner(
     begin: (method, requestId, identity) => {
       options.begin();
       const startedAt = new Date(time.now()).toISOString();
+      const recordId = options.newRecordId();
       const controller = new AbortController();
+      const currentIdentity = (): RequestLeaseIdentity | undefined =>
+        durableRequestIdentity(controller.signal) ?? identity;
       let deadline =
         time.now() +
         (method === 'kb.source.create' || method === 'kb.reindex' ? timing.kbMutationMs : timing.defaultMs);
@@ -73,13 +79,20 @@ export function createRequestLeaseOwner(
       let expired = false;
       let settled = false;
       let released = false;
+      let abandoned = false;
       let grace: TimerHandle | null = null;
       let rejectUnsettled: ((error: Error) => void) | null = null;
       const unsettled = new Promise<never>((_resolve, reject) => {
         rejectUnsettled = reject;
       });
       const deadlineError = (outcome: 'cancelled' | 'unknown') =>
-        documentedCoralSetupError('request_deadline_exceeded', { method, requestId, ...identity, outcome });
+        documentedCoralSetupError('request_deadline_exceeded', {
+          method,
+          requestId,
+          recordId,
+          ...currentIdentity(),
+          outcome,
+        });
       const check = (): void => {
         const current = time.now();
         const gap = current - lastWake;
@@ -91,7 +104,15 @@ export function createRequestLeaseOwner(
         grace = time.setTimeout(() => {
           if (settled) return;
           try {
-            options.abandon?.({ method, requestId, startedAt, outcome: 'continuing', identity });
+            options.abandon?.({
+              recordId,
+              method,
+              requestId,
+              startedAt,
+              outcome: 'continuing',
+              identity: currentIdentity(),
+            });
+            abandoned = true;
           } catch (error: unknown) {
             backendLog.error('Could not record abandoned request', error);
           }
@@ -100,7 +121,8 @@ export function createRequestLeaseOwner(
             documentedCoralSetupError('request_deadline_exceeded', {
               method,
               requestId,
-              ...identity,
+              recordId,
+              ...currentIdentity(),
               outcome: 'continuing',
             }),
           );
@@ -115,9 +137,16 @@ export function createRequestLeaseOwner(
         if (grace !== null) time.clearTimeout(grace);
         options.end();
       };
-      const settle = (): void => {
+      const settle = (outcome: 'completed' | 'failed' | 'cancelled'): void => {
         if (settled) return;
         settled = true;
+        if (expired || abandoned) {
+          try {
+            options.abandon?.({ recordId, method, requestId, startedAt, outcome, identity: currentIdentity() });
+          } catch (error: unknown) {
+            backendLog.error('Could not reconcile abandoned request', error);
+          }
+        }
         release();
       };
       return {
@@ -125,18 +154,11 @@ export function createRequestLeaseOwner(
           const work = Promise.resolve().then(() => execute(controller.signal));
           const observed = work.then(
             (value) => {
-              settle();
-              if (expired)
-                throw documentedCoralSetupError('request_deadline_exceeded', {
-                  method,
-                  requestId,
-                  ...identity,
-                  outcome: 'continuing',
-                });
+              settle('completed');
               return value;
             },
             (error: unknown) => {
-              settle();
+              settle(isAbort(error) ? 'cancelled' : 'failed');
               if (expired) throw deadlineError(isAbort(error) ? 'cancelled' : 'unknown');
               throw error;
             },

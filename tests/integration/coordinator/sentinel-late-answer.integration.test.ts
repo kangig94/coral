@@ -75,6 +75,55 @@ describe('coordinator sentinel recovery', () => {
     expect(alive(replacement?.coordinatorPid as number)).toBe(true);
   }, 15_000);
 
+  it('kills a coordinator that resumes heartbeat answers but ignores SIGTERM', async () => {
+    const stubbornChild = fileURLToPath(new URL('./fixtures/late-answer-stays-child.mjs', import.meta.url));
+    const sentinel = spawn(process.execPath, [sentinelBundle, stubbornChild], {
+      env: { ...process.env, CORAL_SENTINEL_RUN_DIR: root },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    sentinels.push(sentinel);
+    await new Promise<void>((resolve) => {
+      sentinel.on('message', (message: unknown) => {
+        if (typeof message === 'object' && message !== null && 'kind' in message && message.kind === 'ready') resolve();
+      });
+    });
+    sentinel.send({ kind: 'pause-answers' });
+    await waitForCondition(
+      () => records().some((record) => record.sentinelPid === sentinel.pid && record.state === 'exited'),
+      5_000,
+    );
+    const exited = records().find((record) => record.sentinelPid === sentinel.pid && record.state === 'exited');
+    expect(exited?.childSignal).toBe('SIGKILL');
+    await waitForCondition(() => sentinel.exitCode !== null, 5_000);
+  }, 15_000);
+
+  it('keeps the kill deadline through a sentinel scheduling gap after SIGTERM', async () => {
+    const stubbornChild = fileURLToPath(new URL('./fixtures/late-answer-stays-child.mjs', import.meta.url));
+    const sentinel = spawn(process.execPath, [sentinelBundle, stubbornChild, 'grace-gap'], {
+      env: { ...process.env, CORAL_SENTINEL_RUN_DIR: root },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    sentinels.push(sentinel);
+    await new Promise<void>((resolve) => {
+      sentinel.on('message', (message: unknown) => {
+        if (typeof message === 'object' && message !== null && 'kind' in message && message.kind === 'ready') resolve();
+      });
+    });
+    sentinel.send({ kind: 'pause-answers' });
+    await waitForCondition(
+      () => records().some((record) => record.sentinelPid === sentinel.pid && record.state === 'terminating'),
+      5_000,
+    );
+    sentinel.kill('SIGSTOP');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    sentinel.kill('SIGCONT');
+    await waitForCondition(
+      () => records().some((record) => record.sentinelPid === sentinel.pid && record.state === 'exited'),
+      5_000,
+    );
+    expect(records().find((record) => record.sentinelPid === sentinel.pid)?.childSignal).toBe('SIGKILL');
+  }, 15_000);
+
   it('records a terminal status when no valid replacement root exists', async () => {
     const sentinel = spawn(process.execPath, [sentinelBundle, childFixture, 'no-fixture-relaunch'], {
       env: { ...process.env, HOME: root, CORAL_SENTINEL_RUN_DIR: root },

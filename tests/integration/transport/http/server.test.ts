@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
@@ -877,11 +878,14 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(201);
-    expect(mutateKb).toHaveBeenCalledWith({
-      method: 'createMemo',
-      args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
-      ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
-    });
+    expect(mutateKb).toHaveBeenCalledWith(
+      {
+        method: 'createMemo',
+        args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+        ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
+      },
+      expect.any(AbortSignal),
+    );
   });
 
   it('uses the daemon supervisor in the standard server path', async () => {
@@ -934,11 +938,14 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(201);
-    expect(mutateKb).toHaveBeenCalledWith({
-      method: 'createMemo',
-      args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
-      ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
-    });
+    expect(mutateKb).toHaveBeenCalledWith(
+      {
+        method: 'createMemo',
+        args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+        ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
+      },
+      expect.any(AbortSignal),
+    );
   });
 
   it('reports the KB daemon proxy offline when the daemon is disabled', async () => {
@@ -1983,11 +1990,14 @@ describe('execution backend server', () => {
       deleted: ['a.md'],
       count: 1,
     });
-    expect(mutateKb).toHaveBeenCalledWith({
-      method: 'deleteMemos',
-      args: { pattern: 'a*' },
-      ctx: expectedDaemonProjectContext(projectRoot),
-    });
+    expect(mutateKb).toHaveBeenCalledWith(
+      {
+        method: 'deleteMemos',
+        args: { pattern: 'a*' },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+      expect.any(AbortSignal),
+    );
 
     const purgeResponse = await fetch(
       `${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}&all=true`,
@@ -2002,11 +2012,14 @@ describe('execution backend server', () => {
     expect(purgeResponse.status).toBe(200);
     const purgeBody = (await purgeResponse.json()) as Record<string, unknown>;
     expect(purgeBody).toEqual({ deleted: 1 });
-    expect(mutateKb).toHaveBeenLastCalledWith({
-      method: 'deleteMemos',
-      args: { all: true },
-      ctx: expectedDaemonProjectContext(projectRoot),
-    });
+    expect(mutateKb).toHaveBeenLastCalledWith(
+      {
+        method: 'deleteMemos',
+        args: { all: true },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+      expect.any(AbortSignal),
+    );
   });
 
   describe('resource-oriented HTTP routes', () => {
@@ -2510,6 +2523,7 @@ describe('execution backend server', () => {
       const { deps } = createHttpHandlerDeps();
       let inflight = 0;
       deps.admin.beginRequestLease = createRequestLeaseOwner({
+        newRecordId: randomUUID,
         time: runtime.time,
         begin: () => {
           inflight += 1;
@@ -2536,6 +2550,7 @@ describe('execution backend server', () => {
     it('bounds an HTTP KB restart that never settles', async () => {
       const { deps } = createHttpHandlerDeps();
       deps.admin.beginRequestLease = createRequestLeaseOwner({
+        newRecordId: randomUUID,
         time: runtime.time,
         begin: deps.admin.beginRequest,
         end: deps.admin.endRequest,
@@ -2565,6 +2580,7 @@ describe('execution backend server', () => {
         inflight -= 1;
       };
       deps.admin.beginRequestLease = createRequestLeaseOwner({
+        newRecordId: randomUUID,
         time: runtime.time,
         begin: deps.admin.beginRequest,
         end: deps.admin.endRequest,

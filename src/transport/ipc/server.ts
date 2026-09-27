@@ -40,6 +40,7 @@ import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/au
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import { formatError } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
+import { linkRequestLeaseIdentity } from '../../infra/request-lease-identity.js';
 import { acquireDirectoryLock } from '../../infra/fs-lock.js';
 import type { Capability } from '../../security/capability.js';
 import type { Principal } from '../../security/principal.js';
@@ -916,6 +917,7 @@ async function dispatchFrame(
     subscriptionController = controller;
     socket.once('close', abortDispatchOnClose);
     const dispatch = async (signal: AbortSignal) => {
+      linkRequestLeaseIdentity(controller.signal, signal);
       signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
       return entry.dispatch(parsed.data, principal, controller.signal);
     };

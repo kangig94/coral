@@ -31,7 +31,12 @@ import type {
 } from '../jobs/contracts/provider-operation-lifecycle.js';
 
 interface CoordinatorSessionOps {
-  start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
+  start(
+    providerName: string,
+    input: JobLaunchRequest,
+    ctx: InvocationContext,
+    signal?: AbortSignal,
+  ): Promise<ProviderSessionLaunchDecision>;
   resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
 }
 
@@ -50,6 +55,7 @@ interface CoordinatorWorkflowOps {
     input: CanonicalWorkflowCommand,
     ctx: InvocationContext,
     workDir: CanonicalWorkDir,
+    signal?: AbortSignal,
   ): Promise<WorkflowLaunchDecision>;
 }
 

@@ -7,7 +7,9 @@ void runCoordinatorSentinel(executable, [], {
   timing:
     process.argv[3] === 'slow'
       ? { challengeMs: 100, schedulingGapMs: 5_000, lapseMs: 42_000, graceMs: 500 }
-      : { challengeMs: 20, schedulingGapMs: 80, lapseMs: 300, graceMs: 80 },
+      : process.argv[3] === 'grace-gap'
+        ? { challengeMs: 20, schedulingGapMs: 80, lapseMs: 600, graceMs: 300 }
+        : { challengeMs: 20, schedulingGapMs: 80, lapseMs: 300, graceMs: 80 },
 }).then((code) => {
   process.exitCode = code;
 });

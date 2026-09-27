@@ -21,6 +21,7 @@ import { collectBids } from './flow/bid.js';
 import { makeDecisionContext } from './flow/primitives.js';
 import { persistAbortEndForShutdown } from './recovery.js';
 import { providerBindingFailureCode } from '../../providers/contracts/binding.js';
+import { throwIfRequestAborted } from '../../infra/request-lease-identity.js';
 
 function readDiscussMaxEpochs(ctx: DiscussContext): number {
   const raw = Number.parseInt(ctx.runtime.env.get('CORAL_DISCUSS_MAX_EPOCHS') ?? '', 10);
@@ -57,7 +58,9 @@ export async function startDiscussSession(
   agents: AgentConfig[],
   config: DiscussConfig,
   invocationCtx: InvocationContext,
+  signal?: AbortSignal,
 ): Promise<LiveDiscussSession> {
+  throwIfRequestAborted(signal);
   if (!hasProviderScope(invocationCtx)) {
     throw new DiscussManagerError('provider_scope_missing', {
       message:
@@ -93,6 +96,7 @@ export async function startDiscussSession(
     }),
   );
 
+  throwIfRequestAborted(signal);
   const snapshot = await ctx.store.append(sessionId, null, created);
   const session = attachSession(ctx, snapshot);
   afterCommit(ctx, sessionId, snapshot, created);

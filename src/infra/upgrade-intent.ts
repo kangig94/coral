@@ -309,6 +309,44 @@ const upgradeIntentSchema = upgradeIntentFields.superRefine((intent, context) =>
 
 export type UpgradeIntent = z.infer<typeof upgradeIntentSchema>;
 
+const completedSuccessionReceiptSchema = z.object({
+  incumbent: incumbentIdentitySchema,
+  receipt: servingReceiptSchema,
+});
+const completedSuccessionReceiptsSchema = z.object({
+  version: z.literal(1),
+  receipts: z.array(completedSuccessionReceiptSchema).max(16),
+});
+
+export function readCompletedSuccessionReceipts(
+  runDir: string,
+): readonly z.infer<typeof completedSuccessionReceiptSchema>[] {
+  try {
+    const value = JSON.parse(readFileSync(join(runDir, 'upgrade-receipts.v1.json'), 'utf8')) as unknown;
+    return completedSuccessionReceiptsSchema.parse(value).receipts;
+  } catch {
+    return [];
+  }
+}
+
+function retainCompletedSuccessionReceipt(runDir: string, intent: UpgradeIntent): void {
+  if (intent.completionReceipt === null) return;
+  const path = join(runDir, 'upgrade-receipts.v1.json');
+  let receipts: z.infer<typeof completedSuccessionReceiptSchema>[] = [];
+  try {
+    receipts = completedSuccessionReceiptsSchema.parse(JSON.parse(readFileSync(path, 'utf8')) as unknown).receipts;
+  } catch (error: unknown) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
+  const receipt = { incumbent: intent.incumbent, receipt: intent.completionReceipt };
+  writeAtomic(path, {
+    version: 1,
+    receipts: [...receipts.filter((entry) => entry.receipt.attemptId !== receipt.receipt.attemptId), receipt].slice(
+      -16,
+    ),
+  });
+}
+
 /** Superseded attempts retain the same durable shape as an active intent. */
 export function parseUpgradeIntentSnapshot(value: unknown): UpgradeIntent | null {
   const parsed = upgradeIntentSchema.safeParse(value);
@@ -543,7 +581,7 @@ function mergeUnknownKeys(oldValue: unknown, newValue: unknown, key?: string): u
   return merged;
 }
 
-function writeAtomic(path: string, value: UpgradeIntent): void {
+function writeAtomic(path: string, value: unknown): void {
   const parent = dirname(path);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const stage = `${path}.stage.${process.pid}.${randomUUID()}`;
@@ -601,6 +639,12 @@ export async function compareAndSwapUpgradeIntent(
       }),
     );
     lease.assertOwned();
+    if (
+      current?.completionReceipt !== null &&
+      current?.completionReceipt !== undefined &&
+      next.completionReceipt === null
+    )
+      retainCompletedSuccessionReceipt(runDir, current);
     writeAtomic(path, next);
     if (
       current === null ||

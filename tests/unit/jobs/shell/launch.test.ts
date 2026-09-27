@@ -1895,6 +1895,30 @@ describe('ExecutionService launch', () => {
     expect(progressStore.listJobIds()).toEqual([]);
   });
 
+  it('does not launch a session when its request expires during provider preflight', async () => {
+    let finishPreflight!: (value: ProviderPreflightOutcome) => void;
+    const { provider, execute } = makeProvider({
+      preflight: () =>
+        new Promise<ProviderPreflightOutcome>((resolve) => {
+          finishPreflight = resolve;
+        }),
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { progressStore, sessionManager } = getInternals(service);
+    const prepareSession = vi.spyOn(sessionManager, 'prepare');
+    const controller = new AbortController();
+    const pending = service.start('codex', { prompt: 'hello' }, ctx, controller.signal);
+    await vi.waitFor(() => expect(finishPreflight).toBeTypeOf('function'));
+
+    controller.abort();
+    finishPreflight({ kind: 'satisfied' });
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(prepareSession).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(progressStore.listJobIds()).toEqual([]);
+  });
+
   it('returns an undetermined resume without creating another session or a job', async () => {
     const message = 'Provider readiness could not be determined';
     const { provider, execute, preflight } = makeProvider({

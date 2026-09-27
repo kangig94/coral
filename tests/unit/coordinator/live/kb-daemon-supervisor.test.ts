@@ -1061,6 +1061,29 @@ describe('KB daemon supervisor', () => {
     expect(spawnCalls).toHaveLength(1);
   });
 
+  it('does not send a mutation after its request is cancelled during daemon recovery', async () => {
+    const daemonProcess = new FakeDaemonProcess(177);
+    const { runtime, spawnCalls } = createRuntime([daemonProcess]);
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+    const controller = new AbortController();
+    const mutation = supervisor.mutateKb(
+      { method: 'createMemo', args: { topic: 'late', content: 'body', owner: 'kang' }, ctx: daemonCtx() },
+      controller.signal,
+    );
+    await flushMicrotasks(12);
+    expect(spawnCalls).toHaveLength(1);
+    controller.abort();
+    writeReady(daemonProcess);
+
+    await expect(mutation).rejects.toMatchObject({ name: 'AbortError' });
+    expect(requestMessages(daemonProcess).filter((request) => request.method === 'kb.mutate')).toHaveLength(0);
+  });
+
   it('uses the extended request timeout for KB job mutations', async () => {
     const daemonProcess = new FakeDaemonProcess(176);
     const { runtime, time } = createRuntime([daemonProcess]);

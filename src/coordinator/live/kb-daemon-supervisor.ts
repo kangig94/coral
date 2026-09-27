@@ -1,5 +1,6 @@
 import { basename, join } from 'node:path';
 import { errorMessage, formatError } from '../../infra/error-format.js';
+import { throwIfRequestAborted } from '../../infra/request-lease-identity.js';
 import type { ChildProcessLike } from '../../infra/port-types.js';
 import {
   appendBuffer,
@@ -104,8 +105,8 @@ export interface KbDaemonSupervisor {
   probe(): Promise<KbDaemonHealthSnapshot>;
   warmup(): Promise<KbDaemonHealthSnapshot>;
   readKb(request: KbDaemonKbReadRequest, options?: { signal?: AbortSignal }): Promise<KbDaemonKbReadResult>;
-  mutateKb(request: KbDaemonKbMutationRequest): Promise<KbDaemonKbMutationResult>;
-  expansionRpc(request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult>;
+  mutateKb(request: KbDaemonKbMutationRequest, signal?: AbortSignal): Promise<KbDaemonKbMutationResult>;
+  expansionRpc(request: KbDaemonExpansionRequest, signal?: AbortSignal): Promise<KbDaemonExpansionResult>;
   abortKbJobs?(jobIds: string[]): Promise<KbDaemonAbortResult>;
   listActiveKbJobs?(options?: { signal?: AbortSignal }): Promise<KbDaemonJobsResult>;
   listActiveKbJobsForSuccession?(options?: { signal?: AbortSignal }): Promise<KbDaemonJobsResult>;
@@ -915,7 +916,11 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     }
   };
 
-  const mutateKbNow = async (request: KbDaemonKbMutationRequest): Promise<KbDaemonKbMutationResult> => {
+  const mutateKbNow = async (
+    request: KbDaemonKbMutationRequest,
+    signal?: AbortSignal,
+  ): Promise<KbDaemonKbMutationResult> => {
+    throwIfRequestAborted(signal);
     if (!requestRecoveryEnabled) {
       return kbUnavailable('KB daemon mutation request skipped: supervisor is disposing.');
     }
@@ -923,13 +928,16 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     const failedPhase = phase;
     if (phase !== 'online' || daemonProcess === null) {
       const recovered = await recoverForRequest(failedGeneration, failedPhase, 'mutation request recovery');
+      throwIfRequestAborted(signal);
       if (recovered.phase !== 'online') {
         return kbUnavailable(`KB daemon mutation request skipped: recovery ended in ${recovered.phase}.`);
       }
     }
     try {
+      throwIfRequestAborted(signal);
       return await sendKbMutationRequest(request);
     } catch (error: unknown) {
+      if (signal?.aborted) throw error;
       if (error instanceof CoralSetupError) {
         throw error;
       }
@@ -937,7 +945,11 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     }
   };
 
-  const expansionRpcNow = async (request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult> => {
+  const expansionRpcNow = async (
+    request: KbDaemonExpansionRequest,
+    signal?: AbortSignal,
+  ): Promise<KbDaemonExpansionResult> => {
+    throwIfRequestAborted(signal);
     if (!requestRecoveryEnabled) {
       return kbUnavailable('KB daemon expansion request skipped: supervisor is disposing.');
     }
@@ -945,13 +957,16 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     const failedPhase = phase;
     if (phase !== 'online' || daemonProcess === null) {
       const recovered = await recoverForRequest(failedGeneration, failedPhase, 'expansion request recovery');
+      throwIfRequestAborted(signal);
       if (recovered.phase !== 'online') {
         return kbUnavailable(`KB daemon expansion request skipped: recovery ended in ${recovered.phase}.`);
       }
     }
     try {
+      throwIfRequestAborted(signal);
       return await sendExpansionRpcRequest(request);
     } catch (error: unknown) {
+      if (signal?.aborted) throw error;
       if (error instanceof CoralSetupError) {
         throw error;
       }

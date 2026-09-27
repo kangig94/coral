@@ -23,6 +23,7 @@ import { pinRunningBuildRoot, validatedRetainedBuildRoot } from '../../infra/ret
 import { assertNever, formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
+import { identifyDurableRequest, throwIfRequestAborted } from '../../infra/request-lease-identity.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
@@ -397,7 +398,8 @@ export function createKbDaemonReadPort(kbDaemonSupervisor: KbDaemonSupervisor): 
       kbDaemonSupervisor.readKb({ method: 'listStaleCommunities', ctx: daemonCtx(principal) }),
     readCommunitySummaryInput: (slug, principal) =>
       kbDaemonSupervisor.readKb({ method: 'readCommunitySummaryInput', slug, ctx: daemonCtx(principal) }),
-    wakeUp: (args, principal) => kbDaemonSupervisor.readKb({ method: 'wakeUp', args, ctx: daemonCtx(principal) }),
+    wakeUp: (args, principal, signal) =>
+      kbDaemonSupervisor.readKb({ method: 'wakeUp', args, ctx: daemonCtx(principal) }, { signal }),
   };
 }
 
@@ -459,82 +461,90 @@ function createKbDaemonMutationPort(
     toKbDaemonWireContext(ctx ?? fallbackContext);
   return {
     ...readPort,
-    setCommunitySummary: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({
-        method: 'setCommunitySummary',
-        args,
-        ctx: daemonCtx(ctx),
-      });
+    setCommunitySummary: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb(
+        {
+          method: 'setCommunitySummary',
+          args,
+          ctx: daemonCtx(ctx),
+        },
+        signal,
+      );
       return recordAndNotify('community_set_summary', ctx, result, { corpusMutation: true });
     },
-    createNote: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'createNote', args, ctx: daemonCtx(ctx) });
+    createNote: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createNote', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('promote', ctx, result, { corpusMutation: true });
     },
-    updateNote: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'updateNote', args, ctx: daemonCtx(ctx) });
+    updateNote: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'updateNote', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('update', ctx, result, { corpusMutation: true });
     },
-    deleteNote: async (slug, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteNote', slug, ctx: daemonCtx(ctx) });
+    deleteNote: async (slug, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteNote', slug, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('delete', ctx, result, { corpusMutation: true });
     },
-    createSource: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'createSource', args, ctx: daemonCtx(ctx) });
+    createSource: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createSource', args, ctx: daemonCtx(ctx) }, signal);
       const jobId = readStartedKbJobId(result);
       if (jobId !== null) {
+        identifyDurableRequest(signal, { jobId });
         registerDaemonJobAbortProxy(jobId);
       }
       return recordAndNotify('source_import', ctx, result);
     },
-    createWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'createWiki', args, ctx: daemonCtx(ctx) });
+    createWiki: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createWiki', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('wiki_create', ctx, result, { corpusMutation: true });
     },
-    rewriteWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'rewriteWiki', args, ctx: daemonCtx(ctx) });
+    rewriteWiki: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'rewriteWiki', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('wiki_rewrite', ctx, result, { corpusMutation: true });
     },
-    linkWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'linkWiki', args, ctx: daemonCtx(ctx) });
+    linkWiki: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'linkWiki', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('wiki_link', ctx, result, { corpusMutation: true });
     },
-    unlinkWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'unlinkWiki', args, ctx: daemonCtx(ctx) });
+    unlinkWiki: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'unlinkWiki', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('wiki_unlink', ctx, result, { corpusMutation: true });
     },
-    citeWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'citeWiki', args, ctx: daemonCtx(ctx) });
+    citeWiki: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'citeWiki', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('wiki_cite', ctx, result, { corpusMutation: true });
     },
-    adoptWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'adoptWiki', args, ctx: daemonCtx(ctx) });
+    adoptWiki: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'adoptWiki', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('wiki_adopt', ctx, result, { corpusMutation: true });
     },
-    deleteWiki: async (slug, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteWiki', slug, ctx: daemonCtx(ctx) });
+    deleteWiki: async (slug, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteWiki', slug, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('wiki_delete', ctx, result, { corpusMutation: true });
     },
-    deleteSource: async (slug, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteSource', slug, ctx: daemonCtx(ctx) });
+    deleteSource: async (slug, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteSource', slug, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('source_delete', ctx, result, { corpusMutation: true });
     },
-    createMemo: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'createMemo', args, ctx: daemonCtx(ctx) });
+    createMemo: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createMemo', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('memo_create', ctx, result);
     },
-    deleteMemos: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteMemos', args, ctx: daemonCtx(ctx) });
+    deleteMemos: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteMemos', args, ctx: daemonCtx(ctx) }, signal);
       return recordAndNotify('memo_delete', ctx, result);
     },
-    reindex: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({
-        method: 'reindex',
-        args,
-        ctx: daemonCtx(ctx),
-      });
+    reindex: async (args, ctx, signal) => {
+      const result = await kbDaemonSupervisor.mutateKb(
+        {
+          method: 'reindex',
+          args,
+          ctx: daemonCtx(ctx),
+        },
+        signal,
+      );
       const jobId = readStartedKbJobId(result);
       if (jobId !== null) {
+        identifyDurableRequest(signal, { jobId });
         registerDaemonJobAbortProxy(jobId);
       }
       return recordAndNotify('reindex', ctx, result);
@@ -570,6 +580,7 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
     method: Parameters<KbDaemonSupervisor['expansionRpc']>[0]['method'],
     args: unknown,
     principal: Principal | undefined,
+    signal?: AbortSignal,
   ): Promise<T> => {
     if (principal === undefined) {
       throw new CoralSetupError({
@@ -578,7 +589,10 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
         remediation: "Retry the expansion command. If this persists, run 'coral-cli expansion --help'.",
       });
     }
-    const result = await kbDaemonSupervisor.expansionRpc({ method, args, ctx: toKbDaemonWireContext(principal) });
+    const result = await kbDaemonSupervisor.expansionRpc(
+      { method, args, ctx: toKbDaemonWireContext(principal) },
+      signal,
+    );
     if (!result.ok) {
       throw new CoralSetupError({
         code: result.code,
@@ -591,14 +605,21 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
   };
 
   return {
-    equipExpansion: (request: EquipExpansionRequest, principal?: Principal): Promise<EquipExpansionResult> =>
-      run('equipExpansion', request, principal),
-    unequipExpansion: (request: UnequipExpansionRequest, principal?: Principal): Promise<UnequipExpansionResult> =>
-      run('unequipExpansion', request, principal),
+    equipExpansion: (
+      request: EquipExpansionRequest,
+      principal?: Principal,
+      signal?: AbortSignal,
+    ): Promise<EquipExpansionResult> => run('equipExpansion', request, principal, signal),
+    unequipExpansion: (
+      request: UnequipExpansionRequest,
+      principal?: Principal,
+      signal?: AbortSignal,
+    ): Promise<UnequipExpansionResult> => run('unequipExpansion', request, principal, signal),
     removeExpansionCatalog: (
       request: RemoveExpansionCatalogRequest,
       principal?: Principal,
-    ): Promise<RemoveExpansionCatalogResult> => run('removeExpansionCatalog', request, principal),
+      signal?: AbortSignal,
+    ): Promise<RemoveExpansionCatalogResult> => run('removeExpansionCatalog', request, principal, signal),
     listExpansion: (request: ListExpansionRequest, principal?: Principal): Promise<ListExpansionResult> =>
       run('listExpansion', request, principal),
     readBinding: (request: ReadBindingRequest, principal?: Principal): Promise<ReadBindingResult> =>
@@ -1482,7 +1503,8 @@ export function createCoordinatorCore(
   let waitHandover = new AbortController();
   const rpcPorts: RpcPorts = {
     sessions: {
-      start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
+      start: (providerName, input, ctx, signal) =>
+        services.getExecutionService(ctx).start(providerName, input, ctx, signal),
     },
     jobs: {
       scopeCheck: (jobIds, callerRoot, relation) => jobAddressing.scopeCheck(jobIds, callerRoot, relation),
@@ -1516,13 +1538,14 @@ export function createCoordinatorCore(
       outcomeUnrecoverable: (jobIds) => jobAddressing.outcomeUnrecoverable(jobIds),
     },
     workflows: {
-      execute: async (request, ctx) => {
+      execute: async (request, ctx, signal) => {
         try {
+          throwIfRequestAborted(signal);
           const compiled = workflowCompiler.compile(request, world.providerRegistry);
           const decision =
             'status' in compiled
               ? compiled
-              : await workflowCommands.execute(services.getExecutionService(ctx), compiled, ctx);
+              : await workflowCommands.execute(services.getExecutionService(ctx), compiled, ctx, signal);
           return { kind: 'decision' as const, decision };
         } catch (error: unknown) {
           if (isWorkflowInputFailure(error)) {
@@ -1551,8 +1574,8 @@ export function createCoordinatorCore(
         providerHostInspectResponseSchema.parse({
           host: await providerHostAdministration.inspect(selector),
         }),
-      evict: async (selector) =>
-        providerHostEvictResponseSchema.parse(await providerHostAdministration.evict(selector)),
+      evict: async (selector, signal) =>
+        providerHostEvictResponseSchema.parse(await providerHostAdministration.evict(selector, signal)),
     },
     providerProxySets: {
       contain: async (request, signal) =>
@@ -1572,7 +1595,8 @@ export function createCoordinatorCore(
     kb: kbRpcPort,
     discuss: {
       seed: handleDiscussSeed,
-      start: (args, ctx) => handleDiscussStart(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
+      start: (args, ctx, signal) =>
+        handleDiscussStart(args, ctx, { getDiscussContext: discuss.getDiscussContext }, signal),
       listSessions: () => listDiscussSessions(discuss.readHelpersDeps),
       loadDetail: (projectRoot, sessionId, view) =>
         loadDiscussDetail(discuss.readHelpersDeps, world.resolveProjectSource(projectRoot), sessionId, view),
@@ -2001,10 +2025,12 @@ export function createCoordinatorCore(
   const requestLeases = createRequestLeaseOwner({
     time: runtime.time,
     timing: options.requestLeaseTiming,
+    newRecordId: () => runtime.ids.uuid(),
     begin: () => world.idleTimer.beginRequest(),
     end: () => world.idleTimer.endRequest(),
     abandon: (request) => {
-      const path = join(runtime.paths.coral.coordinator.runDir, 'abandoned-requests.v1', `${runtime.ids.uuid()}.json`);
+      const directory = join(runtime.paths.coral.coordinator.runDir, 'abandoned-requests.v1');
+      const path = join(directory, `${request.recordId}.json`);
       runtime.storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
       if (
         !runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify({ version: 1, ...request })}\n`, {
@@ -2013,6 +2039,13 @@ export function createCoordinatorCore(
       ) {
         throw new Error('Abandoned request status could not be recorded');
       }
+      const records = runtime.storage
+        .readdirSync(directory)
+        .filter((name) => name.endsWith('.json'))
+        .map((name) => ({ name, modifiedAt: runtime.storage.statSync(join(directory, name)).mtimeMs }))
+        .sort((left, right) => left.modifiedAt - right.modifiedAt || left.name.localeCompare(right.name));
+      for (const record of records.slice(0, Math.max(0, records.length - 256)))
+        runtime.storage.unlinkSync(join(directory, record.name));
     },
   });
 
