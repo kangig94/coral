@@ -631,8 +631,7 @@ function formatUnusableIncumbent(basis: Extract<HandoffRoutingBasis, { kind: 'in
     case 'identity-mismatch':
       return [
         'Handoff: continuing current build — the authenticated coordinator identity does not match its discovery record.',
-        'Handoff hold: run the shutdown command below, wait for shutdown to finish, then retry.',
-        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+        'Handoff hold: retry after coordinator discovery catches up with the answering coordinator.',
       ].join('\n');
     default:
       return assertNever(basis.cause);

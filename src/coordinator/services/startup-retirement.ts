@@ -54,8 +54,14 @@ export function prepareRetainedControllerHandoff(
 ): Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null {
   const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
   const live = new Map<string, Set<string>>();
+  const holding = new Set<string>();
   for (const entry of custody) {
-    if (entry.kind === 'unreadable' || entry.kind === 'holding') return null;
+    if (entry.kind === 'unreadable') return null;
+    if (entry.kind === 'holding') {
+      if (entry.intent.epochKey === undefined) return null;
+      if (entry.intent.jobId !== undefined) holding.add(entry.intent.jobId);
+      continue;
+    }
     if (entry.kind !== 'bound') continue;
     if (entry.intent.effect === 'provider-operation-publication') continue;
     if (entry.binding.process === null) return null;
@@ -84,7 +90,7 @@ export function prepareRetainedControllerHandoff(
   if (activeLineages.size !== 1) return null;
   const lineageKey = [...activeLineages][0];
   const liveJobIds = live.get(lineageKey) ?? new Set<string>();
-  return prepareRetainedControllerHandoffForLineage(runtime, index, format, custody, lineageKey, liveJobIds);
+  return prepareRetainedControllerHandoffForLineage(runtime, index, format, custody, lineageKey, liveJobIds, holding);
 }
 
 function prepareRetainedControllerHandoffForLineage(
@@ -94,6 +100,7 @@ function prepareRetainedControllerHandoffForLineage(
   custody: ReturnType<typeof readCustodyLedger>,
   lineageKey: string,
   liveJobIds: ReadonlySet<string>,
+  holdingJobIds: ReadonlySet<string>,
 ): Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null {
   const current = inspectCurrentStore(runtime);
   const currentEpoch =
@@ -119,7 +126,8 @@ function prepareRetainedControllerHandoffForLineage(
   const unresolved = index.locationsFor(epochKey).filter((location) => location.disposition !== 'terminal');
   if (
     unresolved.length === 0 ||
-    [...liveJobIds].some((jobId) => !unresolved.some((location) => location.jobId === jobId))
+    [...liveJobIds].some((jobId) => !unresolved.some((location) => location.jobId === jobId)) ||
+    custody.some((entry) => entry.kind === 'holding' && entry.intent.epochKey !== lineageKey)
   )
     return null;
   const { receipts, unreadable } = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
@@ -165,6 +173,7 @@ function prepareRetainedControllerHandoffForLineage(
     )
       return null;
     selectedController = controller;
+    if (holdingJobIds.has(location.jobId) && !liveJobIds.has(location.jobId)) continue;
     if (!liveJobIds.has(location.jobId)) {
       if (location.detail.kind !== 'recorded' || location.detail.value.status.phase !== 'queued') return null;
       continue;

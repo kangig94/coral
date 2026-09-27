@@ -226,6 +226,74 @@ describe('legacy upgrade request', () => {
     expect(startWaiter).toHaveBeenCalledOnce();
   });
 
+  it.each(['null', 'throws'])('keeps the contender retrying until a waiter claims after spawn %s', async (failure) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    installedTargets.add('/installed/target');
+    const realPorts = createRealUpgradeWaiterPorts();
+    let now = Date.now();
+    let launches = 0;
+    const launchDetached = vi.fn(async () => {
+      if (++launches === 1) {
+        if (failure === 'throws') throw new Error('temporary spawn failure');
+        return null;
+      }
+      const observed = readUpgradeIntent(runDir);
+      if (observed.kind !== 'readable') throw new Error('intent disappeared');
+      const claimed = await compareAndSwapUpgradeIntent(runDir, observed.intent.revision, {
+        ...observed.intent,
+        blockers: observed.intent.blockers.filter((entry) => entry.owner !== 'upgrade-contender'),
+        attemptId: 'claimed-attempt',
+        attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: process.pid, incarnation: null },
+        attemptDeadline: new Date(now + 30_000).toISOString(),
+      });
+      expect(claimed.kind).toBe('written');
+      return process.pid;
+    });
+    const sleep = vi.fn(async (ms: number) => {
+      now += ms;
+    });
+
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        ports: { ...realPorts, launchDetached, time: { now: () => now, sleep } },
+      }),
+    ).toMatchObject({ kind: 'waiting', waiter: { kind: 'started', pid: process.pid } });
+    expect(launchDetached).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2_000);
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: { attemptOwner: { kind: 'waiter' }, blockers: [] },
+    });
+  });
+
+  it('stops retrying waiter startup when the installed target disappears', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    installedTargets.add('/installed/target');
+    const launchDetached = vi.fn(async () => {
+      installedTargets.delete('/installed/target');
+      return null;
+    });
+    const realPorts = createRealUpgradeWaiterPorts();
+    const result = await requestLegacyUpgrade({
+      runDir,
+      socketPath: '/legacy.sock',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      ports: {
+        ...realPorts,
+        launchDetached,
+        time: { now: () => Date.now(), sleep: async () => undefined },
+      },
+    });
+    expect(result).toEqual({ kind: 'refused', reason: 'target root no longer validates', disposition: 'deferred' });
+    expect(launchDetached).toHaveBeenCalledOnce();
+  });
+
   it('turns an incumbent-registered intent into a visible retirement wait', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);

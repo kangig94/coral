@@ -17,6 +17,7 @@ import { CONTENDER_DEFERRAL_OWNER, observeRecordedProcess } from './index.js';
 
 const WAITER_CLAIM_TIMEOUT_MS = 5_000;
 const WAITER_CLAIM_POLL_MS = 50;
+const WAITER_RETRY_MS = 2_000;
 
 export type UpgradeWaiterStart =
   | Readonly<{ kind: 'started' | 'existing'; pid: number }>
@@ -44,12 +45,7 @@ export async function startUpgradeWaiter(
       return { kind: 'unavailable', reason: 'intent has ended' };
     }
     const owner = intent.attemptOwner;
-    if (
-      owner?.kind !== 'waiter' ||
-      intent.attemptDeadline === null ||
-      Date.parse(intent.attemptDeadline) <= ports.time.now()
-    )
-      break;
+    if (owner?.kind !== 'waiter') break;
     const liveness = observeRecordedProcess(ports, owner);
     if (liveness === 'alive') return { kind: 'existing', pid: owner.pid };
     if (liveness !== 'absent') return { kind: 'unavailable', reason: 'recorded waiter death is unproven' };
@@ -68,11 +64,16 @@ export async function startUpgradeWaiter(
     }
     observed = readUpgradeIntent(options.runDir);
   }
-  const pid = await ports.launchDetached(join(options.targetRoot, 'bridge', UPGRADE_WAITER_BUNDLE_FILE), [
-    options.runDir,
-    options.socketPath,
-    options.targetRoot,
-  ]);
+  let pid: number | null;
+  try {
+    pid = await ports.launchDetached(join(options.targetRoot, 'bridge', UPGRADE_WAITER_BUNDLE_FILE), [
+      options.runDir,
+      options.socketPath,
+      options.targetRoot,
+    ]);
+  } catch {
+    return { kind: 'unavailable', reason: 'waiter process could not start' };
+  }
   if (pid === null) return { kind: 'unavailable', reason: 'waiter process could not start' };
   const deadline = ports.time.now() + (options.timeoutMs ?? WAITER_CLAIM_TIMEOUT_MS);
   while (ports.time.now() < deadline) {
@@ -245,21 +246,42 @@ export async function requestLegacyUpgrade(
   }
   const registration = outcome.value;
   if (registration.kind === 'refused') return registration;
-  const waiter = await startWaiter({
-    runDir: options.runDir,
-    socketPath: options.socketPath,
-    targetRoot: registration.targetRoot,
-    ports,
-  });
-  return waiter.kind === 'unavailable'
-    ? { kind: 'deferred', requestId: registration.requestId, reason: waiter.reason }
-    : { kind: 'waiting', requestId: registration.requestId, waiter };
+  let lastFailure: string | null = null;
+  for (;;) {
+    const observed = readUpgradeIntent(options.runDir);
+    if (observed.kind !== 'readable') {
+      return {
+        kind: 'refused',
+        reason: `upgrade intent is ${observed.kind}`,
+        disposition: observed.kind === 'absent' ? 'redundant' : intentProblemDisposition(observed.kind),
+      };
+    }
+    const intent = observed.intent;
+    if (intent.requestId !== registration.requestId || intent.target.pluginRootLabel !== registration.targetRoot) {
+      return { kind: 'refused', reason: 'upgrade intent was superseded', disposition: 'redundant' };
+    }
+    if (intent.disposition === 'completed' || intent.disposition === 'closed') {
+      return { kind: 'refused', reason: 'upgrade intent has ended', disposition: 'redundant' };
+    }
+    if (lastFailure !== null && revalidateUpgradeIntentTarget(intent).kind !== 'validated') {
+      return { kind: 'refused', reason: 'target root no longer validates', disposition: 'deferred' };
+    }
+    const waiter = await startWaiter({
+      runDir: options.runDir,
+      socketPath: options.socketPath,
+      targetRoot: registration.targetRoot,
+      ports,
+    });
+    if (waiter.kind !== 'unavailable') return { kind: 'waiting', requestId: registration.requestId, waiter };
+    if (lastFailure !== waiter.reason) {
+      await recordContenderDeferral(options.runDir, waiter.reason);
+      lastFailure = waiter.reason;
+    }
+    await ports.time.sleep(WAITER_RETRY_MS);
+  }
 }
 
-/**
- * A contender that defers exits as a redundant contender does, so what it deferred for is left where status reads
- * it: on the open intent when there is one, and in the audit log always.
- */
+/** Record a contender's current hold on the open intent and in the audit log. */
 export async function recordContenderDeferral(runDir: string, reason: string): Promise<void> {
   writeAuditEvent('upgrade_contender_deferred', { reason }, 'warn');
   const blocker = { owner: CONTENDER_DEFERRAL_OWNER, reason };

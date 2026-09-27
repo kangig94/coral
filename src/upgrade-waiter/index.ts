@@ -33,7 +33,7 @@ export type UpgradeWaiterOptions = Readonly<{
 
 export type UpgradeWaiterResult =
   | Readonly<{
-      kind: 'completed' | 'closed' | 'superseded' | 'target-unavailable' | 'lease-held' | 'expired';
+      kind: 'completed' | 'closed' | 'superseded' | 'target-unavailable' | 'lease-held';
     }>
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
@@ -182,6 +182,24 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     }
     requestId = intent.requestId;
     const child = intent.attemptChild;
+    if (!validate(intent)) {
+      if (attemptId !== null && intent.attemptId === attemptId) {
+        const childMayServe = child?.attemptId === attemptId && observeRecordedProcess(ports, child) !== 'absent';
+        const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+          ...intent,
+          disposition: 'deferred',
+          blockers: [{ owner: 'target', reason: 'target root no longer validates' }],
+          retryCondition: { kind: 'target-change', evidence: 'target root changed or disappeared' },
+          attemptId: childMayServe ? attemptId : null,
+          attemptOwner: childMayServe ? intent.attemptOwner : null,
+          attemptChild: childMayServe ? child : null,
+          attemptDeadline: childMayServe ? intent.attemptDeadline : null,
+        });
+        if (released.kind === 'conflict') continue;
+        if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
+      }
+      return { kind: 'target-unavailable' };
+    }
     if (
       intent.disposition === 'deferred' &&
       intent.attemptId !== null &&
@@ -190,9 +208,13 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       child.attemptId === intent.attemptId
     ) {
       if (intent.attemptDeadline === null || Date.parse(intent.attemptDeadline) > now()) {
-        return { kind: 'lease-held' };
+        await sleep(pollMs);
+        continue;
       }
-      if (observeRecordedProcess(ports, child) !== 'absent') return { kind: 'lease-held' };
+      if (observeRecordedProcess(ports, child) !== 'absent') {
+        await sleep(pollMs);
+        continue;
+      }
       const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
         ...intent,
         attemptId: null,
@@ -202,28 +224,20 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       });
       if (released.kind === 'conflict') continue;
       if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
+      attemptId = null;
+      launched = false;
+      await sleep(pollMs);
       continue;
     }
-    if (!validate(intent)) {
-      if (launched) return { kind: 'target-unavailable' };
-      if (attemptId !== null && intent.attemptId === attemptId) {
-        const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
-          ...intent,
-          disposition: 'deferred',
-          blockers: [{ owner: 'target', reason: 'target root no longer validates' }],
-          retryCondition: { kind: 'target-change', evidence: 'target root changed or disappeared' },
-          attemptId: null,
-          attemptOwner: null,
-          attemptDeadline: null,
-        });
-        if (released.kind === 'conflict') continue;
-      }
-      return { kind: 'target-unavailable' };
-    }
+    if (attemptId !== null && intent.attemptId === attemptId && child?.attemptId === attemptId) launched = true;
 
     const deadline = intent.attemptDeadline === null ? 0 : Date.parse(intent.attemptDeadline);
     if (attemptId === null) {
-      if (intent.attemptOwner !== null && deadline > now()) return { kind: 'lease-held' };
+      if (
+        intent.attemptOwner !== null &&
+        (deadline > now() || observeRecordedProcess(ports, intent.attemptOwner) !== 'absent')
+      )
+        return { kind: 'lease-held' };
       attemptId = ports.uuid();
     } else if (intent.attemptId !== attemptId || intent.attemptOwner?.instanceId !== instanceId) {
       return { kind: 'superseded' };
@@ -244,7 +258,12 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       });
       if (released.kind === 'conflict') continue;
       if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
-      return { kind: 'expired' };
+      if (!recordedChild) {
+        attemptId = null;
+        launched = false;
+      }
+      await sleep(pollMs);
+      continue;
     }
     if (intent.attemptOwner?.instanceId !== instanceId || (!launched && deadline - now() < LEASE_MS / 2)) {
       const claimed = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
@@ -283,7 +302,11 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
           attemptDeadline: null,
         });
         if (released.kind === 'conflict') continue;
-        return { kind: 'unobservable', reason: 'target spawn failed' };
+        if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
+        attemptId = null;
+        launched = false;
+        await sleep(pollMs);
+        continue;
       }
       launched = true;
     }

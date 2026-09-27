@@ -1,10 +1,13 @@
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createStartupMintAuthorizer } from '#src/coordinator/services/startup-retirement.js';
-import { recordControllerOpen } from '#src/coordinator/succession/controller-open.js';
+import {
+  createStartupMintAuthorizer,
+  prepareRetainedControllerHandoff,
+} from '#src/coordinator/services/startup-retirement.js';
+import { latestControllerOpen, recordControllerOpen } from '#src/coordinator/succession/controller-open.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { sha256Hex } from '#src/infra/hash.js';
@@ -13,10 +16,12 @@ import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { recordCustodyIntent } from '#src/store/custody-ledger.js';
 import { observeEpochClosure } from '#src/store/epoch-closure.js';
 import { readEpochKey } from '#src/store/epoch-key.js';
 import {
   encodeResolvedStoreEpoch,
+  inspectCurrentStore,
   settleStoreEpoch,
   type StoreMintDisposition,
   type StoreMintObservation,
@@ -81,6 +86,77 @@ function startUp(
 }
 
 describe('startup mint authorizer', () => {
+  it.each([true, false])(
+    'should hand a holding job to its verified retained controller when the root is available: %s',
+    (rootAvailable) => {
+      assertBuildArtifactsAvailable();
+      const runtime = unreadableEpochRuntime();
+      const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+      const fixture = createPluginFixture(homes, { flavor: 'prod' });
+      const manifest = JSON.parse(
+        readFileSync(join(fixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
+      ) as StrictBundleManifest;
+      const current = inspectCurrentStore(runtime);
+      if (current.kind !== 'current') throw new Error('Expected an unreadable current epoch.');
+      const older = newRawDatabase(current.epoch.path);
+      older.exec("UPDATE meta SET value = '0.1.0' WHERE key = 'store_product_version'");
+      older.close();
+      const epochKey = encodeResolvedStoreEpoch(runtime, current.epoch);
+      const lineageKey = readEpochKey(runtime, current.epoch);
+      if (lineageKey === null) throw new Error('Expected an epoch lineage key.');
+      index.register(
+        'live-job',
+        epochKey,
+        { projectRoot: '/workspace/project', workDir: '/workspace/project', jobKind: 'provider' },
+        { instanceId: 'retained-instance', buildSetId: manifest.buildSetId, controlGeneration: 1 },
+      );
+      recordControllerOpen(runtime, epochKey, 'retained-instance', null, fixture.root, manifest, 1);
+      recordCustodyIntent(runtime, runtime.paths.coral.coordinator.runDir, {
+        effect: 'process-spawn',
+        epoch: dirname(current.epoch.path),
+        epochKey: lineageKey,
+        owner: 'job',
+        operationId: 'live-job',
+        jobId: 'live-job',
+        capsule: null,
+        bindWithinMs: 1_000,
+        nowMs: runtime.time.now(),
+      });
+      recordCustodyIntent(runtime, runtime.paths.coral.coordinator.runDir, {
+        effect: 'provider-operation-publication',
+        epoch: dirname(current.epoch.path),
+        epochKey: lineageKey,
+        owner: 'provider-operation',
+        operationId: 'pending-publication',
+        capsule: null,
+        bindWithinMs: 1_000,
+        nowMs: runtime.time.now(),
+      });
+      if (rootAvailable) {
+        cpSync(fixture.root, retainedBuildRoot(runtime, manifest.buildSetId), { recursive: true });
+        const opened = latestControllerOpen(runtime, epochKey, 'retained-instance').latest;
+        if (opened === null) throw new Error('Expected a recorded controller open.');
+        vi.spyOn(runtime.process, 'execSync').mockReturnValue({
+          status: 0,
+          stdout: `${JSON.stringify({
+            kind: 'retained-epoch-open',
+            version: 'v1',
+            epochKey,
+            instanceId: opened.instanceId,
+            buildSetId: opened.build.buildSetId,
+            bundleHash: opened.build.bundleHash,
+          })}\n`,
+          stderr: '',
+        });
+      }
+
+      const handoff = prepareRetainedControllerHandoff(runtime, index, currentCoralStoreFormat());
+      expect(handoff === null).toBe(!rootAvailable);
+      if (rootAvailable) expect(handoff?.epochKey).toBe(epochKey);
+      else expect(startUp(runtime, index, 'startup-without-retained-root')).toMatchObject({ kind: 'unopenable' });
+    },
+  );
+
   it('should mint over an unreadable epoch on the first startup when nothing records work against it', () => {
     const runtime = unreadableEpochRuntime();
     const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);

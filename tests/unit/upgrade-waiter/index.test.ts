@@ -134,12 +134,28 @@ describe('upgrade waiter', () => {
     expect(readUpgradeIntent(dir)).toMatchObject({ kind: 'readable', intent: { disposition: 'completed' } });
   });
 
-  it('releases an expired launch without claiming completion', async () => {
+  it('retries an expired launch without another contender', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent());
     let time = Date.parse('2026-09-25T00:00:00.000Z');
     const observe = vi.fn().mockResolvedValue('retired');
-    const launch = vi.fn(async () => undefined);
+    const launch = vi.fn(async (intent: UpgradeIntent, attemptId: string) => {
+      if (launch.mock.calls.length === 1) return;
+      const completed = await compareAndSwapUpgradeIntent(dir, intent.revision, {
+        ...intent,
+        disposition: 'completed',
+        completionReceipt: {
+          kind: 'serving',
+          attemptId,
+          successor: { instanceId: 'successor', pid: 5678, incarnation: null, build },
+          epochKey: 'epoch-1:lineage-1',
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date(time).toISOString(),
+        },
+      });
+      expect(completed.kind).toBe('written');
+    });
     const result = await runUpgradeWaiter({
       runDir: dir,
       socketPath: '/unused.sock',
@@ -154,21 +170,96 @@ describe('upgrade waiter', () => {
         },
       ),
     });
-    expect(result).toEqual({ kind: 'expired' });
-    expect(launch).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ kind: 'completed' });
+    expect(launch).toHaveBeenCalledTimes(2);
     expect(readUpgradeIntent(dir)).toMatchObject({
       kind: 'readable',
-      intent: { disposition: 'deferred', attemptOwner: null, retryCondition: { kind: 'incumbent-retirement' } },
+      intent: { disposition: 'completed' },
     });
   });
 
-  it('retains a recorded child on expiry so its serving write remains attributable', async () => {
+  it('retries a transient target spawn failure after legacy retirement without another contender', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent());
+    let time = Date.parse('2026-09-25T00:00:00.000Z');
+    let launches = 0;
+    const ids = ['waiter', 'first-attempt', 'second-attempt'];
+    const launch = vi.fn(async (intent: UpgradeIntent, attemptId: string) => {
+      launches++;
+      if (launches === 1) throw new Error('temporary process-table exhaustion');
+      const completed = await compareAndSwapUpgradeIntent(dir, intent.revision, {
+        ...intent,
+        disposition: 'completed',
+        completionReceipt: {
+          kind: 'serving',
+          attemptId,
+          successor: { instanceId: 'successor', pid: 5678, incarnation: null, build },
+          epochKey: 'epoch-1:lineage-1',
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date(time).toISOString(),
+        },
+      });
+      expect(completed.kind).toBe('written');
+    });
+    const result = await runUpgradeWaiter({
+      runDir: dir,
+      socketPath: '/unused.sock',
+      targetRoot: '/installed/target',
+      validateTarget: () => true,
+      observeRetirement: async () => 'retired',
+      launchTarget: launch,
+      ports: {
+        ...waiterPorts(
+          () => time,
+          async (ms) => {
+            time += ms;
+          },
+        ),
+        uuid: () => ids.shift() ?? 'unexpected-id',
+      },
+    });
+    expect(result).toEqual({ kind: 'completed' });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[0]?.[1]).not.toBe(launch.mock.calls[1]?.[1]);
+  });
+
+  it('releases an unrecorded attempt when the target disappears after launch', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent());
+    let time = Date.parse('2026-09-25T00:00:00.000Z');
+    let targetAvailable = true;
+    const launch = vi.fn(async () => undefined);
+    const result = await runUpgradeWaiter({
+      runDir: dir,
+      socketPath: '/unused.sock',
+      targetRoot: '/installed/target',
+      validateTarget: () => targetAvailable,
+      observeRetirement: async () => 'retired',
+      launchTarget: launch,
+      ports: waiterPorts(
+        () => time,
+        async (ms) => {
+          time += ms;
+          if (launch.mock.calls.length > 0) targetAvailable = false;
+        },
+      ),
+    });
+    expect(result).toEqual({ kind: 'target-unavailable' });
+    expect(launch).toHaveBeenCalledOnce();
+    expect(readUpgradeIntent(dir)).toMatchObject({
+      intent: { disposition: 'deferred', attemptId: null, attemptOwner: null },
+    });
+  });
+
+  it('waits for a recorded child after expiry without launching another successor', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent());
     let time = Date.parse('2026-09-25T00:00:00.000Z');
     let launchedAttemptId: string | null = null;
     const incarnation = waiterPorts(() => time).processIncarnation(process.pid);
     if (incarnation === null) throw new Error('test process has no incarnation');
+    let deferredPolls = 0;
     const result = await runUpgradeWaiter({
       runDir: dir,
       socketPath: '/unused.sock',
@@ -187,33 +278,90 @@ describe('upgrade waiter', () => {
         () => time,
         async (ms) => {
           time += ms;
+          const observed = readUpgradeIntent(dir);
+          if (observed.kind !== 'readable' || observed.intent.disposition !== 'deferred') return;
+          if (++deferredPolls !== 2) return;
+          const closed = await compareAndSwapUpgradeIntent(dir, observed.intent.revision, {
+            ...observed.intent,
+            disposition: 'closed',
+          });
+          expect(closed.kind).toBe('written');
         },
       ),
     });
-    expect(result).toEqual({ kind: 'expired' });
+    expect(result).toEqual({ kind: 'closed' });
+    expect(deferredPolls).toBe(2);
     expect(readUpgradeIntent(dir)).toMatchObject({
       kind: 'readable',
       intent: {
-        disposition: 'deferred',
-        attemptId: launchedAttemptId,
-        attemptOwner: { kind: 'waiter' },
+        disposition: 'closed',
+        attemptId: null,
         attemptChild: { attemptId: launchedAttemptId },
       },
     });
-    expect(
-      await runUpgradeWaiter({
-        runDir: dir,
-        socketPath: '/unused.sock',
-        targetRoot: '/installed/target',
-        validateTarget: () => true,
-        observeRetirement: async () => 'retired',
-        launchTarget: async () => {
-          throw new Error('recorded child must retain the attempt');
+  });
+
+  it('retries an expired recorded child only after proving it absent', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent());
+    let time = Date.parse('2026-09-25T00:00:00.000Z');
+    let childAlive = true;
+    let deferredPolls = 0;
+    const ids = ['waiter', 'first-attempt', 'second-attempt'];
+    const attempts: string[] = [];
+    const launch = vi.fn(async (intent: UpgradeIntent, attemptId: string) => {
+      attempts.push(attemptId);
+      if (attempts.length === 1) {
+        const recorded = await compareAndSwapUpgradeIntent(dir, intent.revision, {
+          ...intent,
+          attemptChild: { attemptId, pid: 3333, incarnation: testIncarnation('expired-target') },
+        });
+        expect(recorded.kind).toBe('written');
+        return;
+      }
+      expect(childAlive).toBe(false);
+      const completed = await compareAndSwapUpgradeIntent(dir, intent.revision, {
+        ...intent,
+        disposition: 'completed',
+        completionReceipt: {
+          kind: 'serving',
+          attemptId,
+          successor: { instanceId: 'successor', pid: 5678, incarnation: null, build },
+          epochKey: 'epoch-1:lineage-1',
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date(time).toISOString(),
         },
-        ports: waiterPorts(() => time),
-      }),
-    ).toEqual({ kind: 'lease-held' });
-    expect(readUpgradeIntent(dir)).toMatchObject({ intent: { attemptId: launchedAttemptId } });
+      });
+      expect(completed.kind).toBe('written');
+    });
+    const result = await runUpgradeWaiter({
+      runDir: dir,
+      socketPath: '/unused.sock',
+      targetRoot: '/installed/target',
+      validateTarget: () => true,
+      observeRetirement: async () => 'retired',
+      launchTarget: launch,
+      ports: {
+        ...waiterPorts(
+          () => time,
+          async (ms) => {
+            time += ms;
+            const observed = readUpgradeIntent(dir);
+            if (observed.kind === 'readable' && observed.intent.disposition === 'deferred' && ++deferredPolls === 2) {
+              childAlive = false;
+            }
+          },
+        ),
+        uuid: () => ids.shift() ?? 'unexpected-id',
+        processIncarnation: () => null,
+        processLiveness: (pid) => (pid === 3333 && childAlive ? 'alive' : 'absent'),
+      },
+    });
+    expect(result).toEqual({ kind: 'completed' });
+    expect(deferredPolls).toBeGreaterThanOrEqual(2);
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(attempts[0]).not.toBe(attempts[1]);
   });
 
   it('keeps an unanswered incumbent observation from authorizing launch', async () => {
@@ -369,6 +517,7 @@ describe('upgrade waiter', () => {
     const ports = createRealUpgradeWaiterPorts();
     const launch = vi.fn(async () => undefined);
 
+    let polls = 0;
     expect(
       await runUpgradeWaiter({
         runDir: dir,
@@ -381,11 +530,24 @@ describe('upgrade waiter', () => {
           ...ports,
           processIncarnation: () => null,
           processLiveness: () => 'unknown',
-          time: { now: () => Date.parse('2026-09-25T00:00:01.000Z'), sleep: async () => {} },
+          time: {
+            now: () => Date.parse('2026-09-25T00:00:01.000Z'),
+            sleep: async () => {
+              if (++polls !== 2) return;
+              const observed = readUpgradeIntent(dir);
+              if (observed.kind !== 'readable') throw new Error('intent disappeared');
+              const closed = await compareAndSwapUpgradeIntent(dir, observed.intent.revision, {
+                ...observed.intent,
+                disposition: 'closed',
+              });
+              expect(closed.kind).toBe('written');
+            },
+          },
         },
       }),
-    ).toEqual({ kind: 'lease-held' });
+    ).toEqual({ kind: 'closed' });
     expect(launch).not.toHaveBeenCalled();
+    expect(polls).toBe(2);
     expect(readUpgradeIntent(dir)).toMatchObject({ intent: { attemptId: 'expired-attempt' } });
   });
 });

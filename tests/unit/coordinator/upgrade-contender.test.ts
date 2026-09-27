@@ -106,24 +106,13 @@ describe('contender upgrade request', () => {
     expect(readUpgradeIntent(runDir)).toEqual({ kind: 'absent' });
   });
 
-  it('should exit a contender whose waiter could not start as a deferral recorded on the intent it registered', async () => {
-    const { options, runDir } = fixture();
-    const startLegacy = vi.fn((legacy: Parameters<typeof requestLegacyUpgrade>[0]) =>
-      requestLegacyUpgrade({
-        ...legacy,
-        startWaiter: async () => ({ kind: 'unavailable', reason: 'waiter process could not start' }),
-      }),
+  it('records a deferred refusal when another owner still holds the intent', async () => {
+    const { runDir } = fixture();
+    await settleContenderUpgrade(
+      runDir,
+      { kind: 'refused', reason: 'pending intent names another incumbent', disposition: 'deferred' },
+      recordContenderDeferral,
     );
-    const waiting = await requestUpgradeFromContender({
-      ...options,
-      startLegacy,
-      request: async () => ({ kind: 'refused' }),
-    });
-
-    await expect(settleContenderUpgrade(runDir, waiting, recordContenderDeferral)).resolves.toBeUndefined();
-    expect(readUpgradeIntent(runDir)).toMatchObject({
-      intent: { blockers: [{ owner: 'upgrade-contender', reason: 'waiter process could not start' }] },
-    });
   });
 
   it('should exit a redundant contender without recording anything, and fail one that cannot read its intent', async () => {

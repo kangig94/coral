@@ -482,46 +482,51 @@ async function readLiveCoordinatorHealth(
   runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>,
   time: TimePort,
 ): Promise<LiveIncumbentReading> {
-  const probe = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
-  // Every probe disposition must explicitly decide whether authenticated health can be requested.
-  let discovery: CoordinatorDiscoveryRecord;
-  switch (probe.kind) {
-    case 'absent':
-      return { kind: 'not-observed', reason: 'absent' };
-    case 'unobservable':
-      if (probe.reason === 'unreadable-record') {
-        return { kind: 'not-observed', reason: 'unresolved', cause: 'unreadable-record' };
-      }
-      // An unobservable pid still has a record, and authenticated health is a stronger statement about whether
-      // an incumbent is serving than a pid probe ever was — so ask it rather than concluding nobody is there.
-      discovery = probe.record;
-      break;
-    case 'live':
-      discovery = probe.record;
-      break;
-  }
+  const changedIdentity: LiveIncumbentReading = { kind: 'observed-unusable', cause: 'identity-mismatch' };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const probe = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
+    // Every probe disposition must explicitly decide whether authenticated health can be requested.
+    let discovery: CoordinatorDiscoveryRecord;
+    switch (probe.kind) {
+      case 'absent':
+        return attempt === 0 ? { kind: 'not-observed', reason: 'absent' } : changedIdentity;
+      case 'unobservable':
+        if (probe.reason === 'unreadable-record') {
+          return attempt === 0
+            ? { kind: 'not-observed', reason: 'unresolved', cause: 'unreadable-record' }
+            : changedIdentity;
+        }
+        // An unobservable pid still has a record, and authenticated health is a stronger statement about whether
+        // an incumbent is serving than a pid probe ever was — so ask it rather than concluding nobody is there.
+        discovery = probe.record;
+        break;
+      case 'live':
+        discovery = probe.record;
+        break;
+    }
 
-  const reading = await readAuthenticatedHealth(discovery, time);
-  if (reading.kind === 'not-observed') {
-    backendLog.warn(
-      `Authenticated health from ${discovery.socketPath} did not resolve; treating the incumbent as unobserved, not absent.`,
-    );
+    const reading = await readAuthenticatedHealth(discovery, time);
+    if (reading.kind === 'not-observed') {
+      if (attempt > 0) return changedIdentity;
+      backendLog.warn(
+        `Authenticated health from ${discovery.socketPath} did not resolve; treating the incumbent as unobserved, not absent.`,
+      );
+      return reading;
+    }
+    if (!discoveryMatchesHealth(discovery, runtime.paths.coral.coordinator.socketPath, reading.health)) {
+      if (attempt === 0) continue;
+      backendLog.warn(
+        `Authenticated health from ${discovery.socketPath} named a different coordinator identity than the discovery record; retry after coordinator discovery settles.`,
+      );
+      return changedIdentity;
+    }
+    if (reading.health.status === 'draining') {
+      backendLog.warn(`Live incumbent at ${discovery.socketPath} reported status draining; treating it as unusable.`);
+      return { kind: 'observed-unusable', cause: 'draining' };
+    }
     return reading;
   }
-  if (reading.health.status === 'draining') {
-    // A positive observation, not an absence: something answered, decoded, and named its own shutdown.
-    backendLog.warn(`Live incumbent at ${discovery.socketPath} reported status draining; treating it as unusable.`);
-    return { kind: 'observed-unusable', cause: 'draining' };
-  }
-  if (!discoveryMatchesHealth(discovery, runtime.paths.coral.coordinator.socketPath, reading.health)) {
-    // Also a positive observation: something answered and decoded, naming an identity the discovery record
-    // did not.
-    backendLog.warn(
-      `Authenticated health from ${discovery.socketPath} named a different coordinator identity than the discovery record; treating it as unusable.`,
-    );
-    return { kind: 'observed-unusable', cause: 'identity-mismatch' };
-  }
-  return reading;
+  return changedIdentity;
 }
 
 async function resolveHandoffRouting(pluginRoot?: string, timePort?: TimePort): Promise<RoutingResolution> {

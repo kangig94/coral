@@ -1637,6 +1637,70 @@ describe('handoff-routing/runner', () => {
     expect(warnSpy, 'must not reuse the draining wording for a mismatched-identity reply').not.toHaveBeenCalledWith(
       expect.stringContaining('draining'),
     );
+    expect(mockState.probeCoordinator).toHaveBeenCalledTimes(2);
+    expect(mockState.health).toHaveBeenCalledTimes(2);
+  });
+
+  it('should reread discovery and authenticated health after a succession changes the answering identity', async () => {
+    const record = {
+      socketPath,
+      pid: 4242,
+      bundleHash: manifest.bundleHash,
+      flavor: manifest.flavor,
+      namespace: 'handoff-runner',
+      bootToken: 'boot-token',
+    };
+    mockState.probeCoordinator
+      .mockReturnValueOnce({ kind: 'live', record })
+      .mockReturnValueOnce({ kind: 'live', record: { ...record, pid: 9999 } });
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: manifest.version,
+      bundleHash: manifest.bundleHash,
+      flavor: manifest.flavor,
+      namespace: 'handoff-runner',
+      instanceId: 'successor-1',
+      pid: 9999,
+    });
+
+    const result = await runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' });
+
+    expect(result).not.toMatchObject({
+      reason: { kind: 'routing', basis: { kind: 'incumbent-unusable', cause: 'identity-mismatch' } },
+    });
+    expect(mockState.probeCoordinator).toHaveBeenCalledTimes(2);
+    expect(mockState.health).toHaveBeenCalledTimes(2);
+  });
+
+  it('should preserve the answered coordinator when discovery disappears during the identity retry', async () => {
+    mockState.probeCoordinator
+      .mockReturnValueOnce({
+        kind: 'live',
+        record: {
+          socketPath,
+          pid: 4242,
+          bundleHash: manifest.bundleHash,
+          flavor: manifest.flavor,
+          namespace: 'handoff-runner',
+          bootToken: 'boot-token',
+        },
+      })
+      .mockReturnValueOnce({ kind: 'absent' });
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: manifest.version,
+      bundleHash: manifest.bundleHash,
+      flavor: manifest.flavor,
+      namespace: 'handoff-runner',
+      instanceId: 'successor-1',
+      pid: 9999,
+    });
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-unusable', cause: 'identity-mismatch' } },
+    });
+    expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
   it.each([{ childExitCode: 0 }, { childExitCode: 23 }])(

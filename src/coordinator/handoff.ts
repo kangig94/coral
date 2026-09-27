@@ -178,7 +178,7 @@ export async function settleContenderUpgrade(
   if (waiting.kind === 'refused' && waiting.disposition === 'error') {
     throw new UpgradeWaiterUnavailableError(waiting.reason);
   }
-  if (waiting.kind === 'deferred' || (waiting.kind === 'refused' && waiting.disposition === 'deferred')) {
+  if (waiting.kind === 'refused' && waiting.disposition === 'deferred') {
     backendLog.warn(`Upgrade deferred while the incumbent serves: ${waiting.reason}`);
     await recordDeferral(runDir, waiting.reason);
   }

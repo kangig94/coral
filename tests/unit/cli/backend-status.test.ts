@@ -1864,6 +1864,14 @@ describe('handoff continuation remediation', () => {
       ].join('\n'),
     },
     {
+      name: 'identity changed during succession',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-unusable', cause: 'identity-mismatch' } },
+      expected: [
+        'Handoff: continuing current build — the authenticated coordinator identity does not match its discovery record.',
+        'Handoff hold: retry after coordinator discovery catches up with the answering coordinator.',
+      ].join('\n'),
+    },
+    {
       name: 'invoking identity unavailable',
       reason: {
         kind: 'routing',
