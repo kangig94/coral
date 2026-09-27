@@ -68,11 +68,12 @@ function lifecycleHarness(
   authorizeStartupMint: StoreEpochOptions['authorizeMint'] = ({ incumbent, observedEpochCount }) =>
     incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
   overrides: Partial<LifecycleDeps> = {},
+  existingRoot?: string,
 ) {
-  const root = mkdtempSync(join(tmpdir(), 'coral-lifecycle-store-epoch-'));
+  const root = existingRoot ?? mkdtempSync(join(tmpdir(), 'coral-lifecycle-store-epoch-'));
   const pluginRoot = join(root, 'plugin');
   mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
-  roots.push(root);
+  if (existingRoot === undefined) roots.push(root);
   const runtime = createRealRuntime('prod', { baseDir: join(root, 'state') });
   const storeFormat = currentCoralStoreFormat();
   const storeServicesRef = createStoreServicesRef();
@@ -211,8 +212,8 @@ async function disposeHarness(harness: ReturnType<typeof lifecycleHarness>): Pro
 }
 
 describe('lifecycle store epoch handoff', () => {
-  it.each(['completed', 'refused'] as const)(
-    'keeps a waiter-launched target private until serving is %s',
+  it.each(['completed', 'refused', 'discovery-retry', 'post-completion-failure'] as const)(
+    'keeps a waiter-launched target fenced through %s',
     async (outcome) => {
       const attemptId = 'waiter-discovery-order';
       const incarnation = probeProcessIncarnation(process.pid);
@@ -222,10 +223,17 @@ describe('lifecycle store epoch handoff', () => {
 
       const observedIntentDispositions: Array<string | undefined> = [];
       const listenFn = vi.fn(async () => ({ port: 4100, host: '127.0.0.1' }));
+      const closeServerFn = vi.fn(async () => {});
       const harness = lifecycleHarness(
         (info) => {
           expect(observeSuccessionServing(harness.runtime, attemptId)).not.toBeNull();
-          const published = writeBackendInfo(info, harness.runtime);
+          if (observedIntentDispositions.length === 0) {
+            expect(harness.runtimeState.getLaunchFenceActive()).toBe(true);
+          }
+          const published =
+            outcome === 'discovery-retry' && observedIntentDispositions.length < 2
+              ? false
+              : writeBackendInfo(info, harness.runtime);
           const observed = upgradeIntent.readUpgradeIntent(harness.runtime.paths.coral.coordinator.runDir);
           observedIntentDispositions.push(
             readBackendInfo(harness.runtime)?.instanceId === harness.identity.instanceId && observed.kind === 'readable'
@@ -239,6 +247,14 @@ describe('lifecycle store epoch handoff', () => {
         {
           readSelfIncarnationFn: () => incarnation,
           listenFn,
+          closeServerFn,
+          ...(outcome === 'post-completion-failure'
+            ? {
+                scheduleStoreEpochSweepFn: () => {
+                  throw new Error('sweep scheduling failed');
+                },
+              }
+            : {}),
           cleanupStaleJobsFn: () => {
             expect(harness.runtimeState.getLaunchFenceActive()).toBe(true);
             expect(harness.runtimeState.getLifecycle()).toBe('starting');
@@ -306,19 +322,120 @@ describe('lifecycle store epoch handoff', () => {
           await expect(harness.lifecycle.start()).rejects.toThrow('waiter serving record has no completion receipt');
           expect(observedIntentDispositions).toEqual([]);
           expect(harness.runtimeState.getLaunchFenceActive()).toBe(true);
-          expect(listenFn).not.toHaveBeenCalled();
+          expect(listenFn).toHaveBeenCalledTimes(1);
           expect(observeSuccessionServing(runtime, attemptId)).toBeNull();
         } else {
           await harness.lifecycle.start();
-          expect(observedIntentDispositions).toEqual(['completed']);
+          if (outcome === 'discovery-retry') {
+            expect(observedIntentDispositions).toEqual([undefined, undefined]);
+            await vi.waitFor(() => expect(observedIntentDispositions).toEqual([undefined, undefined, 'completed']), {
+              timeout: 3_500,
+            });
+          } else {
+            expect(observedIntentDispositions).toEqual(['completed']);
+          }
           expect(listenFn).toHaveBeenCalledTimes(1);
           expect(harness.runtimeState.getLaunchFenceActive()).toBe(false);
+          expect(closeServerFn).not.toHaveBeenCalled();
         }
       } finally {
         await disposeHarness(harness);
       }
     },
   );
+
+  it('keeps a failed HTTP bind retryable and serves on the next launch', async () => {
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('test process has no observable incarnation');
+    vi.stubEnv('CORAL_STARTUP_ATTEMPT_ID', 'first-bind');
+    vi.stubEnv('CORAL_WAITER_LAUNCHED', 'first-bind');
+    const bind = vi.fn().mockRejectedValueOnce(new Error('HTTP bind failed')).mockResolvedValue({
+      port: 4100,
+      host: '127.0.0.1',
+    });
+    const first = lifecycleHarness((info) => writeBackendInfo(info, first.runtime), null, undefined, {
+      readSelfIncarnationFn: () => incarnation,
+      listenFn: bind,
+    });
+    const { runtime, identity, storeFormat } = first;
+    const build = {
+      version: identity.version,
+      buildSetId: identity.buildSetId,
+      bundleHash: identity.bundleHash,
+      cliBundleHash: identity.cliBundleHash,
+      claudeAppserverBundleHash: identity.claudeAppserverBundleHash,
+      durableWrapperBundleHash: identity.durableWrapperBundleHash,
+      flavor: identity.flavor,
+      storeFormatFingerprint: storeFormat.fingerprint,
+    };
+    const seeded = await upgradeIntent.compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'waiter-bind-retry',
+      incumbent: {
+        instanceId: 'legacy-incumbent',
+        pid: process.pid,
+        incarnation,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: identity.pluginRoot },
+      attemptId: 'first-bind',
+      attemptChild: null,
+      attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: process.pid, incarnation },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(Date.now() + 60_000).toISOString(),
+      completionReceipt: null,
+    });
+    if (seeded.kind !== 'written') throw new Error(`waiter intent seed was ${seeded.kind}`);
+    try {
+      await expect(first.lifecycle.start()).rejects.toThrow('HTTP bind failed');
+      expect(upgradeIntent.readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+        intent: { disposition: 'attempting', completionReceipt: null },
+      });
+      expect(observeSuccessionServing(runtime, 'first-bind')).toBeNull();
+      expect(readBackendInfo(runtime)).toBeNull();
+    } finally {
+      await disposeHarness(first);
+    }
+
+    const observed = upgradeIntent.readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('waiter intent disappeared');
+    const retried = await upgradeIntent.compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      observed.intent.revision,
+      {
+        ...observed.intent,
+        attemptId: 'second-bind',
+        attemptChild: null,
+        attemptDeadline: new Date(Date.now() + 60_000).toISOString(),
+      },
+    );
+    if (retried.kind !== 'written') throw new Error(`waiter retry was ${retried.kind}`);
+    vi.stubEnv('CORAL_STARTUP_ATTEMPT_ID', 'second-bind');
+    vi.stubEnv('CORAL_WAITER_LAUNCHED', 'second-bind');
+    const next = lifecycleHarness(
+      (info) => writeBackendInfo(info, next.runtime),
+      null,
+      undefined,
+      {
+        readSelfIncarnationFn: () => incarnation,
+        listenFn: bind,
+      },
+      dirname(identity.pluginRoot),
+    );
+    try {
+      await next.lifecycle.start();
+      expect(upgradeIntent.readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+        intent: { disposition: 'completed', completionReceipt: { attemptId: 'second-bind' } },
+      });
+      expect(readBackendInfo(runtime)?.instanceId).toBe(identity.instanceId);
+      expect(next.runtimeState.getLaunchFenceActive()).toBe(false);
+    } finally {
+      await disposeHarness(next);
+    }
+  });
 
   it.each(['open', 'verify', 'adopt'] as const)(
     'should finish ordinary startup when committed recovery exhausts patience during %s',

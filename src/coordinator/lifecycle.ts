@@ -1151,6 +1151,27 @@ async function runLifecycleStartup({
   const startupAbort = new AbortController();
   state.startupAbort = startupAbort;
   const signal = startupAbort.signal;
+  let port = 0;
+  let host = '';
+  let startedAt = 0;
+  let waiterServingCompleted = false;
+  let waiterDiscoveryPublished = false;
+  let waiterDiscoveryRetryScheduled = false;
+  let publishWaiterDiscovery: (() => void) | null = null;
+  const serverInfo = (): CoordinatorServerInfo => ({
+    port,
+    host,
+    socketPath: runtime.paths.coral.coordinator.socketPath,
+    token: identity.token,
+    bootToken: identity.bootToken,
+    shutdownToken: identity.shutdownToken,
+    version,
+    bundleHash,
+    flavor,
+    namespace,
+    instanceId,
+    startedAt,
+  });
 
   try {
     // ===== Era I (kernel) =====
@@ -1600,13 +1621,11 @@ async function runLifecycleStartup({
     signal.throwIfAborted();
 
     // Ordinary startup binds HTTP and signals kernel-ready before recovery so the CLI can return promptly.
-    // A waiter-launched target waits for its durable serving receipt before exposing either endpoint.
-    let port = 0;
-    let host = '';
+    // A waiter-launched target binds HTTP before its serving receipt, with admission still fenced.
     if (!waiterLaunchedChild) ({ port, host } = await listenFn(server));
     signal.throwIfAborted();
     runtimeState.setStartedAt(now());
-    const startedAt = runtimeState.getStartedAt();
+    startedAt = runtimeState.getStartedAt();
     const publishDiscovery = (): void => {
       const discoveryPublished = writeBackendInfoFn({
         pid: backendPid,
@@ -1625,6 +1644,27 @@ async function runLifecycleStartup({
         ...(openedStore === null ? {} : { storeEpoch: openedStore.epoch }),
       });
       if (discoveryPublished === false) throw new Error('Coordinator discovery publication failed.');
+    };
+    publishWaiterDiscovery = () => {
+      try {
+        publishDiscovery();
+        waiterDiscoveryPublished = true;
+      } catch (error: unknown) {
+        backendLog.warn(`Waiter-launched coordinator discovery publication failed: ${formatError(error)}`);
+        if (state.started && !waiterDiscoveryRetryScheduled) {
+          waiterDiscoveryRetryScheduled = true;
+          void runtime.time.sleep(2_000).then(
+            () => {
+              waiterDiscoveryRetryScheduled = false;
+              if (state.started && runtimeState.getLifecycle() === 'running') publishWaiterDiscovery?.();
+            },
+            (retryError: unknown) => {
+              waiterDiscoveryRetryScheduled = false;
+              backendLog.warn(`Waiter-launched discovery retry wait failed: ${formatError(retryError)}`);
+            },
+          );
+        }
+      }
     };
     if (successionAttemptChild === null && committedRecovery === null && !waiterLaunchedChild) publishDiscovery();
     if (committedRecovery === null && !waiterLaunchedChild) runtimeState.setLifecycle('kernel-ready');
@@ -1787,6 +1827,8 @@ async function runLifecycleStartup({
       if (committedRecovery !== null || openedStore === null) {
         throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
       }
+      ({ port, host } = await listenFn(server));
+      signal.throwIfAborted();
       await completeWaiterLaunchedUpgrade(
         runtime,
         currentBuild,
@@ -1795,10 +1837,9 @@ async function runLifecycleStartup({
         backendPid,
         deps.readSelfIncarnationFn(),
       );
-      ({ port, host } = await listenFn(server));
-      signal.throwIfAborted();
+      waiterServingCompleted = true;
       runtimeState.setLifecycle('kernel-ready');
-      publishDiscovery();
+      publishWaiterDiscovery();
       if (shouldScheduleStoreEpochSweep) deps.scheduleStoreEpochSweepFn?.(openedStore);
     }
     if (runtimeState.getLaunchFenceActive()) {
@@ -1819,6 +1860,7 @@ async function runLifecycleStartup({
 
     runtimeState.setLifecycle('running');
     state.started = true;
+    if (waiterServingCompleted && !waiterDiscoveryPublished) publishWaiterDiscovery();
     deps.wakeSuccessionReconciler?.();
     void kbDaemonSupervisor
       ?.start(openedStore ?? undefined)
@@ -1865,21 +1907,20 @@ async function runLifecycleStartup({
       backendLog.error('Runtime component initialization dispatch failed — KB will be offline until restart', error);
     }
 
-    return {
-      port,
-      host,
-      socketPath,
-      token: identity.token,
-      bootToken: identity.bootToken,
-      shutdownToken: identity.shutdownToken,
-      version,
-      bundleHash,
-      flavor,
-      namespace,
-      instanceId,
-      startedAt,
-    };
+    return serverInfo();
   } catch (error: unknown) {
+    if (waiterServingCompleted && !signal.aborted) {
+      backendLog.error(
+        'Waiter-launched coordinator startup failed after serving was recorded; retaining listeners',
+        error,
+      );
+      if (runtimeState.getLifecycle() === 'starting') runtimeState.setLifecycle('kernel-ready');
+      if (runtimeState.getLifecycle() === 'kernel-ready') runtimeState.setLifecycle('running');
+      state.started = true;
+      runtimeState.setLaunchFenceActive(false);
+      if (!waiterDiscoveryPublished) publishWaiterDiscovery?.();
+      return serverInfo();
+    }
     const successionAttemptChild = currentSuccessionAttemptChild();
     if (successionAttemptChild !== null && !successionAttemptChild.isServing()) {
       await successionAttemptChild

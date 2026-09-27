@@ -65,6 +65,7 @@ export type CustodyEntry =
 
 export type CustodyObservation =
   | Readonly<{ kind: 'alive' | 'unknown' }>
+  | Readonly<{ kind: 'unreadable'; reason: string }>
   | Readonly<{ kind: 'absent'; processToken: string; evidence: string }>;
 
 export function custodyLedgerDir(runDir: string): string {
@@ -370,6 +371,7 @@ export function reconcileCustodyLedger(
     )
       return entry;
     const observation = observe(entry.intent);
+    if (observation.kind === 'unreadable') return { ...entry, reason: observation.reason };
     if (observation.kind !== 'absent' || observation.processToken !== entry.intent.processToken) return entry;
     const absence = custodyAbsenceSchema.parse({
       version: 'v1',

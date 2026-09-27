@@ -220,8 +220,12 @@ function writeGeneration(runtime: Runtime, record: string, generation: Successio
   }
 }
 
-function exclusiveGuard(runtime: Runtime, guard: string): FileLockLease {
-  const deadline = runtime.time.monotonicNow() + BigInt(GUARD_WAIT_MS);
+function exclusiveGuard(runtime: Runtime, guard: string, deadlineAtMs?: number): FileLockLease {
+  const waitMs =
+    deadlineAtMs === undefined
+      ? GUARD_WAIT_MS
+      : Math.min(GUARD_WAIT_MS, Math.max(0, deadlineAtMs - runtime.time.now()));
+  const deadline = runtime.time.monotonicNow() + BigInt(Math.ceil(waitMs));
   for (;;) {
     const release = tryAcquireExclusiveFileLockSync(guard);
     if (release !== null) return release;
@@ -497,9 +501,13 @@ export function recordSuccessionServing(
  * Decides a failed attempt under the guard its successor serves under: the successor either already serves, or
  * can neither advance a writer generation nor record serving for that attempt afterwards.
  */
-export function refuseSuccessionAttempt(runtime: Runtime, attemptId: string): SuccessionAttemptRefusal {
+export function refuseSuccessionAttempt(
+  runtime: Runtime,
+  attemptId: string,
+  deadlineAtMs?: number,
+): SuccessionAttemptRefusal {
   const location = ensureGuard(runtime);
-  const release = exclusiveGuard(runtime, location.guard);
+  const release = exclusiveGuard(runtime, location.guard, deadlineAtMs);
   try {
     const current = readGeneration(runtime, location.record);
     if (current === null) throw new Error('Succession cannot refuse an attempt without a writer generation.');

@@ -4,9 +4,8 @@ import { successionTargetKey } from './protocol.js';
 export const TRANSIENT_RETRY_BASE_MS = 1_000;
 const TRANSIENT_RETRY_MAX_MS = 30_000;
 /**
- * Transient failures one target may spend in total before it waits like a decisive failure. Only a target change
- * restarts the count: an attempt's one success is completion, which ends the target, so no success can separate
- * two failures of it, and a bound that restarts on anything else would not bound the target.
+ * Transient failures one target may spend in total before its intent closes. A different target or a new request
+ * starts a new count; an attempt's one success is completion, so no success can separate two failures of it.
  */
 const TRANSIENT_RETRY_LIMIT = 6;
 const OBLIGATION_RETRY_LIMIT = 6;
@@ -16,6 +15,7 @@ type ObligationRetry = NonNullable<UpgradeIntent['obligationRetry']>;
 
 export type FailedAttemptRetry = Readonly<{
   retryCondition: NonNullable<UpgradeIntent['retryCondition']>;
+  disposition?: 'closed';
   transientRetry?: TransientRetry;
   obligationRetry?: ObligationRetry;
 }>;
@@ -45,8 +45,7 @@ export function attemptRetryAtMs(intent: UpgradeIntent): number | null {
 
 /**
  * The retry condition a failed attempt leaves on the intent's target. Transient failures are counted on the
- * intent, so a restart neither resets the backoff nor the bound; exhausting the bound turns the hold into the
- * decisive one, which a newer target or the incumbent's natural retirement ends.
+ * intent, so a restart neither resets the backoff nor the bound; exhausting the bound closes the failed request.
  */
 export function failedAttemptRetry(
   intent: UpgradeIntent,
@@ -66,6 +65,7 @@ export function failedAttemptRetry(
     };
     if (changes > OBLIGATION_RETRY_LIMIT) {
       return {
+        disposition: 'closed',
         retryCondition: {
           kind: 'target-change',
           evidence: `${OBLIGATION_RETRY_LIMIT} obligation attempt failures exhausted this target's retries`,
@@ -89,6 +89,7 @@ export function failedAttemptRetry(
   };
   if (failures > TRANSIENT_RETRY_LIMIT) {
     return {
+      disposition: 'closed',
       retryCondition: {
         kind: 'target-change',
         evidence: `${TRANSIENT_RETRY_LIMIT} transient attempt failures exhausted this target's retries`,

@@ -251,7 +251,10 @@ type FailedCommit = Readonly<{
   unservedMintDiscard: NonNullable<UpgradeIntent['unservedMintDiscard']> | null;
 }>;
 
-type CommitOutcome = Readonly<{ kind: 'serving'; attempt: SuccessionAttempt }> | FailedCommit;
+type CommitOutcome =
+  | Readonly<{ kind: 'serving'; attempt: SuccessionAttempt }>
+  | Readonly<{ kind: 'unresolved'; attempt: SuccessionAttempt; reason: string }>
+  | FailedCommit;
 
 /** What the intent the attempt was launched for fixes about its commit. */
 type CommitPlan = Readonly<{
@@ -386,7 +389,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         () => finish(new TransientCommitFailure('Successor did not report read-only readiness.')),
         ATTEMPT_READY_TIMEOUT_MS,
       );
-      const onExit = (): void => finish(new Error('Successor exited before readiness.'));
+      const onExit = (): void => finish(new TransientCommitFailure('Successor exited before readiness.'));
       attempt.child.once('exit', onExit);
       unsubscribe = attempt.onAcknowledgment((acknowledgment) => {
         if (acknowledgment.kind === 'hold') finish(new Error(acknowledgment.reason));
@@ -783,7 +786,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       if (window.hold !== null) throw new Error(window.hold);
       if (attemptAbort.signal.aborted) throw new Error('Incumbent shutdown aborted the uncommitted attempt.');
       if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) {
-        throw new Error('Successor exited before durable serving.');
+        throw new TransientCommitFailure('Successor exited before durable serving.');
       }
       if (runtime.time.now() >= deadlineAt) throw new Error('Successor missed its serving deadline.');
       await runtime.time.sleep(SERVING_POLL_MS);
@@ -802,14 +805,16 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
    * Decides a failed window before its successor is reaped: a successor that has not recorded serving by now never
    * can, whether or not it has taken the writer generation yet.
    */
-  function successorServesBeforeRefusal(window: CommitWindow): boolean {
-    if (window.writer === null) return false;
-    try {
-      return refuseSuccessionAttempt(runtime, window.attempt.attemptId).kind === 'serving';
-    } catch (error: unknown) {
-      // Reclaim still hands back any generation the successor took, and owns that failure.
-      ports.log(`Failed succession window could not refuse its attempt: ${formatError(error)}\n`);
-      return false;
+  async function successorServesBeforeRefusal(window: CommitWindow): Promise<'serving' | 'refused' | 'unresolved'> {
+    if (window.writer === null) return 'refused';
+    for (;;) {
+      try {
+        return refuseSuccessionAttempt(runtime, window.attempt.attemptId, window.deadlineAt).kind;
+      } catch (error: unknown) {
+        ports.log(`Failed succession window could not refuse its attempt: ${formatError(error)}\n`);
+        if (runtime.time.now() >= window.deadlineAt) return 'unresolved';
+        await runtime.time.sleep(SERVING_POLL_MS);
+      }
     }
   }
 
@@ -823,10 +828,14 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     const { attempt, preparation } = window;
     window.stopForwarding();
     stopWindowForwarding = null;
-    ports.waitHandover.renew();
-    if (successorServesBeforeRefusal(window)) return { kind: 'serving', attempt };
-    // The admission pause ends on its own clock, which the reap below can outlast while writers stay parked.
     if (window.writer !== null) ports.setLaunchFenceActive(true);
+    const refusal = await successorServesBeforeRefusal(window);
+    if (refusal === 'serving') return { kind: 'serving', attempt };
+    if (refusal === 'unresolved') {
+      return { kind: 'unresolved', attempt, reason: 'Failed successor could not be durably refused.' };
+    }
+    ports.waitHandover.renew();
+    // The admission pause ends on its own clock, which the reap below can outlast while writers stay parked.
     const reason = formatError(failure);
     await recordReleasePending(attempt.attemptId, {
       blockers: [{ owner: 'succession-commit', reason }],
@@ -1146,8 +1155,18 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       }
       const outcome = await runSameBuildRecovery(failure, writer, bundleDir);
       if (outcome.kind === 'serving') return releaseToSuccessor(outcome.attempt);
+      if (outcome.kind === 'unresolved') return releaseUnresolved(outcome);
       failure = outcome;
     }
+  }
+
+  async function releaseUnresolved(outcome: Extract<CommitOutcome, { kind: 'unresolved' }>): Promise<never> {
+    ports.setLaunchFenceActive(true);
+    await recordReleasePending(outcome.attempt.attemptId, {
+      blockers: [{ owner: 'succession-commit', reason: outcome.reason }],
+      retryCondition: { kind: 'attempt-expiry', evidence: 'unresolved successor refusal' },
+    });
+    return writersOrThrow().releaseAuthority({ kind: 'restart', reason: outcome.reason });
   }
 
   async function superviseCommit(
@@ -1183,6 +1202,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       return settlement;
     }
     if (outcome.kind === 'serving') return releaseToSuccessor(outcome.attempt);
+    if (outcome.kind === 'unresolved') return releaseUnresolved(outcome);
     try {
       return await settleFailedCommit(outcome);
     } catch (error: unknown) {

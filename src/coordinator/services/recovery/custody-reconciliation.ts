@@ -1,3 +1,5 @@
+import { dirname } from 'node:path';
+
 import { findCustodyProcessToken } from '../../../infra/custody-process-ticket.js';
 import { readDurableCliPreReadyOwnershipEvidence } from '../../../jobs/runtime-meta-store.js';
 import {
@@ -9,8 +11,10 @@ import {
   type CustodyObservation,
 } from '../../../store/custody-ledger.js';
 import { readProviderOperations } from '../../../store/provider-operation-journal.js';
+import { acquireStoreEpochReadLock } from '../../../store/epoch.js';
 import type { Database } from '../../../store/db.js';
 import type { Runtime } from '../../../runtime/ports.js';
+import { closureCandidates } from './epoch-closure.js';
 
 const CUSTODY_ABSENCE_GRACE_MS = 2_000;
 
@@ -25,16 +29,71 @@ export function reconcileStartupCustody(
     capsuleExists(path: string): boolean;
   }>,
 ): CustodyEntry[] {
-  let operations: ReturnType<typeof readProviderOperations> | null;
+  type OperationScan = ReturnType<typeof readProviderOperations>;
+  let operations: OperationScan | null;
   try {
     operations = readProviderOperations(db);
   } catch {
     operations = null;
   }
-  for (const entry of readCustodyLedger(runtime, runDir)) {
-    if (entry.kind !== 'holding' || entry.intent.epoch !== currentEpoch) continue;
+  const entries = readCustodyLedger(runtime, runDir);
+  let candidates: ReturnType<typeof closureCandidates> = [];
+  if (entries.some((entry) => entry.kind === 'holding' && entry.intent.effect === 'provider-operation-publication')) {
+    try {
+      candidates = closureCandidates(runtime);
+    } catch {
+      // An unreadable epoch address cannot prove publication absence.
+    }
+  }
+  const historicalScans = new Map<string, OperationScan | null>();
+  const publicationScan = (intent: CustodyIntent): OperationScan | null => {
+    const matching = candidates.filter((candidate) =>
+      intent.epochKey === undefined
+        ? intent.epoch === candidate.originalPath || intent.epoch === dirname(candidate.epoch.path)
+        : intent.epochKey === candidate.epochKey,
+    );
+    if (matching.length !== 1) {
+      return matching.length === 0 && intent.epochKey === undefined && intent.epoch === currentEpoch
+        ? operations
+        : null;
+    }
+    const candidate = matching[0];
+    if (dirname(candidate.epoch.path) === currentEpoch) return operations;
+    if (historicalScans.has(candidate.epochKey)) return historicalScans.get(candidate.epochKey) ?? null;
+    let scan: OperationScan | null = null;
+    let release: (() => void) | null = null;
+    let historicalDb: ReturnType<typeof runtime.storage.openSqliteDatabaseSync> | null = null;
+    try {
+      release = acquireStoreEpochReadLock(runtime, candidate.epoch, 0);
+      if (release !== null) {
+        historicalDb = runtime.storage.openSqliteDatabaseSync(candidate.epoch.path, { readOnly: true });
+        scan = readProviderOperations(historicalDb as unknown as Database);
+      }
+    } catch {
+      scan = null;
+    } finally {
+      try {
+        historicalDb?.close();
+      } catch {
+        scan = null;
+      }
+      try {
+        release?.();
+      } catch {
+        scan = null;
+      }
+    }
+    historicalScans.set(candidate.epochKey, scan);
+    return scan;
+  };
+  for (const entry of entries) {
+    if (entry.kind !== 'holding') continue;
     if (entry.intent.effect === 'provider-operation-publication') {
-      if (operations?.records.some((record) => record.operation.operationId === entry.intent.operationId)) {
+      if (
+        publicationScan(entry.intent)?.records.some(
+          (record) => record.operation.operationId === entry.intent.operationId,
+        )
+      ) {
         bindCustodyIdentity(
           runtime,
           runDir,
@@ -49,6 +108,7 @@ export function reconcileStartupCustody(
       }
       continue;
     }
+    if (entry.intent.epoch !== currentEpoch) continue;
     if (entry.intent.owner !== 'durable-cli' || evidence === undefined || nowMs > entry.intent.bindDeadlineMs) continue;
     const token = findCustodyProcessToken(entry.intent.processToken);
     if (token.kind !== 'alive') continue;
@@ -88,14 +148,16 @@ export function reconcileStartupCustody(
   }
   const observe = (intent: CustodyIntent): CustodyObservation => {
     if (intent.effect === 'provider-operation-publication') {
-      if (intent.epoch !== currentEpoch) return { kind: 'unknown' };
-      return operations !== null && operations.unreadableKeys.length === 0
-        ? {
-            kind: 'absent',
-            processToken: intent.processToken,
-            evidence: 'complete provider-operation scan found no publication',
-          }
-        : { kind: 'unknown' };
+      const scan = publicationScan(intent);
+      return scan === null
+        ? { kind: 'unreadable', reason: 'recorded epoch provider-operation journal is unreadable' }
+        : scan.unreadableKeys.length === 0
+          ? {
+              kind: 'absent',
+              processToken: intent.processToken,
+              evidence: 'complete provider-operation scan found no publication',
+            }
+          : { kind: 'unreadable', reason: 'recorded epoch provider-operation journal has unreadable rows' };
     }
     const process = findCustodyProcessToken(intent.processToken);
     if (process.kind !== 'absent') return { kind: process.kind };

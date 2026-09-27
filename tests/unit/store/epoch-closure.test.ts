@@ -30,6 +30,7 @@ import {
   selectProtectedPredecessorFromControllers,
   settleSupersededEpochClosures,
 } from '#src/coordinator/services/recovery/epoch-closure.js';
+import { reconcileStartupCustody } from '#src/coordinator/services/recovery/custody-reconciliation.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -78,6 +79,8 @@ import {
   sweepStoreEpochsPostReady,
 } from '#src/store/epoch.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
+import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const roots: string[] = [];
 const storeFormat = currentCoralStoreFormat();
@@ -1222,6 +1225,92 @@ describe('epoch closure and protected addressing', () => {
       executionDischarge: 'certified',
       obligations: [{ owner: 'durable-cli', intentId: intent.id, outcome: 'absent' }],
     });
+  });
+
+  it('closes a superseded epoch after its own readable journal proves an unbound publication absent', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    publish(runtime, '2');
+    const old = resolvedStoreEpoch(root, '1');
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    recordEpochCustodyCoverage(runtime, dirname(old.path), initializeCustodyLedger(runtime, runDir));
+    const key = readOrCreateEpochKey(runtime, old);
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const currentRecord = providerOperationRecord('prepare-pending');
+    const intent = recordCustodyIntent(runtime, runDir, {
+      effect: 'provider-operation-publication',
+      epoch: dirname(old.path),
+      owner: 'provider-operation',
+      operationId: currentRecord.operation.operationId,
+      capsule: null,
+      bindWithinMs: 1,
+      nowMs: 1,
+    });
+    expect(intent.epochKey).toBe(key);
+    const oldJournalPath = join(protectStoreEpoch(runtime, old).protectedPath, 'store.db');
+    expect((await settleSupersededEpochClosures(runtime, index))[0]?.disposition).toBe('unrecoverable-retained');
+
+    const currentDb = openTestStoreDatabase({ path: epochPath(root, '2'), storage: runtime.storage, storeFormat });
+    try {
+      insertProviderOperation(currentDb, currentRecord);
+      const hidden = `${oldJournalPath}.hidden`;
+      renameSync(oldJournalPath, hidden);
+      try {
+        expect(reconcileStartupCustody(runtime, runDir, 3_000, currentDb, epochDirectory(root, '2'))).toMatchObject([
+          { kind: 'holding', reason: 'recorded epoch provider-operation journal is unreadable' },
+        ]);
+      } finally {
+        renameSync(hidden, oldJournalPath);
+      }
+      writeFileSync(`${oldJournalPath}.format`, 'older-format\n');
+      expect(reconcileStartupCustody(runtime, runDir, 3_000, currentDb, epochDirectory(root, '2'))).toMatchObject([
+        { kind: 'absent', intent: { id: intent.id } },
+      ]);
+    } finally {
+      currentDb.close();
+    }
+    expect((await settleSupersededEpochClosures(runtime, index))[0]).toMatchObject({
+      epochKey: key,
+      disposition: 'closed',
+      executionDischarge: 'certified',
+      obligations: [{ intentId: intent.id, outcome: 'absent' }],
+    });
+  });
+
+  it('recovers a superseded epoch publication from its own journal', () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    publish(runtime, '2');
+    const old = resolvedStoreEpoch(root, '1');
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    recordEpochCustodyCoverage(runtime, dirname(old.path), initializeCustodyLedger(runtime, runDir));
+    readOrCreateEpochKey(runtime, old);
+    const record = providerOperationRecord('prepare-pending');
+    const intent = recordCustodyIntent(runtime, runDir, {
+      effect: 'provider-operation-publication',
+      epoch: dirname(old.path),
+      owner: 'provider-operation',
+      operationId: record.operation.operationId,
+      capsule: null,
+      bindWithinMs: 1,
+      nowMs: 1,
+    });
+    const oldDb = openTestStoreDatabase({ path: old.path, storage: runtime.storage, storeFormat });
+    try {
+      insertProviderOperation(oldDb, record);
+    } finally {
+      oldDb.close();
+    }
+    const currentDb = openTestStoreDatabase({ path: epochPath(root, '2'), storage: runtime.storage, storeFormat });
+    try {
+      expect(reconcileStartupCustody(runtime, runDir, 3_000, currentDb, epochDirectory(root, '2'))).toMatchObject([
+        { kind: 'bound', intent: { id: intent.id }, binding: { process: null } },
+      ]);
+    } finally {
+      currentDb.close();
+    }
   });
 
   it('uses proxy owner control only after historical results are released', async () => {

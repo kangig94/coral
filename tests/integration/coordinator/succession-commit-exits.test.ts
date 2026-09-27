@@ -74,6 +74,9 @@ type AttemptBehavior = Readonly<{
   unprovenIdentity?: boolean;
   /** The successor neither serves nor holds, so the attempt ends only at its commit deadline. */
   silent?: boolean;
+  exitsBeforeServing?: boolean;
+  exitsBeforeReadiness?: boolean;
+  servesOnCommittedOpen?: Readonly<{ runtime: Runtime; epochKey: string }>;
   /**
    * The successor takes the writer generation at committed open and its serving record lands only after the
    * incumbent's last serving check, just before the failed window is closed.
@@ -131,6 +134,24 @@ async function fakeAttempt(attemptId: string, epochKey: string, behavior: Attemp
     setDeadline: async () => undefined,
     // Unless silent, the successor's committed open fails: it reports a hold instead of serving.
     allowCommittedOpen: async () => {
+      if (behavior.exitsBeforeServing === true) {
+        child.kill('SIGTERM');
+        return;
+      }
+      if (behavior.servesOnCommittedOpen !== undefined) {
+        const { runtime, epochKey } = behavior.servesOnCommittedOpen;
+        const parked = observeSuccessionWriterGeneration(runtime);
+        if (parked === null) throw new Error('the incumbent parked no writer generation');
+        const generation = advanceSuccessionWriterGeneration(runtime, parked, parked, attemptId);
+        recordSuccessionServing(runtime, generation, {
+          attemptId,
+          epochKey,
+          successorInstanceId: 'successor',
+          controlGeneration: generation.generation,
+          recordedAt: new Date(runtime.time.now()).toISOString(),
+        });
+        return;
+      }
       const late = behavior.servesAfterIncumbentCheck;
       if (late !== undefined) {
         const parked = observeSuccessionWriterGeneration(late.runtime);
@@ -163,6 +184,10 @@ async function fakeAttempt(attemptId: string, epochKey: string, behavior: Attemp
     },
     onAcknowledgment: (callback) => {
       acknowledgments.add(callback);
+      if (behavior.exitsBeforeReadiness === true) {
+        child.kill('SIGTERM');
+        return () => acknowledgments.delete(callback);
+      }
       callback({ kind: 'ready', epochKey, receiptIds: [] });
       return () => acknowledgments.delete(callback);
     },
@@ -231,6 +256,7 @@ type Harness = Readonly<{
   retryNotifications: number;
   committer: SuccessionCommitter;
   launch(): Promise<SuccessionLaunch>;
+  launchNextServing(): Promise<SuccessionLaunch>;
 }>;
 
 async function harness(
@@ -259,6 +285,8 @@ async function harness(
     priorTransientFailures?: number;
     priorObligationChanges?: number;
     releaseAuthorityThrowsOnce?: boolean;
+    refusalWriteFailures?: number;
+    serveAfterRefusalWriteFailure?: boolean;
   }>,
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'coral-succession-exits-'));
@@ -268,7 +296,7 @@ async function harness(
   const epochKey = encodeResolvedStoreEpoch(runtime, settled.store);
   const preparation = preparationFor(epochKey, runtime.ids.uuid());
   const servingRefusals: unknown[] = [];
-  const attempt = await fakeAttempt(
+  let attempt = await fakeAttempt(
     preparation.attemptId,
     epochKey,
     options.attempt === 'serves-after-incumbent-check'
@@ -277,6 +305,43 @@ async function harness(
         ? { servesBeforeAbort: { runtime, epochKey, refusals: servingRefusals } }
         : (options.attempt ?? {}),
   );
+  const refusalWriteFailures = options.refusalWriteFailures;
+  if (refusalWriteFailures !== undefined) {
+    const durableWrite = runtime.storage.writeAtomicDurableSync;
+    let failures = 0;
+    runtime.storage.writeAtomicDurableSync = (path, data, writeOptions) => {
+      if (
+        failures < refusalWriteFailures &&
+        commitEvents.includes('stop-forwarding') &&
+        path.endsWith('succession-writer-generation.v1.json')
+      ) {
+        failures += 1;
+        commitEvents.push('refusal-write-failed');
+        if (options.serveAfterRefusalWriteFailure === true) {
+          queueMicrotask(() => {
+            try {
+              const parked = observeSuccessionWriterGeneration(runtime);
+              if (parked === null) throw new Error('the incumbent parked no writer generation');
+              const generation = advanceSuccessionWriterGeneration(runtime, parked, parked, preparation.attemptId);
+              recordSuccessionServing(runtime, generation, {
+                attemptId: preparation.attemptId,
+                epochKey,
+                successorInstanceId: 'successor',
+                controlGeneration: generation.generation,
+                recordedAt: new Date(runtime.time.now()).toISOString(),
+              });
+            } catch (error: unknown) {
+              servingRefusals.push(error);
+            }
+          });
+        }
+        return false;
+      }
+      if (failures > 0 && path.endsWith('succession-writer-generation.v1.json'))
+        commitEvents.push('refusal-write-durable');
+      return durableWrite(path, data, writeOptions);
+    };
+  }
   const state = {
     releases: [] as SuccessionRelease[],
     adoptedAdmissions: 0,
@@ -456,6 +521,31 @@ async function harness(
     },
     committer,
     launch: () => committer.launchPrepared(written.intent, preparation),
+    launchNextServing: async () => {
+      const nextPreparation = preparationFor(epochKey, runtime.ids.uuid());
+      attempt = await fakeAttempt(nextPreparation.attemptId, epochKey, {
+        servesOnCommittedOpen: { runtime, epochKey },
+      });
+      const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+      if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
+      const next = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
+        ...observed.intent,
+        disposition: 'pending',
+        attemptId: nextPreparation.attemptId,
+        attemptOwner: observed.intent.attemptOwner ?? {
+          kind: 'incumbent',
+          instanceId: 'incumbent',
+          pid: process.pid,
+          incarnation: probeProcessIncarnation(process.pid),
+        },
+        attemptChild: null,
+        successionPreparation: nextPreparation,
+        blockers: [],
+        retryCondition: null,
+      });
+      if (next.kind !== 'written') throw new Error(`next intent is ${next.kind}`);
+      return createSuccessionCommitter(ports).launchPrepared(next.intent, nextPreparation);
+    },
   };
 }
 
@@ -545,6 +635,40 @@ describe('succession commit failure exits', () => {
     expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
   });
 
+  it('retries a target after its first child exits before serving, and the next attempt serves', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      attempt: { exitsBeforeServing: true },
+    });
+    const first = await test.launch();
+    await first.settled;
+
+    expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
+    expect(readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { transientRetry: { failures: 1 } },
+    });
+    await test.launchNextServing();
+    await waitForCondition(() => test.releases.some((release) => release.kind === 'successor'), 15_000);
+    expect(observeSuccessionServing(test.runtime, test.attemptId)).toBeNull();
+  });
+
+  it('counts a child exit before readiness as a transient attempt failure', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      attempt: { exitsBeforeReadiness: true },
+    });
+    const first = await test.launch();
+    await first.settled;
+
+    expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
+    expect(readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { transientRetry: { failures: 1 } },
+    });
+    expect(test.adoptedAdmissions).toBe(0);
+  });
+
   it('should release to a successor whose serving record lands after the missed deadline, without reaping it', async () => {
     const test = await harness({
       failingPoints: () => false,
@@ -574,6 +698,59 @@ describe('succession commit failure exits', () => {
     expect(test.servingRefusals).toHaveLength(1);
     expect(observeSuccessionServing(test.runtime, test.attemptId)).toBeNull();
     expect(blockers(test.runtime)[0]?.reason).toContain('injected committed-open failure');
+  });
+
+  it('retries a failed refusal write before aborting the successor', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      attempt: 'serves-before-abort',
+      refusalWriteFailures: 1,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
+    expect(commitEvents).toContain('refusal-write-failed');
+    expect(commitEvents.indexOf('refusal-write-durable')).toBeGreaterThan(commitEvents.indexOf('refusal-write-failed'));
+    expect(commitEvents.indexOf('abort')).toBeGreaterThan(commitEvents.indexOf('refusal-write-durable'));
+    expect(test.servingRefusals).toHaveLength(1);
+    expect(observeSuccessionServing(test.runtime, test.attemptId)).toBeNull();
+  });
+
+  it('leaves an unrefused live successor unresolved after the refusal deadline', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      pauseMs: 3_000,
+      refusalWriteFailures: Infinity,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.releases.length === 1, 15_000);
+    expect(test.releases[0]).toMatchObject({ kind: 'restart' });
+    expect(commitEvents).toContain('refusal-write-failed');
+    expect(commitEvents).not.toContain('abort');
+    expect(test.adoptedAdmissions).toBe(0);
+    expect(test.launchFence.at(-1)).toBe(true);
+    expect(readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { attemptId: test.attemptId, retryCondition: { kind: 'attempt-expiry' } },
+    });
+  });
+
+  it('releases a successor that serves after a failed refusal write', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      refusalWriteFailures: 1,
+      serveAfterRefusalWriteFailure: true,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.releases.length === 1, 15_000);
+    expect(test.releases[0]).toMatchObject({ kind: 'successor' });
+    expect(commitEvents).not.toContain('abort');
+    expect(test.servingRefusals).toEqual([]);
+    expect(observeSuccessionServing(test.runtime, test.attemptId)).not.toBeNull();
   });
 
   it('should recognize a retirement its disposition recorded after the historical certificate moves on', async () => {
@@ -657,7 +834,7 @@ describe('succession commit failure exits', () => {
     expect(observed.intent.transientRetry?.failures).toBe(6);
   });
 
-  it('should stop retrying a target after recurring KB writer park refusals', async () => {
+  it('closes an exhausted obligation retry target automatically', async () => {
     const test = await harness({
       failingPoints: () => false,
       recoveryLaunch: 'fails',
@@ -671,6 +848,7 @@ describe('succession commit failure exits', () => {
     if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
     expect(observed.intent.retryCondition?.kind).toBe('target-change');
     expect(observed.intent.obligationRetry?.changes).toBe(7);
+    expect(observed.intent.disposition).toBe('closed');
     expect(test.adoptedAdmissions).toBe(1);
   });
 
@@ -748,7 +926,7 @@ describe('succession commit failure exits', () => {
     expect(blockers(test.runtime)[0]?.reason).toContain('outdated by an admission or epoch change');
   });
 
-  it('should move the target to the decisive hold once its transient retries are exhausted', async () => {
+  it('closes an exhausted transient retry target automatically', async () => {
     const test = await harness({
       failingPoints: () => false,
       recoveryLaunch: 'fails',
@@ -762,6 +940,9 @@ describe('succession commit failure exits', () => {
     expect(retryCondition(test.runtime)).toMatchObject({
       kind: 'target-change',
       evidence: expect.stringContaining('exhausted'),
+    });
+    expect(readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { disposition: 'closed', transientRetry: { failures: 7 } },
     });
     expect(blockers(test.runtime)[0]?.owner).toBe('succession-commit');
     expect(test.retryNotifications).toBe(1);
