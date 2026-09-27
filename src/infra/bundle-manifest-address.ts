@@ -5,7 +5,6 @@ export const CURRENT_STRICT_BUNDLE_MANIFEST_FILE =
 
 export const SUCCESSION_CAPABILITY_VERSION = 'v1' as const;
 export const SUCCESSION_CAPABILITIES_FILE = `succession-capabilities.${SUCCESSION_CAPABILITY_VERSION}.json` as const;
-export const UPGRADE_WAITER_BUNDLE_FILE = 'coral-upgrade-waiter.cjs' as const;
 
 /**
  * The CLI bundle's file name inside the bundle directory. Extensionless so the bundle directory can

@@ -770,9 +770,7 @@ export function formatUpgradeRecordProblem(problem: UpgradeIntentProblem): strin
 
 export function formatPendingUpgrade(upgrade: UpgradeIntentVisibility): string {
   let next: string;
-  if (upgrade.phase === 'launching') {
-    next = 'The waiter awaits the target serving receipt, then records completion or retries after the attempt ends.';
-  } else if (upgrade.phase === 'committing') {
+  if (upgrade.phase === 'committing') {
     next = 'The incumbent finishes or recovers the bounded commit, then verifies that the successor is serving.';
   } else if (upgrade.phase === 'ready') {
     next = 'The incumbent starts the bounded commit after verifying the ready successor.';
@@ -782,7 +780,7 @@ export function formatPendingUpgrade(upgrade: UpgradeIntentVisibility): string {
     switch (upgrade.retryCondition?.kind) {
       case 'incumbent-retirement':
         next =
-          'The legacy incumbent retires after its idle timeout (normally at least 6 hours after its last activity); each CLI reuse resets that timer. A live waiter then starts the target. If no waiter survives, the intent stays held until the next new-build trigger recovers it.';
+          'The legacy incumbent retires after its idle timeout (normally at least 6 hours after its last activity); each CLI reuse resets that timer. The supervisor holds the upgrade request and starts the target after retirement.';
         break;
       case 'obligation-change':
         next = 'The incumbent retries when the held obligations change or settle.';

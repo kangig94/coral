@@ -36,6 +36,7 @@ const coordinators: SpawnedCoordinator[] = [];
 const successors: { pid: number; incarnation: ProcessIncarnation | null }[] = [];
 
 afterEach(async () => {
+  for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   for (const successor of successors.splice(0)) {
     if (
       successor.incarnation !== null &&
@@ -45,7 +46,6 @@ afterEach(async () => {
       process.kill(successor.pid, 'SIGTERM');
     }
   }
-  for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
@@ -114,6 +114,7 @@ describe('real-process incumbent self-escalation', () => {
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
         CORAL_BROKER_IDLE_MS: '100',
       },
+      supervised: true,
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
@@ -134,7 +135,7 @@ describe('real-process incumbent self-escalation', () => {
     }
 
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);
     expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
@@ -160,7 +161,7 @@ describe('real-process incumbent self-escalation', () => {
     const serving = readDiscoveryRecordForHome(home, 'prod');
     if (serving === null) throw new Error('Self-escalated successor did not publish discovery.');
     successors.push({ pid: serving.pid, incarnation: probeProcessIncarnation(serving.pid) });
-    await waitForProcessExit(old, 30_000);
+    await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
     expect(observeProcessLiveness(serving.pid)).toBe('alive');
     expect(readUpgradeIntent(runDir)).toMatchObject({ kind: 'readable', intent: { disposition: 'completed' } });
   }, 150_000);

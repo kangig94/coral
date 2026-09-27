@@ -21,7 +21,7 @@ import { collectBids } from './flow/bid.js';
 import { makeDecisionContext } from './flow/primitives.js';
 import { persistAbortEndForShutdown } from './recovery.js';
 import { providerBindingFailureCode } from '../../providers/contracts/binding.js';
-import { throwIfRequestAborted } from '../../infra/request-lease-identity.js';
+import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 
 function readDiscussMaxEpochs(ctx: DiscussContext): number {
   const raw = Number.parseInt(ctx.runtime.env.get('CORAL_DISCUSS_MAX_EPOCHS') ?? '', 10);

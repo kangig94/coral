@@ -17,8 +17,10 @@ import { dirname, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
-import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
+import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { coordinatorLaunchPath, v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { readUpgradeIntent, visibleUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { retainedBuildRoot } from '#src/infra/retained-build-root.js';
 import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { readActiveStoreSelectionForCoordination } from '#src/store/active-store-selection.js';
@@ -46,6 +48,7 @@ import {
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const roots: string[] = [];
+const homes: string[] = [];
 const firstReleaseRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
 const successors: { pid: number; incarnation: ProcessIncarnation }[] = [];
@@ -88,6 +91,32 @@ const PRE_EPOCH_STORE_TAGS: ReadonlySet<ShippedReleaseTag> = new Set(['v0.10.0',
 const LEGACY_CLI_REPLACEMENT_TAGS = ['v0.10.0', 'v0.10.1', 'v0.10.2', 'v0.10.3', 'v0.10.4'] as const;
 
 afterEach(async () => {
+  for (const home of homes.splice(0)) {
+    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+    if (!existsSync(coordinatorLaunchPath(runDir))) continue;
+    const launch = new CoordinatorLaunchRecord(runDir);
+    try {
+      const state = launch.read();
+      const owner = state.owner?.process;
+      if (owner !== undefined && probeProcessIncarnation(owner.pid) === owner.incarnation) {
+        try {
+          process.kill(owner.pid, 'SIGTERM');
+        } catch {
+          // The supervisor may have released ownership after the observation.
+        }
+      }
+      for (const child of [state.launch?.child, state.attempt?.child]) {
+        if (child === undefined || probeProcessIncarnation(child.pid) !== child.incarnation) continue;
+        try {
+          process.kill(child.pid, 'SIGTERM');
+        } catch {
+          // The child may have retired after the observation.
+        }
+      }
+    } finally {
+      launch.close();
+    }
+  }
   for (const successor of successors.splice(0)) {
     if (
       probeProcessIncarnation(successor.pid) === successor.incarnation &&
@@ -101,6 +130,7 @@ afterEach(async () => {
 
 function newHome(): string {
   const home = mkdtempSync(join(tmpdir(), 'coral-version-pairing-'));
+  homes.push(home);
   roots.push(home);
   return home;
 }
@@ -311,8 +341,18 @@ describe('AC18 first-release version pairing', () => {
       expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
       expect(incumbent.child.exitCode).toBeNull();
       expect(await probeCoordinatorSocket(initial.socketPath)).toBe('accepting');
-      const intent = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
-      expect(intent).toMatchObject({ kind: 'readable', intent: { target: { build: { version: '0.10.14' } } } });
+      const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+      try {
+        expect(launch.read().requests).toContainEqual(
+          expect.objectContaining({
+            executable: join(branch.root, 'bridge', 'coral-backend.cjs'),
+            status: 'accepted',
+            incumbent: expect.objectContaining({ pid: incumbent.child.pid }),
+          }),
+        );
+      } finally {
+        launch.close();
+      }
     },
     45_000,
   );
@@ -346,9 +386,76 @@ describe('AC18 first-release version pairing', () => {
       expect(serving.version).toBe(shipped.version);
       expect(serving.bundleHash).toBe(shipped.bundleHash);
       expect(await probeCoordinatorSocket(serving.socketPath)).toBe('accepting');
+      const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+      try {
+        expect(launch.read()).toMatchObject({ owner: { process: { pid: expect.any(Number) } } });
+        expect(launch.read().requests).toContainEqual(
+          expect.objectContaining({
+            executable: join(branch.root, 'bridge', 'coral-backend.cjs'),
+            status: 'accepted',
+            incumbent: expect.objectContaining({ pid: incumbent.child.pid }),
+          }),
+        );
+      } finally {
+        launch.close();
+      }
     },
     55_000,
   );
+
+  it('keeps a supervisor request owned before a starting shipped incumbent publishes discovery', async () => {
+    assertBuildArtifactsAvailable();
+    const home = newHome();
+    const marker = join(home, 'shipped-ipc-bound');
+    const shipped = createShippedPluginFixture(roots, 'v0.10.13');
+    const incumbent = spawnCoordinator({
+      fixture: shipped,
+      home,
+      tempRoots: roots,
+      env: {
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require ${SHIPPED_IPC_BOUNDARY_PRELOAD}`,
+        CORAL_TEST_SHIPPED_IPC_BOUNDARY: 'starting',
+        CORAL_TEST_SHIPPED_IPC_MARKER: marker,
+        CORAL_TEST_SHIPPED_IPC_DELAY_MS: '12000',
+      },
+    });
+    coordinators.push(incumbent);
+    await waitForCondition(() => existsSync(marker), 20_000);
+    expect(readDiscoveryRecordForHome(home, 'prod')).toBeNull();
+
+    const branch = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const supervisor = spawnCoordinator({ fixture: branch, home, tempRoots: roots, supervised: true });
+    coordinators.push(supervisor);
+    const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+    try {
+      await waitForCondition(
+        () =>
+          launch
+            .read()
+            .requests.some(
+              (request) =>
+                request.executable === join(branch.root, 'bridge', 'coral-backend.cjs') &&
+                request.status === 'accepted' &&
+                readDiscoveryRecordForHome(home, 'prod') === null,
+            ),
+        10_000,
+      );
+      expect(supervisor.child.exitCode).toBeNull();
+      const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
+      expect(initial.pid).toBe(incumbent.child.pid);
+      await stopCoordinator(incumbent);
+      await waitForCondition(() => {
+        const current = readDiscoveryRecordForHome(home, 'prod');
+        return current !== null && current.pid !== initial.pid && current.bundleHash === branch.bundleHash;
+      }, 40_000);
+      const successor = readDiscoveryRecordForHome(home, 'prod');
+      if (successor === null) throw new Error('Supervisor request did not reach a successor.');
+      rememberSuccessor(successor.pid);
+      await waitForCondition(() => launch.read().requests.some((request) => request.status === 'completed'), 10_000);
+    } finally {
+      launch.close();
+    }
+  }, 90_000);
 
   it('refuses a shipped contender while the newer incumbent is starting', async () => {
     assertBuildArtifactsAvailable();
@@ -447,9 +554,7 @@ describe('AC18 first-release version pairing', () => {
         fixture: shipped,
         home,
         tempRoots: roots,
-        // Longer than the upgrade waiter's 2s ping-only poll (POLL_MS in src/upgrade-waiter/index.ts): if a ping
-        // ever renewed the incumbent's idle timer, this incumbent would never go idle and the test would time out
-        // instead of passing vacuously.
+        // A supervisor observation must not renew the shipped incumbent's idle timer.
         env: { CORAL_BACKEND_IDLE_MS: '3000', PATH: `${binDir}:${process.env.PATH ?? ''}` },
       });
       coordinators.push(incumbent);
@@ -462,10 +567,19 @@ describe('AC18 first-release version pairing', () => {
       expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
 
       await waitForProcessExit(incumbent, 90_000);
-      await waitForCondition(() => {
-        const current = readDiscoveryRecordForHome(home, 'prod');
-        return current !== null && current.pid !== initial.pid && current.bundleHash === branch.bundleHash;
-      }, 60_000);
+      try {
+        await waitForCondition(() => {
+          const current = readDiscoveryRecordForHome(home, 'prod');
+          return current !== null && current.pid !== initial.pid && current.bundleHash === branch.bundleHash;
+        }, 60_000);
+      } catch (error: unknown) {
+        const record = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+        try {
+          throw new Error(`Legacy upgrade did not serve; launch=${JSON.stringify(record.read())}`, { cause: error });
+        } finally {
+          record.close();
+        }
+      }
       const successor = readDiscoveryRecordForHome(home, 'prod');
       if (successor === null) throw new Error('Direct-upgrade successor has no discovery record.');
       rememberSuccessor(successor.pid);
@@ -485,13 +599,28 @@ describe('AC18 first-release version pairing', () => {
         expect(detail).toContain(`Job ${completedJobId}`);
         expect(detail).toContain('Phase: completed');
       }
-      expect(readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir)).toMatchObject({
-        kind: 'readable',
-        // attemptOwner.kind must be 'waiter', not 'incumbent': only the idle-driven natural-retirement path
-        // writes 'waiter' here; a signaled handoff completion writes 'incumbent' instead. See
-        // completeWaiterLaunchedUpgrade in src/coordinator/succession/startup.ts.
-        intent: { disposition: 'completed', attemptOwner: { kind: 'waiter' } },
-      });
+      const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+      try {
+        await waitForCondition(
+          () =>
+            launch
+              .read()
+              .requests.some(
+                (request) =>
+                  request.executable === join(branch.root, 'bridge', 'coral-backend.cjs') &&
+                  request.status === 'completed',
+              ),
+          20_000,
+        );
+        expect(launch.read().requests).toContainEqual(
+          expect.objectContaining({
+            executable: join(branch.root, 'bridge', 'coral-backend.cjs'),
+            status: 'completed',
+          }),
+        );
+      } finally {
+        launch.close();
+      }
     },
     210_000,
   );
@@ -619,11 +748,11 @@ describe('AC18 first-release version pairing', () => {
     assertBuildArtifactsAvailable();
     const home = newHome();
     const older = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
-    const incumbent = spawnCoordinator({ fixture: older, home, tempRoots: roots });
+    const incumbent = spawnCoordinator({ fixture: older, home, tempRoots: roots, supervised: true });
     coordinators.push(incumbent);
     const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
     const newer = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15' });
-    const contender = spawnCoordinator({ fixture: newer, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newer, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     expect(await waitForProcessExit(contender, 30_000)).toEqual({ code: 0, signal: null });
     await waitForCondition(() => {
@@ -639,16 +768,23 @@ describe('AC18 first-release version pairing', () => {
     }, 60_000);
     const successor = readDiscoveryRecordForHome(home, 'prod');
     if (successor === null) throw new Error('Completed upgrade has no serving successor.');
-    await waitForProcessExit(incumbent, 30_000);
+    await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    const selected = readActiveStoreSelectionForCoordination(runtime);
+    if (selected.kind !== 'valid') throw new Error(`Completed upgrade selection is ${selected.kind}`);
+    incumbent.child.kill('SIGSTOP');
     process.kill(successor.pid, 'SIGTERM');
+    incumbent.child.kill('SIGKILL');
+    await waitForProcessExit(incumbent, 15_000);
     await waitForCondition(() => observeProcessLiveness(successor.pid) === 'absent', 30_000);
     rmSync(newer.root, { recursive: true, force: true });
+    rmSync(retainedBuildRoot(runtime, selected.selection.manifest.buildSetId), { recursive: true, force: true });
 
-    const rollback = spawnCoordinator({ fixture: older, home, tempRoots: roots });
+    const rollback = spawnCoordinator({ fixture: older, home, tempRoots: roots, supervised: true });
     coordinators.push(rollback);
     await waitForCondition(() => {
       const current = readDiscoveryRecordForHome(home, 'prod');
-      return current !== null && current.pid === rollback.child.pid;
+      return current !== null && current.pid !== successor.pid && current.bundleHash === older.bundleHash;
     }, 30_000).catch((error: unknown) => {
       throw new Error(`Older build did not take rollback: ${rollback.output()}`, { cause: error });
     });
@@ -710,6 +846,7 @@ describe('AC18 first-release version pairing', () => {
         tempRoots: roots,
         // A delay past the successor's serving deadline self-fences the attempt; see SUCCESSION_PAUSE_ATTEMPT_MS.
         env: { CORAL_TEST_SUCCESSION_SERVING_DELAY_MS: '2000' },
+        supervised: true,
       });
       coordinators.push(incumbent);
       const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
@@ -719,7 +856,7 @@ describe('AC18 first-release version pairing', () => {
         version: '0.10.15',
         backend: 'succession-interposition',
       });
-      const contender = spawnCoordinator({ fixture: successorFixture, home, tempRoots: roots });
+      const contender = spawnCoordinator({ fixture: successorFixture, home, tempRoots: roots, supervised: true });
       coordinators.push(contender);
       const [contenderExit] = await Promise.all([
         waitForProcessExit(contender, 30_000),

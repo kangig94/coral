@@ -1,4 +1,4 @@
-import { throwIfAborted } from '../runtime/abort.js';
+import { throwIfAborted } from './abort.js';
 
 export type DurableRequestIdentity = Readonly<{ jobId?: string; operationId?: string }>;
 

@@ -82,35 +82,13 @@ function spawnBackend(pluginRoot) {
     // collide, so it has to be unique across processes without coordination — `randomUUID` is CSPRNG-backed
     // and satisfies that. See `spawnCoordinator` in `src/transport/ipc/ensure.ts`.
     const sentinel = join(pluginRoot, 'bridge', 'coral-sentinel.cjs');
-    const child = spawn(process.execPath, existsSync(sentinel) ? [sentinel, backendBin] : [backendBin], {
+    if (!existsSync(sentinel)) return;
+    const child = spawn(process.execPath, [sentinel, backendBin], {
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
       env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID(), CORAL_SENTINEL_RUN_DIR: runDir },
     });
     // A spawn failure is reported asynchronously as 'error'; unheard, it would throw past every catch here.
-    child.on('error', () => {});
-    child.unref();
-  } catch {}
-}
-
-function recoverExpiredUpgradeWaiter(pluginRoot) {
-  const runDir = coordinatorRunDir();
-  const waiterBin = join(pluginRoot, 'bridge', 'coral-upgrade-waiter.cjs');
-  if (!existsSync(waiterBin)) return;
-  try {
-    const intent = JSON.parse(readFileSync(join(runDir, 'upgrade.v1.json'), 'utf-8'));
-    if (intent?.version !== 'v1' || intent.target?.pluginRootLabel !== pluginRoot) return;
-    const awaitsRetirement =
-      ['pending', 'deferred'].includes(intent.disposition) && intent.retryCondition?.kind === 'incumbent-retirement';
-    // A launched attempt is released only by its waiter; once that waiter's lease lapses, a new one takes it over.
-    const waiterAttempt = intent.disposition === 'attempting' && intent.attemptOwner?.kind === 'waiter';
-    if (!awaitsRetirement && !waiterAttempt) return;
-    if (intent.attemptOwner !== null && intent.attemptOwner?.kind !== 'waiter') return;
-    if (intent.attemptDeadline !== null && Date.parse(intent.attemptDeadline) > Date.now()) return;
-    const child = spawn(process.execPath, [waiterBin, runDir, '', pluginRoot], {
-      detached: true,
-      stdio: 'ignore',
-    });
     child.on('error', () => {});
     child.unref();
   } catch {}
@@ -217,7 +195,6 @@ try {
   if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
 
   spawnBackend(PLUGIN_ROOT);
-  recoverExpiredUpgradeWaiter(PLUGIN_ROOT);
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   ensureCliPermission();

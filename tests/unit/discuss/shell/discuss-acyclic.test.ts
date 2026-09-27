@@ -84,6 +84,9 @@ function classifyDomainBucket(canonicalPath: string): DomainBucket {
   if (sourceRelativePath === 'store-format.ts') {
     return 'coordinator';
   }
+  if (sourceRelativePath === 'coordinator-launch' || sourceRelativePath.startsWith('coordinator-launch/')) {
+    return 'coordinator';
+  }
   if (sourceRelativePath === 'engines' || sourceRelativePath.startsWith('engines/')) {
     return 'kb';
   }

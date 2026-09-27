@@ -1,15 +1,11 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { strictBundleManifestSchema } from '#src/infra/bundle-manifest.js';
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
-import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntentChange } from '#src/infra/upgrade-intent.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { protectStoreEpoch, protectedStoreEpochRoot, reconcileProtectedEpochs } from '#src/store/epoch-protection.js';
 import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
@@ -160,93 +156,6 @@ describe('D5 protected epochs against shipped selectors', () => {
       if (existsSync(old.path)) {
         expect(readOrCreateEpochKey(runtime, old)).not.toBe(oldKey);
       }
-    },
-    30_000,
-  );
-
-  it.each(['v0.10.0', 'v0.10.10', 'v0.10.11', 'v0.10.12', 'v0.10.13'] as const)(
-    'keeps a protected epoch byte-for-byte across a %s rollback after its waiter is killed',
-    async (tag) => {
-      const home = mkdtempSync(join(tmpdir(), `coral-protected-${tag}-`));
-      roots.push(home);
-      const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
-      const storeRoot = runtime.paths.coral.store.dbDir;
-      openSettledTestStoreDb(runtime).close();
-      const original = resolvedStoreEpoch(storeRoot, '1');
-      const key = readOrCreateEpochKey(runtime, original);
-      const address = protectStoreEpoch(runtime, original);
-      const before = digest(join(address.protectedPath, 'store.db'));
-      const storeFormat = currentCoralStoreFormat();
-      for (const epoch of ['2', '3']) {
-        const dir = epochDirectory(storeRoot, epoch);
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(storeEpochLockPath(storeRoot, epoch), '');
-        openTestStoreDatabase({ path: epochPath(storeRoot, epoch), storage: runtime.storage, storeFormat }).close();
-        writeFileSync(join(dir, 'epoch.json'), readFileSync(join(address.protectedPath, 'epoch.json')));
-      }
-
-      const shipped = createShippedPluginFixture(roots, tag);
-      const waiter = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-      await once(waiter, 'spawn');
-      try {
-        if (waiter.pid === undefined) throw new Error('Waiter process did not start.');
-        const incumbentBuild = (
-          JSON.parse(readFileSync(join(address.protectedPath, 'epoch.json'), 'utf8')) as {
-            build: UpgradeIntentChange['target']['build'];
-          }
-        ).build;
-        const currentBuild = strictBundleManifestSchema.parse(
-          JSON.parse(
-            readFileSync(join(process.cwd(), 'clients', 'build', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
-          ),
-        );
-        const targetBuild = strictBundleManifestSchema.parse(
-          tag === 'v0.10.0'
-            ? {
-                ...currentBuild,
-                ...incumbentBuild,
-                version: shipped.version,
-                bundleHash: shipped.bundleHash,
-                storeFormatFingerprint: shipped.storeFormatFingerprint,
-              }
-            : JSON.parse(readFileSync(join(shipped.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8')),
-        );
-        const pending: UpgradeIntentChange = {
-          requestId: `rollback-${tag}`,
-          incumbent: {
-            instanceId: 'retired-incumbent',
-            pid: waiter.pid,
-            incarnation: null,
-            version: incumbentBuild.version,
-            bundleHash: incumbentBuild.bundleHash,
-            flavor: 'prod',
-          },
-          target: { build: targetBuild, pluginRootLabel: shipped.root },
-          attemptId: `killed-waiter-${tag}`,
-          attemptOwner: { kind: 'waiter', instanceId: 'killed-waiter', pid: waiter.pid, incarnation: null },
-          disposition: 'pending',
-          blockers: [],
-          retryCondition: { kind: 'incumbent-retirement', evidence: 'waiting for retirement' },
-          attemptDeadline: new Date(Date.now() - 1_000).toISOString(),
-          completionReceipt: null,
-        };
-        const recorded = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, pending);
-        expect(recorded.kind).toBe('written');
-      } finally {
-        waiter.kill('SIGKILL');
-        await once(waiter, 'exit');
-      }
-      expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
-        kind: 'readable',
-        intent: { disposition: 'pending', attemptOwner: { kind: 'waiter' } },
-      });
-      const coordinator = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
-      coordinators.push(coordinator);
-      await waitForDiscoveryRecord(home, 'prod', 15_000);
-
-      expect(existsSync(address.protectedPath)).toBe(true);
-      expect(digest(join(address.protectedPath, 'store.db'))).toBe(before);
-      expect(address.epochKey).toBe(key);
     },
     30_000,
   );

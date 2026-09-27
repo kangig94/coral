@@ -24,6 +24,7 @@ import {
   SUCCESSION_CAPABILITY_VERSION,
 } from '#src/infra/bundle-manifest-address.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
 import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import { readDurableCliControllerReceipts } from '#src/coordinator/services/durable-cli-transfer.js';
 import { successionPreparationSchema } from '#src/coordinator/succession/protocol.js';
@@ -67,6 +68,7 @@ afterEach(async () => {
   for (const cli of cliChildren.splice(0)) {
     if (cli.exitCode === null && cli.signalCode === null) cli.kill('SIGKILL');
   }
+  for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   // A signalled process may still be writing into the home it ran under, so removal waits for its exit.
   const terminated: { pid: number; incarnation: ProcessIncarnation }[] = [];
   for (const recorded of [...providerChildren.splice(0), ...successors.splice(0)]) {
@@ -84,7 +86,6 @@ afterEach(async () => {
     () => terminated.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
     15_000,
   );
-  for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
@@ -311,6 +312,7 @@ describe('real-process durable-cli succession', () => {
       home,
       tempRoots: roots,
       env: { CORAL_TEST_SUCCESSION_SERVING_DELAY_MS: '2000' },
+      supervised: true,
     });
     coordinators.push(old);
     const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
@@ -323,7 +325,7 @@ describe('real-process durable-cli succession', () => {
     const priorGeneration = observeSuccessionWriterGeneration(runtime)?.generation ?? 0;
 
     const newerFixture = await createDurableFixture('0.0.2');
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
@@ -352,14 +354,16 @@ describe('real-process durable-cli succession', () => {
     )
       throw new Error('Prepared child is unavailable.');
     const childPid = pending.intent.attemptChild.pid;
-    old.child.kill('SIGKILL');
+    old.child.kill('SIGSTOP');
+    process.kill(incumbent.pid, 'SIGKILL');
     process.kill(childPid, 'SIGKILL');
+    old.child.kill('SIGKILL');
     await waitForProcessExit(old, 15_000);
+    await waitForCondition(() => observeProcessLiveness(incumbent.pid) === 'absent', 15_000);
     await waitForCondition(() => observeProcessLiveness(childPid) === 'absent', 15_000);
 
-    const recoveryContender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const recoveryContender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(recoveryContender);
-    expect(await waitForProcessExit(recoveryContender, 30_000), recoveryContender.output()).toMatchObject({ code: 0 });
     await waitForCondition(() => {
       const discovery = readDiscoveryRecordForHome(home, 'prod');
       return discovery?.version === '0.0.1' && discovery.pid !== incumbent.pid;
@@ -491,6 +495,7 @@ describe('real-process durable-cli succession', () => {
       home,
       tempRoots: roots,
       env: { CORAL_MAX_WORKERS: '2' },
+      supervised: true,
     });
     coordinators.push(minting);
     const first = await waitForDiscoveryRecord(home, 'prod', 15_000);
@@ -505,7 +510,12 @@ describe('real-process durable-cli succession', () => {
     const originalKey = encodeResolvedStoreEpoch(runtime, originalEpoch);
 
     const reopeningFixture = await createDurableFixture('0.0.2');
-    const reopeningContender = spawnCoordinator({ fixture: reopeningFixture, home, tempRoots: roots });
+    const reopeningContender = spawnCoordinator({
+      fixture: reopeningFixture,
+      home,
+      tempRoots: roots,
+      supervised: true,
+    });
     coordinators.push(reopeningContender);
     expect(await waitForProcessExit(reopeningContender, 30_000)).toMatchObject({ code: 0 });
     await waitForCondition(() => {
@@ -515,7 +525,7 @@ describe('real-process durable-cli succession', () => {
     const reopened = readDiscoveryRecordForHome(home, 'prod');
     if (reopened === null) throw new Error('Reopening controller did not serve.');
     successors.push({ pid: reopened.pid, incarnation: probeProcessIncarnation(reopened.pid) });
-    await waitForProcessExit(minting, 30_000);
+    await waitForCondition(() => observeProcessLiveness(first.pid) === 'absent', 30_000);
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     await waitForCondition(
       () =>
@@ -543,7 +553,10 @@ describe('real-process durable-cli succession', () => {
       readFileSync(join(reopeningFixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
     ) as { buildSetId: string };
     expect(existsSync(retainedBuildRoot(runtime, reopeningBuild.buildSetId))).toBe(true);
+    minting.child.kill('SIGSTOP');
     process.kill(reopened.pid, 'SIGKILL');
+    minting.child.kill('SIGKILL');
+    await waitForProcessExit(minting, 15_000);
     await waitForCondition(() => observeProcessLiveness(reopened.pid) === 'absent', 15_000);
     rmSync(reopeningFixture.root, { recursive: true, force: true });
 
@@ -551,9 +564,13 @@ describe('real-process durable-cli succession', () => {
       '0.0.3',
       'CREATE TABLE ac10_second_schema_generation (id INTEGER PRIMARY KEY);',
     );
-    const contender = spawnCoordinator({ fixture: incompatibleFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({
+      fixture: incompatibleFixture,
+      home,
+      tempRoots: roots,
+      supervised: true,
+    });
     coordinators.push(contender);
-    expect(await waitForProcessExit(contender, 30_000), contender.output()).toMatchObject({ code: 0 });
     await waitForCondition(() => {
       const discovery = readDiscoveryRecordForHome(home, 'prod');
       return discovery?.version === '0.0.2' && discovery.pid !== reopened.pid;
@@ -761,10 +778,16 @@ describe('real-process durable-cli succession', () => {
         '0.0.2',
         'CREATE TABLE ac16_schema_generation (id INTEGER PRIMARY KEY);',
       );
-      const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, env: { [fault]: '1' } });
+      const old = spawnCoordinator({
+        fixture: oldFixture,
+        home,
+        tempRoots: roots,
+        env: { [fault]: '1' },
+        supervised: true,
+      });
       coordinators.push(old);
       const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
-      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
       coordinators.push(contender);
       expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
       const runDir = coordinatorFilesForHome(home, 'prod').runDir;
@@ -800,20 +823,34 @@ describe('real-process durable-cli succession', () => {
       '0.0.2',
       'CREATE TABLE ac16_schema_generation (id INTEGER PRIMARY KEY);',
     );
-    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, env: incumbentEnv });
+    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, env: incumbentEnv, supervised: true });
     coordinators.push(old);
     const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
     return { oldFixture, newerFixture, incumbentPid: incumbent.pid };
   }
 
   async function expectSchemaChangingSuccessorServes(home: string, incumbentPid: number): Promise<void> {
-    await waitForCondition(() => {
-      const discovery = readDiscoveryRecordForHome(home, 'prod');
-      return discovery !== null && discovery.version === '0.0.2' && discovery.pid !== incumbentPid;
-    }, 30_000);
+    try {
+      await waitForCondition(() => {
+        const discovery = readDiscoveryRecordForHome(home, 'prod');
+        return discovery !== null && discovery.version === '0.0.2' && discovery.pid !== incumbentPid;
+      }, 30_000);
+    } catch (error: unknown) {
+      const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+      const record = new CoordinatorLaunchRecord(runDir);
+      try {
+        const launch = record.read();
+        throw new Error(
+          `Successor did not serve: ${JSON.stringify({ launch, ownerLiveness: launch.owner === null ? null : observeProcessLiveness(launch.owner.process.pid), intent: readUpgradeIntent(runDir), coordinators: coordinators.filter((entry) => entry.home === home).map((entry) => ({ exitCode: entry.child.exitCode, signalCode: entry.child.signalCode, output: entry.output() })) })}`,
+          { cause: error },
+        );
+      } finally {
+        record.close();
+      }
+    }
     const successor = readDiscoveryRecordForHome(home, 'prod');
     if (successor === null) throw new Error('Successor discovery disappeared.');
     successors.push({ pid: successor.pid, incarnation: probeProcessIncarnation(successor.pid) });
@@ -851,6 +888,7 @@ describe('real-process durable-cli succession', () => {
       home,
       tempRoots: roots,
       env: { CORAL_TEST_SUCCESSION_SERVING_DELAY_MS: '1600' },
+      supervised: true,
     });
     coordinators.push(old);
     const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
@@ -863,7 +901,7 @@ describe('real-process durable-cli succession', () => {
       '0.0.2',
       'CREATE TABLE ac16_schema_generation (id INTEGER PRIMARY KEY);',
     );
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
@@ -912,7 +950,7 @@ describe('real-process durable-cli succession', () => {
     writeFileSync(prompt, 'Keep the old-format job running.');
 
     const oldFixture = await createDurableFixture('0.0.1');
-    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots });
+    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(old);
     const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
     const jobId = launchedJobId(await runCli(oldFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']));
@@ -932,7 +970,7 @@ describe('real-process durable-cli succession', () => {
       readFileSync(join(newerFixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
     ) as { storeFormatFingerprint: string };
     expect(newFingerprint.storeFormatFingerprint).not.toBe(oldFingerprint.storeFormatFingerprint);
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
     expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(incumbent.pid);
@@ -997,6 +1035,7 @@ describe('real-process durable-cli succession', () => {
       home,
       tempRoots: roots,
       env: { CORAL_MAX_WORKERS: '1' },
+      supervised: true,
     });
     coordinators.push(old);
     const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
@@ -1041,6 +1080,7 @@ describe('real-process durable-cli succession', () => {
       home,
       tempRoots: roots,
       env: { CORAL_MAX_WORKERS: '1' },
+      supervised: true,
     });
     coordinators.push(contender);
     expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
@@ -1061,7 +1101,7 @@ describe('real-process durable-cli succession', () => {
     }
     const completion = intent.intent.completionReceipt;
     successors.push({ pid: successor.pid, incarnation: probeProcessIncarnation(successor.pid) });
-    await waitForProcessExit(old, 30_000);
+    await waitForCondition(() => observeProcessLiveness(incumbent.pid) === 'absent', 30_000);
     expect(observeProcessLiveness(successor.pid)).toBe('alive');
     expect(completion.acceptedObligations).toEqual(
       expect.arrayContaining([expect.objectContaining({ owner: 'durable-cli' })]),
@@ -1128,7 +1168,7 @@ describe('real-process durable-cli succession', () => {
       const prompt = join(projectRoot, 'prompt.txt');
       writeFileSync(prompt, 'Run across the upgrade, then finish.');
       const oldFixture = await createDurableFixture('0.0.1');
-      const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots });
+      const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, supervised: true });
       coordinators.push(old);
       const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
       const jobId = launchedJobId(await runCli(oldFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']));
@@ -1157,7 +1197,7 @@ describe('real-process durable-cli succession', () => {
       }, 30_000);
 
       const newerFixture = await createDurableFixture('0.0.2');
-      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
       coordinators.push(contender);
       expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
       await waitForCondition(() => {
@@ -1174,8 +1214,9 @@ describe('real-process durable-cli succession', () => {
       const successor = readDiscoveryRecordForHome(home, 'prod');
       if (successor === null) throw new Error('Durable successor did not serve.');
       successors.push({ pid: successor.pid, incarnation: probeProcessIncarnation(successor.pid) });
-      await waitForProcessExit(old, 30_000);
+      await waitForCondition(() => observeProcessLiveness(incumbent.pid) === 'absent', 30_000);
       await abortDurableJob(newerFixture, home, projectRoot, jobId);
+      await stopCoordinator(old);
       process.kill(successor.pid, successorEnd === 'exits cleanly' ? 'SIGTERM' : 'SIGKILL');
       await waitForCondition(() => observeProcessLiveness(successor.pid) === 'absent', 30_000);
 

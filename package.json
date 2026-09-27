@@ -23,7 +23,6 @@
     "clients/bridge/package.json",
     "clients/bridge/coral-claude-appserver.cjs",
     "clients/bridge/coral-durable-wrapper.cjs",
-    "clients/bridge/coral-upgrade-waiter.cjs",
     "clients/bridge/succession-capabilities.v1.json",
     "clients/bridge/manifest.json",
     "clients/bridge/manifest.v*.json"

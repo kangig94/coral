@@ -12,6 +12,7 @@ export interface CoordinatorPaths {
   legacySocketPath: string;
   legacyInfoFile: string;
   upgradeIntentFile: string;
+  launchFile: string;
   socketPath: string;
   infoFile: string;
   startupErrorFile: string;
@@ -51,6 +52,10 @@ export function generationRunDir(flavor: BuildFlavor, opts?: CoordinatorPathOpti
 /** The intent address must remain outside epochs and installed plugin roots. */
 export function upgradeIntentPath(runDir: string): string {
   return join(runDir, 'upgrade.v1.json');
+}
+
+export function coordinatorLaunchPath(runDir: string): string {
+  return join(runDir, 'coordinator-launch.v1.sqlite');
 }
 
 export function handoffRoutingStatusPath(
@@ -144,6 +149,7 @@ export function coordinatorPaths(flavor: BuildFlavor, opts?: CoordinatorPathOpti
     legacySocketPath: join(legacyRunDir, 'coordinator.sock'),
     legacyInfoFile: join(legacyRunDir, 'coordinator.json'),
     upgradeIntentFile: upgradeIntentPath(runDir),
+    launchFile: coordinatorLaunchPath(runDir),
     socketPath,
     infoFile: join(runDir, 'coordinator.json'),
     startupErrorFile: join(runDir, 'startup-error.json'),

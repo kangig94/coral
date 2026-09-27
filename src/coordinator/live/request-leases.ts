@@ -1,7 +1,7 @@
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { durableRequestIdentity } from '../../infra/request-lease-identity.js';
+import { durableRequestIdentity } from '../../runtime/request-lease-identity.js';
 import type { AbandonedRequestStatus } from '../../infra/abandoned-request-status.js';
 
 export type RequestLease = Readonly<{
@@ -48,6 +48,7 @@ export function createRequestLeaseOwner(
     begin(): void;
     end(): void;
     abandon?(request: AbandonedRequestStatus): void;
+    owner?: AbandonedRequestStatus['owner'];
     newRecordId(): string;
     time: TimePort;
     timing?: RequestLeaseTiming;
@@ -72,6 +73,7 @@ export function createRequestLeaseOwner(
       let settled = false;
       let released = false;
       let abandoned = false;
+      let recordingFailed = false;
       let grace: TimerHandle | null = null;
       let rejectUnsettled: ((error: Error) => void) | null = null;
       const unsettled = new Promise<never>((_resolve, reject) => {
@@ -90,12 +92,10 @@ export function createRequestLeaseOwner(
         const gap = current - lastWake;
         lastWake = current;
         if (gap > timing.schedulingGapMs) deadline += gap;
-        if (settled || expired || current < deadline) return;
-        expired = true;
-        controller.abort(deadlineError('unknown'));
-        grace = time.setTimeout(() => {
-          if (settled) return;
+        if (settled) return;
+        if (recordingFailed) {
           try {
+            if (options.abandon === undefined) throw new Error('Abandoned request status writer is unavailable');
             options.abandon?.({
               recordId,
               method,
@@ -103,19 +103,45 @@ export function createRequestLeaseOwner(
               startedAt,
               outcome: 'continuing',
               identity: currentIdentity(),
+              ...(options.owner === undefined ? {} : { owner: options.owner }),
+            });
+            recordingFailed = false;
+            abandoned = true;
+            release();
+          } catch (error: unknown) {
+            backendLog.error('Could not retry abandoned request recording', error);
+          }
+          return;
+        }
+        if (expired || current < deadline) return;
+        expired = true;
+        controller.abort(deadlineError('unknown'));
+        grace = time.setTimeout(() => {
+          if (settled) return;
+          try {
+            if (options.abandon === undefined) throw new Error('Abandoned request status writer is unavailable');
+            options.abandon?.({
+              recordId,
+              method,
+              requestId,
+              startedAt,
+              outcome: 'continuing',
+              identity: currentIdentity(),
+              ...(options.owner === undefined ? {} : { owner: options.owner }),
             });
             abandoned = true;
           } catch (error: unknown) {
             backendLog.error('Could not record abandoned request', error);
+            recordingFailed = true;
           }
-          release();
+          if (!recordingFailed) release();
           rejectUnsettled?.(
             documentedCoralSetupError('request_deadline_exceeded', {
               method,
               requestId,
-              recordId,
+              ...(recordingFailed ? {} : { recordId }),
               ...currentIdentity(),
-              outcome: 'continuing',
+              outcome: recordingFailed ? 'recording_failed' : 'continuing',
             }),
           );
         }, timing.settleMs);
@@ -134,7 +160,15 @@ export function createRequestLeaseOwner(
         settled = true;
         if (expired || abandoned) {
           try {
-            options.abandon?.({ recordId, method, requestId, startedAt, outcome, identity: currentIdentity() });
+            options.abandon?.({
+              recordId,
+              method,
+              requestId,
+              startedAt,
+              outcome,
+              identity: currentIdentity(),
+              ...(options.owner === undefined ? {} : { owner: options.owner }),
+            });
           } catch (error: unknown) {
             backendLog.error('Could not reconcile abandoned request', error);
           }

@@ -11,7 +11,7 @@ import {
   type ProviderHostInventoryRecordWire,
 } from '../../providers/host-inventory-schema.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
-import { throwIfRequestAborted } from '../../infra/request-lease-identity.js';
+import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 
 export type ProviderHostInventoryRecord = ProviderHostInventoryRecordWire;
 

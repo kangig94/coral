@@ -41,7 +41,6 @@ const bundleFreshnessReceiptSchema = z
         cli: outputSchema('clients/build/coral-cli'),
         claudeAppserver: outputSchema('clients/build/coral-claude-appserver.cjs'),
         durableWrapper: outputSchema('clients/build/coral-durable-wrapper.cjs'),
-        upgradeWaiter: outputSchema('clients/build/coral-upgrade-waiter.cjs'),
         legacyManifest: outputSchema('clients/build/manifest.json'),
         strictManifest: outputSchema(CURRENT_STRICT_BUNDLE_MANIFEST_OUTPUT),
         successionCapabilities: outputSchema(SUCCESSION_CAPABILITIES_OUTPUT),
@@ -62,7 +61,6 @@ export type BundleFreshnessReceiptV1 = Readonly<{
     cli: Readonly<{ path: 'clients/build/coral-cli'; sha256: string }>;
     claudeAppserver: Readonly<{ path: 'clients/build/coral-claude-appserver.cjs'; sha256: string }>;
     durableWrapper: Readonly<{ path: 'clients/build/coral-durable-wrapper.cjs'; sha256: string }>;
-    upgradeWaiter: Readonly<{ path: 'clients/build/coral-upgrade-waiter.cjs'; sha256: string }>;
     legacyManifest: Readonly<{ path: 'clients/build/manifest.json'; sha256: string }>;
     strictManifest: Readonly<{ path: typeof CURRENT_STRICT_BUNDLE_MANIFEST_OUTPUT; sha256: string }>;
     successionCapabilities: Readonly<{ path: typeof SUCCESSION_CAPABILITIES_OUTPUT; sha256: string }>;

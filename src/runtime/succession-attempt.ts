@@ -1,11 +1,8 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { type ChildProcess, type SendHandle } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import type { Socket } from 'node:net';
-import { join } from 'node:path';
 
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
-import { composeCoralPaths } from '../infra/path/index.js';
-import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { createRealTimePort } from '../infra/time.js';
 import type { TimePort } from '../infra/port-types.js';
 
@@ -28,46 +25,93 @@ export interface SuccessionAttemptPorts {
   };
 }
 
+function requestSupervisedAttempt(bundleDir: string, attemptId: string): SuccessionAttemptProcess {
+  const processView = new EventEmitter() as SuccessionAttemptProcess;
+  let pid: number | undefined;
+  let connected = true;
+  let exitCode: number | null = null;
+  let signalCode: NodeJS.Signals | null = null;
+  let resolvePid!: (value: number) => void;
+  let rejectPid!: (error: Error) => void;
+  const coordinatorPid = new Promise<number>((resolve, reject) => {
+    resolvePid = resolve;
+    rejectPid = reject;
+  });
+  Object.defineProperties(processView, {
+    pid: { get: () => pid },
+    connected: { get: () => connected && process.connected },
+    exitCode: { get: () => exitCode },
+    signalCode: { get: () => signalCode },
+    coordinatorPid: { value: coordinatorPid },
+    send: {
+      value: (
+        message: unknown,
+        handle?: SendHandle | ((error: Error | null) => void),
+        callback?: (error: Error | null) => void,
+      ) => {
+        const sentHandle = typeof handle === 'function' ? undefined : handle;
+        const done = typeof handle === 'function' ? handle : callback;
+        process.send?.({ kind: 'coral-supervisor-relay', attemptId, message }, sentHandle, done);
+        return true;
+      },
+    },
+    kill: {
+      value: (signal?: NodeJS.Signals) => {
+        process.send?.({ kind: 'coral-supervisor-retire-attempt', attemptId, signal });
+        return true;
+      },
+    },
+  });
+  const onMessage = (message: unknown, handle: unknown): void => {
+    if (
+      typeof message !== 'object' ||
+      message === null ||
+      !('kind' in message) ||
+      !('attemptId' in message) ||
+      message.attemptId !== attemptId
+    )
+      return;
+    switch (message.kind) {
+      case 'coral-supervisor-attempt-spawned':
+        if ('pid' in message && typeof message.pid === 'number') {
+          pid = message.pid;
+          resolvePid(pid);
+          processView.emit('spawn');
+        }
+        break;
+      case 'coral-supervisor-attempt-message':
+        processView.emit('message', 'message' in message ? message.message : undefined, handle);
+        break;
+      case 'coral-supervisor-attempt-exit':
+        connected = false;
+        exitCode = 'exitCode' in message && typeof message.exitCode === 'number' ? message.exitCode : null;
+        signalCode =
+          'signal' in message && typeof message.signal === 'string' ? (message.signal as NodeJS.Signals) : null;
+        process.off('message', onMessage);
+        processView.emit('exit', exitCode, signalCode);
+        processView.emit('disconnect');
+        break;
+      case 'coral-supervisor-attempt-error': {
+        const error = new Error('reason' in message ? String(message.reason) : 'Supervisor refused succession launch');
+        rejectPid(error);
+        processView.emit('error', error);
+        break;
+      }
+    }
+  };
+  process.on('message', onMessage);
+  process.send?.({ kind: 'coral-supervisor-start-attempt', attemptId, bundleDir });
+  return processView;
+}
+
 export function createRealSuccessionAttemptPorts(): SuccessionAttemptPorts {
   let upstreamConnected = true;
   return {
     time: createRealTimePort(),
     spawn: (bundleDir, attemptId) => {
-      const backend = join(bundleDir, 'coral-backend.cjs');
-      const sentinel = join(bundleDir, 'coral-sentinel.cjs');
-      const supervised = existsSync(sentinel);
-      const child: SuccessionAttemptProcess = spawn(process.execPath, supervised ? [sentinel, backend] : [backend], {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          CORAL_STARTUP_ATTEMPT_ID: attemptId,
-          CORAL_SUCCESSION_ATTEMPT_ID: attemptId,
-          CORAL_SENTINEL_RUN_DIR: composeCoralPaths(resolveBuildFlavor(process.env)).coordinator.runDir,
-        },
-        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-      });
-      if (supervised) {
-        child.coordinatorPid = new Promise<number>((resolve, reject) => {
-          const onMessage = (message: unknown): void => {
-            if (
-              typeof message === 'object' &&
-              message !== null &&
-              'kind' in message &&
-              message.kind === 'coral-sentinel-child' &&
-              'pid' in message &&
-              typeof message.pid === 'number' &&
-              Number.isSafeInteger(message.pid)
-            ) {
-              child.off('message', onMessage);
-              resolve(message.pid);
-            }
-          };
-          child.on('message', onMessage);
-          child.once('error', reject);
-          child.once('exit', () => reject(new Error('Succession sentinel exited before its coordinator spawned')));
-        });
-      }
-      return child;
+      if (process.env.CORAL_LAUNCH_ADMISSION !== '1' || process.send === undefined)
+        throw new Error('Succession launch requires a namespace supervisor channel');
+      return requestSupervisedAttempt(bundleDir, attemptId);
     },
     processIncarnation: (pid) => probeProcessIncarnation(pid),
     env: (name) => process.env[name],

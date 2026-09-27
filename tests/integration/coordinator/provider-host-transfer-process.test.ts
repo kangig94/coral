@@ -12,11 +12,15 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+import { build } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import {
   handoffCapsuleControllerBuildSetId,
@@ -75,6 +79,7 @@ async function observedIncarnation(pid: number): Promise<ProcessIncarnation | nu
 
 afterEach(async () => {
   await Promise.all(cliChildren.splice(0).map((cli) => terminateChildProcess(cli, 'SIGKILL')));
+  for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   // A successor shuts down its own children on SIGTERM; waiting for its exit keeps them from outliving the test.
   const terminated: { pid: number; incarnation: ProcessIncarnation }[] = [];
   for (const recorded of successors.splice(0)) {
@@ -88,7 +93,6 @@ afterEach(async () => {
     () => terminated.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
     30_000,
   );
-  for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   await killRecordedProcesses(hostProcesses.splice(0));
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
@@ -237,6 +241,7 @@ async function startProxiedJob(
     home: world.home,
     tempRoots: roots,
     env: { ...world.env, ...oldEnv },
+    supervised: true,
   });
   coordinators.push(old);
   const incumbent = await waitForDiscoveryRecord(world.home, 'prod', 15_000);
@@ -266,20 +271,43 @@ async function upgradeTo(
     backend: 'succession-interposition',
     accepts: 'bundled',
   });
-  const contender = spawnCoordinator({ fixture: newerFixture, home: world.home, tempRoots: roots, env: world.env });
+  const contender = spawnCoordinator({
+    fixture: newerFixture,
+    home: world.home,
+    tempRoots: roots,
+    env: world.env,
+    supervised: true,
+  });
   coordinators.push(contender);
   expect(await waitForProcessExit(contender, 30_000), contender.output()).toMatchObject({ code: 0 });
   const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
-  await waitForCondition(() => {
-    const discovery = readDiscoveryRecordForHome(world.home, 'prod');
-    const intent = readUpgradeIntent(runDir);
-    return (
-      discovery !== null &&
-      discovery.pid !== incumbentPid &&
-      intent.kind === 'readable' &&
-      intent.intent.disposition === 'completed'
-    );
-  }, 90_000);
+  try {
+    await waitForCondition(() => {
+      const discovery = readDiscoveryRecordForHome(world.home, 'prod');
+      const intent = readUpgradeIntent(runDir);
+      return (
+        discovery !== null &&
+        discovery.pid !== incumbentPid &&
+        intent.kind === 'readable' &&
+        intent.intent.disposition === 'completed'
+      );
+    }, 30_000);
+  } catch (error: unknown) {
+    const launch = new CoordinatorLaunchRecord(runDir);
+    try {
+      throw new Error(
+        `Provider transfer did not serve: ${JSON.stringify({
+          launch: launch.read(),
+          intent: readUpgradeIntent(runDir),
+          discovery: readDiscoveryRecordForHome(world.home, 'prod'),
+          outputs: coordinators.map((coordinator) => coordinator.output()),
+        })}`,
+        { cause: error },
+      );
+    } finally {
+      launch.close();
+    }
+  }
   const successor = readDiscoveryRecordForHome(world.home, 'prod');
   const intent = readUpgradeIntent(runDir);
   if (successor === null || intent.kind !== 'readable' || intent.intent.completionReceipt === null) {
@@ -300,15 +328,127 @@ async function capsuleNamesController(home: string, fixture: PluginFixture): Pro
 }
 
 describe('real-process provider host transfer', () => {
+  it('recovers the retained controller before a newer installed build while its host is live', async () => {
+    assertBuildArtifactsAvailable();
+    const world = createTransferWorld();
+    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14', accepts: 'bundled' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(world.home, '.coral') }).runDir;
+    const harness = join(world.home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const registry = join(world.home, 'installed.json');
+    writeFileSync(registry, JSON.stringify({ plugins: {} }));
+    const supervisor = spawn(process.execPath, [harness, join(oldFixture.root, 'bridge', 'coral-backend.cjs')], {
+      env: {
+        ...process.env,
+        HOME: world.home,
+        TMPDIR: world.home,
+        ...world.env,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_PLUGIN_REGISTRY: registry,
+        CORAL_FIXTURE_REAL_BACKEND: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    let supervisorOutput = '';
+    supervisor.stdout?.on('data', (chunk: Buffer) => {
+      supervisorOutput += chunk.toString();
+    });
+    supervisor.stderr?.on('data', (chunk: Buffer) => {
+      supervisorOutput += chunk.toString();
+    });
+    let oldPid: number | null = null;
+    let recoveredPid: number | null = null;
+    const launch = new CoordinatorLaunchRecord(runDir);
+    try {
+      const original = await waitForDiscoveryRecord(world.home, 'prod', 25_000);
+      oldPid = original.pid;
+      const jobId = launchedJobId(await runCli(oldFixture, world, ['codex', '-i', world.prompt, '--detach']));
+      await waitForCondition(() => existsSync(join(world.state, 'job-running')), 60_000);
+      let found: ReturnType<typeof readOnlyCapsule> = null;
+      await waitForCondition(() => (found = readOnlyCapsule(world.home)) !== null, 30_000);
+      if (found === null) throw new Error('The job did not start a provider host.');
+      const hosts = recordHostProcesses((found as NonNullable<ReturnType<typeof readOnlyCapsule>>).capsule);
+      const waiter = startCli(oldFixture, world, ['wait', 'jobs', jobId, '--verbose']);
+      await waitForCondition(() => waiter.stdout().includes('before-transfer'), 60_000);
+
+      const newerFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16', accepts: 'bundled' });
+      writeFileSync(registry, JSON.stringify({ plugins: { 'coral@fixture': [{ installPath: newerFixture.root }] } }));
+      const oldBuild = buildSetIdOf(oldFixture);
+      const retained = join(world.home, '.coral', 'gen2', 'builds', oldBuild);
+      await waitForCondition(() => existsSync(join(retained, 'bridge', 'coral-backend.cjs')), 15_000);
+      rmSync(oldFixture.root, { recursive: true, force: true });
+      process.kill(oldPid, 'SIGSTOP');
+      try {
+        await waitForCondition(() => {
+          const current = readDiscoveryRecordForHome(world.home, 'prod');
+          if (current === null || current.pid === oldPid || current.bundleHash !== original.bundleHash) return false;
+          recoveredPid = current.pid;
+          return launch.read().launch?.phase === 'serving' && launch.read().launch?.buildSetId === oldBuild;
+        }, 35_000);
+      } catch (error: unknown) {
+        throw new Error(
+          `Retained controller did not serve: ${JSON.stringify({
+            launch: launch.read(),
+            discovery: readDiscoveryRecordForHome(world.home, 'prod'),
+            capsule: readOnlyCapsule(world.home)?.capsule.version,
+            supervisorOutput,
+          })}`,
+          { cause: error },
+        );
+      }
+      expect(hostsAlive(hosts)).toBe(true);
+      const resumedWaiter = startCli(newerFixture, world, ['wait', 'jobs', jobId, '--verbose']);
+      writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
+      try {
+        await waitForCondition(() => resumedWaiter.stdout().includes('after-transfer'), 20_000);
+      } catch (error: unknown) {
+        throw new Error(
+          `Recovered job made no progress: ${JSON.stringify({
+            output: resumedWaiter.output(),
+            originalWaiter: waiter.output(),
+            launch: launch.read(),
+            supervisorOutput,
+          })}`,
+          { cause: error },
+        );
+      }
+      writeFileSync(join(world.state, 'release-job'), 'released');
+      expect(await resumedWaiter.completed, resumedWaiter.output()).toBe(0);
+      const detail = await runCli(newerFixture, world, ['jobs', 'detail', jobId]);
+      expect(detail).toMatch(/completed/iu);
+      expect(readFileSync(join(world.home, '.coral', 'exports', 'jobs', jobId, 'result.md'), 'utf8')).toContain('done');
+    } finally {
+      launch.close();
+      if (oldPid !== null && observeProcessLiveness(oldPid) === 'alive') {
+        try {
+          process.kill(oldPid, 'SIGCONT');
+        } catch {
+          /* the supervisor retired it */
+        }
+      }
+      if (recoveredPid !== null && observeProcessLiveness(recoveredPid) === 'alive')
+        process.kill(recoveredPid, 'SIGTERM');
+      if (supervisor.exitCode === null) supervisor.kill('SIGTERM');
+    }
+  }, 240_000);
+
   it('transfers a live host to a compatible build at once and keeps its job through startup recovery', async () => {
     assertBuildArtifactsAvailable();
     const world = createTransferWorld();
-    const { oldFixture, old, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
+    const { oldFixture, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
 
     const { newerFixture, acceptedOwners } = await upgradeTo(world, incumbentPid);
     expect(buildSetIdOf(newerFixture)).not.toBe(buildSetIdOf(oldFixture));
     expect(acceptedOwners).toEqual(expect.arrayContaining(['provider-proxy-sets', 'provider-operations']));
-    await waitForProcessExit(old, 30_000);
+    await waitForCondition(() => observeProcessLiveness(incumbentPid) === 'absent', 30_000);
 
     // The host kept running under the same processes and its own build; only the controller changed.
     expect(hostsAlive(hosts)).toBe(true);
@@ -330,9 +470,9 @@ describe('real-process provider host transfer', () => {
   it('cancels a transferred job through the successor while its host keeps running', async () => {
     assertBuildArtifactsAvailable();
     const world = createTransferWorld();
-    const { old, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
+    const { incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
     const { newerFixture } = await upgradeTo(world, incumbentPid);
-    await waitForProcessExit(old, 30_000);
+    await waitForCondition(() => observeProcessLiveness(incumbentPid) === 'absent', 30_000);
     await capsuleNamesController(world.home, newerFixture);
 
     const abort = startCli(newerFixture, world, ['abort', 'jobs', jobId]);
@@ -349,11 +489,11 @@ describe('real-process provider host transfer', () => {
   it('releases the old controller from the serving record when the successor’s acknowledgment is lost', async () => {
     assertBuildArtifactsAvailable();
     const world = createTransferWorld();
-    const { old, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world, {
+    const { incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world, {
       CORAL_TEST_SUCCESSION_DROP_SERVING_ACK: '1',
     });
     const { newerFixture } = await upgradeTo(world, incumbentPid);
-    await waitForProcessExit(old, 30_000);
+    await waitForCondition(() => observeProcessLiveness(incumbentPid) === 'absent', 30_000);
     expect(hostsAlive(hosts)).toBe(true);
     await capsuleNamesController(world.home, newerFixture);
 
@@ -374,7 +514,13 @@ describe('real-process provider host transfer', () => {
       backend: 'succession-interposition',
       accepts: 'bundled',
     });
-    const contender = spawnCoordinator({ fixture: newerFixture, home: world.home, tempRoots: roots, env: world.env });
+    const contender = spawnCoordinator({
+      fixture: newerFixture,
+      home: world.home,
+      tempRoots: roots,
+      env: world.env,
+      supervised: true,
+    });
     coordinators.push(contender);
     expect(await waitForProcessExit(contender, 30_000), contender.output()).toMatchObject({ code: 0 });
     const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
@@ -405,7 +551,13 @@ describe('real-process provider host transfer', () => {
     const world = createTransferWorld();
     const { oldFixture, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home: world.home, tempRoots: roots, env: world.env });
+    const contender = spawnCoordinator({
+      fixture: newerFixture,
+      home: world.home,
+      tempRoots: roots,
+      env: world.env,
+      supervised: true,
+    });
     coordinators.push(contender);
     expect(await waitForProcessExit(contender, 30_000), contender.output()).toMatchObject({ code: 0 });
     const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;

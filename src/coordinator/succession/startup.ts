@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
 import { backendLog } from '../../infra/backend-log.js';
-import { readBackendInfo } from '../../infra/backend-discovery.js';
+import { CoordinatorLaunchRecord } from '../../infra/coordinator-launch.js';
 import { resolveRunningBundleDir, type StrictBundleManifest } from '../../infra/bundle-manifest.js';
 import { verifyChildPrincipalRecoveryGrant } from '../../infra/child-principal-nonce-ledger.js';
 import { errorMessage, formatError } from '../../infra/error-format.js';
@@ -44,7 +44,7 @@ import {
 } from '../../store/startup-store-routing.js';
 import {
   advanceSuccessionWriterGeneration,
-  generationForWaiterServing,
+  generationForLegacySuccessor,
   handbackSuccessionWriterGeneration,
   joinSuccessionWriterGeneration,
   observeSuccessionServing,
@@ -308,33 +308,6 @@ async function recordStartupHold(
   startups: number,
   exhausted: boolean,
 ): Promise<'released' | 'retained'> {
-  if (exhausted && hold.kind === 'committed-successor-unattributable') {
-    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-    if (
-      observed.kind === 'readable' &&
-      observed.intent.attemptId === attemptId &&
-      observed.intent.disposition === 'attempting' &&
-      observed.intent.attemptOwner?.kind === 'waiter' &&
-      (observed.intent.attemptChild === null || observed.intent.attemptChild === undefined)
-    ) {
-      const serving = observeSuccessionServing(runtime, attemptId);
-      if (serving !== null) {
-        const epoch = decodeResolvedStoreEpoch(runtime, serving.epochKey);
-        const generation = observeSuccessionWriterGeneration(runtime);
-        if (
-          epoch === undefined ||
-          generation === null ||
-          generation.generation !== serving.controlGeneration ||
-          generation.storeRoot !== epoch.storeRoot ||
-          generation.epoch !== epoch.epoch
-        ) {
-          throw new SuccessionAttemptStartupHoldError('waiter serving generation cannot be released', hold);
-        }
-        // A waiter carries no transfer receipts; the generation must advance before its attempt can be released.
-        advanceSuccessionWriterGeneration(runtime, generation, epoch);
-      }
-    }
-  }
   const reason = exhausted
     ? `abandoned after ${startups} startups: ${describeStartupHold(hold)}`
     : `${describeStartupHold(hold)} (startup ${startups} of ${SUCCESSION_STARTUP_PATIENCE})`;
@@ -615,37 +588,6 @@ export async function resolveIncompleteSuccessionAtStartup(
   }
 
   const attemptId = intent.attemptId;
-  if (
-    intent.attemptOwner?.kind === 'waiter' &&
-    attemptId !== null &&
-    observeSuccessionServing(runtime, attemptId) === null &&
-    !(
-      runtime.env.get('CORAL_STARTUP_ATTEMPT_ID') === attemptId &&
-      intent.target.build.buildSetId === options.currentBuild.buildSetId &&
-      intent.target.build.bundleHash === options.currentBuild.bundleHash
-    )
-  ) {
-    const child = intent.attemptChild;
-    if (
-      intent.disposition === 'attempting' &&
-      intent.attemptDeadline !== null &&
-      runtime.time.now() >= Date.parse(intent.attemptDeadline) &&
-      (child === null || child === undefined || child.attemptId !== attemptId)
-    ) {
-      return prior === null ? { kind: 'retire', attemptId } : retireArchived(attemptId);
-    }
-    const unproven = deathsUnproven(
-      attemptId,
-      child === null || child === undefined || child.attemptId !== attemptId
-        ? [intent.attemptOwner]
-        : [intent.attemptOwner, child],
-    );
-    return unproven === null
-      ? prior === null
-        ? { kind: 'retire', attemptId }
-        : retireArchived(attemptId)
-      : holdOrAbandon(unproven);
-  }
   if (
     intent.attemptOwner?.kind !== 'incumbent' ||
     attemptId === null ||
@@ -1047,16 +989,6 @@ export type CommittedSuccessorRecovery =
   | Readonly<{ kind: 'handoff'; target: ValidatedHandoffTarget }>
   | Readonly<{ kind: 'hold'; hold: SuccessionStartupHold }>;
 
-function waiterServingEligible(intent: UpgradeIntent, attemptId: string): boolean {
-  return (
-    intent.disposition === 'deferred' &&
-    intent.attemptId === attemptId &&
-    intent.attemptOwner?.kind === 'waiter' &&
-    intent.attemptChild?.attemptId === attemptId &&
-    intent.attemptDeadline !== null
-  );
-}
-
 async function reconcileServedAttempt(
   runtime: Runtime,
 ): Promise<'none' | 'completed' | Readonly<{ kind: 'unattributable'; attemptId: string; revision: number }>> {
@@ -1064,10 +996,7 @@ async function reconcileServedAttempt(
   if (observed.kind !== 'readable') return 'none';
   const { intent } = observed;
   if (intent.disposition === 'completed') return 'completed';
-  if (
-    intent.attemptId === null ||
-    (intent.disposition !== 'attempting' && !waiterServingEligible(intent, intent.attemptId))
-  )
+  if (intent.attemptId === null || intent.disposition !== 'attempting' || intent.attemptOwner?.kind !== 'incumbent')
     return 'none';
   const attemptId = intent.attemptId;
   const serving = observeSuccessionServing(runtime, attemptId);
@@ -1080,50 +1009,30 @@ async function reconcileServedAttempt(
     return unattributable;
 
   const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
-  const incumbentAttempt = intent.attemptOwner?.kind === 'incumbent';
   const child = intent.attemptChild;
-  const discovery = incumbentAttempt || (child !== null && child !== undefined) ? null : readBackendInfo(runtime);
-  const waiterChild =
-    child?.attemptId === intent.attemptId
-      ? child
-      : discovery?.instanceId === serving.successorInstanceId &&
-          discovery.bundleHash === intent.target.build.bundleHash &&
-          discovery.flavor === intent.target.build.flavor
-        ? { attemptId: intent.attemptId, pid: discovery.pid, incarnation: discovery.incarnation ?? null }
-        : null;
   const prepared = preparation.success ? preparation.data : null;
   const retirement = observeRetirementDisposition(runtime, intent.attemptId);
-  let pid: number;
-  let incarnation: ProcessIncarnation | null;
-  let acceptedObligations: NonNullable<UpgradeIntent['completionReceipt']>['acceptedObligations'];
-  if (incumbentAttempt) {
-    if (
-      prepared === null ||
-      prepared.attemptId !== intent.attemptId ||
-      prepared.ready === null ||
-      prepared.targetKey !== successionTargetKey(intent.target) ||
-      prepared.ready.attemptId !== intent.attemptId ||
-      prepared.ready.targetKey !== prepared.targetKey ||
-      prepared.ready.epochKey !== prepared.epochKey ||
-      JSON.stringify(prepared.ready.receiptIds) !==
-        JSON.stringify(prepared.receipts.map((receipt) => receipt.receiptId)) ||
-      (prepared.epochKey !== serving.epochKey &&
-        (retirement.kind !== 'recorded' || retirement.disposition.incumbentEpochKey !== prepared.epochKey))
-    )
-      return unattributable;
-    pid = prepared.ready.successorPid;
-    incarnation = child?.attemptId === intent.attemptId && child.pid === pid ? child.incarnation : null;
-    acceptedObligations = prepared.receipts.map((ownerReceipt) => ({
-      owner: ownerReceipt.owner,
-      receiptId: ownerReceipt.receiptId,
-      controlGeneration: serving.controlGeneration,
-    }));
-  } else {
-    if (intent.attemptOwner?.kind !== 'waiter' || waiterChild === null) return unattributable;
-    pid = waiterChild.pid;
-    incarnation = waiterChild.incarnation;
-    acceptedObligations = [];
-  }
+  if (
+    prepared === null ||
+    prepared.attemptId !== intent.attemptId ||
+    prepared.ready === null ||
+    prepared.targetKey !== successionTargetKey(intent.target) ||
+    prepared.ready.attemptId !== intent.attemptId ||
+    prepared.ready.targetKey !== prepared.targetKey ||
+    prepared.ready.epochKey !== prepared.epochKey ||
+    JSON.stringify(prepared.ready.receiptIds) !==
+      JSON.stringify(prepared.receipts.map((receipt) => receipt.receiptId)) ||
+    (prepared.epochKey !== serving.epochKey &&
+      (retirement.kind !== 'recorded' || retirement.disposition.incumbentEpochKey !== prepared.epochKey))
+  )
+    return unattributable;
+  const pid = prepared.ready.successorPid;
+  const incarnation = child?.attemptId === intent.attemptId && child.pid === pid ? child.incarnation : null;
+  const acceptedObligations = prepared.receipts.map((ownerReceipt) => ({
+    owner: ownerReceipt.owner,
+    receiptId: ownerReceipt.receiptId,
+    controlGeneration: serving.controlGeneration,
+  }));
   const receipt: NonNullable<UpgradeIntent['completionReceipt']> = {
     kind: 'serving',
     attemptId: intent.attemptId,
@@ -1139,7 +1048,7 @@ async function reconcileServedAttempt(
     }
     if (current.intent.disposition === 'completed') return { kind: 'settle', value: true };
     if (
-      (current.intent.disposition !== 'attempting' && !waiterServingEligible(current.intent, attemptId)) ||
+      current.intent.disposition !== 'attempting' ||
       current.intent.revision !== intent.revision ||
       observeSuccessionServing(runtime, attemptId) === null
     )
@@ -1407,144 +1316,54 @@ export async function publishRecoveredServing(
   }
 }
 
-/** A waiter-launched target records its identity before store open and fences itself if its attempt expired. */
-export async function recordWaiterLaunchedChild(
+/** A supervised legacy successor must match its admitted child before store opening. */
+export async function recordSupervisorLegacyChild(
   runtime: Runtime,
   currentBuild: StrictBundleManifest,
   pid: number,
   incarnation: ProcessIncarnation | null,
 ): Promise<boolean> {
-  const attemptId = runtime.env.get('CORAL_STARTUP_ATTEMPT_ID');
-  if (attemptId === undefined) return false;
-  const spawnNonce = runtime.env.get('CORAL_WAITER_SPAWN_NONCE');
-  const launchedByWaiter = runtime.env.get('CORAL_WAITER_LAUNCHED') === attemptId;
-  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-  const matching =
-    observed.kind === 'readable' &&
-    observed.intent.attemptId === attemptId &&
-    observed.intent.attemptSpawnNonce === spawnNonce &&
-    observed.intent.attemptOwner?.kind === 'waiter';
-  if (!matching) {
-    if (launchedByWaiter)
-      throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
-    return false;
+  if (runtime.env.get('CORAL_LAUNCH_PURPOSE') !== 'legacy-retirement') return false;
+  if (incarnation === null) throw new SuccessionAttemptStartupHoldError('legacy launch child identity is unavailable');
+  const record = new CoordinatorLaunchRecord(runtime.paths.coral.coordinator.runDir);
+  try {
+    if (record.legacyLaunch({ pid, incarnation }, currentBuild.buildSetId) === null)
+      throw new SuccessionAttemptStartupHoldError('legacy launch admission is no longer current');
+    return true;
+  } finally {
+    record.close();
   }
-  if (incarnation === null)
-    throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
-  const childRecorded = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) => {
-    if (observed.kind !== 'readable') return { kind: 'settle', value: false };
-    const intent = observed.intent;
-    if (intent.disposition === 'completed' && intent.completionReceipt?.attemptId === attemptId) {
-      return {
-        kind: 'settle',
-        value:
-          intent.completionReceipt.successor.pid === pid &&
-          intent.completionReceipt.successor.incarnation === incarnation,
-      };
-    }
-    if (
-      intent.disposition !== 'attempting' ||
-      intent.attemptId !== attemptId ||
-      intent.attemptSpawnNonce !== spawnNonce ||
-      intent.attemptOwner?.kind !== 'waiter' ||
-      intent.target.build.buildSetId !== currentBuild.buildSetId ||
-      intent.target.build.bundleHash !== currentBuild.bundleHash
-    )
-      return { kind: 'settle', value: false };
-    if (intent.attemptDeadline !== null && runtime.time.now() >= Date.parse(intent.attemptDeadline)) {
-      return { kind: 'settle', value: false };
-    }
-    if (intent.attemptChild !== null && intent.attemptChild !== undefined) {
-      if (
-        intent.attemptChild.attemptId === attemptId &&
-        intent.attemptChild.pid === pid &&
-        (intent.attemptChild.incarnation === null || intent.attemptSpawnPending === true)
-      ) {
-        return {
-          kind: 'write',
-          expectedRevision: intent.revision,
-          change: {
-            ...intent,
-            attemptSpawnPending: false,
-            attemptChild: { attemptId, pid, incarnation },
-          },
-          settle: () => true,
-        };
-      }
-      return {
-        kind: 'settle',
-        value:
-          intent.attemptChild.attemptId === attemptId &&
-          intent.attemptChild.pid === pid &&
-          intent.attemptChild.incarnation === incarnation,
-      };
-    }
-    return {
-      kind: 'write',
-      expectedRevision: intent.revision,
-      change: { ...intent, attemptSpawnPending: false, attemptChild: { attemptId, pid, incarnation } },
-      settle: () => true,
-    };
-  });
-  if (childRecorded.kind !== 'settled' || !childRecorded.value) {
-    throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
-  }
-  return true;
 }
 
-export async function completeWaiterLaunchedUpgrade(
+export async function completeSupervisorLegacyUpgrade(
   runtime: Runtime,
   currentBuild: StrictBundleManifest,
   openedStore: ResolvedStoreEpoch,
   instanceId: string,
   pid: number,
   incarnation: ProcessIncarnation | null,
-): Promise<void> {
-  if (!(await recordWaiterLaunchedChild(runtime, currentBuild, pid, incarnation))) return;
-  const attemptId = runtime.env.get('CORAL_STARTUP_ATTEMPT_ID');
-  if (attemptId === undefined || incarnation === null) {
-    throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
-  }
-  // One instant and one epoch key for every decision: a re-run decision must write the identical serving record.
-  const recordedAt = new Date(runtime.time.now()).toISOString();
-  const epochKey = encodeResolvedStoreEpoch(runtime, openedStore);
-  const unchanged = { kind: 'settle', value: false } as const;
-  const completed = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) => {
-    if (observed.kind !== 'readable') return unchanged;
-    const intent = observed.intent;
-    if (intent.disposition === 'completed' && intent.completionReceipt?.attemptId === attemptId) {
-      return {
-        kind: 'settle',
-        value:
-          intent.completionReceipt.successor.pid === pid &&
-          intent.completionReceipt.successor.incarnation === incarnation,
-      } as const;
-    }
-    if (
-      (intent.disposition !== 'attempting' && !waiterServingEligible(intent, attemptId)) ||
-      intent.attemptId !== attemptId ||
-      intent.attemptOwner?.kind !== 'waiter' ||
-      intent.target.build.buildSetId !== currentBuild.buildSetId ||
-      intent.target.build.bundleHash !== currentBuild.bundleHash
-    ) {
-      return unchanged;
-    }
-    // A receipt may never postdate the deadline; past it, the attempt is the waiter's to expire.
-    if (intent.attemptDeadline !== null && Date.parse(recordedAt) > Date.parse(intent.attemptDeadline)) {
-      return unchanged;
-    }
+): Promise<{ kind: 'not-legacy' } | { kind: 'completed' }> {
+  if (!(await recordSupervisorLegacyChild(runtime, currentBuild, pid, incarnation))) return { kind: 'not-legacy' };
+  if (incarnation === null) throw new SuccessionAttemptStartupHoldError('legacy launch child identity is unavailable');
+  const record = new CoordinatorLaunchRecord(runtime.paths.coral.coordinator.runDir);
+  try {
+    const admitted = record.legacyLaunch({ pid, incarnation }, currentBuild.buildSetId);
+    if (admitted === null || admitted.request.incumbent === undefined)
+      throw new SuccessionAttemptStartupHoldError('legacy launch admission is no longer current');
+    const attemptId = admitted.launch.id;
+    const recordedAt = new Date(runtime.time.now()).toISOString();
+    const epochKey = encodeResolvedStoreEpoch(runtime, openedStore);
     let generation = observeSuccessionWriterGeneration(runtime);
-    if (generation === null) return unchanged;
+    if (generation === null) throw new SuccessionAttemptStartupHoldError('legacy writer generation is unavailable');
     let serving: ReturnType<typeof recordSuccessionServing>;
     try {
       const previous = observeCurrentSuccessionServing(runtime);
       if (previous !== null && previous.attemptId !== attemptId) {
-        if (observeRecordedDeaths([intent.incumbent]) !== 'absent') {
+        if (observeRecordedDeaths([admitted.request.incumbent]) !== 'absent')
           throw new Error('Previous serving owner is not proven gone after legacy retirement.');
-        }
         const writer = joinSuccessionWriterGeneration(runtime, openedStore);
         writer.park();
-        generation = generationForWaiterServing(runtime, generation, attemptId, previous.attemptId);
+        generation = generationForLegacySuccessor(runtime, generation, attemptId, previous.attemptId);
         writer.rebind(generation);
         writer.unpark();
       }
@@ -1556,33 +1375,22 @@ export async function completeWaiterLaunchedUpgrade(
         recordedAt,
       });
     } catch (error: unknown) {
-      backendLog.warn(`Waiter-launched upgrade could not record serving: ${formatError(error)}`);
-      throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
+      backendLog.warn(`Legacy upgrade could not record serving: ${formatError(error)}`);
+      throw new SuccessionAttemptStartupHoldError('legacy launch has no serving receipt');
     }
-    return {
-      kind: 'write',
-      expectedRevision: intent.revision,
-      change: {
-        ...intent,
-        disposition: 'completed',
-        blockers: [],
-        retryCondition: null,
-        attemptChild: { attemptId, pid, incarnation },
-        completionReceipt: {
-          kind: 'serving',
-          attemptId,
-          successor: { instanceId, pid, incarnation, build: intent.target.build },
-          epochKey: serving.epochKey,
-          controlGeneration: serving.controlGeneration,
-          acceptedObligations: [],
-          recordedAt: serving.recordedAt,
-        },
-      },
-      settle: () => true,
-    };
-  });
-  if (completed.kind !== 'settled' || !completed.value) {
-    throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
+    if (
+      !record.recordLegacyReceipt({ pid, incarnation }, admitted.request.id, {
+        launchId: attemptId,
+        successor: { instanceId, pid, incarnation },
+        epochKey: serving.epochKey,
+        controlGeneration: serving.controlGeneration,
+        recordedAt: serving.recordedAt,
+      })
+    )
+      throw new SuccessionAttemptStartupHoldError('legacy launch has no serving receipt');
+    return { kind: 'completed' };
+  } finally {
+    record.close();
   }
 }
 

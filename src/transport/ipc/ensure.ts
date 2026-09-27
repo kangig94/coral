@@ -6,17 +6,7 @@ declare const __VERSION__: string;
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-} from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -24,12 +14,19 @@ import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { CoordinatorPaths } from '../../infra/path/index.js';
-import { v0109CoordinatorSocketGuardSetForRunDir } from '../../infra/path/index.js';
+import { coordinatorLaunchPath, v0109CoordinatorSocketGuardSetForRunDir } from '../../infra/path/index.js';
 import { HEALTH_TIMEOUT_MS } from '../health.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
-import { readBuildFlavor, readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
+import {
+  readBoundedAdjacentManifest,
+  readBuildFlavor,
+  readBundleHash,
+  resolveStrictBundleIdentity,
+  strictBundleManifestSchema,
+} from '../../infra/bundle-manifest.js';
+import { CoordinatorLaunchRecord } from '../../infra/coordinator-launch.js';
 import {
   createIpcClient,
   IpcDrainRequestUnanswered,
@@ -674,8 +671,8 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
 
   try {
     const sentinel = join(dirname(backendBin), 'coral-sentinel.cjs');
-    const supervised = existsSync(sentinel);
-    const child = spawn(process.execPath, supervised ? [sentinel, backendBin] : [backendBin], {
+    if (!existsSync(sentinel)) throw new BackendUnreachableError('The bundled coordinator supervisor is unavailable.');
+    const child = spawn(process.execPath, [sentinel, backendBin], {
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
       env: {
@@ -687,7 +684,7 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
     });
     const terminal = observeSpawnedCoordinatorTerminal(child);
     child.unref();
-    return { attemptId, spawnedAt, pid: child.pid, terminal, sentinel: supervised };
+    return { attemptId, spawnedAt, pid: child.pid, terminal, sentinel: true };
   } finally {
     if (typeof stderr === 'number') {
       closeSync(stderr);
@@ -794,31 +791,43 @@ function endedStartupMessage(
   }
 }
 
-function deferredWaiterClaim(
+function supervisorAcceptedUpgrade(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
-  incumbent: ReadyCoordinatorEvidence,
   now: number,
-): Readonly<{ kind: 'claimed' | 'unproven' }> {
-  const observed = readUpgradeIntent(paths.runDir);
-  if (observed.kind !== 'readable') return { kind: 'unproven' };
-  const intent = observed.intent;
-  const claimed =
-    intent.incumbent.instanceId === incumbent.health.instanceId &&
-    intent.incumbent.pid === incumbent.info.pid &&
-    intent.incumbent.version === incumbent.health.version &&
-    intent.incumbent.bundleHash === incumbent.health.bundleHash &&
-    intent.target.build.version === desired.version &&
-    intent.target.build.bundleHash === desired.bundleHash &&
-    intent.target.build.flavor === desired.flavor &&
-    intent.attemptOwner?.kind === 'waiter' &&
-    observeProcessLiveness(intent.attemptOwner.pid) === 'alive' &&
-    (intent.attemptOwner.incarnation === null ||
-      probeProcessIncarnation(intent.attemptOwner.pid) === intent.attemptOwner.incarnation) &&
-    intent.attemptDeadline !== null &&
-    Date.parse(intent.attemptDeadline) > now &&
-    intent.retryCondition?.kind === 'incumbent-retirement';
-  return { kind: claimed ? 'claimed' : 'unproven' };
+): 'accepted' | 'unproven' {
+  if (!existsSync(paths.launchFile)) return 'unproven';
+  let record: CoordinatorLaunchRecord | null = null;
+  try {
+    record = new CoordinatorLaunchRecord(paths.runDir);
+    const state = record.read();
+    const owner = state.owner;
+    if (
+      owner === null ||
+      owner.leaseUntil <= now ||
+      observeProcessLiveness(owner.process.pid) !== 'alive' ||
+      probeProcessIncarnation(owner.process.pid) !== owner.process.incarnation
+    )
+      return 'unproven';
+    return state.requests.some((request) => {
+      if (request.status !== 'accepted' || request.acceptedEpoch !== owner.epoch) return false;
+      const adjacent = readBoundedAdjacentManifest(dirname(request.executable));
+      if (!adjacent.ok) return false;
+      const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
+      return (
+        parsed.success &&
+        parsed.data.version === desired.version &&
+        parsed.data.bundleHash === desired.bundleHash &&
+        parsed.data.flavor === desired.flavor
+      );
+    })
+      ? 'accepted'
+      : 'unproven';
+  } catch {
+    return 'unproven';
+  } finally {
+    record?.close();
+  }
 }
 
 /**
@@ -834,48 +843,12 @@ async function waitForBackendReady(
   timePort: TimePort,
   waitContext: BackendReadyWaitContext,
   expectedSocketPath: string = paths.socketPath,
-  recoveryBackendBin?: string,
 ): Promise<ReadyCoordinatorEvidence> {
   const keepAlive = timePort.setTimeout(() => undefined, Math.max(SENTINEL_RECOVERY_BUDGET_MS, timeoutMs));
   try {
-    return await observeBackendReady(
-      paths,
-      desired,
-      timeoutMs,
-      timePort,
-      waitContext,
-      expectedSocketPath,
-      recoveryBackendBin,
-    );
+    return await observeBackendReady(paths, desired, timeoutMs, timePort, waitContext, expectedSocketPath);
   } finally {
     timePort.clearTimeout(keepAlive);
-  }
-}
-
-function hasUnconfirmedSentinelRelaunch(
-  paths: CoordinatorPaths,
-  sentinelPid: number | undefined,
-  attemptId: string,
-): boolean {
-  if (sentinelPid === undefined) return false;
-  const directory = join(paths.runDir, 'coordinator-sentinel.v1');
-  try {
-    return readdirSync(directory).some((name) => {
-      if (!name.endsWith('.json')) return false;
-      try {
-        const record = JSON.parse(readFileSync(join(directory, name), 'utf8')) as Record<string, unknown>;
-        return (
-          record.state === 'relaunch-unconfirmed' &&
-          record.sentinelPid === sentinelPid &&
-          record.attemptId === attemptId &&
-          typeof record.replacementSentinelPid === 'number'
-        );
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return false;
   }
 }
 
@@ -886,7 +859,6 @@ async function observeBackendReady(
   timePort: TimePort,
   waitContext: BackendReadyWaitContext,
   expectedSocketPath: string,
-  recoveryBackendBin?: string,
 ): Promise<ReadyCoordinatorEvidence> {
   const waitStartedAt = timePort.now();
   let recoveryBudgetMs =
@@ -894,9 +866,7 @@ async function observeBackendReady(
       ? SENTINEL_RECOVERY_BUDGET_MS
       : Math.max(timeoutMs, LEGACY_RECOVERY_BUDGET_MS);
   let terminalOutcome: SpawnedCoordinatorTerminal | null = null;
-  let unconfirmedRelaunch = false;
   let refusedHolder: VerifiedBackendInfo | null = null;
-  let freshContenderStarted = false;
   // A draining incumbent cannot serve this wait. An authenticated running legacy incumbent can serve it when
   // this attempt has durably claimed responsibility for the upgrade wait.
   const admission: RouteLifecycleAdmission = 'running';
@@ -953,8 +923,7 @@ async function observeBackendReady(
         if (lineage.kind === 'proven-current-attempt') {
           return servingIncumbent;
         }
-        // A live waiter owns the matching intent; the CLI need not wait for the contender sentinel to exit.
-        if (deferredWaiterClaim(paths, desired, servingIncumbent, timePort.now()).kind === 'claimed') {
+        if (supervisorAcceptedUpgrade(paths, desired, timePort.now()) === 'accepted') {
           return servingIncumbent;
         }
       }
@@ -1004,10 +973,7 @@ async function observeBackendReady(
         terminalOutcome = null;
         continue;
       }
-      if (waitContext.kind === 'current-attempt' && waitContext.sentinel) {
-        unconfirmedRelaunch ||= hasUnconfirmedSentinelRelaunch(paths, waitContext.pid, waitContext.attemptId);
-      }
-      if (unconfirmedRelaunch) {
+      if (supervisorAcceptedUpgrade(paths, desired, timePort.now()) === 'accepted') {
         monitoring = 'available';
         await timePort.sleep(
           Math.max(1, Math.min(STARTUP_POLL_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt))),
@@ -1018,35 +984,6 @@ async function observeBackendReady(
     }
     if (terminalOutcome !== null && (recoveringHolder || refusedHolder !== null) && servingIncumbent !== null) {
       return servingIncumbent;
-    }
-
-    if (
-      terminalOutcome !== null &&
-      refusedHolder !== null &&
-      !freshContenderStarted &&
-      recoveryBackendBin !== undefined &&
-      recoveryBudgetMs - (timePort.now() - waitStartedAt) >= KERNEL_READY_DEADLINE_MS &&
-      recordedProcessObservation(refusedHolder) === 'absent' &&
-      (info === null ||
-        (info.instanceId === refusedHolder.instanceId &&
-          info.pid === refusedHolder.pid &&
-          info.incarnation === refusedHolder.incarnation)) &&
-      (await probeSocketReleased(expectedSocketPath))
-    ) {
-      const spawned = spawnCoordinator(recoveryBackendBin, paths);
-      waitContext = {
-        kind: 'current-attempt',
-        attemptId: spawned.attemptId,
-        spawnedAt: spawned.spawnedAt,
-        pid: spawned.pid,
-        terminal: spawned.terminal,
-        sentinel: spawned.sentinel,
-      };
-      freshContenderStarted = true;
-      terminalOutcome = null;
-      unconfirmedRelaunch = false;
-      refusedHolder = null;
-      continue;
     }
 
     const pollMs = Math.max(1, Math.min(STARTUP_POLL_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt)));
@@ -1070,6 +1007,39 @@ function hasCommittedSuccessionReceipt(
   incumbent: ReturnType<typeof existingIncumbentIdentity>,
   successor: RawCoordinatorHealth,
 ): boolean {
+  if (existsSync(coordinatorLaunchPath(runDir))) {
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const completed = record.read().requests.some((request) => {
+        const prior = request.incumbent;
+        const receipt = request.completionReceipt;
+        if (request.status !== 'completed' || prior === undefined || receipt === undefined) return false;
+        const adjacent = readBoundedAdjacentManifest(dirname(request.executable));
+        if (!adjacent.ok) return false;
+        const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
+        return (
+          parsed.success &&
+          prior.instanceId === incumbent.instanceId &&
+          prior.version === incumbent.version &&
+          prior.bundleHash === incumbent.bundleHash &&
+          prior.flavor === incumbent.flavor &&
+          (incumbent.pid === undefined || prior.pid === incumbent.pid) &&
+          (incumbent.incarnation === undefined || prior.incarnation === incumbent.incarnation) &&
+          receipt.successor.instanceId === successor.instanceId &&
+          receipt.successor.pid === successor.pid &&
+          receipt.successor.incarnation === successor.incarnation &&
+          parsed.data.version === successor.version &&
+          parsed.data.bundleHash === successor.bundleHash &&
+          parsed.data.flavor === successor.flavor
+        );
+      });
+      if (completed) return true;
+    } catch {
+      return false;
+    } finally {
+      record.close();
+    }
+  }
   const observed = readUpgradeIntent(runDir);
   const current =
     observed.kind === 'readable' &&
@@ -1266,7 +1236,6 @@ async function spawnTopLevelCoordinator(
       sentinel: spawned.sentinel,
     },
     paths.socketPath,
-    backendBin,
   );
   return summarizeBackend(ready.info, ready.health, timePort, 'boot');
 }

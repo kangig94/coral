@@ -2525,6 +2525,7 @@ describe('execution backend server', () => {
       deps.admin.beginRequestLease = createRequestLeaseOwner({
         newRecordId: randomUUID,
         time: runtime.time,
+        abandon: vi.fn(),
         begin: () => {
           inflight += 1;
         },

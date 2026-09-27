@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 import { errorMessage, formatError } from '../../infra/error-format.js';
-import { throwIfRequestAborted } from '../../infra/request-lease-identity.js';
+import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import type { ChildProcessLike } from '../../infra/port-types.js';
 import {
   appendBuffer,

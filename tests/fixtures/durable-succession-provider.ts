@@ -11,6 +11,7 @@ import {
 } from '#src/coordinator/succession/attempt-child.js';
 import { parseRetainedEpochArgv, runRetainedEpochCommand } from '#src/coordinator/services/retained-epoch-executor.js';
 import { resolveStrictBundleIdentity } from '#src/infra/bundle-manifest.js';
+import { claimCoordinatorLaunch } from '#src/infra/coordinator-admission.js';
 import { runKbDaemonMain } from '#src/kb-daemon/daemon-main.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
 import { claudeBindingCodec } from '#src/providers/claude/binding.js';
@@ -115,7 +116,33 @@ async function main(): Promise<void> {
     process.exitCode = await runKbDaemonMain({ pluginRoot: __PLUGIN_ROOT__ });
     return;
   }
+  if (!(await claimCoordinatorLaunch())) {
+    process.exitCode = 1;
+    return;
+  }
+  const sentinelId = process.env.CORAL_SENTINEL_ID;
+  let sentinelMessage: ((message: unknown) => void) | null = null;
+  let sentinelDisconnect: (() => void) | null = null;
+  if (sentinelId !== undefined) {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Coordinator supervisor did not arm')), 30_000);
+      sentinelMessage = (message: unknown) => {
+        if (typeof message !== 'object' || message === null || !('kind' in message)) return;
+        if (message.kind === 'coral-sentinel-armed' && 'id' in message && message.id === sentinelId) {
+          clearTimeout(timeout);
+          resolve();
+        }
+        if (message.kind === 'coral-sentinel-challenge' && 'id' in message)
+          process.send?.({ kind: 'coral-sentinel-answer', id: message.id });
+      };
+      process.on('message', sentinelMessage);
+      process.send?.({ kind: 'coral-sentinel-hello', id: sentinelId });
+    });
+    sentinelDisconnect = () => process.exit(1);
+    process.once('disconnect', sentinelDisconnect);
+  }
   const keepalive = setInterval(() => {}, 60_000);
+  let serving = false;
   try {
     const attempt = await receiveSuccessionAttemptChild(createRealSuccessionAttemptPorts());
     installSuccessionAttemptChild(attempt);
@@ -138,6 +165,7 @@ async function main(): Promise<void> {
     });
     try {
       await coordinator.start();
+      serving = true;
     } catch (error) {
       if (error instanceof StartupStoreHandoffError) {
         const handoff = await runHandoff(
@@ -157,6 +185,11 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   } finally {
     clearInterval(keepalive);
+    if (!serving) {
+      if (sentinelMessage !== null) process.off('message', sentinelMessage);
+      if (sentinelDisconnect !== null) process.off('disconnect', sentinelDisconnect);
+      if (process.connected) process.disconnect();
+    }
   }
 }
 

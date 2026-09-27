@@ -1,7 +1,7 @@
 import type { Runtime } from '../runtime/ports.js';
 import { compareProductVersions } from '../infra/product-version.js';
-import { waiterExecutableReady } from '../infra/handoff-target.js';
-import { readUpgradeIntent, type UpgradeIntent } from '../infra/upgrade-intent.js';
+import { supervisorExecutableReady } from '../infra/handoff-target.js';
+import type { UpgradeIntent } from '../infra/upgrade-intent.js';
 import { IpcRpcError, requestIpcMethod } from '../transport/ipc/client.js';
 import { SUCCESSION_METHODS } from '../infra/succession-address.js';
 import type { LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
@@ -35,10 +35,10 @@ export class BackendAlreadyRunningError extends Error {
   }
 }
 
-export class UpgradeWaiterUnavailableError extends Error {
+export class UpgradeSupervisorUnavailableError extends Error {
   constructor(reason: string) {
-    super(`Upgrade waiter unavailable: ${reason}`);
-    this.name = 'UpgradeWaiterUnavailableError';
+    super(`Upgrade supervisor unavailable: ${reason}`);
+    this.name = 'UpgradeSupervisorUnavailableError';
   }
 }
 
@@ -88,7 +88,7 @@ export interface HandoffOptions {
   totalBudgetMs: number;
 }
 
-/** An absent or failed capability response cannot authorize the contender to skip its waiter. */
+/** An absent or failed capability response still requires a supervisor-owned request. */
 export async function requestUpgradeFromContender(
   options: Readonly<{
     socketPath: string;
@@ -99,7 +99,7 @@ export async function requestUpgradeFromContender(
     requestId: string;
     time: Runtime['time'];
     request?: (socketPath: string, method: string, params: unknown, options: unknown) => Promise<unknown>;
-    waiterReady?: (pluginRoot: string) => boolean;
+    supervisorReady?: (pluginRoot: string) => boolean;
     startLegacy: (
       options: Readonly<{
         runDir: string;
@@ -122,8 +122,8 @@ export async function requestUpgradeFromContender(
   } catch {
     return { kind: 'refused', reason: 'build version is invalid', disposition: 'error' };
   }
-  if (!(options.waiterReady ?? waiterExecutableReady)(target.pluginRootLabel)) {
-    return { kind: 'refused', reason: 'waiter bundle is unavailable', disposition: 'error' };
+  if (!(options.supervisorReady ?? supervisorExecutableReady)(target.pluginRootLabel)) {
+    return { kind: 'refused', reason: 'supervisor bundle is unavailable', disposition: 'error' };
   }
   if (incumbent.bootToken !== undefined) {
     try {
@@ -146,20 +146,10 @@ export async function requestUpgradeFromContender(
       // A failed negotiation cannot prove the incumbent can commit.
     }
   }
-  const observed = readUpgradeIntent(options.runDir);
-  const recordedIncumbent =
-    observed.kind === 'readable' &&
-    observed.intent.incumbent.instanceId === instanceId &&
-    observed.intent.incumbent.pid === incumbent.pid &&
-    observed.intent.incumbent.version === health.version &&
-    observed.intent.incumbent.bundleHash === health.bundleHash &&
-    observed.intent.incumbent.flavor === health.flavor
-      ? observed.intent.incumbent
-      : null;
   return options.startLegacy({
     runDir: options.runDir,
     socketPath: options.socketPath,
-    incumbent: recordedIncumbent ?? {
+    incumbent: {
       instanceId,
       pid: incumbent.pid,
       incarnation: incumbent.incarnation ?? null,
@@ -181,7 +171,7 @@ export async function settleContenderUpgrade(
   recordDeferral: (runDir: string, reason: string) => Promise<void>,
 ): Promise<void> {
   if (waiting.kind === 'refused' && waiting.disposition === 'error') {
-    throw new UpgradeWaiterUnavailableError(waiting.reason);
+    throw new UpgradeSupervisorUnavailableError(waiting.reason);
   }
   if (waiting.kind === 'refused' && waiting.disposition === 'deferred') {
     backendLog.warn(`Upgrade deferred while the incumbent serves: ${waiting.reason}`);
@@ -302,11 +292,17 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
           desired: opts.desired,
           lastHealth: health,
         });
+        if (incumbent === null && health.status === 'starting') {
+          const pollMs = Math.min(SOCKET_BIND_POLL_MS, Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow()));
+          if (pollMs > 0)
+            await opts.runtime.time.sleep(pollMs, opts.signal === undefined ? undefined : { signal: opts.signal });
+          continue;
+        }
         if (incumbent !== null) {
           try {
             await opts.requestSuccession?.(opts.socketPath, incumbent, health);
           } catch (error: unknown) {
-            if (error instanceof UpgradeWaiterUnavailableError) throw error;
+            if (error instanceof UpgradeSupervisorUnavailableError) throw error;
             // Failed negotiation never grants a contender replacement authority.
           }
         }

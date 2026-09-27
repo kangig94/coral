@@ -78,6 +78,7 @@ describe('IPC request leases', () => {
       time: createRealTimePort(),
       begin: serverPorts.admin.beginRequest,
       end: serverPorts.admin.endRequest,
+      abandon: vi.fn(),
       timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
     }).begin;
     serverPorts.admin.restartKbDaemon = async () => new Promise<never>(() => {});

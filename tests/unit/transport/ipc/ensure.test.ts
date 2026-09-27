@@ -19,8 +19,6 @@ import {
   readCompletedSuccessionReceipts,
   readUpgradeIntent,
 } from '#src/infra/upgrade-intent.js';
-import { requestLegacyUpgrade } from '#src/upgrade-waiter/start.js';
-import { createRealUpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
 import {
   readBuildFlavor,
@@ -153,6 +151,8 @@ function createPluginRoot(flavor: 'prod' | 'dev' = 'prod', version = '0.5.2'): s
   const root = mkdtempSync(join(tmpdir(), 'coral-ipc-ensure-root-'));
   tempRoots.push(root);
   mkdirSync(join(root, 'bridge'), { recursive: true });
+  writeFileSync(join(root, 'bridge', 'coral-backend.cjs'), 'backend fixture');
+  writeFileSync(join(root, 'bridge', 'coral-sentinel.cjs'), 'supervisor fixture');
   writeFileSync(join(root, 'bridge', 'manifest.json'), JSON.stringify({ bundleHash: 'test-hash', flavor }), 'utf-8');
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version }), 'utf-8');
   return root;
@@ -1777,7 +1777,10 @@ describe('ipc ensure', () => {
 
     expect(ensured.instanceId).toBe('replacement-coordinator');
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
-    expect(mockState.spawn.mock.calls[0]?.[1]).toEqual([join(root, 'bridge', 'coral-backend.cjs')]);
+    expect(mockState.spawn.mock.calls[0]?.[1]).toEqual([
+      join(root, 'bridge', 'coral-sentinel.cjs'),
+      join(root, 'bridge', 'coral-backend.cjs'),
+    ]);
     expect(mockState.shutdown).not.toHaveBeenCalled();
   });
 
@@ -1792,6 +1795,7 @@ describe('ipc ensure', () => {
       JSON.stringify({ bundleHash: 'bundle-dir-hash', flavor: 'prod' }),
       'utf-8',
     );
+    writeFileSync(join(bundleDir, 'coral-sentinel.cjs'), 'supervisor fixture');
     (globalThis as { __BUNDLE_DIR__?: string }).__BUNDLE_DIR__ = bundleDir;
 
     let spawned = false;
@@ -1824,62 +1828,10 @@ describe('ipc ensure', () => {
 
     expect(ensured.instanceId).toBe('bundle-dir-coordinator');
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
-    expect(mockState.spawn.mock.calls[0]?.[1]).toEqual([join(bundleDir, 'coral-backend.cjs')]);
-  });
-
-  it('reports recovery after a no-health socket-holder refusal while its child remains alive', async () => {
-    makeHome();
-    vi.useFakeTimers();
-    const root = createPluginRoot();
-
-    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
-    const child = spawnedChild();
-    mockState.spawn.mockReturnValue(child);
-
-    const { ensure } = await importEnsure();
-    const ensuredPromise = ensure('sessions.create', root).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(mockState.spawn).toHaveBeenCalledOnce();
-    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), 10_000);
-    await vi.advanceTimersByTimeAsync(30_200);
-    const error = await ensuredPromise;
-
-    expect(error).toMatchObject({ code: 'coordinator_recovering' });
-    expect(child.unref).toHaveBeenCalledOnce();
-  });
-
-  it('returns recovery without trusting delegated-build refusal prose', async () => {
-    makeHome();
-    vi.useFakeTimers();
-    const root = createPluginRoot();
-
-    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
-    const child = spawnedChild();
-    mockState.spawn.mockReturnValue(child);
-    const context = { stage: 'handoff-deadline', socketPath: '/tmp/coral.sock' } as const;
-
-    const { ensure } = await importEnsure();
-    const ensuredPromise = ensure('sessions.create', root).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(0);
-    setTimeout(
-      () =>
-        writeStartupSentinel(root, spawnedAttemptId(), {
-          pid: 99_999,
-          bundleHash: 'selected-build-hash',
-          code: 'handoff_socket_holder_unverified',
-          userMessage: '\u001b[2Jprivate delegated startup text',
-          remediation: 'Run a forged recovery command.',
-          context,
-        }),
-      10_000,
-    );
-    await vi.advanceTimersByTimeAsync(30_200);
-    const error = await ensuredPromise;
-
-    expect(error).toMatchObject({ code: 'coordinator_recovering' });
-    expect(JSON.stringify(error)).not.toContain('private delegated startup text');
-    expect(JSON.stringify(error)).not.toContain('forged recovery command');
-    expect(child.unref).toHaveBeenCalledOnce();
+    expect(mockState.spawn.mock.calls[0]?.[1]).toEqual([
+      join(bundleDir, 'coral-sentinel.cjs'),
+      join(bundleDir, 'coral-backend.cjs'),
+    ]);
   });
 
   it('waits through a delegated-build socket-holder refusal at another plugin root', async () => {
@@ -2193,83 +2145,6 @@ describe('ipc ensure', () => {
     await expect(ensuredPromise).resolves.toMatchObject({ instanceId: 'foreign-incumbent' });
   });
 
-  it('returns the incumbent for a live inline waiter whose coordinator PID differs from its sentinel PID', async () => {
-    makeHome();
-    vi.useFakeTimers();
-    const root = createPluginRoot();
-    const paths = coordinatorPaths('prod');
-    mockState.validUpgradeTargetRoot = root;
-    const incumbent = {
-      instanceId: 'legacy-incumbent',
-      pid: process.pid,
-      incarnation: null,
-      version: '0.5.1',
-      bundleHash: 'legacy-hash',
-      flavor: 'prod' as const,
-    };
-    writeDiscovery(root, {
-      pid: incumbent.pid,
-      version: incumbent.version,
-      bundleHash: incumbent.bundleHash,
-      instanceId: incumbent.instanceId,
-    });
-    let spawned = false;
-    let executorSettled = false;
-    const child = spawnedChild(process.pid + 1);
-    const startWaiter = vi.fn(async () => ({ kind: 'unavailable' as const, reason: 'waiter did not claim' }));
-    const runWaiter = vi.fn(async () => {
-      const observed = readUpgradeIntent(paths.runDir);
-      if (observed.kind !== 'readable') throw new Error('upgrade intent disappeared');
-      const claimed = await compareAndSwapUpgradeIntent(paths.runDir, observed.intent.revision, {
-        ...observed.intent,
-        attemptId: 'inline-waiter-attempt',
-        attemptOwner: { kind: 'waiter', instanceId: 'inline-waiter', pid: process.pid, incarnation: null },
-        attemptDeadline: new Date(Date.now() + 30_000).toISOString(),
-      });
-      expect(claimed.kind).toBe('written');
-      return await new Promise<never>(() => undefined);
-    });
-    mockState.health.mockImplementation(async () => {
-      if (!spawned) throw createErrnoError('ECONNREFUSED');
-      return {
-        status: 'ok',
-        version: incumbent.version,
-        bundleHash: incumbent.bundleHash,
-        flavor: incumbent.flavor,
-        instanceId: incumbent.instanceId,
-        namespace: pluginRootNamespace(root),
-      };
-    });
-    mockState.spawn.mockImplementation(() => {
-      spawned = true;
-      void requestLegacyUpgrade({
-        runDir: paths.runDir,
-        socketPath: paths.socketPath,
-        incumbent,
-        target: { build: provenManifest('test-hash'), pluginRootLabel: root },
-        startWaiter,
-        runWaiter,
-        ports: createRealUpgradeWaiterPorts(),
-      }).then(() => {
-        executorSettled = true;
-      });
-      return child;
-    });
-
-    const { ensure, KERNEL_READY_DEADLINE_MS } = await importEnsure();
-    const result = ensure('sessions.create', root);
-    await vi.advanceTimersByTimeAsync(4_000);
-    expect((await result).instanceId).toBe(incumbent.instanceId);
-    expect(startWaiter).toHaveBeenCalledTimes(2);
-    expect(runWaiter).toHaveBeenCalledOnce();
-    expect(executorSettled).toBe(false);
-    expect(readUpgradeIntent(paths.runDir)).toMatchObject({
-      intent: { attemptOwner: { kind: 'waiter', pid: process.pid } },
-    });
-    expect(KERNEL_READY_DEADLINE_MS).toBeGreaterThan(4_000);
-    expect(child.unref).toHaveBeenCalledOnce();
-  });
-
   it('adopts a different-identity coordinator reached through the current attempt delegation chain', async () => {
     makeHome();
     vi.useFakeTimers();
@@ -2472,27 +2347,6 @@ describe('ipc ensure', () => {
     'The spawned Coral coordinator stopped, and this address does not answer health requests ' +
     '(health-request-failed); recorded process observation is unknown. Retry the command.';
 
-  it('waits 30 seconds for a legacy silent holder, then reports retryable recovery', async () => {
-    makeHome();
-    vi.useFakeTimers();
-    const root = createPluginRoot();
-    writeDiscovery(root);
-    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
-
-    const { ensure, LEGACY_RECOVERY_BUDGET_MS } = await importEnsure();
-    const result = ensure('sessions.create', root).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(LEGACY_RECOVERY_BUDGET_MS - 1);
-    let settled = false;
-    void result.then(() => {
-      settled = true;
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(settled).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(await result).toMatchObject({ code: 'coordinator_recovering', context: { monitoring: 'unavailable' } });
-    expect(JSON.stringify(await result)).not.toContain('kill -9');
-  });
-
   it('uses one 660-second budget for a sentinel-capable holder across identity changes', async () => {
     makeHome();
     vi.useFakeTimers();
@@ -2593,58 +2447,6 @@ describe('ipc ensure', () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(UNREACHABLE_AFTER_CHILD_STOPPED);
     expect(readFileSync(coordinatorPaths('prod').startupErrorFile, 'utf-8')).toContain('another-attempt');
-  });
-
-  it('waits for a sentinel replacement that becomes healthy after its 15-second confirmation window', async () => {
-    makeHome();
-    vi.useFakeTimers();
-    const root = createPluginRoot();
-    writeFileSync(join(root, 'bridge', 'coral-sentinel.cjs'), '');
-    const child = spawnedChild();
-    const startedAt = Date.now();
-    let attemptId = '';
-    mockState.health.mockImplementation(async () => {
-      if (Date.now() - startedAt < 16_000) throw createErrnoError('ECONNREFUSED');
-      return {
-        status: 'ok',
-        version: '0.5.2',
-        bundleHash: 'test-hash',
-        flavor: 'prod',
-        instanceId: 'late-replacement',
-        namespace: pluginRootNamespace(root),
-        pid: process.pid,
-        env: { CORAL_STARTUP_ATTEMPT_ID: attemptId },
-        sentinel: { version: 1, id: 'replacement' },
-      };
-    });
-    mockState.spawn.mockImplementation((_command, _args, options) => {
-      attemptId = (options as { env: Record<string, string> }).env.CORAL_STARTUP_ATTEMPT_ID;
-      setTimeout(() => {
-        const directory = join(coordinatorPaths('prod').runDir, 'coordinator-sentinel.v1');
-        mkdirSync(directory, { recursive: true });
-        writeFileSync(
-          join(directory, 'unconfirmed.json'),
-          JSON.stringify({
-            state: 'relaunch-unconfirmed',
-            sentinelPid: child.pid,
-            attemptId,
-            replacementSentinelPid: 23_456,
-          }),
-        );
-        child.emit('exit', 1, null);
-      }, 100);
-      setTimeout(
-        () => writeDiscovery(root, { instanceId: 'late-replacement', sentinel: { version: 1, id: 'replacement' } }),
-        16_000,
-      );
-      return child;
-    });
-
-    const { ensure } = await importEnsure();
-    const result = ensure('sessions.create', root);
-    await vi.advanceTimersByTimeAsync(16_200);
-    expect((await result).instanceId).toBe('late-replacement');
-    expect(mockState.spawn).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a live current attempt waiting past every elapsed-time budget without spawning a competitor', async () => {

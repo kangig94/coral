@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,6 +47,46 @@ afterEach(async () => {
 });
 
 describe('coordinator warm-start integration', () => {
+  it('releases a redundant supervisor while the incumbent keeps serving', async () => {
+    if (!buildArtifactsAvailable()) {
+      throw new Error('Expected clients/build/coral-backend.cjs to exist before running integration tests');
+    }
+
+    const home = mkdtempSync(join(tmpdir(), 'coral-warm-home-'));
+    tempRoots.push(home);
+    const fixture = createPluginFixture(tempRoots, { flavor: 'prod' });
+    const incumbent = spawnCoordinator({ fixture, home, tempRoots, supervised: true });
+    coordinators.push(incumbent);
+    const discovery = await waitForDiscoveryRecord(home, 'prod', 15_000);
+
+    const redundant = spawnCoordinator({ fixture, home, tempRoots, supervised: true });
+    coordinators.push(redundant);
+    expect(await waitForProcessExit(redundant, 10_000)).toEqual({ code: 0, signal: null });
+    expect(observeProcessLiveness(discovery.pid)).toBe('alive');
+  });
+
+  it('exits after a served child shuts down and ownership is released', async () => {
+    if (!buildArtifactsAvailable()) {
+      throw new Error('Expected clients/build/coral-backend.cjs to exist before running integration tests');
+    }
+
+    const home = mkdtempSync(join(tmpdir(), 'coral-warm-home-'));
+    tempRoots.push(home);
+    const fixture = createPluginFixture(tempRoots, { flavor: 'prod' });
+    const supervisor = spawnCoordinator({ fixture, home, tempRoots, supervised: true });
+    coordinators.push(supervisor);
+    await waitForDiscoveryRecord(home, 'prod', 15_000);
+
+    const shutdown = spawnSync(process.execPath, [join(fixture.root, 'bridge', 'coral-cli'), 'backend', 'shutdown'], {
+      cwd: home,
+      env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    expect(shutdown.status, shutdown.stderr).toBe(0);
+    expect(await waitForProcessExit(supervisor, 15_000)).toEqual({ code: 0, signal: null });
+  });
+
   // The only real-process cover of the daemon bind election. `cross-version-election.test.ts` proves the
   // same rule against a scripted incumbent in-process; this proves the built backend actually behaves that
   // way end to end, discovery record and process lifetime included.
@@ -126,6 +167,7 @@ describe('coordinator warm-start integration', () => {
       fixture: olderFixture,
       home,
       tempRoots,
+      supervised: true,
       env: { CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000' },
     });
     coordinators.push(older);
@@ -137,12 +179,13 @@ describe('coordinator warm-start integration', () => {
       fixture: newerFixture,
       home,
       tempRoots,
+      supervised: true,
       env: { CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000' },
     });
     coordinators.push(newer);
 
     try {
-      await waitForProcessExit(older, TAKEOVER_BUDGET_MS);
+      await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', TAKEOVER_BUDGET_MS);
       const replaced = await waitForDiscoveryRecordFrom(home, newerFixture.bundleHash, TAKEOVER_BUDGET_MS);
       expect(replaced.namespace).not.toBe(initial.namespace);
       expect(observeProcessLiveness(replaced.pid)).toBe('alive');

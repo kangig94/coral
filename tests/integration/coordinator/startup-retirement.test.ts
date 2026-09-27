@@ -204,7 +204,7 @@ describe('startup mint authorizer', () => {
     expect(startUp(runtime, index, 'custody-startup')).toBeNull();
   });
 
-  it('hands back a live job when another recorded running process is proven absent', async () => {
+  it.each([true, false])('hands back a live job with a compatible epoch: %s', async (compatible) => {
     assertBuildArtifactsAvailable();
     const runtime = unreadableEpochRuntime();
     const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
@@ -214,9 +214,11 @@ describe('startup mint authorizer', () => {
     ) as StrictBundleManifest;
     const current = inspectCurrentStore(runtime);
     if (current.kind !== 'current') throw new Error('Expected a current epoch.');
-    const older = newRawDatabase(current.epoch.path);
-    older.exec("UPDATE meta SET value = '0.1.0' WHERE key = 'store_product_version'");
-    older.close();
+    if (!compatible) {
+      const older = newRawDatabase(current.epoch.path);
+      older.exec("UPDATE meta SET value = '0.1.0' WHERE key = 'store_product_version'");
+      older.close();
+    }
     const epochKey = encodeResolvedStoreEpoch(runtime, current.epoch);
     const lineageKey = readEpochKey(runtime, current.epoch);
     if (lineageKey === null) throw new Error('Expected a lineage key.');
@@ -300,7 +302,7 @@ describe('startup mint authorizer', () => {
       exited.kill('SIGKILL');
       await exit;
 
-      expect(prepareRetainedControllerHandoff(runtime, index, currentCoralStoreFormat())?.epochKey).toBe(epochKey);
+      expect(prepareRetainedControllerHandoff(runtime, index)?.epochKey).toBe(epochKey);
     } finally {
       live.kill('SIGKILL');
       exited.kill('SIGKILL');
@@ -385,7 +387,7 @@ describe('startup mint authorizer', () => {
         });
       }
 
-      const handoff = prepareRetainedControllerHandoff(runtime, index, currentCoralStoreFormat());
+      const handoff = prepareRetainedControllerHandoff(runtime, index);
       expect(handoff === null).toBe(!rootAvailable);
       if (rootAvailable) expect(handoff?.epochKey).toBe(epochKey);
       else {

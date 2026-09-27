@@ -539,7 +539,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       };
     }
     if (options.commitAvailable !== true) {
-      return { kind: 'deferred', reason: 'incumbent needs a legacy retirement waiter' };
+      return { kind: 'deferred', reason: 'incumbent needs supervised legacy retirement' };
     }
     if (launchedAttempt !== null) return { kind: 'deferred', reason: LAUNCH_IN_FLIGHT };
     const prepared = await prepare(intent.requestId);
@@ -550,7 +550,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       intent.target.build,
     );
     if (declaration.kind !== 'declared' || !declaration.capabilities.protocols.includes('commit')) {
-      return { kind: 'deferred', reason: 'target needs a legacy retirement waiter' };
+      return { kind: 'deferred', reason: 'target needs supervised legacy retirement' };
     }
     const current = status(intent.requestId);
     if (current.kind !== 'readable' || current.preparation?.attemptId !== prepared.preparation.attemptId) {

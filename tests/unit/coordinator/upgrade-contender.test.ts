@@ -6,11 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   requestUpgradeFromContender,
   settleContenderUpgrade,
-  UpgradeWaiterUnavailableError,
+  UpgradeSupervisorUnavailableError,
 } from '#src/coordinator/handoff.js';
 import { createRealTimePort } from '#src/infra/time.js';
-import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
-import { recordContenderDeferral, requestLegacyUpgrade } from '#src/upgrade-waiter/start.js';
+import { recordContenderDeferral } from '#src/coordinator-launch/request.js';
 
 const build = {
   version: '0.11.0',
@@ -32,10 +31,7 @@ describe('contender upgrade request', () => {
   function fixture(version = '0.10.13') {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-contender-upgrade-'));
     directories.push(runDir);
-    const startWaiter = vi.fn(async () => ({ kind: 'started' as const, pid: 5678 }));
-    const startLegacy = vi.fn((options: Parameters<typeof requestLegacyUpgrade>[0]) =>
-      requestLegacyUpgrade({ ...options, startWaiter }),
-    );
+    const startLegacy = vi.fn(async () => ({ kind: 'waiting' as const, requestId: 'request-1', supervisorPid: 5678 }));
     const options = {
       runDir,
       socketPath: '/incumbent.sock',
@@ -51,14 +47,14 @@ describe('contender upgrade request', () => {
       target: { build, pluginRootLabel: '/installed/target' },
       requestId: 'request-1',
       time: createRealTimePort(),
-      waiterReady: () => true,
+      supervisorReady: () => true,
       startLegacy,
     };
-    return { options, startLegacy, startWaiter, runDir };
+    return { options, startLegacy, runDir };
   }
 
-  it('records legacy intent and starts a waiter when the incumbent lacks succession RPC', async () => {
-    const { options, startWaiter, runDir } = fixture();
+  it('submits to the supervisor when the incumbent lacks succession RPC', async () => {
+    const { options, startLegacy } = fixture();
     const result = await requestUpgradeFromContender({
       ...options,
       request: vi.fn(async () => {
@@ -66,42 +62,37 @@ describe('contender upgrade request', () => {
       }),
     });
 
-    expect(result).toMatchObject({ kind: 'waiting', waiter: { kind: 'started', pid: 5678 } });
-    expect(startWaiter).toHaveBeenCalledOnce();
-    expect(readUpgradeIntent(runDir)).toMatchObject({
-      kind: 'readable',
-      intent: { incumbent: { instanceId: 'incumbent' }, retryCondition: { kind: 'incumbent-retirement' } },
-    });
+    expect(result).toMatchObject({ kind: 'waiting', supervisorPid: 5678 });
+    expect(startLegacy).toHaveBeenCalledOnce();
   });
 
-  it('rejects a target without a waiter before asking an incumbent to register it', async () => {
-    const { options, startLegacy, runDir } = fixture();
+  it('rejects a target without a supervisor bundle before asking an incumbent to register it', async () => {
+    const { options, startLegacy } = fixture();
     const request = vi.fn(async () => ({ kind: 'registered', incumbentCanCommit: true }));
 
     expect(
       await requestUpgradeFromContender({
         ...options,
-        waiterReady: () => false,
+        supervisorReady: () => false,
         request,
       }),
-    ).toEqual({ kind: 'refused', reason: 'waiter bundle is unavailable', disposition: 'error' });
+    ).toEqual({ kind: 'refused', reason: 'supervisor bundle is unavailable', disposition: 'error' });
     expect(request).not.toHaveBeenCalled();
     expect(startLegacy).not.toHaveBeenCalled();
-    expect(readUpgradeIntent(runDir)).toEqual({ kind: 'absent' });
   });
 
-  it('starts a waiter when a responding incumbent cannot commit the target', async () => {
-    const { options, startWaiter } = fixture();
+  it('submits to the supervisor when a responding incumbent cannot commit the target', async () => {
+    const { options, startLegacy } = fixture();
     const result = await requestUpgradeFromContender({
       ...options,
       request: vi.fn(async () => ({ kind: 'registered', incumbentCanCommit: false })),
     });
 
     expect(result.kind).toBe('waiting');
-    expect(startWaiter).toHaveBeenCalledOnce();
+    expect(startLegacy).toHaveBeenCalledOnce();
   });
 
-  it('leaves a commit-capable incumbent to reconcile and never starts a waiter', async () => {
+  it('leaves a commit-capable incumbent to reconcile', async () => {
     const { options, startLegacy } = fixture();
     const result = await requestUpgradeFromContender({
       ...options,
@@ -113,14 +104,13 @@ describe('contender upgrade request', () => {
   });
 
   it.each(['0.11.0', '0.11.1'])('does not register or wait against version %s', async (version) => {
-    const { options, startLegacy, runDir } = fixture(version);
+    const { options, startLegacy } = fixture(version);
     const request = vi.fn(async () => ({ kind: 'registered', incumbentCanCommit: false }));
     const result = await requestUpgradeFromContender({ ...options, request });
 
     expect(result.kind).toBe('refused');
     expect(request).not.toHaveBeenCalled();
     expect(startLegacy).not.toHaveBeenCalled();
-    expect(readUpgradeIntent(runDir)).toEqual({ kind: 'absent' });
   });
 
   it('records a deferred refusal when another owner still holds the intent', async () => {
@@ -147,7 +137,7 @@ describe('contender upgrade request', () => {
         { kind: 'refused', reason: 'upgrade intent is corrupt', disposition: 'error' },
         recordDeferral,
       ),
-    ).rejects.toBeInstanceOf(UpgradeWaiterUnavailableError);
+    ).rejects.toBeInstanceOf(UpgradeSupervisorUnavailableError);
     expect(recordDeferral).not.toHaveBeenCalled();
   });
 });

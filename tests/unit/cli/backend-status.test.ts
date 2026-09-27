@@ -17,7 +17,6 @@ import {
   formatBackendStatus,
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
-  formatPendingUpgrade,
   formatUnreadableProviderOperationDiscard,
 } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
@@ -207,23 +206,6 @@ describe('shutdown obligation projection', () => {
 });
 
 describe('pending upgrade visibility', () => {
-  it('reports a waiter launch as waiting for the target serving receipt', () => {
-    const rendered = formatPendingUpgrade({
-      requestId: 'request-1',
-      disposition: 'attempting',
-      phase: 'launching',
-      target: UPGRADE_TARGET,
-      blockers: [],
-      reason: 'waiter launched the target',
-      since: null,
-      retryCondition: null,
-    });
-    expect(rendered).toContain('Phase: launching');
-    expect(rendered).toContain('waiter');
-    expect(rendered).toContain('serving receipt');
-    expect(rendered).not.toContain('The incumbent finishes');
-  });
-
   it('keeps the incumbent serving and states the legacy idle-retirement delay without an exit command', () => {
     const rendered = formatBackendStatus(
       runningBackendStatus(

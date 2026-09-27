@@ -77,7 +77,7 @@ import {
   settleContenderUpgrade,
   type BoundCoordinator,
 } from './handoff.js';
-import { recordContenderDeferral, requestLegacyUpgrade } from '../upgrade-waiter/start.js';
+import { recordContenderDeferral, requestLegacyUpgrade } from '../coordinator-launch/request.js';
 import {
   IncumbentMatchesError,
   type DesiredIncumbentIdentity,
@@ -153,8 +153,8 @@ import { currentSuccessionAttemptChild } from './succession/attempt-child.js';
 import type { RetiringStoreProtection, SuccessionShutdownPort } from './succession/commit.js';
 import { NO_SUCCESSION_INTERPOSITION, type SuccessionInterposition } from './succession/interposition.js';
 import {
-  completeWaiterLaunchedUpgrade,
-  recordWaiterLaunchedChild,
+  completeSupervisorLegacyUpgrade,
+  recordSupervisorLegacyChild,
   dischargeDeadSuccessionAttempt,
   handBackDeadAttemptGeneration,
   openPreferredStoreEpoch,
@@ -1155,10 +1155,10 @@ async function runLifecycleStartup({
   let host = '';
   let localBindHost: string | undefined;
   let startedAt = 0;
-  let waiterServingCompleted = false;
-  let waiterDiscoveryPublished = false;
-  let waiterDiscoveryRetryScheduled = false;
-  let publishWaiterDiscovery: (() => void) | null = null;
+  let legacyServingCompleted = false;
+  let legacyDiscoveryPublished = false;
+  let legacyDiscoveryRetryScheduled = false;
+  let publishLegacyDiscovery: (() => void) | null = null;
   const serverInfo = (): CoordinatorServerInfo => ({
     port,
     host,
@@ -1190,10 +1190,10 @@ async function runLifecycleStartup({
       flavor,
       storeFormatFingerprint: deps.storeFormat.fingerprint,
     };
-    const waiterLaunchedChild =
+    const legacySupervisedChild =
       successionAttemptChild === null &&
-      (await recordWaiterLaunchedChild(runtime, currentBuild, backendPid, deps.readSelfIncarnationFn()));
-    if (waiterLaunchedChild) runtimeState.setLaunchFenceActive(true);
+      (await recordSupervisorLegacyChild(runtime, currentBuild, backendPid, deps.readSelfIncarnationFn()));
+    if (legacySupervisedChild) runtimeState.setLaunchFenceActive(true);
     const successionStoreContext = {
       runtime,
       storeFormat: deps.storeFormat,
@@ -1622,8 +1622,8 @@ async function runLifecycleStartup({
     signal.throwIfAborted();
 
     // Ordinary startup binds HTTP and signals kernel-ready before recovery so the CLI can return promptly.
-    // A waiter-launched target binds HTTP before its serving receipt, with admission still fenced.
-    if (!waiterLaunchedChild) ({ port, host, bindHost: localBindHost } = await listenFn(server));
+    // A supervised legacy successor binds HTTP before its serving receipt, with admission still fenced.
+    if (!legacySupervisedChild) ({ port, host, bindHost: localBindHost } = await listenFn(server));
     signal.throwIfAborted();
     runtimeState.setStartedAt(now());
     startedAt = runtimeState.getStartedAt();
@@ -1649,35 +1649,35 @@ async function runLifecycleStartup({
       });
       if (discoveryPublished === false) throw new Error('Coordinator discovery publication failed.');
     };
-    publishWaiterDiscovery = () => {
+    publishLegacyDiscovery = () => {
       try {
         publishDiscovery();
-        waiterDiscoveryPublished = true;
+        legacyDiscoveryPublished = true;
       } catch (error: unknown) {
         backendLog.warn(`Waiter-launched coordinator discovery publication failed: ${formatError(error)}`);
-        if (state.started && !waiterDiscoveryRetryScheduled) {
-          waiterDiscoveryRetryScheduled = true;
+        if (state.started && !legacyDiscoveryRetryScheduled) {
+          legacyDiscoveryRetryScheduled = true;
           void runtime.time.sleep(2_000).then(
             () => {
-              waiterDiscoveryRetryScheduled = false;
-              if (state.started && runtimeState.getLifecycle() === 'running') publishWaiterDiscovery?.();
+              legacyDiscoveryRetryScheduled = false;
+              if (state.started && runtimeState.getLifecycle() === 'running') publishLegacyDiscovery?.();
             },
             (retryError: unknown) => {
-              waiterDiscoveryRetryScheduled = false;
+              legacyDiscoveryRetryScheduled = false;
               backendLog.warn(`Waiter-launched discovery retry wait failed: ${formatError(retryError)}`);
             },
           );
         }
       }
     };
-    if (successionAttemptChild === null && committedRecovery === null && !waiterLaunchedChild) publishDiscovery();
-    if (committedRecovery === null && !waiterLaunchedChild) runtimeState.setLifecycle('kernel-ready');
+    if (successionAttemptChild === null && committedRecovery === null && !legacySupervisedChild) publishDiscovery();
+    if (committedRecovery === null && !legacySupervisedChild) runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
     // An attempt child that has not served may still be abandoned, and its sweep would certify the epoch it retires.
     if (
       successionAttemptChild === null &&
       committedRecovery === null &&
-      !waiterLaunchedChild &&
+      !legacySupervisedChild &&
       shouldScheduleStoreEpochSweep &&
       openedStore !== null
     ) {
@@ -1761,7 +1761,7 @@ async function runLifecycleStartup({
         acceptedSuccessionPreparation = null;
         acceptedSuccessionJobs = [];
         runtimeState.setLifecycle('kernel-ready');
-        if (!waiterLaunchedChild) {
+        if (!legacySupervisedChild) {
           publishDiscovery();
           if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
         }
@@ -1827,13 +1827,13 @@ async function runLifecycleStartup({
       publishDiscovery();
       if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
     }
-    if (waiterLaunchedChild) {
+    if (legacySupervisedChild) {
       if (committedRecovery !== null || openedStore === null) {
-        throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
+        throw new SuccessionAttemptStartupHoldError('legacy serving record has no completion receipt');
       }
       ({ port, host, bindHost: localBindHost } = await listenFn(server));
       signal.throwIfAborted();
-      await completeWaiterLaunchedUpgrade(
+      const legacyCompletion = await completeSupervisorLegacyUpgrade(
         runtime,
         currentBuild,
         openedStore,
@@ -1841,9 +1841,11 @@ async function runLifecycleStartup({
         backendPid,
         deps.readSelfIncarnationFn(),
       );
-      waiterServingCompleted = true;
+      if (legacyCompletion.kind !== 'completed')
+        throw new SuccessionAttemptStartupHoldError('legacy launch did not record completion');
+      legacyServingCompleted = true;
       runtimeState.setLifecycle('kernel-ready');
-      publishWaiterDiscovery();
+      publishLegacyDiscovery();
       if (shouldScheduleStoreEpochSweep) deps.scheduleStoreEpochSweepFn?.(openedStore);
     }
     if (runtimeState.getLaunchFenceActive()) {
@@ -1864,7 +1866,7 @@ async function runLifecycleStartup({
 
     runtimeState.setLifecycle('running');
     state.started = true;
-    if (waiterServingCompleted && !waiterDiscoveryPublished) publishWaiterDiscovery();
+    if (legacyServingCompleted && !legacyDiscoveryPublished) publishLegacyDiscovery();
     deps.wakeSuccessionReconciler?.();
     void kbDaemonSupervisor
       ?.start(openedStore ?? undefined)
@@ -1913,7 +1915,7 @@ async function runLifecycleStartup({
 
     return serverInfo();
   } catch (error: unknown) {
-    if (waiterServingCompleted && !signal.aborted) {
+    if (legacyServingCompleted && !signal.aborted) {
       backendLog.error(
         'Waiter-launched coordinator startup failed after serving was recorded; retaining listeners',
         error,
@@ -1922,7 +1924,7 @@ async function runLifecycleStartup({
       if (runtimeState.getLifecycle() === 'kernel-ready') runtimeState.setLifecycle('running');
       state.started = true;
       runtimeState.setLaunchFenceActive(false);
-      if (!waiterDiscoveryPublished) publishWaiterDiscovery?.();
+      if (!legacyDiscoveryPublished) publishLegacyDiscovery?.();
       return serverInfo();
     }
     const successionAttemptChild = currentSuccessionAttemptChild();

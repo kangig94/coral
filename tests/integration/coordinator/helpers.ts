@@ -24,7 +24,6 @@ import {
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   SUCCESSION_CAPABILITIES_FILE,
   SUCCESSION_CAPABILITY_VERSION,
-  UPGRADE_WAITER_BUNDLE_FILE,
 } from '#src/infra/bundle-manifest-address.js';
 import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
@@ -37,7 +36,6 @@ const sourceSentinelBundle = join(process.cwd(), 'clients', 'build', 'coral-sent
 const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli');
 const sourceClaudeAppserverBundle = join(process.cwd(), 'clients', 'build', 'coral-claude-appserver.cjs');
 const sourceDurableWrapperBundle = join(process.cwd(), 'clients', 'build', 'coral-durable-wrapper.cjs');
-const sourceUpgradeWaiterBundle = join(process.cwd(), 'clients', 'build', UPGRADE_WAITER_BUNDLE_FILE);
 const sourceManifestPath = join(process.cwd(), 'clients', 'build', CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
 const sourceSuccessionCapabilitiesPath = join(process.cwd(), 'clients', 'build', SUCCESSION_CAPABILITIES_FILE);
 const requiredBuildArtifacts = [
@@ -46,7 +44,6 @@ const requiredBuildArtifacts = [
   sourceCliBundle,
   sourceClaudeAppserverBundle,
   sourceDurableWrapperBundle,
-  sourceUpgradeWaiterBundle,
   sourceManifestPath,
   sourceSuccessionCapabilitiesPath,
 ] as const;
@@ -226,7 +223,6 @@ export function createPluginFixture(
   const cliPath = join(root, 'bridge', 'coral-cli');
   const claudeAppserverPath = join(root, 'bridge', 'coral-claude-appserver.cjs');
   const durableWrapperPath = join(root, 'bridge', 'coral-durable-wrapper.cjs');
-  const upgradeWaiterPath = join(root, 'bridge', UPGRADE_WAITER_BUNDLE_FILE);
   const copyBundle = (source: string, destination: string): void => {
     if (!variant) {
       copyFileSync(source, destination);
@@ -255,7 +251,6 @@ export function createPluginFixture(
   copyBundle(sourceBundle('coral-cli'), cliPath);
   copyBundle(sourceBundle('coral-claude-appserver.cjs'), claudeAppserverPath);
   copyBundle(sourceBundle('coral-durable-wrapper.cjs'), durableWrapperPath);
-  copyBundle(sourceBundle(UPGRADE_WAITER_BUNDLE_FILE), upgradeWaiterPath);
   const bundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
   const fixtureManifest = {
     version: options.version ?? sourceManifest.version,
@@ -510,6 +505,9 @@ export function spawnCoordinator(options: {
         ...process.env,
         HOME: options.home,
         TMPDIR: options.home,
+        ...(options.supervised
+          ? { CORAL_SENTINEL_RUN_DIR: coordinatorFilesForHome(options.home, options.fixture.flavor).runDir }
+          : {}),
         ...options.env,
       },
       stdio: options.supervised

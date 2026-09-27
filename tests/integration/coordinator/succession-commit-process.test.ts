@@ -43,6 +43,7 @@ const commitFailures: [string, Record<string, string>][] = [
 ];
 
 afterEach(async () => {
+  for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   for (const successor of successorPids.splice(0)) {
     if (
       successor.incarnation !== null &&
@@ -51,7 +52,6 @@ afterEach(async () => {
     )
       process.kill(successor.pid, 'SIGTERM');
   }
-  for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
@@ -85,7 +85,7 @@ describe('real-process succession commit', () => {
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);
     await waitForCondition(() => readDiscoveryRecordForHome(home, 'prod')?.pid !== initial.pid, 30_000);
-    await waitForProcessExit(old, 30_000);
+    expect(old.child.exitCode).toBeNull();
     const successor = readDiscoveryRecordForHome(home, 'prod');
     if (successor === null) throw new Error('Successor did not publish discovery');
     expect(successor.sentinel?.id).toBeTypeOf('string');
@@ -112,6 +112,7 @@ describe('real-process succession commit', () => {
       home,
       tempRoots: roots,
       env,
+      supervised: true,
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
@@ -123,7 +124,7 @@ describe('real-process succession commit', () => {
       }
     })();
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
 
     try {
@@ -146,7 +147,7 @@ describe('real-process succession commit', () => {
     expect(successor.bundleHash).toBe(newerFixture.bundleHash);
     expect(successor.pid).not.toBe(initial.pid);
     expect(observeProcessLiveness(successor.pid)).toBe('alive');
-    await waitForProcessExit(old, 30_000);
+    await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
     await assertAddressClaimed(successor.socketPath);
   });
 
@@ -166,11 +167,12 @@ describe('real-process succession commit', () => {
         home,
         tempRoots: roots,
         env,
+        supervised: true,
       });
       coordinators.push(old);
       const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
       const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
-      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
       coordinators.push(contender);
       await waitForProcessExit(contender, 30_000);
 
@@ -207,11 +209,12 @@ describe('real-process succession commit', () => {
         CORAL_TEST_SUCCESSION_OPEN_FAILURE: '1',
         CORAL_TEST_SUCCESSION_RECLAIM_FAILURE: '1',
       },
+      supervised: true,
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);
 
@@ -222,7 +225,7 @@ describe('real-process succession commit', () => {
     const recovered = readDiscoveryRecordForHome(home, 'prod');
     if (recovered === null) throw new Error('Same-build recovery discovery was not published.');
     successorPids.push({ pid: recovered.pid, incarnation: probeProcessIncarnation(recovered.pid) });
-    await waitForProcessExit(old, 30_000);
+    await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
     expect(observeProcessLiveness(initial.pid)).toBe('absent');
     expect(observeProcessLiveness(recovered.pid)).toBe('alive');
     expect(existsSync(storeDbPathForHome(home, 'prod', '2'))).toBe(false);
@@ -242,18 +245,18 @@ describe('real-process succession commit', () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-committed-successor-recovery-'));
     roots.push(home);
     const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
-    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots });
+    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
     const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);
     await waitForCondition(() => {
       const discovery = readDiscoveryRecordForHome(home, 'prod');
       return discovery !== null && discovery.pid !== initial.pid;
     }, 60_000);
-    await waitForProcessExit(old, 30_000);
+    await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
     const committed = readDiscoveryRecordForHome(home, 'prod');
     if (committed === null) throw new Error('Committed successor discovery was not published.');
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
@@ -271,16 +274,10 @@ describe('real-process succession commit', () => {
     process.kill(committed.pid, 'SIGKILL');
     await waitForCondition(() => observeProcessLiveness(committed.pid) === 'absent', 15_000);
 
-    const recovery = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
-    coordinators.push(recovery);
     await waitForCondition(() => {
       const discovery = readDiscoveryRecordForHome(home, 'prod');
       return discovery !== null && discovery.pid !== committed.pid && discovery.bundleHash === newerFixture.bundleHash;
-    }, 60_000).catch((error: unknown) => {
-      throw new Error(
-        `${String(error)}; recovery output: ${recovery.output()}; intent: ${JSON.stringify(readUpgradeIntent(runDir))}`,
-      );
-    });
+    }, 60_000);
     const recovered = readDiscoveryRecordForHome(home, 'prod');
     if (recovered === null) throw new Error('Committed recovery discovery was not published.');
     expect(recovered.pid).not.toBe(initial.pid);
@@ -326,11 +323,12 @@ describe('real-process succession commit', () => {
         CORAL_TEST_SUCCESSION_SERVING_DELAY_MS: '3000',
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
       },
+      supervised: true,
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);
 
@@ -426,18 +424,19 @@ describe('real-process succession commit', () => {
       home,
       tempRoots: roots,
       env: { CORAL_TEST_SUCCESSION_SERVING_GATE: servingGate },
+      supervised: true,
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     try {
       await waitForCondition(() => existsSync(servingGate), 30_000);
       const attempting = readUpgradeIntent(runDir);
       expect(attempting.kind === 'readable' ? attempting.intent.attemptChild?.pid : null).toBeGreaterThan(0);
-      old.child.kill('SIGTERM');
+      process.kill(initial.pid, 'SIGTERM');
       await waitForCondition(() => {
         const observed = readUpgradeIntent(runDir);
         return (
@@ -449,7 +448,7 @@ describe('real-process succession commit', () => {
       rmSync(servingGate, { force: true });
     }
     await waitForProcessExit(contender, 30_000);
-    await waitForProcessExit(old, 30_000);
+    await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
     const observed = readUpgradeIntent(runDir);
     expect(observed.kind === 'readable' && observed.intent.disposition === 'completed').toBe(false);
     expect(existsSync(storeDbPathForHome(home, 'prod', '2'))).toBe(false);
@@ -470,11 +469,12 @@ describe('real-process succession commit', () => {
       home,
       tempRoots: roots,
       env: { CORAL_TEST_SUCCESSION_RELEASE_DELAY_MS: '1500' },
+      supervised: true,
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
@@ -482,8 +482,8 @@ describe('real-process succession commit', () => {
       const observed = readUpgradeIntent(runDir);
       return observed.kind === 'readable' && observed.intent.disposition === 'completed';
     }, 60_000);
-    if (old.child.exitCode === null && old.child.signalCode === null) old.child.kill('SIGTERM');
-    await waitForProcessExit(old, 30_000);
+    if (observeProcessLiveness(initial.pid) === 'alive') process.kill(initial.pid, 'SIGTERM');
+    await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
     const successor = readDiscoveryRecordForHome(home, 'prod');
     if (successor === null) throw new Error('Committed successor discovery is absent.');
     successorPids.push({ pid: successor.pid, incarnation: probeProcessIncarnation(successor.pid) });

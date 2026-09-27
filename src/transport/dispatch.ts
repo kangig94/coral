@@ -19,7 +19,7 @@ import {
   type Decision,
 } from '../security/policy/authorize.js';
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
-import { identifyDurableRequest, throwIfRequestAborted } from '../infra/request-lease-identity.js';
+import { identifyDurableRequest, throwIfRequestAborted } from '../runtime/request-lease-identity.js';
 import { isRecord } from '../infra/json.js';
 import type { RecoveryQuarantineClearRequest } from '../recovery/source-registry.js';
 import type { UnreadableProviderOperationDiscardRequest } from '../recovery/unreadable-provider-operation.js';

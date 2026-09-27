@@ -23,6 +23,7 @@ function makeRuntime(): Runtime {
       existsSync: () => false,
       mkdirSync: () => {},
       readFileSync: () => '',
+      readdirSync: () => [],
       rmSync: () => {},
       writeAtomicDurableSync: () => true,
       writeAtomicSync: () => {},
@@ -177,16 +178,19 @@ describe('expansion RPC before store services exist', () => {
         status: 'equipped',
       },
     });
-    expect(expansionRpc).toHaveBeenCalledWith({
-      method: 'equipExpansion',
-      args: { name: 'vector' },
-      ctx: expect.objectContaining({
-        principal: expect.objectContaining({
-          subject: 'operator',
-          binding: { kind: 'unbound' },
+    expect(expansionRpc).toHaveBeenCalledWith(
+      {
+        method: 'equipExpansion',
+        args: { name: 'vector' },
+        ctx: expect.objectContaining({
+          principal: expect.objectContaining({
+            subject: 'operator',
+            binding: { kind: 'unbound' },
+          }),
         }),
-      }),
-    });
+      },
+      expect.any(AbortSignal),
+    );
   });
 
   it.each([

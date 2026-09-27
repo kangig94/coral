@@ -7,7 +7,6 @@ import { seedHistoricalEpoch, type HistoricalSeedResult } from '../../jobs/histo
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { readCustodyLedger } from '../../store/custody-ledger.js';
-import { classifyStoreFile } from '../../store/db.js';
 import {
   decodeResolvedStoreEpoch,
   encodeResolvedStoreEpoch,
@@ -23,7 +22,6 @@ import {
 import { recordEpochClosure } from '../../store/epoch-closure.js';
 import { readEpochKey } from '../../store/epoch-key.js';
 import { observeProtectedEpoch } from '../../store/epoch-protection.js';
-import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import { latestControllerOpen } from '../succession/controller-open.js';
 import { readDurableCliControllerReceipts } from './durable-cli-transfer.js';
 import {
@@ -115,7 +113,6 @@ function seedUnprovenIncumbentJobs(
 export function prepareRetainedControllerHandoff(
   runtime: Runtime,
   index: JobLocationIndex,
-  format: StoreFormatDescription,
 ): Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null {
   const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
   const live = new Map<string, Set<string>>();
@@ -163,7 +160,6 @@ export function prepareRetainedControllerHandoff(
   return prepareRetainedControllerHandoffForLineage(
     runtime,
     index,
-    format,
     custody,
     lineageKey,
     liveJobIds,
@@ -175,7 +171,6 @@ export function prepareRetainedControllerHandoff(
 function prepareRetainedControllerHandoffForLineage(
   runtime: Runtime,
   index: JobLocationIndex,
-  format: StoreFormatDescription,
   custody: ReturnType<typeof readCustodyLedger>,
   lineageKey: string,
   liveJobIds: ReadonlySet<string>,
@@ -194,13 +189,6 @@ function prepareRetainedControllerHandoffForLineage(
     return null;
   }
   if (epoch === null) return null;
-  let classification: ReturnType<typeof classifyStoreFile>;
-  try {
-    classification = classifyStoreFile(epoch.path, runtime.storage, format);
-  } catch {
-    return null;
-  }
-  if (classification.kind !== 'older-incompatible' && classification.kind !== 'newer-incompatible') return null;
   const epochKey = observeResolvedStoreEpochKey(runtime, epoch);
   if (epochKey === null || observeResolvedStoreEpoch(runtime, epochKey)?.lineageKey !== lineageKey) return null;
   const unresolved = index.locationsFor(epochKey).filter((location) => location.disposition !== 'terminal');

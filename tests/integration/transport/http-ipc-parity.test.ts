@@ -7,7 +7,7 @@ import { createHttpHandler } from '#src/transport/http/handler.js';
 import { closeIpcServer, createIpcServer, ipcAdapter, listenIpcServer } from '#src/transport/ipc/server.js';
 import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
-import { durableRequestIdentity } from '#src/infra/request-lease-identity.js';
+import { durableRequestIdentity } from '#src/runtime/request-lease-identity.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { kbSourceCreateRequestSchema } from '#src/kb/tool-contracts.js';
 import { testPrincipal } from '../../helpers/principal.js';

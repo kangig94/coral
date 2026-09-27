@@ -23,7 +23,7 @@ import {
 import type { SessionAllocateOptions } from '../../sessions/contracts.js';
 import { describeSessionInterrupted, type SessionInterruptedFault } from '../../sessions/fault.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
-import { throwIfRequestAborted } from '../../infra/request-lease-identity.js';
+import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
 import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../sessions/entry.js';

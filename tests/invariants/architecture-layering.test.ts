@@ -57,23 +57,21 @@ const PROVIDER_PROXY_FORBIDDEN = [
   'src/workflow/',
   'src/kb/',
 ] as const;
-/**
- * The upgrade waiter is a detached process launched from the target build and outlives the contender that
- * started it. It decides from the upgrade intent, recorded process identity, and the coordinator's IPC address
- * alone, so it reaches only its own module, infra, runtime ports, and the IPC client — never a store, domain, or
- * coordinator module whose state belongs to a process it may outlive.
- */
-const UPGRADE_WAITER_ROOT = 'src/upgrade-waiter/';
-const UPGRADE_WAITER_ALLOWED = [UPGRADE_WAITER_ROOT, 'src/infra/', 'src/runtime/'] as const;
-const UPGRADE_WAITER_ALLOWED_FILES = new Set(['src/transport/ipc/client.ts']);
+/** The supervisor outlives coordinators and reads only durable launch and provider-custody evidence. */
+const SUPERVISOR_ROOT = 'src/coordinator-launch/';
+const SUPERVISOR_ALLOWED = [SUPERVISOR_ROOT, 'src/infra/', 'src/runtime/'] as const;
+const SUPERVISOR_ALLOWED_FILES = new Set([
+  'src/provider-proxy/handoff-capsule.ts',
+  'src/provider-proxy/handoff-capsule-discovery.ts',
+]);
 
-function upgradeWaiterImportViolations(edges: readonly ParsedImportEdge[]): string[] {
+function supervisorImportViolations(edges: readonly ParsedImportEdge[]): string[] {
   return edges
     .filter(
       ({ source, target }) =>
-        source.startsWith(UPGRADE_WAITER_ROOT) &&
-        !startsWithAny(target, UPGRADE_WAITER_ALLOWED) &&
-        !UPGRADE_WAITER_ALLOWED_FILES.has(target),
+        source.startsWith(SUPERVISOR_ROOT) &&
+        !startsWithAny(target, SUPERVISOR_ALLOWED) &&
+        !SUPERVISOR_ALLOWED_FILES.has(target),
     )
     .map(({ source, target }) => `${source} -> ${target}`)
     .sort();
@@ -372,18 +370,18 @@ describe('architecture layering invariants', () => {
     expect(violations).toEqual([]);
   });
 
-  it('the upgrade waiter reaches only infra, runtime ports, and the IPC client', () => {
-    expect(IMPORT_EDGES.some((edge) => edge.source.startsWith(UPGRADE_WAITER_ROOT))).toBe(true);
-    expect(upgradeWaiterImportViolations(IMPORT_EDGES)).toEqual([]);
+  it('the namespace supervisor reaches only durable infrastructure and provider custody', () => {
+    expect(IMPORT_EDGES.some((edge) => edge.source.startsWith(SUPERVISOR_ROOT))).toBe(true);
+    expect(supervisorImportViolations(IMPORT_EDGES)).toEqual([]);
   });
 
   it.each([
     ['src/store/epoch.ts', '../store/epoch.js'],
     ['src/coordinator/lifecycle.ts', '../coordinator/lifecycle.js'],
     ['src/transport/ipc/server.ts', '../transport/ipc/server.js'],
-  ] as const)('rejects an upgrade waiter import of %s', (target, specifier) => {
+  ] as const)('rejects a namespace supervisor import of %s', (target, specifier) => {
     const mutation: ParsedImportEdge = {
-      source: 'src/upgrade-waiter/index.ts',
+      source: 'src/coordinator-launch/supervisor.ts',
       target,
       specifier,
       via: 'ImportDeclaration',
@@ -391,7 +389,7 @@ describe('architecture layering invariants', () => {
       typeOnly: false,
     };
 
-    expect(upgradeWaiterImportViolations([mutation])).toEqual([`${mutation.source} -> ${target}`]);
+    expect(supervisorImportViolations([mutation])).toEqual([`${mutation.source} -> ${target}`]);
   });
 
   it('the shared providers domain reaches neither provider-host owner', () => {

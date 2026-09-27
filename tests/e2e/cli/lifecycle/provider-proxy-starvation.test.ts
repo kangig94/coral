@@ -40,6 +40,7 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
+const SOURCE_SUPERVISOR_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-sentinel.cjs');
 const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli');
 const SOURCE_CLAUDE_APPSERVER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-claude-appserver.cjs');
 const SOURCE_DURABLE_WRAPPER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-durable-wrapper.cjs');
@@ -198,6 +199,7 @@ function createFixture(): Fixture {
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(binDir, { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
+  copyFileSync(SOURCE_SUPERVISOR_BUNDLE, join(root, 'bridge', 'coral-sentinel.cjs'));
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli'));
   // The fixture bridge must carry a complete lifecycle build set.
   copyFileSync(SOURCE_CLAUDE_APPSERVER_BUNDLE, join(root, 'bridge', 'coral-claude-appserver.cjs'));

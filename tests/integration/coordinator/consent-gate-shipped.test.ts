@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
 import {
   coordinatorFilesForHome,
   createPluginFixture,
@@ -13,9 +13,9 @@ import {
   spawnCoordinator,
   stopCoordinator,
   waitForDiscoveryRecord,
-  waitForProcessExit,
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const roots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 describe('AC1 consent gate against shipped v0.10.13', () => {
-  it('exits zero while the shipped incumbent keeps serving, sends no signal, and records the outranking intent', async () => {
+  it('keeps the shipped incumbent serving without a signal while the outranking request remains owned', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-consent-home-'));
     roots.push(home);
     const shipped = createShippedPluginFixture(roots, 'v0.10.13');
@@ -36,19 +36,27 @@ describe('AC1 consent gate against shipped v0.10.13', () => {
     const discovery = await waitForDiscoveryRecord(home, 'prod', 15_000);
     expect(discovery.version).toBe('0.10.13');
 
-    const contender = spawnCoordinator({ fixture: branch, home, tempRoots: roots });
+    const contender = spawnCoordinator({ fixture: branch, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
-    expect(await waitForProcessExit(contender, 15_000)).toEqual({ code: 0, signal: null });
+    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      await waitForCondition(
+        () =>
+          record
+            .read()
+            .requests.some((request) => request.incumbent?.version === '0.10.13' && request.status === 'accepted'),
+        15_000,
+      );
+    } finally {
+      record.close();
+    }
 
     expect(incumbent.child.exitCode).toBeNull();
     expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(discovery.pid);
     expect(await probeCoordinatorSocket(discovery.socketPath)).toBe('accepting');
-    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     expect(existsSync(join(runDir, 'handoff-signal.json'))).toBe(false);
     expect(existsSync(join(runDir, 'handoff-signal.v2.json'))).toBe(false);
-    expect(readUpgradeIntent(runDir)).toMatchObject({
-      kind: 'readable',
-      intent: { incumbent: { version: '0.10.13' }, target: { build: { version: '0.10.14' } } },
-    });
+    expect(contender.child.exitCode).toBeNull();
   }, 30_000);
 });

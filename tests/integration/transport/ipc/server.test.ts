@@ -470,6 +470,7 @@ describe('ipc server', () => {
       time: createRealTimePort(),
       begin,
       end,
+      abandon: vi.fn(),
       timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
     });
     ports.admin.beginRequestLease = leases.begin;

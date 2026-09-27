@@ -14,13 +14,13 @@ import {
   LEGACY_CLI_BUNDLE_FILE,
   SUCCESSION_CAPABILITIES_FILE,
   SUCCESSION_CAPABILITY_VERSION,
-  UPGRADE_WAITER_BUNDLE_FILE,
 } from '../src/infra/bundle-manifest-address.ts';
 
 const { storeEpochHookSource } = await import('../dist/store/epoch.js');
 writeFileSync('clients/hooks/lib/store-epoch.mjs', storeEpochHookSource());
 
 mkdirSync('clients/build', { recursive: true });
+rmSync('clients/build/coral-upgrade-waiter.cjs', { force: true });
 
 function parseArgs(argv) {
   let flavor = 'prod';
@@ -134,7 +134,7 @@ let sharedOpts = createProductionServerEsbuildOptions({
 
 await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/coordinator/bootstrap.ts'],
+  entryPoints: ['src/coordinator/admission-main.ts'],
   outfile: 'clients/build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
@@ -155,7 +155,7 @@ sharedOpts = createProductionServerEsbuildOptions({
 });
 const backendBuild = await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/coordinator/bootstrap.ts'],
+  entryPoints: ['src/coordinator/admission-main.ts'],
   outfile: 'clients/build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
   metafile: true,
@@ -163,7 +163,7 @@ const backendBuild = await esbuild.build({
 
 const sentinelBuild = await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/runtime/sentinel-main.ts'],
+  entryPoints: ['src/coordinator-launch/main.ts'],
   outfile: 'clients/build/coral-sentinel.cjs',
   metafile: true,
 });
@@ -210,14 +210,6 @@ const durableWrapperBuild = await esbuild.build({
   metafile: true,
 });
 console.log('Built clients/build/coral-durable-wrapper.cjs');
-
-const upgradeWaiterBuild = await esbuild.build({
-  ...sharedOpts,
-  entryPoints: ['src/upgrade-waiter/main.ts'],
-  outfile: `clients/build/${UPGRADE_WAITER_BUNDLE_FILE}`,
-  metafile: true,
-});
-console.log(`Built clients/build/${UPGRADE_WAITER_BUNDLE_FILE}`);
 
 const backendHash = createHash('sha256').update(backendBundle).digest('hex').slice(0, 16);
 const cliHash = createHash('sha256')
@@ -321,7 +313,6 @@ const receiptInputs = [
       ...Object.keys(cliBuild.metafile.inputs),
       ...Object.keys(claudeAppserverBuild.metafile.inputs),
       ...Object.keys(durableWrapperBuild.metafile.inputs),
-      ...Object.keys(upgradeWaiterBuild.metafile.inputs),
       ...requiredReceiptInputs,
     ].map(canonicalReceiptInput),
   ),
@@ -332,7 +323,6 @@ const receiptOutputs = {
   cli: { path: `clients/build/${CLI_BUNDLE_FILE}` },
   claudeAppserver: { path: 'clients/build/coral-claude-appserver.cjs' },
   durableWrapper: { path: 'clients/build/coral-durable-wrapper.cjs' },
-  upgradeWaiter: { path: `clients/build/${UPGRADE_WAITER_BUNDLE_FILE}` },
   legacyManifest: { path: legacyManifestPath },
   strictManifest: { path: strictManifestPath },
   successionCapabilities: { path: successionCapabilitiesPath },
@@ -369,7 +359,6 @@ if (release) {
     LEGACY_CLI_BUNDLE_FILE,
     'coral-claude-appserver.cjs',
     'coral-durable-wrapper.cjs',
-    UPGRADE_WAITER_BUNDLE_FILE,
     'package.json',
     'manifest.json',
     CURRENT_STRICT_BUNDLE_MANIFEST_FILE,

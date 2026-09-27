@@ -42,7 +42,7 @@ const incumbentIdentitySchema = z
   })
   .passthrough();
 
-const ATTEMPT_OWNER_KINDS = ['incumbent', 'waiter'] as const;
+const ATTEMPT_OWNER_KINDS = ['incumbent'] as const;
 
 const attemptOwnerSchema = z
   .object({
@@ -77,7 +77,6 @@ const knownBlockerOwners = new Set([
   'protocol',
   'preparation',
   'legacy-incumbent',
-  'waiter',
   'upgrade-contender',
   'succession-adoption',
   'succession-attempt-child',
@@ -205,8 +204,6 @@ const upgradeIntentFields = z
     blockers: z.array(blockerSchema),
     retryCondition: retryConditionSchema.nullable(),
     attemptDeadline: z.string().datetime().nullable(),
-    attemptSpawnPending: z.boolean().optional(),
-    attemptSpawnNonce: z.string().min(1).nullable().optional(),
     completionReceipt: servingReceiptSchema.nullable(),
     transientRetry: transientRetrySchema.optional().catch(undefined),
     obligationRetry: obligationRetrySchema.nullable().optional().catch(undefined),
@@ -371,7 +368,7 @@ export type UpgradeIntentChange = Pick<
 export type UpgradeIntentVisibility = Readonly<{
   requestId: string;
   disposition: UpgradeIntent['disposition'];
-  phase: 'pending' | 'prepared' | 'ready' | 'launching' | 'committing';
+  phase: 'pending' | 'prepared' | 'ready' | 'committing';
   target: Readonly<{
     version: string;
     buildSetId: string;
@@ -392,7 +389,7 @@ export type UpgradeIntentVisibility = Readonly<{
 const upgradeIntentVisibilitySchema = z.object({
   requestId: z.string().min(1),
   disposition: z.enum(UPGRADE_INTENT_DISPOSITIONS),
-  phase: z.enum(['pending', 'prepared', 'ready', 'launching', 'committing']),
+  phase: z.enum(['pending', 'prepared', 'ready', 'committing']),
   target: z.object({
     version: z.string().min(1),
     buildSetId: z.string().min(1),
@@ -422,9 +419,7 @@ export function visibleUpgradeIntent(intent: UpgradeIntent): UpgradeIntentVisibi
     typeof preparation === 'object' && preparation !== null && 'stage' in preparation ? preparation.stage : null;
   const phase =
     intent.disposition === 'attempting'
-      ? intent.attemptOwner?.kind === 'waiter'
-        ? 'launching'
-        : 'committing'
+      ? 'committing'
       : intent.disposition === 'deferred'
         ? 'pending'
         : stage === 'prepared' || stage === 'ready' || stage === 'committing'

@@ -12,7 +12,7 @@ import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { assertNever } from '../../infra/error-format.js';
-import { throwIfRequestAborted } from '../../infra/request-lease-identity.js';
+import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
 import {

@@ -1,16 +1,15 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE, UPGRADE_WAITER_BUNDLE_FILE } from '#src/infra/bundle-manifest-address.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import {
   createForeignTargetValidator,
   inspectValidatedHandoffTarget,
   withValidatedHandoffTarget,
-  waiterExecutableReady,
   type ValidatedHandoffTarget,
 } from '#src/infra/handoff-target.js';
 
@@ -48,19 +47,6 @@ afterEach(() => {
 });
 
 describe('handoff-target', () => {
-  it('requires a stable regular waiter bundle before legacy launch', () => {
-    const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-waiter-target-'));
-    roots.push(pluginRoot);
-    const bridge = join(pluginRoot, 'bridge');
-    mkdirSync(bridge);
-    expect(waiterExecutableReady(pluginRoot)).toBe(false);
-    writeFileSync(join(bridge, UPGRADE_WAITER_BUNDLE_FILE), 'waiter fixture');
-    expect(waiterExecutableReady(pluginRoot)).toBe(true);
-    rmSync(join(bridge, UPGRADE_WAITER_BUNDLE_FILE));
-    symlinkSync('/missing/waiter', join(bridge, UPGRADE_WAITER_BUNDLE_FILE));
-    expect(waiterExecutableReady(pluginRoot)).toBe(false);
-  });
-
   it('should seal a validated target and expose its evidence only through the branded accessor', () => {
     const bundleDir = createBundle();
     const result = createForeignTargetValidator()(bundleDir, manifest);

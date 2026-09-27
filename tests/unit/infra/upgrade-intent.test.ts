@@ -107,24 +107,6 @@ describe('upgrade intent', () => {
     ).toBe('prepared');
   });
 
-  it('shows a waiter-owned attempt as launching and an incumbent-owned attempt as committing', async () => {
-    const dir = runDir();
-    const seeded = await compareAndSwapUpgradeIntent(dir, null, {
-      ...pendingIntent('first'),
-      disposition: 'attempting',
-      attemptId: 'attempt-1',
-      attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: 100, incarnation: null },
-    });
-    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
-    expect(visibleUpgradeIntent(seeded.intent)?.phase).toBe('launching');
-    expect(
-      visibleUpgradeIntent({
-        ...seeded.intent,
-        attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: 100, incarnation: null },
-      })?.phase,
-    ).toBe('committing');
-  });
-
   it('emits one audit event for each visible status change', async () => {
     const events: string[] = [];
     vi.spyOn(backendLog, 'info').mockImplementation((message) => {

@@ -176,6 +176,7 @@ function createBundle(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-handoff-runner-'));
   roots.push(root);
   writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf8');
+  writeFileSync(join(root, 'coral-sentinel.cjs'), 'handoff runner supervisor fixture', 'utf8');
   writeFileSync(join(root, 'coral-cli'), cliBundle, 'utf8');
   writeFileSync(join(root, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf8');
   writeFileSync(join(root, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
@@ -909,17 +910,21 @@ describe('handoff-routing/runner', () => {
 
     expect(mockState.probeCoordinator).toHaveBeenCalled();
     expect(mockState.health).not.toHaveBeenCalled();
-    expect(mockState.spawn).toHaveBeenCalledWith(process.execPath, [join(bundleDir, 'coral-backend.cjs')], {
-      cwd: '/handoff/cwd',
-      env: {
-        CORAL_BASE_ENV: 'preserved',
-        [GUARD_ENV]: '1',
-        CORAL_STARTUP_ATTEMPT_ID: 'delegation-attempt',
-        CORAL_SENTINEL_RUN_DIR: '/handoff/run',
+    expect(mockState.spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [join(bundleDir, 'coral-sentinel.cjs'), join(bundleDir, 'coral-backend.cjs')],
+      {
+        cwd: '/handoff/cwd',
+        env: {
+          CORAL_BASE_ENV: 'preserved',
+          [GUARD_ENV]: '1',
+          CORAL_STARTUP_ATTEMPT_ID: 'delegation-attempt',
+          CORAL_SENTINEL_RUN_DIR: '/handoff/run',
+        },
+        stdio: 'inherit',
+        detached: true,
       },
-      stdio: 'inherit',
-      detached: true,
-    });
+    );
     expect(pollDelays).toHaveLength(1);
     expect(pollDelays[0]).toBe(100);
 

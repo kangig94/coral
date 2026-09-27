@@ -180,7 +180,7 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'UnknownWorkflowRecoveryOutcome',
   'UsageError',
   'UserInputError',
-  'UpgradeWaiterUnavailableError',
+  'UpgradeSupervisorUnavailableError',
   'WaitResumeError',
   'WorkDirectoryError',
   'WorkflowExecutionError',

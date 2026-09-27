@@ -23,7 +23,7 @@ import { pinRunningBuildRoot, validatedRetainedBuildRoot } from '../../infra/ret
 import { assertNever, formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
-import { identifyDurableRequest, throwIfRequestAborted } from '../../infra/request-lease-identity.js';
+import { identifyDurableRequest, throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
@@ -153,7 +153,11 @@ import {
   visibleUpgradeIntent,
   type UpgradeIntent,
 } from '../../infra/upgrade-intent.js';
-import { writeAbandonedRequestStatus } from '../../infra/abandoned-request-status.js';
+import {
+  reconcileAbandonedRequestStatuses,
+  writeAbandonedRequestStatus,
+} from '../../infra/abandoned-request-status.js';
+import { probeProcessIncarnation } from '../../infra/node-process.js';
 import { createRealSuccessionAttemptPorts } from '../../runtime/succession-attempt.js';
 import { currentSuccessionAttemptChild, startSuccessionAttempt } from '../succession/attempt-child.js';
 import {
@@ -2023,10 +2027,16 @@ export function createCoordinatorCore(
     onReconcileError: (error) => world.log(`Succession reconciliation failed: ${formatError(error)}\n`),
   });
 
+  reconcileAbandonedRequestStatuses(runtime.storage, runtime.paths.coral.coordinator.runDir);
+  const requestOwnerIncarnation = probeProcessIncarnation(process.pid);
   const requestLeases = createRequestLeaseOwner({
     time: runtime.time,
     timing: options.requestLeaseTiming,
     newRecordId: () => runtime.ids.uuid(),
+    owner:
+      requestOwnerIncarnation === null
+        ? undefined
+        : { instanceId: identity.instanceId, pid: process.pid, incarnation: requestOwnerIncarnation },
     begin: () => world.idleTimer.beginRequest(),
     end: () => world.idleTimer.endRequest(),
     abandon: (request) => writeAbandonedRequestStatus(runtime.storage, runtime.paths.coral.coordinator.runDir, request),
@@ -2410,7 +2420,7 @@ export function createCoordinatorCore(
     onStoreServing: (attemptId, epochKey, instanceId, controlGeneration) =>
       recordControllerServing(runtime, attemptId, epochKey, instanceId, controlGeneration),
     authorizeStartupMint: createStartupMintAuthorizer(runtime, jobLocationIndex, identity.instanceId),
-    prepareNoIncumbentHandoff: () => prepareRetainedControllerHandoff(runtime, jobLocationIndex, options.storeFormat),
+    prepareNoIncumbentHandoff: () => prepareRetainedControllerHandoff(runtime, jobLocationIndex),
     prepareRecoveryGrantHandoff: (epochKey, incumbentInstanceId) =>
       controllerRecoveryTarget(runtime, epochKey, incumbentInstanceId),
     onRetiredEpochOpened: (epoch, disposition) => {

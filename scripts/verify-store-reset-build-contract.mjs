@@ -8,7 +8,6 @@ import {
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   LEGACY_CLI_BUNDLE_FILE,
   SUCCESSION_CAPABILITIES_FILE,
-  UPGRADE_WAITER_BUNDLE_FILE,
 } from '../src/infra/bundle-manifest-address.ts';
 
 const [targetArgument, sourceArgument] = process.argv.slice(2);
@@ -24,7 +23,6 @@ const requiredBundleFiles = [
   LEGACY_CLI_BUNDLE_FILE,
   'coral-claude-appserver.cjs',
   'coral-durable-wrapper.cjs',
-  UPGRADE_WAITER_BUNDLE_FILE,
   'package.json',
   'manifest.json',
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
@@ -129,9 +127,6 @@ const rootAllowlist = new Set(['LICENSE', 'README.md', 'README.ko.md', 'package.
 const packageManifest = parseJson(readFileSync('package.json'), 'package.json');
 if (!packageManifest.files?.includes('clients/bridge/coral-durable-wrapper.cjs')) {
   throw new Error('Package manifest does not include the durable wrapper artifact.');
-}
-if (!packageManifest.files?.includes(`clients/bridge/${UPGRADE_WAITER_BUNDLE_FILE}`)) {
-  throw new Error('Package manifest does not include the upgrade waiter artifact.');
 }
 if (!packageManifest.files?.includes(`clients/bridge/${SUCCESSION_CAPABILITIES_FILE}`)) {
   throw new Error('Package manifest does not include the succession capability declaration.');

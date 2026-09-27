@@ -189,7 +189,7 @@ describe('succession reconciler', () => {
       ).toMatchObject({ kind: 'registered' });
       expect(await reconciler.reconcile()).toMatchObject({
         kind: 'deferred',
-        reason: 'incumbent needs a legacy retirement waiter',
+        reason: 'incumbent needs supervised legacy retirement',
       });
       expect(readUpgradeIntent(runDir)).toMatchObject({
         kind: 'readable',
@@ -503,7 +503,7 @@ describe('succession reconciler', () => {
 
       expect(await reconciler.reconcile()).toEqual({
         kind: 'deferred',
-        reason: 'incumbent needs a legacy retirement waiter',
+        reason: 'incumbent needs supervised legacy retirement',
       });
       expect(readUpgradeIntent(runDir)).toMatchObject({
         intent: { incumbent: { instanceId: serving.instanceId }, blockers: [] },

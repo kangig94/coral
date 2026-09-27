@@ -36,6 +36,7 @@ describe('coordinator request leases', () => {
       timing,
       begin: () => idleTimer.beginRequest(),
       end: () => idleTimer.endRequest(),
+      abandon: vi.fn(),
     });
     const request = owner.begin('jobs.detail', 'provider-neighbor').run(() => new Promise<never>(() => {}));
     const rejected = expect(request).rejects.toMatchObject({ context: { outcome: 'continuing' } });
@@ -62,6 +63,7 @@ describe('coordinator request leases', () => {
       time,
       begin: () => idleTimer.beginRequest(),
       end: () => idleTimer.endRequest(),
+      abandon: vi.fn(),
       timing,
     });
     const result = owner.begin('transport.kb.restart', 'abandoned-request').run(() => new Promise<never>(() => {}));
@@ -86,6 +88,7 @@ describe('coordinator request leases', () => {
       timing,
       begin: () => idleTimer.beginRequest(),
       end: () => idleTimer.endRequest(),
+      abandon: vi.fn(),
     });
     const request = owner.begin('jobs.detail', 'passive-idle').run(() => new Promise<never>(() => {}));
     const rejected = expect(request).rejects.toMatchObject({ context: { outcome: 'continuing' } });
@@ -154,6 +157,7 @@ describe('coordinator request leases', () => {
       newRecordId: randomUUID,
       begin: () => {},
       end: () => {},
+      abandon: vi.fn(),
       time: createRealTimePort(),
       timing,
       shutdown: () => finishJob('terminated'),
@@ -179,6 +183,7 @@ describe('coordinator request leases', () => {
       end: () => {
         inflight -= 1;
       },
+      abandon: vi.fn(),
       time: createRealTimePort(),
       timing,
     });
@@ -232,6 +237,7 @@ describe('coordinator request leases', () => {
       time: createRealTimePort(),
       begin: () => {},
       end,
+      abandon: vi.fn(),
       timing,
     });
     const result = owner.begin('jobs.detail', 'request-3').run(
@@ -280,5 +286,36 @@ describe('coordinator request leases', () => {
     finish?.('accepted');
     await completion;
     expect(recorded).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'completed' }));
+  });
+
+  it('keeps ownership when continuing status cannot be recorded, then releases after a successful retry', async () => {
+    vi.useFakeTimers();
+    let inflight = 0;
+    let writes = 0;
+    const owner = createRequestLeaseOwner({
+      newRecordId: randomUUID,
+      time: createRealTimePort(),
+      timing: { ...timing, checkMs: 3 },
+      begin: () => {
+        inflight += 1;
+      },
+      end: () => {
+        inflight -= 1;
+      },
+      abandon: () => {
+        if (++writes === 1) throw new Error('disk full');
+      },
+    });
+    const request = owner.begin('jobs.detail', 'record-failure').run(() => new Promise<never>(() => {}));
+    const rejected = expect(request).rejects.toMatchObject({
+      code: 'request_deadline_exceeded',
+      context: { outcome: 'recording_failed' },
+    });
+    await vi.advanceTimersByTimeAsync(52);
+    await rejected;
+    expect(inflight).toBe(1);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(writes).toBe(2);
+    expect(inflight).toBe(0);
   });
 });

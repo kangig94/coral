@@ -1,7 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import { identifyDurableRequest, throwIfRequestAborted } from '../../infra/request-lease-identity.js';
+import { identifyDurableRequest, throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import { hasProviderScope, type InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';

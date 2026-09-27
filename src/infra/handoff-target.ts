@@ -1,5 +1,5 @@
 import { lstatSync, realpathSync } from 'node:fs';
-import { CLI_BUNDLE_FILE, UPGRADE_WAITER_BUNDLE_FILE } from './bundle-manifest-address.js';
+import { CLI_BUNDLE_FILE } from './bundle-manifest-address.js';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import {
@@ -116,13 +116,16 @@ export const STRICT_MANIFEST_FIELDS = Object.keys(strictBundleManifestSchema.sha
   keyof StrictBundleManifest
 >;
 
-export function manifestsMatch(left: StrictBundleManifest, right: StrictBundleManifest): boolean {
-  return STRICT_MANIFEST_FIELDS.every((field) => left[field] === right[field]);
+export function supervisorExecutableReady(pluginRoot: string): boolean {
+  const bridge = join(pluginRoot, 'bridge');
+  return (
+    hashStableAdjacentBundle(bridge, 'coral-sentinel.cjs') !== null &&
+    hashStableAdjacentBundle(bridge, 'coral-backend.cjs') !== null
+  );
 }
 
-/** The waiter has no manifest hash, but it must be a stable readable file before a contender launches it. */
-export function waiterExecutableReady(pluginRoot: string): boolean {
-  return hashStableAdjacentBundle(join(pluginRoot, 'bridge'), UPGRADE_WAITER_BUNDLE_FILE) !== null;
+export function manifestsMatch(left: StrictBundleManifest, right: StrictBundleManifest): boolean {
+  return STRICT_MANIFEST_FIELDS.every((field) => left[field] === right[field]);
 }
 
 function validateAdjacentTarget(

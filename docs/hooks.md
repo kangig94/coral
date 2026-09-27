@@ -155,7 +155,7 @@ Evidence whose filename and decoded target do not agree is moved to `~/.coral/st
 
 ## Backend Warm-start
 
-`clients/hooks/session-start.mjs` unconditionally spawns `bridge/coral-backend.cjs` near the top of its body (logic absorbed from the former `backend-warm-start.mjs`). The contender checks the serving incumbent's build. When its own same-flavor version strictly outranks that build, it registers upgrade intent; it does not request shutdown or signal the incumbent. A capable incumbent can launch the successor after its obligations allow transfer. For a shipped incumbent without commit support, the contender starts a detached waiter that observes natural idle retirement and starts the target then, without another hook or CLI call. The hook itself restarts the target's waiter whenever the recorded waiter's lease has lapsed, including over an attempt that waiter launched and never released. During an administrative drain the contender waits briefly for socket release. The hook stays free of upgrade policy. It renders a recent legacy `handoff_shutdown_capability_rejected` diagnostic as a deferred upgrade while that incumbent remains live. Startup failures are ignored and the CLI can start the backend lazily later.
+`clients/hooks/session-start.mjs` starts the bundled namespace supervisor when a coordinator is needed. The supervisor admits its child through `run/coordinator-launch.v1.sqlite`, keeps the exact child under heartbeat supervision, and stays alive while an upgrade request waits for a shipped incumbent to retire. Later invocations may start a fresh supervisor after clean release. The hook does not decide upgrade policy or signal an incumbent; startup failures remain nonfatal to session start.
 
 ## Compact Recovery
 

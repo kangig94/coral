@@ -40,7 +40,7 @@ import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/au
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import { formatError } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import { linkRequestLeaseIdentity } from '../../infra/request-lease-identity.js';
+import { linkRequestLeaseIdentity } from '../../runtime/request-lease-identity.js';
 import { acquireDirectoryLock } from '../../infra/fs-lock.js';
 import type { Capability } from '../../security/capability.js';
 import type { Principal } from '../../security/principal.js';

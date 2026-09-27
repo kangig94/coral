@@ -7,7 +7,7 @@ import * as discussOperations from './operations.js';
 import { getWatchState } from './registry.js';
 import { seedPersonas } from '../persona/seed.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import { identifyDurableRequest, throwIfRequestAborted } from '../../infra/request-lease-identity.js';
+import { identifyDurableRequest, throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 
 function toolValidationError(error: { message: string }): DiscussToolResult {
   return discussToolError('invalid_request', error.message);

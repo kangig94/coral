@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bindWithHandoff, HandoffEscalationError, UpgradeWaiterUnavailableError } from '#src/coordinator/handoff.js';
+import {
+  bindWithHandoff,
+  HandoffEscalationError,
+  UpgradeSupervisorUnavailableError,
+} from '#src/coordinator/handoff.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { IncumbentMatchesError, probeIncumbent } from '#src/transport/ipc/handoff.js';
@@ -134,10 +138,10 @@ describe('bindWithHandoff', () => {
         ...handoff,
         readVerifiedIncumbentFromDiscovery: () => ({ pid: 100, source: 'discovery', instanceId: 'incumbent' }),
         requestSuccession: async () => {
-          throw new UpgradeWaiterUnavailableError('claim failed');
+          throw new UpgradeSupervisorUnavailableError('claim failed');
         },
       }),
-    ).rejects.toBeInstanceOf(UpgradeWaiterUnavailableError);
+    ).rejects.toBeInstanceOf(UpgradeSupervisorUnavailableError);
   });
 
   it('waits for an administrative drain to release the socket', async () => {

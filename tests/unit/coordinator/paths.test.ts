@@ -79,6 +79,7 @@ describe('composeCoralPaths', () => {
       legacySocketPath: join('/tmp/coral-root', 'run', 'coordinator.sock'),
       legacyInfoFile: join('/tmp/coral-root', 'run', 'coordinator.json'),
       upgradeIntentFile: join('/tmp/coral-root', 'gen2', 'run', 'upgrade.v1.json'),
+      launchFile: join('/tmp/coral-root', 'gen2', 'run', 'coordinator-launch.v1.sqlite'),
       socketPath: join('/tmp/coral-root', 'gen2', 'run', 'coordinator.sock'),
       infoFile: join('/tmp/coral-root', 'gen2', 'run', 'coordinator.json'),
       startupErrorFile: join('/tmp/coral-root', 'gen2', 'run', 'startup-error.json'),

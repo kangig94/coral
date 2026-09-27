@@ -28,7 +28,6 @@ const OUTPUTS = {
   cli: 'clients/build/coral-cli',
   claudeAppserver: 'clients/build/coral-claude-appserver.cjs',
   durableWrapper: 'clients/build/coral-durable-wrapper.cjs',
-  upgradeWaiter: 'clients/build/coral-upgrade-waiter.cjs',
   legacyManifest: 'clients/build/manifest.json',
   strictManifest: `clients/build/${CURRENT_STRICT_BUNDLE_MANIFEST_FILE}`,
   successionCapabilities: `clients/build/${SUCCESSION_CAPABILITIES_FILE}`,
@@ -70,10 +69,6 @@ function createFreshBuildFixture(): string {
         path: OUTPUTS.durableWrapper,
         sha256: sha256(`output:${OUTPUTS.durableWrapper}`),
       },
-      upgradeWaiter: {
-        path: OUTPUTS.upgradeWaiter,
-        sha256: sha256(`output:${OUTPUTS.upgradeWaiter}`),
-      },
       legacyManifest: {
         path: OUTPUTS.legacyManifest,
         sha256: sha256(`output:${OUTPUTS.legacyManifest}`),
@@ -108,11 +103,8 @@ describe('lifecycle bundle build freshness', () => {
     expect(() => assertLifecycleBundleSetFresh(root)).not.toThrow();
   });
 
-  it('rejects a changed waiter bundle or capability declaration', () => {
+  it('rejects a changed capability declaration', () => {
     const root = createFreshBuildFixture();
-    writeFixtureFile(root, OUTPUTS.upgradeWaiter, 'changed waiter');
-    expect(captureFreshnessResult(root)).toBe(STALE_BUILD_DIAGNOSTIC);
-    writeFixtureFile(root, OUTPUTS.upgradeWaiter, `output:${OUTPUTS.upgradeWaiter}`);
     writeFixtureFile(root, OUTPUTS.successionCapabilities, 'changed declaration');
     expect(captureFreshnessResult(root)).toBe(STALE_BUILD_DIAGNOSTIC);
   });

@@ -2,14 +2,16 @@ import { dirname, join } from 'node:path';
 
 import type { StoragePort } from './port-types.js';
 import { isNoEntryError } from './fs-errors.js';
+import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
 
 export type AbandonedRequestStatus = Readonly<{
   recordId: string;
   method: string;
   requestId: string;
   startedAt: string;
-  outcome: 'continuing' | 'completed' | 'failed' | 'cancelled';
+  outcome: 'continuing' | 'completed' | 'failed' | 'cancelled' | 'owner_exited';
   identity?: Readonly<{ jobId?: string; operationId?: string }>;
+  owner?: Readonly<{ instanceId: string; pid: number; incarnation: ProcessIncarnation }>;
 }>;
 
 export type AbandonedRequestStatusRead =
@@ -54,13 +56,44 @@ export function readAbandonedRequestStatus(
       !('startedAt' in parsed) ||
       typeof parsed.startedAt !== 'string' ||
       !('outcome' in parsed) ||
-      !['continuing', 'completed', 'failed', 'cancelled'].includes(String(parsed.outcome))
+      !['continuing', 'completed', 'failed', 'cancelled', 'owner_exited'].includes(String(parsed.outcome))
     )
       return { kind: 'unreadable' };
     return { kind: 'found', status: parsed as AbandonedRequestStatus };
   } catch {
     return { kind: 'unreadable' };
   }
+}
+
+export function reconcileAbandonedRequestStatuses(
+  storage: StoragePort,
+  runDir: string,
+): Readonly<{ updated: number; alive: number; unknown: number }> {
+  let updated = 0;
+  let alive = 0;
+  let unknown = 0;
+  let names: string[];
+  try {
+    names = storage.readdirSync(join(runDir, 'abandoned-requests.v1'));
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return { updated, alive, unknown };
+    throw error;
+  }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const result = readAbandonedRequestStatus(storage, runDir, name.slice(0, -'.json'.length));
+    if (result.kind !== 'found' || result.status.outcome !== 'continuing') continue;
+    const owner = result.status.owner;
+    if (owner === undefined) continue;
+    const observed = probeProcessIncarnation(owner.pid);
+    const liveness = observed !== null && observed !== owner.incarnation ? 'absent' : observeProcessLiveness(owner.pid);
+    if (liveness === 'absent') {
+      writeAbandonedRequestStatus(storage, runDir, { ...result.status, outcome: 'owner_exited' });
+      updated++;
+    } else if (liveness === 'alive') alive++;
+    else unknown++;
+  }
+  return { updated, alive, unknown };
 }
 
 export function writeAbandonedRequestStatus(

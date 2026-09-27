@@ -531,19 +531,13 @@ export function observeSuccessionServing(runtime: Runtime, attemptId: string): S
   return current?.serving?.attemptId === attemptId ? current.serving : null;
 }
 
-export function observePriorSuccessionServing(runtime: Runtime, attemptId: string): SuccessionServingRecord | null {
-  const location = paths(runtime);
-  const current = readGeneration(runtime, location.record);
-  return current?.priorServings?.find((serving) => serving.attemptId === attemptId) ?? null;
-}
-
 export function observeCurrentSuccessionServing(runtime: Runtime): SuccessionServingRecord | null {
   const location = paths(runtime);
   return readGeneration(runtime, location.record)?.serving ?? null;
 }
 
-/** A waiter may take a fresh same-epoch turn after its recorded legacy incumbent has retired. */
-export function generationForWaiterServing(
+/** A supervised legacy successor may take a fresh same-epoch turn after its incumbent retires. */
+export function generationForLegacySuccessor(
   runtime: Runtime,
   expected: SuccessionWriterGeneration,
   attemptId: string,
@@ -563,7 +557,7 @@ export function generationForWaiterServing(
     assertNotRefused(current, attemptId);
     if (current.serving?.attemptId === attemptId) return expected;
     if (current.serving?.attemptId !== previousAttemptId) {
-      throw new Error('Previous succession serving changed before waiter generation advance.');
+      throw new Error('Previous succession serving changed before legacy successor generation advance.');
     }
     const next = {
       ...current,

@@ -9,6 +9,7 @@ import { basename, join } from 'node:path';
 import type { BuildFlavor } from '../build-flavor.js';
 import {
   type CoordinatorPaths,
+  coordinatorLaunchPath,
   coordinatorPaths,
   handoffRoutingStatusPathForRunDir,
   socketPathForRunDir,
@@ -75,6 +76,7 @@ export type CoralPaths = {
 export type { CoordinatorPaths } from './coordinator.js';
 export type { V0109CoordinatorSocketGuardSet } from './coordinator.js';
 export {
+  coordinatorLaunchPath,
   handoffRoutingStatusPathForRunDir,
   socketPathForRunDir,
   upgradeIntentPath,
