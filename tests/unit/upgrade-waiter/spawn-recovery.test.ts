@@ -4,11 +4,11 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { compareAndSwapUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { runUpgradeWaiter } from '#src/upgrade-waiter/index.js';
 import { createRealUpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
-import { observePendingSpawn } from '#src/upgrade-waiter/pending-spawn.js';
+import { observePendingSpawn, pendingSpawnMayBeReleased } from '#src/upgrade-waiter/pending-spawn.js';
 
 const directories: string[] = [];
 
@@ -51,9 +51,14 @@ describe('upgrade waiter spawn recovery', () => {
         sentinelPid: 999_999_991,
       }),
     );
-    expect(
-      observePendingSpawn(runDir, { attemptId: 'attempt', attemptSpawnNonce: 'nonce' }, createRealUpgradeWaiterPorts()),
-    ).toBe('unknown');
+    const spawn = observePendingSpawn(
+      runDir,
+      { attemptId: 'attempt', attemptSpawnNonce: 'nonce' },
+      createRealUpgradeWaiterPorts(),
+    );
+    expect(spawn).toBe('prepared-dead');
+    expect(pendingSpawnMayBeReleased(spawn, 100_000, 129_999)).toBe(false);
+    expect(pendingSpawnMayBeReleased(spawn, 100_000, 130_000)).toBe(true);
   });
 
   it('accepts a durable spawn-fenced record as proof that no child was launched', () => {
@@ -73,6 +78,63 @@ describe('upgrade waiter spawn recovery', () => {
     expect(
       observePendingSpawn(runDir, { attemptId: 'attempt', attemptSpawnNonce: 'nonce' }, createRealUpgradeWaiterPorts()),
     ).toBe('absent');
+  });
+
+  it('releases an expired pending spawn after authorization CAS but before spawn', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-prepared-after-cas-'));
+    directories.push(runDir);
+    const now = Date.parse('2026-09-27T00:00:00.000Z');
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'waiting-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'dead-waiter', pid: 999_999_990, incarnation: null },
+      attemptChild: null,
+      attemptSpawnPending: true,
+      attemptSpawnNonce: 'nonce',
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(now - 30_000).toISOString(),
+      completionReceipt: null,
+    });
+    expect(seeded.kind).toBe('written');
+    if (seeded.kind !== 'written') return;
+    expect((await compareAndSwapUpgradeIntent(runDir, seeded.intent.revision, seeded.intent)).kind).toBe('written');
+    const recordDir = join(runDir, 'coordinator-sentinel.v1');
+    mkdirSync(recordDir);
+    writeFileSync(
+      join(recordDir, 'prepared.json'),
+      JSON.stringify({
+        attemptId: 'attempt',
+        spawnNonce: 'nonce',
+        state: 'prepared',
+        sentinelPid: 999_999_991,
+      }),
+    );
+    let validations = 0;
+    await expect(
+      runUpgradeWaiter({
+        runDir,
+        socketPath: '/unused.sock',
+        targetRoot: '/installed/target',
+        validateTarget: () => ++validations === 1,
+        observeRetirement: async () => 'retired',
+        launchTarget: async () => {
+          throw new Error('stale attempt must not launch');
+        },
+        ports: {
+          ...createRealUpgradeWaiterPorts(),
+          pid: 9876,
+          uuid: () => 'new-waiter',
+          processIncarnation: () => null,
+          processLiveness: () => 'absent',
+          time: { now: () => now, sleep: async () => undefined },
+        },
+      }),
+    ).resolves.toEqual({ kind: 'closed' });
+    expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { attemptSpawnPending: false, attemptId: null } });
   });
 
   it('finds a live replacement after an earlier sentinel record says exited', async () => {
@@ -107,6 +169,30 @@ describe('upgrade waiter spawn recovery', () => {
     expect(
       observePendingSpawn(runDir, { attemptId: 'attempt', attemptSpawnNonce: 'nonce' }, createRealUpgradeWaiterPorts()),
     ).toEqual({ kind: 'child', pid: process.pid, incarnation });
+  });
+
+  it('holds a spawned but unarmed child until it exits after sentinel loss', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-pending-spawn-unarmed-'));
+    directories.push(runDir);
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('test process has no incarnation');
+    const recordDir = join(runDir, 'coordinator-sentinel.v1');
+    mkdirSync(recordDir);
+    writeFileSync(
+      join(recordDir, 'prepared.json'),
+      JSON.stringify({
+        attemptId: 'attempt',
+        spawnNonce: 'nonce',
+        state: 'prepared',
+        sentinelPid: 999_999_991,
+        coordinatorPid: process.pid,
+        coordinatorIncarnation: incarnation,
+      }),
+    );
+    const intent = { attemptId: 'attempt', attemptSpawnNonce: 'nonce' };
+    const ports = createRealUpgradeWaiterPorts();
+    expect(observePendingSpawn(runDir, intent, ports)).toEqual({ kind: 'child', pid: process.pid, incarnation });
+    expect(observePendingSpawn(runDir, intent, { ...ports, processLiveness: () => 'absent' })).toBe('absent');
   });
 
   it('does not launch a second target when an expired pending spawn has no decisive child record', async () => {

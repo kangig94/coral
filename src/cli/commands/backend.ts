@@ -34,6 +34,7 @@ import type {
   HandoffRoutingStatusQuarantineClearResult,
 } from '../../coordinator/handoff-routing/status-operator.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
+import { readAbandonedRequestStatus, type AbandonedRequestStatusRead } from '../../infra/abandoned-request-status.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
@@ -525,6 +526,7 @@ export interface BackendStatusCommandOperations {
   getLiveHandoffResult(): LiveHandoffResult | null;
   getRoutingStatus(): Promise<HandoffRoutingStatusReadResult>;
   readProviderProxySetHolderStatusDirect?(): Promise<readonly DirectProviderProxySetHolderStatusRow[]>;
+  getAbandonedRequestStatus?(recordId: string): AbandonedRequestStatusRead;
 }
 
 export interface HandoffRoutingStatusCommandOperations {
@@ -1001,6 +1003,8 @@ export function createBackendStatusCommandOperations(
     getLiveHandoffResult,
     getRoutingStatus: () => readHandoffRoutingStatusWithOwnerObservations(runtime, statusPath),
     readProviderProxySetHolderStatusDirect: () => readProviderProxySetHolderStatusDirect(runtime),
+    getAbandonedRequestStatus: (recordId) =>
+      readAbandonedRequestStatus(runtime.storage, runtime.paths.coral.coordinator.runDir, recordId),
   };
 }
 
@@ -1500,16 +1504,31 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   });
 
   const statusCommand = backend.command('status');
-  statusCommand.description('Show backend daemon status').action(async () => {
-    try {
-      process.exitCode = await reportBackendStatus({
-        stderr: (text) => process.stderr.write(text),
-        stdout: (text) => process.stdout.write(text),
-      });
-    } catch (error) {
-      emitError(error);
-    }
-  });
+  statusCommand
+    .description('Show backend daemon status')
+    .option('--request <record-id>', 'Show one abandoned request by record ID')
+    .action(async (options: { request?: string }) => {
+      try {
+        if (options.request !== undefined) {
+          const status = (
+            backendStatus.getAbandonedRequestStatus ??
+            ((recordId: string) => {
+              const runtime = createRealRuntime(resolveBuildFlavor(process.env));
+              return readAbandonedRequestStatus(runtime.storage, runtime.paths.coral.coordinator.runDir, recordId);
+            })
+          )(options.request);
+          process.stdout.write(`${JSON.stringify(status)}\n`);
+          process.exitCode = status.kind === 'found' ? 0 : 75;
+          return;
+        }
+        process.exitCode = await reportBackendStatus({
+          stderr: (text) => process.stderr.write(text),
+          stdout: (text) => process.stdout.write(text),
+        });
+      } catch (error) {
+        emitError(error);
+      }
+    });
 
   const routingStatusCommand = backend.command('routing-status').description('Inspect and repair routing status');
   const resolveRoutingStatusCommand = routingStatusCommand

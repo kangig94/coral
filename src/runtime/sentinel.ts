@@ -270,6 +270,8 @@ export async function runCoordinatorSentinel(
     timing?: SentinelTiming;
     onChild?: (child: ChildProcess) => void;
     fixtureRelaunch?: boolean;
+    isChildUninterruptible?: (pid: number) => boolean;
+    writeRecord?: typeof writeSentinelRecord;
   }> = {},
 ): Promise<number> {
   const timing = options.timing ?? SENTINEL_TIMING;
@@ -280,7 +282,7 @@ export async function runCoordinatorSentinel(
   const originalManifest = validatedBuild(dirname(dirname(executable)));
   let coordinatorIdentity: { coordinatorPid: number; coordinatorIncarnation: ProcessIncarnation | null } | null = null;
   const record = (state: string, fields: Record<string, unknown> = {}): boolean => {
-    return writeSentinelRecord(runDir, id, {
+    return (options.writeRecord ?? writeSentinelRecord)(runDir, id, {
       version: 1,
       sentinelId: id,
       sentinelPid: process.pid,
@@ -401,7 +403,11 @@ export async function runCoordinatorSentinel(
       return 1;
     }
   }
-  record('armed', { coordinatorPid: child.pid });
+  if (!record('armed', { coordinatorPid: child.pid })) {
+    child.kill('SIGKILL');
+    await exited;
+    return 1;
+  }
   armed = true;
   acknowledgeArm();
   process.send?.({ kind: 'coral-sentinel-child', pid: child.pid } satisfies SentinelMessage);
@@ -415,6 +421,8 @@ export async function runCoordinatorSentinel(
   let channelAvailable = true;
   let schedulingGaps = 0;
   let wedgeTermination = false;
+  let dStateSince: number | null = null;
+  const isChildUninterruptible = options.isChildUninterruptible ?? childIsUninterruptible;
   const reset = (now: number): void => {
     lastAnswer = now;
     outstanding = null;
@@ -429,17 +437,19 @@ export async function runCoordinatorSentinel(
     if (child.exitCode !== null || child.signalCode !== null) return;
     if (escalationAt !== null) {
       if (!killed && now - escalationAt >= timing.graceMs) {
-        if (child.pid !== undefined && childIsUninterruptible(child.pid)) return;
-        else {
-          record('killing', { coordinatorPid: child.pid, lastAnswer, schedulingGaps });
-          child.kill('SIGKILL');
-          killed = true;
-        }
+        record('killing', { coordinatorPid: child.pid, lastAnswer, schedulingGaps });
+        child.kill('SIGKILL');
+        killed = true;
       }
       return;
     }
-    if (now - lastAnswer >= timing.lapseMs) {
-      if (child.pid !== undefined && childIsUninterruptible(child.pid)) reset(now);
+    if (dStateSince !== null && child.pid !== undefined && !isChildUninterruptible(child.pid)) {
+      dStateSince = null;
+      reset(now);
+    }
+    if (now - lastAnswer >= timing.lapseMs || (dStateSince !== null && now - dStateSince >= timing.dStateDeferralMs)) {
+      if (child.pid !== undefined && isChildUninterruptible(child.pid) && dStateSince === null) dStateSince = now;
+      if (dStateSince !== null && now - dStateSince < timing.dStateDeferralMs) reset(now);
       else {
         record('terminating', { coordinatorPid: child.pid, lastAnswer, schedulingGaps });
         wedgeTermination = child.kill('SIGTERM') || wedgeTermination;

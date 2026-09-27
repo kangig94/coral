@@ -193,6 +193,14 @@ describe('CoralSetupError', () => {
       expect(isRetryableCoralSetupError(refusal)).toBe(true);
     }
     expect(documentedCoralSetupErrorExitCode('kb_unavailable')).toBe(75);
+    const deadline = documentedCoralSetupError('request_deadline_exceeded', {
+      method: 'jobs.detail',
+      requestId: 'request-1',
+      recordId: 'record-1',
+      outcome: 'continuing',
+    });
+    expect(`${deadline.userMessage} ${deadline.remediation}`).toContain('record-1');
+    expect(deadline.remediation).toContain('backend status --request');
     expect(isRetryableCoralSetupError(documentedCoralSetupError('store_schema_outdated'))).toBe(false);
     expect(documentedCoralSetupErrorExitCode('not_a_documented_code')).toBeUndefined();
     expect(isRetryableCoralSetupError(new Error('database is locked'))).toBe(false);

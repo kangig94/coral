@@ -10,13 +10,17 @@ type SpawnObservation =
   | 'alive'
   | 'unknown'
   | 'missing'
+  | 'prepared-dead'
   | Readonly<{ kind: 'child'; pid: number; incarnation: ProcessIncarnation }>;
 
 const MISSING_SPAWN_SETTLE_MS = 30_000;
 
 /** A missing record remains unknown until the deadline plus 30 seconds; the sentinel's pre-spawn CAS fences a concurrent release. */
 export function pendingSpawnMayBeReleased(spawn: SpawnObservation, deadline: number, now: number): boolean {
-  return spawn === 'absent' || (spawn === 'missing' && now >= deadline + MISSING_SPAWN_SETTLE_MS);
+  return (
+    spawn === 'absent' ||
+    ((spawn === 'missing' || spawn === 'prepared-dead') && now >= deadline + MISSING_SPAWN_SETTLE_MS)
+  );
 }
 
 /** Sentinel records identify a launched target even if its waiter died before recording the child in the intent. */
@@ -34,6 +38,7 @@ export function observePendingSpawn(
   }
   let matched = false;
   let unknown = false;
+  let preparedDead = false;
   for (const entry of entries) {
     if (!entry.endsWith('.json')) continue;
     let record: Record<string, unknown>;
@@ -76,8 +81,12 @@ export function observePendingSpawn(
     const sentinelAbsent = currentIncarnation !== null && currentIncarnation !== incarnation;
     const liveness = sentinelAbsent ? 'absent' : ports.processLiveness(record.sentinelPid);
     if (liveness === 'alive') return 'alive';
+    if (liveness === 'absent' && record.state === 'prepared' && !childAbsent && record.coordinatorPid === undefined) {
+      preparedDead = true;
+      continue;
+    }
     if (liveness === 'unknown' || (!childAbsent && record.state !== 'exited' && record.state !== 'spawn-fenced'))
       unknown = true;
   }
-  return unknown ? 'unknown' : matched ? 'absent' : 'missing';
+  return unknown ? 'unknown' : preparedDead ? 'prepared-dead' : matched ? 'absent' : 'missing';
 }

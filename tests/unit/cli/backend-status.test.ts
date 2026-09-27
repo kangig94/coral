@@ -413,6 +413,42 @@ afterEach(() => {
   for (const root of storeResetRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+describe('backend status request lookup', () => {
+  it('prints the durable status for an abandoned request record ID', async () => {
+    const getStatus = vi.fn(async () => {
+      throw new Error('request lookup should not probe the backend');
+    });
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      storeReset,
+      backendStatus: {
+        inspectReadiness: () => ({ kind: 'no-legacy' }),
+        getStatus,
+        getLiveHandoffResult: () => null,
+        getRoutingStatus: async () => ({ kind: 'absent' }),
+        getAbandonedRequestStatus: (recordId) => ({
+          kind: 'found',
+          status: {
+            recordId,
+            method: 'jobs.detail',
+            requestId: 'request-1',
+            startedAt: '2026-09-27T00:00:00.000Z',
+            outcome: 'continuing',
+          },
+        }),
+      },
+    });
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status', '--request', 'request-1']);
+    expect(JSON.parse(stdout)).toMatchObject({
+      kind: 'found',
+      status: { recordId: 'request-1', outcome: 'continuing' },
+    });
+    expect(getStatus).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
+  });
+});
+
 describe('backend store-reset discard output', () => {
   it('does not print the absolute store root', async () => {
     const program = new Command();

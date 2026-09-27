@@ -9,6 +9,7 @@
 import { isAbsolute, normalize } from 'node:path';
 
 import { isRecord } from '../infra/json.js';
+import { validAbandonedRequestRecordId } from '../infra/abandoned-request-status.js';
 
 export interface CoralSetupErrorInit {
   code: string;
@@ -776,7 +777,12 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   request_deadline_exceeded: {
     userMessage: (context) =>
       `Request ${stringContextValue(context, 'requestId', 'unknown')} exceeded its deadline (${stringContextValue(context, 'outcome', 'unknown')}).`,
-    remediation: 'Read the operation state before retrying a request that may have changed it.',
+    remediation: (context) => {
+      const recordId = stringContextValue(context, 'recordId', '');
+      return validAbandonedRequestRecordId(recordId)
+        ? `Run coral-cli backend status --request ${recordId} to read this request's outcome before retrying a mutation.`
+        : 'Read the operation state before retrying a request that may have changed it.';
+    },
     exitCode: 75,
   },
   handoff_administrative_drain_timeout: {

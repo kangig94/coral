@@ -2,6 +2,7 @@ import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { durableRequestIdentity } from '../../infra/request-lease-identity.js';
+import type { AbandonedRequestStatus } from '../../infra/abandoned-request-status.js';
 
 export type RequestLease = Readonly<{
   run<T>(execute: (signal: AbortSignal) => Promise<T>): Promise<T>;
@@ -10,15 +11,6 @@ export type RequestLease = Readonly<{
 export type RequestLeaseIdentity = Readonly<{
   jobId?: string;
   operationId?: string;
-}>;
-
-export type AbandonedRequest = Readonly<{
-  recordId: string;
-  method: string;
-  requestId: string;
-  startedAt: string;
-  outcome: 'continuing' | 'completed' | 'failed' | 'cancelled';
-  identity?: RequestLeaseIdentity;
 }>;
 
 export type RequestLeaseTiming = Readonly<{
@@ -55,7 +47,7 @@ export function createRequestLeaseOwner(
   options: Readonly<{
     begin(): void;
     end(): void;
-    abandon?(request: AbandonedRequest): void;
+    abandon?(request: AbandonedRequestStatus): void;
     newRecordId(): string;
     time: TimePort;
     timing?: RequestLeaseTiming;

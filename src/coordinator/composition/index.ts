@@ -153,6 +153,7 @@ import {
   visibleUpgradeIntent,
   type UpgradeIntent,
 } from '../../infra/upgrade-intent.js';
+import { writeAbandonedRequestStatus } from '../../infra/abandoned-request-status.js';
 import { createRealSuccessionAttemptPorts } from '../../runtime/succession-attempt.js';
 import { currentSuccessionAttemptChild, startSuccessionAttempt } from '../succession/attempt-child.js';
 import {
@@ -2028,25 +2029,7 @@ export function createCoordinatorCore(
     newRecordId: () => runtime.ids.uuid(),
     begin: () => world.idleTimer.beginRequest(),
     end: () => world.idleTimer.endRequest(),
-    abandon: (request) => {
-      const directory = join(runtime.paths.coral.coordinator.runDir, 'abandoned-requests.v1');
-      const path = join(directory, `${request.recordId}.json`);
-      runtime.storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-      if (
-        !runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify({ version: 1, ...request })}\n`, {
-          mode: 0o600,
-        })
-      ) {
-        throw new Error('Abandoned request status could not be recorded');
-      }
-      const records = runtime.storage
-        .readdirSync(directory)
-        .filter((name) => name.endsWith('.json'))
-        .map((name) => ({ name, modifiedAt: runtime.storage.statSync(join(directory, name)).mtimeMs }))
-        .sort((left, right) => left.modifiedAt - right.modifiedAt || left.name.localeCompare(right.name));
-      for (const record of records.slice(0, Math.max(0, records.length - 256)))
-        runtime.storage.unlinkSync(join(directory, record.name));
-    },
+    abandon: (request) => writeAbandonedRequestStatus(runtime.storage, runtime.paths.coral.coordinator.runDir, request),
   });
 
   const httpHandlerDeps: HttpHandlerPorts = {
