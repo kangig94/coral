@@ -342,9 +342,16 @@ describe('real-process succession commit', () => {
     expect(observeSuccessionWriterGeneration(runtime)?.generation).toBeGreaterThan(4);
     await assertAddressClaimed(initial.socketPath);
 
+    const {
+      CORAL_CHILD: _coralChild,
+      CORAL_CHILD_PRINCIPAL_HANDLE: _childHandle,
+      CORAL_JOB_ID: _jobId,
+      CORAL_SESSION_ID: _sessionId,
+      ...topLevelEnv
+    } = process.env;
     const cli = spawn('node', [join(oldFixture.root, 'bridge', 'coral-cli'), 'codex', '-i', prompt], {
       cwd: projectRoot,
-      env: { ...process.env, HOME: home, TMPDIR: home, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+      env: { ...topLevelEnv, HOME: home, TMPDIR: home, PATH: `${binDir}:${process.env.PATH ?? ''}` },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -385,26 +392,35 @@ describe('real-process succession commit', () => {
       backend: 'succession-interposition',
       version: '0.0.1',
     });
+    const servingGate = join(home, 'successor-before-serving');
     const old = spawnCoordinator({
       fixture: oldFixture,
       home,
       tempRoots: roots,
-      env: { CORAL_TEST_SUCCESSION_SERVING_DELAY_MS: '1500' },
+      env: { CORAL_TEST_SUCCESSION_SERVING_GATE: servingGate },
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
     coordinators.push(contender);
-    await waitForProcessExit(contender, 30_000);
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
-    await waitForCondition(() => {
-      const observed = readUpgradeIntent(runDir);
-      return observed.kind === 'readable' && observed.intent.disposition === 'attempting';
-    }, 30_000);
-    const attempting = readUpgradeIntent(runDir);
-    expect(attempting.kind === 'readable' ? attempting.intent.attemptChild?.pid : null).toBeGreaterThan(0);
-    old.child.kill('SIGTERM');
+    try {
+      await waitForCondition(() => existsSync(servingGate), 30_000);
+      const attempting = readUpgradeIntent(runDir);
+      expect(attempting.kind === 'readable' ? attempting.intent.attemptChild?.pid : null).toBeGreaterThan(0);
+      old.child.kill('SIGTERM');
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(runDir);
+        return (
+          observed.kind === 'readable' &&
+          observed.intent.blockers.some((blocker) => blocker.reason.includes('Incumbent shutdown aborted'))
+        );
+      }, 30_000);
+    } finally {
+      rmSync(servingGate, { force: true });
+    }
+    await waitForProcessExit(contender, 30_000);
     await waitForProcessExit(old, 30_000);
     const observed = readUpgradeIntent(runDir);
     expect(observed.kind === 'readable' && observed.intent.disposition === 'completed').toBe(false);

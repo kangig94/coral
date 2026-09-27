@@ -95,6 +95,7 @@ export class SuccessionAttemptStartupHoldError extends Error {
  */
 export type SuccessionStartupHold =
   | Readonly<{ kind: 'unsupported-intent'; attemptId: null; reason: string; fingerprint: string }>
+  | Readonly<{ kind: 'unreadable-intent'; attemptId: null; source: 'corrupt' | 'unreadable'; fingerprint: string }>
   | Readonly<{ kind: 'attempt-record-unreadable'; attemptId: string }>
   | Readonly<{ kind: 'deaths-unproven'; attemptId: string; alive: boolean }>
   | Readonly<{ kind: 'recovery-grants-unverified'; attemptId: string }>
@@ -126,6 +127,8 @@ function describeStartupHold(hold: SuccessionStartupHold): string {
   switch (hold.kind) {
     case 'unsupported-intent':
       return hold.reason;
+    case 'unreadable-intent':
+      return `upgrade intent is ${hold.source}`;
     case 'attempt-record-unreadable':
       return 'incomplete attempt record is unreadable';
     case 'deaths-unproven':
@@ -153,13 +156,14 @@ function describeStartupHold(hold: SuccessionStartupHold): string {
 }
 
 function patienceSubject(hold: SuccessionStartupHold): string {
-  if (hold.kind === 'unsupported-intent') return `${hold.kind}:${hold.fingerprint}`;
+  if (hold.kind === 'unsupported-intent' || hold.kind === 'unreadable-intent')
+    return `${hold.kind}:${hold.fingerprint}`;
   if (hold.kind === 'preferred-epoch-unopenable') return hold.attemptId ?? `preferred-epoch:${hold.epochKey}`;
   if (hold.kind === 'retirement-mint-withheld') return hold.kind;
   return hold.attemptId;
 }
 
-function unsupportedIntentFingerprint(runtime: Runtime): string {
+function startupIntentFingerprint(runtime: Runtime): string {
   try {
     return runtime.ids.sha256(
       runtime.storage.readFileSync(upgradeIntentPath(runtime.paths.coral.coordinator.runDir), 'utf-8'),
@@ -474,13 +478,17 @@ export async function resolveIncompleteSuccessionAtStartup(
 ): Promise<IncompleteSuccessionResolution> {
   const { runtime } = options;
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-  if (observed.kind === 'unsupported') {
-    const hold = {
-      kind: 'unsupported-intent',
-      attemptId: null,
-      reason: 'upgrade intent uses unsupported vocabulary',
-      fingerprint: unsupportedIntentFingerprint(runtime),
-    } as const;
+  if (observed.kind === 'unsupported' || observed.kind === 'corrupt' || observed.kind === 'unreadable') {
+    const fingerprint = startupIntentFingerprint(runtime);
+    const hold: SuccessionStartupHold =
+      observed.kind === 'unsupported'
+        ? {
+            kind: 'unsupported-intent',
+            attemptId: null,
+            reason: 'upgrade intent uses unsupported vocabulary',
+            fingerprint,
+          }
+        : { kind: 'unreadable-intent', attemptId: null, source: observed.kind, fingerprint };
     return (await exhaustStartupPatience(runtime, options.startupId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
   }
   if (observed.kind !== 'readable') return { kind: 'none' };

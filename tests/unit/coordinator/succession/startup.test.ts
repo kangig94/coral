@@ -276,6 +276,49 @@ describe('incomplete succession at startup', () => {
     expect(await holdOf(resolveAt(runtime, 'startup-1'))).toMatchObject({ kind: 'unsupported-intent' });
   });
 
+  it('holds a corrupt active intent until its recorded startup patience expires', async () => {
+    const runtime = runtimeFixture();
+    await seedRecoveryGrant(runtime, { pid: process.pid, incarnation: null });
+    writeFileSync(upgradeIntentPath(runtime.paths.coral.coordinator.runDir), '{"version":');
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir).kind).toBe('corrupt');
+
+    const hold = await holdOf(resolveAt(runtime, 'startup-1'));
+    expect(hold).toMatchObject({ kind: 'unreadable-intent', source: 'corrupt' });
+    if (hold.kind !== 'unreadable-intent') throw new Error('Expected an unreadable intent hold.');
+    const subject = `${hold.kind}:${hold.fingerprint}`;
+    const patience = join(
+      runtime.paths.coral.coordinator.runDir,
+      'succession-startup-patience.v1',
+      `${runtime.ids.sha256(subject)}.json`,
+    );
+    expect(JSON.parse(runtime.storage.readFileSync(patience, 'utf-8'))).toMatchObject({
+      attemptId: subject,
+      startups: 1,
+    });
+    expect(await holdOf(resolveAt(runtime, 'startup-2'))).toMatchObject({
+      kind: 'unreadable-intent',
+      source: 'corrupt',
+    });
+    await expect(resolveAt(runtime, 'startup-3')).resolves.toEqual({ kind: 'none' });
+    await expect(resolveAt(runtime, 'startup-4')).resolves.toEqual({ kind: 'none' });
+  });
+
+  it('holds an unreadable active intent under the same bounded startup patience', async () => {
+    const runtime = runtimeFixture();
+    await seedRecoveryGrant(runtime, { pid: process.pid, incarnation: null });
+    const path = upgradeIntentPath(runtime.paths.coral.coordinator.runDir);
+    rmSync(path);
+    runtime.storage.mkdirSync(path);
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir).kind).toBe('unreadable');
+
+    expect(await holdOf(resolveAt(runtime, 'startup-1'))).toMatchObject({
+      kind: 'unreadable-intent',
+      source: 'unreadable',
+    });
+    expect(await holdOf(resolveAt(runtime, 'startup-2'))).toMatchObject({ kind: 'unreadable-intent' });
+    await expect(resolveAt(runtime, 'startup-3')).resolves.toEqual({ kind: 'none' });
+  });
+
   it('should abandon an attempt whose deaths stay unproven once patience is exhausted', async () => {
     const runtime = runtimeFixture();
     await seedRecoveryGrant(runtime, { pid: process.pid, incarnation: null });

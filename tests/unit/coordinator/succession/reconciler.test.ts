@@ -116,6 +116,50 @@ describe('succession reconciler', () => {
   const directories: string[] = [];
   afterEach(() => {
     for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
+    installedTargets.clear();
+  });
+
+  it.each(['0.11.0', '0.10.50'])(
+    'replaces a vanished target with an installed %s target that outranks the incumbent',
+    async (version) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+      directories.push(runDir);
+      await seedHeldIntent(runDir, serving);
+      installedTargets.set('/installed/replacement', {});
+      const reconciler = servingReconciler(runDir);
+      try {
+        expect(
+          await reconciler.request({
+            requestId: 'replacement-request',
+            target: { build: { ...build, version }, pluginRootLabel: '/installed/replacement' },
+          }),
+        ).toMatchObject({
+          kind: 'registered',
+          intent: { requestId: 'replacement-request', target: { pluginRootLabel: '/installed/replacement' } },
+        });
+      } finally {
+        reconciler.dispose();
+      }
+    },
+  );
+
+  it('keeps a valid recorded target over a lower contender', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    await seedHeldIntent(runDir, serving);
+    installedTargets.set('/missing/target', {});
+    installedTargets.set('/installed/lower', {});
+    const reconciler = servingReconciler(runDir);
+    try {
+      expect(
+        await reconciler.request({
+          requestId: 'lower-request',
+          target: { build: { ...build, version: '0.10.50' }, pluginRootLabel: '/installed/lower' },
+        }),
+      ).toMatchObject({ kind: 'registered', intent: { requestId: 'request-1' } });
+    } finally {
+      reconciler.dispose();
+    }
   });
 
   it('leaves a commit-incapable incumbent intent claimable by a legacy waiter', async () => {

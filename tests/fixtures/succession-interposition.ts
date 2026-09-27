@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 
 import type {
   SuccessionInterposition,
@@ -67,6 +67,11 @@ export function successionInterpositionFromEnvironment(env: NodeJS.ProcessEnv = 
         await holdSharedOpener(env.CORAL_TEST_RETIREMENT_OPENER_LOCK, delayMs('CORAL_TEST_RETIREMENT_OPENER_HOLD_MS'));
       }
       if (point === 'successor-before-serving') {
+        if (!recovery && env.CORAL_TEST_SUCCESSION_SERVING_GATE !== undefined) {
+          const gate = env.CORAL_TEST_SUCCESSION_SERVING_GATE;
+          writeFileSync(gate, String(process.pid));
+          while (existsSync(gate)) await sleep(10);
+        }
         await sleep(delayMs('CORAL_TEST_SUCCESSION_SERVING_DELAY_MS'));
         if (claimOnce(env.CORAL_TEST_SUCCESSION_MISS_DEADLINE_ONCE)) {
           await sleep(delayMs('CORAL_TEST_SUCCESSION_MISS_DEADLINE_MS'));

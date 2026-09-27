@@ -32,7 +32,7 @@ import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { retainedBuildRoot } from '#src/infra/retained-build-root.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { readCustodyLedger } from '#src/store/custody-ledger.js';
+import { bindCustodyIdentity, readCustodyLedger, recordCustodyIntent } from '#src/store/custody-ledger.js';
 import { readControllerRecoveryGrant } from '#src/store/controller-receipt-records.js';
 import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, resolveCurrentStore } from '#src/store/epoch.js';
 import { protectStoreEpoch, protectedStoreEpochRoot, resolveProtectedEpoch } from '#src/store/epoch-protection.js';
@@ -371,7 +371,7 @@ describe('real-process durable-cli succession', () => {
     expect(new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot).read(jobId)).not.toBeNull();
   }, 180_000);
 
-  it.each(['canonical', 'protected-published', 'protected-unpublished'] as const)(
+  it.each(['canonical', 'protected-published', 'protected-unpublished', 'published-operation'] as const)(
     'hands a live old-format job back to its proven controller before minting (%s)',
     async (address) => {
       assertBuildArtifactsAvailable();
@@ -397,6 +397,23 @@ describe('real-process durable-cli succession', () => {
       const originalKey = encodeResolvedStoreEpoch(activeRuntime, originalEpoch);
       expect(admitted?.epochKey).toBe(originalKey);
       expect(admitted?.controller?.instanceId).toBe(incumbent.instanceId);
+      if (address === 'published-operation') {
+        const intent = recordCustodyIntent(activeRuntime, activeRuntime.paths.coral.coordinator.runDir, {
+          effect: 'provider-operation-publication',
+          epoch: dirname(originalEpoch.path),
+          owner: 'provider-operation',
+          operationId: 'completed-provider-operation',
+          jobId: 'completed-provider-job',
+          capsule: null,
+          nowMs: Date.now(),
+          bindWithinMs: 10_000,
+        });
+        bindCustodyIdentity(activeRuntime, activeRuntime.paths.coral.coordinator.runDir, intent, {
+          process: null,
+          capsule: null,
+          observedAtMs: Date.now(),
+        });
+      }
       old.child.kill('SIGKILL');
       await waitForProcessExit(old, 15_000);
       await waitForCondition(() => {

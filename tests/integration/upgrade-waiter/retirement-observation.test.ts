@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntentChange } from '#src/infra/upgrade-intent.js';
+import {
+  compareAndSwapUpgradeIntent,
+  readUpgradeIntent,
+  type UpgradeIntent,
+  type UpgradeIntentChange,
+} from '#src/infra/upgrade-intent.js';
 import { createRealUpgradeWaiterPorts, type UpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
 import { runUpgradeWaiter } from '#src/upgrade-waiter/index.js';
 
@@ -83,7 +88,7 @@ describe('upgrade waiter natural-retirement observation', () => {
     for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  it('should release its attempt to the coordinator that serves once the recorded incumbent is proven gone', async () => {
+  it('keeps the waiter accountable while a replacement legacy coordinator serves, then launches on retirement', async () => {
     const dir = runDir();
     const retired = await exitedPid();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent(retired));
@@ -91,7 +96,22 @@ describe('upgrade waiter natural-retirement observation', () => {
     const server = await answeringCoordinator(socketPath, { instanceId: 'successor', pid: process.pid });
     let time = Date.parse('2026-09-25T00:00:00.000Z');
     let polls = 0;
-    const launch = vi.fn(async () => undefined);
+    const launch = vi.fn(async (intent: UpgradeIntent, attemptId: string) => {
+      const completed = await compareAndSwapUpgradeIntent(dir, intent.revision, {
+        ...intent,
+        disposition: 'completed',
+        completionReceipt: {
+          kind: 'serving',
+          attemptId,
+          successor: { instanceId: 'target', pid: 5678, incarnation: null, build },
+          epochKey: 'epoch-1:lineage-1',
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date(time).toISOString(),
+        },
+      });
+      expect(completed.kind).toBe('written');
+    });
     try {
       const result = await runUpgradeWaiter({
         runDir: dir,
@@ -103,19 +123,24 @@ describe('upgrade waiter natural-retirement observation', () => {
           () => time,
           async (ms) => {
             time += ms;
-            if (++polls > 20) throw new Error('waiter still holds the attempt');
+            if (++polls === 4) {
+              const observed = readUpgradeIntent(dir);
+              expect(observed).toMatchObject({ intent: { attemptOwner: { kind: 'waiter' } } });
+              await new Promise<void>((resolve) => server.close(() => resolve()));
+            }
+            if (polls > 20) throw new Error('waiter did not launch after replacement retired');
           },
         ),
       });
 
-      expect(result).toEqual({ kind: 'replaced' });
-      expect(launch).not.toHaveBeenCalled();
+      expect(result).toEqual({ kind: 'completed' });
+      expect(launch).toHaveBeenCalledOnce();
       expect(readUpgradeIntent(dir)).toMatchObject({
         kind: 'readable',
-        intent: { disposition: 'pending', attemptId: null, attemptOwner: null, retryCondition: null },
+        intent: { disposition: 'completed' },
       });
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });

@@ -719,6 +719,8 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         if (
           current.attemptId !== null &&
           ((options.observeServing?.(current.attemptId) ?? null) !== null ||
+            (current.attemptChild?.attemptId === current.attemptId &&
+              observeRecordedDeath(current.attemptChild) !== 'absent') ||
             (recordsSelf(current.incumbent, self) && (heldByCommit(current) || current.attemptId === launchedAttempt)))
         ) {
           return queueBehindAttempt(current, input);
@@ -731,7 +733,9 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         }
         if (
           sameTarget(current.target, input.target) ||
-          (current.target.build.flavor === input.target.build.flavor && comparison <= 0)
+          (current.target.build.flavor === input.target.build.flavor &&
+            comparison <= 0 &&
+            revalidateUpgradeIntentTarget(current).kind === 'validated')
         ) {
           notifyObligationChange();
           return settle({ kind: 'registered', intent: current });

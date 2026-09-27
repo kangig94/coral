@@ -57,6 +57,7 @@ export function prepareRetainedControllerHandoff(
   for (const entry of custody) {
     if (entry.kind === 'unreadable' || entry.kind === 'holding') return null;
     if (entry.kind !== 'bound') continue;
+    if (entry.intent.effect === 'provider-operation-publication') continue;
     if (entry.binding.process === null) return null;
     const observation = observeRecordedContainment(
       { ...entry.binding.process, childRoot: null },

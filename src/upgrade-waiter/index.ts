@@ -17,8 +17,7 @@ const LEASE_MS = 30_000;
 export const CONTENDER_DEFERRAL_OWNER = 'upgrade-contender';
 const POLL_MS = 2_000;
 
-/** `replaced`: another coordinator answers and the recorded incumbent is proven gone, so it can never retire. */
-type RetirementObservation = 'serving' | 'retired' | 'replaced' | 'unknown';
+type RetirementObservation = 'serving' | 'retired' | 'unknown';
 
 export type UpgradeWaiterOptions = Readonly<{
   runDir: string;
@@ -34,7 +33,7 @@ export type UpgradeWaiterOptions = Readonly<{
 
 export type UpgradeWaiterResult =
   | Readonly<{
-      kind: 'completed' | 'closed' | 'superseded' | 'replaced' | 'target-unavailable' | 'lease-held' | 'expired';
+      kind: 'completed' | 'closed' | 'superseded' | 'target-unavailable' | 'lease-held' | 'expired';
     }>
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
@@ -92,7 +91,7 @@ async function observeNaturalRetirement(
       incarnation?: string;
     }>({ timeoutMs: 1_000 });
     if (sameIncumbent(intent, ping)) return 'serving';
-    return observeRecordedProcess(ports, intent.incumbent) === 'absent' ? 'replaced' : 'unknown';
+    return observeRecordedProcess(ports, intent.incumbent) === 'absent' ? 'serving' : 'unknown';
   } catch {
     if (observeRecordedProcess(ports, intent.incumbent) !== 'absent') return 'unknown';
     if (!ports.pathAbsent(join(runDir, 'coordinator.json'))) return 'unknown';
@@ -262,21 +261,6 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       continue;
     }
     const retirement = launched ? null : await observe(intent);
-    if (retirement === 'replaced') {
-      // The coordinator that serves adopts or supersedes an intent only once no attempt names it.
-      const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
-        ...intent,
-        disposition: 'pending',
-        blockers: [{ owner: 'waiter', reason: 'another coordinator serves after the recorded incumbent exited' }],
-        retryCondition: null,
-        attemptId: null,
-        attemptOwner: null,
-        attemptDeadline: null,
-      });
-      if (released.kind === 'conflict') continue;
-      if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
-      return { kind: 'replaced' };
-    }
     if (retirement === 'retired') {
       if (!validate(intent)) continue;
       const claimed = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {

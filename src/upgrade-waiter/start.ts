@@ -5,7 +5,9 @@ import type { LegacyUpgradeRefusal, LegacyUpgradeStart } from '../infra/legacy-u
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import {
+  compareAndSwapUpgradeIntent,
   readUpgradeIntent,
+  revalidateUpgradeIntentTarget,
   retryUpgradeIntentCas,
   type UpgradeIntent,
   type UpgradeIntentProblem,
@@ -20,15 +22,6 @@ export type UpgradeWaiterStart =
   | Readonly<{ kind: 'started' | 'existing'; pid: number }>
   | Readonly<{ kind: 'unavailable'; reason: string }>;
 
-function waiterAlive(ports: UpgradeWaiterPorts, owner: NonNullable<UpgradeIntent['attemptOwner']>): boolean {
-  if (owner.incarnation === null) return false;
-  try {
-    return ports.processIncarnation(owner.pid) === owner.incarnation;
-  } catch {
-    return false;
-  }
-}
-
 /** The contender must observe a durable waiter owner before it exits. */
 export async function startUpgradeWaiter(
   options: Readonly<{
@@ -40,23 +33,40 @@ export async function startUpgradeWaiter(
   }>,
 ): Promise<UpgradeWaiterStart> {
   const { ports } = options;
-  const observed = readUpgradeIntent(options.runDir);
-  if (observed.kind !== 'readable') return { kind: 'unavailable', reason: `intent is ${observed.kind}` };
-  if (observed.intent.target.pluginRootLabel !== options.targetRoot) {
-    return { kind: 'unavailable', reason: 'intent target changed' };
-  }
-  if (observed.intent.disposition === 'completed' || observed.intent.disposition === 'closed') {
-    return { kind: 'unavailable', reason: 'intent has ended' };
-  }
-  const owner = observed.intent.attemptOwner;
-  if (
-    owner?.kind === 'waiter' &&
-    observed.intent.attemptDeadline !== null &&
-    Date.parse(observed.intent.attemptDeadline) > ports.time.now()
-  ) {
-    return waiterAlive(ports, owner)
-      ? { kind: 'existing', pid: owner.pid }
-      : { kind: 'unavailable', reason: 'recorded waiter died before its lease expired' };
+  let observed = readUpgradeIntent(options.runDir);
+  for (;;) {
+    if (observed.kind !== 'readable') return { kind: 'unavailable', reason: `intent is ${observed.kind}` };
+    const intent = observed.intent;
+    if (intent.target.pluginRootLabel !== options.targetRoot) {
+      return { kind: 'unavailable', reason: 'intent target changed' };
+    }
+    if (intent.disposition === 'completed' || intent.disposition === 'closed') {
+      return { kind: 'unavailable', reason: 'intent has ended' };
+    }
+    const owner = intent.attemptOwner;
+    if (
+      owner?.kind !== 'waiter' ||
+      intent.attemptDeadline === null ||
+      Date.parse(intent.attemptDeadline) <= ports.time.now()
+    )
+      break;
+    const liveness = observeRecordedProcess(ports, owner);
+    if (liveness === 'alive') return { kind: 'existing', pid: owner.pid };
+    if (liveness !== 'absent') return { kind: 'unavailable', reason: 'recorded waiter death is unproven' };
+    if (intent.attemptChild && observeRecordedProcess(ports, intent.attemptChild) !== 'absent') {
+      return { kind: 'unavailable', reason: 'recorded attempt child may still serve' };
+    }
+    const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+      ...intent,
+      attemptId: null,
+      attemptOwner: null,
+      attemptChild: null,
+      attemptDeadline: null,
+    });
+    if (released.kind !== 'written' && released.kind !== 'conflict') {
+      return { kind: 'unavailable', reason: `intent is ${released.kind}` };
+    }
+    observed = readUpgradeIntent(options.runDir);
   }
   const pid = await ports.launchDetached(join(options.targetRoot, 'bridge', UPGRADE_WAITER_BUNDLE_FILE), [
     options.runDir,
@@ -77,7 +87,7 @@ export async function startUpgradeWaiter(
       claimant?.kind === 'waiter' &&
       current.intent.attemptDeadline !== null &&
       Date.parse(current.intent.attemptDeadline) > ports.time.now() &&
-      waiterAlive(ports, claimant)
+      observeRecordedProcess(ports, claimant) === 'alive'
     ) {
       return { kind: 'existing', pid: claimant.pid };
     }
@@ -89,7 +99,7 @@ export async function startUpgradeWaiter(
 /**
  * An intent recorded against an incumbent that is proven gone can never be released by that incumbent, so the one
  * now serving may replace it — unless an attempt may still act on it: an incumbent-owned attempt belongs to startup
- * recovery, and a waiter's attempt ends only with its lease.
+ * recovery, and a live waiter's attempt ends only with its lease.
  */
 function retiredIncumbentSupersession(
   ports: UpgradeWaiterPorts,
@@ -100,7 +110,8 @@ function retiredIncumbentSupersession(
     owner?.kind === 'incumbent' ||
     (owner?.kind === 'waiter' &&
       intent.attemptDeadline !== null &&
-      Date.parse(intent.attemptDeadline) > ports.time.now())
+      Date.parse(intent.attemptDeadline) > ports.time.now() &&
+      observeRecordedProcess(ports, owner) !== 'absent')
   ) {
     return 'attempt-held';
   }
@@ -167,7 +178,11 @@ export async function requestLegacyUpgrade(
       if (current.target.build.flavor !== options.target.build.flavor) {
         return refuse('pending target has another build flavor', 'deferred');
       }
-      if (targetOrder >= 0) {
+      if (
+        targetOrder >= 0 &&
+        (current.target.pluginRootLabel === options.target.pluginRootLabel ||
+          revalidateUpgradeIntentTarget(current).kind === 'validated')
+      ) {
         const registered = {
           kind: 'registered',
           requestId: current.requestId,
@@ -183,6 +198,12 @@ export async function requestLegacyUpgrade(
           },
           settle: () => registered,
         };
+      }
+      if (
+        targetOrder >= 0 &&
+        revalidateUpgradeIntentTarget({ ...current, target: options.target }).kind !== 'validated'
+      ) {
+        return refuse('replacement target does not validate', 'error');
       }
     }
     if (
