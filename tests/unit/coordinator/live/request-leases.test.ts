@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRequestLeaseOwner, type RequestLeaseTiming } from '#src/coordinator/live/request-leases.js';
+import { IdleTimer } from '#src/coordinator/live/idle.js';
 import { createRealTimePort } from '#src/infra/time.js';
 
 const timing: RequestLeaseTiming = {
@@ -16,6 +17,119 @@ afterEach(() => {
 });
 
 describe('coordinator request leases', () => {
+  it('keeps a live provider job through abandonment and retires after its terminal outcome', async () => {
+    vi.useFakeTimers();
+    const time = createRealTimePort();
+    const idleTimer = new IdleTimer({ time, timeoutMs: 1 });
+    const retired = vi.fn();
+    let jobRunning = true;
+    let jobOutcome: 'running' | 'completed' = 'running';
+    idleTimer.startWatching(() => !jobRunning, retired);
+    setTimeout(() => {
+      jobOutcome = 'completed';
+      jobRunning = false;
+    }, 61_000);
+    const owner = createRequestLeaseOwner({
+      time,
+      timing,
+      begin: () => idleTimer.beginRequest(),
+      end: () => idleTimer.endRequest(),
+    });
+    const request = owner.begin('jobs.detail', 'provider-neighbor').run(() => new Promise<never>(() => {}));
+    const rejected = expect(request).rejects.toMatchObject({ context: { outcome: 'continuing' } });
+    await vi.advanceTimersByTimeAsync(50);
+    await rejected;
+    expect(idleTimer.inflightRequests).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(jobOutcome).toBe('running');
+    expect(retired).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(jobOutcome).toBe('completed');
+    expect(retired).toHaveBeenCalledWith('idle');
+    idleTimer.stopWatching();
+  });
+
+  it('releases idle shutdown after an abandoned request ignores its cancellation signal', async () => {
+    vi.useFakeTimers();
+    const time = createRealTimePort();
+    const idleTimer = new IdleTimer({ time, timeoutMs: 60_000 });
+    const drained = vi.fn();
+    idleTimer.startWatching(() => true, drained);
+    const owner = createRequestLeaseOwner({
+      time,
+      begin: () => idleTimer.beginRequest(),
+      end: () => idleTimer.endRequest(),
+      timing,
+    });
+    const result = owner.begin('transport.kb.restart', 'abandoned-request').run(() => new Promise<never>(() => {}));
+    const rejection = expect(result).rejects.toMatchObject({ code: 'request_deadline_exceeded' });
+    await vi.advanceTimersByTimeAsync(50);
+    await rejection;
+    idleTimer.requestDrain('idle');
+    expect(drained).toHaveBeenCalledOnce();
+    expect(idleTimer.inflightRequests).toBe(0);
+    idleTimer.stopWatching();
+  });
+
+  it('retires passively after an abandoned request when no jobs are running', async () => {
+    vi.useFakeTimers();
+    const time = createRealTimePort();
+    const idleTimer = new IdleTimer({ time, timeoutMs: 1 });
+    const retired = vi.fn();
+    idleTimer.startWatching(() => true, retired);
+    const owner = createRequestLeaseOwner({
+      time,
+      timing,
+      begin: () => idleTimer.beginRequest(),
+      end: () => idleTimer.endRequest(),
+    });
+    const request = owner.begin('jobs.detail', 'passive-idle').run(() => new Promise<never>(() => {}));
+    const rejected = expect(request).rejects.toMatchObject({ context: { outcome: 'continuing' } });
+    await vi.advanceTimersByTimeAsync(50);
+    await rejected;
+    await vi.advanceTimersByTimeAsync(60_001);
+    expect(retired).toHaveBeenCalledWith('idle');
+    idleTimer.stopWatching();
+  });
+
+  it('records a continuing request before releasing its count, once only', async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    let inflight = 0;
+    const recorded = vi.fn();
+    const owner = createRequestLeaseOwner({
+      time: createRealTimePort(),
+      timing,
+      begin: () => {
+        inflight += 1;
+      },
+      end: () => {
+        inflight -= 1;
+      },
+      abandon: recorded,
+    });
+    const request = owner.begin('jobs.detail', 'request-late', { jobId: 'job-1' }).run(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const rejected = expect(request).rejects.toMatchObject({ context: { outcome: 'continuing' } });
+    await vi.advanceTimersByTimeAsync(50);
+    await rejected;
+    expect(recorded).toHaveBeenCalledWith({
+      method: 'jobs.detail',
+      requestId: 'request-late',
+      startedAt: expect.any(String),
+      outcome: 'continuing',
+      identity: { jobId: 'job-1' },
+    });
+    expect(inflight).toBe(0);
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(inflight).toBe(0);
+    expect(recorded).toHaveBeenCalledOnce();
+  });
   it('lets a live provider job reach a terminal result beside a stalled unary request', async () => {
     vi.useFakeTimers();
     let finishJob!: (outcome: 'completed' | 'terminated') => void;
@@ -63,7 +177,7 @@ describe('coordinator request leases', () => {
       context: {
         method: 'jobs.detail',
         requestId: 'request-1',
-        outcome: 'unknown',
+        outcome: 'continuing',
       },
     });
     await vi.advanceTimersByTimeAsync(40);
@@ -71,7 +185,7 @@ describe('coordinator request leases', () => {
     expect(inflight).toBe(1);
     await vi.advanceTimersByTimeAsync(10);
     await rejection;
-    expect(inflight).toBe(1);
+    expect(inflight).toBe(0);
   });
 
   it('keeps the one-hour KB mutation allowance', async () => {

@@ -1347,6 +1347,32 @@ describe('waiter-launched upgrade completion', () => {
     ).rejects.toThrow('waiter serving record has no completion receipt');
   });
 
+  it('self-fences a waiter-launched child with a stale spawn nonce', async () => {
+    const { runtime } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('intent disappeared');
+    await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
+      ...observed.intent,
+      attemptSpawnNonce: 'new-spawn',
+    });
+    const markedRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (name: string) => {
+          if (name === 'CORAL_WAITER_SPAWN_NONCE') return 'old-spawn';
+          if (name === 'CORAL_WAITER_LAUNCHED') return 'waiter-attempt';
+          return runtime.env.get(name);
+        },
+      },
+    };
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+    await expect(
+      recordWaiterLaunchedChild(markedRuntime, current, process.pid, probeProcessIncarnation(process.pid)),
+    ).rejects.toThrow('waiter serving record has no completion receipt');
+  });
+
   it('self-fences a matching waiter attempt when its own incarnation is unavailable', async () => {
     const { runtime, store } = await waiterAttempt('2026-09-25T00:00:30.000Z');
     const format = currentCoralStoreFormat();

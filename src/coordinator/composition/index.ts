@@ -2000,8 +2000,20 @@ export function createCoordinatorCore(
 
   const requestLeases = createRequestLeaseOwner({
     time: runtime.time,
+    timing: options.requestLeaseTiming,
     begin: () => world.idleTimer.beginRequest(),
     end: () => world.idleTimer.endRequest(),
+    abandon: (request) => {
+      const path = join(runtime.paths.coral.coordinator.runDir, 'abandoned-requests.v1', `${runtime.ids.uuid()}.json`);
+      runtime.storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      if (
+        !runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify({ version: 1, ...request })}\n`, {
+          mode: 0o600,
+        })
+      ) {
+        throw new Error('Abandoned request status could not be recorded');
+      }
+    },
   });
 
   const httpHandlerDeps: HttpHandlerPorts = {

@@ -206,6 +206,7 @@ const upgradeIntentFields = z
     retryCondition: retryConditionSchema.nullable(),
     attemptDeadline: z.string().datetime().nullable(),
     attemptSpawnPending: z.boolean().optional(),
+    attemptSpawnNonce: z.string().min(1).nullable().optional(),
     completionReceipt: servingReceiptSchema.nullable(),
     transientRetry: transientRetrySchema.optional().catch(undefined),
     obligationRetry: obligationRetrySchema.nullable().optional().catch(undefined),

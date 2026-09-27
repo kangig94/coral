@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { observePendingSpawn } from './pending-spawn.js';
 
 import { UPGRADE_WAITER_BUNDLE_FILE } from '../infra/bundle-manifest-address.js';
 import type { LegacyUpgradeRefusal, LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
@@ -51,9 +52,28 @@ export async function startUpgradeWaiter(
     const liveness = observeRecordedProcess(ports, owner);
     const leaseExpired = intent.attemptDeadline !== null && Date.parse(intent.attemptDeadline) <= ports.time.now();
     if (intent.attemptSpawnPending === true) {
-      return liveness === 'alive'
-        ? { kind: 'existing', pid: owner.pid }
-        : { kind: 'unavailable', reason: 'target spawn outcome is unresolved' };
+      if (liveness === 'alive') return { kind: 'existing', pid: owner.pid };
+      if (!leaseExpired || liveness !== 'absent') {
+        return { kind: 'unavailable', reason: 'target spawn outcome is unresolved' };
+      }
+      if (intent.attemptChild && observeRecordedProcess(ports, intent.attemptChild) !== 'absent') {
+        return { kind: 'unavailable', reason: 'recorded attempt child may still serve' };
+      }
+      const spawn = observePendingSpawn(options.runDir, intent, ports);
+      if (typeof spawn === 'object') {
+        if (intent.attemptId === null) return { kind: 'unavailable', reason: 'target spawn outcome is unresolved' };
+        const attached = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+          ...intent,
+          attemptSpawnPending: false,
+          attemptChild: { attemptId: intent.attemptId, pid: spawn.pid, incarnation: spawn.incarnation },
+        });
+        if (attached.kind !== 'written' && attached.kind !== 'conflict') {
+          return { kind: 'unavailable', reason: `intent is ${attached.kind}` };
+        }
+        observed = readUpgradeIntent(options.runDir);
+        continue;
+      }
+      if (spawn !== 'absent') return { kind: 'unavailable', reason: 'target spawn outcome is unresolved' };
     }
     if (!leaseExpired && liveness === 'alive') return { kind: 'existing', pid: owner.pid };
     if (!leaseExpired && liveness !== 'absent') {
@@ -70,6 +90,8 @@ export async function startUpgradeWaiter(
       attemptId: null,
       attemptOwner: null,
       attemptChild: null,
+      attemptSpawnPending: false,
+      attemptSpawnNonce: null,
       attemptDeadline: null,
     });
     if (released.kind !== 'written' && released.kind !== 'conflict') {
@@ -272,6 +294,7 @@ export async function requestLegacyUpgrade(
         attemptId: null,
         attemptChild: null,
         attemptSpawnPending: false,
+        attemptSpawnNonce: null,
         attemptOwner: null,
         disposition: 'pending',
         blockers: [],

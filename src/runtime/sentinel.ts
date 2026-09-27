@@ -15,6 +15,7 @@ import { socketPathForRunDir } from '../infra/path/index.js';
 import { createPluginRegistry } from '../infra/plugin-registry.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import { SENTINEL_TIMING, validSentinelTiming, type SentinelTiming } from '../infra/sentinel-timing.js';
+import { probeProcessIncarnation } from '../infra/node-process.js';
 
 export type SentinelMessage =
   | { kind: 'coral-sentinel-hello'; id: string }
@@ -174,11 +175,16 @@ export async function runCoordinatorSentinel(
   const startedAt = Date.now();
   const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
   const originalManifest = validatedBuild(dirname(dirname(executable)));
+  let coordinatorIdentity: { coordinatorPid: number; coordinatorIncarnation: string | null } | null = null;
   const record = (state: string, fields: Record<string, unknown> = {}): void => {
     writeSentinelRecord(runDir, id, {
       version: 1,
       sentinelId: id,
       sentinelPid: process.pid,
+      sentinelIncarnation: probeProcessIncarnation(process.pid),
+      attemptId: process.env.CORAL_STARTUP_ATTEMPT_ID,
+      spawnNonce: process.env.CORAL_WAITER_SPAWN_NONCE,
+      ...coordinatorIdentity,
       executable,
       startedAt,
       timing,
@@ -192,6 +198,12 @@ export async function runCoordinatorSentinel(
     env: { ...process.env, CORAL_SENTINEL_ID: id },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
+  if (child.pid !== undefined) {
+    coordinatorIdentity = {
+      coordinatorPid: child.pid,
+      coordinatorIncarnation: probeProcessIncarnation(child.pid),
+    };
+  }
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
@@ -214,6 +226,9 @@ export async function runCoordinatorSentinel(
     child.once('error', () => resolve(false));
   });
   if (!spawned || child.pid === undefined) return 1;
+  if (coordinatorIdentity?.coordinatorIncarnation === null) {
+    coordinatorIdentity.coordinatorIncarnation = probeProcessIncarnation(child.pid);
+  }
   record('armed', { coordinatorPid: child.pid });
   armed = true;
   acknowledgeArm();
@@ -332,6 +347,8 @@ export async function runCoordinatorSentinel(
       await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
       const recoveryEnv = { ...process.env };
       delete recoveryEnv.CORAL_STARTUP_ATTEMPT_ID;
+      delete recoveryEnv.CORAL_WAITER_LAUNCHED;
+      delete recoveryEnv.CORAL_WAITER_SPAWN_NONCE;
       delete recoveryEnv.CORAL_STARTUP_STARTED_AT;
       delete recoveryEnv.CORAL_SUCCESSION_ATTEMPT_ID;
       const roots = relaunchRoots(runDir, originalManifest);

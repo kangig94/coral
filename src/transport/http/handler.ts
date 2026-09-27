@@ -333,7 +333,7 @@ export function writeSseEvent(res: ServerResponse, event: string, data: unknown,
   return accepted;
 }
 
-function runOnResponseDone(res: ServerResponse, fn: () => void): void {
+function runOnResponseDone(res: ServerResponse, fn: () => void): () => void {
   let called = false;
   const run = () => {
     if (called) return;
@@ -345,6 +345,7 @@ function runOnResponseDone(res: ServerResponse, fn: () => void): void {
 
   res.once('finish', run);
   res.once('close', run);
+  return run;
 }
 
 function parseEventStreamRequest(url: string): { projectRoot?: string; filterJobId: string | null } | ZodError {
@@ -1432,17 +1433,20 @@ export function createHttpHandler(
         });
         if (lease !== undefined) {
           deps.admin.beginRequest();
-          runOnResponseDone(res, () => {
-            deps.admin.endRequest();
-          });
+          const finishResponse = runOnResponseDone(res, () => deps.admin.endRequest());
           try {
             await lease.run((signal) =>
               catalogMatch.route.handle(req, res, parsedUrl, catalogMatch.pathParams, signal),
             );
           } catch (error: unknown) {
+            if (error instanceof Error && 'code' in error && error.code === 'request_deadline_exceeded') {
+              finishResponse();
+            }
             if (!res.writableEnded && !res.headersSent) {
               const response = buildTransportErrorResponse(error);
               sendJson(res, response.statusCode, response.body);
+            } else if (!res.writableEnded) {
+              res.destroy();
             }
           }
           return;

@@ -1,5 +1,6 @@
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
+import { backendLog } from '../../infra/backend-log.js';
 
 export type RequestLease = Readonly<{
   run<T>(execute: (signal: AbortSignal) => Promise<T>): Promise<T>;
@@ -8,6 +9,14 @@ export type RequestLease = Readonly<{
 export type RequestLeaseIdentity = Readonly<{
   jobId?: string;
   operationId?: string;
+}>;
+
+export type AbandonedRequest = Readonly<{
+  method: string;
+  requestId: string;
+  startedAt: string;
+  outcome: 'continuing';
+  identity?: RequestLeaseIdentity;
 }>;
 
 export type RequestLeaseTiming = Readonly<{
@@ -44,6 +53,7 @@ export function createRequestLeaseOwner(
   options: Readonly<{
     begin(): void;
     end(): void;
+    abandon?(request: AbandonedRequest): void;
     time: TimePort;
     timing?: RequestLeaseTiming;
   }>,
@@ -54,6 +64,7 @@ export function createRequestLeaseOwner(
   return {
     begin: (method, requestId, identity) => {
       options.begin();
+      const startedAt = new Date(time.now()).toISOString();
       const controller = new AbortController();
       let deadline =
         time.now() +
@@ -61,6 +72,7 @@ export function createRequestLeaseOwner(
       let lastWake = time.now();
       let expired = false;
       let settled = false;
+      let released = false;
       let grace: TimerHandle | null = null;
       let rejectUnsettled: ((error: Error) => void) | null = null;
       const unsettled = new Promise<never>((_resolve, reject) => {
@@ -78,17 +90,35 @@ export function createRequestLeaseOwner(
         controller.abort(deadlineError('unknown'));
         grace = time.setTimeout(() => {
           if (settled) return;
-          rejectUnsettled?.(deadlineError('unknown'));
+          try {
+            options.abandon?.({ method, requestId, startedAt, outcome: 'continuing', identity });
+          } catch (error: unknown) {
+            backendLog.error('Could not record abandoned request', error);
+          }
+          release();
+          rejectUnsettled?.(
+            documentedCoralSetupError('request_deadline_exceeded', {
+              method,
+              requestId,
+              ...identity,
+              outcome: 'continuing',
+            }),
+          );
         }, timing.settleMs);
       };
       const interval = time.setInterval(check, timing.checkMs);
       interval.unref?.();
-      const settle = (): void => {
-        if (settled) return;
-        settled = true;
+      const release = (): void => {
+        if (released) return;
+        released = true;
         time.clearInterval(interval);
         if (grace !== null) time.clearTimeout(grace);
         options.end();
+      };
+      const settle = (): void => {
+        if (settled) return;
+        settled = true;
+        release();
       };
       return {
         run: <T>(execute: (signal: AbortSignal) => Promise<T>): Promise<T> => {

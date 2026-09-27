@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,11 +10,13 @@ const attemptPause = vi.hoisted(() => {
   let release: () => void = () => {};
   const state = {
     enabled: false,
+    crashOnPending: false,
     paused: false,
     reached: Promise.resolve(),
     blocked: Promise.resolve(),
     reset(): void {
       state.enabled = false;
+      state.crashOnPending = false;
       state.paused = false;
       state.reached = new Promise<void>((resolve) => {
         reachedResolve = resolve;
@@ -42,6 +44,16 @@ vi.mock('#src/infra/upgrade-intent.js', async (importOriginal) => {
       const result = await actual.compareAndSwapUpgradeIntent(...args);
       const change = args[2];
       if (
+        attemptPause.crashOnPending &&
+        result.kind === 'written' &&
+        typeof change === 'object' &&
+        change !== null &&
+        'attemptSpawnPending' in change &&
+        change.attemptSpawnPending === true
+      ) {
+        throw new Error('simulated crash after pending write');
+      }
+      if (
         attemptPause.enabled &&
         !attemptPause.paused &&
         typeof change === 'object' &&
@@ -59,6 +71,7 @@ vi.mock('#src/infra/upgrade-intent.js', async (importOriginal) => {
 });
 
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { createRealUpgradeWaiterPorts, type UpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
 import { runUpgradeWaiter } from '#src/upgrade-waiter/index.js';
 
@@ -207,5 +220,115 @@ describe('upgrade waiter lease recovery', () => {
     expect(secondLaunch).not.toHaveBeenCalled();
     release();
     await expect(first).resolves.toEqual({ kind: 'closed' });
+  });
+
+  it('completes an upgrade after the first waiter dies immediately after its pending write', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-upgrade-crash-after-pending-'));
+    directories.push(runDir);
+    await compareAndSwapUpgradeIntent(runDir, null, pendingIntent());
+    let currentTime = Date.parse('2026-09-25T00:00:00.000Z');
+    attemptPause.crashOnPending = true;
+    const firstLaunch = vi.fn(async () => undefined);
+    await expect(
+      runUpgradeWaiter({
+        runDir,
+        socketPath: '/unused.sock',
+        targetRoot: '/installed/target',
+        validateTarget: () => true,
+        observeRetirement: async () => 'retired',
+        launchTarget: firstLaunch,
+        ports: {
+          ...waiterPorts(() => currentTime, ['first-waiter', 'first-attempt', 'first-nonce']),
+          pid: 999_999_991,
+        },
+      }),
+    ).rejects.toThrow('simulated crash after pending write');
+    expect(firstLaunch).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: { attemptId: 'first-attempt', attemptSpawnPending: true, attemptSpawnNonce: 'first-nonce' },
+    });
+
+    attemptPause.crashOnPending = false;
+    currentTime += 30_001;
+    const secondLaunch = vi.fn(async (intent: UpgradeIntent, attemptId: string, nonce: string) => {
+      expect(nonce).toBe('second-nonce');
+      const completed = await compareAndSwapUpgradeIntent(runDir, intent.revision, {
+        ...intent,
+        disposition: 'completed',
+        completionReceipt: {
+          kind: 'serving',
+          attemptId,
+          successor: { instanceId: 'successor', pid: process.pid, incarnation: null, build },
+          epochKey: 'epoch-1',
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date(currentTime).toISOString(),
+        },
+      });
+      expect(completed.kind).toBe('written');
+    });
+    await expect(
+      runUpgradeWaiter({
+        runDir,
+        socketPath: '/unused.sock',
+        targetRoot: '/installed/target',
+        validateTarget: () => true,
+        observeRetirement: async () => 'retired',
+        launchTarget: secondLaunch,
+        ports: waiterPorts(() => currentTime, ['second-waiter', 'second-attempt', 'second-nonce']),
+      }),
+    ).resolves.toEqual({ kind: 'completed' });
+    expect(secondLaunch).toHaveBeenCalledOnce();
+  });
+
+  it('attaches a live target to an expired pending spawn during inline recovery', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-inline-spawn-reconciliation-'));
+    directories.push(runDir);
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('test process has no incarnation');
+    const now = Date.parse('2026-09-25T00:00:30.001Z');
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      ...pendingIntent(),
+      attemptId: 'existing-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'dead-waiter', pid: 999_999_991, incarnation: null },
+      attemptChild: null,
+      attemptSpawnPending: true,
+      attemptSpawnNonce: 'existing-nonce',
+      disposition: 'attempting',
+      attemptDeadline: new Date(now - 1).toISOString(),
+    });
+    const recordDir = join(runDir, 'coordinator-sentinel.v1');
+    mkdirSync(recordDir);
+    writeFileSync(
+      join(recordDir, 'sentinel.json'),
+      JSON.stringify({
+        state: 'armed',
+        attemptId: 'existing-attempt',
+        spawnNonce: 'existing-nonce',
+        sentinelPid: process.pid,
+        sentinelIncarnation: incarnation,
+        coordinatorPid: process.pid,
+        coordinatorIncarnation: incarnation,
+      }),
+    );
+    const launchTarget = vi.fn(async () => undefined);
+    await expect(
+      runUpgradeWaiter({
+        runDir,
+        socketPath: '/unused.sock',
+        targetRoot: '/installed/target',
+        validateTarget: () => true,
+        observeRetirement: async () => 'retired',
+        launchTarget,
+        ports: waiterPorts(() => now, ['replacement-waiter', 'replacement-attempt']),
+      }),
+    ).resolves.toEqual({ kind: 'lease-held' });
+    expect(launchTarget).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: {
+        attemptSpawnPending: false,
+        attemptChild: { attemptId: 'existing-attempt', pid: process.pid, incarnation },
+      },
+    });
   });
 });

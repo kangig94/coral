@@ -15,6 +15,7 @@ import {
 } from '../infra/upgrade-intent.js';
 import type { UpgradeWaiterPorts } from '../runtime/upgrade-waiter.js';
 import { createIpcClient } from '../transport/ipc/client.js';
+import { observePendingSpawn } from './pending-spawn.js';
 
 const LEASE_MS = 30_000;
 
@@ -30,7 +31,7 @@ export type UpgradeWaiterOptions = Readonly<{
   targetRoot: string;
   ports: UpgradeWaiterPorts;
   observeRetirement?: (intent: UpgradeIntent) => Promise<RetirementObservation>;
-  launchTarget?: (intent: UpgradeIntent, attemptId: string) => Promise<number | void>;
+  launchTarget?: (intent: UpgradeIntent, attemptId: string, spawnNonce: string) => Promise<number | void>;
   validateTarget?: (intent: UpgradeIntent) => boolean;
   pollMs?: number;
   waitForIntentMs?: number;
@@ -108,6 +109,7 @@ async function launchInstalledTarget(
   ports: UpgradeWaiterPorts,
   intent: UpgradeIntent,
   attemptId: string,
+  spawnNonce: string,
   runDir: string,
 ): Promise<number> {
   const backend = join(intent.target.pluginRootLabel, 'bridge', 'coral-backend.cjs');
@@ -119,6 +121,7 @@ async function launchInstalledTarget(
     {
       CORAL_STARTUP_ATTEMPT_ID: attemptId,
       CORAL_WAITER_LAUNCHED: attemptId,
+      CORAL_WAITER_SPAWN_NONCE: spawnNonce,
       CORAL_SENTINEL_RUN_DIR: runDir,
     },
     supervised,
@@ -151,7 +154,8 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     ((intent: UpgradeIntent) => observeNaturalRetirement(ports, options.runDir, options.socketPath, intent));
   const launch =
     options.launchTarget ??
-    ((intent: UpgradeIntent, attemptId: string) => launchInstalledTarget(ports, intent, attemptId, options.runDir));
+    ((intent: UpgradeIntent, attemptId: string, spawnNonce: string) =>
+      launchInstalledTarget(ports, intent, attemptId, spawnNonce, options.runDir));
   const validate =
     options.validateTarget ?? ((intent: UpgradeIntent) => revalidateUpgradeIntentTarget(intent).kind === 'validated');
   const pollMs = options.pollMs ?? POLL_MS;
@@ -310,6 +314,38 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
 
     const deadline = intent.attemptDeadline === null ? 0 : Date.parse(intent.attemptDeadline);
     if (attemptId === null) {
+      if (intent.attemptSpawnPending === true && deadline <= now()) {
+        if (intent.attemptOwner === null || observeRecordedProcess(ports, intent.attemptOwner) !== 'absent')
+          return { kind: 'lease-held' };
+        if (child !== null && child !== undefined && observeRecordedProcess(ports, child) !== 'absent') {
+          return { kind: 'lease-held' };
+        }
+        const spawn = observePendingSpawn(options.runDir, intent, ports);
+        if (typeof spawn === 'object') {
+          if (intent.attemptId === null) return { kind: 'lease-held' };
+          const attached = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+            ...intent,
+            attemptSpawnPending: false,
+            attemptChild: { attemptId: intent.attemptId, pid: spawn.pid, incarnation: spawn.incarnation },
+          });
+          if (attached.kind === 'conflict') continue;
+          if (attached.kind !== 'written') return { kind: 'unobservable', reason: attached.kind };
+          continue;
+        }
+        if (spawn !== 'absent') return { kind: 'lease-held' };
+        const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+          ...intent,
+          attemptId: null,
+          attemptOwner: null,
+          attemptChild: null,
+          attemptDeadline: null,
+          attemptSpawnPending: false,
+          attemptSpawnNonce: null,
+        });
+        if (released.kind === 'conflict') continue;
+        if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
+        continue;
+      }
       if (
         (intent.attemptOwner !== null && (deadline > now() || intent.attemptSpawnPending === true)) ||
         (intent.disposition === 'attempting' && intent.attemptId !== null && !child && deadline > now()) ||
@@ -356,6 +392,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
         attemptOwner: { kind: 'waiter', instanceId, pid: ports.pid, incarnation },
         attemptChild: null,
         attemptSpawnPending: false,
+        attemptSpawnNonce: null,
         attemptDeadline: new Date(now() + LEASE_MS).toISOString(),
         retryCondition: { kind: 'incumbent-retirement', evidence: 'waiting for verified idle retirement' },
       });
@@ -387,19 +424,26 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       )
         continue;
       if (!validate(current.intent)) continue;
+      const spawnNonce = ports.uuid();
       const spawning = await compareAndSwapUpgradeIntent(options.runDir, current.intent.revision, {
         ...current.intent,
         attemptSpawnPending: true,
+        attemptSpawnNonce: spawnNonce,
       });
       if (spawning.kind === 'conflict') continue;
       if (spawning.kind !== 'written') return { kind: 'unobservable', reason: spawning.kind };
       try {
-        launchedPid = (await launch(spawning.intent, attemptId)) ?? null;
+        launchedPid = (await launch(spawning.intent, attemptId, spawnNonce)) ?? null;
         for (;;) {
           const observedChild = readUpgradeIntent(options.runDir);
           if (observedChild.kind !== 'readable') break;
           const latest = observedChild.intent;
-          if (latest.attemptId !== attemptId || latest.attemptOwner?.instanceId !== instanceId) break;
+          if (
+            latest.attemptId !== attemptId ||
+            latest.attemptOwner?.instanceId !== instanceId ||
+            latest.attemptSpawnNonce !== spawning.intent.attemptSpawnNonce
+          )
+            break;
           const recorded = await compareAndSwapUpgradeIntent(options.runDir, latest.revision, {
             ...latest,
             attemptSpawnPending: false,
@@ -421,6 +465,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
           attemptId: null,
           attemptOwner: null,
           attemptSpawnPending: false,
+          attemptSpawnNonce: null,
           attemptDeadline: null,
         });
         if (released.kind === 'conflict') return { kind: 'unobservable', reason: 'target spawn outcome changed' };

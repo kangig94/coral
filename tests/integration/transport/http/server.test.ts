@@ -10,7 +10,7 @@ import {
   TEST_SYSTEM_PROVIDER_SCOPE,
   withTestBindingLocation,
 } from '../../../helpers/provider-credentials.js';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import {
   createServer,
   request as httpRequest,
@@ -2527,7 +2527,7 @@ describe('execution backend server', () => {
         });
         expect(response.status).toBe(503);
         await expect(response.json()).resolves.toMatchObject({ code: 'request_deadline_exceeded' });
-        expect(inflight).toBe(1);
+        expect(inflight).toBe(0);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -5884,6 +5884,48 @@ describe('execution backend server', () => {
       }
     },
   );
+
+  it('finishes admin shutdown after a KB restart request is abandoned', async () => {
+    let started!: () => void;
+    const restartStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const kbDaemonSupervisor = {
+      ...createMockKbDaemonSupervisor(),
+      restart: async () => {
+        started();
+        return new Promise<never>(() => {});
+      },
+    };
+    const backend = await startBackendServer({
+      kbDaemonSupervisor,
+      requestLeaseTiming: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+    });
+    const restart = fetch(`${backend.baseUrl}/admin/kb/restart`, {
+      method: 'POST',
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+    });
+    await restartStarted;
+    const response = await restart;
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe('request_deadline_exceeded');
+    expect(backend.controller.getIdleTimer().inflightRequests).toBe(0);
+    const records = readdirSync(join(runtime.paths.coral.coordinator.runDir, 'abandoned-requests.v1'));
+    expect(records).toHaveLength(1);
+    expect(
+      JSON.parse(
+        readFileSync(join(runtime.paths.coral.coordinator.runDir, 'abandoned-requests.v1', records[0]), 'utf8'),
+      ),
+    ).toMatchObject({ method: 'transport.kb.restart', outcome: 'continuing' });
+
+    const shutdown = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+    });
+    expect(shutdown.status).toBe(200);
+    await backend.controller.waitForShutdown();
+    expect(backend.controller.getLifecycle()).toBe('stopped');
+  });
 
   it('rejects /admin/shutdown when only the general backend token is provided', async () => {
     const backend = await startBackendServer();

@@ -1416,11 +1416,13 @@ export async function recordWaiterLaunchedChild(
 ): Promise<boolean> {
   const attemptId = runtime.env.get('CORAL_STARTUP_ATTEMPT_ID');
   if (attemptId === undefined) return false;
+  const spawnNonce = runtime.env.get('CORAL_WAITER_SPAWN_NONCE');
   const launchedByWaiter = runtime.env.get('CORAL_WAITER_LAUNCHED') === attemptId;
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
   const matching =
     observed.kind === 'readable' &&
     observed.intent.attemptId === attemptId &&
+    observed.intent.attemptSpawnNonce === spawnNonce &&
     observed.intent.attemptOwner?.kind === 'waiter';
   if (!matching) {
     if (launchedByWaiter)
@@ -1443,6 +1445,7 @@ export async function recordWaiterLaunchedChild(
     if (
       intent.disposition !== 'attempting' ||
       intent.attemptId !== attemptId ||
+      intent.attemptSpawnNonce !== spawnNonce ||
       intent.attemptOwner?.kind !== 'waiter' ||
       intent.target.build.buildSetId !== currentBuild.buildSetId ||
       intent.target.build.bundleHash !== currentBuild.bundleHash

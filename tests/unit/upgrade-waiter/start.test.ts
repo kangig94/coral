@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -265,6 +265,144 @@ describe('legacy upgrade request', () => {
       }),
     ).resolves.toEqual({ kind: 'existing', pid: process.pid });
     expect(launchDetached).not.toHaveBeenCalled();
+  });
+
+  it('reclaims an expired spawn-pending lease after the waiter is proven dead', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-upgrade-dead-spawn-'));
+    directories.push(runDir);
+    waiterTargets.add('/installed/target');
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'waiting-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'lost-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'dead-waiter', pid: await exitedPid(), incarnation: null },
+      attemptChild: null,
+      attemptSpawnPending: true,
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(Date.now() - 1).toISOString(),
+      completionReceipt: null,
+    });
+    const launchDetached = vi.fn(async () => {
+      const current = readUpgradeIntent(runDir);
+      if (current.kind !== 'readable') throw new Error('intent disappeared');
+      expect(current.intent).toMatchObject({ attemptOwner: null, attemptSpawnPending: false });
+      const claimed = await compareAndSwapUpgradeIntent(runDir, current.intent.revision, {
+        ...current.intent,
+        attemptId: 'replacement-attempt',
+        attemptOwner: { kind: 'waiter', instanceId: 'replacement', pid: process.pid, incarnation: null },
+        attemptDeadline: new Date(Date.now() + 30_000).toISOString(),
+      });
+      expect(claimed.kind).toBe('written');
+      return process.pid;
+    });
+
+    await expect(
+      startUpgradeWaiter({
+        runDir,
+        socketPath: '/legacy.sock',
+        targetRoot: '/installed/target',
+        ports: { ...createRealUpgradeWaiterPorts(), launchDetached },
+      }),
+    ).resolves.toEqual({ kind: 'started', pid: process.pid });
+    expect(launchDetached).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an expired pending spawn while its tracked sentinel is alive', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-upgrade-live-pending-spawn-'));
+    directories.push(runDir);
+    waiterTargets.add('/installed/target');
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'waiting-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'lost-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'dead-waiter', pid: await exitedPid(), incarnation: null },
+      attemptChild: null,
+      attemptSpawnPending: true,
+      attemptSpawnNonce: 'spawn-nonce',
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(Date.now() - 1).toISOString(),
+      completionReceipt: null,
+    });
+    const recordDir = join(runDir, 'coordinator-sentinel.v1');
+    mkdirSync(recordDir);
+    writeFileSync(
+      join(recordDir, 'sentinel.json'),
+      JSON.stringify({
+        state: 'armed',
+        attemptId: 'lost-attempt',
+        spawnNonce: 'spawn-nonce',
+        sentinelPid: process.pid,
+      }),
+    );
+    const launchDetached = vi.fn(async () => process.pid);
+    await expect(
+      startUpgradeWaiter({
+        runDir,
+        socketPath: '/legacy.sock',
+        targetRoot: '/installed/target',
+        ports: { ...createRealUpgradeWaiterPorts(), launchDetached },
+      }),
+    ).resolves.toEqual({ kind: 'unavailable', reason: 'target spawn outcome is unresolved' });
+    expect(launchDetached).not.toHaveBeenCalled();
+  });
+
+  it('records a live target from its spawn nonce after the waiter dies', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-upgrade-reconcile-child-'));
+    directories.push(runDir);
+    waiterTargets.add('/installed/target');
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('test process has no incarnation');
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'waiting-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'lost-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'dead-waiter', pid: await exitedPid(), incarnation: null },
+      attemptChild: null,
+      attemptSpawnPending: true,
+      attemptSpawnNonce: 'spawn-nonce',
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(Date.now() - 1).toISOString(),
+      completionReceipt: null,
+    });
+    const recordDir = join(runDir, 'coordinator-sentinel.v1');
+    mkdirSync(recordDir);
+    writeFileSync(
+      join(recordDir, 'sentinel.json'),
+      JSON.stringify({
+        state: 'armed',
+        attemptId: 'lost-attempt',
+        spawnNonce: 'spawn-nonce',
+        sentinelPid: process.pid,
+        sentinelIncarnation: incarnation,
+        coordinatorPid: process.pid,
+        coordinatorIncarnation: incarnation,
+      }),
+    );
+    const launchDetached = vi.fn(async () => process.pid);
+    await expect(
+      startUpgradeWaiter({
+        runDir,
+        socketPath: '/legacy.sock',
+        targetRoot: '/installed/target',
+        ports: { ...createRealUpgradeWaiterPorts(), launchDetached },
+      }),
+    ).resolves.toEqual({ kind: 'unavailable', reason: 'recorded attempt child may still serve' });
+    expect(launchDetached).not.toHaveBeenCalled();
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: {
+        attemptSpawnPending: false,
+        attemptChild: { attemptId: 'lost-attempt', pid: process.pid, incarnation },
+      },
+    });
   });
 
   it.each([0, -1])('replaces an unrecorded target attempt at deadline offset %i ms', async (offset) => {

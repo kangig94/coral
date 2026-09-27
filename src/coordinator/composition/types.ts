@@ -25,6 +25,7 @@ import type { ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { ProviderEventHandler } from '../../provider-proxy/control-client.js';
 import type { LocalOperationRegistry } from '../services/operation-registry.js';
 import type { IdleTimer } from '../live/idle.js';
+import type { RequestLeaseTiming } from '../live/request-leases.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } from '../../transport/ipc/server.js';
@@ -73,6 +74,8 @@ export type CoordinatorCoreOptions = {
     publishedCompatibilitySocketAddresses?: readonly PublishedIpcSocketAddress[],
   ) => Promise<ListenIpcServerResult>;
   createIdleTimer?: () => IdleTimer;
+  /** Supplied by a test harness to exercise request deadline and drain behavior. */
+  requestLeaseTiming?: RequestLeaseTiming;
   createExecutionService?: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
   writeBackendInfoFn?: (info: BackendInfo) => boolean | void;
   removeBackendInfoIfOwnerFn?: (instanceId: string) => void | BackendInfoRemovalResult;
