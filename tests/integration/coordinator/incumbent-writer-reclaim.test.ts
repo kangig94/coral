@@ -80,4 +80,27 @@ describe('incumbent writer reclaim', () => {
     expect(() => db.exec('CREATE TABLE should_not_write (value TEXT)')).toThrow(/parked|closed/u);
     db.close();
   });
+
+  it('does not unpark a writer after the admission pause has expired', async () => {
+    const { runtime, writer, db } = fixture();
+    writer.park();
+    let reclaimStarted = false;
+
+    const result = await reclaimIncumbentWriter({
+      runtime,
+      writer,
+      storeDb: db,
+      incumbentInstanceId: 'incumbent',
+      deadlineMs: 0,
+      reclaimKbDaemonWriter: async () => {
+        reclaimStarted = true;
+      },
+      reportReclaimFailure: () => undefined,
+    });
+
+    expect(result.kind).toBe('same-build-succession');
+    expect(reclaimStarted).toBe(false);
+    expect(() => db.exec('CREATE TABLE should_not_write (value TEXT)')).toThrow(/parked|closed/u);
+    db.close();
+  });
 });

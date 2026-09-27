@@ -9,6 +9,7 @@ import { backendLog } from './backend-log.js';
 import { serializeThrown, type SerializedThrown } from './error-format.js';
 import { isNoEntryError } from './fs-errors.js';
 import { sha256Hex } from './hash.js';
+import { v0100CoordinatorSocketPathForRunDir } from './path/index.js';
 import type { Runtime } from '../runtime/ports.js';
 
 /** Connection and authentication evidence only; executable identity comes from authenticated health. */
@@ -48,6 +49,7 @@ export type DiscoveryRuntime = {
   paths: { readonly coral: CoralPaths };
 };
 export type DiscoveryWriterRuntime = DiscoveryRuntime & {
+  env: DiscoveryEnv & Pick<EnvPort, 'get' | 'tmpdir'>;
   process: Pick<Runtime['process'], 'readProcessIncarnation'>;
 };
 
@@ -260,8 +262,17 @@ export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryWriterRunt
   if (!writeDiscoveryRecord(info, runtime)) return false;
   // Shipped v0.10.0-v0.10.3 readers of this record never send the shutdown token.
   const { shutdownToken: _shutdownToken, ...legacyInfo } = info;
+  const legacySocketPath = v0100CoordinatorSocketPathForRunDir(
+    runtime.paths.coral.coordinator.legacyRunDir,
+    info.flavor,
+    {
+      platform: runtime.env.platform(),
+      configuredTempDirectory: runtime.env.get('TMPDIR'),
+      systemTempDirectory: runtime.env.tmpdir(),
+    },
+  );
   return writeDiscoveryRecordAtPath(
-    { ...legacyInfo, socketPath: runtime.paths.coral.coordinator.legacySocketPath },
+    { ...legacyInfo, socketPath: legacySocketPath },
     runtime,
     runtime.paths.coral.coordinator.legacyInfoFile,
   );

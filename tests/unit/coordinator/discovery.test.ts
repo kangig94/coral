@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { hashToken } from '#src/infra/hash.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { DiscoveryWriterRuntime } from '#src/infra/backend-discovery.js';
 
@@ -27,6 +28,7 @@ const tempRoots: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
+  vi.unstubAllEnvs();
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -478,6 +480,45 @@ describe('coordinator discovery', () => {
     expect(legacy).toMatchObject({ socketPath: coordinatorPaths('prod').legacySocketPath, bootToken: 'boot-token-a' });
     expect(legacy).not.toHaveProperty('shutdownToken');
   });
+
+  it.each(['configured', 'system'] as const)(
+    'publishes the v0.10.0 fallback socket for a long state root using the %s temp directory',
+    async (tempSource) => {
+      const home = makeHome();
+      mockState.home = join(home, 'long'.repeat(30));
+      const configuredTemp = join(home, 'configured-temp');
+      vi.stubEnv('TMPDIR', tempSource === 'configured' ? configuredTemp : undefined);
+      const { writeBackendInfo } = await importDiscovery();
+      const runtime = makeDiscoveryRuntime('prod');
+      const paths = coordinatorPaths('prod');
+      const candidate = paths.legacySocketPath;
+      expect(Buffer.byteLength(candidate, 'utf8')).toBeGreaterThanOrEqual(108);
+
+      expect(
+        writeBackendInfo(
+          {
+            pid: process.pid,
+            port: 4312,
+            socketPath: paths.socketPath,
+            host: '127.0.0.1',
+            bundleHash: 'bundle-a',
+            flavor: 'prod',
+            namespace: 'ns-a',
+            startedAt: 1_713_456_789_000,
+            token: 'token-a',
+            bootToken: 'boot-token-a',
+            version: '1.2.3',
+            instanceId: 'instance-a',
+          },
+          runtime,
+        ),
+      ).toBe(true);
+
+      const legacy = JSON.parse(readFileSync(paths.legacyInfoFile, 'utf-8')) as { socketPath: string };
+      const temp = tempSource === 'configured' ? configuredTemp : tmpdir();
+      expect(legacy.socketPath).toBe(join(temp, `coral-prod-${hashToken(candidate, 8)}.sock`));
+    },
+  );
 
   it('reads an absent discovery file as missing, not as a failure', async () => {
     makeHome();

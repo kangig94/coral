@@ -161,7 +161,20 @@ describe('KB daemon runtime host', () => {
       await host.withKb(({ db }) => {
         expect(db.prepare<[], { epoch: string }>('SELECT epoch FROM epoch_marker').get()?.epoch).toBe('1');
       });
-      await host.parkWriterTurn();
+      const parking = host.parkWriterTurn();
+      expect(await host.createSource({}, {} as Parameters<typeof host.createSource>[1])).toMatchObject({
+        ok: false,
+        code: 'succession_admission_paused',
+      });
+      await parking;
+      expect(await host.createSource({}, {} as Parameters<typeof host.createSource>[1])).toMatchObject({
+        ok: false,
+        code: 'succession_admission_paused',
+      });
+      expect(await host.reindex({}, {} as Parameters<typeof host.reindex>[1])).toMatchObject({
+        ok: false,
+        code: 'succession_admission_paused',
+      });
       await expect(
         host.withKb(({ db }) => db.prepare('INSERT INTO epoch_marker (epoch) VALUES (?)').run('parked')),
       ).rejects.toThrow(/parked|closed/u);

@@ -6524,7 +6524,7 @@ describe('execution backend server', () => {
       );
     }
 
-    async function startFencedToolServer() {
+    async function startFencedToolServer(successionPaused = false) {
       const { createHttpHandler, sendJson } = await import('#src/transport/http/handler.js');
       const { runtimeState } = createRuntimeStateMock();
       const idleTimer = createFakeIdleTimer();
@@ -6553,6 +6553,7 @@ describe('execution backend server', () => {
           isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
           isDrainRequested: () => false,
           isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
+          isSuccessionAdmissionPaused: () => successionPaused,
           beginRequest: () => {
             idleTimer.beginRequest();
           },
@@ -6691,6 +6692,29 @@ describe('execution backend server', () => {
         expect(await response.json()).toEqual({
           code: 'backend_recovering',
           message: 'recovering — retry after 500ms',
+        });
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          fenced.server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+
+    it('returns the retryable succession pause code while reclaim holds the launch fence', async () => {
+      const fenced = await startFencedToolServer(true);
+      try {
+        const response = await fetch(`${fenced.baseUrl}/sessions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({ provider: 'codex', prompt: 'hello', projectRoot: DEFAULT_PROJECT_ROOT }),
+        });
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({
+          code: 'succession_admission_paused',
+          message: 'Launch admission is paused during succession. Retry shortly.',
         });
       } finally {
         await new Promise<void>((resolve, reject) =>

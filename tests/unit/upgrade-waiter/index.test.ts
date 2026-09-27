@@ -178,6 +178,79 @@ describe('upgrade waiter', () => {
     });
   });
 
+  it.each([
+    { description: 'known incarnation', incarnationAvailable: true },
+    { description: 'unavailable incarnation', incarnationAvailable: false },
+  ])(
+    'keeps a slow launched child accountable past the attempt deadline ($description)',
+    async ({ incarnationAvailable }) => {
+      const dir = runDir();
+      await compareAndSwapUpgradeIntent(dir, null, pendingIntent());
+      let time = Date.parse('2026-09-25T00:00:00.000Z');
+      let childAlive = true;
+      let deferredPolls = 0;
+      let firstAttemptId: string | null = null;
+      const launch = vi.fn(async (intent: UpgradeIntent, attemptId: string) => {
+        if (launch.mock.calls.length === 1) {
+          firstAttemptId = attemptId;
+          return 3333;
+        }
+        expect(childAlive).toBe(false);
+        const completed = await compareAndSwapUpgradeIntent(dir, intent.revision, {
+          ...intent,
+          disposition: 'completed',
+          completionReceipt: {
+            kind: 'serving',
+            attemptId,
+            successor: { instanceId: 'successor', pid: 5678, incarnation: null, build },
+            epochKey: 'epoch-1:lineage-1',
+            controlGeneration: 1,
+            acceptedObligations: [],
+            recordedAt: new Date(time).toISOString(),
+          },
+        });
+        expect(completed.kind).toBe('written');
+      });
+      const result = await runUpgradeWaiter({
+        runDir: dir,
+        socketPath: '/unused.sock',
+        targetRoot: '/installed/target',
+        validateTarget: () => true,
+        observeRetirement: async () => 'retired',
+        launchTarget: launch,
+        ports: {
+          ...waiterPorts(
+            () => time,
+            async (ms) => {
+              time += ms;
+              const observed = readUpgradeIntent(dir);
+              if (
+                observed.kind !== 'readable' ||
+                observed.intent.disposition !== 'deferred' ||
+                observed.intent.attemptId !== firstAttemptId
+              )
+                return;
+              expect(launch).toHaveBeenCalledTimes(1);
+              expect(observed.intent.attemptChild).toMatchObject({
+                pid: 3333,
+                incarnation: incarnationAvailable ? testIncarnation('slow-target') : null,
+              });
+              if (++deferredPolls === 2) childAlive = false;
+            },
+          ),
+          processIncarnation: (pid) =>
+            pid === 3333 && childAlive && incarnationAvailable ? testIncarnation('slow-target') : null,
+          processLiveness: (pid) => (pid === 3333 && childAlive ? 'alive' : 'absent'),
+        },
+      });
+      expect(result).toEqual({ kind: 'completed' });
+      expect(launch).toHaveBeenCalledTimes(2);
+      expect(readUpgradeIntent(dir)).toMatchObject({
+        intent: { disposition: 'completed', completionReceipt: { kind: 'serving' } },
+      });
+    },
+  );
+
   it('retries a transient target spawn failure after legacy retirement without another contender', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent());

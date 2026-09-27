@@ -154,6 +154,7 @@ import type { RetiringStoreProtection, SuccessionShutdownPort } from './successi
 import { NO_SUCCESSION_INTERPOSITION, type SuccessionInterposition } from './succession/interposition.js';
 import {
   completeWaiterLaunchedUpgrade,
+  recordWaiterLaunchedChild,
   dischargeDeadSuccessionAttempt,
   handBackDeadAttemptGeneration,
   openPreferredStoreEpoch,
@@ -1167,6 +1168,10 @@ async function runLifecycleStartup({
       flavor,
       storeFormatFingerprint: deps.storeFormat.fingerprint,
     };
+    const waiterLaunchedChild =
+      successionAttemptChild === null &&
+      (await recordWaiterLaunchedChild(runtime, currentBuild, backendPid, deps.readSelfIncarnationFn()));
+    if (waiterLaunchedChild) runtimeState.setLaunchFenceActive(true);
     const successionStoreContext = {
       runtime,
       storeFormat: deps.storeFormat,
@@ -1594,12 +1599,11 @@ async function runLifecycleStartup({
     recoveryCoordinator.retireAbsentSupersededProviderOperations();
     signal.throwIfAborted();
 
-    // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
-    // recovery work. KB daemon startup cannot gate daemon liveness. The CLI's
-    // `waitForBackendReady` resolves on
-    // `kernel.phase ∈ { 'kernel-ready', 'running' }` so once we reach this
-    // point the CLI returns within `KERNEL_READY_DEADLINE_MS`.
-    const { port, host } = await listenFn(server);
+    // Ordinary startup binds HTTP and signals kernel-ready before recovery so the CLI can return promptly.
+    // A waiter-launched target waits for its durable serving receipt before exposing either endpoint.
+    let port = 0;
+    let host = '';
+    if (!waiterLaunchedChild) ({ port, host } = await listenFn(server));
     signal.throwIfAborted();
     runtimeState.setStartedAt(now());
     const startedAt = runtimeState.getStartedAt();
@@ -1622,33 +1626,19 @@ async function runLifecycleStartup({
       });
       if (discoveryPublished === false) throw new Error('Coordinator discovery publication failed.');
     };
-    if (successionAttemptChild === null && committedRecovery === null) publishDiscovery();
-    if (committedRecovery === null) runtimeState.setLifecycle('kernel-ready');
+    if (successionAttemptChild === null && committedRecovery === null && !waiterLaunchedChild) publishDiscovery();
+    if (committedRecovery === null && !waiterLaunchedChild) runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
     // An attempt child that has not served may still be abandoned, and its sweep would certify the epoch it retires.
     if (
       successionAttemptChild === null &&
       committedRecovery === null &&
+      !waiterLaunchedChild &&
       shouldScheduleStoreEpochSweep &&
       openedStore !== null
     ) {
       deps.scheduleStoreEpochSweepFn?.(openedStore);
     }
-    const serverInfo = {
-      port,
-      host,
-      socketPath,
-      token: identity.token,
-      bootToken: identity.bootToken,
-      shutdownToken: identity.shutdownToken,
-      version,
-      bundleHash,
-      flavor,
-      namespace,
-      instanceId,
-      startedAt,
-    };
-
     // ===== Era II (recovery) =====
     await yieldPastKernelReadyResponse();
     reconcileCustodyAtStartup?.();
@@ -1727,8 +1717,10 @@ async function runLifecycleStartup({
         acceptedSuccessionPreparation = null;
         acceptedSuccessionJobs = [];
         runtimeState.setLifecycle('kernel-ready');
-        publishDiscovery();
-        if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
+        if (!waiterLaunchedChild) {
+          publishDiscovery();
+          if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
+        }
         const ordinaryResumes = await (bound !== null
           ? bound.runStartupRecovery({ ...recoveryInputs, transferredJobIds: new Set() })
           : runStartupRecovery(
@@ -1791,10 +1783,10 @@ async function runLifecycleStartup({
       publishDiscovery();
       if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
     }
-    if (runtimeState.getLaunchFenceActive()) {
-      runtimeState.setLaunchFenceActive(false);
-    }
-    if (successionAttemptChild === null && committedRecovery === null && openedStore !== null) {
+    if (waiterLaunchedChild) {
+      if (committedRecovery !== null || openedStore === null) {
+        throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
+      }
       await completeWaiterLaunchedUpgrade(
         runtime,
         currentBuild,
@@ -1803,6 +1795,14 @@ async function runLifecycleStartup({
         backendPid,
         deps.readSelfIncarnationFn(),
       );
+      ({ port, host } = await listenFn(server));
+      signal.throwIfAborted();
+      runtimeState.setLifecycle('kernel-ready');
+      publishDiscovery();
+      if (shouldScheduleStoreEpochSweep) deps.scheduleStoreEpochSweepFn?.(openedStore);
+    }
+    if (runtimeState.getLaunchFenceActive()) {
+      runtimeState.setLaunchFenceActive(false);
     }
     const deadAttemptId = pendingDeadAttempt?.attemptId ?? retiredDeadAttemptId;
     if (deadAttemptId !== null) {
@@ -1865,7 +1865,20 @@ async function runLifecycleStartup({
       backendLog.error('Runtime component initialization dispatch failed — KB will be offline until restart', error);
     }
 
-    return serverInfo;
+    return {
+      port,
+      host,
+      socketPath,
+      token: identity.token,
+      bootToken: identity.bootToken,
+      shutdownToken: identity.shutdownToken,
+      version,
+      bundleHash,
+      flavor,
+      namespace,
+      instanceId,
+      startedAt,
+    };
   } catch (error: unknown) {
     const successionAttemptChild = currentSuccessionAttemptChild();
     if (successionAttemptChild !== null && !successionAttemptChild.isServing()) {

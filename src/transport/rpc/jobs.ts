@@ -35,11 +35,8 @@ export const jobWaitSchema = z
   })
   .strict();
 
-/**
- * The `jobs.wait` flags added after v0.10.13, whose strict schema rejects a request carrying either of them. A
- * coordinator that accepts them advertises them on `ping`; a client sends one only to a coordinator that did.
- */
-export const JOBS_WAIT_EXTENSIONS = ['supportsWaitV2', 'supportsHandover'] as const;
+/** A coordinator advertises the `jobs.wait` fields its strict schema accepts on `ping`. */
+export const JOBS_WAIT_EXTENSIONS = ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'] as const;
 
 export type JobsWaitFields = Readonly<{
   jobIds: readonly string[];
@@ -66,9 +63,7 @@ export function jobsWaitRequest(fields: JobsWaitFields, extensions: readonly str
     projectRoot: fields.projectRoot,
     ...(fields.timeoutSeconds === undefined ? {} : { timeoutSeconds: fields.timeoutSeconds }),
     ...(cursor === undefined ? {} : { cursor }),
-    // Only a client whose wait renderer has an arm for `interrupted` may declare this; every shipped coordinator
-    // since v0.10.5 withholds the event from a subscriber that does not.
-    supportsInterrupted: true,
+    // This CLI can render `interrupted`; advertise it only to a coordinator that accepts the field.
     ...Object.fromEntries(JOBS_WAIT_EXTENSIONS.filter((flag) => extensions.includes(flag)).map((flag) => [flag, true])),
   };
 }

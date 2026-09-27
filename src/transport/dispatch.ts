@@ -201,6 +201,11 @@ function ensureLaunchFenceInactive(rpcPorts: HttpHandlerPorts): { statusCode: nu
   if (!rpcPorts.admin.isLaunchFenceActive()) {
     return null;
   }
+  if (rpcPorts.admin.isSuccessionAdmissionPaused?.() === true) {
+    return domainResultToHttp(
+      domainError('succession_admission_paused', 'Launch admission is paused during succession. Retry shortly.'),
+    );
+  }
   return domainResultToHttp(domainError('backend_recovering', BACKEND_RECOVERING_MESSAGE));
 }
 

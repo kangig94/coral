@@ -47,6 +47,71 @@ const retirementPatienceSchema = z
 
 type RetirementPatience = z.infer<typeof retirementPatienceSchema>;
 
+function seedUnprovenIncumbentJobs(
+  runtime: Runtime,
+  index: JobLocationIndex,
+  incumbent: ResolvedStoreEpoch,
+  epochKey: string,
+): string {
+  let db: ReturnType<Runtime['storage']['openSqliteDatabaseSync']> | null = null;
+  try {
+    db = runtime.storage.openSqliteDatabaseSync(incumbent.path, { readOnly: true });
+    const projections = db.prepare('SELECT job_id, project_root, job_kind FROM projection_jobs').all();
+    const launches = db
+      .prepare("SELECT stream_id, body FROM events WHERE stream_kind = 'job' AND type = 'job.launch.requested'")
+      .all();
+    const subjects = new Map<
+      string,
+      { projectRoot: string; workDir: string | null; jobKind: 'provider' | 'workflow' | 'kb' }
+    >();
+    for (const row of projections) {
+      const parsed = z
+        .object({
+          job_id: z.string().min(1),
+          project_root: z.string().min(1),
+          job_kind: z.enum(['provider', 'workflow', 'kb']),
+        })
+        .parse(row);
+      subjects.set(parsed.job_id, {
+        projectRoot: parsed.project_root,
+        workDir: parsed.job_kind === 'kb' ? null : parsed.project_root,
+        jobKind: parsed.job_kind,
+      });
+    }
+    for (const row of launches) {
+      const parsed = z.object({ stream_id: z.string().min(1), body: z.instanceof(Uint8Array) }).parse(row);
+      const body = z
+        .object({
+          projectRoot: z.string().min(1),
+          jobKind: z.enum(['provider', 'workflow', 'kb']),
+          request: z
+            .object({ cwd: z.string().min(1).optional() })
+            .passthrough()
+            .optional(),
+        })
+        .parse(JSON.parse(Buffer.from(parsed.body).toString('utf8')) as unknown);
+      subjects.set(parsed.stream_id, {
+        projectRoot: body.projectRoot,
+        workDir: body.jobKind === 'kb' ? null : (body.request?.cwd ?? body.projectRoot),
+        jobKind: body.jobKind,
+      });
+    }
+    for (const [jobId, subject] of subjects) {
+      index.register(jobId, epochKey, subject);
+      index.markUnresolved(jobId);
+    }
+    const fingerprint = z
+      .object({ value: z.string() })
+      .safeParse(db.prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint'").get());
+    return fingerprint.success ? fingerprint.data.value : '';
+  } catch (error: unknown) {
+    index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error));
+    return '';
+  } finally {
+    db?.close();
+  }
+}
+
 export function prepareRetainedControllerHandoff(
   runtime: Runtime,
   index: JobLocationIndex,
@@ -54,6 +119,7 @@ export function prepareRetainedControllerHandoff(
 ): Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null {
   const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
   const live = new Map<string, Set<string>>();
+  const absent = new Map<string, Set<string>>();
   const holding = new Map<string, Set<string>>();
   for (const entry of custody) {
     if (entry.kind === 'unreadable') return null;
@@ -78,11 +144,11 @@ export function prepareRetainedControllerHandoff(
       },
     );
     if (observation.kind === 'unobservable') return null;
-    if (observation.kind !== 'alive') continue;
     if (entry.intent.epochKey === undefined) return null;
-    const jobs = live.get(entry.intent.epochKey) ?? new Set<string>();
+    const byLineage = observation.kind === 'alive' ? live : absent;
+    const jobs = byLineage.get(entry.intent.epochKey) ?? new Set<string>();
     jobs.add(entry.intent.jobId ?? entry.intent.operationId);
-    live.set(entry.intent.epochKey, jobs);
+    byLineage.set(entry.intent.epochKey, jobs);
   }
   const activeLineages = new Set(live.keys());
   for (const location of index.locations()) {
@@ -101,6 +167,7 @@ export function prepareRetainedControllerHandoff(
     custody,
     lineageKey,
     liveJobIds,
+    absent.get(lineageKey) ?? new Set<string>(),
     holding.get(lineageKey) ?? new Set<string>(),
   );
 }
@@ -112,6 +179,7 @@ function prepareRetainedControllerHandoffForLineage(
   custody: ReturnType<typeof readCustodyLedger>,
   lineageKey: string,
   liveJobIds: ReadonlySet<string>,
+  absentJobIds: ReadonlySet<string>,
   holdingJobIds: ReadonlySet<string>,
 ): Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null {
   const current = inspectCurrentStore(runtime);
@@ -186,7 +254,11 @@ function prepareRetainedControllerHandoffForLineage(
     selectedController = controller;
     if (holdingJobIds.has(location.jobId) && !liveJobIds.has(location.jobId)) continue;
     if (!liveJobIds.has(location.jobId)) {
-      if (location.detail.kind !== 'recorded' || location.detail.value.status.phase !== 'queued') return null;
+      if (
+        (location.detail.kind !== 'recorded' || location.detail.value.status.phase !== 'queued') &&
+        !absentJobIds.has(location.jobId)
+      )
+        return null;
       continue;
     }
     let bound = false;
@@ -283,11 +355,15 @@ export function createStartupMintAuthorizer(
     const epochKey = encodeResolvedStoreEpoch(runtime, incumbent);
     const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
     if (lineageKey === undefined) return null;
+    const unprovenIncumbent = observation.classification.kind === 'absent';
+    const recoveredFingerprint = unprovenIncumbent
+      ? seedUnprovenIncumbentJobs(runtime, index, incumbent, epochKey)
+      : '';
     const fingerprint =
       'storedFingerprint' in observation.classification &&
       typeof observation.classification.storedFingerprint === 'string'
         ? observation.classification.storedFingerprint
-        : '';
+        : recoveredFingerprint;
     const knownLocations = index.locationsFor(epochKey);
     const knownJobs = knownLocations.map((location) => ({
       jobId: location.jobId,
@@ -413,7 +489,7 @@ export function createStartupMintAuthorizer(
       index.locationsFor(epochKey).length === 0 &&
       !custodyNamesEpoch &&
       !controllerReceiptsMayNameEpoch(runtime, epochKey, lineageKey);
-    if (!liveHistory && !holdsNoWork && attempts < UNOPENABLE_STARTUP_ATTEMPTS) return null;
+    if ((!liveHistory || unprovenIncumbent) && !holdsNoWork && attempts < UNOPENABLE_STARTUP_ATTEMPTS) return null;
     // An unreadable closure already retains the epoch visibly, so the mint proceeds without overwriting it.
     void recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
       version: 'v1',

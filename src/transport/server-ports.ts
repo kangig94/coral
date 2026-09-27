@@ -26,6 +26,7 @@ interface AdminControlPort {
   isLifecycleRunning(): boolean;
   isDrainRequested(): boolean;
   isLaunchFenceActive(): boolean;
+  isSuccessionAdmissionPaused?(): boolean;
   admitTopLevelLaunch?(): boolean;
   beginRequest(): void;
   endRequest(): void;

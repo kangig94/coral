@@ -2734,8 +2734,31 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
         return { db: opened.db, store: opened.store };
       }
     }
+    const unprovenCurrent =
+      current === null
+        ? observations
+            .filter((observation) => {
+              if (observation.proof.kind === 'proven') return false;
+              const directory = epochDirectory(dbDir, observation.epoch);
+              const contained = observeContainedDirectory(runtime.storage, dbDir, directory);
+              return (
+                contained.kind === 'proven' &&
+                observeContainedRegularFile(runtime.storage, directory, epochPath(dbDir, observation.epoch), contained)
+                  .kind === 'proven' &&
+                observeStoreEpochLock(runtime.storage, dbDir, observation.epoch, contained).kind === 'proven'
+              );
+            })
+            .reduce<StoreEpochObservation | null>(
+              (latest, observation) =>
+                latest === null || compareEpoch(observation.epoch, latest.epoch) > 0 ? observation : latest,
+              null,
+            )
+        : null;
     const predecessor = current === null ? protectedIncumbent : resolvedStoreEpoch(dbDir, current.epoch);
-    const incumbent = classification.kind === 'unavailable' ? null : predecessor;
+    const incumbent =
+      classification.kind === 'unavailable'
+        ? null
+        : (predecessor ?? (unprovenCurrent === null ? null : resolvedStoreEpoch(dbDir, unprovenCurrent.epoch)));
     const incumbentEpochKey = incumbent === null ? null : encodeResolvedStoreEpoch(runtime, incumbent);
     const disposition =
       options.authorizeMint?.({

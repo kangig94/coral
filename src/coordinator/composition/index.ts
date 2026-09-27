@@ -2009,6 +2009,7 @@ export function createCoordinatorCore(
       isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
       isDrainRequested: control.isDrainRequested,
       isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
+      isSuccessionAdmissionPaused: () => world.launchCoordinator.successionAdmissionPaused(),
       admitTopLevelLaunch: () => world.launchCoordinator.admitTopLevelLaunch(),
       beginRequest: () => {
         world.idleTimer.beginRequest();

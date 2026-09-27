@@ -226,7 +226,7 @@ describe('subscription carriage', () => {
         JOBS_WAIT_EXTENSIONS,
       );
       expect(jobWaitSchema.safeParse(request).success).toBe(true);
-      expect(request).toMatchObject({ supportsWaitV2: true, supportsHandover: true });
+      expect(request).toMatchObject({ supportsInterrupted: true, supportsWaitV2: true, supportsHandover: true });
     } finally {
       await closeIpcServer(listener);
     }

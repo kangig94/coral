@@ -5,7 +5,13 @@ import type * as FollowModule from '#src/cli/follow.js';
 import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
 import type * as HandoffRunnerModule from '#src/coordinator/handoff-routing/runner.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
-import { parseSerializedWaitCursor, serializeWaitCursor, type WaitStreamEvent } from '#src/jobs/wait.js';
+import {
+  isWaitCursor,
+  parseSerializedWaitCursor,
+  serializeWaitCursor,
+  type WaitCursor,
+  type WaitStreamEvent,
+} from '#src/jobs/wait.js';
 import { advanceWaitRenderCursor, parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
@@ -75,7 +81,7 @@ function makeBackend(subscribe = vi.fn()) {
     port: 4100,
     token: 'token',
     version: '1.0.0',
-    jobsWaitExtensions: ['supportsWaitV2', 'supportsHandover'],
+    jobsWaitExtensions: ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'],
     request: vi.fn(),
     subscribe,
     ping: vi.fn(),
@@ -271,25 +277,14 @@ describe('cli follow handoff', () => {
     expect(emitError).not.toHaveBeenCalled();
   });
 
-  it('should send a coordinator that advertises no wait extensions only what the v0.10.13 strict schema accepts', async () => {
-    // Frozen copy of v0.10.13 `jobWaitSchema` (src/transport/rpc/jobs.ts at that tag): any unknown key is rejected.
+  it('sends a coordinator with no wait extensions only what the v0.10.0 strict schema accepts', async () => {
+    // Frozen copy of v0.10.0 `jobWaitSchema` (src/transport/rpc/jobs.ts at that tag).
     const shippedJobWaitSchema = z
       .object({
         jobIds: z.array(z.string().min(1)).min(1),
         projectRoot: z.string().min(1),
         timeoutSeconds: z.number().int().min(1).max(1200).optional(),
-        cursor: z
-          .custom<{
-            afterSeq: number;
-          }>(
-            (value) =>
-              typeof value === 'object' &&
-              value !== null &&
-              Number.isInteger((value as { afterSeq?: unknown }).afterSeq) &&
-              (value as { afterSeq: number }).afterSeq >= 0,
-          )
-          .optional(),
-        supportsInterrupted: z.boolean().optional(),
+        cursor: z.custom<WaitCursor>(isWaitCursor, { message: 'cursor must be a valid wait cursor' }).optional(),
       })
       .strict();
     const terminal: WaitStreamEvent = {
@@ -308,7 +303,7 @@ describe('cli follow handoff', () => {
       callback?.();
       return true;
     }) as typeof process.stdout.write);
-    mockState.ensure.mockResolvedValue({ ...makeBackend(subscribe), version: '0.10.13', jobsWaitExtensions: [] });
+    mockState.ensure.mockResolvedValue({ ...makeBackend(subscribe), version: '0.10.0', jobsWaitExtensions: [] });
     mockState.runHandoff.mockResolvedValue(
       recorded({ kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } }),
     );
@@ -318,7 +313,7 @@ describe('cli follow handoff', () => {
 
     const params: unknown = subscribe.mock.calls[0]?.[1];
     expect(shippedJobWaitSchema.safeParse(params).success).toBe(true);
-    expect(params).toMatchObject({ supportsInterrupted: true });
+    expect(params).not.toHaveProperty('supportsInterrupted');
   });
 
   it('should preserve a delegated bounded-wait exit code of 75', async () => {

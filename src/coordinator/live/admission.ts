@@ -192,6 +192,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private successionAdmissionRevision = 0;
   private readonly successionObligationListeners = new Set<() => void>();
   private successionPause: ActiveSuccessionPause | null = null;
+  private successionWriterParkAttemptId: string | null = null;
   private readonly successionPauseIntervals: PauseInterval[] = [];
   private providerOperationJournalProbe:
     | ((identity: ProviderOperationBindingIdentity) => ProviderOperationJournalProbeResult)
@@ -263,7 +264,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     if (this.successionAdmissionRevision !== expectedRevision) {
       return { kind: 'refused', reason: 'stale-preparation' };
     }
-    if (this.successionPause !== null) {
+    if (this.successionPause !== null || this.successionWriterParkAttemptId !== null) {
       return { kind: 'refused', reason: 'pause-active' };
     }
 
@@ -279,13 +280,18 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
     const deadlineAtMs = this.runtime.time.now() + SUCCESSION_PAUSE_ATTEMPT_MS;
     const timer = this.runtime.time.setTimeout(() => {
-      this.endSuccessionCommitWindow(attemptId);
+      this.finishSuccessionPause(attemptId);
     }, SUCCESSION_PAUSE_ATTEMPT_MS);
     this.successionPause = { attemptId, startedAtMs: now, timer };
     return { kind: 'paused', attemptId, deadlineAtMs };
   }
 
   endSuccessionCommitWindow(attemptId: string): boolean {
+    if (this.successionWriterParkAttemptId === attemptId) this.successionWriterParkAttemptId = null;
+    return this.finishSuccessionPause(attemptId);
+  }
+
+  private finishSuccessionPause(attemptId: string): boolean {
     const pause = this.successionPause;
     if (pause === null || pause.attemptId !== attemptId) return false;
     this.runtime.time.clearTimeout(pause.timer);
@@ -300,11 +306,16 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }
 
   successionAdmissionPaused(): boolean {
-    return this.successionPause !== null;
+    return this.successionPause !== null || this.successionWriterParkAttemptId !== null;
+  }
+
+  beginSuccessionWriterPark(attemptId: string): void {
+    if (this.successionPause?.attemptId !== attemptId) throw new Error('Succession commit window is not active.');
+    this.successionWriterParkAttemptId = attemptId;
   }
 
   admitTopLevelLaunch(): boolean {
-    if (this.successionPause !== null) return false;
+    if (this.successionAdmissionPaused()) return false;
     this.successionAdmissionRevision++;
     return true;
   }
@@ -321,7 +332,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     acceptedWork = false,
   ): AdmissionResult {
     if (this.shutdownRequested) throw new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE);
-    if (this.successionPause !== null) {
+    if (this.successionPause !== null || this.successionWriterParkAttemptId !== null) {
       if (!acceptedWork) throw new SuccessionAdmissionPausedError();
       this.successionAdmissionRevision++;
     }

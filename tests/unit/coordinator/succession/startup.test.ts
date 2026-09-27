@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   closeServedIntentAtCleanExit,
   completeWaiterLaunchedUpgrade,
+  recordWaiterLaunchedChild,
   dischargeDeadSuccessionAttempt,
   heldUnservedMint,
   holdFailedCommittedRecovery,
@@ -1219,15 +1220,96 @@ describe('waiter-launched upgrade completion', () => {
     expect(writerGeneration.observeSuccessionWriterGeneration(runtime)).toEqual(generation);
   });
 
-  it('should leave an attempt whose deadline passed to its waiter instead of failing the serving target', async () => {
+  it('self-fences a waiter-launched target whose store opens after the deadline', async () => {
     const { runtime, complete, revision } = await waiterAttempt('2026-09-24T23:59:30.000Z');
 
-    await expect(complete()).resolves.toBeUndefined();
+    await expect(complete()).rejects.toThrow('waiter serving record has no completion receipt');
     expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
       kind: 'readable',
       intent: { revision, disposition: 'attempting', completionReceipt: null },
     });
     expect(writerGeneration.observeSuccessionServing(runtime, 'waiter-attempt')).toBeNull();
+  });
+
+  it('records the child before opening its store', async () => {
+    const { runtime } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('this process has no incarnation');
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+
+    await expect(recordWaiterLaunchedChild(runtime, current, process.pid, incarnation)).resolves.toBe(true);
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: {
+        disposition: 'attempting',
+        attemptChild: { attemptId: 'waiter-attempt', pid: process.pid, incarnation },
+      },
+    });
+  });
+
+  it('fills in a provisional spawned child incarnation before opening its store', async () => {
+    const { runtime } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('intent disappeared');
+    await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
+      ...observed.intent,
+      attemptChild: { attemptId: 'waiter-attempt', pid: process.pid, incarnation: null },
+    });
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('this process has no incarnation');
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+
+    await expect(recordWaiterLaunchedChild(runtime, current, process.pid, incarnation)).resolves.toBe(true);
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { attemptChild: { attemptId: 'waiter-attempt', pid: process.pid, incarnation } },
+    });
+  });
+
+  it('self-fences a waiter-launched child after its attempt is replaced', async () => {
+    const { runtime } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('intent disappeared');
+    await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
+      ...observed.intent,
+      attemptId: 'replacement-attempt',
+    });
+    const markedRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (name: string) => (name === 'CORAL_WAITER_LAUNCHED' ? 'waiter-attempt' : runtime.env.get(name)),
+      },
+    };
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+
+    await expect(
+      recordWaiterLaunchedChild(markedRuntime, current, process.pid, probeProcessIncarnation(process.pid)),
+    ).rejects.toThrow('waiter serving record has no completion receipt');
+  });
+
+  it('self-fences a matching waiter attempt when its own incarnation is unavailable', async () => {
+    const { runtime, store } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+
+    await expect(completeWaiterLaunchedUpgrade(runtime, current, store, 'target', process.pid, null)).rejects.toThrow(
+      'waiter serving record has no completion receipt',
+    );
+  });
+
+  it('allows an ordinary startup carrying an unrelated attempt ID', async () => {
+    const { runtime, complete } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('intent disappeared');
+    await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
+      ...observed.intent,
+      attemptId: 'different-attempt',
+      attemptChild: null,
+    });
+
+    await expect(complete()).resolves.toBeUndefined();
   });
 
   it('should hold a recorded child whose serving publication missed the deadline', async () => {

@@ -25,7 +25,7 @@ export type UpgradeWaiterOptions = Readonly<{
   targetRoot: string;
   ports: UpgradeWaiterPorts;
   observeRetirement?: (intent: UpgradeIntent) => Promise<RetirementObservation>;
-  launchTarget?: (intent: UpgradeIntent, attemptId: string) => Promise<void>;
+  launchTarget?: (intent: UpgradeIntent, attemptId: string) => Promise<number | void>;
   validateTarget?: (intent: UpgradeIntent) => boolean;
   pollMs?: number;
   waitForIntentMs?: number;
@@ -103,11 +103,13 @@ async function launchInstalledTarget(
   ports: UpgradeWaiterPorts,
   intent: UpgradeIntent,
   attemptId: string,
-): Promise<void> {
+): Promise<number> {
   const pid = await ports.launchDetached(join(intent.target.pluginRootLabel, 'bridge', 'coral-backend.cjs'), [], {
     CORAL_STARTUP_ATTEMPT_ID: attemptId,
+    CORAL_WAITER_LAUNCHED: attemptId,
   });
   if (pid === null) throw new Error('Upgrade target process could not be started.');
+  return pid;
 }
 
 /** An unanswered probe never authorizes retirement or target launch. */
@@ -130,6 +132,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
   let requestId: string | null = null;
   let attemptId: string | null = null;
   let launched = false;
+  let launchedPid: number | null = null;
 
   for (;;) {
     const observed = readUpgradeIntent(options.runDir);
@@ -185,7 +188,9 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     if (!validate(intent)) {
       const ownsAttempt =
         attemptId !== null && intent.attemptId === attemptId && intent.attemptOwner?.instanceId === instanceId;
-      const childMayServe = child !== null && child !== undefined && observeRecordedProcess(ports, child) !== 'absent';
+      const childMayServe =
+        (child !== null && child !== undefined && observeRecordedProcess(ports, child) !== 'absent') ||
+        (launchedPid !== null && ports.processLiveness(launchedPid) !== 'absent');
       if (ownsAttempt && (launched || childMayServe)) {
         const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
           ...intent,
@@ -244,6 +249,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
       attemptId = null;
       launched = false;
+      launchedPid = null;
       await sleep(pollMs);
       continue;
     }
@@ -263,6 +269,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     }
     if (launched && deadline <= now()) {
       const recordedChild = intent.attemptChild?.attemptId === attemptId;
+      const childMayServe = recordedChild || (launchedPid !== null && ports.processLiveness(launchedPid) !== 'absent');
       const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
         ...intent,
         disposition: 'deferred',
@@ -271,15 +278,16 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
           kind: 'incumbent-retirement',
           evidence: 'legacy incumbent retired; successor attempt expired',
         },
-        attemptId: recordedChild ? attemptId : null,
-        attemptOwner: recordedChild ? intent.attemptOwner : null,
-        attemptDeadline: recordedChild ? intent.attemptDeadline : null,
+        attemptId: childMayServe ? attemptId : null,
+        attemptOwner: childMayServe ? intent.attemptOwner : null,
+        attemptDeadline: childMayServe ? intent.attemptDeadline : null,
       });
       if (released.kind === 'conflict') continue;
       if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
-      if (!recordedChild) {
+      if (!childMayServe) {
         attemptId = null;
         launched = false;
+        launchedPid = null;
       }
       await sleep(pollMs);
       continue;
@@ -310,7 +318,23 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       if (claimed.kind === 'conflict') continue;
       if (claimed.kind !== 'written') return { kind: 'unobservable', reason: claimed.kind };
       try {
-        await launch(claimed.intent, attemptId);
+        launchedPid = (await launch(claimed.intent, attemptId)) ?? null;
+        if (launchedPid !== null) {
+          const childIncarnation = ports.processIncarnation(launchedPid);
+          for (;;) {
+            const observedChild = readUpgradeIntent(options.runDir);
+            if (observedChild.kind !== 'readable') break;
+            const current = observedChild.intent;
+            if (current.attemptId !== attemptId || current.attemptOwner?.instanceId !== instanceId) break;
+            if (current.attemptChild !== null && current.attemptChild !== undefined) break;
+            const recorded = await compareAndSwapUpgradeIntent(options.runDir, current.revision, {
+              ...current,
+              attemptChild: { attemptId, pid: launchedPid, incarnation: childIncarnation },
+            });
+            if (recorded.kind === 'conflict') continue;
+            break;
+          }
+        }
       } catch {
         const released = await compareAndSwapUpgradeIntent(options.runDir, claimed.intent.revision, {
           ...claimed.intent,
@@ -325,6 +349,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
         if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
         attemptId = null;
         launched = false;
+        launchedPid = null;
         await sleep(pollMs);
         continue;
       }

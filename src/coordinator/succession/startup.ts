@@ -1394,24 +1394,39 @@ export async function publishRecoveredServing(
   }
 }
 
-/**
- * A waiter launches its target without a gate of its own, so the target that reaches serving under the
- * waiter's attempt id is the only process that can prove completion. A refusal leaves the intent to the
- * waiter's attempt deadline.
- */
-export async function completeWaiterLaunchedUpgrade(
+/** A waiter-launched target records its identity before store open and fences itself if its attempt expired. */
+export async function recordWaiterLaunchedChild(
   runtime: Runtime,
   currentBuild: StrictBundleManifest,
-  openedStore: ResolvedStoreEpoch,
-  instanceId: string,
   pid: number,
   incarnation: ProcessIncarnation | null,
-): Promise<void> {
+): Promise<boolean> {
   const attemptId = runtime.env.get('CORAL_STARTUP_ATTEMPT_ID');
-  if (attemptId === undefined || incarnation === null) return;
+  if (attemptId === undefined) return false;
+  const launchedByWaiter = runtime.env.get('CORAL_WAITER_LAUNCHED') === attemptId;
+  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  const matching =
+    observed.kind === 'readable' &&
+    observed.intent.attemptId === attemptId &&
+    observed.intent.attemptOwner?.kind === 'waiter';
+  if (!matching) {
+    if (launchedByWaiter)
+      throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
+    return false;
+  }
+  if (incarnation === null)
+    throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
   const childRecorded = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) => {
     if (observed.kind !== 'readable') return { kind: 'settle', value: false };
     const intent = observed.intent;
+    if (intent.disposition === 'completed' && intent.completionReceipt?.attemptId === attemptId) {
+      return {
+        kind: 'settle',
+        value:
+          intent.completionReceipt.successor.pid === pid &&
+          intent.completionReceipt.successor.incarnation === incarnation,
+      };
+    }
     if (
       intent.disposition !== 'attempting' ||
       intent.attemptId !== attemptId ||
@@ -1424,6 +1439,18 @@ export async function completeWaiterLaunchedUpgrade(
       return { kind: 'settle', value: false };
     }
     if (intent.attemptChild !== null && intent.attemptChild !== undefined) {
+      if (
+        intent.attemptChild.attemptId === attemptId &&
+        intent.attemptChild.pid === pid &&
+        intent.attemptChild.incarnation === null
+      ) {
+        return {
+          kind: 'write',
+          expectedRevision: intent.revision,
+          change: { ...intent, attemptChild: { attemptId, pid, incarnation } },
+          settle: () => true,
+        };
+      }
       return {
         kind: 'settle',
         value:
@@ -1439,7 +1466,25 @@ export async function completeWaiterLaunchedUpgrade(
       settle: () => true,
     };
   });
-  if (childRecorded.kind !== 'settled' || !childRecorded.value) return;
+  if (childRecorded.kind !== 'settled' || !childRecorded.value) {
+    throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
+  }
+  return true;
+}
+
+export async function completeWaiterLaunchedUpgrade(
+  runtime: Runtime,
+  currentBuild: StrictBundleManifest,
+  openedStore: ResolvedStoreEpoch,
+  instanceId: string,
+  pid: number,
+  incarnation: ProcessIncarnation | null,
+): Promise<void> {
+  if (!(await recordWaiterLaunchedChild(runtime, currentBuild, pid, incarnation))) return;
+  const attemptId = runtime.env.get('CORAL_STARTUP_ATTEMPT_ID');
+  if (attemptId === undefined || incarnation === null) {
+    throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
+  }
   // One instant and one epoch key for every decision: a re-run decision must write the identical serving record.
   const recordedAt = new Date(runtime.time.now()).toISOString();
   const epochKey = encodeResolvedStoreEpoch(runtime, openedStore);
@@ -1448,7 +1493,12 @@ export async function completeWaiterLaunchedUpgrade(
     if (observed.kind !== 'readable') return unchanged;
     const intent = observed.intent;
     if (intent.disposition === 'completed' && intent.completionReceipt?.attemptId === attemptId) {
-      return { kind: 'settle', value: true } as const;
+      return {
+        kind: 'settle',
+        value:
+          intent.completionReceipt.successor.pid === pid &&
+          intent.completionReceipt.successor.incarnation === incarnation,
+      } as const;
     }
     if (
       (intent.disposition !== 'attempting' && !waiterServingEligible(intent, attemptId)) ||

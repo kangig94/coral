@@ -2,7 +2,7 @@ import { posix, win32 } from 'node:path';
 
 import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
 import { formatError } from '../infra/error-format.js';
-import { v0109CoordinatorSocketGuardSetForRunDir } from '../infra/path/index.js';
+import { v0100CoordinatorSocketPathForRunDir, v0109CoordinatorSocketGuardSetForRunDir } from '../infra/path/index.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { PublishedIpcSocketAddress } from '../transport/ipc/server.js';
@@ -65,9 +65,12 @@ export function createCoordinatorSocketAddressClaim(
 
   const computedSocketPaths = new Set([
     ...v0109SocketGuards.paths,
-    ...(legacySocketGuards.kind === 'primary-address'
-      ? [runtime.paths.coral.coordinator.legacySocketPath]
-      : legacySocketGuards.paths),
+    ...legacySocketGuards.paths,
+    v0100CoordinatorSocketPathForRunDir(runtime.paths.coral.coordinator.legacyRunDir, runtime.flavor, {
+      platform,
+      configuredTempDirectory: runtime.env.get('TMPDIR'),
+      systemTempDirectory: runtime.env.tmpdir(),
+    }),
   ]);
   const publishedSocketAddresses = new Map<string, PublishedIpcSocketAddress>();
   const asPublishedSocketAddress = (

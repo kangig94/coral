@@ -1227,7 +1227,7 @@ describe('ipc server', () => {
         namespace: 'test-namespace',
         instanceId: 'test-instance',
         pid: 12345,
-        jobsWaitExtensions: ['supportsWaitV2', 'supportsHandover'],
+        jobsWaitExtensions: ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'],
       });
       await expect(
         requestIpcMethod(socketPath, 'transport.health', undefined, { auth: { kind: 'boot', token: 'boot-token' } }),

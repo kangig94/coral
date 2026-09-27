@@ -251,6 +251,7 @@ async function harness(
     /** The KB daemon refuses to park its writer turn with this error. */
     kbParkRefusal?: string;
     kbParkRefusalDelayMs?: number;
+    kbReclaimDelayMs?: number;
     /** A target store format other than the incumbent's makes the commit a format-changing retirement. */
     targetFingerprint?: string;
     certifyCustody?: SuccessionCommitPorts['retiringEpoch']['certifyCustody'];
@@ -313,6 +314,10 @@ async function harness(
     },
     reconciler: () => ({
       ...reconcilerStub(options.readiness, options.recertification),
+      recertify: async (attemptId) => {
+        commitEvents.push('recertify');
+        return options.recertification ?? { kind: 'prepared', preparation: preparationFor(epochKey, attemptId) };
+      },
       notifyObligationChange: () => {
         state.retryNotifications += 1;
       },
@@ -320,6 +325,13 @@ async function harness(
     writers: () => writers,
     kbDaemon: {
       ...createDisabledKbDaemonSupervisor('test'),
+      ...(options.kbReclaimDelayMs === undefined
+        ? {}
+        : {
+            reclaimWriterTurn: async () => {
+              await runtime.time.sleep(options.kbReclaimDelayMs ?? 0);
+            },
+          }),
       ...(options.kbParkRefusal === undefined
         ? {}
         : {
@@ -331,6 +343,9 @@ async function harness(
     },
     launchCoordinator: {
       admissionRevision: () => 0,
+      beginSuccessionWriterPark: () => {
+        commitEvents.push('begin-writer-park');
+      },
       beginSuccessionCommitWindow: (attemptId) => ({
         kind: 'paused',
         attemptId,
@@ -592,6 +607,20 @@ describe('succession commit failure exits', () => {
     expect(test.launchFence).toEqual([true, false]);
   });
 
+  it('does not reclaim beyond the admission pause deadline', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      pauseMs: 100,
+      kbReclaimDelayMs: 500,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.releases.length === 1, 5_000);
+    expect(test.adoptedAdmissions).toBe(0);
+    expect(test.launchFence).not.toContain(false);
+  });
+
   it('should retry, not block, the target when the KB writer turn refuses to park', async () => {
     const test = await harness({
       failingPoints: () => false,
@@ -645,7 +674,7 @@ describe('succession commit failure exits', () => {
     expect(test.adoptedAdmissions).toBe(1);
   });
 
-  it('should retry, not strand, an obligation that began after preparation, before any writer parks', async () => {
+  it('re-certifies an obligation after the ancillary writers park and retries the target', async () => {
     const test = await harness({
       failingPoints: () => false,
       recoveryLaunch: 'fails',
@@ -664,20 +693,24 @@ describe('succession commit failure exits', () => {
     expect(blockers(test.runtime)[0]?.reason).toContain(
       'discuss: live discuss session retains coordinator-local state',
     );
+    expect(commitEvents).toContain('park');
+    expect(commitEvents.indexOf('begin-writer-park')).toBeLessThan(commitEvents.indexOf('recertify'));
+    expect(commitEvents.indexOf('park')).toBeLessThan(commitEvents.indexOf('recertify'));
   });
 
-  it('should reclaim in place after a same-build recovery child fails to start', async () => {
+  it('restarts when a failed same-build recovery launch leaves no admission pause to reclaim in', async () => {
     const test = await harness({
       failingPoints: (point, recovery) => point === 'incumbent-reclaim' && !recovery,
       recoveryLaunch: 'fails',
     });
     await test.launch();
 
-    await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
-    expect(test.startedRecoveries).toBe(1);
-    expect(test.releases).toEqual([]);
-    expect(test.launchFence).toEqual([true, true, false]);
-    expect(blockers(test.runtime)[0]?.reason).toContain('incumbent reclaimed after same-build recovery launch failed');
+    await waitForCondition(() => test.releases.length === 1, 15_000);
+    expect(test.startedRecoveries).toBe(2);
+    expect(test.releases[0]).toMatchObject({ kind: 'restart' });
+    expect(test.adoptedAdmissions).toBe(0);
+    expect(test.launchFence.at(-1)).toBe(true);
+    expect(test.launchFence).not.toContain(false);
   });
 
   it.each(['fails', 'starts'] as const)(

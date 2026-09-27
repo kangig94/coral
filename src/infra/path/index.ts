@@ -13,6 +13,7 @@ import {
   handoffRoutingStatusPathForRunDir,
   socketPathForRunDir,
   upgradeIntentPath,
+  v0100CoordinatorSocketPathForRunDir,
   v0109CoordinatorSocketGuardSetForRunDir,
 } from './coordinator.js';
 import { coralStateRoot, generationRoot, generationStateRoot, kbVaultRoot } from './root.js';
@@ -77,6 +78,7 @@ export {
   handoffRoutingStatusPathForRunDir,
   socketPathForRunDir,
   upgradeIntentPath,
+  v0100CoordinatorSocketPathForRunDir,
   v0109CoordinatorSocketGuardSetForRunDir,
 };
 export { isRelocatedSocket } from './unix-socket.js';

@@ -195,7 +195,7 @@ const upgradeIntentFields = z
       .object({
         attemptId: z.string().min(1),
         pid: z.number().int().positive(),
-        incarnation: processIncarnationSchema,
+        incarnation: processIncarnationSchema.nullable(),
       })
       .passthrough()
       .nullable()

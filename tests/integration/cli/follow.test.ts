@@ -51,7 +51,7 @@ function makeBackend(instanceId = 'backend-1') {
     port: 4100,
     token: 'backend-token',
     version: '0.5.2',
-    jobsWaitExtensions: ['supportsWaitV2', 'supportsHandover'],
+    jobsWaitExtensions: ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'],
     request: vi.fn(),
     subscribe: mockState.subscribe,
     health: vi.fn(),

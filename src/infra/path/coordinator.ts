@@ -74,6 +74,21 @@ export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: So
   return join(socketFallbackDir(dirname(runDir)), `coral-${flavor}-${hash}.sock`);
 }
 
+export function v0100CoordinatorSocketPathForRunDir(
+  runDir: string,
+  flavor: BuildFlavor,
+  env: SocketPathEnvironment & Readonly<{ configuredTempDirectory: string | undefined; systemTempDirectory: string }>,
+): string {
+  const path = env.platform === 'win32' ? win32 : posix;
+  const candidateSocket = path.join(runDir, 'coordinator.sock');
+  const limit = env.platform === 'darwin' ? V0109_SOCKET_LIMIT_DARWIN : V0109_SOCKET_LIMIT_OTHER;
+  if (Buffer.byteLength(candidateSocket, 'utf8') < limit) return candidateSocket;
+  return path.join(
+    env.configuredTempDirectory ?? env.systemTempDirectory,
+    `coral-${flavor}-${hashToken(candidateSocket, V0109_FALLBACK_HASH_LENGTH)}.sock`,
+  );
+}
+
 export function v0109CoordinatorSocketGuardSetForRunDir(
   runDir: string,
   flavor: BuildFlavor,

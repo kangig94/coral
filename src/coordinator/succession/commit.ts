@@ -90,6 +90,11 @@ export async function reclaimIncumbentWriter(
     reportReclaimFailure: (reason: string) => void;
   }>,
 ): Promise<IncumbentWriterReclaim> {
+  if (options.deadlineMs <= 0) {
+    const reason = 'Incumbent writer reclaim deadline expired.';
+    options.reportReclaimFailure(reason);
+    return { kind: 'same-build-succession', reason };
+  }
   const controller = new AbortController();
   const expiresAt = options.runtime.time.monotonicNow() + BigInt(Math.max(0, Math.ceil(options.deadlineMs)));
   let timer: TimerHandle | null = null;
@@ -178,7 +183,7 @@ export type SuccessionCommitPorts = Readonly<{
   kbDaemon: Pick<KbDaemonSupervisor, 'parkWriterTurn' | 'reclaimWriterTurn' | 'stop'>;
   launchCoordinator: Pick<
     LaunchCoordinator,
-    'admissionRevision' | 'beginSuccessionCommitWindow' | 'endSuccessionCommitWindow'
+    'admissionRevision' | 'beginSuccessionCommitWindow' | 'beginSuccessionWriterPark' | 'endSuccessionCommitWindow'
   >;
   childPrincipals: Pick<ChildPrincipalRegistry, 'fenceAuthentication' | 'reclaimAuthentication'>;
   /**
@@ -720,8 +725,9 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       ports.retiringEpoch.recoverLocations(preparation.epochKey);
     }
     if (!recovering) {
-      await recertifyObligations(attempt.attemptId, deadlineAt);
+      ports.launchCoordinator.beginSuccessionWriterPark(attempt.attemptId);
       await parkIncumbentWriters(writers, deadlineAt);
+      await recertifyObligations(attempt.attemptId, deadlineAt);
       writer.park();
     }
     if (plan.transfersChildPrincipals) ports.childPrincipals.fenceAuthentication();
@@ -970,7 +976,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         ? { reopenStore: () => writers.reopenRetiringStore(failure.preparation.epochKey) }
         : {}),
       incumbentInstanceId: ports.incumbent.instanceId,
-      deadlineMs: Math.max(RECLAIM_RESERVE_MS, pauseRemainingMs),
+      deadlineMs: Math.max(0, pauseRemainingMs),
       reclaimKbDaemonWriter: (generation, signal) => reclaimKbDaemonWriter(generation, signal, recovering),
       reportReclaimFailure: (reason) => ports.log(`Same-build writer recovery required: ${reason}\n`),
     });

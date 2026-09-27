@@ -49,6 +49,7 @@ function buildStartupFailureHarness(dispose: () => Promise<KbDaemonDisposalSettl
       now: () => 0,
     },
     runtime: {
+      env: { get: () => undefined },
       paths: { coral: { coordinator: { socketPath: '/state/coordinator.sock' } } },
     },
     storeFormat: { fingerprint: 'fp' },

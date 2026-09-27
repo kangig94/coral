@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -16,7 +18,7 @@ import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { recordCustodyIntent } from '#src/store/custody-ledger.js';
+import { bindCustodyIdentity, recordCustodyIntent } from '#src/store/custody-ledger.js';
 import { observeEpochClosure } from '#src/store/epoch-closure.js';
 import { readEpochKey } from '#src/store/epoch-key.js';
 import {
@@ -86,6 +88,187 @@ function startUp(
 }
 
 describe('startup mint authorizer', () => {
+  it.each(['missing', 'unreadable'] as const)(
+    'retains a %s-metadata epoch with a durable running job before minting',
+    (metadata) => {
+      const base = unreadableEpochRuntime();
+      let now = Date.now();
+      const runtime: Runtime = { ...base, time: { ...base.time, now: () => now } };
+      const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+      const current = inspectCurrentStore(runtime);
+      if (current.kind !== 'current') throw new Error('Expected a current epoch.');
+      const db = newRawDatabase(current.epoch.path);
+      db.prepare(
+        `INSERT INTO projection_jobs (
+      job_id, execution_owner, phase, diagnostics, session_id, provider, project_root, work_dir,
+      backend_namespace, job_kind, created_at, last_seq
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        'durable-running-job',
+        JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
+        'running',
+        JSON.stringify({ progressFaults: [] }),
+        'session-1',
+        'claude',
+        '/workspace/project',
+        '/workspace/project',
+        'namespace',
+        'provider',
+        '2026-09-25T00:00:00.000Z',
+        1,
+      );
+      db.prepare('INSERT INTO events (seq, ts, type, stream_kind, stream_id, body) VALUES (?, ?, ?, ?, ?, ?)').run(
+        1,
+        '2026-09-25T00:00:00.000Z',
+        'job.launch.requested',
+        'job',
+        'durable-running-job',
+        Buffer.from(
+          JSON.stringify({
+            projectRoot: '/workspace/project',
+            jobKind: 'provider',
+            request: { cwd: '/workspace/project' },
+          }),
+        ),
+      );
+      db.close();
+      const metadataPath = join(dirname(current.epoch.path), 'epoch.json');
+      rmSync(metadataPath);
+      if (metadata === 'unreadable') mkdirSync(metadataPath);
+
+      expect(startUp(runtime, index, 'startup-1')).toBeNull();
+      expect(index.read('durable-running-job')).toMatchObject({ disposition: 'unresolved' });
+      now += 10_000;
+      expect(startUp(runtime, index, 'startup-2')).toMatchObject({ kind: 'unopenable' });
+      expect(index.read('durable-running-job')).toMatchObject({ disposition: 'unresolved' });
+    },
+  );
+
+  it('waits for custody against an unproven epoch before minting', () => {
+    const runtime = unreadableEpochRuntime();
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const current = inspectCurrentStore(runtime);
+    if (current.kind !== 'current') throw new Error('Expected a current epoch.');
+    encodeResolvedStoreEpoch(runtime, current.epoch);
+    recordCustodyIntent(runtime, runtime.paths.coral.coordinator.runDir, {
+      effect: 'process-spawn',
+      epoch: dirname(current.epoch.path),
+      owner: 'job',
+      operationId: 'custodied-job',
+      jobId: 'custodied-job',
+      capsule: null,
+      bindWithinMs: 1_000,
+      nowMs: runtime.time.now(),
+    });
+    rmSync(join(dirname(current.epoch.path), 'epoch.json'));
+
+    expect(startUp(runtime, index, 'custody-startup')).toBeNull();
+  });
+
+  it('hands back a live job when another recorded running process is proven absent', async () => {
+    assertBuildArtifactsAvailable();
+    const runtime = unreadableEpochRuntime();
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const fixture = createPluginFixture(homes, { flavor: 'prod' });
+    const manifest = JSON.parse(
+      readFileSync(join(fixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
+    ) as StrictBundleManifest;
+    const current = inspectCurrentStore(runtime);
+    if (current.kind !== 'current') throw new Error('Expected a current epoch.');
+    const older = newRawDatabase(current.epoch.path);
+    older.exec("UPDATE meta SET value = '0.1.0' WHERE key = 'store_product_version'");
+    older.close();
+    const epochKey = encodeResolvedStoreEpoch(runtime, current.epoch);
+    const lineageKey = readEpochKey(runtime, current.epoch);
+    if (lineageKey === null) throw new Error('Expected a lineage key.');
+    cpSync(fixture.root, retainedBuildRoot(runtime, manifest.buildSetId), { recursive: true });
+    recordControllerOpen(runtime, epochKey, 'retained-instance', null, fixture.root, manifest, 1);
+    const opened = latestControllerOpen(runtime, epochKey, 'retained-instance').latest;
+    if (opened === null) throw new Error('Expected a recorded controller open.');
+    vi.spyOn(runtime.process, 'execSync').mockReturnValue({
+      status: 0,
+      stdout: `${JSON.stringify({
+        kind: 'retained-epoch-open',
+        version: 'v1',
+        epochKey,
+        instanceId: opened.instanceId,
+        buildSetId: opened.build.buildSetId,
+        bundleHash: opened.build.bundleHash,
+      })}\n`,
+      stderr: '',
+    });
+    const live = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    const exited = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    try {
+      await Promise.all([once(live, 'spawn'), once(exited, 'spawn')]);
+      for (const [jobId, child] of [
+        ['live-job', live],
+        ['exited-job', exited],
+      ] as const) {
+        if (child.pid === undefined) throw new Error('Custody process has no pid.');
+        const incarnation = runtime.process.readProcessIncarnation(
+          child.pid,
+          runtime.env.platform() as NodeJS.Platform,
+        );
+        if (incarnation === null) throw new Error('Custody process incarnation was not observable.');
+        index.register(
+          jobId,
+          epochKey,
+          {
+            projectRoot: '/workspace/project',
+            workDir: '/workspace/project',
+            jobKind: 'provider',
+          },
+          { instanceId: 'retained-instance', buildSetId: manifest.buildSetId, controlGeneration: 1 },
+        );
+        if (jobId === 'exited-job')
+          index.recordObserved(jobId, {
+            status: {
+              jobId,
+              owner: { kind: 'provider-session', id: 'session-1' },
+              sessionId: 'session-1',
+              provider: 'claude',
+              projectRoot: '/workspace/project',
+              workDir: null,
+              backendNamespace: 'namespace',
+              jobKind: 'provider',
+              phase: 'running',
+              updatedAt: '2026-09-25T00:00:00.000Z',
+              lastSeq: 1,
+            },
+            events: [],
+            readiness: 'ready',
+            exit: null,
+          });
+        const intent = recordCustodyIntent(runtime, runtime.paths.coral.coordinator.runDir, {
+          effect: 'process-spawn',
+          epoch: dirname(current.epoch.path),
+          epochKey: lineageKey,
+          owner: 'job',
+          operationId: jobId,
+          jobId,
+          capsule: null,
+          bindWithinMs: 1_000,
+          nowMs: runtime.time.now(),
+        });
+        bindCustodyIdentity(runtime, runtime.paths.coral.coordinator.runDir, intent, {
+          process: { pid: child.pid, incarnation, processGroupId: child.pid },
+          capsule: null,
+          observedAtMs: runtime.time.now(),
+        });
+      }
+      const exit = once(exited, 'exit');
+      exited.kill('SIGKILL');
+      await exit;
+
+      expect(prepareRetainedControllerHandoff(runtime, index, currentCoralStoreFormat())?.epochKey).toBe(epochKey);
+    } finally {
+      live.kill('SIGKILL');
+      exited.kill('SIGKILL');
+      if (live.exitCode === null) await once(live, 'exit');
+    }
+  });
+
   it.each([true, false])(
     'hands a holding job to its verified retained controller despite another lineage hold when the root is available: %s',
     (rootAvailable) => {

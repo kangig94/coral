@@ -159,6 +159,35 @@ describe('succession admission pause', () => {
     });
   });
 
+  it('keeps accepted descendants and refuses new launches while writer park is settling', () => {
+    expect(coordinator.beginSuccessionCommitWindow('attempt', coordinator.admissionRevision()).kind).toBe('paused');
+    const accepted = coordinator.requestLaunch(
+      'before-park',
+      'claude',
+      { kind: 'workflow', id: 'parent' },
+      'default',
+      true,
+    );
+    expect(accepted).toMatchObject({ type: 'immediate' });
+
+    coordinator.beginSuccessionWriterPark('attempt');
+    expect(
+      coordinator.requestLaunch('after-park', 'claude', { kind: 'workflow', id: 'parent' }, 'default', true),
+    ).toMatchObject({ type: 'immediate' });
+    advance(SUCCESSION_PAUSE_ATTEMPT_MS);
+    expect(coordinator.successionAdmissionPaused()).toBe(true);
+    expect(coordinator.admitTopLevelLaunch()).toBe(false);
+    expect(() =>
+      coordinator.requestLaunch('overrun', 'claude', { kind: 'provider-session', id: 'new' }, 'default'),
+    ).toThrow(SuccessionAdmissionPausedError);
+    expect(coordinator.endSuccessionCommitWindow('attempt')).toBe(false);
+    expect(
+      coordinator.requestLaunch('after-window', 'claude', { kind: 'workflow', id: 'parent' }, 'default', true),
+    ).toMatchObject({
+      type: 'immediate',
+    });
+  });
+
   it('should count partially used windows toward the rolling budget', () => {
     for (const [attemptId, durationMs] of [
       ['first', 4_000],

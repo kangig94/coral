@@ -327,6 +327,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   let lastError: string | undefined;
   let lastSetupError: SerializedCoralSetupError | undefined;
   let state: KbDaemonWriteRuntimeState | null = null;
+  let writerParkPending = false;
   let initPromise: Promise<KbDaemonWriteRuntimeState> | null = null;
   let disposePromise: Promise<void> | null = null;
   let searchWarmupPromise: Promise<void> | null = null;
@@ -369,6 +370,8 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     return 'running';
   };
   const disposedError = (): KbToolResult => kbError('kb_unavailable', `KB daemon write runtime is ${phase}.`);
+  const writerParkRefusal = (): KbToolResult =>
+    kbError('succession_admission_paused', 'KB work admission is paused during succession. Retry shortly.');
 
   const build = async (): Promise<KbDaemonWriteRuntimeState> => {
     const buildKiwiArtifactBootController = kiwiArtifactBootTasks.start();
@@ -913,6 +916,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     warmSearchRuntime,
     searchReadiness,
     async createSource(args, ctx) {
+      if (writerParkPending) return writerParkRefusal();
       if (phase === 'disposing' || phase === 'disposed') {
         return disposedError();
       }
@@ -923,15 +927,18 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       const initialized = await init();
       initialized.kbRuntime.kb.invalidateKbCache();
       await initialized.kbRuntime.kb.ensureCorpusFreshness({ wait: true });
+      if (writerParkPending) return writerParkRefusal();
       return initialized.sourceImportService.start(parsed.data, ctx, initialized.kbRuntime);
     },
     async reindex(args, ctx) {
+      if (writerParkPending) return writerParkRefusal();
       if (phase === 'disposing' || phase === 'disposed') {
         return disposedError();
       }
       const initialized = await init();
       initialized.kbRuntime.kb.invalidateKbCache();
       await initialized.kbRuntime.kb.ensureCorpusFreshness({ wait: true });
+      if (writerParkPending) return writerParkRefusal();
       return initialized.reindexService.run({ async: args.async === true }, ctx, initialized.kbRuntime);
     },
     async expansionRpc(request) {
@@ -978,18 +985,25 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       return activeState === null ? [] : activeState.abortRegistry.listActive();
     },
     async parkWriterTurn(options) {
+      writerParkPending = true;
       const activeState = state;
       if (activeState === null || activeState.writerEntitlement === null) {
+        writerParkPending = false;
         throw new Error('KB daemon writer turn is unavailable.');
       }
-      await drainCorpusMutationLock(activeState.kbRuntime.kb, { signal: options?.signal });
-      if (state !== activeState) throw new Error('KB daemon writer turn changed during park.');
-      // A job the succession inventory did not see would lose its writer with no owner accepting it.
-      const activeJobs = activeState.abortRegistry.listActive();
-      if (activeJobs.length > 0) {
-        throw new Error(`KB daemon writer turn cannot park while ${activeJobs.length} KB job(s) run.`);
+      try {
+        await drainCorpusMutationLock(activeState.kbRuntime.kb, { signal: options?.signal });
+        if (state !== activeState) throw new Error('KB daemon writer turn changed during park.');
+        // A job the succession inventory did not see would lose its writer with no owner accepting it.
+        const activeJobs = activeState.abortRegistry.listActive();
+        if (activeJobs.length > 0) {
+          throw new Error(`KB daemon writer turn cannot park while ${activeJobs.length} KB job(s) run.`);
+        }
+        activeState.writerEntitlement.park();
+      } catch (error: unknown) {
+        writerParkPending = false;
+        throw error;
       }
-      activeState.writerEntitlement.park();
     },
     reclaimWriterTurn(generation, signal) {
       const writer = state?.writerEntitlement;
@@ -1001,6 +1015,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         writer.park();
         signal.throwIfAborted();
       }
+      writerParkPending = false;
     },
     dispose,
     health() {
