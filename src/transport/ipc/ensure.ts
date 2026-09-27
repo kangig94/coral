@@ -24,6 +24,7 @@ import {
   createIpcClient,
   IpcDrainRequestUnanswered,
   IpcLifecycleRefusal,
+  IpcRpcError,
   IpcRequestTimeout,
   type IpcClient,
   type IpcRequestOptions,
@@ -131,6 +132,7 @@ type EnsuredClientAuthMode = 'boot' | 'none';
 type SpawnedCoordinator = {
   readonly attemptId: string;
   readonly spawnedAt: number;
+  readonly pid: number | undefined;
   readonly terminal: Promise<SpawnedCoordinatorTerminal>;
 };
 
@@ -147,6 +149,7 @@ type BackendReadyWaitContext =
       readonly kind: 'current-attempt';
       readonly attemptId: string;
       readonly spawnedAt: number;
+      readonly pid: number | undefined;
       readonly terminal: Promise<SpawnedCoordinatorTerminal>;
     }
   | { readonly kind: 'existing-starting' };
@@ -359,7 +362,7 @@ function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
  */
 type CoordinatorHealthReading =
   | Readonly<{ kind: 'answered'; health: RawCoordinatorHealth }>
-  | Readonly<{ kind: 'unusable'; cause: 'health-shape-rejected' }>
+  | Readonly<{ kind: 'unusable'; cause: 'health-shape-rejected' | 'ipc-capacity-refusal' }>
   | Readonly<{ kind: 'unanswered'; cause: 'health-request-failed' }>;
 
 async function readRawCoordinatorHealth(
@@ -372,7 +375,10 @@ async function readRawCoordinatorHealth(
       request === 'ping'
         ? await client.ping<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS })
         : await client.health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
-  } catch {
+  } catch (error: unknown) {
+    if (error instanceof IpcRpcError && error.code === 'too_many_ipc_connections') {
+      return { kind: 'unusable', cause: 'ipc-capacity-refusal' };
+    }
     return { kind: 'unanswered', cause: 'health-request-failed' };
   }
 
@@ -658,7 +664,7 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
     });
     const terminal = observeSpawnedCoordinatorTerminal(child);
     child.unref();
-    return { attemptId, spawnedAt, terminal };
+    return { attemptId, spawnedAt, pid: child.pid, terminal };
   } finally {
     if (typeof stderr === 'number') {
       closeSync(stderr);
@@ -764,6 +770,29 @@ function verifiedUnresponsivePid(info: VerifiedBackendInfo | null): number | nul
     : null;
 }
 
+async function answersAuthenticatedHttpHealth(
+  paths: CoordinatorPaths,
+  info: VerifiedBackendInfo,
+  expectedSocketPath: string,
+): Promise<boolean> {
+  if (info.socketPath !== expectedSocketPath) return false;
+  try {
+    const response = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': info.bootToken },
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+    if (response.status !== 200) return false;
+    const health = parseRawCoordinatorHealth(await response.json());
+    return (
+      health !== null &&
+      discoveryMatchesExistingIncumbent(info, expectedSocketPath, existingIncumbentIdentity(health)) &&
+      recordedHolderIdentity(info) === recordedHolderIdentity(readDiscoverySnapshot(paths))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function endedStartupMessage(
   terminal: SpawnedCoordinatorTerminal,
   reading: CoordinatorHealthReading,
@@ -808,6 +837,36 @@ function forceKillUnresponsiveMessage(pid: number, run: UnansweredRun, now: numb
   );
 }
 
+function deferredWaiterClaim(
+  paths: CoordinatorPaths,
+  desired: DesiredCoordinator,
+  incumbent: ReadyCoordinatorEvidence,
+  childPid: number | undefined,
+  now: number,
+): Readonly<{ kind: 'claimed' | 'unproven' }> {
+  if (childPid === undefined) return { kind: 'unproven' };
+  const observed = readUpgradeIntent(paths.runDir);
+  if (observed.kind !== 'readable') return { kind: 'unproven' };
+  const intent = observed.intent;
+  const claimed =
+    intent.incumbent.instanceId === incumbent.health.instanceId &&
+    intent.incumbent.pid === incumbent.info.pid &&
+    intent.incumbent.version === incumbent.health.version &&
+    intent.incumbent.bundleHash === incumbent.health.bundleHash &&
+    intent.target.build.version === desired.version &&
+    intent.target.build.bundleHash === desired.bundleHash &&
+    intent.target.build.flavor === desired.flavor &&
+    intent.attemptOwner?.kind === 'waiter' &&
+    intent.attemptOwner.pid === childPid &&
+    observeProcessLiveness(childPid) === 'alive' &&
+    (intent.attemptOwner.incarnation === null ||
+      probeProcessIncarnation(childPid) === intent.attemptOwner.incarnation) &&
+    intent.attemptDeadline !== null &&
+    Date.parse(intent.attemptDeadline) > now &&
+    intent.retryCondition?.kind === 'incumbent-retirement';
+  return { kind: claimed ? 'claimed' : 'unproven' };
+}
+
 /**
  * After a fresh spawn (or while the incumbent is still in `starting`), poll
  * until the daemon has both bound the socket AND written `coordinator.json`
@@ -825,8 +884,8 @@ async function waitForBackendReady(
   const currentAttempt = waitContext.kind === 'current-attempt';
   const readyDeadline = timePort.now() + timeoutMs;
   let terminalOutcome: SpawnedCoordinatorTerminal | null = null;
-  // What this wait produces is the successor to a draining incumbent, so no route's admission may end it on a
-  // draining coordinator: that would hand back the incumbent as its own replacement.
+  // A draining incumbent cannot serve this wait. An authenticated running legacy incumbent can serve it when
+  // this attempt has durably claimed responsibility for the upgrade wait.
   const admission: RouteLifecycleAdmission = 'running';
   let unansweredRun: UnansweredRun | null = null;
 
@@ -874,6 +933,10 @@ async function waitForBackendReady(
         if (lineage.kind === 'proven-current-attempt') {
           return servingIncumbent;
         }
+        // The contender remains detached and owns the recorded waiter lease; the CLI need not wait for its exit.
+        if (deferredWaiterClaim(paths, desired, servingIncumbent, waitContext.pid, timePort.now()).kind === 'claimed') {
+          return servingIncumbent;
+        }
       }
     }
 
@@ -892,7 +955,9 @@ async function waitForBackendReady(
           if (
             startupError.code === 'handoff_socket_holder_unverified' &&
             unresponsivePid !== null &&
-            unansweredThroughWindow(unansweredRun, now)
+            unansweredThroughWindow(unansweredRun, now) &&
+            latestInfo !== null &&
+            !(await answersAuthenticatedHttpHealth(paths, latestInfo, expectedSocketPath))
           ) {
             throw new BackendUnreachableError(forceKillUnresponsiveMessage(unresponsivePid, unansweredRun, now));
           }
@@ -1119,6 +1184,7 @@ async function spawnTopLevelCoordinator(
     kind: 'current-attempt',
     attemptId: spawned.attemptId,
     spawnedAt: spawned.spawnedAt,
+    pid: spawned.pid,
     terminal: spawned.terminal,
   });
   return summarizeBackend(ready.info, ready.health, timePort, 'boot');

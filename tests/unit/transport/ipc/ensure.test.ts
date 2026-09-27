@@ -1,5 +1,6 @@
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as IpcClientMod from '#src/transport/ipc/client.js';
+import type * as UpgradeIntentMod from '#src/infra/upgrade-intent.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
 import { probeProcessIncarnation, type ProcessIncarnation, type ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -13,6 +14,9 @@ import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { requestLegacyUpgrade } from '#src/upgrade-waiter/start.js';
+import { createRealUpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
 import {
   readBuildFlavor,
@@ -21,7 +25,7 @@ import {
 } from '#src/infra/bundle-manifest.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
-import type { IpcClient } from '#src/transport/ipc/client.js';
+import { IpcRpcError, type IpcClient } from '#src/transport/ipc/client.js';
 import { jobsAbortRpcSpec, providerProxySetContainRpcSpec } from '#src/transport/rpc/catalog.js';
 
 const mockState = vi.hoisted(() => ({
@@ -39,7 +43,19 @@ const mockState = vi.hoisted(() => ({
   /** Overrides for the recorded owner's observed state; `null` leaves the real probe in charge. */
   ownerLiveness: null as ProcessLiveness | null,
   ownerIncarnationUnprobeable: false,
+  validUpgradeTargetRoot: null as string | null,
 }));
+
+vi.mock('#src/infra/upgrade-intent.js', async (loadOriginal) => {
+  const actual = await loadOriginal<typeof UpgradeIntentMod>();
+  return {
+    ...actual,
+    revalidateUpgradeIntentTarget: (intent: UpgradeIntentMod.UpgradeIntent) =>
+      intent.target.pluginRootLabel === mockState.validUpgradeTargetRoot
+        ? ({ kind: 'validated' } as ReturnType<typeof actual.revalidateUpgradeIntentTarget>)
+        : actual.revalidateUpgradeIntentTarget(intent),
+  };
+});
 
 vi.mock('#src/infra/node-process.js', async () => {
   const actual = await vi.importActual<typeof NodeProcessMod>('#src/infra/node-process.js');
@@ -293,6 +309,7 @@ beforeEach(() => {
   mockState.strictIdentity = { ok: false, reason: 'embedded_identity_unavailable' };
   mockState.ownerLiveness = null;
   mockState.ownerIncarnationUnprobeable = false;
+  mockState.validUpgradeTargetRoot = null;
 });
 
 afterEach(() => {
@@ -2104,6 +2121,83 @@ describe('ipc ensure', () => {
     });
   });
 
+  it('returns the incumbent after two waiter launches fail while the contender keeps waiting', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const paths = coordinatorPaths('prod');
+    mockState.validUpgradeTargetRoot = root;
+    const incumbent = {
+      instanceId: 'legacy-incumbent',
+      pid: process.pid,
+      incarnation: null,
+      version: '0.5.1',
+      bundleHash: 'legacy-hash',
+      flavor: 'prod' as const,
+    };
+    writeDiscovery(root, {
+      pid: incumbent.pid,
+      version: incumbent.version,
+      bundleHash: incumbent.bundleHash,
+      instanceId: incumbent.instanceId,
+    });
+    let spawned = false;
+    let executorSettled = false;
+    const child = spawnedChild(process.pid);
+    const startWaiter = vi.fn(async () => ({ kind: 'unavailable' as const, reason: 'waiter did not claim' }));
+    const runWaiter = vi.fn(async () => {
+      const observed = readUpgradeIntent(paths.runDir);
+      if (observed.kind !== 'readable') throw new Error('upgrade intent disappeared');
+      const claimed = await compareAndSwapUpgradeIntent(paths.runDir, observed.intent.revision, {
+        ...observed.intent,
+        attemptId: 'inline-waiter-attempt',
+        attemptOwner: { kind: 'waiter', instanceId: 'inline-waiter', pid: process.pid, incarnation: null },
+        attemptDeadline: new Date(Date.now() + 30_000).toISOString(),
+      });
+      expect(claimed.kind).toBe('written');
+      return await new Promise<never>(() => undefined);
+    });
+    mockState.health.mockImplementation(async () => {
+      if (!spawned) throw createErrnoError('ECONNREFUSED');
+      return {
+        status: 'ok',
+        version: incumbent.version,
+        bundleHash: incumbent.bundleHash,
+        flavor: incumbent.flavor,
+        instanceId: incumbent.instanceId,
+        namespace: pluginRootNamespace(root),
+      };
+    });
+    mockState.spawn.mockImplementation(() => {
+      spawned = true;
+      void requestLegacyUpgrade({
+        runDir: paths.runDir,
+        socketPath: paths.socketPath,
+        incumbent,
+        target: { build: provenManifest('test-hash'), pluginRootLabel: root },
+        startWaiter,
+        runWaiter,
+        ports: createRealUpgradeWaiterPorts(),
+      }).then(() => {
+        executorSettled = true;
+      });
+      return child;
+    });
+
+    const { ensure, KERNEL_READY_DEADLINE_MS } = await importEnsure();
+    const result = ensure('sessions.create', root);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect((await result).instanceId).toBe(incumbent.instanceId);
+    expect(startWaiter).toHaveBeenCalledTimes(2);
+    expect(runWaiter).toHaveBeenCalledOnce();
+    expect(executorSettled).toBe(false);
+    expect(readUpgradeIntent(paths.runDir)).toMatchObject({
+      intent: { attemptOwner: { kind: 'waiter', pid: process.pid } },
+    });
+    expect(KERNEL_READY_DEADLINE_MS).toBeGreaterThan(4_000);
+    expect(child.unref).toHaveBeenCalledOnce();
+  });
+
   it('adopts a different-identity coordinator reached through the current attempt delegation chain', async () => {
     makeHome();
     vi.useFakeTimers();
@@ -2329,6 +2423,102 @@ describe('ipc ensure', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain(`action=kill -9 ${process.pid}`);
+  });
+
+  it('treats an IPC connection-cap refusal as an answer, not a silent holder', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { pid: process.pid, incarnation: incarnation! });
+    mockState.health.mockRejectedValue(
+      new IpcRpcError({
+        code: -32603,
+        message: 'Too many IPC connections',
+        data: { code: 'too_many_ipc_connections' },
+      }),
+    );
+
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const result = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), FORCE_KILL_UNANSWERED_WINDOW_MS + 400);
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS + 800);
+
+    expect(await result).toMatchObject({ code: 'handoff_socket_holder_unverified' });
+    expect(JSON.stringify(await result)).not.toContain('kill -9');
+  });
+
+  it('checks authenticated HTTP health before naming a silent holder for force-kill', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { pid: process.pid, incarnation: incarnation! });
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    const http = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'ok',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'existing-coordinator',
+          namespace: pluginRootNamespace(root),
+          pid: process.pid,
+          incarnation,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const result = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), FORCE_KILL_UNANSWERED_WINDOW_MS + 400);
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS + 800);
+
+    expect(await result).toMatchObject({ code: 'handoff_socket_holder_unverified' });
+    expect(JSON.stringify(await result)).not.toContain('kill -9');
+    expect(http).toHaveBeenCalledWith('http://127.0.0.1:4100/health?detailed=1', {
+      headers: { 'X-Coral-Boot-Token': 'test-boot-token' },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('does not accept HTTP health for another coordinator as the recorded holder', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { pid: process.pid, incarnation: incarnation! });
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'ok',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'another-coordinator',
+          namespace: pluginRootNamespace(root),
+          pid: process.pid,
+          incarnation,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const result = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), FORCE_KILL_UNANSWERED_WINDOW_MS + 400);
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS + 800);
+
+    expect(((await result) as Error).message).toContain(`action=kill -9 ${process.pid}`);
   });
 
   it('resets silence when the recorded holder identity changes', async () => {

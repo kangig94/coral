@@ -1,7 +1,7 @@
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { createRealTimePort } from '../../infra/time.js';
 import { compareProductVersions } from '../../infra/product-version.js';
-import { createIpcClient } from './client.js';
+import { createIpcClient, IpcRpcError } from './client.js';
 import type { TimePort } from '../../infra/port-types.js';
 
 export type IncumbentIdentity = {
@@ -66,7 +66,8 @@ export async function probeIncumbent(opts: {
   if (opts.timeoutMs <= 0) return null;
   try {
     return await client.ping<IncumbentHealth | null>({ timeoutMs: opts.timeoutMs });
-  } catch {
+  } catch (error: unknown) {
+    if (error instanceof IpcRpcError && error.code === 'too_many_ipc_connections') throw error;
     return null;
   }
 }

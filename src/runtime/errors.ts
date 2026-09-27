@@ -143,6 +143,8 @@ export type DocumentedCoralSetupErrorCode =
   | 'handoff_shutdown_capability_rejected'
   | 'handoff_shutdown_credential_unavailable'
   | 'handoff_socket_holder_unverified'
+  | 'handoff_administrative_drain_timeout'
+  | 'handoff_ipc_capacity_timeout'
   | 'user_cancelled';
 
 export type HandoffRefusalCode = Extract<DocumentedCoralSetupErrorCode, `handoff_${string}`>;
@@ -157,6 +159,14 @@ export type HandoffRefusalContextByCode = {
     pid: number;
   }>;
   readonly handoff_socket_holder_unverified: Readonly<{
+    stage: 'handoff-deadline';
+    socketPath: string;
+  }>;
+  readonly handoff_administrative_drain_timeout: Readonly<{
+    stage: 'handoff-deadline';
+    socketPath: string;
+  }>;
+  readonly handoff_ipc_capacity_timeout: Readonly<{
     stage: 'handoff-deadline';
     socketPath: string;
   }>;
@@ -752,6 +762,20 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     exitCode: 75,
     observation: 'not_observed',
   },
+  handoff_administrative_drain_timeout: {
+    userMessage: (context) =>
+      `Handoff deferred for socket ${context.socketPath}: an answering coordinator remained in administrative drain past the startup deadline.`,
+    remediation: 'The coordinator is still draining. A later invocation can retry after it releases the socket.',
+    exitCode: 75,
+    retryable: true,
+  },
+  handoff_ipc_capacity_timeout: {
+    userMessage: (context) =>
+      `Handoff deferred for socket ${context.socketPath}: an answering coordinator refused new IPC connections at capacity through the startup deadline.`,
+    remediation: 'The coordinator is still answering. Retry when its IPC connections have capacity.',
+    exitCode: 75,
+    retryable: true,
+  },
   user_cancelled: {
     userMessage: (context) => `User cancelled '${stringContextValue(context, 'during', 'the operation')}'.`,
     remediation: (context) => {
@@ -1058,9 +1082,10 @@ const isShutdownCredentialUnavailableContext = contextValidator<
   HandoffRefusalContextByCode['handoff_shutdown_credential_unavailable']
 >({ stage: isLiteral('shutdown-request'), pid: isNumber });
 
-const isSocketHolderUnverifiedContext = contextValidator<
-  HandoffRefusalContextByCode['handoff_socket_holder_unverified']
->({ stage: isLiteral('handoff-deadline'), socketPath: isString });
+const isHandoffDeadlineContext = contextValidator<HandoffRefusalContextByCode['handoff_socket_holder_unverified']>({
+  stage: isLiteral('handoff-deadline'),
+  socketPath: isString,
+});
 
 type HandoffRefusalContextValidator<Code extends HandoffRefusalCode> = (
   context: CoralSetupErrorContext,
@@ -1069,7 +1094,9 @@ type HandoffRefusalContextValidator<Code extends HandoffRefusalCode> = (
 const HANDOFF_REFUSAL_CONTEXT_VALIDATORS = {
   handoff_shutdown_capability_rejected: isShutdownCapabilityRejectedContext,
   handoff_shutdown_credential_unavailable: isShutdownCredentialUnavailableContext,
-  handoff_socket_holder_unverified: isSocketHolderUnverifiedContext,
+  handoff_socket_holder_unverified: isHandoffDeadlineContext,
+  handoff_administrative_drain_timeout: isHandoffDeadlineContext,
+  handoff_ipc_capacity_timeout: isHandoffDeadlineContext,
 } satisfies { readonly [Code in HandoffRefusalCode]: HandoffRefusalContextValidator<Code> };
 
 function isHandoffRefusalCode(code: DocumentedCoralSetupErrorCode): code is HandoffRefusalCode {

@@ -75,6 +75,30 @@ const HANDOFF_REFUSAL_CASES = [
     observation: 'not_observed',
     retryable: false,
   },
+  {
+    init: {
+      code: 'handoff_administrative_drain_timeout',
+      context: { stage: 'handoff-deadline', socketPath: '/run/coral/coordinator.sock' },
+    },
+    userMessage:
+      'Handoff deferred for socket /run/coral/coordinator.sock: an answering coordinator remained in administrative drain past the startup deadline.',
+    remediation: 'The coordinator is still draining. A later invocation can retry after it releases the socket.',
+    exitCode: 75,
+    observation: undefined,
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_ipc_capacity_timeout',
+      context: { stage: 'handoff-deadline', socketPath: '/run/coral/coordinator.sock' },
+    },
+    userMessage:
+      'Handoff deferred for socket /run/coral/coordinator.sock: an answering coordinator refused new IPC connections at capacity through the startup deadline.',
+    remediation: 'The coordinator is still answering. Retry when its IPC connections have capacity.',
+    exitCode: 75,
+    observation: undefined,
+    retryable: true,
+  },
 ] satisfies readonly HandoffRefusalCase[];
 
 function documentedCoralSetupErrorSpec(code: DocumentedCoralSetupErrorCode): Readonly<{
@@ -163,6 +187,11 @@ describe('CoralSetupError', () => {
 
     expect(documentedCoralSetupErrorExitCode(socketHolder.code)).toBe(75);
     expect(isRetryableCoralSetupError(socketHolder)).toBe(false);
+    for (const code of ['handoff_administrative_drain_timeout', 'handoff_ipc_capacity_timeout'] as const) {
+      const refusal = documentedCoralSetupError(code, { stage: 'handoff-deadline', socketPath: '/tmp/coral.sock' });
+      expect(documentedCoralSetupErrorExitCode(refusal.code)).toBe(75);
+      expect(isRetryableCoralSetupError(refusal)).toBe(true);
+    }
     expect(documentedCoralSetupErrorExitCode('kb_unavailable')).toBe(75);
     expect(isRetryableCoralSetupError(documentedCoralSetupError('store_schema_outdated'))).toBe(false);
     expect(documentedCoralSetupErrorExitCode('not_a_documented_code')).toBeUndefined();

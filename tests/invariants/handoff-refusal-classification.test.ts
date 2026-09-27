@@ -88,6 +88,10 @@ describe('handoff refusal classification ownership', () => {
     // multiplicity. What it must not depend on is position — where a `throw` sits inside the function that
     // owns it is not a change of ownership, and an inventory that fails for it gets re-synced rather than read.
     const approved = [
+      'bindWithHandoff:handoff_administrative_drain_timeout',
+      'bindWithHandoff:handoff_administrative_drain_timeout',
+      'bindWithHandoff:handoff_ipc_capacity_timeout',
+      'bindWithHandoff:handoff_ipc_capacity_timeout',
       'bindWithHandoff:handoff_socket_holder_unverified',
       'bindWithHandoff:handoff_socket_holder_unverified',
     ];

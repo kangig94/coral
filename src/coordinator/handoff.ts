@@ -2,7 +2,7 @@ import type { Runtime } from '../runtime/ports.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import { waiterExecutableReady } from '../infra/handoff-target.js';
 import { readUpgradeIntent, type UpgradeIntent } from '../infra/upgrade-intent.js';
-import { requestIpcMethod } from '../transport/ipc/client.js';
+import { IpcRpcError, requestIpcMethod } from '../transport/ipc/client.js';
 import { SUCCESSION_METHODS } from '../infra/succession-address.js';
 import type { LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
 import { backendLog } from '../infra/backend-log.js';
@@ -208,10 +208,24 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
   let opts = { ...initialOptions };
   const deadlineMonotonicMs = opts.runtime.time.monotonicNow() + BigInt(opts.totalBudgetMs);
   let sawIncumbent = false;
+  let sawDrainingReply = false;
+  let sawCapacityRefusal = false;
 
   while (true) {
     opts.signal?.throwIfAborted();
     if (sawIncumbent && opts.runtime.time.monotonicNow() >= deadlineMonotonicMs) {
+      if (sawDrainingReply) {
+        throw new HandoffEscalationError({
+          code: 'handoff_administrative_drain_timeout',
+          context: { stage: 'handoff-deadline', socketPath: opts.socketPath },
+        });
+      }
+      if (sawCapacityRefusal) {
+        throw new HandoffEscalationError({
+          code: 'handoff_ipc_capacity_timeout',
+          context: { stage: 'handoff-deadline', socketPath: opts.socketPath },
+        });
+      }
       throw new HandoffEscalationError({
         code: 'handoff_socket_holder_unverified',
         context: { stage: 'handoff-deadline', socketPath: opts.socketPath },
@@ -228,17 +242,37 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
 
     const remaining = Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow());
     if (remaining <= 0) {
+      if (sawDrainingReply) {
+        throw new HandoffEscalationError({
+          code: 'handoff_administrative_drain_timeout',
+          context: { stage: 'handoff-deadline', socketPath: opts.socketPath },
+        });
+      }
+      if (sawCapacityRefusal) {
+        throw new HandoffEscalationError({
+          code: 'handoff_ipc_capacity_timeout',
+          context: { stage: 'handoff-deadline', socketPath: opts.socketPath },
+        });
+      }
       throw new HandoffEscalationError({
         code: 'handoff_socket_holder_unverified',
         context: { stage: 'handoff-deadline', socketPath: opts.socketPath },
       });
     }
 
-    const health = await probeIncumbent({
-      socketPath: opts.socketPath,
-      timeoutMs: Math.min(HEALTH_RPC_TIMEOUT_MS, remaining),
-      timePort: opts.runtime.time,
-    });
+    let health: IncumbentHealth | null;
+    try {
+      health = await probeIncumbent({
+        socketPath: opts.socketPath,
+        timeoutMs: Math.min(HEALTH_RPC_TIMEOUT_MS, remaining),
+        timePort: opts.runtime.time,
+      });
+    } catch (error: unknown) {
+      if (!(error instanceof IpcRpcError && error.code === 'too_many_ipc_connections')) throw error;
+      sawCapacityRefusal = true;
+      health = null;
+    }
+    if (health?.status === 'draining') sawDrainingReply = true;
     if (health !== null && health.status !== 'draining') {
       if (
         health.version !== undefined &&

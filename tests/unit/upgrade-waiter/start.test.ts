@@ -679,6 +679,51 @@ describe('legacy upgrade request', () => {
     });
   });
 
+  it('keeps an accountable inline waiter alive when two launches fail and retirement stays pending', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    installedTargets.add('/installed/target');
+    const startWaiter = vi.fn(async () => ({ kind: 'unavailable' as const, reason: 'waiter could not claim' }));
+    let claimed!: () => void;
+    const claimReady = new Promise<void>((resolve) => {
+      claimed = resolve;
+    });
+    const runWaiter = vi.fn(async () => {
+      const observed = readUpgradeIntent(runDir);
+      if (observed.kind !== 'readable') throw new Error('intent disappeared');
+      const written = await compareAndSwapUpgradeIntent(runDir, observed.intent.revision, {
+        ...observed.intent,
+        attemptId: 'inline-pending',
+        attemptOwner: { kind: 'waiter', instanceId: 'inline-waiter', pid: process.pid, incarnation: null },
+        attemptDeadline: new Date(Date.now() + 30_000).toISOString(),
+      });
+      expect(written.kind).toBe('written');
+      claimed();
+      return await new Promise<never>(() => undefined);
+    });
+
+    let settled = false;
+    void requestLegacyUpgrade({
+      runDir,
+      socketPath: '/legacy.sock',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      startWaiter,
+      runWaiter,
+      ports: { ...createRealUpgradeWaiterPorts(), time: { now: () => Date.now(), sleep: async () => undefined } },
+    }).then(() => {
+      settled = true;
+    });
+    await claimReady;
+
+    expect(startWaiter).toHaveBeenCalledTimes(2);
+    expect(runWaiter).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: { attemptOwner: { kind: 'waiter', pid: process.pid }, retryCondition: { kind: 'incumbent-retirement' } },
+    });
+  });
+
   it('refuses a target with no waiter executable before recording an intent', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);
