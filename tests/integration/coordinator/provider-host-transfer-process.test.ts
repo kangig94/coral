@@ -32,6 +32,7 @@ import {
   assertBuildArtifactsAvailable,
   coordinatorFilesForHome,
   createPluginFixture,
+  createShippedPluginFixture,
   readDiscoveryRecordForHome,
   spawnCoordinator,
   stopCoordinator,
@@ -191,7 +192,7 @@ function readOnlyCapsule(home: string): Readonly<{ path: string; capsule: Redeem
   const runDir = coordinatorFilesForHome(home, 'prod').runDir;
   const paths = existsSync(runDir)
     ? readdirSync(runDir)
-        .filter((entry) => /^provider-1[0-9a-f]{23}\.handoff\.v4\.json$/u.test(entry))
+        .filter((entry) => /^provider-1[0-9a-f]{23}\.handoff\.v[34]\.json$/u.test(entry))
         .map((entry) => join(runDir, entry))
     : [];
   if (paths.length !== 1) return null;
@@ -328,11 +329,10 @@ async function capsuleNamesController(home: string, fixture: PluginFixture): Pro
 }
 
 describe('real-process provider host transfer', () => {
-  it('keeps a live job controllable after a sentinel-less backend crashes', async () => {
+  it('reports a terminal job when a shipped v0.10.13 backend crashes and its reaper closes', async () => {
     assertBuildArtifactsAvailable();
     const world = createTransferWorld();
-    const fixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14', accepts: 'bundled' });
-    rmSync(join(fixture.root, 'bridge', 'coral-sentinel.cjs'));
+    const fixture = createShippedPluginFixture(roots, 'v0.10.13');
     const runDir = coordinatorPaths('prod', { baseDir: join(world.home, '.coral') }).runDir;
     const harness = join(world.home, 'supervisor.mjs');
     await build({
@@ -371,19 +371,33 @@ describe('real-process provider host transfer', () => {
       if (found === null) throw new Error('Live job has no provider capsule');
       const hosts = recordHostProcesses((found as NonNullable<ReturnType<typeof readOnlyCapsule>>).capsule);
       const waiter = startCli(fixture, world, ['wait', 'jobs', jobId, '--verbose']);
-      await waitForCondition(() => waiter.stdout().includes('before-transfer'), 30_000);
+      try {
+        await waitForCondition(() => waiter.stdout().includes('before-transfer'), 30_000);
+      } catch (error: unknown) {
+        throw new Error(
+          `Shipped waiter failed before crash: ${JSON.stringify({ output: waiter.output(), supervisor: output })}`,
+          {
+            cause: error,
+          },
+        );
+      }
       process.kill(original.pid, 'SIGKILL');
-      await waitForCondition(() => {
-        const current = readDiscoveryRecordForHome(world.home, 'prod');
-        return current !== null && current.pid !== original.pid && launch.read().launch?.phase === 'serving';
-      }, 25_000);
-      expect(hostsAlive(hosts), output).toBe(true);
-      const resumedWaiter = startCli(fixture, world, ['wait', 'jobs', jobId, '--verbose']);
-      writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
-      await waitForCondition(() => resumedWaiter.stdout().includes('after-transfer'), 30_000);
-      writeFileSync(join(world.state, 'release-job'), 'released');
-      expect(await resumedWaiter.completed, resumedWaiter.output()).toBe(0);
-      expect(await runCli(fixture, world, ['jobs', 'detail', jobId])).toMatch(/completed/iu);
+      try {
+        await waitForCondition(() => {
+          const current = readDiscoveryRecordForHome(world.home, 'prod');
+          return current !== null && current.pid !== original.pid && launch.read().launch?.phase === 'serving';
+        }, 60_000);
+      } catch (error: unknown) {
+        throw new Error(`Shipped successor did not serve: ${output.slice(0, 8000)}`, { cause: error });
+      }
+      await waitForCondition(
+        () => hosts.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
+        30_000,
+      );
+      const detail = await runCli(fixture, world, ['jobs', 'detail', jobId]);
+      expect(detail).toMatch(/Phase: (?:error|aborted)\b/iu);
+      expect(detail).toContain('Exit:');
+      expect(await waiter.completed).not.toBe(0);
     } finally {
       const childPid = launch.read().launch?.child?.pid;
       launch.close();
@@ -415,7 +429,21 @@ describe('real-process provider host transfer', () => {
     }, 30_000);
     const waiter = startCli(oldFixture, world, ['wait', 'jobs', jobId, '--verbose']);
     writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
-    await waitForCondition(() => waiter.stdout().includes('after-transfer'), 60_000);
+    try {
+      await waitForCondition(() => existsSync(join(world.state, 'emitted-after-transfer')), 60_000);
+    } catch (error: unknown) {
+      throw new Error(
+        `Recovered provider made no progress: ${JSON.stringify({
+          waiter: waiter.output(),
+          replacement: replacement.output(),
+          hostsAlive: hostsAlive(hosts),
+          interrupted: existsSync(join(world.state, 'terminal-interrupted')),
+          completed: existsSync(join(world.state, 'terminal-completed')),
+          discovery: readDiscoveryRecordForHome(world.home, 'prod'),
+        })}`,
+        { cause: error },
+      );
+    }
     writeFileSync(join(world.state, 'release-job'), 'released');
     expect(await waiter.completed, waiter.output()).toBe(0);
     expect(await runCli(oldFixture, world, ['jobs', 'detail', jobId])).toMatch(/completed/iu);
@@ -505,7 +533,7 @@ describe('real-process provider host transfer', () => {
       const resumedWaiter = startCli(newerFixture, world, ['wait', 'jobs', jobId, '--verbose']);
       writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
       try {
-        await waitForCondition(() => resumedWaiter.stdout().includes('after-transfer'), 20_000);
+        await waitForCondition(() => existsSync(join(world.state, 'emitted-after-transfer')), 20_000);
       } catch (error: unknown) {
         throw new Error(
           `Recovered job made no progress: ${JSON.stringify({

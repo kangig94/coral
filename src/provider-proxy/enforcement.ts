@@ -329,8 +329,11 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       return;
     }
     if (observation.disposition === 'absent') {
-      if (deadlines.bounds().holderCheckAccelerated && !acceleratedCheckMayAuthorizeAbsence) {
-        // Pairing loss must not authorize incumbent absence while a successor may still be in flight.
+      if (
+        deadlines.bounds().holderCheckAccelerated &&
+        !(acceleratedCheckMayAuthorizeAbsence && options.pairingLossObserved?.() === true)
+      ) {
+        // Coordinator EOF alone must leave an in-flight successor its adoption window.
         deadlines.renewHolderCheck(checkedAt);
         schedule(generation);
         return;
