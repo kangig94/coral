@@ -549,6 +549,8 @@ describe('upgrade waiter', () => {
       ...pendingIntent(),
       attemptId: 'stalled-attempt',
       attemptOwner: { kind: 'waiter', instanceId: 'stalled-waiter', pid: process.pid, incarnation: null },
+      attemptChild: null,
+      disposition: 'attempting',
       attemptDeadline: new Date(now - 1).toISOString(),
     });
     const launch = vi.fn(async (intent: UpgradeIntent, attemptId: string) => {

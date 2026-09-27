@@ -170,6 +170,38 @@ function resolveAt(runtime: Runtime, startupId: string) {
 }
 
 describe('incomplete succession at startup', () => {
+  it.each([0, -1])('retires an unrecorded waiter attempt at deadline offset %i ms', async (offset) => {
+    const runtime = runtimeFixture();
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('test process has no readable incarnation');
+    atStartup(runtime, 'later-contender');
+    await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'waiting-request',
+      incumbent: {
+        instanceId: 'legacy',
+        pid: 1234,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'unrecorded-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'stuck-waiter', pid: process.pid, incarnation },
+      attemptChild: null,
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(runtime.time.now() + offset).toISOString(),
+      completionReceipt: null,
+    });
+
+    await expect(resolveAt(runtime, 'later-contender')).resolves.toEqual({
+      kind: 'retire',
+      attemptId: 'unrecorded-attempt',
+    });
+  });
+
   it('retires archived attempts and resolves the current recovery grant in the same startup', async () => {
     const runtime = runtimeFixture();
     const dead = await exitedPid();
@@ -1231,6 +1263,25 @@ describe('waiter-launched upgrade completion', () => {
     expect(writerGeneration.observeSuccessionServing(runtime, 'waiter-attempt')).toBeNull();
   });
 
+  it('self-fences an unrecorded waiter-launched child exactly at its deadline', async () => {
+    const { runtime } = await waiterAttempt('2026-09-25T00:00:00.000Z');
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('this process has no incarnation');
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+    const atDeadline: Runtime = {
+      ...runtime,
+      time: { ...runtime.time, now: () => Date.parse('2026-09-25T00:00:00.000Z') },
+    };
+
+    await expect(recordWaiterLaunchedChild(atDeadline, current, process.pid, incarnation)).rejects.toThrow(
+      'waiter serving record has no completion receipt',
+    );
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { attemptChild: null },
+    });
+  });
+
   it('records the child before opening its store', async () => {
     const { runtime } = await waiterAttempt('2026-09-25T00:00:30.000Z');
     const incarnation = probeProcessIncarnation(process.pid);
@@ -1314,9 +1365,14 @@ describe('waiter-launched upgrade completion', () => {
 
   it('should hold a recorded child whose serving publication missed the deadline', async () => {
     const { runtime, complete } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('this process has no incarnation');
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+    await recordWaiterLaunchedChild(runtime, current, process.pid, incarnation);
     const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
     if (observed.kind !== 'readable') throw new Error('intent disappeared');
-    const deadline = new Date(runtime.time.now() + 1).toISOString();
+    const deadline = new Date(runtime.time.now() - 1).toISOString();
     const changed = await compareAndSwapUpgradeIntent(
       runtime.paths.coral.coordinator.runDir,
       observed.intent.revision,

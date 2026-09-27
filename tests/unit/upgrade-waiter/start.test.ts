@@ -236,6 +236,52 @@ describe('legacy upgrade request', () => {
     expect(launchDetached).toHaveBeenCalledOnce();
   });
 
+  it.each([0, -1])('replaces an unrecorded target attempt at deadline offset %i ms', async (offset) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    waiterTargets.add('/installed/target');
+    const now = Date.now();
+    await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'waiting-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'unrecorded-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'dead-waiter', pid: await exitedPid(), incarnation: null },
+      attemptChild: null,
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(now + offset).toISOString(),
+      completionReceipt: null,
+    });
+    const launchDetached = vi.fn(async () => {
+      const observed = readUpgradeIntent(runDir);
+      if (observed.kind !== 'readable') throw new Error('intent disappeared');
+      expect(observed.intent).toMatchObject({ attemptId: null, attemptOwner: null, attemptChild: null });
+      const claimed = await compareAndSwapUpgradeIntent(runDir, observed.intent.revision, {
+        ...observed.intent,
+        attemptId: 'replacement-attempt',
+        attemptOwner: { kind: 'waiter', instanceId: 'replacement', pid: process.pid, incarnation: null },
+        attemptDeadline: new Date(now + 30_000).toISOString(),
+      });
+      expect(claimed.kind).toBe('written');
+      return process.pid;
+    });
+
+    await expect(
+      startUpgradeWaiter({
+        runDir,
+        socketPath: '/legacy.sock',
+        targetRoot: '/installed/target',
+        ports: {
+          ...createRealUpgradeWaiterPorts(),
+          time: { now: () => now, sleep: async () => undefined },
+          launchDetached,
+        },
+      }),
+    ).resolves.toEqual({ kind: 'started', pid: process.pid });
+  });
+
   it('keeps an expired live waiter lease while its recorded attempt child may serve', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);

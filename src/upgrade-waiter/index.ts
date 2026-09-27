@@ -259,7 +259,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     if (attemptId === null) {
       if (
         (intent.attemptOwner !== null && deadline > now()) ||
-        (intent.disposition === 'attempting' && intent.attemptId !== null && !child) ||
+        (intent.disposition === 'attempting' && intent.attemptId !== null && !child && deadline > now()) ||
         (child !== null && child !== undefined && observeRecordedProcess(ports, child) !== 'absent')
       )
         return { kind: 'lease-held' };

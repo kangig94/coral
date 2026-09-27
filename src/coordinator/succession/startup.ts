@@ -626,6 +626,14 @@ export async function resolveIncompleteSuccessionAtStartup(
     )
   ) {
     const child = intent.attemptChild;
+    if (
+      intent.disposition === 'attempting' &&
+      intent.attemptDeadline !== null &&
+      runtime.time.now() >= Date.parse(intent.attemptDeadline) &&
+      (child === null || child === undefined || child.attemptId !== attemptId)
+    ) {
+      return prior === null ? { kind: 'retire', attemptId } : retireArchived(attemptId);
+    }
     const unproven = deathsUnproven(
       attemptId,
       child === null || child === undefined || child.attemptId !== attemptId
@@ -1435,7 +1443,7 @@ export async function recordWaiterLaunchedChild(
       intent.target.build.bundleHash !== currentBuild.bundleHash
     )
       return { kind: 'settle', value: false };
-    if (intent.attemptDeadline !== null && runtime.time.now() > Date.parse(intent.attemptDeadline)) {
+    if (intent.attemptDeadline !== null && runtime.time.now() >= Date.parse(intent.attemptDeadline)) {
       return { kind: 'settle', value: false };
     }
     if (intent.attemptChild !== null && intent.attemptChild !== undefined) {

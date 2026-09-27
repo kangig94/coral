@@ -57,22 +57,12 @@ export function failedAttemptRetry(
     return { retryCondition: { kind: 'target-change', evidence: targetChangeEvidence } };
   }
   if (retry.obligationChange === true) {
-    const changes = (obligationRetryOf(intent)?.changes ?? 0) + 1;
+    const changes = Math.min((obligationRetryOf(intent)?.changes ?? 0) + 1, OBLIGATION_RETRY_LIMIT + 1);
     const obligationRetry = {
       targetKey: successionTargetKey(intent.target),
       changes,
       retryAfter: new Date(nowMs + Math.max(retry.retryAfterMs, backoffMs(changes))).toISOString(),
     };
-    if (changes > OBLIGATION_RETRY_LIMIT) {
-      return {
-        disposition: 'closed',
-        retryCondition: {
-          kind: 'target-change',
-          evidence: `${OBLIGATION_RETRY_LIMIT} obligation attempt failures exhausted this target's retries`,
-        },
-        obligationRetry,
-      };
-    }
     return {
       retryCondition: {
         kind: 'obligation-change',

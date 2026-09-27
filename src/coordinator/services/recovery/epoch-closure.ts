@@ -1,5 +1,10 @@
 import { dirname, join } from 'node:path';
 
+import {
+  decodeDurableCliProcessRuntimeMeta,
+  decodeDurableCliProcessRuntimeMetaV1,
+  decodeDurableCliProvisionalProcessRuntimeMeta,
+} from '../../../jobs/runtime-meta.js';
 import { observeRecordedContainment, reapRecordedContainment } from '../../../infra/process-containment.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
@@ -182,16 +187,17 @@ function observePreCoverageCustody(
   runtime: Runtime,
   candidate: ClosureCandidate,
   entries: readonly CustodyEntry[],
+  ambiguousOriginalPath: boolean,
 ): Readonly<{ kind: 'alive' | 'undecidable' | 'discharged' }> {
   for (const entry of entries) {
     if (entry.kind === 'unreadable') return { kind: 'undecidable' };
-    if (
-      entry.intent.epochKey !== candidate.epochKey &&
-      entry.intent.epoch !== candidate.originalPath &&
-      entry.intent.epoch !== candidate.epochKey &&
-      entry.intent.epoch !== dirname(candidate.epoch.path)
-    )
-      continue;
+    const keyed = entry.intent.epochKey !== undefined;
+    const pathMatches =
+      entry.intent.epoch === candidate.originalPath ||
+      entry.intent.epoch === candidate.epochKey ||
+      entry.intent.epoch === dirname(candidate.epoch.path);
+    if (keyed ? entry.intent.epochKey !== candidate.epochKey : !pathMatches) continue;
+    if (!keyed && ambiguousOriginalPath) return { kind: 'undecidable' };
     if (entry.kind === 'holding') return { kind: 'undecidable' };
     if (entry.kind === 'absent') continue;
     if (entry.binding.process === null) return { kind: 'undecidable' };
@@ -208,7 +214,69 @@ function observePreCoverageCustody(
     if (observed.kind === 'alive') return { kind: 'alive' };
     if (observed.kind !== 'absent') return { kind: 'undecidable' };
   }
+  const shipped = observeShippedDurableCliProcesses(runtime, candidate);
+  if (shipped !== 'absent') return { kind: shipped === 'alive' ? 'alive' : 'undecidable' };
   return { kind: 'discharged' };
+}
+
+function observeShippedDurableCliProcesses(
+  runtime: Runtime,
+  candidate: ClosureCandidate,
+): 'alive' | 'unknown' | 'absent' {
+  let db: ReturnType<Runtime['storage']['openSqliteDatabaseSync']>;
+  try {
+    db = runtime.storage.openSqliteDatabaseSync(candidate.epoch.path, { readOnly: true });
+  } catch {
+    return 'unknown';
+  }
+  try {
+    const rows = db
+      .prepare(
+        "SELECT key, value FROM meta WHERE key LIKE 'durable_cli_process.v%:%' OR key LIKE 'durable_cli_provisional_process.v%:%'",
+      )
+      .all();
+    for (const row of rows) {
+      if (typeof row !== 'object' || row === null || !('key' in row) || !('value' in row)) return 'unknown';
+      const { key, value } = row;
+      if (typeof key !== 'string' || typeof value !== 'string') return 'unknown';
+      const version = /^durable_cli_process\.v([12]):(.+)$/u.exec(key);
+      const provisional = /^durable_cli_provisional_process\.v1:(.+)$/u.exec(key);
+      const full = version?.[1] === '2' ? decodeDurableCliProcessRuntimeMeta(value) : null;
+      const predecessor = version?.[1] === '1' ? decodeDurableCliProcessRuntimeMetaV1(value) : null;
+      const provisionalRecord = provisional === null ? null : decodeDurableCliProvisionalProcessRuntimeMeta(value);
+      const record = full ?? predecessor ?? provisionalRecord;
+      if (record === null || record.jobId !== (version?.[2] ?? provisional?.[1])) return 'unknown';
+      if ('processGroupId' in record) {
+        const contained = observeRecordedContainment(
+          {
+            pid: record.pid,
+            incarnation: record.incarnation,
+            processGroupId: record.processGroupId,
+            childRoot: full?.childRoot ?? null,
+          },
+          {
+            process: runtime.process,
+            platform: runtime.env.platform() as NodeJS.Platform,
+            readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+          },
+        );
+        if (contained.kind === 'alive') return 'alive';
+        if (contained.kind !== 'absent') return 'unknown';
+        continue;
+      }
+      const observed = runtime.process.observeLiveness(record.pid);
+      if (observed === 'unknown') return 'unknown';
+      if (observed === 'absent') continue;
+      const incarnation = runtime.process.readProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform);
+      if (incarnation === null) return 'unknown';
+      if (incarnation === record.incarnation) return 'alive';
+    }
+    return 'absent';
+  } catch {
+    return 'unknown';
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -626,7 +694,9 @@ export async function settleSupersededEpochClosures(
         (address) => address.epochKey !== candidate.epochKey && address.originalPath === candidate.originalPath,
       );
     const preCoverage = predatesCustodyCoverage(runtime, candidate);
-    const liveCustody = preCoverage ? observePreCoverageCustody(runtime, candidate, custody) : null;
+    const liveCustody = preCoverage
+      ? observePreCoverageCustody(runtime, candidate, custody, ambiguousOriginalPath)
+      : null;
     const settlement = preCoverage
       ? liveCustody?.kind === 'alive'
         ? {

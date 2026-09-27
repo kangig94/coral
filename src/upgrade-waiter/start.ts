@@ -54,7 +54,7 @@ export async function startUpgradeWaiter(
     if (!leaseExpired && liveness !== 'absent') {
       return { kind: 'unavailable', reason: 'recorded waiter death is unproven' };
     }
-    if (intent.disposition === 'attempting' && intent.attemptId !== null && !intent.attemptChild) {
+    if (intent.disposition === 'attempting' && intent.attemptId !== null && !intent.attemptChild && !leaseExpired) {
       return { kind: 'unavailable', reason: 'unrecorded attempt child may still serve' };
     }
     if (intent.attemptChild && observeRecordedProcess(ports, intent.attemptChild) !== 'absent') {

@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendLog } from '#src/infra/backend-log.js';
 
 import { JobLocationIndex } from '#src/jobs/location-index.js';
+import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { formatStoreResetList } from '#src/cli/format/store-reset.js';
 import { withSupersededEpochClosures } from '#src/cli/backend-status.js';
 import {
@@ -808,6 +809,69 @@ describe('epoch closure and protected addressing', () => {
     expect(existsSync(epochDirectory(root, '2'))).toBe(true);
   });
 
+  it('holds a pre-coverage epoch while a shipped durable CLI process remains alive', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const old = resolvedStoreEpoch(root, '1');
+    const key = readOrCreateEpochKey(runtime, old);
+    publish(runtime, '2');
+    initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+    publish(runtime, '3');
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    index.certify(encodeResolvedStoreEpoch(runtime, old), 0);
+    const guardian = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    await once(guardian, 'spawn');
+    try {
+      if (guardian.pid === undefined) throw new Error('Guardian process did not start.');
+      const incarnation = runtime.process.readProcessIncarnation(
+        guardian.pid,
+        runtime.env.platform() as NodeJS.Platform,
+      );
+      if (incarnation === null) throw new Error('Guardian incarnation was not observable.');
+      const db = openTestStoreDatabase({ path: old.path, storage: runtime.storage, storeFormat });
+      writeDurableCliProcessRuntimeMeta(db, {
+        jobId: '00000000-0000-4000-8000-000000000001',
+        pid: guardian.pid,
+        incarnation,
+        processGroupId: guardian.pid,
+        childRoot: { pid: guardian.pid, incarnation },
+      });
+      db.close();
+
+      expect(
+        (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+      ).toMatchObject({
+        disposition: 'unrecoverable-retained',
+        executionDischarge: 'undecidable',
+      });
+      await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
+        resultsReleased: (epochKey) => index.resultsReleased(epochKey),
+      });
+      expect(existsSync(epochDirectory(root, '1'))).toBe(true);
+      const unreadable = vi.spyOn(runtime.process, 'readProcessIncarnation').mockImplementation(() => {
+        throw new Error('process observation unavailable');
+      });
+      expect(
+        (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+      ).toMatchObject({ disposition: 'unrecoverable-retained', executionDischarge: 'undecidable' });
+      unreadable.mockRestore();
+    } finally {
+      const exited = once(guardian, 'exit');
+      guardian.kill('SIGKILL');
+      await exited;
+    }
+    expect(
+      (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+    ).toMatchObject({
+      disposition: 'closed',
+      executionDischarge: 'certified',
+    });
+  });
+
   it('does not certify an uncovered epoch from a higher directory that was never a proven epoch', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
@@ -1018,6 +1082,64 @@ describe('epoch closure and protected addressing', () => {
       disposition: 'closed',
       executionDischarge: 'certified',
     });
+  });
+
+  it('ignores a different explicit epoch key even when its custody path was reused', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const old = resolvedStoreEpoch(root, '1');
+    const key = readOrCreateEpochKey(runtime, old);
+    publish(runtime, '2');
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    initializeCustodyLedger(runtime, runDir);
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const guardian = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    await once(guardian, 'spawn');
+    try {
+      if (guardian.pid === undefined) throw new Error('Guardian process did not start.');
+      const incarnation = runtime.process.readProcessIncarnation(
+        guardian.pid,
+        runtime.env.platform() as NodeJS.Platform,
+      );
+      if (incarnation === null) throw new Error('Guardian incarnation was not observable.');
+      const intent = recordCustodyIntent(runtime, runDir, {
+        effect: 'process-spawn',
+        epoch: dirname(old.path),
+        owner: 'provider-proxy-set',
+        operationId: 'another-lineage:guardian',
+        capsule: null,
+        bindWithinMs: 10_000,
+        nowMs: runtime.time.now(),
+      });
+      bindCustodyIdentity(runtime, runDir, intent, {
+        process: { pid: guardian.pid, incarnation, processGroupId: guardian.pid },
+        capsule: null,
+        observedAtMs: runtime.time.now(),
+      });
+      expect(
+        (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+      ).toMatchObject({
+        disposition: 'unrecoverable-retained',
+        executionDischarge: 'undecidable',
+      });
+      const path = join(custodyLedgerDir(runDir), intent.id, 'intent.v1.json');
+      writeFileSync(path, JSON.stringify({ ...intent, epochKey: 'another-lineage:1' }));
+
+      expect(
+        (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+      ).toMatchObject({
+        disposition: 'closed',
+        executionDischarge: 'certified',
+      });
+    } finally {
+      const exited = once(guardian, 'exit');
+      guardian.kill('SIGKILL');
+      await exited;
+    }
   });
 
   it('updates retained data outcome without reopening certified execution discharge', async () => {

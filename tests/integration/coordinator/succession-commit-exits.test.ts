@@ -255,6 +255,7 @@ type Harness = Readonly<{
   startedRecoveries: number;
   retryNotifications: number;
   committer: SuccessionCommitter;
+  releaseKbWriter(): void;
   launch(): Promise<SuccessionLaunch>;
   launchNextServing(): Promise<SuccessionLaunch>;
 }>;
@@ -349,6 +350,7 @@ async function harness(
     startedRecoveries: 0,
     retryNotifications: 0,
   };
+  let kbWriterBusy = options.kbParkRefusal !== undefined;
   const writers: IncumbentWriterPorts = {
     parkProviderOperationMutations: async () => {
       commitEvents.push('park');
@@ -402,7 +404,7 @@ async function harness(
         : {
             parkWriterTurn: async () => {
               if (options.kbParkRefusalDelayMs !== undefined) await runtime.time.sleep(options.kbParkRefusalDelayMs);
-              throw new Error(options.kbParkRefusal);
+              if (kbWriterBusy) throw new Error(options.kbParkRefusal);
             },
           }),
     },
@@ -520,6 +522,9 @@ async function harness(
       return state.retryNotifications;
     },
     committer,
+    releaseKbWriter: () => {
+      kbWriterBusy = false;
+    },
     launch: () => committer.launchPrepared(written.intent, preparation),
     launchNextServing: async () => {
       const nextPreparation = preparationFor(epochKey, runtime.ids.uuid());
@@ -834,7 +839,7 @@ describe('succession commit failure exits', () => {
     expect(observed.intent.transientRetry?.failures).toBe(6);
   });
 
-  it('closes an exhausted obligation retry target automatically', async () => {
+  it('retries an exhausted obligation retry target after the writer releases', async () => {
     const test = await harness({
       failingPoints: () => false,
       recoveryLaunch: 'fails',
@@ -846,10 +851,16 @@ describe('succession commit failure exits', () => {
     await waitForCondition(() => test.retryNotifications === 1, 15_000);
     const observed = readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir);
     if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
-    expect(observed.intent.retryCondition?.kind).toBe('target-change');
+    expect(observed.intent.retryCondition?.kind).toBe('obligation-change');
     expect(observed.intent.obligationRetry?.changes).toBe(7);
-    expect(observed.intent.disposition).toBe('closed');
+    expect(observed.intent.disposition).toBe('deferred');
     expect(test.adoptedAdmissions).toBe(1);
+    test.releaseKbWriter();
+    await test.launchNextServing();
+    await waitForCondition(() => test.releases.some((release) => release.kind === 'successor'), 15_000);
+    const retried = readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir);
+    if (retried.kind !== 'readable' || retried.intent.attemptId === null) throw new Error('retry was not recorded');
+    expect(observeSuccessionServing(test.runtime, retried.intent.attemptId)).not.toBeNull();
   });
 
   it('re-certifies an obligation after the ancillary writers park and retries the target', async () => {

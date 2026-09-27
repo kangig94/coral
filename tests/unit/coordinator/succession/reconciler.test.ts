@@ -288,75 +288,91 @@ describe('succession reconciler', () => {
     expect(onIntentChanged).toHaveBeenCalledTimes(2);
   });
 
-  it('holds the next attempt through an obligation wake until a transient backoff ends, then wakes itself', async () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
-    directories.push(runDir);
-    const incumbent = {
-      instanceId: 'incumbent',
-      pid: 1234,
-      incarnation: null,
-      version: '0.10.13',
-      bundleHash: 'fedcba9876543210',
-      flavor: 'prod' as const,
-    };
-    const target = { build, pluginRootLabel: '/missing/target' };
-    const retryAfterMs = Date.now() + 1_500;
-    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
-      requestId: 'request-1',
-      incumbent,
-      target,
-      attemptId: null,
-      attemptOwner: null,
-      disposition: 'deferred',
-      blockers: [{ owner: 'succession-commit', reason: 'Successor missed its serving deadline.' }],
-      retryCondition: { kind: 'attempt-expiry', evidence: 'transient attempt failure 1 of 6' },
-      attemptDeadline: null,
-      completionReceipt: null,
-      transientRetry: {
-        targetKey: successionTargetKey(target),
-        failures: 1,
-        retryAfter: new Date(retryAfterMs).toISOString(),
-      },
-    });
-    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
-    let notify: (() => void) | undefined;
-    const reconciler = createSuccessionReconciler({
-      runtime,
-      runDir,
-      incumbent: () => incumbent,
-      owners: [],
-      epochKey: () => null,
-      admissionRevision: () => 0,
-      commitAvailable: true,
-      subscribeObligationChanges: (callback) => {
-        notify = callback;
-        return () => undefined;
-      },
-    });
-    try {
-      expect(await reconciler.reconcile()).toMatchObject({
-        kind: 'deferred',
-        reason: expect.stringContaining('backs off until'),
+  it.each(['transient', 'obligation'] as const)(
+    'holds the next attempt through an obligation wake until the %s backoff ends, then wakes itself',
+    async (retryKind) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+      directories.push(runDir);
+      const incumbent = {
+        instanceId: 'incumbent',
+        pid: 1234,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod' as const,
+      };
+      const target = { build, pluginRootLabel: '/missing/target' };
+      const retryAfterMs = Date.now() + 1_500;
+      const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+        requestId: 'request-1',
+        incumbent,
+        target,
+        attemptId: null,
+        attemptOwner: null,
+        disposition: 'deferred',
+        blockers: [{ owner: 'succession-commit', reason: 'Successor missed its serving deadline.' }],
+        retryCondition:
+          retryKind === 'transient'
+            ? { kind: 'attempt-expiry', evidence: 'transient attempt failure 1 of 6' }
+            : { kind: 'obligation-change', evidence: 'KB writer turn remains busy' },
+        attemptDeadline: null,
+        completionReceipt: null,
+        ...(retryKind === 'transient'
+          ? {
+              transientRetry: {
+                targetKey: successionTargetKey(target),
+                failures: 1,
+                retryAfter: new Date(retryAfterMs).toISOString(),
+              },
+            }
+          : {
+              obligationRetry: {
+                targetKey: successionTargetKey(target),
+                changes: 7,
+                retryAfter: new Date(retryAfterMs).toISOString(),
+              },
+            }),
       });
-      notify?.();
-      expect(await reconciler.reconcile()).toMatchObject({
-        kind: 'deferred',
-        reason: expect.stringContaining('backs off'),
+      if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+      let notify: (() => void) | undefined;
+      const reconciler = createSuccessionReconciler({
+        runtime,
+        runDir,
+        incumbent: () => incumbent,
+        owners: [],
+        epochKey: () => null,
+        admissionRevision: () => 0,
+        commitAvailable: true,
+        subscribeObligationChanges: (callback) => {
+          notify = callback;
+          return () => undefined;
+        },
       });
-      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { revision: seeded.intent.revision } });
+      try {
+        expect(await reconciler.reconcile()).toMatchObject({
+          kind: 'deferred',
+          reason: expect.stringContaining('backs off until'),
+        });
+        notify?.();
+        expect(await reconciler.reconcile()).toMatchObject({
+          kind: 'deferred',
+          reason: expect.stringContaining('backs off'),
+        });
+        expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { revision: seeded.intent.revision } });
 
-      await waitForCondition(() => {
-        const observed = readUpgradeIntent(runDir);
-        return observed.kind === 'readable' && observed.intent.revision > seeded.intent.revision;
-      }, 10_000);
-      expect(Date.now()).toBeGreaterThanOrEqual(retryAfterMs);
-      expect(readUpgradeIntent(runDir)).toMatchObject({
-        intent: { blockers: [{ owner: 'target', reason: 'target build no longer validates' }] },
-      });
-    } finally {
-      reconciler.dispose();
-    }
-  });
+        await waitForCondition(() => {
+          const observed = readUpgradeIntent(runDir);
+          return observed.kind === 'readable' && observed.intent.revision > seeded.intent.revision;
+        }, 10_000);
+        expect(Date.now()).toBeGreaterThanOrEqual(retryAfterMs);
+        expect(readUpgradeIntent(runDir)).toMatchObject({
+          intent: { blockers: [{ owner: 'target', reason: 'target build no longer validates' }] },
+        });
+      } finally {
+        reconciler.dispose();
+      }
+    },
+  );
   it('adopts the intent of an exited incumbent and keeps the hold its target is under', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
     directories.push(runDir);
