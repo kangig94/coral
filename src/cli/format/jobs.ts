@@ -134,7 +134,9 @@ export function formatAbortResult(result: AbortResult): string {
     result.aborted.length > 0 ? `Aborted jobs: ${result.aborted.join(', ')}` : 'No jobs aborted',
     result.notFound.length > 0 ? `Not found: ${result.notFound.join(', ')}` : undefined,
     ...(result.refused ?? []).flatMap((refusal) => [
-      `Abort held for ${refusal.jobId}: ${refusal.reason}`,
+      refusal.reason === 'job_pre_epoch_history'
+        ? `Pre-epoch history may contain ${refusal.jobId}; this build cannot read it.`
+        : `Abort held for ${refusal.jobId}: ${refusal.reason}`,
       ...formatAbortNextStep(refusal.nextStep),
     ]),
     ...(result.held ?? []).flatMap((hold) => [

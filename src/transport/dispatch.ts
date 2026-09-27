@@ -1147,6 +1147,9 @@ async function executeJobsWaitCatalogRequest({
   if (scopeCheck.missing.length === parsed.jobIds.length) {
     return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
   }
+  if (scopeCheck.missing.length > 0 && rpcPorts.jobs.unknownJobDisposition() === 'pre-epoch-history') {
+    return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
+  }
   const unrecoverable = rpcPorts.jobs.outcomeUnrecoverable(parsed.jobIds);
   if (unrecoverable.length > 0) {
     return unary(

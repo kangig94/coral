@@ -169,6 +169,71 @@ function resolveAt(runtime: Runtime, startupId: string) {
 }
 
 describe('incomplete succession at startup', () => {
+  it('retires archived attempts and resolves the current recovery grant in the same startup', async () => {
+    const runtime = runtimeFixture();
+    const dead = await exitedPid();
+    const owner = { kind: 'incumbent' as const, instanceId: 'incumbent', pid: dead, incarnation: null };
+    const incumbent = { ...owner, version: '0.10.13', bundleHash: 'fedcba9876543210', flavor: 'prod' as const };
+    const completed = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'completed-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+      attemptId: 'completed-attempt',
+      attemptOwner: owner,
+      disposition: 'completed',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: {
+        kind: 'serving',
+        attemptId: 'completed-attempt',
+        successor: { instanceId: 'successor', pid: dead, incarnation: null, build },
+        epochKey: 'epoch-key',
+        controlGeneration: 1,
+        acceptedObligations: [],
+        recordedAt: new Date().toISOString(),
+      },
+    });
+    if (completed.kind !== 'written') throw new Error(`intent seed was ${completed.kind}`);
+    const retired = {
+      ...completed.intent,
+      requestId: 'retired-request',
+      attemptId: 'retired-attempt',
+      disposition: 'pending' as const,
+      completionReceipt: null,
+    };
+    const closed = {
+      ...retired,
+      requestId: 'closed-request',
+      attemptId: null,
+      attemptOwner: null,
+      disposition: 'closed' as const,
+    };
+    const current = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      completed.intent.revision,
+      {
+        ...retired,
+        requestId: 'current-request',
+        attemptId: 'recovery-attempt',
+        disposition: 'deferred',
+        recoveryAttemptId: 'recovery-attempt',
+        recoveryBuildSetId: build.buildSetId,
+        successionPreparation: preparation('recovery-attempt'),
+        supersededAttempts: [retired, completed.intent, closed],
+      },
+    );
+    if (current.kind !== 'written') throw new Error(`replacement seed was ${current.kind}`);
+
+    await expect(resolveAt(runtime, 'startup-1')).resolves.toMatchObject({
+      kind: 'hold',
+      hold: { kind: 'grant-controller-unavailable', attemptId: 'recovery-attempt' },
+    });
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { attemptId: 'recovery-attempt', supersededAttempts: [] },
+    });
+  });
+
   it('lets the waiter-launched target start while its waiter is alive', async () => {
     const base = runtimeFixture();
     const attemptId = 'waiter-attempt';
@@ -529,8 +594,10 @@ describe('incomplete succession at startup', () => {
     );
     if (replaced.kind !== 'written') throw new Error('replacement waiter was not recorded');
 
-    await expect(resolveAt(runtime, 'startup-1')).resolves.toEqual({ kind: 'retire', attemptId: 'old-attempt' });
-    await dischargeDeadSuccessionAttempt(runtime, 'old-attempt', replaced.intent.incumbent);
+    await expect(resolveAt(runtime, 'startup-1')).resolves.toMatchObject({
+      kind: 'hold',
+      hold: { kind: 'deaths-unproven', attemptId: 'new-attempt' },
+    });
     expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
       intent: {
         requestId: 'new-request',

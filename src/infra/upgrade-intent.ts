@@ -60,6 +60,38 @@ const blockerSchema = z
   })
   .passthrough();
 
+const knownBlockerOwners = new Set([
+  'launch-admission',
+  'durable-cli',
+  'provider-operations',
+  'provider-proxy-sets',
+  'provider-hosts',
+  'recovery',
+  'workflow',
+  'kb-daemon',
+  'discuss',
+  'session-continuation',
+  'child-principals',
+  'jobs',
+  'target',
+  'protocol',
+  'preparation',
+  'legacy-incumbent',
+  'waiter',
+  'upgrade-contender',
+  'succession-adoption',
+  'succession-attempt-child',
+  'succession-commit',
+  'succession-prepare',
+  'succession-startup',
+]);
+
+function blockerNeedsNewerBuild(blocker: Readonly<{ owner: string; reason: string }>): boolean {
+  return (
+    !knownBlockerOwners.has(blocker.owner) || Object.keys(blocker).some((key) => key !== 'owner' && key !== 'reason')
+  );
+}
+
 const RETRY_CONDITION_KINDS = ['obligation-change', 'incumbent-retirement', 'target-change', 'attempt-expiry'] as const;
 
 const retryConditionSchema = z
@@ -299,7 +331,7 @@ export type UpgradeIntentChange = Pick<
 export type UpgradeIntentVisibility = Readonly<{
   requestId: string;
   disposition: UpgradeIntent['disposition'];
-  phase: 'pending' | 'prepared' | 'ready' | 'committing';
+  phase: 'pending' | 'prepared' | 'ready' | 'launching' | 'committing';
   target: Readonly<{
     version: string;
     buildSetId: string;
@@ -320,7 +352,7 @@ export type UpgradeIntentVisibility = Readonly<{
 const upgradeIntentVisibilitySchema = z.object({
   requestId: z.string().min(1),
   disposition: z.enum(UPGRADE_INTENT_DISPOSITIONS),
-  phase: z.enum(['pending', 'prepared', 'ready', 'committing']),
+  phase: z.enum(['pending', 'prepared', 'ready', 'launching', 'committing']),
   target: z.object({
     version: z.string().min(1),
     buildSetId: z.string().min(1),
@@ -350,7 +382,9 @@ export function visibleUpgradeIntent(intent: UpgradeIntent): UpgradeIntentVisibi
     typeof preparation === 'object' && preparation !== null && 'stage' in preparation ? preparation.stage : null;
   const phase =
     intent.disposition === 'attempting'
-      ? 'committing'
+      ? intent.attemptOwner?.kind === 'waiter'
+        ? 'launching'
+        : 'committing'
       : intent.disposition === 'deferred'
         ? 'pending'
         : stage === 'prepared' || stage === 'ready' || stage === 'committing'
@@ -453,9 +487,9 @@ export function revalidateUpgradeIntentTarget(
   return createForeignTargetValidator()(join(pluginRoot, 'bridge'), manifest);
 }
 
-function mergeUnknownKeys(oldValue: unknown, newValue: unknown): unknown {
+function mergeUnknownKeys(oldValue: unknown, newValue: unknown, key?: string): unknown {
   if (Array.isArray(oldValue) && Array.isArray(newValue)) {
-    return newValue.map((entry) => {
+    const merged = newValue.map((entry) => {
       if (typeof entry !== 'object' || entry === null || !('owner' in entry)) return entry;
       const previous = oldValue.find(
         (candidate) =>
@@ -467,6 +501,29 @@ function mergeUnknownKeys(oldValue: unknown, newValue: unknown): unknown {
       );
       return mergeUnknownKeys(previous, entry);
     });
+    if (key !== 'blockers') return merged;
+    return [
+      ...merged,
+      ...oldValue.filter(
+        (entry) =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          'owner' in entry &&
+          typeof entry.owner === 'string' &&
+          'reason' in entry &&
+          typeof entry.reason === 'string' &&
+          blockerNeedsNewerBuild(entry as { owner: string; reason: string }) &&
+          !newValue.some(
+            (replacement) =>
+              typeof replacement === 'object' &&
+              replacement !== null &&
+              'owner' in replacement &&
+              'reason' in replacement &&
+              replacement.owner === entry.owner &&
+              replacement.reason === ('reason' in entry ? entry.reason : undefined),
+          ),
+      ),
+    ];
   }
   if (
     typeof oldValue !== 'object' ||
@@ -479,7 +536,8 @@ function mergeUnknownKeys(oldValue: unknown, newValue: unknown): unknown {
     return newValue;
   }
   const merged: Record<string, unknown> = { ...oldValue };
-  for (const [key, value] of Object.entries(newValue)) merged[key] = mergeUnknownKeys(merged[key], value);
+  for (const [entryKey, value] of Object.entries(newValue))
+    merged[entryKey] = mergeUnknownKeys(merged[entryKey], value, entryKey);
   return merged;
 }
 
@@ -523,6 +581,12 @@ export async function compareAndSwapUpgradeIntent(
     }
     const current = observed.kind === 'readable' ? observed.intent : null;
     if (current?.revision !== (expectedRevision ?? undefined)) return { kind: 'conflict', current };
+    if (
+      current?.blockers.some(blockerNeedsNewerBuild) &&
+      (change.attemptId !== null || change.disposition === 'completed' || change.disposition === 'closed')
+    ) {
+      return { kind: 'unsupported' };
+    }
     const next = upgradeIntentSchema.parse(
       mergeUnknownKeys(current, {
         ...change,

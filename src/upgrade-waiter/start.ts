@@ -223,7 +223,13 @@ export async function requestLegacyUpgrade(
     const earlier = Array.isArray(current?.supersededAttempts) ? current.supersededAttempts : [];
     const snapshot = current === null ? null : { ...current };
     if (snapshot !== null) delete snapshot.supersededAttempts;
-    const supersededAttempts = current?.attemptId === null || snapshot === null ? earlier : [...earlier, snapshot];
+    const supersededAttempts =
+      current?.attemptId === null ||
+      snapshot === null ||
+      current?.disposition === 'completed' ||
+      current?.disposition === 'closed'
+        ? earlier
+        : [...earlier, snapshot];
     return {
       kind: 'write',
       expectedRevision: current?.revision ?? null,

@@ -66,6 +66,50 @@ describe('legacy upgrade request', () => {
     waiterTargets.clear();
   });
 
+  it.each(['completed', 'closed'] as const)('does not archive an already %s attempt', async (disposition) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    installedTargets.add('/installed/target');
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'old-request',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      attemptId: 'served-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'old-waiter', pid: 1234, incarnation: null },
+      disposition,
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt:
+        disposition === 'completed'
+          ? {
+              kind: 'serving',
+              attemptId: 'served-attempt',
+              successor: { instanceId: 'successor', pid: 1234, incarnation: null, build },
+              epochKey: 'epoch-key',
+              controlGeneration: 1,
+              acceptedObligations: [],
+              recordedAt: new Date().toISOString(),
+            }
+          : null,
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+
+    await requestLegacyUpgrade({
+      runDir,
+      socketPath: '/legacy.sock',
+      incumbent,
+      target: { build, pluginRootLabel: '/installed/target' },
+      startWaiter: async () => ({ kind: 'started', pid: 5678 }),
+    });
+
+    const observed = readUpgradeIntent(runDir);
+    expect(observed.kind).toBe('readable');
+    if (observed.kind !== 'readable') return;
+    expect(observed.intent.requestId).not.toBe('old-request');
+    expect(observed.intent.supersededAttempts ?? []).toEqual([]);
+  });
+
   it.each(['0.11.0', '0.10.50'])(
     'replaces a vanished target with an installed %s legacy-waiter target',
     async (version) => {

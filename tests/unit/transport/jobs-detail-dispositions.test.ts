@@ -122,4 +122,55 @@ describe('jobs.detail retained-epoch dispositions', () => {
       });
     },
   );
+
+  it('should give missing ids in a mixed wait the pre-epoch disposition before streaming', async () => {
+    const waitStream = vi.fn();
+    const result = await execute(
+      'jobs.wait',
+      { jobIds: ['known', 'possible-flat'] },
+      {
+        scopeCheck: () => ({ valid: ['known', 'possible-flat'], mismatch: [], missing: ['possible-flat'] }),
+        unknownJobDisposition: () => 'pre-epoch-history',
+        outcomeUnrecoverable: () => [],
+        validateWait: () => null,
+        waitStream,
+      },
+    );
+
+    expect(result).toMatchObject({
+      kind: 'unary',
+      statusCode: 404,
+      body: { code: 'job_pre_epoch_history', detail: { jobs: ['possible-flat'] } },
+    });
+    expect(waitStream).not.toHaveBeenCalled();
+  });
+
+  it('should let addressing answer each id in a mixed pre-epoch abort', async () => {
+    const abort = vi.fn(() => ({
+      kind: 'answered' as const,
+      result: {
+        aborted: ['known'],
+        notFound: [],
+        refused: [{ jobId: 'possible-flat', reason: 'job_pre_epoch_history', nextStep: 'Do not retry.' }],
+      },
+    }));
+    const result = await execute(
+      'jobs.abort',
+      { jobs: ['known', 'possible-flat'] },
+      {
+        scopeCheck: () => ({ valid: ['known', 'possible-flat'], mismatch: [], missing: ['possible-flat'] }),
+        abort,
+      },
+    );
+
+    expect(abort).toHaveBeenCalledWith(['known', 'possible-flat']);
+    expect(result).toMatchObject({
+      kind: 'unary',
+      body: {
+        aborted: ['known'],
+        notFound: [],
+        refused: [{ jobId: 'possible-flat', reason: 'job_pre_epoch_history' }],
+      },
+    });
+  });
 });

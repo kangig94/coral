@@ -133,6 +133,8 @@ export class JobAddressing {
     const activeEpochKey = this.active.epochKey();
     const activeIds = jobIds.filter((jobId) => this.location(jobId)?.epochKey === activeEpochKey);
     const historicalIds = jobIds.filter((jobId) => !activeIds.includes(jobId) && this.location(jobId) !== null);
+    const unknownIds = jobIds.filter((jobId) => this.location(jobId) === null);
+    const preEpochHistory = unknownIds.length > 0 && this.unknownJobDisposition() === 'pre-epoch-history';
     const active =
       activeIds.length > 0
         ? this.active.abort(activeIds)
@@ -143,6 +145,14 @@ export class JobAddressing {
     const unrecoverable = unrecoverableAfterRefresh.filter((jobId) => !historicalTerminal.includes(jobId));
     const refused = [
       ...(active.result.refused ?? []),
+      ...(preEpochHistory
+        ? unknownIds.map((jobId) => ({
+            jobId,
+            reason: 'job_pre_epoch_history',
+            nextStep:
+              'A job that ran before store epochs has no details this build can read; another id may never have been a job. Do not retry.',
+          }))
+        : []),
       ...unrecoverable.map((jobId) => ({
         jobId,
         reason: 'historical_outcome_unrecoverable',
@@ -167,11 +177,7 @@ export class JobAddressing {
         ...active.result,
         // A terminal job answers as not found in every epoch: a refusal would send the caller retrying an abort
         // that has nothing left to stop.
-        notFound: [
-          ...active.result.notFound,
-          ...jobIds.filter((jobId) => this.location(jobId) === null),
-          ...historicalTerminal,
-        ],
+        notFound: [...active.result.notFound, ...(!preEpochHistory ? unknownIds : []), ...historicalTerminal],
         ...(refused.length === 0 ? {} : { refused }),
         ...(held.length === 0 ? {} : { held }),
       },

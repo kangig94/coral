@@ -100,6 +100,7 @@ export type SuccessionStartupHold =
   | Readonly<{ kind: 'unsupported-intent'; attemptId: null; reason: string; fingerprint: string }>
   | Readonly<{ kind: 'unreadable-intent'; attemptId: null; source: 'corrupt' | 'unreadable'; fingerprint: string }>
   | Readonly<{ kind: 'attempt-record-unreadable'; attemptId: string }>
+  | Readonly<{ kind: 'archive-retirement-unconfirmed'; attemptId: string | null }>
   | Readonly<{ kind: 'deaths-unproven'; attemptId: string; alive: boolean }>
   | Readonly<{ kind: 'recovery-grants-unverified'; attemptId: string }>
   | Readonly<{ kind: 'grant-controller-unavailable'; attemptId: string }>
@@ -134,6 +135,8 @@ function describeStartupHold(hold: SuccessionStartupHold): string {
       return `upgrade intent is ${hold.source}`;
     case 'attempt-record-unreadable':
       return 'incomplete attempt record is unreadable';
+    case 'archive-retirement-unconfirmed':
+      return 'archived attempt could not be retired before the next attempt is resolved';
     case 'deaths-unproven':
       return hold.alive ? 'a process of the attempt is still alive' : 'attempt process deaths are unproven';
     case 'recovery-grants-unverified':
@@ -163,6 +166,7 @@ function patienceSubject(hold: SuccessionStartupHold): string {
     return `${hold.kind}:${hold.fingerprint}`;
   if (hold.kind === 'preferred-epoch-unopenable') return hold.attemptId ?? `preferred-epoch:${hold.epochKey}`;
   if (hold.kind === 'retirement-mint-withheld') return hold.kind;
+  if (hold.kind === 'archive-retirement-unconfirmed') return hold.attemptId ?? 'archived-attempt';
   return hold.attemptId;
 }
 
@@ -545,6 +549,21 @@ export async function resolveIncompleteSuccessionAtStartup(
     backendLog.warn(`Abandoned an incomplete succession attempt for ordinary startup: ${describeStartupHold(hold)}`);
     return { kind: 'none' };
   };
+  const retireArchived = async (attemptId: string | null): Promise<IncompleteSuccessionResolution> => {
+    await dischargeDeadSuccessionAttempt(runtime, attemptId, observed.intent.incumbent);
+    const next = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (
+      next.kind === 'readable' &&
+      Array.isArray(next.intent.supersededAttempts) &&
+      parseUpgradeIntentSnapshot(next.intent.supersededAttempts[0])?.attemptId === attemptId
+    ) {
+      return { kind: 'hold', hold: { kind: 'archive-retirement-unconfirmed', attemptId } };
+    }
+    return resolveIncompleteSuccessionAtStartup(options);
+  };
+  if (prior !== null && (prior.disposition === 'completed' || prior.disposition === 'closed')) {
+    return retireArchived(prior.attemptId);
+  }
   const deathsUnproven = (
     attemptId: string,
     processes: readonly Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>[],
@@ -613,7 +632,11 @@ export async function resolveIncompleteSuccessionAtStartup(
         ? [intent.attemptOwner]
         : [intent.attemptOwner, child],
     );
-    return unproven === null ? { kind: 'retire', attemptId } : holdOrAbandon(unproven);
+    return unproven === null
+      ? prior === null
+        ? { kind: 'retire', attemptId }
+        : retireArchived(attemptId)
+      : holdOrAbandon(unproven);
   }
   if (
     intent.attemptOwner?.kind !== 'incumbent' ||
@@ -631,7 +654,11 @@ export async function resolveIncompleteSuccessionAtStartup(
       attemptId,
       child !== undefined && child !== null && child.attemptId === attemptId ? [owner, child] : [owner],
     );
-    return unproven === null ? { kind: 'retire', attemptId } : holdOrAbandon(unproven);
+    return unproven === null
+      ? prior === null
+        ? { kind: 'retire', attemptId }
+        : retireArchived(attemptId)
+      : holdOrAbandon(unproven);
   }
   if (intent.disposition !== 'attempting') return { kind: 'none' };
   const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
@@ -674,7 +701,11 @@ export async function resolveIncompleteSuccessionAtStartup(
       discardAttemptId: attemptId,
     };
   }
-  return recovery === null ? { kind: 'retire', attemptId } : { kind: 'recover', attempt: recovery, preferredEpochKey };
+  return recovery === null
+    ? prior === null
+      ? { kind: 'retire', attemptId }
+      : retireArchived(attemptId)
+    : { kind: 'recover', attempt: recovery, preferredEpochKey };
 }
 
 /**
@@ -749,7 +780,7 @@ export async function openPreferredStoreEpoch(
  */
 export async function dischargeDeadSuccessionAttempt(
   runtime: Runtime,
-  attemptId: string,
+  attemptId: string | null,
   incumbent: UpgradeIntent['incumbent'],
 ): Promise<void> {
   const outcome = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) => {
@@ -765,6 +796,7 @@ export async function dischargeDeadSuccessionAttempt(
       }
     }
     if (
+      attemptId === null ||
       observed.kind !== 'readable' ||
       observed.intent.attemptId !== attemptId ||
       observed.intent.disposition === 'completed'

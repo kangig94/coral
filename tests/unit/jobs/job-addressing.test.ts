@@ -685,6 +685,35 @@ describe('job addressing', () => {
     ).toBe('not-found');
   });
 
+  it('should abort a known job and refuse a possible pre-epoch job without calling it not found', () => {
+    const { index } = fixture();
+    index.register('known', 'lineage-new:8', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: ['known'], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => true,
+      () => 'pending',
+    );
+
+    expect(addressing.abort(['known', 'possible-flat'])).toMatchObject({
+      kind: 'answered',
+      result: {
+        aborted: ['known'],
+        notFound: [],
+        refused: [{ jobId: 'possible-flat', reason: 'job_pre_epoch_history' }],
+      },
+    });
+  });
+
   it('should keep the carrier-unconfirmed list when it multiplexes a wait', async () => {
     const { index } = fixture();
     index.register('new-live', 'lineage-new:8', {

@@ -322,6 +322,26 @@ describe('cli format', () => {
       expect(formatAbortResult(mixedAbortResult)).toBe('Aborted jobs: job-1\nNot found: job-9');
     });
 
+    it('formats a mixed abort with a possible pre-epoch job as a final refusal', () => {
+      expect(
+        formatAbortResult({
+          aborted: ['job-1'],
+          notFound: [],
+          refused: [
+            {
+              jobId: 'possible-flat',
+              reason: 'job_pre_epoch_history',
+              nextStep: 'A job that ran in the flat store has no details here. Do not retry.',
+            },
+          ],
+        }),
+      ).toBe(
+        'Aborted jobs: job-1\n' +
+          'Pre-epoch history may contain possible-flat; this build cannot read it.\n' +
+          'Next step: A job that ran in the flat store has no details here. Do not retry.',
+      );
+    });
+
     it('formats a held abort with its reason and next step', () => {
       expect(formatAbortResult(refusedAbortResult)).toBe(
         'No jobs aborted\n' +
