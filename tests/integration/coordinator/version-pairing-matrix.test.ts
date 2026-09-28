@@ -875,6 +875,7 @@ describe('AC18 first-release version pairing', () => {
       assertBuildArtifactsAvailable();
       const home = newHome();
       const incumbentFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+      const older = createShippedPluginFixture(roots, 'v0.10.13');
       const incumbent = spawnCoordinator({
         fixture: incumbentFixture,
         home,
@@ -893,23 +894,30 @@ describe('AC18 first-release version pairing', () => {
       });
       const contender = spawnCoordinator({ fixture: successorFixture, home, tempRoots: roots, supervised: true });
       coordinators.push(contender);
-      const [contenderExit] = await Promise.all([
-        waitForProcessExit(contender, 30_000),
-        waitForCondition(() => {
-          const observed = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
-          return observed.kind === 'readable' && visibleUpgradeIntent(observed.intent)?.phase === 'prepared';
-        }, 30_000),
-      ]);
-      expect(contenderExit).toEqual({ code: 0, signal: null });
-      const older = createShippedPluginFixture(roots, 'v0.10.13');
-      const olderContender = spawnCoordinator({ fixture: older, home, tempRoots: roots });
-      coordinators.push(olderContender);
-
-      // The commit window closes at the successor's serving deadline, so the legacy arrivals must overlap it.
       await waitForCondition(() => {
         const observed = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
-        return observed.kind === 'readable' && observed.intent.disposition === 'attempting';
+        return observed.kind === 'readable' && visibleUpgradeIntent(observed.intent)?.phase === 'prepared';
       }, 30_000);
+      expect(contender.child.exitCode).toBeNull();
+
+      // The commit window closes at the successor's serving deadline, so the legacy arrivals must overlap it.
+      try {
+        await waitForCondition(() => {
+          const observed = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
+          return observed.kind === 'readable' && observed.intent.disposition === 'attempting';
+        }, 30_000);
+      } catch (error: unknown) {
+        const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+        const launch = new CoordinatorLaunchRecord(runDir);
+        const state = launch.read();
+        launch.close();
+        throw new Error(
+          `Commit did not start: ${JSON.stringify({ intent: readUpgradeIntent(runDir), launch: state, incumbent: incumbent.output(), contender: contender.output() })}`,
+          { cause: error },
+        );
+      }
+      const olderContender = spawnCoordinator({ fixture: older, home, tempRoots: roots });
+      coordinators.push(olderContender);
       expect(readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir)).toMatchObject({
         kind: 'readable',
         intent: { successionPreparation: { stage: 'ready' } },
@@ -954,6 +962,7 @@ describe('AC18 first-release version pairing', () => {
         sampling = false;
         await addressSamples;
       }
+      expect(await waitForProcessExit(contender, 30_000)).toEqual({ code: 0, signal: null });
       await waitForProcessExit(olderContender, 30_000);
       expect(readDiscoveryRecordForHome(home, 'prod')?.version).not.toBe(older.version);
     },

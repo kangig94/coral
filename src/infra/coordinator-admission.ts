@@ -27,12 +27,13 @@ export async function claimCoordinatorLaunch(): Promise<boolean> {
       try {
         const state = record.read();
         const reservation = [state.launch, state.attempt].find((launch) => launch?.id === message.launchId);
-        resolve(
+        const accepted =
           reservation !== undefined &&
-            reservation !== null &&
-            reservation.ownerEpoch === message.ownerEpoch &&
-            record.admit(reservation, message.parent, { pid: process.pid, incarnation: childIncarnation }, Date.now()),
-        );
+          reservation !== null &&
+          reservation.ownerEpoch === message.ownerEpoch &&
+          record.admit(reservation, message.parent, { pid: process.pid, incarnation: childIncarnation }, Date.now());
+        if (accepted) process.env.CORAL_LAUNCH_ID = reservation.id;
+        resolve(accepted);
       } finally {
         record.close();
       }

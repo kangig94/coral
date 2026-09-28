@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,9 @@ import { handoffCapsuleV1Schema } from '#src/provider-proxy/handoff-capsule.js';
 import { createPluginFixture, createShippedPluginFixture } from '#tests/integration/coordinator/helpers.js';
 import { validatedBuild } from '#src/coordinator-launch/selection.js';
 import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
+import { JobLocationIndex } from '#src/jobs/location-index.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { custodyLedgerDir } from '#src/store/custody-ledger.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 import { supervisorAcceptedUpgrade } from '#src/transport/ipc/ensure.js';
 
@@ -28,7 +31,66 @@ function fixtureBuildSetId(root: string): string {
 }
 
 describe('namespace supervisor controller selection', () => {
-  it('requires a request accepted by the current owner before reporting upgrade acceptance', () => {
+  it('keeps the same CLI invocation through a failed first child', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-child-setup-recovery-'));
+    roots.push(home);
+    const plugin = createPluginFixture(roots, { flavor: 'prod', backend: 'setup-error-once' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const record = new CoordinatorLaunchRecord(runDir);
+    const cli = spawn(process.execPath, [join(plugin.root, 'bridge', 'coral-cli'), 'backend', 'start'], {
+      cwd: home,
+      env: {
+        ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('CORAL_'))),
+        HOME: home,
+        TMPDIR: home,
+        CLAUDE_PLUGIN_ROOT: plugin.root,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    cli.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+    cli.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
+    try {
+      await waitForCondition(() => cli.exitCode !== null, 30_000);
+      expect(cli.exitCode, output).toBe(0);
+      expect(existsSync(join(runDir, 'setup-error-once.fixture'))).toBe(true);
+      await waitForCondition(() => record.read().launch?.phase === 'serving', 10_000);
+      expect(record.read().launch).toMatchObject({ phase: 'serving', buildSetId: fixtureBuildSetId(plugin.root) });
+    } finally {
+      const state = record.read();
+      record.close();
+      if (cli.exitCode === null) cli.kill('SIGKILL');
+      for (const pid of [state.owner?.process.pid, state.launch?.child?.pid]) {
+        if (pid === undefined) continue;
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // The fixture may already have exited.
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+  it('holds selection when an unresolved job has unreadable custody', () => {
+    const home = mkdtempSync(join(tmpdir(), 'coral-unreadable-controller-'));
+    try {
+      const baseDir = join(home, '.coral');
+      const runtime = createRealRuntime('prod', { baseDir });
+      const runDir = runtime.paths.coral.coordinator.runDir;
+      const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+      index.register('unresolved-job', 'epoch-1', {
+        projectRoot: home,
+        workDir: home,
+        jobKind: 'provider',
+      });
+      mkdirSync(join(custodyLedgerDir(runDir), 'unreadable-entry'), { recursive: true });
+      expect(controllerBuild(runDir)).toEqual({ kind: 'unknown' });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+  it('reports acceptance after acquisition atomically accepts the request', () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-acceptance-'));
     roots.push(home);
@@ -46,13 +108,13 @@ describe('namespace supervisor controller selection', () => {
         namespace: 'test',
       };
       const request = record.request(join(target.root, 'bridge', 'coral-backend.cjs'), manifest.buildSetId);
+      expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('unproven');
       const owner = record.acquire(
         { id: 'current', process: { pid: process.pid, incarnation }, buildSetId: manifest.buildSetId },
         Date.now(),
       );
       if (owner === null) throw new Error('Owner did not acquire');
-      expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('unproven');
-      record.accept(owner, request.id, Date.now());
+      expect(record.read().requests.find((entry) => entry.id === request.id)?.acceptedEpoch).toBe(owner.epoch);
       expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('accepted');
     } finally {
       record.close();

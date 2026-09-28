@@ -140,6 +140,7 @@ export class IpcLifecycleRefusal extends Error {
  * expiring without re-deriving it from prose — see drainBoundedClient in src/transport/ipc/ensure.ts.
  */
 export class IpcRequestTimeout extends Error {
+  readonly code = 'ETIMEDOUT';
   constructor(message: string) {
     super(message);
     this.name = 'IpcRequestTimeout';
@@ -525,7 +526,7 @@ export async function subscribeIpcMethod<TResult>(
         envelope = decode(frame);
       } catch (error: unknown) {
         fail(error);
-        socket.destroy(normalizeIpcError(error));
+        socket.destroy();
         return;
       }
 
@@ -572,9 +573,9 @@ export async function subscribeIpcMethod<TResult>(
   const handshakeBudget = remainingMs(deadlineMs, timePort);
   if (typeof handshakeBudget === 'number' && handshakeBudget > 0) {
     handshakeTimer = timePort.setTimeout(() => {
-      const error = new Error(`IPC subscription timed out after ${handshakeBudget}ms`);
+      const error = new IpcRequestTimeout(`IPC subscription timed out after ${handshakeBudget}ms`);
       fail(error);
-      socket.destroy(error);
+      socket.destroy();
     }, handshakeBudget);
   }
 

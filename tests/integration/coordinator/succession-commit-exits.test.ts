@@ -210,6 +210,7 @@ function reconcilerStub(readiness?: SuccessionDecision, recertification?: Succes
   return {
     incumbent: incumbentIdentity,
     request: async () => deferred,
+    repairSupervision: async () => deferred,
     prepare: async () => deferred,
     reportReady: async (report) =>
       readiness ?? { kind: 'ready', preparation: preparationFor(report.epochKey, report.attemptId) },

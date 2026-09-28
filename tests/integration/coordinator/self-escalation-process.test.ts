@@ -137,9 +137,6 @@ describe('real-process incumbent self-escalation', () => {
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
-    await waitForProcessExit(contender, 30_000);
-    expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
-    expect(observeProcessLiveness(initial.pid)).toBe('alive');
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     await waitForCondition(() => {
       const observed = readUpgradeIntent(runDir);
@@ -149,6 +146,9 @@ describe('real-process incumbent self-escalation', () => {
         observed.intent.blockers.length > 0
       );
     }, 30_000);
+    expect(contender.child.exitCode).toBeNull();
+    expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
+    expect(observeProcessLiveness(initial.pid)).toBe('alive');
 
     writeFileSync(join(state, 'release-job'), 'released');
     const result = join(home, '.coral', 'exports', 'jobs', jobId, 'result.md');
@@ -164,5 +164,6 @@ describe('real-process incumbent self-escalation', () => {
     await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
     expect(observeProcessLiveness(serving.pid)).toBe('alive');
     expect(readUpgradeIntent(runDir)).toMatchObject({ kind: 'readable', intent: { disposition: 'completed' } });
+    expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
   }, 150_000);
 });

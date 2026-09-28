@@ -98,6 +98,7 @@ export type CoordinatorServerController = {
   waitForShutdown: () => Promise<LifecycleShutdownDisposition>;
   getLifecycle: () => LifecycleState;
   getIdleTimer: () => CoordinatorCoreResult['idleTimer'];
+  repairSupervision: CoordinatorCoreResult['repairSupervision'];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -728,6 +729,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
 
   return {
     server: coordinatorCore.server,
+    repairSupervision: coordinatorCore.repairSupervision,
     start: () => coordinatorCore.lifecycleController.start(),
     shutdown: async (reason) => {
       const disposition = await coordinatorCore.lifecycleController.shutdown(reason);

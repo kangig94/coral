@@ -31,6 +31,8 @@ import { startReplacementSupervisor } from '../runtime/supervisor-loss.js';
 import { createRealSuccessionAttemptPorts } from '../runtime/succession-attempt.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
+import { CoordinatorLaunchRecord } from '../infra/coordinator-launch.js';
+import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { parseProviderRoleArgv, type ProviderRole } from '../provider-proxy/role-argv.js';
 import { runProviderRoleMain } from '../provider-proxy/role-main.js';
 import { currentCoralStoreFormat } from '../store-format.js';
@@ -342,14 +344,22 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
   }
 
   const runningIdentity = resolveStrictBundleIdentity();
+  let repairAfterSupervisorAccepted = (_pluginRoot: string): Promise<void> => Promise.resolve();
+  let replacingSupervisor = false;
   const replaceSupervisor = (): void => {
+    if (replacingSupervisor) return;
     const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
     if (!runningIdentity.ok || runDir === undefined) {
       backendLog.error('Could not replace coordinator supervisor: running build identity is unavailable');
       return;
     }
-    startReplacementSupervisor(__PLUGIN_ROOT__, runDir, runningIdentity.manifest, (error) =>
-      backendLog.error('Could not replace coordinator supervisor', error),
+    replacingSupervisor = true;
+    startReplacementSupervisor(
+      __PLUGIN_ROOT__,
+      runDir,
+      runningIdentity.manifest,
+      (error) => backendLog.error('Could not replace coordinator supervisor', error),
+      (pluginRoot) => repairAfterSupervisorAccepted(pluginRoot),
     );
   };
   let shutdownAfterSentinelLoss = (): void => {
@@ -359,6 +369,35 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
   let sentinelArm: Promise<void> | null = null;
   if (process.env.CORAL_SENTINEL_ID !== undefined) {
     const sentinelId = process.env.CORAL_SENTINEL_ID;
+    const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
+    let lastParentProgress = Date.now();
+    let lastWake = lastParentProgress;
+    if (runDir !== undefined) {
+      const supervisorMonitor = setInterval(() => {
+        const now = Date.now();
+        const gap = now - lastWake;
+        lastWake = now;
+        if (gap > SENTINEL_TIMING.schedulingGapMs) {
+          lastParentProgress = now;
+          return;
+        }
+        try {
+          const record = new CoordinatorLaunchRecord(runDir);
+          const owner = record.read().owner;
+          record.close();
+          if (
+            owner === null ||
+            owner.process.pid !== process.ppid ||
+            owner.leaseUntil <= now ||
+            now - lastParentProgress >= SENTINEL_TIMING.lapseMs
+          )
+            replaceSupervisor();
+        } catch (error: unknown) {
+          backendLog.error('Could not observe coordinator supervisor', error);
+        }
+      }, SENTINEL_TIMING.challengeMs);
+      supervisorMonitor.unref();
+    }
     sentinelArm = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Coordinator sentinel did not arm before startup')), 30_000);
       const onArm = (message: unknown): void => {
@@ -387,6 +426,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
         'id' in message &&
         Number.isSafeInteger(message.id)
       ) {
+        lastParentProgress = Date.now();
         process.send?.({ kind: 'coral-sentinel-answer', id: message.id });
       }
     });
@@ -434,6 +474,10 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
         bootstrapProbeExitGate.requestExit(1);
       },
     });
+    repairAfterSupervisorAccepted = (pluginRoot) => {
+      if (!runningIdentity.ok) return Promise.reject(new Error('Running build identity is unavailable'));
+      return coordinator.repairSupervision({ build: runningIdentity.manifest, pluginRootLabel: pluginRoot });
+    };
     shutdownAfterSentinelLoss = replaceSupervisor;
 
     const handleShutdownSignal = createCoordinatorShutdownSignalHandler({

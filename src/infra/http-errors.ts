@@ -30,5 +30,5 @@ export function isTransientStreamError(error: unknown): boolean {
     return true;
   }
   const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
-  return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'ECONNABORTED';
+  return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'ECONNABORTED' || code === 'ETIMEDOUT';
 }

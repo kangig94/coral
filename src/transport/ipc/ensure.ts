@@ -26,7 +26,7 @@ import {
   resolveStrictBundleIdentity,
   strictBundleManifestSchema,
 } from '../../infra/bundle-manifest.js';
-import { CoordinatorLaunchRecord } from '../../infra/coordinator-launch.js';
+import { CoordinatorLaunchRecord, type CoordinatorLaunchState } from '../../infra/coordinator-launch.js';
 import {
   createIpcClient,
   IpcDrainRequestUnanswered,
@@ -176,7 +176,9 @@ type CoordinatorObservation = Readonly<{
 type StartupErrorSentinel = {
   readonly version: 1;
   readonly attemptId: string;
+  readonly launchId?: string;
   readonly pid: number;
+  readonly incarnation?: ProcessIncarnation | null;
   readonly startedAt: number;
   readonly recordedAt?: number;
   readonly phase?: string;
@@ -362,8 +364,12 @@ function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
     isRecord(value) &&
     value.version === 1 &&
     typeof value.attemptId === 'string' &&
+    (value.launchId === undefined || typeof value.launchId === 'string') &&
     Number.isInteger(value.pid) &&
     (value.pid as number) > 0 &&
+    (value.incarnation === undefined ||
+      value.incarnation === null ||
+      processIncarnationSchema.safeParse(value.incarnation).success) &&
     Number.isFinite(value.startedAt) &&
     (value.startedAt as number) > 0 &&
     typeof value.socketPath === 'string' &&
@@ -595,6 +601,34 @@ function matchingStartupError(
     const earliestMtime = waitContext.spawnedAt - STARTUP_POLL_MS;
     if (mtimeMs < earliestMtime) {
       return null;
+    }
+    if (waitContext.sentinel && sentinel.launchId !== undefined) {
+      if (sentinel.incarnation === undefined || sentinel.incarnation === null) return null;
+      try {
+        const launchRecord = new CoordinatorLaunchRecord(paths.runDir);
+        let state: CoordinatorLaunchState;
+        try {
+          state = launchRecord.read();
+        } finally {
+          launchRecord.close();
+        }
+        const child = [state.launch, state.attempt].find((slot) => slot?.id === sentinel.launchId);
+        if (
+          child?.child?.pid !== sentinel.pid ||
+          child.child.incarnation !== sentinel.incarnation ||
+          child.phase === 'exited'
+        )
+          return null;
+        const owner = state.owner;
+        if (
+          owner !== null &&
+          owner.leaseUntil > Date.now() &&
+          probeProcessIncarnation(owner.process.pid) === owner.process.incarnation
+        )
+          return null;
+      } catch {
+        return null;
+      }
     }
     return readOperatorFacingCoralSetupError(sentinel.error, sentinelAuthorship(sentinel, desired));
   }

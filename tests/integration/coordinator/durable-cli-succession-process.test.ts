@@ -327,7 +327,6 @@ describe('real-process durable-cli succession', () => {
     const newerFixture = await createDurableFixture('0.0.2');
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
-    expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     await waitForCondition(() => {
       const intent = readUpgradeIntent(runDir);
@@ -354,6 +353,9 @@ describe('real-process durable-cli succession', () => {
     )
       throw new Error('Prepared child is unavailable.');
     const childPid = pending.intent.attemptChild.pid;
+    expect(contender.child.exitCode).toBeNull();
+    contender.child.kill('SIGKILL');
+    await waitForProcessExit(contender, 15_000);
     old.child.kill('SIGSTOP');
     process.kill(incumbent.pid, 'SIGKILL');
     process.kill(childPid, 'SIGKILL');
@@ -789,7 +791,6 @@ describe('real-process durable-cli succession', () => {
       const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
       const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
       coordinators.push(contender);
-      expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
       const runDir = coordinatorFilesForHome(home, 'prod').runDir;
       await waitForCondition(() => {
         const intent = readUpgradeIntent(runDir);
@@ -808,6 +809,7 @@ describe('real-process durable-cli succession', () => {
           epoch?.epoch === '1'
         );
       }, 45_000);
+      expect(contender.child.exitCode).toBeNull();
       const jobId = launchedJobId(await runCli(oldFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']));
       await abortDurableJob(oldFixture, home, projectRoot, jobId);
     },
@@ -903,7 +905,6 @@ describe('real-process durable-cli succession', () => {
     );
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
-    expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     await waitForCondition(() => {
       const intent = readUpgradeIntent(runDir);
@@ -912,6 +913,7 @@ describe('real-process durable-cli succession', () => {
         intent.intent.blockers.some((blocker) => blocker.reason.includes('blocking(format)'))
       );
     }, 30_000);
+    expect(contender.child.exitCode).toBeNull();
 
     await abortDurableJob(oldFixture, home, projectRoot, jobId);
 
@@ -972,8 +974,6 @@ describe('real-process durable-cli succession', () => {
     expect(newFingerprint.storeFormatFingerprint).not.toBe(oldFingerprint.storeFormatFingerprint);
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
-    expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
-    expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(incumbent.pid);
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     await waitForCondition(() => {
       const intent = readUpgradeIntent(runDir);
@@ -982,6 +982,8 @@ describe('real-process durable-cli succession', () => {
         intent.intent.blockers.some((blocker) => blocker.reason.includes('blocking(format)'))
       );
     }, 30_000);
+    expect(contender.child.exitCode).toBeNull();
+    expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(incumbent.pid);
 
     await abortDurableJob(oldFixture, home, projectRoot, jobId);
     await waitForCondition(() => {

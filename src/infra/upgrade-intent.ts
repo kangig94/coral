@@ -185,6 +185,7 @@ const upgradeIntentFields = z
   .object({
     version: z.literal('v1'),
     requestId: z.string().min(1),
+    reason: z.enum(['upgrade', 'supervision-repair']).optional(),
     requestedAt: z.string().datetime().optional(),
     revision: z.number().int().nonnegative(),
     incumbent: incumbentIdentitySchema,

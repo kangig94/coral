@@ -9,6 +9,7 @@ import { errorMessage, SERIALIZED_THROWN_CAUSE_MAX_DEPTH, serializeThrown } from
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { isRecord } from '../infra/json.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
+import { probeProcessIncarnation } from '../infra/node-process.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { isRetryableCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
 
@@ -190,7 +191,9 @@ export function writeStartupErrorSentinel(
     const sentinel = {
       version: 1,
       attemptId,
+      launchId: process.env.CORAL_LAUNCH_ID,
       pid: process.pid,
+      incarnation: probeProcessIncarnation(process.pid),
       startedAt: Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now(),
       recordedAt: Date.now(),
       phase: 'startup_failed',

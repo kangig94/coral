@@ -531,6 +531,19 @@ describe('provider-proxy grant registry controller succession', () => {
     ).toEqual({ state: 'transfer-authorized', grantId: grant.grantId, attemptId: 'attempt-1' });
   });
 
+  it('authorizes a same-build controller replacement on the installed grant', () => {
+    const registry = createGrantRegistry(mintReceipt());
+    const grant = installedGrantFor([OPERATION_A]);
+    registry.install(grant);
+
+    expect(
+      registry.authorizeTransfer({ grantId: grant.grantId, attemptId: 'repair-1', successor: HOST_BUILD }),
+    ).toEqual({ state: 'transfer-authorized', grantId: grant.grantId, attemptId: 'repair-1' });
+    expect(registry.redeem({ ...transferRequest(grant), successorBuild: HOST_BUILD }).grant.operations).toEqual([
+      OPERATION_A,
+    ]);
+  });
+
   it('admits the transferred build only after the controller authorizes it, and keeps the controller build', () => {
     // Every later redemption below happens after the previous holder's control lapsed.
     const registry = createGrantRegistry(mintReceipt(), { mayReplaceRedemption: () => true });

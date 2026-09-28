@@ -406,29 +406,70 @@ describe('real-process provider host transfer', () => {
     }
   }, 180_000);
 
-  it('preserves a live provider job when its supervisor disappears', async () => {
+  it('transfers a live provider job when a hook claimant wins before the coordinator replacement', async () => {
     assertBuildArtifactsAvailable();
     const world = createTransferWorld();
-    const { oldFixture, old, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
+    const { oldFixture, old, incumbentPid, jobId, hosts } = await startProxiedJob(world);
     if (old.child.pid === undefined) throw new Error('Supervisor has no PID');
     const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
     const launch = new CoordinatorLaunchRecord(runDir);
-    process.kill(old.child.pid, 'SIGKILL');
+    let claimant: SpawnedCoordinator | null = null;
+    process.kill(old.child.pid, 'SIGSTOP');
+    process.kill(incumbentPid, 'SIGSTOP');
     try {
-      await waitForCondition(() => launch.read().owner?.process.pid !== old.child.pid, 20_000);
+      claimant = spawnCoordinator({
+        fixture: oldFixture,
+        home: world.home,
+        tempRoots: roots,
+        env: world.env,
+        supervised: true,
+      });
+      coordinators.push(claimant);
+      await waitForCondition(() => launch.read().requests.some((request) => request.status === 'recorded'), 10_000);
+      process.kill(old.child.pid, 'SIGKILL');
+      await waitForCondition(() => launch.read().owner?.process.pid === claimant?.child.pid, 20_000);
+      expect(launch.read().owner?.mode).toBe('recovering');
+      expect(claimant.child.exitCode).toBeNull();
       expect(launch.read().launch).toMatchObject({ phase: 'serving', child: { pid: incumbentPid } });
       expect(observeProcessLiveness(incumbentPid)).toBe('alive');
+      process.kill(incumbentPid, 'SIGCONT');
+      await waitForCondition(
+        () => launch.read().owner?.process.pid !== claimant?.child.pid && launch.read().owner?.mode === 'recovering',
+        20_000,
+      );
+      try {
+        await waitForCondition(
+          () =>
+            launch.read().launch?.phase === 'serving' &&
+            launch.read().launch?.child?.pid !== incumbentPid &&
+            launch.read().owner?.mode === 'supervised',
+          30_000,
+        );
+      } catch (error: unknown) {
+        throw new Error(
+          `Hook-owned repair did not serve: ${JSON.stringify({ launch: launch.read(), intent: readUpgradeIntent(runDir), old: old.output(), claimant: claimant.output() })}`,
+          { cause: error },
+        );
+      }
+      expect(launch.read().launch?.parent).toEqual(launch.read().owner?.process);
+      await waitForProcessExit(claimant, 20_000);
     } finally {
+      try {
+        process.kill(incumbentPid, 'SIGCONT');
+      } catch {
+        // The predecessor may have retired.
+      }
       launch.close();
     }
     expect(hostsAlive(hosts)).toBe(true);
+    const resumedWaiter = startCli(oldFixture, world, ['wait', 'jobs', jobId, '--verbose']);
     writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
     try {
       await waitForCondition(() => existsSync(join(world.state, 'emitted-after-transfer')), 60_000);
     } catch (error: unknown) {
       throw new Error(
         `Recovered provider made no progress: ${JSON.stringify({
-          waiter: waiter.output(),
+          waiter: resumedWaiter.output(),
           supervisor: old.output(),
           hostsAlive: hostsAlive(hosts),
           interrupted: existsSync(join(world.state, 'terminal-interrupted')),
@@ -439,7 +480,7 @@ describe('real-process provider host transfer', () => {
       );
     }
     writeFileSync(join(world.state, 'release-job'), 'released');
-    expect(await waiter.completed, waiter.output()).toBe(0);
+    expect(await resumedWaiter.completed, resumedWaiter.output()).toBe(0);
     expect(await runCli(oldFixture, world, ['jobs', 'detail', jobId])).toMatch(/completed/iu);
     expect(hostsAlive(hosts)).toBe(true);
   }, 180_000);
@@ -681,7 +722,6 @@ describe('real-process provider host transfer', () => {
       supervised: true,
     });
     coordinators.push(contender);
-    expect(await waitForProcessExit(contender, 30_000), contender.output()).toMatchObject({ code: 0 });
     const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
     await waitForCondition(() => {
       const observed = readUpgradeIntent(runDir);
@@ -718,7 +758,6 @@ describe('real-process provider host transfer', () => {
       supervised: true,
     });
     coordinators.push(contender);
-    expect(await waitForProcessExit(contender, 30_000), contender.output()).toMatchObject({ code: 0 });
     const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
     await waitForCondition(() => {
       const observed = readUpgradeIntent(runDir);

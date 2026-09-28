@@ -4,8 +4,9 @@ import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { isTransientStreamError } from '#src/infra/http-errors.js';
 import { decode, encode, type JsonRpcRequestEnvelope } from '#src/transport/ipc/json-rpc.js';
-import { IpcRpcError, subscribeIpcMethod } from '#src/transport/ipc/client.js';
+import { IpcRequestTimeout, IpcRpcError, subscribeIpcMethod } from '#src/transport/ipc/client.js';
 
 const tempDirs: string[] = [];
 const servers: NetServer[] = [];
@@ -61,6 +62,17 @@ afterEach(async () => {
 });
 
 describe('subscription primitive', () => {
+  it('rejects an unanswered subscription handshake as a retriable timeout', async () => {
+    const socketPath = makeSocketPath('unanswered');
+    await startSubscriptionServer(socketPath, () => undefined);
+
+    const error = await subscribeIpcMethod(socketPath, 'jobs.wait', undefined, { timeoutMs: 20 }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(IpcRequestTimeout);
+    expect(isTransientStreamError(error)).toBe(true);
+  });
+
   it('opens and receives a scripted notification sequence', async () => {
     const socketPath = makeSocketPath('receive');
     const events = [

@@ -5,6 +5,7 @@ import { Server, Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 
 import { isNoEntryError } from '../infra/fs-errors.js';
+import { readDiscoveryRecordDisposition, removeBackendInfoIfOwner } from '../infra/backend-discovery.js';
 import {
   readBoundedAdjacentManifest,
   strictBundleManifestSchema,
@@ -26,6 +27,7 @@ import {
   type ProcessLiveness,
 } from '../infra/node-process.js';
 import { SENTINEL_TIMING, validSentinelTiming, type SentinelTiming } from '../infra/sentinel-timing.js';
+import { readUpgradeIntent } from '../infra/upgrade-intent.js';
 import { handoffCapsuleControllerBuildSetId, type HandoffCapsule } from '../provider-proxy/handoff-capsule.js';
 import {
   providerProxySetIdentityFromCapsule,
@@ -142,6 +144,24 @@ function incumbentLiveness(incumbent: { pid: number; incarnation: string | null 
   return observeProcessLiveness(incumbent.pid);
 }
 
+function removeExitedChildDiscovery(runDir: string, identity: LaunchProcess): void {
+  const runtime = createRealRuntime(runDir.endsWith('run-dev') ? 'dev' : 'prod', { baseDir: dirname(dirname(runDir)) });
+  try {
+    const discovery = readDiscoveryRecordDisposition(runtime);
+    if (
+      discovery.kind === 'record' &&
+      discovery.record.pid === identity.pid &&
+      discovery.record.incarnation === identity.incarnation &&
+      discovery.record.instanceId !== undefined
+    ) {
+      const removal = removeBackendInfoIfOwner(discovery.record.instanceId, runtime);
+      if (removal.kind === 'refused') process.stderr.write(`Coordinator discovery cleanup failed: ${removal.code}\n`);
+    }
+  } catch (error: unknown) {
+    process.stderr.write(`Coordinator discovery cleanup failed: ${String(error)}\n`);
+  }
+}
+
 export function controllerBuild(
   runDir: string,
 ): { kind: 'none' | 'unknown' } | { kind: 'required'; buildSetId: string } {
@@ -199,7 +219,9 @@ export function controllerBuild(
         .filter((location) => location.disposition !== 'terminal')
         .map((location) => location.jobId),
     );
-    const durableCliJob = readCustodyLedger(runtime, runDir).some(
+    const custody = readCustodyLedger(runtime, runDir);
+    if (unresolved.size > 0 && custody.some((entry) => entry.kind === 'unreadable')) return { kind: 'unknown' };
+    const durableCliJob = custody.some(
       (entry) =>
         entry.kind !== 'unreadable' &&
         entry.intent.owner === 'durable-cli' &&
@@ -225,6 +247,25 @@ function candidates(
 ): Candidate[] {
   const controller = controllerBuild(runDir);
   if (controller.kind === 'unknown') return [];
+  const observedIntent = readUpgradeIntent(runDir);
+  const committedIntent =
+    observedIntent.kind === 'readable' &&
+    observedIntent.intent.disposition === 'completed' &&
+    observedIntent.intent.completionReceipt?.kind === 'serving' &&
+    observedIntent.intent.completionReceipt.successor.build.buildSetId === observedIntent.intent.target.build.buildSetId
+      ? observedIntent.intent
+      : null;
+  const committedRoot =
+    committedIntent === null
+      ? null
+      : validatedRunningBuildRoot(runDir, committedIntent.target.pluginRootLabel, committedIntent.target.build);
+  const committed =
+    committedRoot === null || committedIntent === null
+      ? null
+      : {
+          executable: join(committedRoot, 'bridge', 'coral-backend.cjs'),
+          buildSetId: committedIntent.target.build.buildSetId,
+        };
   const requested = record
     .read()
     .requests.filter((request) => request.status === 'recorded' || request.status === 'accepted')
@@ -240,7 +281,7 @@ function candidates(
       ? []
       : [{ executable: join(root, 'bridge', 'coral-backend.cjs'), buildSetId: build.buildSetId }];
   });
-  const requiredBuild = controller.kind === 'required' ? controller.buildSetId : null;
+  const requiredBuild = controller.kind === 'required' ? controller.buildSetId : (committed?.buildSetId ?? null);
   const retainedController =
     requiredBuild === null ? null : validatedBuild(join(dirname(runDir), 'builds', requiredBuild));
   const controllerCandidate =
@@ -258,6 +299,7 @@ function candidates(
     ...new Map(
       [
         ...requested,
+        ...(committed === null ? [] : [committed]),
         ...controllerCandidate,
         ...recovery,
         ...(originalRoot === null
@@ -311,6 +353,7 @@ function signalInheritedChild(
   const current = [state.launch, state.attempt].find((entry) => entry?.id === slot.id);
   if (
     state.owner?.id !== owner.id ||
+    current?.terminationAt === undefined ||
     current?.child?.pid !== child.pid ||
     current.child.incarnation !== child.incarnation ||
     probeProcessIncarnation(child.pid) !== child.incarnation
@@ -322,31 +365,6 @@ function signalInheritedChild(
   } catch {
     return false;
   }
-}
-
-function handOffLostOwnership(
-  owner: OwnerHandle,
-  executable: string,
-  manifest: StrictBundleManifest,
-  runDir: string,
-): void {
-  if (owner.lost) return;
-  owner.lost = true;
-  const entry = process.argv[1];
-  if (entry === undefined) return;
-  const root = validatedRunningBuildRoot(runDir, dirname(dirname(executable)), manifest);
-  if (root === null) return;
-  const script = existsSync(entry) ? entry : join(root, 'bridge', 'coral-sentinel.cjs');
-  const env: NodeJS.ProcessEnv = { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir };
-  delete env.CORAL_STARTUP_ATTEMPT_ID;
-  delete env.CORAL_SUCCESSION_ATTEMPT_ID;
-  const successor = spawn(process.execPath, [script, join(root, 'bridge', 'coral-backend.cjs')], {
-    detached: true,
-    stdio: 'ignore',
-    env,
-  });
-  successor.once('error', (error) => process.stderr.write(`Coordinator supervisor handoff failed: ${String(error)}\n`));
-  successor.unref();
 }
 
 function spawnAdmittedChild(
@@ -373,6 +391,7 @@ function spawnAdmittedChild(
     CORAL_SENTINEL_RUN_DIR: runDir,
     CORAL_STARTUP_ATTEMPT_ID: attemptId ?? process.env.CORAL_STARTUP_ATTEMPT_ID ?? randomUUID(),
   };
+  delete env.CORAL_LAUNCH_ID;
   if (attemptId === undefined) delete env.CORAL_SUCCESSION_ATTEMPT_ID;
   else env.CORAL_SUCCESSION_ATTEMPT_ID = attemptId;
   const child = spawn(
@@ -468,7 +487,12 @@ async function watchChild(
     if (now - lastRenewal >= 30_000) {
       const renewed = record.renew(owner.current, now);
       if (renewed !== null) owner.current = renewed;
-      else handOffLostOwnership(owner, executable, manifest, runDir);
+      else {
+        const { id, process: holderProcess, buildSetId } = owner.current;
+        const reacquired = record.acquire({ id, process: holderProcess, buildSetId }, now);
+        if (reacquired === null) owner.lost = true;
+        else owner.current = reacquired;
+      }
       lastRenewal = now;
     }
     if (child.exitCode !== null || child.signalCode !== null) return;
@@ -534,32 +558,35 @@ async function watchChild(
   clearInterval(interval);
   clearInterval(servingPoll);
   if (forwardParentMessages) process.off('message', parentMessage);
+  removeExitedChildDiscovery(runDir, identity);
   if (!record.exited(reservation, identity)) record.cancelReservation(owner.current, reservation, Date.now());
   return { exitCode, signal, served, wedged };
 }
 
-type InheritedAttempt = Readonly<{
+type RepairChild = Readonly<{
   attemptId: string;
   reservation: LaunchReservation;
   running: RunningChild;
   watch: Promise<WatchResult>;
 }>;
 
-function createInheritedAttemptChannel(
+function createRepairBridge(
   record: CoordinatorLaunchRecord,
   owner: OwnerHandle,
   runDir: string,
   timing: SentinelTiming,
   startupBudgetMs: number,
-): Readonly<{ pending: () => InheritedAttempt | null; promote: () => InheritedAttempt | null; close: () => void }> {
-  let pending: InheritedAttempt | null = null;
-  let active: InheritedAttempt | null = null;
+): Readonly<{ child: (launchId: string | undefined) => RepairChild | null; close: () => void }> {
+  const children = new Map<string, RepairChild>();
   let starting = false;
+  const servingChild = (): RepairChild | null => {
+    const launchId = record.read().launch?.id;
+    return launchId === undefined ? null : (children.get(launchId) ?? null);
+  };
   const reply = (message: unknown, handle?: unknown): void => {
-    if (active?.running.child.connected)
-      active.running.child.send(message as Parameters<ChildProcess['send']>[0], handle as SendHandle, () =>
-        closeHandle(handle),
-      );
+    const recipient = servingChild()?.running.child;
+    if (recipient?.connected)
+      recipient.send(message as Parameters<ChildProcess['send']>[0], handle as SendHandle, () => closeHandle(handle));
     else if (process.connected)
       process.send?.(message as Parameters<NonNullable<typeof process.send>>[0], handle as SendHandle, () =>
         closeHandle(handle),
@@ -576,7 +603,8 @@ function createInheritedAttemptChannel(
       typeof message.bundleDir === 'string'
     ) {
       const attemptId = message.attemptId;
-      if (starting || pending !== null) {
+      const reservedAttempt = record.read().attempt;
+      if (starting || (reservedAttempt !== null && reservedAttempt.phase !== 'exited')) {
         reply({ kind: 'coral-supervisor-attempt-error', attemptId, reason: 'Succession attempt is already active' });
         return;
       }
@@ -602,17 +630,17 @@ function createInheritedAttemptChannel(
           timing,
           startupBudgetMs,
           (childMessage, childHandle) => {
-            if (active?.running.child === running.child) onMessage(childMessage, childHandle);
+            if (servingChild()?.running.child === running.child) onMessage(childMessage, childHandle);
             else reply({ kind: 'coral-supervisor-attempt-message', attemptId, message: childMessage }, childHandle);
             return true;
           },
           false,
         );
-        pending = { attemptId, reservation, running, watch };
+        children.set(reservation.id, { attemptId, reservation, running, watch });
         reply({ kind: 'coral-supervisor-attempt-spawned', attemptId, pid: running.identity.pid });
         void watch.then((result) => {
           reply({ kind: 'coral-supervisor-attempt-exit', attemptId, exitCode: result.exitCode, signal: result.signal });
-          if (pending?.running === running) pending = null;
+          children.delete(reservation.id);
         });
       } catch (error: unknown) {
         reply({ kind: 'coral-supervisor-attempt-error', attemptId, reason: String(error) });
@@ -621,7 +649,8 @@ function createInheritedAttemptChannel(
       }
       return;
     }
-    const attempt = pending;
+    const attemptId = record.read().attempt?.id;
+    const attempt = attemptId === undefined ? null : (children.get(attemptId) ?? null);
     if (attempt === null || !('attemptId' in message) || message.attemptId !== attempt.attemptId) return;
     if (message.kind === 'coral-supervisor-retire-attempt') {
       attempt.running.child.kill('SIGTERM');
@@ -644,13 +673,7 @@ function createInheritedAttemptChannel(
   };
   process.on('message', onMessage);
   return {
-    pending: () => pending,
-    promote: () => {
-      active = pending;
-      pending = null;
-      process.off('message', onMessage);
-      return active;
-    },
+    child: (launchId) => (launchId === undefined ? null : (children.get(launchId) ?? null)),
     close: () => process.off('message', onMessage),
   };
 }
@@ -676,31 +699,87 @@ export async function runNamespaceSupervisor(
       process: { pid: process.pid, incarnation },
       buildSetId: originalManifest.buildSetId,
     };
-    let holder = record.acquire(holderIdentity, Date.now());
+    const recoverySourcePid = Number(process.env.CORAL_RECOVERY_SOURCE_PID);
+    const recoveryChallenge = process.env.CORAL_RECOVERY_CHALLENGE;
+    const recoverySourceIncarnation = process.env.CORAL_RECOVERY_SOURCE_INCARNATION;
+    const replacement =
+      Number.isSafeInteger(recoverySourcePid) &&
+      recoverySourcePid > 0 &&
+      recoveryChallenge !== undefined &&
+      recoverySourceIncarnation !== undefined;
+    let offered: LaunchOwner | null = null;
+    const onRecoveryOffer = (message: unknown): void => {
+      if (
+        !replacement ||
+        process.ppid !== recoverySourcePid ||
+        probeProcessIncarnation(recoverySourcePid) !== recoverySourceIncarnation ||
+        typeof message !== 'object' ||
+        message === null ||
+        !('kind' in message) ||
+        message.kind !== 'coral-recovery-offer' ||
+        !('id' in message) ||
+        typeof message.id !== 'string' ||
+        !('challenge' in message) ||
+        message.challenge !== recoveryChallenge
+      )
+        return;
+      offered = record.acceptRecoveryTransfer(holderIdentity, message.id, recoveryChallenge, Date.now());
+    };
+    if (replacement) {
+      process.on('message', onRecoveryOffer);
+      process.send?.({ kind: 'coral-recovery-ready', challenge: recoveryChallenge });
+    }
+    const recoveryWaitStartedAt = Date.now();
+    let holder = replacement ? null : record.acquire(holderIdentity, Date.now());
     while (holder === null) {
+      if (offered !== null) {
+        holder = offered;
+        break;
+      }
+      if (replacement && (!process.connected || process.ppid !== recoverySourcePid)) return 1;
       const state = record.read();
       const pending = state.requests.find((entry) => entry.id === request.id);
       if (pending?.status === 'completed' || pending?.status === 'unavailable') return 0;
-      if (
-        pending?.status === 'accepted' &&
-        pending.acceptedEpoch === state.owner?.epoch &&
-        (state.owner?.leaseUntil ?? 0) > Date.now()
-      )
-        return 0;
       await sleep(POLL_MS);
-      holder = record.acquire(holderIdentity, Date.now());
+      if (!replacement || Date.now() - recoveryWaitStartedAt >= 1_000)
+        holder = record.acquire(holderIdentity, Date.now());
     }
+    if (replacement) process.off('message', onRecoveryOffer);
     const owner = { current: holder, lost: false };
     const original = { executable, buildSetId: originalManifest.buildSetId };
     const tried = new Set<string>();
     const inheritedWatch = new Map<string, InheritedWatch>();
     const lastInheritedRequest = new Map<string, number>();
-    let inheritedChannel: ReturnType<typeof createInheritedAttemptChannel> | null = null;
+    let repairBridge: ReturnType<typeof createRepairBridge> | null = null;
     let firstLaunch = true;
     while (true) {
       const renewed = record.renew(owner.current, Date.now());
+      if (renewed === null && !owner.lost) {
+        const reacquired = record.acquire(holderIdentity, Date.now());
+        if (reacquired !== null) {
+          owner.current = reacquired;
+          continue;
+        }
+      }
       if (renewed === null || owner.lost) {
-        handOffLostOwnership(owner, executable, originalManifest, runDir);
+        owner.lost = true;
+        while (true) {
+          let ownsUnsettledChild = false;
+          for (const slot of [record.read().launch, record.read().attempt]) {
+            if (
+              slot === null ||
+              (slot.phase !== 'admitted' && slot.phase !== 'serving') ||
+              slot.parent?.pid !== process.pid ||
+              slot.parent.incarnation !== incarnation ||
+              slot.child === undefined
+            )
+              continue;
+            const liveness = incumbentLiveness(slot.child);
+            if (liveness === 'alive' || liveness === 'unknown') ownsUnsettledChild = true;
+          }
+          if (!ownsUnsettledChild) break;
+          await sleep(POLL_MS);
+        }
         return 1;
       }
       owner.current = renewed;
@@ -724,9 +803,9 @@ export async function runNamespaceSupervisor(
           const now = Date.now();
           const watch = inheritedWatch.get(slot.id) ?? {
             firstSeen: now,
-            lastHealthy: now,
+            lastHealthy: slot.observedHealthyAt ?? slot.admittedAt ?? now,
             uninterruptibleSince: null,
-            terminationAt: null,
+            terminationAt: slot.terminationAt ?? null,
           };
           inheritedWatch.set(slot.id, watch);
           const healthy =
@@ -734,6 +813,7 @@ export async function runNamespaceSupervisor(
             (await replacementServing(runDir, originalManifest.flavor, child.pid));
           if (healthy && watch.terminationAt === null) {
             watch.lastHealthy = now;
+            record.observeInheritedHealth(owner.current, slot, now);
             record.clearInheritedChildHold(owner.current, slot, now);
             if (slot.phase === 'admitted') record.serving(slot, child);
             if (slot.buildSetId === originalManifest.buildSetId)
@@ -743,29 +823,32 @@ export async function runNamespaceSupervisor(
               process.ppid === child.pid &&
               probeProcessIncarnation(child.pid) === child.incarnation
             ) {
-              inheritedChannel ??= createInheritedAttemptChannel(record, owner, runDir, timing, startupBudgetMs);
-              const incumbentManifest =
-                slot.buildSetId === originalManifest.buildSetId
-                  ? originalManifest
-                  : record
-                      .read()
-                      .requests.filter((request) => request.buildSetId === slot.buildSetId)
-                      .map((request) => validatedExecutable(request.executable))
-                      .find((manifest) => manifest !== null);
-              if (incumbentManifest !== undefined && incumbentManifest !== null) {
-                for (const request of record.read().requests) {
-                  if (request.status !== 'accepted' || request.buildSetId === slot.buildSetId) continue;
-                  const target = validatedExecutable(request.executable);
-                  if (target === null || compareProductVersions(target.version, incumbentManifest.version) <= 0)
-                    continue;
-                  if (now - (lastInheritedRequest.get(request.id) ?? 0) < 10_000) continue;
-                  lastInheritedRequest.set(request.id, now);
-                  await requestInheritedSuccession(runDir, incumbentManifest.flavor, child.pid, request.id, {
-                    build: target,
-                    pluginRootLabel: dirname(dirname(request.executable)),
-                  });
-                  break;
-                }
+              if (repairBridge === null) {
+                repairBridge = createRepairBridge(record, owner, runDir, timing, startupBudgetMs);
+                if (replacement) process.send?.({ kind: 'coral-repair-bridge-ready', challenge: recoveryChallenge });
+              }
+            }
+            const incumbentManifest =
+              slot.buildSetId === originalManifest.buildSetId
+                ? originalManifest
+                : record
+                    .read()
+                    .requests.filter((request) => request.buildSetId === slot.buildSetId)
+                    .map((request) => validatedExecutable(request.executable))
+                    .find((manifest) => manifest !== null);
+            if (incumbentManifest !== undefined && incumbentManifest !== null) {
+              for (const request of record.read().requests) {
+                if (record.read().attempt !== null && record.read().attempt?.phase !== 'exited') break;
+                if (request.status !== 'accepted' || request.buildSetId === slot.buildSetId) continue;
+                const target = validatedExecutable(request.executable);
+                if (target === null || compareProductVersions(target.version, incumbentManifest.version) <= 0) continue;
+                if (now - (lastInheritedRequest.get(request.id) ?? 0) < 10_000) continue;
+                lastInheritedRequest.set(request.id, now);
+                await requestInheritedSuccession(runDir, incumbentManifest.flavor, child.pid, request.id, {
+                  build: target,
+                  pluginRootLabel: dirname(dirname(request.executable)),
+                });
+                break;
               }
             }
           }
@@ -775,7 +858,7 @@ export async function runNamespaceSupervisor(
           if (!overdue && watch.terminationAt === null) continue;
           if (watch.terminationAt !== null) {
             if (
-              now - watch.terminationAt >= timing.graceMs &&
+              now >= (slot.killAt ?? watch.terminationAt + timing.graceMs) &&
               !signalInheritedChild(record, owner.current, slot, 'SIGKILL')
             )
               record.holdInheritedChild(owner.current, slot, now);
@@ -787,74 +870,71 @@ export async function runNamespaceSupervisor(
           } else {
             watch.uninterruptibleSince = null;
           }
-          if (signalInheritedChild(record, owner.current, slot, 'SIGTERM')) watch.terminationAt = now;
-          else record.holdInheritedChild(owner.current, slot, now);
+          if (record.commitTermination(owner.current, slot, now, timing.graceMs)) {
+            watch.terminationAt = now;
+            if (!signalInheritedChild(record, owner.current, slot, 'SIGTERM'))
+              record.holdInheritedChild(owner.current, slot, now);
+          } else record.holdInheritedChild(owner.current, slot, now);
         }
       }
-      const inheritedAttempt = inheritedChannel?.pending();
-      if (inheritedAttempt !== null && inheritedAttempt !== undefined && record.read().launch?.phase === 'exited') {
-        if (record.promoteAttempt(owner.current, Date.now()) !== null) {
-          const promotedAttempt = inheritedChannel?.promote();
-          if (promotedAttempt === null || promotedAttempt === undefined)
-            throw new Error('Promoted succession child is unavailable');
-          let current: InheritedAttempt = promotedAttempt;
-          const requestPoll = setInterval(() => {
-            try {
-              if (record.read().launch?.phase !== 'serving') return;
-              settleRequests(record, owner.current, current.running.manifest, true);
-              for (const request of record.read().requests) {
-                if (request.status !== 'accepted') continue;
-                const target = validatedExecutable(request.executable);
-                if (
-                  target === null ||
-                  compareProductVersions(target.version, current.running.manifest.version) <= 0 ||
-                  Date.now() - (lastInheritedRequest.get(request.id) ?? 0) < 10_000
-                )
-                  continue;
-                lastInheritedRequest.set(request.id, Date.now());
-                void requestInheritedSuccession(
-                  runDir,
-                  current.running.manifest.flavor,
-                  current.running.identity.pid,
-                  request.id,
-                  {
-                    build: target,
-                    pluginRootLabel: dirname(dirname(request.executable)),
-                  },
-                );
-                break;
-              }
-            } catch (error: unknown) {
-              process.stderr.write(`Inherited successor request observation failed: ${String(error)}\n`);
-            }
-          }, 500);
-          let result: WatchResult;
+      record.normalize(owner.current, Date.now());
+      const adoptedChild = repairBridge?.child(record.read().launch?.id);
+      if (adoptedChild !== null && adoptedChild !== undefined) {
+        let current: RepairChild = adoptedChild;
+        const requestPoll = setInterval(() => {
           try {
-            while (true) {
-              result = await current.watch;
-              const next = inheritedChannel?.pending();
-              if (next === null || next === undefined || record.promoteAttempt(owner.current, Date.now()) === null)
-                break;
-              const promoted = inheritedChannel?.promote();
-              if (promoted === null || promoted === undefined) break;
-              current = promoted;
+            if (record.read().launch?.phase !== 'serving') return;
+            settleRequests(record, owner.current, current.running.manifest, true);
+            for (const request of record.read().requests) {
+              if (request.status !== 'accepted') continue;
+              const target = validatedExecutable(request.executable);
+              if (
+                target === null ||
+                compareProductVersions(target.version, current.running.manifest.version) <= 0 ||
+                Date.now() - (lastInheritedRequest.get(request.id) ?? 0) < 10_000
+              )
+                continue;
+              lastInheritedRequest.set(request.id, Date.now());
+              void requestInheritedSuccession(
+                runDir,
+                current.running.manifest.flavor,
+                current.running.identity.pid,
+                request.id,
+                {
+                  build: target,
+                  pluginRootLabel: dirname(dirname(request.executable)),
+                },
+              );
+              break;
             }
-          } finally {
-            clearInterval(requestPoll);
-            inheritedChannel?.close();
-            inheritedChannel = null;
+          } catch (error: unknown) {
+            process.stderr.write(`Inherited successor request observation failed: ${String(error)}\n`);
           }
-          if (result.served) settleRequests(record, owner.current, current.running.manifest, true);
-          if (
-            result.served &&
-            result.exitCode === 0 &&
-            !result.wedged &&
-            record.read().requests.every((entry) => entry.status === 'completed' || entry.status === 'unavailable') &&
-            record.release(owner.current)
-          )
-            return 0;
-          continue;
+        }, 500);
+        let result: WatchResult;
+        try {
+          while (true) {
+            result = await current.watch;
+            record.normalize(owner.current, Date.now());
+            const next = repairBridge?.child(record.read().launch?.id);
+            if (next === null || next === undefined || next.reservation.id === current.reservation.id) break;
+            current = next;
+          }
+        } finally {
+          clearInterval(requestPoll);
+          repairBridge?.close();
+          repairBridge = null;
         }
+        if (result.served) settleRequests(record, owner.current, current.running.manifest, true);
+        if (
+          result.served &&
+          result.exitCode === 0 &&
+          !result.wedged &&
+          record.read().requests.every((entry) => entry.status === 'completed' || entry.status === 'unavailable') &&
+          record.release(owner.current)
+        )
+          return 0;
+        continue;
       }
       const settled = record.read();
       const slots = [settled.launch, settled.attempt];
@@ -1189,7 +1269,7 @@ export async function runNamespaceSupervisor(
           successor.running.child.signalCode !== null
         )
           break;
-        if (record.promoteAttempt(owner.current, Date.now()) === null) break;
+        if (record.normalize(owner.current, Date.now()) === null) break;
         current = successor.running;
         watched = successor.watch;
         pending.value = null;

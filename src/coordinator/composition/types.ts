@@ -19,6 +19,7 @@ import type { DiscussContextRegistry } from '../../discuss/shell/live-registry.j
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { TypedEventBus } from '../event-bus.js';
 import type { ResolvedStoreEpoch } from '../../store/epoch.js';
+import type { UpgradeIntent } from '../../infra/upgrade-intent.js';
 
 import type { LaunchCoordinator } from '../live/admission.js';
 import type { ProviderHostManager } from '../live/provider-hosts/index.js';
@@ -162,4 +163,5 @@ export type CoordinatorCoreResult = {
   hooks: LifecycleHooks;
   /** The store epoch this coordinator opened, at the address it opened it; null before open and for in-memory stores. */
   openedStoreEpoch: () => ResolvedStoreEpoch | null;
+  repairSupervision: (target: UpgradeIntent['target']) => Promise<void>;
 };

@@ -46,6 +46,7 @@ export type SuccessionReconcilerOptions = Readonly<{
    * incarnation never makes the process mistake its own intent for another incumbent's.
    */
   incumbent: () => IncumbentIdentity;
+  runningBuildSetId?: string;
   owners: readonly SuccessionOwner[];
   requiredOwners?: readonly SuccessionOwnerId[];
   liveJobIds?: () => readonly string[];
@@ -99,6 +100,7 @@ export type SuccessionStatus =
 export type SuccessionReconciler = Readonly<{
   incumbent: () => IncumbentIdentity;
   request: (input: { requestId: string; target: Target }) => Promise<SuccessionDecision>;
+  repairSupervision: (input: { requestId: string; target: Target }) => Promise<SuccessionDecision>;
   prepare: (requestId: string) => Promise<SuccessionDecision>;
   reportReady: (report: SuccessionReady) => Promise<SuccessionDecision>;
   commit: (attemptId: string) => Promise<SuccessionDecision>;
@@ -153,9 +155,11 @@ function requestedIntent(
   request: TargetRequest,
   incumbent: IncumbentIdentity,
   queued: TargetRequest | null | undefined,
+  reason: 'upgrade' | 'supervision-repair' = 'upgrade',
 ): UpgradeIntentChange {
   return {
     requestId: request.requestId,
+    reason,
     incumbent,
     target: request.target,
     attemptId: null,
@@ -522,7 +526,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     } catch {
       return { kind: 'deferred', reason: 'target or incumbent version is invalid' };
     }
-    if (!applies && intent.attemptId === null) return close(intent);
+    if (!applies && intent.reason !== 'supervision-repair' && intent.attemptId === null) return close(intent);
     if (
       intent.disposition === 'deferred' &&
       intent.retryCondition?.kind === 'target-change' &&
@@ -756,6 +760,43 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       };
     });
     return decisionOf(outcome, 'refused');
+  }
+
+  async function repairSupervision(input: { requestId: string; target: Target }): Promise<SuccessionDecision> {
+    const self = options.incumbent();
+    if (
+      input.target.build.flavor !== self.flavor ||
+      input.target.build.version !== self.version ||
+      input.target.build.bundleHash !== self.bundleHash ||
+      (options.runningBuildSetId !== undefined && input.target.build.buildSetId !== options.runningBuildSetId)
+    )
+      return { kind: 'refused', reason: 'supervision repair must use the serving build' };
+    const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) => {
+      if (observed.kind !== 'absent' && observed.kind !== 'readable')
+        return settle({ kind: 'deferred', reason: `upgrade intent is ${observed.kind}` });
+      const current = observed.kind === 'readable' ? observed.intent : null;
+      if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
+        if (current.reason === 'supervision-repair' || supersedes(current.target, input.target)) {
+          notifyObligationChange();
+          return settle({ kind: 'registered', intent: current });
+        }
+        if (current.attemptId !== null) {
+          notifyObligationChange();
+          return settle({ kind: 'deferred', reason: 'existing succession attempt must settle before repair' });
+        }
+      }
+      return {
+        kind: 'write',
+        expectedRevision: current?.revision ?? null,
+        change: requestedIntent(input, self, null, 'supervision-repair'),
+        settle: (written) => {
+          options.onIntentChanged?.();
+          notifyObligationChange();
+          return { kind: 'registered', intent: written };
+        },
+      };
+    });
+    return decisionOf(outcome, 'deferred');
   }
 
   /**
@@ -1285,6 +1326,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   return {
     incumbent: options.incumbent,
     request,
+    repairSupervision,
     prepare,
     reportReady,
     commit,

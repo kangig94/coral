@@ -14,6 +14,7 @@ export type LaunchOwner = Readonly<{
   epoch: number;
   renewal: number;
   leaseUntil: number;
+  mode: 'supervised' | 'recovering';
 }>;
 export type LaunchReservation = Readonly<{
   id: string;
@@ -22,8 +23,11 @@ export type LaunchReservation = Readonly<{
   purpose: 'startup' | 'contender' | 'succession' | 'recovery' | 'legacy-retirement';
   phase: 'reserved' | 'admitted' | 'serving' | 'exited';
   admittedAt?: number;
+  observedHealthyAt?: number;
   parent?: LaunchProcess;
   child?: LaunchProcess;
+  terminationAt?: number;
+  killAt?: number;
 }>;
 export type LaunchRequest = Readonly<{
   id: string;
@@ -56,6 +60,12 @@ export type CoordinatorLaunchState = Readonly<{
   launch: LaunchReservation | null;
   attempt: LaunchReservation | null;
   requests: readonly LaunchRequest[];
+  recovery?: Readonly<{
+    id: string;
+    sourceLaunchId: string;
+    nominee: LaunchProcess;
+    challenge: string;
+  }>;
   hold?:
     | Readonly<{ kind: 'no-eligible-build'; controller: string }>
     | Readonly<{ kind: 'target-indeterminate'; requestId: string }>
@@ -128,7 +138,7 @@ export class CoordinatorLaunchRecord {
     }
   }
 
-  acquire(holder: Omit<LaunchOwner, 'epoch' | 'renewal' | 'leaseUntil'>, now: number): LaunchOwner | null {
+  acquire(holder: Omit<LaunchOwner, 'epoch' | 'renewal' | 'leaseUntil' | 'mode'>, now: number): LaunchOwner | null {
     return this.#change((state) => {
       if (state.owner !== null && state.owner.leaseUntil > now) {
         const observed = probeProcessIncarnation(state.owner.process.pid);
@@ -138,16 +148,91 @@ export class CoordinatorLaunchRecord {
         )
           return { state, result: null };
       }
+      const launch = state.launch?.phase === 'reserved' ? null : state.launch;
+      const attempt = state.attempt?.phase === 'reserved' ? null : state.attempt;
+      const normalized = this.#normalize({ ...state, launch, attempt });
       const owner: LaunchOwner = {
         ...holder,
         epoch: state.ownerEpoch + 1,
         renewal: 0,
         leaseUntil: now + LAUNCH_OWNER_LEASE_MS,
+        mode: this.#mode(normalized, holder.process),
       };
-      const launch = state.launch?.phase === 'reserved' ? null : state.launch;
-      const attempt = state.attempt?.phase === 'reserved' ? null : state.attempt;
       return {
-        state: { ...state, ownerEpoch: owner.epoch, owner, launch, attempt },
+        state: {
+          ...normalized,
+          ownerEpoch: owner.epoch,
+          owner,
+          recovery: undefined,
+          requests: state.requests.map((request) =>
+            request.status === 'recorded' || request.status === 'accepted'
+              ? { ...request, status: 'accepted' as const, acceptedEpoch: owner.epoch }
+              : request,
+          ),
+        },
+        result: owner,
+      };
+    });
+  }
+
+  nominateRecovery(source: LaunchProcess, nominee: LaunchProcess, challenge: string, now: number): string | null {
+    return this.#change((state) => {
+      const normalized = this.#normalize(state);
+      const selected = normalized.launch;
+      if (
+        selected === null ||
+        selected.phase !== 'serving' ||
+        selected.child?.pid !== source.pid ||
+        selected.child.incarnation !== source.incarnation ||
+        (normalized.attempt !== null && normalized.attempt.phase !== 'exited') ||
+        (normalized.owner?.mode === 'supervised' &&
+          normalized.owner.leaseUntil > now &&
+          probeProcessIncarnation(normalized.owner.process.pid) === normalized.owner.process.incarnation)
+      )
+        return { state, result: null };
+      const recovery = { id: randomUUID(), sourceLaunchId: selected.id, nominee, challenge };
+      return { state: { ...normalized, recovery }, result: recovery.id };
+    });
+  }
+
+  acceptRecoveryTransfer(
+    holder: Omit<LaunchOwner, 'epoch' | 'renewal' | 'leaseUntil' | 'mode'>,
+    recoveryId: string,
+    challenge: string,
+    now: number,
+  ): LaunchOwner | null {
+    return this.#change((state) => {
+      const normalized = this.#normalize(state);
+      const recovery = normalized.recovery;
+      if (
+        recovery?.id !== recoveryId ||
+        recovery.challenge !== challenge ||
+        recovery.nominee.pid !== holder.process.pid ||
+        recovery.nominee.incarnation !== holder.process.incarnation ||
+        normalized.launch?.id !== recovery.sourceLaunchId ||
+        normalized.launch.phase !== 'serving' ||
+        (normalized.attempt !== null && normalized.attempt.phase !== 'exited')
+      )
+        return { state, result: null };
+      const owner: LaunchOwner = {
+        ...holder,
+        epoch: state.ownerEpoch + 1,
+        renewal: 0,
+        leaseUntil: now + LAUNCH_OWNER_LEASE_MS,
+        mode: this.#mode(normalized, holder.process),
+      };
+      return {
+        state: {
+          ...normalized,
+          ownerEpoch: owner.epoch,
+          owner,
+          recovery: undefined,
+          requests: normalized.requests.map((request) =>
+            request.status === 'recorded' || request.status === 'accepted'
+              ? { ...request, status: 'accepted' as const, acceptedEpoch: owner.epoch }
+              : request,
+          ),
+        },
         result: owner,
       };
     });
@@ -173,14 +258,16 @@ export class CoordinatorLaunchRecord {
     now: number,
   ): LaunchReservation | null {
     return this.#change((state) => {
-      const succession = (purpose === 'succession' || purpose === 'contender') && state.launch?.phase === 'serving';
+      const normalized = this.#normalize(state);
+      const succession =
+        (purpose === 'succession' || purpose === 'contender') && normalized.launch?.phase === 'serving';
       if (
-        !this.#current(state, owner, now) ||
+        !this.#current(normalized, owner, now) ||
         (succession
-          ? state.attempt !== null && state.attempt.phase !== 'exited'
-          : state.launch !== null && state.launch.phase !== 'exited')
+          ? normalized.attempt !== null && normalized.attempt.phase !== 'exited'
+          : normalized.launch !== null && normalized.launch.phase !== 'exited')
       )
-        return { state, result: null };
+        return { state: normalized, result: null };
       const launch: LaunchReservation = {
         id: randomUUID(),
         ownerEpoch: owner.epoch,
@@ -188,7 +275,10 @@ export class CoordinatorLaunchRecord {
         purpose,
         phase: 'reserved',
       };
-      return { state: succession ? { ...state, attempt: launch } : { ...state, launch }, result: launch };
+      return {
+        state: succession ? { ...normalized, attempt: launch } : { ...normalized, launch },
+        result: launch,
+      };
     });
   }
 
@@ -415,7 +505,7 @@ export class CoordinatorLaunchRecord {
       const launch = slot === 'launch' ? state.launch : state.attempt;
       if (!this.#exactChild(launch, reservation, child) || launch?.phase !== 'admitted')
         return { state, result: false };
-      const serving: LaunchReservation = { ...launch, phase: 'serving' };
+      const serving: LaunchReservation = { ...launch, phase: 'serving', observedHealthyAt: Date.now() };
       return {
         state: slot === 'launch' ? { ...state, launch: serving } : { ...state, attempt: serving },
         result: true,
@@ -449,20 +539,49 @@ export class CoordinatorLaunchRecord {
       )
         return { state, result: false };
       const exited: LaunchReservation = { ...launch, phase: 'exited' };
-      return { state: slot === 'launch' ? { ...state, launch: exited } : { ...state, attempt: exited }, result: true };
+      return {
+        state: this.#normalize(slot === 'launch' ? { ...state, launch: exited } : { ...state, attempt: exited }),
+        result: true,
+      };
     });
   }
 
-  promoteAttempt(owner: LaunchOwner, now: number): LaunchReservation | null {
+  normalize(owner: LaunchOwner, now: number): LaunchReservation | null {
     return this.#change((state) => {
-      if (
-        !this.#current(state, owner, now) ||
-        state.launch?.phase !== 'exited' ||
-        state.attempt === null ||
-        state.attempt.phase === 'exited'
-      )
-        return { state, result: null };
-      return { state: { ...state, launch: state.attempt, attempt: null }, result: state.attempt };
+      if (!this.#current(state, owner, now)) return { state, result: null };
+      const normalized = this.#normalize(state);
+      return { state: normalized, result: normalized.launch?.id !== state.launch?.id ? normalized.launch : null };
+    });
+  }
+
+  commitTermination(owner: LaunchOwner, reservation: LaunchReservation, now: number, graceMs: number): boolean {
+    return this.#change((state) => {
+      if (!this.#current(state, owner, now)) return { state, result: false };
+      const slot = this.#slot(state, reservation);
+      const child = slot === 'launch' ? state.launch : state.attempt;
+      if (slot === null || child?.id !== reservation.id || child.phase === 'exited' || child.child === undefined)
+        return { state, result: false };
+      if (child.terminationAt !== undefined) return { state, result: true };
+      const committed = { ...child, terminationAt: now, killAt: now + graceMs };
+      return {
+        state: slot === 'launch' ? { ...state, launch: committed } : { ...state, attempt: committed },
+        result: true,
+      };
+    });
+  }
+
+  observeInheritedHealth(owner: LaunchOwner, reservation: LaunchReservation, now: number): void {
+    this.#change((state) => {
+      if (!this.#current(state, owner, now)) return { state, result: undefined };
+      const slot = this.#slot(state, reservation);
+      const child = slot === 'launch' ? state.launch : state.attempt;
+      if (slot === null || child?.id !== reservation.id || child.terminationAt !== undefined)
+        return { state, result: undefined };
+      const healthy = { ...child, observedHealthyAt: now };
+      return {
+        state: slot === 'launch' ? { ...state, launch: healthy } : { ...state, attempt: healthy },
+        result: undefined,
+      };
     });
   }
 
@@ -493,5 +612,26 @@ export class CoordinatorLaunchRecord {
     if (state.launch?.id === reservation.id) return 'launch';
     if (state.attempt?.id === reservation.id) return 'attempt';
     return null;
+  }
+
+  #mode(state: CoordinatorLaunchState, parent: LaunchProcess): LaunchOwner['mode'] {
+    return [state.launch, state.attempt].some(
+      (slot) =>
+        slot !== null &&
+        (slot.phase === 'admitted' || slot.phase === 'serving') &&
+        (slot.parent?.pid !== parent.pid || slot.parent.incarnation !== parent.incarnation),
+    )
+      ? 'recovering'
+      : 'supervised';
+  }
+
+  #normalize(state: CoordinatorLaunchState): CoordinatorLaunchState {
+    const next =
+      state.launch?.phase === 'exited' && state.attempt !== null && state.attempt.phase !== 'exited'
+        ? { ...state, launch: state.attempt, attempt: null }
+        : state;
+    if (next.owner === null) return next;
+    const mode = this.#mode(next, next.owner.process);
+    return next.owner.mode === mode ? next : { ...next, owner: { ...next.owner, mode } };
   }
 }

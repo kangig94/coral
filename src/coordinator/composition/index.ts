@@ -1999,6 +1999,7 @@ export function createCoordinatorCore(
     runtime,
     runDir: runtime.paths.coral.coordinator.runDir,
     incumbent: successionIncumbent,
+    runningBuildSetId: identity.buildSetId,
     owners: successionOwners,
     liveJobIds: readSuccessionJobs,
     storeFormatFingerprint: options.storeFormat.fingerprint,
@@ -2697,6 +2698,13 @@ export function createCoordinatorCore(
 
   return {
     identity,
+    repairSupervision: async (target) => {
+      const decision = await succession.reconciler.repairSupervision({ requestId: runtime.ids.uuid(), target });
+      if (decision.kind !== 'registered')
+        throw new Error(
+          `Supervision repair was not registered: ${decision.kind}: ${'reason' in decision ? decision.reason : ''}`,
+        );
+    },
     server,
     handleRequest,
     lifecycleController: resolvedLifecycleController,

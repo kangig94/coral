@@ -174,7 +174,6 @@ describe('real-process succession commit', () => {
       const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
       const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
       coordinators.push(contender);
-      await waitForProcessExit(contender, 30_000);
 
       const runDir = coordinatorFilesForHome(home, 'prod').runDir;
       await waitForCondition(() => {
@@ -216,7 +215,6 @@ describe('real-process succession commit', () => {
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
-    await waitForProcessExit(contender, 30_000);
 
     await waitForCondition(() => {
       const discovery = readDiscoveryRecordForHome(home, 'prod');
@@ -330,7 +328,6 @@ describe('real-process succession commit', () => {
     const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
-    await waitForProcessExit(contender, 30_000);
 
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });

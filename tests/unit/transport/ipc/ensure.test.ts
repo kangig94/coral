@@ -219,6 +219,8 @@ function writeStartupSentinel(
   attemptId: string,
   overrides: Partial<{
     pid: number;
+    launchId: string;
+    incarnation: string | null;
     bundleHash: string;
     namespace: string;
     code: string;
@@ -235,7 +237,9 @@ function writeStartupSentinel(
     JSON.stringify({
       version: 1,
       attemptId,
+      ...(overrides.launchId === undefined ? {} : { launchId: overrides.launchId }),
       pid: overrides.pid ?? 12_345,
+      ...(overrides.incarnation === undefined ? {} : { incarnation: overrides.incarnation }),
       startedAt: Date.now(),
       recordedAt: Date.now(),
       phase: 'startup_failed',
@@ -1881,6 +1885,24 @@ describe('ipc ensure', () => {
     child.emit('exit', 1, null);
     await vi.advanceTimersByTimeAsync(LEGACY_RECOVERY_BUDGET_MS);
     expect(await result).toMatchObject({ code: 'coordinator_recovering', context: { monitoring: 'unknown' } });
+  });
+
+  it('keeps waiting when an exact launch reports an error without a provable incarnation', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    writeFileSync(join(root, 'bridge', 'coral-sentinel.cjs'), '');
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    const child = spawnedChild();
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure, LEGACY_RECOVERY_BUDGET_MS } = await importEnsure();
+    const result = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    writeStartupSentinel(root, spawnedAttemptId(), { launchId: 'failed-child', incarnation: null });
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(LEGACY_RECOVERY_BUDGET_MS);
+    expect(await result).toMatchObject({ name: 'BackendUnreachableError' });
   });
 
   it('leaves a foreign-namespace sentinel to its own build when no attempt id attributes it', async () => {

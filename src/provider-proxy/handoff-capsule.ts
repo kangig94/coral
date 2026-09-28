@@ -800,12 +800,6 @@ export function createGrantRegistry(
           'A transfer must name the recovery grant already installed for this set.',
         );
       }
-      if (sameControllerBuild(installed.controllerBuild, successor)) {
-        throw new ProxyControlProtocolError(
-          'invalid_request',
-          'The successor already runs the controller build; its own recovery grant authorizes it.',
-        );
-      }
       transfer = Object.freeze({ grantId, attemptId, successor });
       return { state: 'transfer-authorized', grantId, attemptId };
     },
