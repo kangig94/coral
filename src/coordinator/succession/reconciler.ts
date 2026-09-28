@@ -70,6 +70,32 @@ export type SuccessionReconcilerOptions = Readonly<{
   retryIntervalMs?: number;
 }>;
 
+type TargetCustodyDisposition =
+  | Readonly<{ kind: 'blocked-by-jobs'; formatChanges: true; liveJobs: readonly string[] }>
+  | Readonly<{ kind: 'deferred' | 'eligible'; formatChanges: boolean }>;
+
+type TargetCustodyClassification =
+  | Readonly<{ kind: 'invalid-target' }>
+  | Readonly<{ kind: 'validated-target'; disposition: () => TargetCustodyDisposition }>;
+
+function classifyTargetCustody(
+  intent: UpgradeIntent,
+  options: SuccessionReconcilerOptions,
+): TargetCustodyClassification {
+  if (revalidateUpgradeIntentTarget(intent).kind !== 'validated') return { kind: 'invalid-target' };
+  return {
+    kind: 'validated-target',
+    disposition: () => {
+      const formatChanges =
+        options.storeFormatFingerprint !== undefined &&
+        intent.target.build.storeFormatFingerprint !== options.storeFormatFingerprint;
+      const liveJobs = formatChanges ? (options.liveJobIds?.() ?? []) : [];
+      if (liveJobs.length > 0) return { kind: 'blocked-by-jobs', formatChanges: true, liveJobs };
+      return { kind: intent.disposition === 'deferred' ? 'deferred' : 'eligible', formatChanges };
+    },
+  };
+}
+
 /**
  * How a launched attempt's commit ended while this process lives. `clear-owed` carries the write that clears the
  * attempt from the intent, which the commit could not land after reclaiming in place; until it lands, the intent
@@ -778,14 +804,11 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       const current = observed.kind === 'readable' ? observed.intent : null;
       const active = current !== null && current.disposition !== 'closed' && current.disposition !== 'completed';
       if (active) {
-        const newerTargetCanTakeCustody =
-          current.reason !== 'supervision-repair' &&
-          supersedes(current.target, input.target) &&
-          current.disposition !== 'deferred' &&
-          revalidateUpgradeIntentTarget(current).kind === 'validated' &&
-          (options.storeFormatFingerprint === undefined ||
-            current.target.build.storeFormatFingerprint === options.storeFormatFingerprint ||
-            (options.liveJobIds?.().length ?? 0) === 0);
+        let newerTargetCanTakeCustody = false;
+        if (current.reason !== 'supervision-repair' && supersedes(current.target, input.target)) {
+          const custody = classifyTargetCustody(current, options);
+          newerTargetCanTakeCustody = custody.kind === 'validated-target' && custody.disposition().kind === 'eligible';
+        }
         if (current.reason === 'supervision-repair' || newerTargetCanTakeCustody) {
           notifyObligationChange();
           return settle({ kind: 'registered', intent: current });
@@ -864,9 +887,9 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if (intent.attemptId !== null && intent.attemptId === launchedAttempt)
         return settle({ kind: 'deferred', reason: LAUNCH_IN_FLIGHT });
       if (holdsRecovery(intent)) return settle({ kind: 'refused', reason: RECOVERY_HOLDS_INTENT });
-      const validated = revalidateUpgradeIntentTarget(intent);
+      const custody = classifyTargetCustody(intent, options);
       const declared =
-        validated.kind === 'validated'
+        custody.kind === 'validated-target'
           ? readSuccessionCapabilities(
               options.runtime,
               join(intent.target.pluginRootLabel, 'bridge'),
@@ -874,7 +897,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
             )
           : null;
       const targetFailure =
-        validated.kind !== 'validated'
+        custody.kind === 'invalid-target'
           ? 'target build no longer validates'
           : declared?.kind === 'invalid'
             ? 'target succession declaration is invalid'
@@ -919,16 +942,15 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           { kind: 'refused', reason: targetFailure },
         );
       }
-      if (declared === null) return settle({ kind: 'refused', reason: 'target build no longer validates' });
+      if (custody.kind !== 'validated-target' || declared === null)
+        return settle({ kind: 'refused', reason: 'target build no longer validates' });
       const capabilities = declared.kind === 'declared' ? declared.capabilities : emptyCapabilities(intent);
       const epochKey = options.epochKey();
       if (epochKey === null) return settle({ kind: 'deferred', reason: 'exact store epoch is unavailable' });
-      const formatChanges =
-        options.storeFormatFingerprint !== undefined &&
-        intent.target.build.storeFormatFingerprint !== options.storeFormatFingerprint;
-      const liveJobs = formatChanges ? (options.liveJobIds?.() ?? []) : [];
-      if (liveJobs.length > 0) {
-        const blockers = liveJobs.map((jobId) => ({ owner: 'jobs', reason: `blocking(format): ${jobId}` }));
+      const disposition = custody.disposition();
+      const formatChanges = disposition.formatChanges;
+      if (disposition.kind === 'blocked-by-jobs') {
+        const blockers = disposition.liveJobs.map((jobId) => ({ owner: 'jobs', reason: `blocking(format): ${jobId}` }));
         return writeThen(
           intent,
           {

@@ -162,6 +162,43 @@ describe('succession reconciler', () => {
     }
   });
 
+  it('repairs supervision before a deferred target takes custody even after its jobs settle', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    await seedHeldIntent(runDir, serving);
+    installedTargets.set('/missing/target', {});
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [],
+      liveJobIds: () => [],
+      storeFormatFingerprint: `sha256:${'1'.repeat(64)}`,
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+    });
+    try {
+      expect(
+        await reconciler.repairSupervision({
+          requestId: 'repair-request',
+          target: {
+            build: { ...build, version: serving.version, bundleHash: serving.bundleHash },
+            pluginRootLabel: '/installed/serving',
+          },
+        }),
+      ).toMatchObject({
+        kind: 'registered',
+        intent: {
+          requestId: 'repair-request',
+          reason: 'supervision-repair',
+          nextTarget: { requestId: 'request-1', target: { pluginRootLabel: '/missing/target' } },
+        },
+      });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
   it('leaves a commit-incapable incumbent intent claimable by a legacy waiter', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
     directories.push(runDir);
