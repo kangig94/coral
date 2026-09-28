@@ -715,6 +715,16 @@ export function formatBackendStatus(
       ? formatLiveShutdownGuidance(daemonStatus.health)
       : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
   const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
+  if (daemonStatus.launchHold?.kind === 'custody-unreadable')
+    sections.push(
+      `Coordinator launch is quarantined by unreadable custody at ${daemonStatus.launchHold.path}. The supervisor retries automatically when that record becomes readable.`,
+    );
+  if (daemonStatus.launchHold?.kind === 'no-eligible-build')
+    sections.push(
+      daemonStatus.launchHold.controller === 'unknown'
+        ? 'Coordinator launch is quarantined by indeterminate controller evidence. The supervisor retries when custody, transfer, or process evidence changes.'
+        : `Coordinator launch requires build ${daemonStatus.launchHold.controller}. The supervisor retries when an eligible executable is available.`,
+    );
   const upgrade =
     daemonStatus.status === 'ok' ? (daemonStatus.health.succession ?? daemonStatus.upgrade) : daemonStatus.upgrade;
   if (upgrade !== undefined) sections.push(formatPendingUpgrade(upgrade));

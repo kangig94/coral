@@ -1,5 +1,6 @@
 import { runNamespaceSupervisor } from '#src/coordinator-launch/supervisor.js';
 import { launchLegacyBackend } from '#src/coordinator-launch/legacy-bootstrap.js';
+import type { ChildProcess } from 'node:child_process';
 
 const executable = process.argv[2];
 if (executable === '--launch-legacy') {
@@ -10,12 +11,20 @@ if (executable === '--launch-legacy') {
   const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
   if (executable === undefined || runDir === undefined) throw new Error('Missing coordinator fixture or run directory');
 
+  let coordinator: ChildProcess | null = null;
+  process.on('message', (message: unknown) => {
+    if (message === 'disconnect-coordinator') coordinator?.disconnect();
+    if (message === 'error-coordinator-channel') coordinator?.emit('error', new Error('IPC send failed'));
+  });
   void runNamespaceSupervisor(executable, [], runDir, {
     timing:
       process.env.CORAL_FIXTURE_REAL_BACKEND === '1'
         ? { challengeMs: 100, schedulingGapMs: 1_000, lapseMs: 8_000, graceMs: 200, dStateDeferralMs: 4_000 }
         : { challengeMs: 20, schedulingGapMs: 80, lapseMs: 300, graceMs: 80, dStateDeferralMs: 120 },
     startupBudgetMs: Number(process.env.CORAL_FIXTURE_STARTUP_BUDGET_MS ?? 25_000),
+    onChild: (child) => {
+      coordinator = child;
+    },
   }).then((code) => {
     process.exitCode = code;
   });

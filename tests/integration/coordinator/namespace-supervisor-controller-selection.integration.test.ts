@@ -18,7 +18,7 @@ import { validatedBuild } from '#src/coordinator-launch/selection.js';
 import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { custodyLedgerDir } from '#src/store/custody-ledger.js';
+import { custodyLedgerDir, recordCustodyIntent, reconcileCustodyLedger } from '#src/store/custody-ledger.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 import { supervisorAcceptedUpgrade } from '#src/transport/ipc/ensure.js';
 
@@ -90,6 +90,121 @@ describe('namespace supervisor controller selection', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+  it('holds launch selection when custody inventory is unreadable before any job location is indexed', () => {
+    const home = mkdtempSync(join(tmpdir(), 'coral-unreadable-unindexed-custody-'));
+    try {
+      const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+      mkdirSync(join(custodyLedgerDir(runDir), 'unreadable-entry'), { recursive: true });
+      expect(controllerBuild(runDir)).toEqual({ kind: 'unknown' });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+  it('records unreadable custody quarantine and launches after the record is repaired', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-custody-quarantine-'));
+    roots.push(home);
+    const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const unreadablePath = join(custodyLedgerDir(runDir), 'unreadable-entry');
+    mkdirSync(unreadablePath, { recursive: true });
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisor = spawn(process.execPath, [harness, join(plugin.root, 'bridge', 'coral-backend.cjs')], {
+      env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+      stdio: 'ignore',
+    });
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      await waitForCondition(() => record.read().hold?.kind === 'custody-unreadable', 10_000);
+      expect(record.read().hold).toEqual({
+        kind: 'custody-unreadable',
+        path: unreadablePath,
+        retry: 'restore-readable-custody-record',
+      });
+      expect(record.read().launch).toBeNull();
+      rmSync(unreadablePath, { recursive: true });
+      await waitForCondition(() => record.read().launch?.phase === 'serving', 15_000);
+      expect(record.read().hold).toBeUndefined();
+    } finally {
+      const state = record.read();
+      record.close();
+      supervisor.kill('SIGKILL');
+      if (state.launch?.child?.pid !== undefined) {
+        try {
+          process.kill(state.launch.child.pid, 'SIGKILL');
+        } catch {
+          // The fixture may already have exited.
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+  it('starts recovery for an unresolved job with decisively absent CLI custody', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'coral-absent-cli-controller-'));
+    const roots = [home];
+    const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    let supervisor: ReturnType<typeof spawn> | null = null;
+    let record: CoordinatorLaunchRecord | null = null;
+    try {
+      const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+      const runDir = runtime.paths.coral.coordinator.runDir;
+      const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+      index.register('absent-job', 'epoch-1', { projectRoot: home, workDir: home, jobKind: 'provider' });
+      const intent = recordCustodyIntent(runtime, runDir, {
+        effect: 'process-spawn',
+        epoch: 'epoch-1',
+        owner: 'durable-cli',
+        operationId: 'absent-job',
+        capsule: null,
+        bindWithinMs: 1_000,
+        nowMs: 100,
+      });
+      reconcileCustodyLedger(runtime, runDir, 2_000, 100, () => ({
+        kind: 'absent',
+        processToken: intent.processToken,
+        evidence: 'wrapper never started',
+      }));
+      expect(controllerBuild(runDir)).toEqual({ kind: 'none' });
+      const harness = join(home, 'supervisor.mjs');
+      await build({
+        entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+        outfile: harness,
+        bundle: true,
+        platform: 'node',
+        target: 'node22',
+        format: 'esm',
+        external: ['node:*'],
+      });
+      supervisor = spawn(process.execPath, [harness, join(plugin.root, 'bridge', 'coral-backend.cjs')], {
+        env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+        stdio: 'ignore',
+      });
+      record = new CoordinatorLaunchRecord(runDir);
+      await waitForCondition(() => record?.read().launch?.phase === 'serving', 15_000);
+      expect(index.locations().find((location) => location.jobId === 'absent-job')?.disposition).not.toBe('terminal');
+    } finally {
+      const childPid = record?.read().launch?.child?.pid;
+      record?.close();
+      supervisor?.kill('SIGKILL');
+      if (childPid !== undefined) {
+        try {
+          process.kill(childPid, 'SIGKILL');
+        } catch {
+          // The fixture may already have exited.
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 25_000);
   it('reports acceptance after acquisition atomically accepts the request', () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-acceptance-'));

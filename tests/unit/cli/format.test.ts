@@ -78,6 +78,21 @@ function formatBackendStatus(status: BackendStatusFull): string {
   return formatComposedBackendStatus(status, { kind: 'absent' }, null);
 }
 
+it('shows the custody quarantine path and retry action in backend status', () => {
+  expect(
+    formatBackendStatus({
+      status: 'no_record_no_socket',
+      launchHold: { kind: 'custody-unreadable', path: '/run/custody/entry', retry: 'restore-readable-custody-record' },
+    }),
+  ).toContain('unreadable custody at /run/custody/entry');
+  expect(
+    formatBackendStatus({
+      status: 'no_record_no_socket',
+      launchHold: { kind: 'no-eligible-build', controller: 'unknown', retry: 'controller-evidence-change' },
+    }),
+  ).toContain('retries when custody, transfer, or process evidence changes');
+});
+
 const runningDecision = {
   kind: 'provider-session',
   launchState: 'running',

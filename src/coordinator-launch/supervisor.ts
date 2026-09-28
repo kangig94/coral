@@ -220,10 +220,10 @@ export function controllerBuild(
         .map((location) => location.jobId),
     );
     const custody = readCustodyLedger(runtime, runDir);
-    if (unresolved.size > 0 && custody.some((entry) => entry.kind === 'unreadable')) return { kind: 'unknown' };
+    if (custody.some((entry) => entry.kind === 'unreadable')) return { kind: 'unknown' };
     const durableCliJob = custody.some(
       (entry) =>
-        entry.kind !== 'unreadable' &&
+        (entry.kind === 'holding' || entry.kind === 'bound') &&
         entry.intent.owner === 'durable-cli' &&
         unresolved.has(entry.intent.jobId ?? entry.intent.operationId),
     );
@@ -446,7 +446,6 @@ async function watchChild(
 
   const childExit = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
-    child.once('error', () => resolve({ exitCode: 1, signal: null }));
   });
   child.on('message', (message: unknown, handle: unknown) => {
     if (typeof message === 'object' && message !== null && 'kind' in message) {
@@ -484,7 +483,7 @@ async function watchChild(
       outstanding = null;
       startupDeadline += gap;
     }
-    if (now - lastRenewal >= 30_000) {
+    if (child.connected && now - lastRenewal >= 30_000) {
       const renewed = record.renew(owner.current, now);
       if (renewed !== null) owner.current = renewed;
       else {
@@ -496,6 +495,7 @@ async function watchChild(
       lastRenewal = now;
     }
     if (child.exitCode !== null || child.signalCode !== null) return;
+    if (owner.lost || record.read().owner?.epoch !== owner.current.epoch || !child.connected) return;
     if (escalationAt !== null) {
       if (!killed && now - escalationAt >= timing.graceMs) {
         child.kill('SIGKILL');
@@ -682,7 +682,11 @@ export async function runNamespaceSupervisor(
   executable: string,
   args: readonly string[],
   runDir: string,
-  options: Readonly<{ timing?: SentinelTiming; startupBudgetMs?: number }> = {},
+  options: Readonly<{
+    timing?: SentinelTiming;
+    startupBudgetMs?: number;
+    onChild?: (child: ChildProcess) => void;
+  }> = {},
 ): Promise<number> {
   const timing = options.timing ?? SENTINEL_TIMING;
   if (!validSentinelTiming(timing)) throw new Error('Invalid coordinator supervisor timing');
@@ -989,7 +993,14 @@ export async function runNamespaceSupervisor(
           record.release(owner.current)
         )
           return 0;
-        if (record.read().hold?.kind !== 'target-indeterminate')
+        const unreadable = readCustodyLedger(
+          createRealRuntime(runDir.endsWith('run-dev') ? 'dev' : 'prod', {
+            baseDir: dirname(dirname(runDir)),
+          }),
+          runDir,
+        ).find((entry) => entry.kind === 'unreadable');
+        if (unreadable?.kind === 'unreadable') record.holdUnreadableCustody(owner.current, unreadable.path, Date.now());
+        else if (record.read().hold?.kind !== 'target-indeterminate')
           record.hold(
             owner.current,
             controller.kind === 'required' ? controller.buildSetId : controller.kind,
@@ -1022,6 +1033,7 @@ export async function runNamespaceSupervisor(
         await sleep(POLL_MS);
         continue;
       }
+      options.onChild?.(initial.child);
       let current = initial;
       type PendingAttempt = Readonly<{
         attemptId?: string;

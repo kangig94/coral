@@ -67,12 +67,29 @@ export type CoordinatorLaunchState = Readonly<{
     challenge: string;
   }>;
   hold?:
-    | Readonly<{ kind: 'no-eligible-build'; controller: string }>
+    | Readonly<{
+        kind: 'no-eligible-build';
+        controller: string;
+        retry?: 'controller-evidence-change' | 'eligible-build-appears';
+      }>
+    | Readonly<{ kind: 'custody-unreadable'; path: string; retry: 'restore-readable-custody-record' }>
     | Readonly<{ kind: 'target-indeterminate'; requestId: string }>
     | Readonly<{ kind: 'inherited-child-unresponsive'; launchId: string; pid: number }>;
 }>;
 
 export const LAUNCH_OWNER_LEASE_MS = 10 * 60_000;
+
+export function readCoordinatorLaunchState(runDir: string): CoordinatorLaunchState {
+  const database = new DatabaseSync(coordinatorLaunchPath(runDir), { readOnly: true });
+  try {
+    const row = database.prepare('SELECT state FROM control WHERE id = 1').get() as { state: string };
+    const state = JSON.parse(row.state) as CoordinatorLaunchState;
+    if (state.schemaGeneration !== 1) throw new Error('Unsupported coordinator launch generation');
+    return state;
+  } finally {
+    database.close();
+  }
+}
 
 /** One short SQLite write transaction owns each protocol transition. No caller holds it across process I/O. */
 export class CoordinatorLaunchRecord {
@@ -175,7 +192,7 @@ export class CoordinatorLaunchRecord {
     });
   }
 
-  nominateRecovery(source: LaunchProcess, nominee: LaunchProcess, challenge: string, now: number): string | null {
+  nominateRecovery(source: LaunchProcess, nominee: LaunchProcess, challenge: string): string | null {
     return this.#change((state) => {
       const normalized = this.#normalize(state);
       const selected = normalized.launch;
@@ -184,10 +201,7 @@ export class CoordinatorLaunchRecord {
         selected.phase !== 'serving' ||
         selected.child?.pid !== source.pid ||
         selected.child.incarnation !== source.incarnation ||
-        (normalized.attempt !== null && normalized.attempt.phase !== 'exited') ||
-        (normalized.owner?.mode === 'supervised' &&
-          normalized.owner.leaseUntil > now &&
-          probeProcessIncarnation(normalized.owner.process.pid) === normalized.owner.process.incarnation)
+        (normalized.attempt !== null && normalized.attempt.phase !== 'exited')
       )
         return { state, result: null };
       const recovery = { id: randomUUID(), sourceLaunchId: selected.id, nominee, challenge };
@@ -318,18 +332,33 @@ export class CoordinatorLaunchRecord {
 
   hold(owner: LaunchOwner, controller: string, now: number): void {
     this.#change((state) => {
+      const retry = controller === 'unknown' ? 'controller-evidence-change' : 'eligible-build-appears';
       if (
         !this.#current(state, owner, now) ||
-        (state.hold?.kind === 'no-eligible-build' && state.hold.controller === controller)
+        (state.hold?.kind === 'no-eligible-build' && state.hold.controller === controller && state.hold.retry === retry)
       )
         return { state, result: undefined };
-      return { state: { ...state, hold: { kind: 'no-eligible-build', controller } }, result: undefined };
+      return { state: { ...state, hold: { kind: 'no-eligible-build', controller, retry } }, result: undefined };
+    });
+  }
+
+  holdUnreadableCustody(owner: LaunchOwner, path: string, now: number): void {
+    this.#change((state) => {
+      if (!this.#current(state, owner, now) || (state.hold?.kind === 'custody-unreadable' && state.hold.path === path))
+        return { state, result: undefined };
+      return {
+        state: { ...state, hold: { kind: 'custody-unreadable', path, retry: 'restore-readable-custody-record' } },
+        result: undefined,
+      };
     });
   }
 
   clearHold(owner: LaunchOwner, now: number): void {
     this.#change((state) => {
-      if (!this.#current(state, owner, now) || state.hold?.kind !== 'no-eligible-build')
+      if (
+        !this.#current(state, owner, now) ||
+        (state.hold?.kind !== 'no-eligible-build' && state.hold?.kind !== 'custody-unreadable')
+      )
         return { state, result: undefined };
       return { state: { ...state, hold: undefined }, result: undefined };
     });

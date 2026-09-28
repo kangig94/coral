@@ -6,7 +6,11 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CoordinatorLaunchRecord, LAUNCH_OWNER_LEASE_MS } from '#src/infra/coordinator-launch.js';
+import {
+  CoordinatorLaunchRecord,
+  LAUNCH_OWNER_LEASE_MS,
+  readCoordinatorLaunchState,
+} from '#src/infra/coordinator-launch.js';
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 
 const roots: string[] = [];
@@ -84,7 +88,7 @@ describe('coordinator launch admission', () => {
     if (provisional === null) throw new Error('provisional owner was not admitted');
     expect(provisional.mode).toBe('recovering');
     const nominee = { pid: 113, incarnation: incarnation('nominee') };
-    const recoveryId = record.nominateRecovery(child, nominee, 'private-challenge', takeoverAt + 1);
+    const recoveryId = record.nominateRecovery(child, nominee, 'private-challenge');
     if (recoveryId === null) throw new Error('nomination was refused');
     expect(
       record.acceptRecoveryTransfer(
@@ -111,6 +115,40 @@ describe('coordinator launch admission', () => {
       killAt: takeoverAt + 30_002,
     });
     record.close();
+  });
+  it('transfers a serving child to its nominee while the disconnected supervisor is still alive', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-live-supervisor-transfer-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const incarnation = probeProcessIncarnation(process.pid);
+      if (incarnation === null) throw new Error('Test process has no incarnation');
+      const owner = record.acquire(
+        { id: 'supervisor', process: { pid: process.pid, incarnation }, buildSetId: 'A' },
+        Date.now(),
+      );
+      if (owner === null) throw new Error('Supervisor did not acquire');
+      const launch = record.reserve(owner, 'A', 'startup', Date.now());
+      if (launch === null) throw new Error('Launch was not reserved');
+      const child = { pid: 211, incarnation: 'child' as ProcessIncarnation };
+      expect(record.admit(launch, owner.process, child, Date.now())).toBe(true);
+      expect(record.serving(launch, child)).toBe(true);
+      const nominee = { pid: 311, incarnation: 'nominee' as ProcessIncarnation };
+      const recoveryId = record.nominateRecovery(child, nominee, 'private-challenge');
+      expect(recoveryId).not.toBeNull();
+      if (recoveryId === null) return;
+      const accepted = record.acceptRecoveryTransfer(
+        { id: 'nominee', process: nominee, buildSetId: 'A' },
+        recoveryId,
+        'private-challenge',
+        Date.now(),
+      );
+      expect(accepted?.mode).toBe('recovering');
+      expect(record.renew(owner, Date.now())).toBeNull();
+      expect(record.read().launch).toMatchObject({ id: launch.id, phase: 'serving', child });
+    } finally {
+      record.close();
+    }
   });
   it('fences an unavailable receipt to the current owner epoch', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-unavailable-'));
@@ -139,6 +177,28 @@ describe('coordinator launch admission', () => {
     record.clearTargetHold(second, second.leaseUntil - 1);
     expect(record.read().hold).toBeUndefined();
     record.close();
+  });
+  it('names the evidence change that retries an indeterminate controller hold', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-controller-hold-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const incarnation = probeProcessIncarnation(process.pid);
+      if (incarnation === null) throw new Error('Test process has no incarnation');
+      const owner = record.acquire(
+        { id: 'supervisor', process: { pid: process.pid, incarnation }, buildSetId: 'A' },
+        Date.now(),
+      );
+      if (owner === null) throw new Error('Supervisor did not acquire');
+      record.hold(owner, 'unknown', Date.now());
+      expect(readCoordinatorLaunchState(runDir).hold).toEqual({
+        kind: 'no-eligible-build',
+        controller: 'unknown',
+        retry: 'controller-evidence-change',
+      });
+    } finally {
+      record.close();
+    }
   });
 
   it('revokes a live stalled holder before child admission and preserves an already admitted child', async () => {

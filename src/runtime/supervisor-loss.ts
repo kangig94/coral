@@ -68,18 +68,18 @@ export function startReplacementSupervisor(
       },
     );
     let settled = false;
+    let accepted = false;
     let channelReady = false;
     let bridgeReady = false;
     let offered: string | null = null;
-    const finish = (error: Error | null): void => {
+    const finish = (error: Error | null, repair = false): void => {
       if (settled) return;
       settled = true;
       clearInterval(poll);
       clearTimeout(deadline);
-      const shouldRepair = error === null && (offered !== null || record.read().attempt === null);
       record.close();
       if (error === null) {
-        if (shouldRepair) startRepair(root);
+        if (repair) startRepair(root);
         supervisor.unref();
       } else retry(error);
     };
@@ -95,8 +95,21 @@ export function startReplacementSupervisor(
           owner.leaseUntil > Date.now() &&
           channelReady &&
           bridgeReady
-        )
-          finish(null);
+        ) {
+          accepted = true;
+          clearTimeout(deadline);
+          supervisor.unref();
+        }
+        if (accepted) {
+          if (state.attempt !== null && state.attempt.phase !== 'exited') return;
+          finish(
+            null,
+            state.launch?.phase === 'serving' &&
+              state.launch.child?.pid === process.pid &&
+              state.launch.child.incarnation === sourceIncarnation,
+          );
+          return;
+        }
         if (settled || !channelReady || offered !== null || supervisor.pid === undefined) return;
         const nomineeIncarnation = probeProcessIncarnation(supervisor.pid);
         if (nomineeIncarnation === null) return;
@@ -104,7 +117,6 @@ export function startReplacementSupervisor(
           { pid: process.pid, incarnation: sourceIncarnation },
           { pid: supervisor.pid, incarnation: nomineeIncarnation },
           challenge,
-          Date.now(),
         );
         if (id === null) return;
         offered = id;

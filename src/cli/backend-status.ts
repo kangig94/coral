@@ -1,5 +1,8 @@
 import { observeCoordinator, type CoordinatorObservation } from '../transport/http/backend/coordinator-observation.js';
 import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { readCoordinatorLaunchState, type CoordinatorLaunchState } from '../infra/coordinator-launch.js';
+import { coordinatorLaunchPath } from '../infra/path/index.js';
 import {
   readUpgradeIntent,
   upgradeIntentProblem,
@@ -451,6 +454,10 @@ export type SupersededEpochClosures =
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
 export type BackendStatusFull = BackendStatusFullBase & {
+  launchHold?: Extract<
+    NonNullable<CoordinatorLaunchState['hold']>,
+    { kind: 'custody-unreadable' | 'no-eligible-build' }
+  >;
   upgrade?: UpgradeIntentVisibility;
   upgradeProblem?: UpgradeIntentProblem;
   legacyContenderDeferred?: boolean;
@@ -1095,7 +1102,7 @@ export function withSupersededEpochClosures(
   return supersededEpochs === null ? status : { ...status, supersededEpochs };
 }
 
-export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
+async function getBackendStatusBase(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
   const observed = observeCoordinator({
     storage: runtime.storage,
@@ -1151,5 +1158,19 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       );
     case 'addressed':
       return probeAddressedCoordinatorStatus(runtime, observed, provenSelfIdentity);
+  }
+}
+
+export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
+  const status = await getBackendStatusBase(pluginRoot);
+  const runDir = createRealRuntime(readBuildFlavor(pluginRoot)).paths.coral.coordinator.runDir;
+  if (!existsSync(coordinatorLaunchPath(runDir))) return status;
+  try {
+    const hold = readCoordinatorLaunchState(runDir).hold;
+    return hold?.kind === 'custody-unreadable' || hold?.kind === 'no-eligible-build'
+      ? { ...status, launchHold: hold }
+      : status;
+  } catch {
+    return status;
   }
 }
