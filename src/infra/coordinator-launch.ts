@@ -197,8 +197,10 @@ export class CoordinatorLaunchRecord {
         if (ownerPresent && (state.owner.leaseUntil > now || (committedChild && !sameHolder)))
           return { state, result: null };
       }
-      const launch = state.launch?.phase === 'reserved' ? null : state.launch;
-      const attempt = state.attempt?.phase === 'reserved' ? null : state.attempt;
+      const launch =
+        state.launch?.phase === 'reserved' && state.launch.terminationAt === undefined ? null : state.launch;
+      const attempt =
+        state.attempt?.phase === 'reserved' && state.attempt.terminationAt === undefined ? null : state.attempt;
       const normalized = this.#normalize({ ...state, launch, attempt });
       const owner: LaunchOwner = {
         ...holder,
@@ -214,7 +216,8 @@ export class CoordinatorLaunchRecord {
           owner,
           recovery: undefined,
           requests: state.requests.map((request) =>
-            request.status === 'recorded' || request.status === 'accepted'
+            (request.status === 'recorded' || request.status === 'accepted') &&
+            !this.#terminatingBuild(normalized, request.buildSetId)
               ? { ...request, status: 'accepted' as const, acceptedEpoch: owner.epoch }
               : request,
           ),
@@ -277,7 +280,8 @@ export class CoordinatorLaunchRecord {
             (hold) => hold.launchId !== replacementSignalHoldId(holder.process),
           ),
           requests: normalized.requests.map((request) =>
-            request.status === 'recorded' || request.status === 'accepted'
+            (request.status === 'recorded' || request.status === 'accepted') &&
+            !this.#terminatingBuild(normalized, request.buildSetId)
               ? { ...request, status: 'accepted' as const, acceptedEpoch: owner.epoch }
               : request,
           ),
@@ -327,7 +331,9 @@ export class CoordinatorLaunchRecord {
     return this.#change((state) => {
       const normalized = this.#normalize(state);
       const succession =
-        (purpose === 'succession' || purpose === 'contender') && normalized.launch?.phase === 'serving';
+        (purpose === 'succession' || purpose === 'contender') &&
+        normalized.launch?.phase === 'serving' &&
+        normalized.launch.terminationAt === undefined;
       if (
         !this.#current(normalized, owner, now) ||
         (succession
@@ -474,7 +480,9 @@ export class CoordinatorLaunchRecord {
       if (
         !this.#current(state, owner, now) ||
         !this.#exactChild(launch, reservation, child) ||
-        (launch?.phase !== 'admitted' && launch?.phase !== 'serving')
+        (launch?.phase !== 'admitted' &&
+          launch?.phase !== 'serving' &&
+          (launch?.phase !== 'reserved' || launch.terminationAt === undefined))
       )
         return { state, result: false };
       const holds = state.signalHolds ?? [];
@@ -559,6 +567,8 @@ export class CoordinatorLaunchRecord {
   accept(owner: LaunchOwner, requestId: string, now: number): boolean {
     return this.#change((state) => {
       if (!this.#current(state, owner, now)) return { state, result: false };
+      const target = state.requests.find((request) => request.id === requestId);
+      if (target === undefined || this.#terminatingBuild(state, target.buildSetId)) return { state, result: false };
       const requests = state.requests.map((request) =>
         request.id === requestId && (request.status === 'recorded' || request.status === 'accepted')
           ? { ...request, status: 'accepted' as const, acceptedEpoch: owner.epoch }
@@ -573,6 +583,14 @@ export class CoordinatorLaunchRecord {
   complete(owner: LaunchOwner, requestId: string, now: number): boolean {
     return this.#change((state) => {
       if (!this.#current(state, owner, now)) return { state, result: false };
+      const target = state.requests.find((request) => request.id === requestId);
+      const matching = [state.launch, state.attempt].filter((slot) => slot?.buildSetId === target?.buildSetId);
+      if (
+        target === undefined ||
+        (matching.some((slot) => slot?.terminationAt !== undefined) &&
+          !matching.some((slot) => slot?.phase === 'serving' && slot.terminationAt === undefined))
+      )
+        return { state, result: false };
       const requests = state.requests.map((request) =>
         request.id === requestId && request.acceptedEpoch === owner.epoch
           ? { ...request, status: 'completed' as const }
@@ -608,6 +626,7 @@ export class CoordinatorLaunchRecord {
     const launch = state.launch;
     if (
       launch?.purpose !== 'legacy-retirement' ||
+      launch.terminationAt !== undefined ||
       launch.buildSetId !== buildSetId ||
       (launch.phase !== 'admitted' && launch.phase !== 'serving') ||
       launch.child?.pid !== child.pid ||
@@ -631,6 +650,7 @@ export class CoordinatorLaunchRecord {
       if (
         launch?.id !== receipt.launchId ||
         launch.purpose !== 'legacy-retirement' ||
+        launch.terminationAt !== undefined ||
         launch.phase !== 'admitted' ||
         launch.child?.pid !== child.pid ||
         launch.child.incarnation !== child.incarnation ||
@@ -690,7 +710,11 @@ export class CoordinatorLaunchRecord {
     return this.#change((state) => {
       const slot = this.#slot(state, reservation);
       const launch = slot === 'launch' ? state.launch : state.attempt;
-      if (!this.#exactChild(launch, reservation, child) || launch?.phase !== 'admitted')
+      if (
+        !this.#exactChild(launch, reservation, child) ||
+        launch?.phase !== 'admitted' ||
+        launch.terminationAt !== undefined
+      )
         return { state, result: false };
       const serving: LaunchReservation = { ...launch, phase: 'serving', observedHealthyAt: Date.now() };
       return {
@@ -817,6 +841,12 @@ export class CoordinatorLaunchRecord {
 
   #current(state: CoordinatorLaunchState, owner: LaunchOwner, now: number): boolean {
     return state.owner?.id === owner.id && state.owner.epoch === owner.epoch && state.owner.leaseUntil > now;
+  }
+
+  #terminatingBuild(state: CoordinatorLaunchState, buildSetId: string): boolean {
+    return [state.launch, state.attempt].some(
+      (slot) => slot?.buildSetId === buildSetId && slot.phase !== 'exited' && slot.terminationAt !== undefined,
+    );
   }
 
   #exactChild(launch: LaunchReservation | null, reservation: LaunchReservation, child: LaunchProcess): boolean {

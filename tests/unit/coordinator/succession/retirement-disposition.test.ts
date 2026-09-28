@@ -76,6 +76,10 @@ describe('retirement disposition records', () => {
       certificateRevision: 3,
       futureDisposition: 'keep',
     });
+    expect(observeRetirementDisposition(runtime, ATTEMPT_ID)).toMatchObject({
+      kind: 'recorded',
+      disposition: { certificateRevision: 3, futureDisposition: 'keep' },
+    });
   });
 
   it('should treat a parseable record without settled custody as unreadable, not as authority', () => {

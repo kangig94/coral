@@ -46,6 +46,10 @@ describe('abandoned request status', () => {
       futureField: 'keep',
       identity: { futureIdentity: 'keep' },
     });
+    expect(readAbandonedRequestStatus(storage, runDir, request.recordId)).toMatchObject({
+      kind: 'found',
+      status: { outcome: 'completed', futureField: 'keep', identity: { futureIdentity: 'keep' } },
+    });
   });
   it('retains more than 256 concurrently abandoned requests and makes each outcome readable by record ID', async () => {
     vi.useFakeTimers();

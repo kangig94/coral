@@ -229,6 +229,13 @@ describe('epoch closure and protected addressing', () => {
       dataOutcome: 'retained',
       obligations: [{ outcome: 'terminal', futureObligationProof: 'retained' }],
     });
+    expect(observeEpochClosure(runtime, stateRoot, evidence.epochKey)).toMatchObject({
+      kind: 'recorded',
+      evidence: {
+        futureRetentionProof: { generation: 2 },
+        obligations: [{ outcome: 'terminal', futureObligationProof: 'retained' }],
+      },
+    });
   });
 
   it('reaches a fresh epoch after two protected lineages reuse the same number', () => {

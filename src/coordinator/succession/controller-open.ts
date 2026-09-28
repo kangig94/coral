@@ -12,16 +12,18 @@ const openSchema = z
     instanceId: z.string().min(1),
     attemptId: z.string().uuid().nullable(),
     pluginRoot: z.string().min(1),
-    build: z.object({
-      version: z.string(),
-      buildSetId: z.string(),
-      flavor: z.enum(['dev', 'prod']),
-      storeFormatFingerprint: z.string(),
-      bundleHash: z.string(),
-      cliBundleHash: z.string(),
-      claudeAppserverBundleHash: z.string(),
-      durableWrapperBundleHash: z.string(),
-    }),
+    build: z
+      .object({
+        version: z.string(),
+        buildSetId: z.string(),
+        flavor: z.enum(['dev', 'prod']),
+        storeFormatFingerprint: z.string(),
+        bundleHash: z.string(),
+        cliBundleHash: z.string(),
+        claudeAppserverBundleHash: z.string(),
+        durableWrapperBundleHash: z.string(),
+      })
+      .passthrough(),
     controlGeneration: z.number().int().nonnegative(),
     openedAtMs: z.number().int().nonnegative(),
   })

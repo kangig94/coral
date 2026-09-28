@@ -14,6 +14,7 @@ import {
   handbackSuccessionWriterGeneration,
   joinSuccessionWriterGeneration,
   observeSuccessionServing,
+  observeSuccessionWriterGeneration,
   recordSuccessionServing,
   refuseSuccessionAttempt,
 } from '#src/store/succession-writer-generation.js';
@@ -57,6 +58,7 @@ describe('succession writer generation', () => {
     advanceSuccessionWriterGeneration(runtime, writer.generation, store);
 
     expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({ futureGeneration: 'keep', generation: 2 });
+    expect(observeSuccessionWriterGeneration(runtime)).toMatchObject({ generation: 2 });
   });
   it('allows coordinator and KB daemon writable handles and Corpus writes before takeover', () => {
     const { root, runtime, store, open } = fixture();

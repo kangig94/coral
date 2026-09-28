@@ -191,6 +191,9 @@ describe('superseded epoch protection', () => {
       chmodSync(epochPath(dbDir, '2'), 0o000);
       expect(mint()).toBe('3');
       expect(JSON.parse(readFileSync(pendingPath, 'utf-8'))).toMatchObject({ futureRetry: 'keep' });
+      expect(listStoreEpochs(runtime).find((entry) => entry.epoch === '1')).toMatchObject({
+        protectionPending: expect.any(String),
+      });
     } finally {
       opener();
     }

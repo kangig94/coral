@@ -33,9 +33,28 @@ function terminalDetail(jobId: string): JobDetailResponse {
       updatedAt: '2026-09-25T00:00:00.000Z',
       result,
     },
-    events: [{ type: 'terminal', jobId, sessionId: 'session-1', seq: 2, ts: '2026-09-25T00:00:00.000Z', result }],
+    events: [
+      {
+        type: 'terminal',
+        jobId,
+        sessionId: 'session-1',
+        seq: 2,
+        ts: '2026-09-25T00:00:00.000Z',
+        result,
+        usage: { inputTokens: 1 },
+      },
+    ],
     readiness: 'ready',
-    exit: { ...result, diagnostics: { progressFaults: [] }, endTime: '2026-09-25T00:00:00.000Z' },
+    exit: {
+      ...result,
+      diagnostics: {
+        progressFaults: [{ kind: 'missing_launch_record' }],
+        usage: { outputTokens: 2 },
+        processExit: { exitCode: 0, signal: null },
+        byteCounts: { stdout: 1, stderr: 0 },
+      },
+      endTime: '2026-09-25T00:00:00.000Z',
+    },
   };
 }
 
@@ -67,19 +86,37 @@ describe('job location additive records', () => {
             status: {
               ...detail.status,
               futureStatus: 'keep',
-              result: { ...detail.status.result, futureResult: 'keep' },
+              owner: { ...detail.status.owner, futureOwner: 'keep' },
+              result: {
+                ...detail.status.result,
+                futureResult: 'keep',
+                outcome: { kind: 'completed', futureOutcome: 'keep' },
+              },
             },
             events: [
               {
                 ...detail.events[0],
                 futureEvent: 'keep',
-                result: { ...detail.status.result, futureEventResult: 'keep' },
+                result: {
+                  ...detail.status.result,
+                  futureEventResult: 'keep',
+                  outcome: { kind: 'completed', futureEventOutcome: 'keep' },
+                },
+                usage: { inputTokens: 1, futureUsage: 'keep' },
               },
             ],
             exit: {
               ...detail.exit,
               futureExit: 'keep',
-              diagnostics: { ...detail.exit!.diagnostics, futureDiagnostics: 'keep' },
+              outcome: { kind: 'completed', futureExitOutcome: 'keep' },
+              diagnostics: {
+                ...detail.exit!.diagnostics,
+                futureDiagnostics: 'keep',
+                usage: { outputTokens: 2, futureDiagnosticUsage: 'keep' },
+                processExit: { exitCode: 0, signal: null, futureProcessExit: 'keep' },
+                byteCounts: { stdout: 1, stderr: 0, futureByteCounts: 'keep' },
+                progressFaults: [{ kind: 'missing_launch_record', futureFault: 'keep' }],
+              },
             },
           },
         })}\n`,
@@ -93,6 +130,35 @@ describe('job location additive records', () => {
         status: { futureStatus: 'keep', result: { futureResult: 'keep' } },
         events: [{ futureEvent: 'keep', result: { futureEventResult: 'keep' } }],
         exit: { futureExit: 'keep', diagnostics: { futureDiagnostics: 'keep' } },
+      });
+      expect(index.read(jobId)?.detail).toMatchObject({
+        kind: 'recorded',
+        value: {
+          futureRoot: 'keep',
+          status: {
+            futureStatus: 'keep',
+            owner: { futureOwner: 'keep' },
+            result: { futureResult: 'keep', outcome: { futureOutcome: 'keep' } },
+          },
+          events: [
+            {
+              futureEvent: 'keep',
+              result: { futureEventResult: 'keep', outcome: { futureEventOutcome: 'keep' } },
+              usage: { futureUsage: 'keep' },
+            },
+          ],
+          exit: {
+            futureExit: 'keep',
+            outcome: { futureExitOutcome: 'keep' },
+            diagnostics: {
+              futureDiagnostics: 'keep',
+              usage: { futureDiagnosticUsage: 'keep' },
+              processExit: { futureProcessExit: 'keep' },
+              byteCounts: { futureByteCounts: 'keep' },
+              progressFaults: [{ futureFault: 'keep' }],
+            },
+          },
+        },
       });
     },
   );
@@ -179,6 +245,7 @@ describe('job location additive records', () => {
       disposition: 'unresolved',
       subject: { futureScope: 'tenant-a' },
     });
+    expect(index.read('job-1')).toMatchObject({ disposition: 'unresolved', subject: { futureScope: 'tenant-a' } });
   });
 
   it('preserves newer nested subject and controller fields through terminal recording', () => {
@@ -225,6 +292,11 @@ describe('job location additive records', () => {
       subject: { futureScope: 'tenant-a' },
       controller: { futureLease: 'lease-a' },
     });
+    expect(index.read('job-1')).toMatchObject({
+      disposition: 'terminal',
+      subject: { futureScope: 'tenant-a' },
+      controller: { futureLease: 'lease-a' },
+    });
   });
 
   it('preserves additive epoch fields across revision, hold, and certificate rewrites', () => {
@@ -241,6 +313,7 @@ describe('job location additive records', () => {
     writeFileSync(revisionPath, `${JSON.stringify({ ...revision, futureRevision: 'keep' })}\n`);
     index.invalidateTerminalCertificate(epochKey);
     expect(JSON.parse(readFileSync(revisionPath, 'utf-8'))).toMatchObject({ futureRevision: 'keep' });
+    expect(index.certificate(epochKey)).toBeNull();
 
     index.holdUnknownLocations(epochKey, 'first');
     const holdPath = join(epochDir, 'unknown-locations.v1.json');
@@ -248,6 +321,7 @@ describe('job location additive records', () => {
     writeFileSync(holdPath, `${JSON.stringify({ ...hold, futureHold: 'keep' })}\n`);
     index.holdUnknownLocations(epochKey, 'second');
     expect(JSON.parse(readFileSync(holdPath, 'utf-8'))).toMatchObject({ futureHold: 'keep' });
+    expect(index.unknownLocationHold(epochKey)).toBe('second');
     index.clearUnknownLocations(epochKey);
 
     index.recordTerminal('job-1', terminalDetail('job-1'), join(root, 'result.md'), 2);
@@ -257,5 +331,6 @@ describe('job location additive records', () => {
     writeFileSync(certificatePath, `${JSON.stringify({ ...certificate, futureCertificate: 'keep' })}\n`);
     expect(index.certify(epochKey, 3)).not.toBeNull();
     expect(JSON.parse(readFileSync(certificatePath, 'utf-8'))).toMatchObject({ futureCertificate: 'keep' });
+    expect(index.certificate(epochKey)).toMatchObject({ futureCertificate: 'keep' });
   });
 });

@@ -66,10 +66,13 @@ describe('controller-open records', () => {
     const { runtime, directory } = fixture();
     const [name] = readdirSync(directory);
     const record = JSON.parse(readFileSync(join(directory, name), 'utf-8')) as Record<string, unknown>;
-    writeFileSync(join(directory, name), `${JSON.stringify({ ...record, laterField: true })}\n`);
+    writeFileSync(
+      join(directory, name),
+      `${JSON.stringify({ ...record, laterField: true, build: { ...(record.build as object), futureBuild: 'keep' } })}\n`,
+    );
 
     expect(latestControllerOpen(runtime, EPOCH_KEY)).toMatchObject({
-      latest: { instanceId: 'instance-a', controlGeneration: 3 },
+      latest: { instanceId: 'instance-a', controlGeneration: 3, laterField: true, build: { futureBuild: 'keep' } },
       unreadable: [],
     });
   });

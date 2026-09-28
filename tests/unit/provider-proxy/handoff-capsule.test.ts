@@ -697,6 +697,7 @@ describe('provider-proxy handoff capsule file I/O', () => {
     if (inherited?.version !== 4) throw new Error('V4 capsule not read');
     writeHandoffCapsuleFile(capsulePath, { ...inherited, controllerBuildSetId: HOST_BUILD.buildSetId }, env);
     expect(JSON.parse(readFileSync(capsulePath, 'utf-8'))).toMatchObject({ futureGrant: 'keep' });
+    expect(readHandoffCapsuleFile(capsulePath, env)).toMatchObject({ version: 4, futureGrant: 'keep' });
   });
 
   it('returns null for an absent capsule', () => {

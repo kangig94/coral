@@ -163,6 +163,14 @@ describe('upgrade intent', () => {
     expect((result.target as Record<string, unknown>).futureTargetField).toBe('keep');
     expect(((result.target as Record<string, unknown>).build as Record<string, unknown>).futureBuildField).toBe('keep');
     expect((result.blockers as Record<string, unknown>[])[0].futureBlockerField).toBe('keep');
+    expect(readUpgradeIntent(dir)).toMatchObject({
+      kind: 'readable',
+      intent: {
+        futureField: 'keep',
+        target: { futureTargetField: 'keep', build: { futureBuildField: 'keep' } },
+        blockers: [{ futureBlockerField: 'keep' }],
+      },
+    });
 
     writeFileSync(path, JSON.stringify({ ...result, version: 'v2' }));
     expect(readUpgradeIntent(dir)).toEqual({ kind: 'unsupported', version: 'v2' });
@@ -408,6 +416,7 @@ describe('upgrade intent', () => {
     expect(record.futureEnvelope).toBe('keep');
     expect(record.receipts[0]).toMatchObject({ futureEntry: 'keep' });
     expect(readCompletedSuccessionReceipts(dir)).toHaveLength(2);
+    expect(readCompletedSuccessionReceipts(dir)[0]).toMatchObject({ futureEntry: 'keep' });
   });
 
   it('should decide again from the winning revision after losing a write race', async () => {

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import {
   readPendingGrantTransfer,
+  readPendingGrantTransferController,
   recordPendingGrantTransfer,
 } from '#src/coordinator/services/provider-proxy-set/pending-grant-transfer.js';
 import type { HandoffCapsuleV4 } from '#src/provider-proxy/handoff-capsule.js';
@@ -69,6 +70,11 @@ describe('pending provider grant transfer', () => {
 
     expect(recordPendingGrantTransfer(runtime, handoff, SUCCESSOR_BUILD, 'attempt-2')).toEqual({ kind: 'recorded' });
     expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({ attemptId: 'attempt-2', futureField: 'keep' });
+    expect(readPendingGrantTransferController(runtime, handoff)).toMatchObject({
+      kind: 'recorded',
+      attemptId: 'attempt-2',
+      futureField: 'keep',
+    });
   });
   it('holds an unreadable newer status with its retry exit instead of accepting it', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-red-pending-grant-'));

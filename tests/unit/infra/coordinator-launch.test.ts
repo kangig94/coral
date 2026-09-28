@@ -19,6 +19,69 @@ afterEach(() => {
 });
 
 describe('coordinator launch admission', () => {
+  it('rejects an in-flight serving probe after termination commits and keeps the request pending', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-terminating-probe-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'B', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
+      const request = record.request('/bundle/B', 'B');
+      expect(record.accept(owner, request.id, 1_001)).toBe(true);
+      let resolveProbe: (ready: boolean) => void = () => {};
+      const probe = new Promise<boolean>((resolve) => {
+        resolveProbe = resolve;
+      });
+      const promotion = probe.then((ready) => ready && record.serving(launch, child));
+
+      expect(record.commitTermination(owner, launch, child, 1_002, 100)).toBe(true);
+      resolveProbe(true);
+      expect(await promotion).toBe(false);
+      expect(record.accept(owner, request.id, 1_003)).toBe(false);
+      expect(record.complete(owner, request.id, 1_003)).toBe(false);
+      expect(record.read().requests.find((entry) => entry.id === request.id)?.status).toBe('accepted');
+      expect(record.exited(launch, child)).toBe(true);
+      expect(record.complete(owner, request.id, 1_004)).toBe(false);
+    } finally {
+      record.close();
+    }
+  });
+  it('holds a refused signal for a termination-committed reserved child until exit', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-reserved-signal-hold-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      expect(record.holdSignalRefusal(owner, launch, child, 1_001)).toBe(false);
+      expect(record.commitTermination(owner, launch, child, 1_002, 100)).toBe(true);
+      expect(record.holdSignalRefusal(owner, launch, child, 1_003)).toBe(true);
+      expect(record.read().signalHolds).toEqual([{ launchId: launch.id, ...child }]);
+      const successor = record.acquire(
+        { id: 'second', process: { pid: 301, incarnation: 'second' as ProcessIncarnation }, buildSetId: 'A' },
+        owner.leaseUntil + 1,
+      );
+      expect(successor).not.toBeNull();
+      expect(record.read().launch).toMatchObject({ id: launch.id, phase: 'reserved', terminationAt: 1_002 });
+      expect(record.exited(launch, child)).toBe(true);
+      expect(record.read().signalHolds).toEqual([]);
+    } finally {
+      record.close();
+    }
+  });
   it('reconciles orphaned replacement holds only on decisive absence', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-orphan-replacement-hold-'));
     roots.push(runDir);
@@ -65,6 +128,8 @@ describe('coordinator launch admission', () => {
       if (recovery === null) throw new Error('recovery not nominated');
       expect(record.commitTermination(first, launch, child, 1_002, 100)).toBe(true);
       expect(record.read().launch?.terminationOwnerEpoch).toBe(first.epoch);
+      expect(record.nominateRecovery(child, nominee, 'after-termination')).toBeNull();
+      expect(record.reserve(first, 'B', 'succession', 1_003)).toBeNull();
       expect(
         record.acceptRecoveryTransfer(
           { id: 'nominee', process: nominee, buildSetId: 'A' },

@@ -45,44 +45,70 @@ const jobEventBaseSchema = z.object({
   seq: z.number().int().nonnegative(),
   ts: z.string(),
 });
+
+function storedPassthrough<T extends z.ZodTypeAny>(schema: T): T {
+  if (schema instanceof z.ZodObject) {
+    const shape = Object.fromEntries(
+      Object.entries(schema.shape).map(([key, value]) => [key, storedPassthrough(value as z.ZodTypeAny)]),
+    );
+    return schema.extend(shape).passthrough() as unknown as T;
+  }
+  if (schema instanceof z.ZodDiscriminatedUnion) {
+    const options = schema.options.map((option: z.ZodDiscriminatedUnionOption<string>) => storedPassthrough(option));
+    return z.discriminatedUnion(
+      schema.discriminator,
+      options as [z.ZodDiscriminatedUnionOption<string>, ...z.ZodDiscriminatedUnionOption<string>[]],
+    ) as unknown as T;
+  }
+  if (schema instanceof z.ZodArray) return z.array(storedPassthrough(schema.element)) as unknown as T;
+  if (schema instanceof z.ZodOptional) return storedPassthrough(schema.unwrap()).optional() as T;
+  if (schema instanceof z.ZodNullable) return storedPassthrough(schema.unwrap()).nullable() as T;
+  return schema;
+}
+
 // Another build may write a detail this one cannot decode; that detail is reported unreadable, never guessed at.
-const storedJobDetailSchema: z.ZodType<JobDetailResponse, z.ZodTypeDef, unknown> = z
-  .object({
-    status: z
-      .object({
-        jobId: z.string().min(1),
-        owner: executionOwnerSchema,
-        sessionId: z.string().nullable(),
-        provider: z.string().nullable(),
-        projectRoot: z.string().min(1),
-        workDir: canonicalWorkDirWireSchema.nullable(),
-        backendNamespace: z.string(),
-        bundleHash: z.string().optional(),
-        jobKind: jobKindSchema,
-        parentWorkflowJobId: z.string().optional(),
-        workflowSlotId: z.string().optional(),
-        workflowSlotGeneration: z.number().int().nonnegative().optional(),
-        replacesWorkflowJobId: z.string().optional(),
-        phase: jobPhaseSchema,
-        updatedAt: z.string(),
-        lastSeq: z.number().int().nonnegative().optional(),
-        result: jobTerminalSchema.optional(),
-      })
-      .passthrough(),
-    events: z.array(
-      z.discriminatedUnion('type', [
-        jobEventBaseSchema
-          .extend({ type: z.literal('progress'), message: z.string(), timing: jobProgressTimingSchema })
-          .passthrough(),
-        jobEventBaseSchema
-          .extend({ type: z.literal('terminal'), result: jobTerminalSchema, usage: usageSummarySchema.optional() })
-          .passthrough(),
-      ]),
-    ),
-    readiness: z.enum(['pending', 'queued', 'ready', 'error']),
-    exit: jobTerminalSchema.extend({ diagnostics: jobDiagnosticsSchema, endTime: z.string() }).passthrough().nullable(),
-  })
-  .passthrough();
+const storedJobDetailSchema: z.ZodType<JobDetailResponse, z.ZodTypeDef, unknown> = storedPassthrough(
+  z
+    .object({
+      status: z
+        .object({
+          jobId: z.string().min(1),
+          owner: executionOwnerSchema,
+          sessionId: z.string().nullable(),
+          provider: z.string().nullable(),
+          projectRoot: z.string().min(1),
+          workDir: canonicalWorkDirWireSchema.nullable(),
+          backendNamespace: z.string(),
+          bundleHash: z.string().optional(),
+          jobKind: jobKindSchema,
+          parentWorkflowJobId: z.string().optional(),
+          workflowSlotId: z.string().optional(),
+          workflowSlotGeneration: z.number().int().nonnegative().optional(),
+          replacesWorkflowJobId: z.string().optional(),
+          phase: jobPhaseSchema,
+          updatedAt: z.string(),
+          lastSeq: z.number().int().nonnegative().optional(),
+          result: jobTerminalSchema.optional(),
+        })
+        .passthrough(),
+      events: z.array(
+        z.discriminatedUnion('type', [
+          jobEventBaseSchema
+            .extend({ type: z.literal('progress'), message: z.string(), timing: jobProgressTimingSchema })
+            .passthrough(),
+          jobEventBaseSchema
+            .extend({ type: z.literal('terminal'), result: jobTerminalSchema, usage: usageSummarySchema.optional() })
+            .passthrough(),
+        ]),
+      ),
+      readiness: z.enum(['pending', 'queued', 'ready', 'error']),
+      exit: jobTerminalSchema
+        .extend({ diagnostics: jobDiagnosticsSchema, endTime: z.string() })
+        .passthrough()
+        .nullable(),
+    })
+    .passthrough(),
+);
 const revisionSchema = z.object({ version: z.literal('v1'), revision: z.number().int().nonnegative() }).passthrough();
 const certificateSchema = z
   .object({
