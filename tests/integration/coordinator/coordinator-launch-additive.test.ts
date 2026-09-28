@@ -60,6 +60,36 @@ it('keeps additive SQLite columns and JSON fields across a launch-state transiti
   }
 });
 
+it('preserves an inherited hold from the previous state shape when another hold is written', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-inherited-hold-'));
+  const record = new CoordinatorLaunchRecord(runDir);
+  const database = new DatabaseSync(coordinatorLaunchPath(runDir));
+  try {
+    const owner = record.acquire(
+      { id: 'supervisor', process: { pid: 101, incarnation: 'supervisor' as ProcessIncarnation }, buildSetId: 'A' },
+      1_000,
+    );
+    if (owner === null) throw new Error('Owner was not admitted');
+    const launch = record.reserve(owner, 'A', 'startup', 1_000);
+    if (launch === null) throw new Error('Launch was not reserved');
+    const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+    expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
+    database.prepare('UPDATE control SET state = ? WHERE id = 1').run(
+      JSON.stringify({
+        ...record.read(),
+        hold: { kind: 'inherited-child-unresponsive', launchId: launch.id, pid: 201 },
+      }),
+    );
+    record.holdTarget(owner, 'request-1', 1_002);
+    expect(record.read().hold).toEqual({ kind: 'target-indeterminate', requestId: 'request-1' });
+    expect(record.read().inheritedHolds).toEqual([{ launchId: launch.id, pid: 201 }]);
+  } finally {
+    database.close();
+    record.close();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
 it('forwards every durable launch hold through backend status', async () => {
   const home = mkdtempSync(join(tmpdir(), 'coral-launch-status-'));
   const previousHome = process.env.HOME;
@@ -90,8 +120,9 @@ it('forwards every durable launch hold through backend status', async () => {
       expect(record.admit(launch, owner.process, child, Date.now())).toBe(true);
       record.holdInheritedChild(owner, { ...launch, child }, Date.now());
       const inherited = await getBackendStatusFull('/plugin-root');
-      expect(inherited.launchHold).toEqual({ kind: 'inherited-child-unresponsive', launchId: launch.id, pid: 201 });
+      expect(inherited.launchInheritedHolds).toEqual([{ launchId: launch.id, pid: 201 }]);
       expect(formatBackendStatus(inherited, { kind: 'absent' }, null)).toContain(launch.id);
+      expect(formatBackendStatus(inherited, { kind: 'absent' }, null)).not.toContain('Run the start command below');
     } finally {
       record.close();
     }

@@ -65,6 +65,7 @@ export type CoordinatorLaunchState = Readonly<{
   attempt: LaunchReservation | null;
   requests: readonly LaunchRequest[];
   signalHolds?: readonly Readonly<{ launchId: string; pid: number; incarnation: ProcessIncarnation }>[];
+  inheritedHolds?: readonly Readonly<{ launchId: string; pid: number }>[];
   recovery?: Readonly<{
     id: string;
     sourceLaunchId: string;
@@ -145,12 +146,30 @@ export class CoordinatorLaunchRecord {
   #change<T>(transition: (state: CoordinatorLaunchState) => { state: CoordinatorLaunchState; result: T }): T {
     this.#database.exec('BEGIN IMMEDIATE');
     try {
-      const current = this.read();
+      const persisted = this.read();
+      const legacyHold = persisted.hold?.kind === 'inherited-child-unresponsive' ? persisted.hold : null;
+      const activeChild = [persisted.launch, persisted.attempt].some(
+        (slot) =>
+          legacyHold !== null &&
+          slot?.id === legacyHold.launchId &&
+          (slot.phase === 'admitted' || slot.phase === 'serving'),
+      );
+      const current =
+        legacyHold === null
+          ? persisted
+          : {
+              ...persisted,
+              hold: undefined,
+              inheritedHolds:
+                activeChild && !persisted.inheritedHolds?.some((hold) => hold.launchId === legacyHold.launchId)
+                  ? [...(persisted.inheritedHolds ?? []), { launchId: legacyHold.launchId, pid: legacyHold.pid }]
+                  : persisted.inheritedHolds,
+            };
       const { state, result } = transition(current);
-      if (state !== current) {
+      if (state !== persisted) {
         this.#database
           .prepare('UPDATE control SET state = ? WHERE id = 1')
-          .run(JSON.stringify({ ...state, revision: current.revision + 1 }));
+          .run(JSON.stringify({ ...state, revision: persisted.revision + 1 }));
       }
       this.#database.exec('COMMIT');
       return result;
@@ -200,15 +219,11 @@ export class CoordinatorLaunchRecord {
   nominateRecovery(source: LaunchProcess, nominee: LaunchProcess, challenge: string): string | null {
     return this.#change((state) => {
       const normalized = this.#normalize(state);
-      const selected = normalized.launch;
-      if (
-        selected === null ||
-        selected.phase !== 'serving' ||
-        selected.child?.pid !== source.pid ||
-        selected.child.incarnation !== source.incarnation ||
-        (normalized.attempt !== null && normalized.attempt.phase !== 'exited')
-      )
-        return { state, result: null };
+      const selected = [normalized.launch, normalized.attempt].find(
+        (slot) =>
+          slot?.phase === 'serving' && slot.child?.pid === source.pid && slot.child.incarnation === source.incarnation,
+      );
+      if (selected === undefined || selected === null) return { state, result: null };
       const recovery = { id: randomUUID(), sourceLaunchId: selected.id, nominee, challenge };
       return { state: { ...normalized, recovery }, result: recovery.id };
     });
@@ -228,9 +243,9 @@ export class CoordinatorLaunchRecord {
         recovery.challenge !== challenge ||
         recovery.nominee.pid !== holder.process.pid ||
         recovery.nominee.incarnation !== holder.process.incarnation ||
-        normalized.launch?.id !== recovery.sourceLaunchId ||
-        normalized.launch.phase !== 'serving' ||
-        (normalized.attempt !== null && normalized.attempt.phase !== 'exited')
+        ![normalized.launch, normalized.attempt].some(
+          (slot) => slot?.id === recovery.sourceLaunchId && slot.phase === 'serving',
+        )
       )
         return { state, result: null };
       const owner: LaunchOwner = {
@@ -398,27 +413,31 @@ export class CoordinatorLaunchRecord {
         throw new Error('Coordinator launch hold refused: owner or child is no longer current');
       const slot = this.#slot(state, reservation);
       const launch = slot === 'launch' ? state.launch : state.attempt;
-      if (!this.#exactChild(launch, reservation, reservation.child))
+      if (
+        !this.#exactChild(launch, reservation, reservation.child) ||
+        (launch?.phase !== 'admitted' && launch?.phase !== 'serving')
+      )
         throw new Error('Coordinator launch hold refused: child is no longer current');
-      const hold = {
-        kind: 'inherited-child-unresponsive' as const,
-        launchId: reservation.id,
-        pid: reservation.child.pid,
+      const holds = state.inheritedHolds ?? [];
+      if (holds.some((hold) => hold.launchId === reservation.id)) return { state, result: undefined };
+      return {
+        state: { ...state, inheritedHolds: [...holds, { launchId: reservation.id, pid: reservation.child.pid }] },
+        result: undefined,
       };
-      if (state.hold?.kind === hold.kind && state.hold.launchId === hold.launchId) return { state, result: undefined };
-      return { state: { ...state, hold }, result: undefined };
     });
   }
 
   clearInheritedChildHold(owner: LaunchOwner, reservation: LaunchReservation, now: number): void {
     this.#change((state) => {
-      if (
-        !this.#current(state, owner, now) ||
-        state.hold?.kind !== 'inherited-child-unresponsive' ||
-        state.hold.launchId !== reservation.id
-      )
+      if (!this.#current(state, owner, now) || !state.inheritedHolds?.some((hold) => hold.launchId === reservation.id))
         return { state, result: undefined };
-      return { state: { ...state, hold: undefined }, result: undefined };
+      return {
+        state: {
+          ...state,
+          inheritedHolds: (state.inheritedHolds ?? []).filter((hold) => hold.launchId !== reservation.id),
+        },
+        result: undefined,
+      };
     });
   }
 
@@ -426,7 +445,11 @@ export class CoordinatorLaunchRecord {
     return this.#change((state) => {
       const slot = this.#slot(state, reservation);
       const launch = slot === 'launch' ? state.launch : state.attempt;
-      if (!this.#current(state, owner, now) || !this.#exactChild(launch, reservation, child))
+      if (
+        !this.#current(state, owner, now) ||
+        !this.#exactChild(launch, reservation, child) ||
+        (launch?.phase !== 'admitted' && launch?.phase !== 'serving')
+      )
         return { state, result: false };
       const holds = state.signalHolds ?? [];
       if (holds.some((hold) => hold.launchId === reservation.id)) return { state, result: true };
@@ -635,6 +658,7 @@ export class CoordinatorLaunchRecord {
         state: {
           ...(slot === 'launch' ? { ...state, launch: exited } : { ...state, attempt: exited }),
           signalHolds: (state.signalHolds ?? []).filter((hold) => hold.launchId !== reservation.id),
+          inheritedHolds: (state.inheritedHolds ?? []).filter((hold) => hold.launchId !== reservation.id),
         },
         result: true,
       };
@@ -660,6 +684,7 @@ export class CoordinatorLaunchRecord {
         state: this.#normalize({
           ...(slot === 'launch' ? { ...state, launch: exited } : { ...state, attempt: exited }),
           signalHolds: (state.signalHolds ?? []).filter((hold) => hold.launchId !== reservation.id),
+          inheritedHolds: (state.inheritedHolds ?? []).filter((hold) => hold.launchId !== reservation.id),
         }),
         result: true,
       };

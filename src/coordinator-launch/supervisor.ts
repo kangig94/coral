@@ -468,6 +468,10 @@ async function watchChild(
     child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
   });
   child.on('message', (message: unknown, handle: unknown) => {
+    if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+      closeHandle(handle);
+      return;
+    }
     if (typeof message === 'object' && message !== null && 'kind' in message) {
       if (message.kind === 'coral-launch-admitted' && 'pid' in message && message.pid === child.pid) admitted = true;
       if (message.kind === 'coral-sentinel-hello' && 'id' in message && message.id === sentinelId) {
@@ -489,6 +493,10 @@ async function watchChild(
     else closeHandle(handle);
   });
   const parentMessage = (message: unknown, handle: unknown): void => {
+    if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+      closeHandle(handle);
+      return;
+    }
     if (child.connected)
       child.send(message as Parameters<typeof child.send>[0], handle as SendHandle, () => closeHandle(handle));
     else closeHandle(handle);
@@ -529,6 +537,10 @@ async function watchChild(
       lastAnswer = now;
       outstanding = null;
       startupDeadline += gap;
+    }
+    if (record.read().owner?.epoch !== owner.current.epoch) {
+      owner.lost = true;
+      return;
     }
     if (child.connected && now - lastRenewal >= 30_000) {
       const renewed = record.renew(owner.current, now);
@@ -706,6 +718,10 @@ function createRepairBridge(
     else closeHandle(handle);
   };
   const onMessage = (message: unknown, handle: unknown): void => {
+    if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+      closeHandle(handle);
+      return;
+    }
     if (typeof message !== 'object' || message === null || !('kind' in message)) return;
     if (
       message.kind === 'coral-supervisor-start-attempt' &&
@@ -1051,6 +1067,10 @@ async function superviseActiveChild(input: {
     }
   };
   const route = (source: ChildProcess, message: unknown, handle: unknown): boolean => {
+    if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+      closeHandle(handle);
+      return true;
+    }
     if (typeof message !== 'object' || message === null || !('kind' in message)) return false;
     const attempt = pending.value;
     if (source === current.child) {

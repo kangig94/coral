@@ -430,6 +430,28 @@ afterEach(() => {
 });
 
 describe('backend status request lookup', () => {
+  it('rejects --json without --request before reading or printing general status', async () => {
+    const getStatus = vi.fn(async () => {
+      throw new Error('General status must not be read');
+    });
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      storeReset,
+      backendStatus: {
+        inspectReadiness: () => ({ kind: 'no-legacy' }),
+        getStatus,
+        getLiveHandoffResult: () => null,
+        getRoutingStatus: async () => ({ kind: 'absent' }),
+      },
+    });
+    await expect(program.parseAsync(['node', 'coral-cli', 'backend', 'status', '--json'])).rejects.toMatchObject({
+      exitCode: 2,
+    });
+    expect(stdout).toBe('');
+    expect(stderr).toContain('--json requires --request');
+    expect(getStatus).not.toHaveBeenCalled();
+  });
   it('explains the continuing request and its read-only recheck', async () => {
     const getStatus = vi.fn(async () => {
       throw new Error('request lookup should not probe the backend');

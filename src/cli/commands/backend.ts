@@ -1510,6 +1510,8 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .option('--request <record-id>', 'Show one abandoned request by record ID')
     .option('--json', 'Show request status as JSON')
     .action(async (options: { request?: string; json?: boolean }) => {
+      if (options.json && options.request === undefined)
+        statusCommand.error('Option --json requires --request <record-id>.', { exitCode: 2 });
       try {
         if (options.request !== undefined) {
           const status = (

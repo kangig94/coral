@@ -147,6 +147,7 @@ The signal-escalation branch and `CORAL_HANDOFF_SIGNAL_POLICY` have been removed
 | `handoff_sigkill_grace_target_alive`          | The verified target remained alive after accepted SIGKILL and its grace, as can occur during uninterruptible I/O. Exit `69`; settled backend-unavailable refusal; retryable because SIGKILL can take effect once that I/O finishes. `backend status` prints `Retryable: yes`; SessionStart suppresses the notice while the incumbent is alive and after it is absent                                                                                                                                                                                                                                                                                           |
 
 Use `coral-cli backend status --request <recordId>` with the error's `recordId` to read the durable request outcome. A `continuing` record remains available until that request settles; the newest 256 terminal records are retained.
+Add `--json` only with `--request <recordId>` to receive that request outcome as JSON. General `backend status` is text only.
 
 Socket-handoff refusals are documented `CoralSetupError` instances whose code names the observed cause. Both surfaces
 promised in the rows above are recency-bounded: `backend status` and the SessionStart notice render a recorded refusal

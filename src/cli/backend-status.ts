@@ -456,6 +456,7 @@ export type SupersededEpochClosures =
 
 export type BackendStatusFull = BackendStatusFullBase & {
   launchHold?: NonNullable<CoordinatorLaunchState['hold']>;
+  launchInheritedHolds?: NonNullable<CoordinatorLaunchState['inheritedHolds']>;
   launchSignalHolds?: NonNullable<CoordinatorLaunchState['signalHolds']>;
   upgrade?: UpgradeIntentVisibility;
   upgradeProblem?: UpgradeIntentProblem;
@@ -1172,6 +1173,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     return {
       ...status,
       ...(hold === undefined ? {} : { launchHold: hold }),
+      ...(state.inheritedHolds?.length ? { launchInheritedHolds: state.inheritedHolds } : {}),
       ...(state.signalHolds?.length ? { launchSignalHolds: state.signalHolds } : {}),
       ...(quarantined ? { upgradeQuarantined: true } : {}),
     };

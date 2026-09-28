@@ -253,6 +253,104 @@ describe('coordinator launch admission', () => {
       record.close();
     }
   });
+  it('transfers recovery from a serving attempt while the first child remains live', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-attempt-transfer-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'owner', process: { pid: 101, incarnation: 'owner' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('Owner was not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('Launch was not reserved');
+      const first = { pid: 201, incarnation: 'first' as ProcessIncarnation };
+      expect(record.admit(launch, owner.process, first, 1_001)).toBe(true);
+      expect(record.serving(launch, first)).toBe(true);
+      const attempt = record.reserve(owner, 'B', 'succession', 1_002);
+      if (attempt === null) throw new Error('Attempt was not reserved');
+      const second = { pid: 202, incarnation: 'second' as ProcessIncarnation };
+      expect(record.admit(attempt, owner.process, second, 1_003)).toBe(true);
+      expect(record.serving(attempt, second)).toBe(true);
+      const nominee = { pid: 301, incarnation: 'nominee' as ProcessIncarnation };
+      const recoveryId = record.nominateRecovery(second, nominee, 'challenge');
+      expect(recoveryId).not.toBeNull();
+      if (recoveryId === null) return;
+      const accepted = record.acceptRecoveryTransfer(
+        { id: 'nominee', process: nominee, buildSetId: 'B' },
+        recoveryId,
+        'challenge',
+        1_004,
+      );
+      expect(accepted?.mode).toBe('recovering');
+      expect(record.read().launch).toMatchObject({ id: launch.id, phase: 'serving', child: first });
+      expect(record.read().attempt).toMatchObject({ id: attempt.id, phase: 'serving', child: second });
+      expect(record.renew(owner, 1_005)).toBeNull();
+    } finally {
+      record.close();
+    }
+  });
+  it('tracks both inherited children and clears each hold atomically on exit or absence', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-inherited-holds-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'owner', process: { pid: 101, incarnation: 'owner' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('Owner was not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('Launch was not reserved');
+      const first = { pid: 201, incarnation: 'first' as ProcessIncarnation };
+      expect(record.admit(launch, owner.process, first, 1_001)).toBe(true);
+      expect(record.serving(launch, first)).toBe(true);
+      const attempt = record.reserve(owner, 'B', 'succession', 1_002);
+      if (attempt === null) throw new Error('Attempt was not reserved');
+      const second = { pid: 202, incarnation: 'second' as ProcessIncarnation };
+      expect(record.admit(attempt, owner.process, second, 1_003)).toBe(true);
+      record.holdInheritedChild(owner, { ...launch, child: first }, 1_004);
+      record.holdInheritedChild(owner, { ...attempt, child: second }, 1_004);
+      expect(record.read().inheritedHolds).toEqual([
+        { launchId: launch.id, pid: first.pid },
+        { launchId: attempt.id, pid: second.pid },
+      ]);
+      expect(record.exited(launch, first)).toBe(true);
+      expect(record.read().inheritedHolds).toEqual([{ launchId: attempt.id, pid: second.pid }]);
+      expect(() => record.holdInheritedChild(owner, { ...launch, child: first }, 1_005)).toThrow(
+        'child is no longer current',
+      );
+      expect(record.settleAbsentChild(owner, { ...attempt, child: second }, 1_005)).toBe(true);
+      expect(record.read().inheritedHolds).toEqual([]);
+      expect(() => record.holdInheritedChild(owner, { ...attempt, child: second }, 1_006)).toThrow(
+        'child is no longer current',
+      );
+    } finally {
+      record.close();
+    }
+  });
+  it('refuses a signal hold after the child has exited', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-exited-signal-hold-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'owner', process: { pid: 101, incarnation: 'owner' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('Owner was not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('Launch was not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
+      expect(record.exited(launch, child)).toBe(true);
+      expect(record.holdSignalRefusal(owner, launch, child, 1_002)).toBe(false);
+      expect(record.read().signalHolds ?? []).toEqual([]);
+    } finally {
+      record.close();
+    }
+  });
   it('fences an unavailable receipt to the current owner epoch', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-unavailable-'));
     roots.push(runDir);

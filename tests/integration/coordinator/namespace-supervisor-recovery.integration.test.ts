@@ -92,142 +92,201 @@ describe('namespace supervisor recovery', () => {
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
-  it('repairs a disconnected coordinator while its original supervisor stays alive', async () => {
-    const roots: string[] = [];
-    const home = mkdtempSync(join(tmpdir(), 'coral-disconnected-supervisor-'));
-    roots.push(home);
-    const plugin = createPluginFixture(roots, {
-      flavor: 'prod',
-      version: '0.10.14',
-      backend: 'succession-interposition',
-      accepts: 'bundled',
-    });
-    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
-    const harness = join(home, 'supervisor.mjs');
-    await build({
-      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
-      outfile: harness,
-      bundle: true,
-      platform: 'node',
-      target: 'node22',
-      format: 'esm',
-      external: ['node:*'],
-    });
-    const supervisor = spawn(process.execPath, [harness, join(plugin.root, 'bridge', 'coral-backend.cjs')], {
-      env: {
-        ...process.env,
-        HOME: home,
-        TMPDIR: home,
-        PATH: `${join(home, 'bin')}:${process.env.PATH ?? ''}`,
-        CORAL_SENTINEL_RUN_DIR: runDir,
-      },
-      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-    });
-    const record = new CoordinatorLaunchRecord(runDir);
-    const pids = new Set<number>();
-    const hosts: { pid: number; incarnation: ProcessIncarnation }[] = [];
-    let cli: ReturnType<typeof spawn> | null = null;
-    try {
-      await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
-      const originalPid = record.read().launch?.child?.pid;
-      if (originalPid === undefined) throw new Error('Serving child has no PID');
-      pids.add(originalPid);
-      const binDir = join(home, 'bin');
-      const stateDir = join(home, '.fake-codex-state');
-      const projectRoot = join(home, 'project');
-      mkdirSync(binDir);
-      mkdirSync(stateDir);
-      mkdirSync(projectRoot);
-      mkdirSync(join(home, '.codex'));
-      mkdirSync(join(home, '.claude'));
-      writeFileSync(
-        join(home, '.codex', 'auth.json'),
-        JSON.stringify({ tokens: { access_token: 'fake-access-token', account_id: 'fake-account-id' } }),
-      );
-      const fakeCodex = join(binDir, 'codex');
-      copyFileSync(join(process.cwd(), 'tests', 'fixtures', 'transfer-codex-appserver.cjs'), fakeCodex);
-      chmodSync(fakeCodex, 0o755);
-      const prompt = join(projectRoot, 'prompt.txt');
-      writeFileSync(prompt, 'Keep this provider job running during supervisor repair.');
-      const launchedCli = spawn('node', [join(plugin.root, 'bridge', 'coral-cli'), 'codex', '-i', prompt, '--detach'], {
-        cwd: projectRoot,
-        env: topLevelCliEnvironment(home, { PATH: `${binDir}:${process.env.PATH ?? ''}` }),
-        stdio: ['ignore', 'pipe', 'pipe'],
+  it.each(['launch', 'serving attempt'] as const)(
+    'repairs a disconnected %s coordinator while its original supervisor stays alive and its job survives',
+    async (source) => {
+      const roots: string[] = [];
+      const home = mkdtempSync(join(tmpdir(), 'coral-disconnected-supervisor-'));
+      roots.push(home);
+      const plugin = createPluginFixture(roots, {
+        flavor: 'prod',
+        version: '0.10.14',
+        backend: 'succession-interposition',
+        accepts: 'bundled',
       });
-      cli = launchedCli;
-      let cliOutput = '';
-      launchedCli.stdout?.on('data', (chunk: Buffer) => (cliOutput += chunk.toString()));
-      launchedCli.stderr?.on('data', (chunk: Buffer) => (cliOutput += chunk.toString()));
-      await waitForCondition(() => launchedCli.exitCode !== null, 30_000);
-      expect(launchedCli.exitCode, cliOutput).toBe(0);
+      const successor =
+        source === 'serving attempt'
+          ? createPluginFixture(roots, {
+              flavor: 'prod',
+              version: '0.10.15',
+              backend: 'succession-interposition',
+              accepts: 'bundled',
+            })
+          : null;
+      const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+      const harness = join(home, 'supervisor.mjs');
+      await build({
+        entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+        outfile: harness,
+        bundle: true,
+        platform: 'node',
+        target: 'node22',
+        format: 'esm',
+        external: ['node:*'],
+      });
+      const supervisor = spawn(process.execPath, [harness, join(plugin.root, 'bridge', 'coral-backend.cjs')], {
+        env: {
+          ...process.env,
+          HOME: home,
+          TMPDIR: home,
+          PATH: `${join(home, 'bin')}:${process.env.PATH ?? ''}`,
+          CORAL_SENTINEL_RUN_DIR: runDir,
+          ...(successor === null ? {} : { CORAL_TEST_SUCCESSION_RELEASE_DELAY_MS: '10000' }),
+        },
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      });
+      const record = new CoordinatorLaunchRecord(runDir);
+      const pids = new Set<number>();
+      const hosts: { pid: number; incarnation: ProcessIncarnation }[] = [];
+      let cli: ReturnType<typeof spawn> | null = null;
       try {
-        await waitForCondition(() => existsSync(join(stateDir, 'job-running')), 30_000);
-      } catch (error: unknown) {
-        throw new Error(`Provider job did not start: ${cliOutput}`, { cause: error });
-      }
-      let capsulePath: string | undefined;
-      await waitForCondition(() => {
-        capsulePath = readdirSync(runDir).find((name) => /^provider-1[0-9a-f]{23}\.handoff\.v[34]\.json$/u.test(name));
-        return capsulePath !== undefined;
-      }, 20_000);
-      if (capsulePath === undefined) throw new Error('Provider host capsule is unavailable');
-      const capsule = readHandoffCapsuleFile(join(runDir, capsulePath), {
-        storage: createRealRuntime('prod', { baseDir: join(home, '.coral') }).storage,
-        uid: process.getuid?.() ?? 0,
-      });
-      if (capsule === null || (capsule.version !== 3 && capsule.version !== 4))
-        throw new Error('Provider host capsule is unreadable');
-      hosts.push(
-        { pid: capsule.guardianPid, incarnation: capsule.guardianIncarnation },
-        { pid: capsule.reaperPid, incarnation: capsule.reaperIncarnation },
-        { pid: capsule.proxyPid, incarnation: capsule.proxyIncarnation },
-      );
-      const jobPid = Number(readFileSync(join(stateDir, 'job-running'), 'utf8'));
-      const jobIncarnation = probeProcessIncarnation(jobPid);
-      if (jobIncarnation === null) throw new Error('Provider job process has no incarnation');
-      hosts.push({ pid: jobPid, incarnation: jobIncarnation });
-      supervisor.send('disconnect-coordinator');
-      await waitForCondition(() => record.read().owner?.process.pid !== supervisor.pid, 10_000);
-      const replacementPid = record.read().owner?.process.pid;
-      if (replacementPid !== undefined) pids.add(replacementPid);
-      expect(supervisor.exitCode).toBeNull();
-      await waitForCondition(
-        () =>
-          record.read().launch?.phase === 'serving' &&
-          record.read().launch?.child?.pid !== originalPid &&
-          record.read().launch?.parent?.pid === replacementPid,
-        20_000,
-      );
-      expect(record.read().owner?.mode).toBe('supervised');
-      expect(hosts.every(({ pid, incarnation }) => probeProcessIncarnation(pid) === incarnation)).toBe(true);
-      writeFileSync(join(stateDir, 'release-job'), '');
-      await waitForCondition(() => existsSync(join(stateDir, 'terminal-completed')), 20_000);
-    } finally {
-      const state = record.read();
-      for (const pid of [state.owner?.process.pid, state.launch?.child?.pid]) {
-        if (pid !== undefined) pids.add(pid);
-      }
-      record.close();
-      cli?.kill('SIGKILL');
-      supervisor.kill('SIGKILL');
-      for (const pid of pids) {
+        await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
+        const originalPid = record.read().launch?.child?.pid;
+        if (originalPid === undefined) throw new Error('Serving child has no PID');
+        pids.add(originalPid);
+        const binDir = join(home, 'bin');
+        const stateDir = join(home, '.fake-codex-state');
+        const projectRoot = join(home, 'project');
+        mkdirSync(binDir);
+        mkdirSync(stateDir);
+        mkdirSync(projectRoot);
+        mkdirSync(join(home, '.codex'));
+        mkdirSync(join(home, '.claude'));
+        writeFileSync(
+          join(home, '.codex', 'auth.json'),
+          JSON.stringify({ tokens: { access_token: 'fake-access-token', account_id: 'fake-account-id' } }),
+        );
+        const fakeCodex = join(binDir, 'codex');
+        copyFileSync(join(process.cwd(), 'tests', 'fixtures', 'transfer-codex-appserver.cjs'), fakeCodex);
+        chmodSync(fakeCodex, 0o755);
+        const prompt = join(projectRoot, 'prompt.txt');
+        writeFileSync(prompt, 'Keep this provider job running during supervisor repair.');
+        const launchedCli = spawn(
+          'node',
+          [join(plugin.root, 'bridge', 'coral-cli'), 'codex', '-i', prompt, '--detach'],
+          {
+            cwd: projectRoot,
+            env: topLevelCliEnvironment(home, { PATH: `${binDir}:${process.env.PATH ?? ''}` }),
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        );
+        cli = launchedCli;
+        let cliOutput = '';
+        launchedCli.stdout?.on('data', (chunk: Buffer) => (cliOutput += chunk.toString()));
+        launchedCli.stderr?.on('data', (chunk: Buffer) => (cliOutput += chunk.toString()));
+        await waitForCondition(() => launchedCli.exitCode !== null, 30_000);
+        expect(launchedCli.exitCode, cliOutput).toBe(0);
         try {
-          process.kill(pid, 'SIGKILL');
-        } catch {
-          // The fixture may already have exited.
+          await waitForCondition(() => existsSync(join(stateDir, 'job-running')), 30_000);
+        } catch (error: unknown) {
+          throw new Error(`Provider job did not start: ${cliOutput}`, { cause: error });
         }
-      }
-      for (const { pid, incarnation } of hosts) {
-        if (probeProcessIncarnation(pid) !== incarnation) continue;
-        try {
-          process.kill(pid, 'SIGKILL');
-        } catch {
-          // The provider host may already have exited.
+        let capsulePath: string | undefined;
+        await waitForCondition(() => {
+          capsulePath = readdirSync(runDir).find((name) =>
+            /^provider-1[0-9a-f]{23}\.handoff\.v[34]\.json$/u.test(name),
+          );
+          return capsulePath !== undefined;
+        }, 20_000);
+        if (capsulePath === undefined) throw new Error('Provider host capsule is unavailable');
+        const capsule = readHandoffCapsuleFile(join(runDir, capsulePath), {
+          storage: createRealRuntime('prod', { baseDir: join(home, '.coral') }).storage,
+          uid: process.getuid?.() ?? 0,
+        });
+        if (capsule === null || (capsule.version !== 3 && capsule.version !== 4))
+          throw new Error('Provider host capsule is unreadable');
+        hosts.push(
+          { pid: capsule.guardianPid, incarnation: capsule.guardianIncarnation },
+          { pid: capsule.reaperPid, incarnation: capsule.reaperIncarnation },
+          { pid: capsule.proxyPid, incarnation: capsule.proxyIncarnation },
+        );
+        const jobPid = Number(readFileSync(join(stateDir, 'job-running'), 'utf8'));
+        const jobIncarnation = probeProcessIncarnation(jobPid);
+        if (jobIncarnation === null) throw new Error('Provider job process has no incarnation');
+        hosts.push({ pid: jobPid, incarnation: jobIncarnation });
+        const healthBeforeDisconnect = record.read().attempt?.observedHealthyAt ?? 0;
+        let disconnectedPid = originalPid;
+        if (successor === null) supervisor.send('disconnect-coordinator');
+        else {
+          record.request(join(successor.root, 'bridge', 'coral-backend.cjs'), buildSetId(successor.root));
+          await waitForCondition(() => record.read().attempt?.phase === 'serving', 30_000);
+          const attemptPid = record.read().attempt?.child?.pid;
+          if (attemptPid === undefined) throw new Error('Serving attempt has no PID');
+          disconnectedPid = attemptPid;
+          pids.add(attemptPid);
+          process.kill(attemptPid, 'SIGUSR2');
         }
+        await waitForCondition(() => record.read().owner?.process.pid !== supervisor.pid, 10_000);
+        const replacementPid = record.read().owner?.process.pid;
+        if (replacementPid !== undefined) pids.add(replacementPid);
+        expect(supervisor.exitCode).toBeNull();
+        await waitForCondition(() => {
+          const state = record.read();
+          const repaired = [state.launch, state.attempt].find((slot) => slot?.child?.pid === disconnectedPid);
+          return source === 'launch'
+            ? state.launch?.phase === 'serving' &&
+                state.launch.child?.pid !== originalPid &&
+                state.launch.parent?.pid === replacementPid
+            : repaired?.phase === 'serving' && state.owner?.process.pid === replacementPid;
+        }, 20_000);
+        if (source === 'launch') expect(record.read().owner?.mode).toBe('supervised');
+        else {
+          await waitForCondition(
+            () => (record.read().attempt?.observedHealthyAt ?? 0) > healthBeforeDisconnect,
+            10_000,
+          );
+          expect(record.read().owner?.mode).toBe('recovering');
+          expect(record.read().launch?.child?.pid).toBe(originalPid);
+        }
+        expect(hosts.every(({ pid, incarnation }) => probeProcessIncarnation(pid) === incarnation)).toBe(true);
+        writeFileSync(join(stateDir, 'release-job'), '');
+        await waitForCondition(() => existsSync(join(stateDir, 'terminal-completed')), 20_000);
+        if (source === 'serving attempt') {
+          try {
+            await waitForCondition(() => {
+              const state = record.read();
+              return (
+                state.launch?.phase === 'serving' &&
+                state.launch.child?.pid !== disconnectedPid &&
+                state.launch.parent?.pid === state.owner?.process.pid &&
+                state.owner?.mode === 'supervised'
+              );
+            }, 30_000);
+          } catch (error: unknown) {
+            throw new Error(
+              `Serving attempt did not complete supervision repair: state=${JSON.stringify(record.read())}; intent=${JSON.stringify(readUpgradeIntent(runDir))}`,
+              { cause: error },
+            );
+          }
+        }
+      } finally {
+        const state = record.read();
+        for (const pid of [state.owner?.process.pid, state.launch?.child?.pid, state.attempt?.child?.pid]) {
+          if (pid !== undefined) pids.add(pid);
+        }
+        record.close();
+        cli?.kill('SIGKILL');
+        supervisor.kill('SIGKILL');
+        for (const pid of pids) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // The fixture may already have exited.
+          }
+        }
+        for (const { pid, incarnation } of hosts) {
+          if (probeProcessIncarnation(pid) !== incarnation) continue;
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // The provider host may already have exited.
+          }
+        }
+        for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
       }
-      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
-    }
-  }, 45_000);
+    },
+    65_000,
+  );
   it('repairs the serving coordinator after an inherited admitted attempt exits', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-pending-attempt-repair-'));

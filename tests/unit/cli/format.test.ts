@@ -108,6 +108,19 @@ it('renders every launch hold with its identity and exit condition', () => {
   expect(inherited).not.toContain('command=');
 });
 
+it('reports inherited child holds without suggesting a second startup', () => {
+  const status = formatBackendStatus({
+    status: 'no_record_no_socket',
+    launchInheritedHolds: [
+      { launchId: 'launch-1', pid: 321 },
+      { launchId: 'attempt-2', pid: 322 },
+    ],
+  });
+  expect(status).toContain('launch-1');
+  expect(status).toContain('attempt-2');
+  expect(status).not.toContain('Run the start command below');
+});
+
 const runningDecision = {
   kind: 'provider-session',
   launchState: 'running',

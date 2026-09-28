@@ -762,6 +762,10 @@ export function formatBackendStatus(
       );
   }
   const launchHold = daemonStatus.launchHold;
+  for (const hold of daemonStatus.launchInheritedHolds ?? [])
+    sections.push(
+      `Coordinator launch ${hold.launchId} (PID ${hold.pid}) is held by an unresponsive inherited child. The supervisor retries on cooperation or confirmed absence.`,
+    );
   if (launchHold !== undefined) {
     switch (launchHold.kind) {
       case 'custody-unreadable':
@@ -914,7 +918,7 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
-        result.launchHold !== undefined || result.launchSignalHolds?.length
+        result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
           ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch record reports the hold below.'
           : [
               'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
@@ -924,7 +928,7 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'recorded_process_absent':
       return withShutdownRemainderSection(
-        result.launchHold !== undefined || result.launchSignalHolds?.length
+        result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
           ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch record reports the hold below.`
           : [
               `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
