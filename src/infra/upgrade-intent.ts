@@ -320,14 +320,18 @@ const upgradeIntentSchema = upgradeIntentFields.superRefine((intent, context) =>
 
 export type UpgradeIntent = z.infer<typeof upgradeIntentSchema>;
 
-const completedSuccessionReceiptSchema = z.object({
-  incumbent: incumbentIdentitySchema,
-  receipt: servingReceiptSchema,
-});
-const completedSuccessionReceiptsSchema = z.object({
-  version: z.literal(1),
-  receipts: z.array(completedSuccessionReceiptSchema).max(16),
-});
+const completedSuccessionReceiptSchema = z
+  .object({
+    incumbent: incumbentIdentitySchema,
+    receipt: servingReceiptSchema,
+  })
+  .passthrough();
+const completedSuccessionReceiptsSchema = z
+  .object({
+    version: z.literal(1),
+    receipts: z.array(completedSuccessionReceiptSchema).max(16),
+  })
+  .passthrough();
 
 export function readCompletedSuccessionReceipts(
   runDir: string,
@@ -343,18 +347,22 @@ export function readCompletedSuccessionReceipts(
 function retainCompletedSuccessionReceipt(runDir: string, intent: UpgradeIntent): void {
   if (intent.completionReceipt === null) return;
   const path = join(runDir, 'upgrade-receipts.v1.json');
-  let receipts: z.infer<typeof completedSuccessionReceiptSchema>[] = [];
+  let previous: z.infer<typeof completedSuccessionReceiptsSchema> = { version: 1, receipts: [] };
   try {
-    receipts = completedSuccessionReceiptsSchema.parse(JSON.parse(readFileSync(path, 'utf8')) as unknown).receipts;
+    previous = completedSuccessionReceiptsSchema.parse(JSON.parse(readFileSync(path, 'utf8')) as unknown);
   } catch (error: unknown) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
   }
-  const receipt = { incumbent: intent.incumbent, receipt: intent.completionReceipt };
+  const existing = previous.receipts.find((entry) => entry.receipt.attemptId === intent.completionReceipt?.attemptId);
+  const receipt = completedSuccessionReceiptSchema.parse(
+    mergeUnknownKeys(existing, { incumbent: intent.incumbent, receipt: intent.completionReceipt }),
+  );
   writeAtomic(path, {
-    version: 1,
-    receipts: [...receipts.filter((entry) => entry.receipt.attemptId !== receipt.receipt.attemptId), receipt].slice(
-      -16,
-    ),
+    ...previous,
+    receipts: [
+      ...previous.receipts.filter((entry) => entry.receipt.attemptId !== receipt.receipt.attemptId),
+      receipt,
+    ].slice(-16),
   });
 }
 

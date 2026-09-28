@@ -324,7 +324,7 @@ export const handoffCapsuleV4Schema = handoffCapsuleV3Schema
     version: z.literal(4),
     controllerBuildSetId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
   })
-  .strict();
+  .passthrough();
 
 export const handoffCapsuleSchema = z.discriminatedUnion('version', [
   handoffCapsuleV1Schema,

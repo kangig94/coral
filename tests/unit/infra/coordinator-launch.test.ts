@@ -19,6 +19,30 @@ afterEach(() => {
 });
 
 describe('coordinator launch admission', () => {
+  it('holds a replacement signal refusal by process identity', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-hold-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    const incarnation = (value: string) => value as ProcessIncarnation;
+    const owner = record.acquire(
+      { id: 'supervisor', process: { pid: 101, incarnation: incarnation('supervisor') }, buildSetId: 'A' },
+      1_000,
+    );
+    if (owner === null) throw new Error('owner not admitted');
+    const launch = record.reserve(owner, 'A', 'startup', 1_000);
+    if (launch === null) throw new Error('launch not reserved');
+    const source = { pid: 201, incarnation: incarnation('source') };
+    const replacement = { pid: 301, incarnation: incarnation('replacement') };
+    expect(record.admit(launch, owner.process, source, 1_001)).toBe(true);
+    expect(record.serving(launch, source)).toBe(true);
+    expect(record.holdReplacementSignalRefusal(source, replacement)).toBe(true);
+    expect(record.read().signalHolds).toEqual([
+      { launchId: `replacement:${replacement.pid}:${replacement.incarnation}`, ...replacement },
+    ]);
+    record.clearReplacementSignalRefusal(replacement);
+    expect(record.read().signalHolds).toEqual([]);
+    record.close();
+  });
   it('keeps a refused KILL visible for the exact launch until that child exits', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-signal-hold-'));
     roots.push(runDir);
@@ -111,6 +135,7 @@ describe('coordinator launch admission', () => {
     const nominee = { pid: 113, incarnation: incarnation('nominee') };
     const recoveryId = record.nominateRecovery(child, nominee, 'private-challenge');
     if (recoveryId === null) throw new Error('nomination was refused');
+    expect(record.holdReplacementSignalRefusal(child, nominee)).toBe(true);
     expect(
       record.acceptRecoveryTransfer(
         { id: 'wrong', process: { pid: 114, incarnation: incarnation('wrong') }, buildSetId: 'A' },
@@ -126,6 +151,7 @@ describe('coordinator launch admission', () => {
       takeoverAt + 1,
     );
     if (accepted === null) throw new Error('nominated owner did not accept');
+    expect(record.read().signalHolds).toEqual([]);
     expect(accepted.mode).toBe('recovering');
     expect(record.read().launch).toMatchObject({ id: launch.id, admittedAt: 1_001, parent: first.process });
     expect(record.read().requests.find((entry) => entry.id === request.id)?.acceptedEpoch).toBe(accepted.epoch);

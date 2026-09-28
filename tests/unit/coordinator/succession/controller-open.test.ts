@@ -124,6 +124,8 @@ describe('controller-open records', () => {
     recordControllerServing(runtime, ATTEMPT_ID, EPOCH_KEY, 'successor', 4);
     const served = JSON.parse(readFileSync(servingPath(runtime), 'utf-8')) as Record<string, unknown>;
     writeFileSync(servingPath(runtime), `${JSON.stringify({ ...served, laterField: true })}\n`);
+    recordControllerServing(runtime, ATTEMPT_ID, EPOCH_KEY, 'successor', 4);
+    expect(JSON.parse(readFileSync(servingPath(runtime), 'utf-8'))).toMatchObject({ laterField: true });
     expect(latestControllerOpen(runtime, EPOCH_KEY)).toMatchObject({
       latest: { instanceId: 'successor' },
       unreadable: [],

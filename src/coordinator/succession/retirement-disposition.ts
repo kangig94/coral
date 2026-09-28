@@ -23,7 +23,13 @@ function dispositionPath(runtime: Runtime, attemptId: string): string {
 }
 
 export function recordRetirementDisposition(runtime: Runtime, disposition: RetirementDisposition): void {
-  const validated = retirementDispositionSchema.parse(disposition);
+  const next = retirementDispositionSchema.parse(disposition);
+  const observed = observeRetirementDisposition(runtime, next.attemptId);
+  if (observed.kind === 'unreadable') throw new Error('Retirement disposition is unreadable.');
+  const validated = retirementDispositionSchema.parse({
+    ...(observed.kind === 'recorded' ? observed.disposition : {}),
+    ...next,
+  });
   const path = dispositionPath(runtime, validated.attemptId);
   runtime.storage.mkdirSync(join(runtime.paths.coral.coordinator.runDir, 'retirement-dispositions.v1'), {
     recursive: true,

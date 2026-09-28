@@ -287,7 +287,7 @@ async function exhaustStartupPatience(
   const startups = repeated?.startups ?? (previous?.startups ?? 0) + 1;
   const countedAt = repeated === null ? now : (repeated.countedAt ?? now);
   runtime.storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const record = { version: 'v1', attemptId: subject, startupId, startups, countedAt };
+  const record = { ...previous, version: 'v1', attemptId: subject, startupId, startups, countedAt };
   if (!runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 })) {
     throw new SuccessionAttemptStartupHoldError(`${describeStartupHold(hold)}; patience could not be recorded`, hold);
   }

@@ -185,9 +185,9 @@ export class JobLocationIndex {
 
   private advanceRevision(epochKey: string): number {
     const revisionPath = this.epochPath(epochKey, 'revision.v1.json');
-    const previous = optionalJson(this.runtime, revisionPath, revisionSchema)?.revision ?? 0;
-    const revision = previous + 1;
-    atomicJson(this.runtime, revisionPath, { version: 'v1', revision });
+    const previous = optionalJson(this.runtime, revisionPath, revisionSchema);
+    const revision = (previous?.revision ?? 0) + 1;
+    atomicJson(this.runtime, revisionPath, { ...previous, version: 'v1', revision });
     return revision;
   }
 
@@ -335,7 +335,9 @@ export class JobLocationIndex {
   holdUnknownLocations(epochKey: string, reason: string): void {
     this.withRevisionLock(epochKey, () => {
       this.advanceRevision(epochKey);
-      atomicJson(this.runtime, this.epochPath(epochKey, 'unknown-locations.v1.json'), { version: 'v1', reason });
+      const path = this.epochPath(epochKey, 'unknown-locations.v1.json');
+      const previous = optionalJson(this.runtime, path, unknownHoldSchema);
+      atomicJson(this.runtime, path, { ...previous, version: 'v1', reason });
     });
   }
 
@@ -411,7 +413,9 @@ export class JobLocationIndex {
       }
       const revision =
         optionalJson(this.runtime, this.epochPath(epochKey, 'revision.v1.json'), revisionSchema)?.revision ?? 0;
+      const previous = optionalJson(this.runtime, this.epochPath(epochKey, 'certificate.v1.json'), certificateSchema);
       const certificate = certificateSchema.parse({
+        ...previous,
         version: 'v1',
         epochKey,
         revision,

@@ -161,6 +161,41 @@ describe('superseded epoch protection', () => {
     expect(listed?.protectionPending).toBeUndefined();
   });
 
+  it('preserves additive pending-protection fields when another mint retries the held epoch', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-pending-protection-additive-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const initial = settleStoreEpoch(runtime, { storeFormat: format, build, authorizeMint: authorizeFixtureStoreMint });
+    initial.db.close();
+    encodeResolvedStoreEpoch(runtime, initial.store);
+    const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
+    chmodSync(epochPath(dbDir, '1'), 0o000);
+    const opener = createSharedFileLockSync(join(epochDirectory(dbDir, '1'), '.lock'));
+    try {
+      const mint = () => {
+        const settled = settleStoreEpoch(runtime, {
+          storeFormat: format,
+          build,
+          startupBusyTimeoutMs: 1,
+          authorizeMint: ({ incumbent, incumbentEpochKey }) =>
+            incumbent === null ? null : retirementMintDisposition('unopenable', incumbentEpochKey),
+        });
+        settled.db.close();
+        return settled.store.epoch;
+      };
+      expect(mint()).toBe('2');
+      const pendingDir = join(runtime.paths.coral.generation.dataRoot, 'store-epoch-protection-pending.v1');
+      const pendingPath = join(pendingDir, `${sha256Hex(epochDirectory(dbDir, '1'))}.json`);
+      const pending = JSON.parse(readFileSync(pendingPath, 'utf-8')) as Record<string, unknown>;
+      writeFileSync(pendingPath, `${JSON.stringify({ ...pending, futureRetry: 'keep' })}\n`);
+      chmodSync(epochPath(dbDir, '2'), 0o000);
+      expect(mint()).toBe('3');
+      expect(JSON.parse(readFileSync(pendingPath, 'utf-8'))).toMatchObject({ futureRetry: 'keep' });
+    } finally {
+      opener();
+    }
+  });
+
   it('retains a canonical epoch when its pending-protection record cannot be decoded', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-pending-protection-unreadable-'));
     roots.push(root);

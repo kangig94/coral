@@ -156,4 +156,36 @@ describe('job location additive records', () => {
       controller: { futureLease: 'lease-a' },
     });
   });
+
+  it('preserves additive epoch fields across revision, hold, and certificate rewrites', () => {
+    const { root, index } = fixture();
+    const epochKey = 'lineage-1:1';
+    const epochDir = join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256(epochKey));
+    index.register('job-1', epochKey, {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const revisionPath = join(epochDir, 'revision.v1.json');
+    const revision = JSON.parse(readFileSync(revisionPath, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(revisionPath, `${JSON.stringify({ ...revision, futureRevision: 'keep' })}\n`);
+    index.invalidateTerminalCertificate(epochKey);
+    expect(JSON.parse(readFileSync(revisionPath, 'utf-8'))).toMatchObject({ futureRevision: 'keep' });
+
+    index.holdUnknownLocations(epochKey, 'first');
+    const holdPath = join(epochDir, 'unknown-locations.v1.json');
+    const hold = JSON.parse(readFileSync(holdPath, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(holdPath, `${JSON.stringify({ ...hold, futureHold: 'keep' })}\n`);
+    index.holdUnknownLocations(epochKey, 'second');
+    expect(JSON.parse(readFileSync(holdPath, 'utf-8'))).toMatchObject({ futureHold: 'keep' });
+    index.clearUnknownLocations(epochKey);
+
+    index.recordTerminal('job-1', terminalDetail('job-1'), join(root, 'result.md'), 2);
+    expect(index.certify(epochKey, 2)).not.toBeNull();
+    const certificatePath = join(epochDir, 'certificate.v1.json');
+    const certificate = JSON.parse(readFileSync(certificatePath, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(certificatePath, `${JSON.stringify({ ...certificate, futureCertificate: 'keep' })}\n`);
+    expect(index.certify(epochKey, 3)).not.toBeNull();
+    expect(JSON.parse(readFileSync(certificatePath, 'utf-8'))).toMatchObject({ futureCertificate: 'keep' });
+  });
 });

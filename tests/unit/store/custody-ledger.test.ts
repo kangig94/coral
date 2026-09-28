@@ -126,6 +126,7 @@ describe('custody ledger', () => {
         evidence: 'stale',
       })),
     ).toMatchObject([{ kind: 'bound' }]);
+    expect(JSON.parse(readFileSync(bindingPath, 'utf8'))).toMatchObject({ futureField: true });
   });
 
   it('should self-fence a late child even when its parent bound the observed pid', () => {

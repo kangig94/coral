@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -47,6 +47,17 @@ afterEach(() => {
 });
 
 describe('succession writer generation', () => {
+  it('preserves additive generation fields when advancing the writer', () => {
+    const { runtime, store } = fixture();
+    const writer = joinSuccessionWriterGeneration(runtime, store);
+    const path = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-generation.v1.json');
+    const record = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(path, `${JSON.stringify({ ...record, futureGeneration: 'keep' })}\n`);
+
+    advanceSuccessionWriterGeneration(runtime, writer.generation, store);
+
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({ futureGeneration: 'keep', generation: 2 });
+  });
   it('allows coordinator and KB daemon writable handles and Corpus writes before takeover', () => {
     const { root, runtime, store, open } = fixture();
     const coordinator = open();

@@ -1,5 +1,14 @@
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -799,7 +808,16 @@ describe('incomplete succession at startup', () => {
         prepareRecoveryGrantHandoff: () => null,
       });
       expect(resolution).toMatchObject({ kind: 'hold', hold: { kind: 'deaths-unproven', alive: false } });
+      if (startupId === 'burst-1') {
+        const directory = join(runtime.paths.coral.coordinator.runDir, 'succession-startup-patience.v1');
+        const path = join(directory, readdirSync(directory)[0]);
+        const record = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+        writeFileSync(path, `${JSON.stringify({ ...record, futurePatience: 'keep' })}\n`);
+      }
     }
+    const directory = join(runtime.paths.coral.coordinator.runDir, 'succession-startup-patience.v1');
+    const path = join(directory, readdirSync(directory)[0]);
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({ futurePatience: 'keep' });
     expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
       intent: {
         attemptId: 'recovery-attempt',

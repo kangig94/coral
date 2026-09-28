@@ -124,8 +124,17 @@ export function writeAbandonedRequestStatus(
 ): void {
   if (!validAbandonedRequestRecordId(request.recordId)) throw new Error('Invalid abandoned request record ID');
   const path = statusPath(runDir, request.recordId);
+  const existing = readAbandonedRequestStatus(storage, runDir, request.recordId);
+  if (existing.kind === 'unreadable') throw new Error('Abandoned request status is unreadable');
+  const previous = existing.kind === 'found' ? existing.status : null;
+  const next = {
+    ...previous,
+    ...request,
+    ...(request.identity === undefined ? {} : { identity: { ...previous?.identity, ...request.identity } }),
+    ...(request.owner === undefined ? {} : { owner: { ...previous?.owner, ...request.owner } }),
+  };
   storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  if (!storage.writeAtomicDurableSync(path, `${JSON.stringify({ version: 1, ...request })}\n`, { mode: 0o600 }))
+  if (!storage.writeAtomicDurableSync(path, `${JSON.stringify({ version: 1, ...next })}\n`, { mode: 0o600 }))
     throw new Error('Abandoned request status could not be recorded');
   if (request.outcome === 'continuing') return;
   const directory = dirname(path);

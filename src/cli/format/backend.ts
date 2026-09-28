@@ -751,10 +751,16 @@ export function formatBackendStatus(
       ? formatLiveShutdownGuidance(daemonStatus.health)
       : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
   const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
-  for (const hold of daemonStatus.launchSignalHolds ?? [])
-    sections.push(
-      `Coordinator launch ${hold.launchId} (PID ${hold.pid}) is held because SIGKILL delivery could not be confirmed. The owning supervisor retries for this exact child until it exits or is decisively absent.`,
-    );
+  for (const hold of daemonStatus.launchSignalHolds ?? []) {
+    if (hold.launchId.startsWith('replacement:'))
+      sections.push(
+        `Replacement supervisor (PID ${hold.pid}) is held because a retirement signal was refused. The coordinator retries this exact process; once it exits, recovery launches the next replacement.`,
+      );
+    else
+      sections.push(
+        `Coordinator launch ${hold.launchId} (PID ${hold.pid}) is held because SIGKILL delivery could not be confirmed. The owning supervisor retries for this exact child until it exits or is decisively absent.`,
+      );
+  }
   if (daemonStatus.launchHold?.kind === 'custody-unreadable')
     sections.push(
       `Coordinator launch is quarantined by unreadable custody at ${daemonStatus.launchHold.path}. The supervisor retries automatically when that record becomes readable.`,

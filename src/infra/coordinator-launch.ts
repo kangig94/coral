@@ -7,6 +7,10 @@ import { coordinatorLaunchPath } from './path/index.js';
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
 
 export type LaunchProcess = Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
+
+function replacementSignalHoldId(child: LaunchProcess): string {
+  return `replacement:${child.pid}:${child.incarnation}`;
+}
 export type LaunchOwner = Readonly<{
   id: string;
   process: LaunchProcess;
@@ -242,6 +246,9 @@ export class CoordinatorLaunchRecord {
           ownerEpoch: owner.epoch,
           owner,
           recovery: undefined,
+          signalHolds: (normalized.signalHolds ?? []).filter(
+            (hold) => hold.launchId !== replacementSignalHoldId(holder.process),
+          ),
           requests: normalized.requests.map((request) =>
             request.status === 'recorded' || request.status === 'accepted'
               ? { ...request, status: 'accepted' as const, acceptedEpoch: owner.epoch }
@@ -430,6 +437,37 @@ export class CoordinatorLaunchRecord {
       if (!this.#exactChild(launch, reservation, child)) return { state, result: undefined };
       return {
         state: { ...state, signalHolds: (state.signalHolds ?? []).filter((hold) => hold.launchId !== reservation.id) },
+        result: undefined,
+      };
+    });
+  }
+
+  holdReplacementSignalRefusal(source: LaunchProcess, replacement: LaunchProcess): boolean {
+    return this.#change((state) => {
+      if (
+        state.launch?.phase !== 'serving' ||
+        state.launch.child?.pid !== source.pid ||
+        state.launch.child.incarnation !== source.incarnation
+      )
+        return { state, result: false };
+      const launchId = replacementSignalHoldId(replacement);
+      if (state.signalHolds?.some((hold) => hold.launchId === launchId)) return { state, result: true };
+      return {
+        state: {
+          ...state,
+          signalHolds: [...(state.signalHolds ?? []), { launchId, ...replacement }],
+        },
+        result: true,
+      };
+    });
+  }
+
+  clearReplacementSignalRefusal(replacement: LaunchProcess): void {
+    this.#change((state) => {
+      const launchId = replacementSignalHoldId(replacement);
+      if (!state.signalHolds?.some((hold) => hold.launchId === launchId)) return { state, result: undefined };
+      return {
+        state: { ...state, signalHolds: state.signalHolds.filter((hold) => hold.launchId !== launchId) },
         result: undefined,
       };
     });

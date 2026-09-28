@@ -66,6 +66,18 @@ describe('retirement disposition records', () => {
     });
   });
 
+  it('preserves an additive field when refreshing a disposition', () => {
+    const { runtime, path } = fixture();
+    recordRetirementDisposition(runtime, disposition());
+    const record = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(path, `${JSON.stringify({ ...record, futureDisposition: 'keep' })}\n`);
+    recordRetirementDisposition(runtime, { ...disposition(), certificateRevision: 3 });
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({
+      certificateRevision: 3,
+      futureDisposition: 'keep',
+    });
+  });
+
   it('should treat a parseable record without settled custody as unreadable, not as authority', () => {
     const { runtime, path } = fixture();
     recordRetirementDisposition(runtime, disposition());

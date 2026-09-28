@@ -2098,14 +2098,39 @@ function recordPendingProtection(
     if (!runtime.storage.syncDirectoryDurableSync(runtime.paths.coral.generation.dataRoot)) {
       throw new Error('Pending protection directory could not be linked durably.');
     }
-    const record = { version: 'v1', storeRoot, epoch, reason, recordedAt: new Date(runtime.time.now()).toISOString() };
-    if (
-      !runtime.storage.writeAtomicDurableSync(
-        pendingProtectionPath(runtime, storeRoot, epoch),
-        `${JSON.stringify(record)}\n`,
-        { encoding: 'utf8', mode: 0o600 },
+    const path = pendingProtectionPath(runtime, storeRoot, epoch);
+    let previous: Record<string, unknown> = {};
+    try {
+      const candidate = JSON.parse(runtime.storage.readFileSync(path, 'utf-8')) as unknown;
+      if (
+        typeof candidate !== 'object' ||
+        candidate === null ||
+        Array.isArray(candidate) ||
+        !('version' in candidate) ||
+        candidate.version !== 'v1' ||
+        !('storeRoot' in candidate) ||
+        candidate.storeRoot !== storeRoot ||
+        !('epoch' in candidate) ||
+        candidate.epoch !== epoch ||
+        !('reason' in candidate) ||
+        typeof candidate.reason !== 'string' ||
+        !('recordedAt' in candidate) ||
+        typeof candidate.recordedAt !== 'string'
       )
-    )
+        throw new Error('Existing pending protection record is unreadable.');
+      previous = candidate as Record<string, unknown>;
+    } catch (error: unknown) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    }
+    const record = {
+      ...previous,
+      version: 'v1',
+      storeRoot,
+      epoch,
+      reason,
+      recordedAt: new Date(runtime.time.now()).toISOString(),
+    };
+    if (!runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 }))
       throw new Error('Pending protection record could not be written durably.');
     return { kind: 'recorded' };
   } catch (cause: unknown) {

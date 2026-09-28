@@ -96,13 +96,16 @@ export function recordControllerServing(
   const directory = join(controllerRoot(runtime), 'served');
   runtime.storage.mkdirSync(directory, { recursive: true, mode: 0o700 });
   syncDirectory(runtime, controllerRoot(runtime));
-  const record = servingSchema.parse({
+  const next = servingSchema.parse({
     version: 'v1',
     attemptId,
     epochKey,
     successorInstanceId: instanceId,
     controlGeneration,
   });
+  const previous = readControllerServing(runtime, next.attemptId);
+  if (previous.kind === 'unreadable') throw new Error('Controller serving record is unreadable');
+  const record = servingSchema.parse({ ...(previous.kind === 'recorded' ? previous.serving : {}), ...next });
   const path = join(directory, `${attemptId}.json`);
   if (!runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 })) {
     throw new Error(`Could not record controller serving: ${path}`);

@@ -300,6 +300,22 @@ describe('pending upgrade visibility', () => {
     expect(rendered).toContain('retries');
   });
 
+  it('shows refused retirement of a replacement supervisor and its retry successor', () => {
+    const rendered = formatBackendStatus(
+      {
+        ...runningBackendStatus({}),
+        launchSignalHolds: [
+          { launchId: 'replacement:123:incarnation', pid: 123, incarnation: testIncarnation('incarnation') },
+        ],
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('Replacement supervisor (PID 123)');
+    expect(rendered).toContain('retirement signal was refused');
+    expect(rendered).toContain('once it exits, recovery launches the next replacement');
+  });
+
   it('renders a corrupt durable intent as a visible automatic hold', () => {
     const rendered = formatBackendStatus(
       runningBackendStatus({}, { successionProblem: 'corrupt' }),

@@ -7,6 +7,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import {
   compareAndSwapUpgradeIntent,
   quarantineCorruptUpgradeIntent,
+  readCompletedSuccessionReceipts,
   readUpgradeIntent,
   retryUpgradeIntentCas,
   revalidateUpgradeIntentTarget,
@@ -353,6 +354,60 @@ describe('upgrade intent', () => {
       },
     });
     expect(completed).toMatchObject({ kind: 'written', intent: { disposition: 'completed', revision: 2 } });
+  });
+
+  it('preserves additive receipt envelope and entry fields when retaining another succession', async () => {
+    const dir = runDir();
+    let revision: number | null = null;
+    for (const id of ['first', 'second']) {
+      const pending = await compareAndSwapUpgradeIntent(dir, revision, pendingIntent(id));
+      if (pending.kind !== 'written') throw new Error('pending intent not written');
+      const attempting = {
+        ...pendingIntent(id),
+        attemptId: `attempt-${id}`,
+        attemptOwner: { kind: 'incumbent' as const, instanceId: 'incumbent', pid: 100, incarnation: null },
+        disposition: 'attempting' as const,
+        attemptDeadline: '2026-09-25T01:00:00.000Z',
+      };
+      const attempt = await compareAndSwapUpgradeIntent(dir, pending.intent.revision, attempting);
+      if (attempt.kind !== 'written') throw new Error('attempt not written');
+      const completed = await compareAndSwapUpgradeIntent(dir, attempt.intent.revision, {
+        ...attempting,
+        disposition: 'completed',
+        completionReceipt: {
+          kind: 'serving',
+          attemptId: `attempt-${id}`,
+          successor: { instanceId: 'successor', pid: 200, incarnation: null, build },
+          epochKey: 'epoch-1:lineage-1',
+          controlGeneration: 2,
+          acceptedObligations: [],
+          recordedAt: '2026-09-25T00:59:00.000Z',
+        },
+      });
+      if (completed.kind !== 'written') throw new Error('completion not written');
+      revision = completed.intent.revision;
+      if (id === 'first') {
+        const next = await compareAndSwapUpgradeIntent(dir, revision, pendingIntent('between'));
+        if (next.kind !== 'written') throw new Error('receipt not retained');
+        revision = next.intent.revision;
+        const path = join(dir, 'upgrade-receipts.v1.json');
+        const record = JSON.parse(readFileSync(path, 'utf-8')) as {
+          receipts: Record<string, unknown>[];
+        };
+        writeFileSync(
+          path,
+          `${JSON.stringify({ ...record, futureEnvelope: 'keep', receipts: [{ ...record.receipts[0], futureEntry: 'keep' }] })}\n`,
+        );
+      }
+    }
+    await compareAndSwapUpgradeIntent(dir, revision, pendingIntent('after'));
+    const record = JSON.parse(readFileSync(join(dir, 'upgrade-receipts.v1.json'), 'utf-8')) as {
+      futureEnvelope: string;
+      receipts: Record<string, unknown>[];
+    };
+    expect(record.futureEnvelope).toBe('keep');
+    expect(record.receipts[0]).toMatchObject({ futureEntry: 'keep' });
+    expect(readCompletedSuccessionReceipts(dir)).toHaveLength(2);
   });
 
   it('should decide again from the winning revision after losing a write race', async () => {

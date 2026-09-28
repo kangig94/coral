@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { CoordinatorLaunchRecord } from '../infra/coordinator-launch.js';
-import { probeProcessIncarnation } from '../infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
 import { installReplacementSupervisorChannel } from './succession-attempt.js';
@@ -73,7 +73,7 @@ export function startReplacementSupervisor(
     let channelReady = false;
     let bridgeReady = false;
     let offered: string | null = null;
-    let launchedIncarnation: string | null = null;
+    let launchedIncarnation: ProcessIncarnation | null = null;
     let retirementAt: number | null = null;
     let termSent = false;
     let killSent = false;
@@ -94,26 +94,28 @@ export function startReplacementSupervisor(
         const state = record.read();
         const owner = state.owner;
         if (
+          !accepted &&
           owner !== null &&
           owner.process.pid === supervisor.pid &&
           owner.process.incarnation === probeProcessIncarnation(supervisor.pid) &&
           owner.buildSetId === manifest.buildSetId &&
           owner.leaseUntil > Date.now() &&
-          channelReady &&
-          bridgeReady
+          channelReady
         ) {
           accepted = true;
           clearTimeout(deadline);
+          if (launchedIncarnation !== null && supervisor.pid !== undefined)
+            record.clearReplacementSignalRefusal({ pid: supervisor.pid, incarnation: launchedIncarnation });
           supervisor.unref();
         }
         if (accepted) {
           if (state.attempt !== null && state.attempt.phase !== 'exited') return;
-          finish(
-            null,
+          const repair =
             state.launch?.phase === 'serving' &&
-              state.launch.child?.pid === process.pid &&
-              state.launch.child.incarnation === sourceIncarnation,
-          );
+            state.launch.child?.pid === process.pid &&
+            state.launch.child.incarnation === sourceIncarnation;
+          if (repair && !bridgeReady) return;
+          finish(null, repair);
           return;
         }
         if (settled || !channelReady || offered !== null || supervisor.pid === undefined) return;
@@ -138,13 +140,16 @@ export function startReplacementSupervisor(
       const observed = probeProcessIncarnation(supervisor.pid);
       launchedIncarnation ??= observed;
       if (observed === null || observed !== launchedIncarnation) return;
+      const replacement = { pid: supervisor.pid, incarnation: observed };
       if (Date.now() - retirementAt < SENTINEL_TIMING.graceMs) {
         if (termSent) return;
         try {
           termSent = supervisor.kill('SIGTERM');
         } catch {
-          return;
+          termSent = false;
         }
+        if (termSent) record.clearReplacementSignalRefusal(replacement);
+        else record.holdReplacementSignalRefusal({ pid: process.pid, incarnation: sourceIncarnation }, replacement);
         return;
       }
       try {
@@ -152,6 +157,8 @@ export function startReplacementSupervisor(
       } catch {
         killSent = false;
       }
+      if (killSent) record.clearReplacementSignalRefusal(replacement);
+      else record.holdReplacementSignalRefusal({ pid: process.pid, incarnation: sourceIncarnation }, replacement);
     }, 1_000);
     retirementPoll.unref();
     const deadline = setTimeout(() => {
@@ -185,11 +192,15 @@ export function startReplacementSupervisor(
     });
     supervisor.once('exit', (code, signal) => {
       if (!settled) {
+        if (launchedIncarnation !== null && supervisor.pid !== undefined)
+          record.clearReplacementSignalRefusal({ pid: supervisor.pid, incarnation: launchedIncarnation });
         finish(new Error(`Replacement supervisor exited before accepting ownership (${code ?? signal})`));
         return;
       }
       const current = new CoordinatorLaunchRecord(runDir);
       try {
+        if (launchedIncarnation !== null && supervisor.pid !== undefined)
+          current.clearReplacementSignalRefusal({ pid: supervisor.pid, incarnation: launchedIncarnation });
         const state = current.read();
         if (
           [state.launch, state.attempt].some(

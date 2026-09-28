@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,6 +21,32 @@ afterEach(() => {
 });
 
 describe('abandoned request status', () => {
+  it('preserves additive fields when an abandoned request settles', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-abandoned-additive-'));
+    roots.push(runDir);
+    const storage = createRealRuntime('prod').storage;
+    const request = {
+      recordId: 'request-1',
+      method: 'jobs.detail',
+      requestId: 'request-1',
+      startedAt: '2026-09-27T00:00:00.000Z',
+      outcome: 'continuing' as const,
+      identity: { jobId: 'job-1' },
+    };
+    writeAbandonedRequestStatus(storage, runDir, request);
+    const path = join(runDir, 'abandoned-requests.v1', 'request-1.json');
+    const stored = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(
+      path,
+      `${JSON.stringify({ ...stored, futureField: 'keep', identity: { jobId: 'job-1', futureIdentity: 'keep' } })}\n`,
+    );
+    writeAbandonedRequestStatus(storage, runDir, { ...request, outcome: 'completed' });
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({
+      outcome: 'completed',
+      futureField: 'keep',
+      identity: { futureIdentity: 'keep' },
+    });
+  });
   it('retains more than 256 concurrently abandoned requests and makes each outcome readable by record ID', async () => {
     vi.useFakeTimers();
     const runDir = mkdtempSync(join(tmpdir(), 'coral-abandoned-requests-'));

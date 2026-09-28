@@ -1,5 +1,15 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -677,6 +687,16 @@ describe('provider-proxy handoff capsule file I/O', () => {
     expect(stat.uid).toBe(BigInt(env.uid));
     expect(stat.mode & 0o777n).toBe(0o600n);
     expect(readHandoffCapsuleFile(capsulePath, env)).toEqual(capsuleV4For());
+  });
+
+  it('preserves additive fields when a V4 capsule is rewritten for a new controller', () => {
+    writeHandoffCapsuleFile(capsulePath, capsuleV4For(), env);
+    const original = JSON.parse(readFileSync(capsulePath, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(capsulePath, JSON.stringify({ ...original, futureGrant: 'keep' }));
+    const inherited = readHandoffCapsuleFile(capsulePath, env);
+    if (inherited?.version !== 4) throw new Error('V4 capsule not read');
+    writeHandoffCapsuleFile(capsulePath, { ...inherited, controllerBuildSetId: HOST_BUILD.buildSetId }, env);
+    expect(JSON.parse(readFileSync(capsulePath, 'utf-8'))).toMatchObject({ futureGrant: 'keep' });
   });
 
   it('returns null for an absent capsule', () => {
