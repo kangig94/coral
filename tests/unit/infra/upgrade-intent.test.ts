@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 
 import {
   compareAndSwapUpgradeIntent,
+  quarantineCorruptUpgradeIntent,
   readUpgradeIntent,
   retryUpgradeIntentCas,
   revalidateUpgradeIntentTarget,
@@ -59,6 +60,18 @@ describe('upgrade intent', () => {
   afterEach(() => {
     for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
+  });
+
+  it('durably quarantines corrupt bytes and permits a fresh recorded request', async () => {
+    const dir = runDir();
+    writeFileSync(upgradeIntentPath(dir), '{broken');
+    expect(readUpgradeIntent(dir).kind).toBe('corrupt');
+    expect(await quarantineCorruptUpgradeIntent(dir)).toBe(true);
+    expect(readUpgradeIntent(dir).kind).toBe('absent');
+    const quarantined = readdirSync(dir).find((name) => name.startsWith('upgrade.v1.corrupt-'));
+    expect(quarantined).toBeDefined();
+    expect(readFileSync(join(dir, quarantined!), 'utf8')).toBe('{broken');
+    expect((await compareAndSwapUpgradeIntent(dir, null, pendingIntent('new-request'))).kind).toBe('written');
   });
 
   it('allows exactly one writer from a revision and retains the losing request on retry', async () => {

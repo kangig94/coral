@@ -27,6 +27,7 @@ import { formatJobsList, renderJobsList } from '#src/cli/format/jobs.js';
 import { formatKbMemoList, formatKbPrinciples, formatKbRead, formatKbSourceList } from '#src/cli/format/kb.js';
 import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
 import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
+import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BUNDLE_DIR = e2eBundleDir();
@@ -260,8 +261,7 @@ function runCliSubprocess(
 ): { status: number | null; stdout: string; stderr: string; error?: Error } {
   const result = spawnSync('node', [join(fixture.root, 'bridge', 'coral-cli'), ...args], {
     cwd: fixture.projectRoot,
-    env: {
-      ...process.env,
+    env: topLevelCliEnvironment(fixture.home, {
       ...temporaryHomes.environment(fixture.home),
       TMPDIR: fixture.home,
       // Keep plugin discovery inside the fixture instead of inheriting the
@@ -272,7 +272,7 @@ function runCliSubprocess(
       NODE_OPTIONS: `--require ${fixture.probeScriptPath}`,
       CORAL_SOCKET_PROBE_FILE: fixture.probeLogPath,
       CORAL_FIXED_NOW_MS: String(FIXED_NOW.getTime()),
-    },
+    }),
     encoding: 'utf-8',
     timeout: 60_000,
   });

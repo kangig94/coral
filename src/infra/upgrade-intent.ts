@@ -1,5 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -8,6 +19,8 @@ import { writeAuditEvent } from './audit-log.js';
 import { createForeignTargetValidator, type ForeignTargetValidationResult } from './handoff-target.js';
 import { processIncarnationSchema } from './node-process.js';
 import { upgradeIntentPath } from './path/index.js';
+import { coordinatorLaunchPath } from './path/index.js';
+import { readCoordinatorLaunchState } from './coordinator-launch.js';
 
 const buildIdentitySchema = z
   .object({
@@ -493,6 +506,42 @@ function readUpgradeIntentAtPath(path: string): UpgradeIntentRead {
 /** Unknown generations and malformed records never authorize an overwrite. */
 export function readUpgradeIntent(runDir: string): UpgradeIntentRead {
   return readUpgradeIntentAtPath(upgradeIntentPath(runDir));
+}
+
+export async function quarantineCorruptUpgradeIntent(runDir: string): Promise<boolean> {
+  const lease = await acquireDirectoryLock(join(runDir, 'upgrade.v1.lock'));
+  try {
+    if (readUpgradeIntentAtPath(upgradeIntentPath(runDir)).kind !== 'corrupt') return false;
+    if (existsSync(coordinatorLaunchPath(runDir))) {
+      let activeAttempt: boolean;
+      try {
+        const attempt = readCoordinatorLaunchState(runDir).attempt;
+        activeAttempt = attempt !== null && attempt.phase !== 'exited';
+      } catch {
+        return false;
+      }
+      if (activeAttempt) return false;
+    }
+    lease.assertOwned();
+    renameSync(upgradeIntentPath(runDir), join(runDir, `upgrade.v1.corrupt-${randomUUID()}.json`));
+    const directoryFd = openSync(runDir, 'r');
+    try {
+      fsyncSync(directoryFd);
+    } finally {
+      closeSync(directoryFd);
+    }
+    return true;
+  } finally {
+    lease();
+  }
+}
+
+export function hasQuarantinedUpgradeIntent(runDir: string): boolean {
+  try {
+    return readdirSync(runDir).some((name) => /^upgrade\.v1\.corrupt-[0-9a-f-]+\.json$/.test(name));
+  } catch {
+    return false;
+  }
 }
 
 /** A persisted root label is never a launch capability; validate its current manifest at launch. */

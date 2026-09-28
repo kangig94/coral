@@ -19,6 +19,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
@@ -87,7 +88,7 @@ describe('coordinator warm-start integration', () => {
 
     const shutdown = spawnSync(process.execPath, [join(fixture.root, 'bridge', 'coral-cli'), 'backend', 'shutdown'], {
       cwd: home,
-      env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root },
+      env: topLevelCliEnvironment(home, { CLAUDE_PLUGIN_ROOT: fixture.root }),
       encoding: 'utf8',
       timeout: 30_000,
     });

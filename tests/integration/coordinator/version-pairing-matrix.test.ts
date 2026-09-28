@@ -23,6 +23,7 @@ import { readUpgradeIntent, visibleUpgradeIntent } from '#src/infra/upgrade-inte
 import { retainedBuildRoot } from '#src/infra/retained-build-root.js';
 import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 import { readActiveStoreSelectionForCoordination } from '#src/store/active-store-selection.js';
 import { probeIncumbent } from '#src/transport/ipc/handoff.js';
 import {
@@ -1020,13 +1021,10 @@ async function runFixtureCli(
 ): Promise<string> {
   const child = spawn(process.execPath, [join(pluginRoot, 'bridge', 'coral-cli'), ...args], {
     cwd: work.projectRoot,
-    env: {
-      ...process.env,
-      HOME: work.home,
-      TMPDIR: work.home,
+    env: topLevelCliEnvironment(work.home, {
       CLAUDE_PLUGIN_ROOT: pluginRoot,
       PATH: `${work.binDir}:${process.env.PATH ?? ''}`,
-    },
+    }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

@@ -60,6 +60,7 @@ export type CoordinatorLaunchState = Readonly<{
   launch: LaunchReservation | null;
   attempt: LaunchReservation | null;
   requests: readonly LaunchRequest[];
+  signalHolds?: readonly Readonly<{ launchId: string; pid: number; incarnation: ProcessIncarnation }>[];
   recovery?: Readonly<{
     id: string;
     sourceLaunchId: string;
@@ -404,6 +405,36 @@ export class CoordinatorLaunchRecord {
     });
   }
 
+  holdSignalRefusal(owner: LaunchOwner, reservation: LaunchReservation, child: LaunchProcess, now: number): boolean {
+    return this.#change((state) => {
+      const slot = this.#slot(state, reservation);
+      const launch = slot === 'launch' ? state.launch : state.attempt;
+      if (!this.#current(state, owner, now) || !this.#exactChild(launch, reservation, child))
+        return { state, result: false };
+      const holds = state.signalHolds ?? [];
+      if (holds.some((hold) => hold.launchId === reservation.id)) return { state, result: true };
+      return {
+        state: {
+          ...state,
+          signalHolds: [...holds, { launchId: reservation.id, pid: child.pid, incarnation: child.incarnation }],
+        },
+        result: true,
+      };
+    });
+  }
+
+  clearSignalRefusal(reservation: LaunchReservation, child: LaunchProcess): void {
+    this.#change((state) => {
+      const slot = this.#slot(state, reservation);
+      const launch = slot === 'launch' ? state.launch : state.attempt;
+      if (!this.#exactChild(launch, reservation, child)) return { state, result: undefined };
+      return {
+        state: { ...state, signalHolds: (state.signalHolds ?? []).filter((hold) => hold.launchId !== reservation.id) },
+        result: undefined,
+      };
+    });
+  }
+
   accept(owner: LaunchOwner, requestId: string, now: number): boolean {
     return this.#change((state) => {
       if (!this.#current(state, owner, now)) return { state, result: false };
@@ -549,7 +580,13 @@ export class CoordinatorLaunchRecord {
       if (!this.#exactChild(launch, reservation, child) || launch === null || launch.phase === 'exited')
         return { state, result: false };
       const exited: LaunchReservation = { ...launch, phase: 'exited' };
-      return { state: slot === 'launch' ? { ...state, launch: exited } : { ...state, attempt: exited }, result: true };
+      return {
+        state: {
+          ...(slot === 'launch' ? { ...state, launch: exited } : { ...state, attempt: exited }),
+          signalHolds: (state.signalHolds ?? []).filter((hold) => hold.launchId !== reservation.id),
+        },
+        result: true,
+      };
     });
   }
 
@@ -569,7 +606,10 @@ export class CoordinatorLaunchRecord {
         return { state, result: false };
       const exited: LaunchReservation = { ...launch, phase: 'exited' };
       return {
-        state: this.#normalize(slot === 'launch' ? { ...state, launch: exited } : { ...state, attempt: exited }),
+        state: this.#normalize({
+          ...(slot === 'launch' ? { ...state, launch: exited } : { ...state, attempt: exited }),
+          signalHolds: (state.signalHolds ?? []).filter((hold) => hold.launchId !== reservation.id),
+        }),
         result: true,
       };
     });

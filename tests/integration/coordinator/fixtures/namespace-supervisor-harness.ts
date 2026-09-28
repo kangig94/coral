@@ -12,9 +12,12 @@ if (executable === '--launch-legacy') {
   if (executable === undefined || runDir === undefined) throw new Error('Missing coordinator fixture or run directory');
 
   let coordinator: ChildProcess | null = null;
+  let refusedKill = false;
   process.on('message', (message: unknown) => {
     if (message === 'disconnect-coordinator') coordinator?.disconnect();
     if (message === 'error-coordinator-channel') coordinator?.emit('error', new Error('IPC send failed'));
+    if (typeof message === 'object' && message !== null && 'fixtureChildMessage' in message)
+      coordinator?.emit('message', message.fixtureChildMessage);
   });
   void runNamespaceSupervisor(executable, [], runDir, {
     timing:
@@ -24,6 +27,16 @@ if (executable === '--launch-legacy') {
     startupBudgetMs: Number(process.env.CORAL_FIXTURE_STARTUP_BUDGET_MS ?? 25_000),
     onChild: (child) => {
       coordinator = child;
+      if (process.env.CORAL_FIXTURE_REFUSE_KILL_ONCE === '1' && !refusedKill) {
+        const kill = child.kill.bind(child);
+        child.kill = ((signal) => {
+          if (signal === 'SIGKILL' && !refusedKill) {
+            refusedKill = true;
+            return false;
+          }
+          return kill(signal);
+        }) as typeof child.kill;
+      }
     },
   }).then((code) => {
     process.exitCode = code;

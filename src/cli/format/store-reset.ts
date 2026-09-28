@@ -169,13 +169,16 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
             ? 'reclaimed after closure; retained historical results remain addressable'
             : 'reclaimed after closure; historical results are no longer retained';
       } else if (epoch.role === 'unobservable') {
-        next = 'hold: epoch address cannot be verified; retained for reconciliation';
+        next =
+          'terminal quarantine: epoch address cannot be verified; retained without release. If the address becomes readable, the coordinator re-inspects it for closure or unrecoverable retention';
       } else if (epoch.closureDisposition === 'unrecoverable-retained') {
-        next = `hold: ${epoch.closureReason ?? 'custody cannot be certified; retained for investigation'}`;
+        next = `terminal unrecoverable retention: ${epoch.closureReason ?? 'custody cannot be certified'}; the epoch stays retained without release`;
       } else if (epoch.closureDisposition !== 'closed') {
-        next = 'automatic custody reconciliation and closure retry; hold until certified';
+        next =
+          'the coordinator retries when custody settles or its evidence changes, then records closure or unrecoverable retention';
       } else if (epoch.resultRetention !== 'retained') {
-        next = 'automatic result-retention reconciliation; hold until historical results are retained';
+        next =
+          'the coordinator retries when historical result indexing settles, then records retained results or keeps the epoch protected';
       } else {
         next = 'retained until sweep eligibility, then automatic reclamation';
       }

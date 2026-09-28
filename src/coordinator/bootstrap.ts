@@ -282,7 +282,6 @@ function logStartupHandoffPublicationIncident(incident: HandoffPublicationIncide
   backendLog.warn(`Backend startup handoff routing-status publication incident: ${JSON.stringify(incident)}`);
 }
 
-/** Seams only a test harness entry point supplies; the shipped entry point passes none. */
 export type BackendHarness = Readonly<{
   successionInterposition?: SuccessionInterposition;
   afterReady?: () => void;

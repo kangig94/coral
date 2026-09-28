@@ -213,7 +213,7 @@ describe('store-reset operator epochs', () => {
       expect(rendered).toContain(epoch.epochKey);
     }
     expect(rendered).toContain('Result retention');
-    expect(rendered).toContain('automatic custody reconciliation and closure retry');
+    expect(rendered).toContain('the coordinator retries when custody settles or its evidence changes');
     expect(rendered).not.toContain('store-reset release');
     await expect(reportStoreResetLocal('gen2', '1', dependencies)).rejects.toMatchObject({
       code: 'store_reset_epoch_ambiguous',
@@ -263,6 +263,18 @@ describe('store-reset operator epochs', () => {
       closureDisposition: 'unrecoverable-retained',
       custodyState: 'undecidable',
     });
+    const rendered = formatStoreResetList(
+      {
+        epochs: listStoreEpochs(runtime),
+        holders: [],
+        residues: [],
+        legacyIncidents: [],
+        truncated: false,
+      },
+      'gen2',
+    );
+    expect(rendered).toContain('terminal quarantine: epoch address cannot be verified');
+    expect(rendered).toContain('the coordinator re-inspects it for closure or unrecoverable retention');
   });
 
   it('shows the durable pending upgrade in the store listing without offering a release', async () => {
@@ -313,7 +325,8 @@ describe('store-reset operator epochs', () => {
     };
     const rendered = formatStoreResetList(listStoreResetIncidentsLocal('gen2', dependencies), 'gen2');
     expect(rendered).toContain('Upgrade intent record is corrupt');
-    expect(rendered).toContain('Automatic succession is held');
+    expect(rendered).toContain('the coordinator durably quarantines the upgrade intent record');
+    expect(rendered).toContain('the next recorded upgrade request can then proceed');
   });
 
   it('reports current, preserved, garbage, and malformed epochs without opening SQLite', async () => {

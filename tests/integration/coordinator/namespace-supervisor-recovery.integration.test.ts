@@ -33,6 +33,7 @@ import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createPluginFixture } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
 function buildSetId(root: string): string {
   return (
@@ -150,7 +151,7 @@ describe('namespace supervisor recovery', () => {
       writeFileSync(prompt, 'Keep this provider job running during supervisor repair.');
       const launchedCli = spawn('node', [join(plugin.root, 'bridge', 'coral-cli'), 'codex', '-i', prompt, '--detach'], {
         cwd: projectRoot,
-        env: { ...process.env, HOME: home, TMPDIR: home, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+        env: topLevelCliEnvironment(home, { PATH: `${binDir}:${process.env.PATH ?? ''}` }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       cli = launchedCli;
@@ -701,11 +702,17 @@ describe('namespace supervisor recovery', () => {
     }
   }, 35_000);
   it.each([
-    { stall: 'an admitted child without hello', phase: 'before-hello', observed: 'admitted' },
-    { stall: 'a child that never claims admission', phase: 'before-admission', observed: 'reserved' },
+    { stall: 'an admitted child without hello', phase: 'before-hello', observed: 'admitted', refuseKill: false },
+    {
+      stall: 'a child that never claims admission',
+      phase: 'before-admission',
+      observed: 'reserved',
+      refuseKill: false,
+    },
+    { stall: 'a refused SIGKILL', phase: 'before-hello', observed: 'admitted', refuseKill: true },
   ] as const)(
     'terminates $stall and serves from a fallback',
-    async ({ phase, observed }) => {
+    async ({ phase, observed, refuseKill }) => {
       const roots: string[] = [];
       const home = mkdtempSync(join(tmpdir(), 'coral-no-first-hello-'));
       roots.push(home);
@@ -748,6 +755,8 @@ describe('namespace supervisor recovery', () => {
           CORAL_PLUGIN_REGISTRY: registry,
           CORAL_FIXTURE_STARTUP_BUDGET_MS: '1500',
           CORAL_FIXTURE_FREEZE_PHASE: phase,
+          CORAL_FIXTURE_IGNORE_SIGTERM: refuseKill ? '1' : '0',
+          CORAL_FIXTURE_REFUSE_KILL_ONCE: refuseKill ? '1' : '0',
         },
         stdio: 'ignore',
       });
@@ -758,6 +767,12 @@ describe('namespace supervisor recovery', () => {
           10_000,
         );
         stalledPid = record.read().launch?.child?.pid;
+        if (refuseKill) {
+          await waitForCondition(
+            () => record.read().signalHolds?.some((hold) => hold.launchId === record.read().launch?.id) === true,
+            8_000,
+          );
+        }
         try {
           await waitForCondition(
             () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === fallbackBuildSetId,
@@ -767,6 +782,7 @@ describe('namespace supervisor recovery', () => {
           throw new Error(`Fallback did not serve: ${JSON.stringify(record.read())}`, { cause: error });
         }
         expect(record.read().launch?.child?.pid).not.toBe(stalledPid);
+        if (refuseKill) expect(record.read().signalHolds).toEqual([]);
       } finally {
         const currentPid = record.read().launch?.child?.pid;
         record.close();
@@ -784,6 +800,67 @@ describe('namespace supervisor recovery', () => {
     },
     30_000,
   );
+
+  it('escalates an explicit attempt retirement after a refused SIGTERM', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-explicit-attempt-retirement-'));
+    roots.push(home);
+    const incumbent = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const target = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16', backend: 'admission-freeze' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisor = spawn(process.execPath, [harness, join(incumbent.root, 'bridge', 'coral-backend.cjs')], {
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_FIXTURE_IGNORE_SIGTERM: '1',
+      },
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+    const record = new CoordinatorLaunchRecord(runDir);
+    let attemptPid: number | undefined;
+    try {
+      await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
+      supervisor.send({
+        fixtureChildMessage: {
+          kind: 'coral-supervisor-start-attempt',
+          attemptId: 'explicit-retirement',
+          bundleDir: join(target.root, 'bridge'),
+        },
+      });
+      await waitForCondition(() => record.read().attempt?.child !== undefined, 5_000);
+      attemptPid = record.read().attempt?.child?.pid;
+      supervisor.send({
+        fixtureChildMessage: { kind: 'coral-supervisor-retire-attempt', attemptId: 'explicit-retirement' },
+      });
+      await waitForCondition(() => record.read().attempt?.phase === 'exited', 5_000);
+      expect(record.read().signalHolds).toEqual([]);
+    } finally {
+      const incumbentPid = record.read().launch?.child?.pid;
+      record.close();
+      if (supervisor.exitCode === null) supervisor.kill('SIGKILL');
+      for (const pid of [attemptPid, incumbentPid]) {
+        if (pid === undefined) continue;
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          continue;
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('dispatches a newer request after the serving build installation is removed', async () => {
     const roots: string[] = [];
@@ -1277,7 +1354,7 @@ describe('namespace supervisor recovery', () => {
       writeFileSync(prompt, 'Keep this job running through supervisor replacement.');
       cli = spawn('node', [join(incumbent.root, 'bridge', 'coral-cli'), 'codex', '-i', prompt, '--detach'], {
         cwd: projectRoot,
-        env: { ...process.env, HOME: home, TMPDIR: home, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+        env: topLevelCliEnvironment(home, { PATH: `${binDir}:${process.env.PATH ?? ''}` }),
         stdio: 'ignore',
       });
       await waitForCondition(() => cli?.exitCode !== null && existsSync(join(stateDir, 'job-running')), 30_000);
@@ -1549,8 +1626,19 @@ describe('namespace supervisor recovery', () => {
     } finally {
       const currentPid = record.read().launch?.child?.pid;
       record.close();
-      if (parent.exitCode === null) parent.kill('SIGKILL');
-      if (replacement !== null && replacement.exitCode === null) replacement.kill('SIGKILL');
+      const replacementProcess = replacement;
+      const parentExit =
+        parent.exitCode === null && parent.signalCode === null
+          ? new Promise<void>((resolve) => parent.once('exit', () => resolve()))
+          : Promise.resolve();
+      const replacementExit =
+        replacementProcess !== null && replacementProcess.exitCode === null && replacementProcess.signalCode === null
+          ? new Promise<void>((resolve) => replacementProcess.once('exit', () => resolve()))
+          : Promise.resolve();
+      if (parent.exitCode === null && parent.signalCode === null) parent.kill('SIGKILL');
+      if (replacementProcess !== null && replacementProcess.exitCode === null && replacementProcess.signalCode === null)
+        replacementProcess.kill('SIGKILL');
+      await Promise.all([parentExit, replacementExit]);
       for (const pid of [stalledPid, currentPid]) {
         if (pid === undefined) continue;
         try {

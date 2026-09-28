@@ -1,5 +1,7 @@
 import { claimCoordinatorLaunch } from '#src/infra/coordinator-admission.js';
 
+if (process.env.CORAL_FIXTURE_IGNORE_SIGTERM === '1') process.on('SIGTERM', () => {});
+
 if (process.env.CORAL_FIXTURE_FREEZE_PHASE === 'before-admission') setInterval(() => {}, 60_000);
 else
   void claimCoordinatorLaunch().then((admitted) => {

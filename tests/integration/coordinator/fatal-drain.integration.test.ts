@@ -28,6 +28,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
@@ -35,20 +36,10 @@ const FATAL_DRAIN_ACTIONS_FILE = 'fatal-drain-actions.log';
 let successorPid: number | null = null;
 
 function topLevelEnvironment(home: string): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = {
-    ...process.env,
-    HOME: home,
-    TMPDIR: home,
+  return topLevelCliEnvironment(home, {
     CORAL_KB_ENABLE: '0',
     CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000',
-  };
-  delete environment.CORAL_CHILD;
-  delete environment.CORAL_CHILD_PRINCIPAL_HANDLE;
-  delete environment.CORAL_JOB_ID;
-  delete environment.CORAL_SESSION_ID;
-  delete environment.CORAL_CLI_HANDOFF_DELEGATED;
-  delete environment.CORAL_BACKEND_DISABLE_AUTOSTART;
-  return environment;
+  });
 }
 
 /**

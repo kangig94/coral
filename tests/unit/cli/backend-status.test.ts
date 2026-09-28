@@ -14,6 +14,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { releaseStoreReset } from '#src/store/operator-store-reset.js';
 import {
+  formatAbandonedRequestStatus,
   formatBackendStatus,
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
@@ -285,6 +286,20 @@ describe('pending upgrade visibility', () => {
     expect(rendered).not.toContain('command=');
   });
 
+  it('shows the launch ID whose SIGKILL delivery is still held', () => {
+    const rendered = formatBackendStatus(
+      {
+        ...runningBackendStatus({}),
+        launchSignalHolds: [{ launchId: 'attempt-1', pid: 123, incarnation: testIncarnation('attempt') }],
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('attempt-1');
+    expect(rendered).toContain('SIGKILL');
+    expect(rendered).toContain('retries');
+  });
+
   it('renders a corrupt durable intent as a visible automatic hold', () => {
     const rendered = formatBackendStatus(
       runningBackendStatus({}, { successionProblem: 'corrupt' }),
@@ -293,9 +308,9 @@ describe('pending upgrade visibility', () => {
     );
     expect(rendered).toContain('Backend ok');
     expect(rendered).toContain('Upgrade intent record is corrupt');
-    expect(rendered).toContain('Automatic succession is held');
-    expect(rendered).toContain('nothing in Coral repairs this record');
-    expect(rendered).toContain('file a Coral issue with this output');
+    expect(rendered).toContain('coordinator durably quarantines');
+    expect(rendered).toContain('next recorded upgrade request');
+    expect(rendered).not.toContain('file a Coral issue');
   });
 
   it.each(['handoff_shutdown_capability_rejected', 'handoff_shutdown_credential_unavailable'])(
@@ -396,7 +411,7 @@ afterEach(() => {
 });
 
 describe('backend status request lookup', () => {
-  it('prints the durable status for an abandoned request record ID', async () => {
+  it('explains the continuing request and its read-only recheck', async () => {
     const getStatus = vi.fn(async () => {
       throw new Error('request lookup should not probe the backend');
     });
@@ -422,12 +437,40 @@ describe('backend status request lookup', () => {
       },
     });
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status', '--request', 'request-1']);
+    expect(stdout).toContain('continuing');
+    expect(stdout).toContain('settles automatically');
+    expect(stdout).toContain('command=coral-cli backend status --request request-1');
+    expect(getStatus).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
+    stdout = '';
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status', '--request', 'request-1', '--json']);
     expect(JSON.parse(stdout)).toMatchObject({
       kind: 'found',
       status: { recordId: 'request-1', outcome: 'continuing' },
     });
-    expect(getStatus).not.toHaveBeenCalled();
-    expect(process.exitCode).toBe(0);
+  });
+
+  it('explains every request lookup outcome without authorizing a blind retry', () => {
+    for (const kind of ['missing', 'unreadable'] as const) {
+      const rendered = formatAbandonedRequestStatus('request-1', { kind });
+      expect(rendered).toContain('unverified');
+      expect(rendered).toContain('blind mutation retry is not safe');
+    }
+    expect(formatAbandonedRequestStatus('bad/id', { kind: 'invalid-id' })).toContain('exact recordId');
+    for (const outcome of ['completed', 'failed', 'cancelled', 'owner_exited'] as const) {
+      const rendered = formatAbandonedRequestStatus('request-1', {
+        kind: 'found',
+        status: {
+          recordId: 'request-1',
+          method: 'jobs.detail',
+          requestId: 'request-1',
+          startedAt: '2026-09-27T00:00:00.000Z',
+          outcome,
+        },
+      });
+      expect(rendered).toContain(outcome);
+      expect(rendered).toMatch(/read the operation state/i);
+    }
   });
 });
 

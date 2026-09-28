@@ -30,6 +30,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
 const roots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
@@ -58,7 +59,7 @@ async function runCli(
 ): Promise<string> {
   const child = spawn('node', [join(fixture.root, 'bridge', 'coral-cli'), ...args], {
     cwd: projectRoot,
-    env: { ...process.env, HOME: home, TMPDIR: home, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+    env: topLevelCliEnvironment(home, { PATH: `${binDir}:${process.env.PATH ?? ''}` }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

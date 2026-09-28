@@ -1,4 +1,5 @@
 import { assertNever } from '../../infra/error-format.js';
+import type { AbandonedRequestStatusRead } from '../../infra/abandoned-request-status.js';
 import type { UpgradeIntentProblem, UpgradeIntentVisibility } from '../../infra/upgrade-intent.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing/policy.js';
 import {
@@ -55,6 +56,7 @@ type BackendOperatorCommand =
   | Readonly<{ kind: 'abort-job'; jobId: string }>
   | Readonly<{ kind: 'backend-start' }>
   | Readonly<{ kind: 'backend-status' }>
+  | Readonly<{ kind: 'backend-status-request'; recordId: string }>
   | Readonly<{ kind: 'backend-shutdown' }>
   | Readonly<{ kind: 'jobs-detail'; jobId: string }>
   | Readonly<{ kind: 'kb-reindex' }>
@@ -76,6 +78,9 @@ function renderBackendOperatorCommand(command: BackendOperatorCommand): string {
       break;
     case 'backend-status':
       commandArguments = 'backend status';
+      break;
+    case 'backend-status-request':
+      commandArguments = `backend status --request ${command.recordId}`;
       break;
     case 'backend-shutdown':
       commandArguments = 'backend shutdown';
@@ -143,6 +148,37 @@ export function formatBackendStartResult(statusNeedsAttention: boolean): string 
 
 export function formatBackendStatusCommand(): string {
   return formatBackendOperatorCommand({ kind: 'backend-status' });
+}
+
+export function formatAbandonedRequestStatus(recordId: string, result: AbandonedRequestStatusRead): string {
+  if (result.kind !== 'found') {
+    if (result.kind === 'invalid-id')
+      return 'Invalid request record ID. Use the exact recordId from the timeout response.';
+    return [
+      `Request record ${recordId} is ${result.kind}; its outcome is unverified. A blind mutation retry is not safe.`,
+      'Read the operation state and backend status before deciding what happened.',
+      formatBackendOperatorCommand({ kind: 'backend-status' }),
+    ].join('\n');
+  }
+  const { status } = result;
+  if (status.outcome === 'continuing')
+    return [
+      `Request ${recordId} is continuing. It settles automatically when the request completes, fails, is cancelled, or its owner exits.`,
+      'Recheck this record without repeating the mutation.',
+      formatBackendOperatorCommand({ kind: 'backend-status-request', recordId }),
+    ].join('\n');
+  const meaning = {
+    completed: 'The request completed; read the operation state to confirm its effect.',
+    failed: 'The request failed; read the operation state before deciding whether another mutation is needed.',
+    cancelled:
+      'The request was cancelled; read the operation state before deciding whether another mutation is needed.',
+    owner_exited:
+      'The request owner exited; its effect remains unverified. Read the operation state before another mutation.',
+  }[status.outcome];
+  return [
+    `Request ${recordId}: ${status.outcome}. ${meaning}`,
+    formatBackendOperatorCommand({ kind: 'backend-status' }),
+  ].join('\n');
 }
 
 export function formatRecoveryQuarantineCommand(
@@ -715,6 +751,10 @@ export function formatBackendStatus(
       ? formatLiveShutdownGuidance(daemonStatus.health)
       : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
   const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
+  for (const hold of daemonStatus.launchSignalHolds ?? [])
+    sections.push(
+      `Coordinator launch ${hold.launchId} (PID ${hold.pid}) is held because SIGKILL delivery could not be confirmed. The owning supervisor retries for this exact child until it exits or is decisively absent.`,
+    );
   if (daemonStatus.launchHold?.kind === 'custody-unreadable')
     sections.push(
       `Coordinator launch is quarantined by unreadable custody at ${daemonStatus.launchHold.path}. The supervisor retries automatically when that record becomes readable.`,
@@ -733,6 +773,10 @@ export function formatBackendStatus(
       ? (daemonStatus.health.successionProblem ?? daemonStatus.upgradeProblem)
       : daemonStatus.upgradeProblem;
   if (upgradeProblem !== undefined) sections.push(formatUpgradeRecordProblem(upgradeProblem));
+  if (daemonStatus.upgradeQuarantined)
+    sections.push(
+      'A corrupt upgrade intent was durably quarantined. A fresh recorded upgrade request can now proceed automatically.',
+    );
   if (daemonStatus.supersededEpochs !== undefined) {
     sections.push(formatSupersededEpochClosures(daemonStatus.supersededEpochs));
   }
@@ -753,15 +797,25 @@ export function formatBackendStatus(
 
 function formatSupersededEpochClosures(closures: SupersededEpochClosures): string {
   if (closures.kind === 'unobservable') {
-    return `Superseded store epochs could not be observed (${closures.reason}); their closures are not shown.`;
+    return `Superseded store epoch observation is quarantined (${closures.reason}); no epoch is released. When the store root becomes readable, the coordinator re-inspects closure and retention.`;
   }
   return [
     'Superseded store epochs:',
-    ...closures.epochs.map(
-      (epoch) =>
+    ...closures.epochs.map((epoch) => {
+      const disposition =
+        epoch.role === 'unobservable'
+          ? 'terminal quarantine; retained without release until its address is readable and re-inspected'
+          : epoch.closure === 'unrecoverable-retained'
+            ? 'terminal unrecoverable retention; retained without release'
+            : epoch.closure === 'closed'
+              ? 'closed; result retention and sweep eligibility govern reclamation'
+              : 'pending; the coordinator retries when custody settles or evidence changes';
+      return (
         `  ${epoch.epochKey ?? 'unobservable'} (epoch ${epoch.epoch}, ${epoch.role}): ${epoch.closure}` +
-        (epoch.reason === null ? '' : `; ${epoch.reason}`),
-    ),
+        (epoch.reason === null ? '' : `; ${epoch.reason}`) +
+        `; ${disposition}`
+      );
+    }),
   ].join('\n');
 }
 
@@ -774,7 +828,7 @@ export function formatUpgradeRecordProblem(problem: UpgradeIntentProblem): strin
     case 'unsupported':
       return `Upgrade intent record is unsupported: a newer Coral build wrote it. Automatic succession is held until a build that reads ${UPGRADE_INTENT_RECORD} is serving.`;
     case 'corrupt':
-      return `Upgrade intent record is corrupt. Automatic succession is held, and nothing in Coral repairs this record. Do not edit or delete ${UPGRADE_INTENT_RECORD}; file a Coral issue with this output.`;
+      return `Upgrade intent record is corrupt. Automatic succession waits while the coordinator durably quarantines ${UPGRADE_INTENT_RECORD} after any active attempt exits; the next recorded upgrade request can then proceed.`;
   }
 }
 

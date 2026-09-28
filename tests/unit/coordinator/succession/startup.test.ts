@@ -22,7 +22,12 @@ import {
 import { successionTargetKey, type SuccessionPreparation } from '#src/coordinator/succession/protocol.js';
 import { recordRetirementDisposition } from '#src/coordinator/succession/retirement-disposition.js';
 import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
-import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntentChange } from '#src/infra/upgrade-intent.js';
+import {
+  compareAndSwapUpgradeIntent,
+  hasQuarantinedUpgradeIntent,
+  readUpgradeIntent,
+  type UpgradeIntentChange,
+} from '#src/infra/upgrade-intent.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -264,31 +269,16 @@ describe('incomplete succession at startup', () => {
     expect(await holdOf(resolveAt(runtime, 'startup-1'))).toMatchObject({ kind: 'unsupported-intent' });
   });
 
-  it('holds a corrupt active intent until its recorded startup patience expires', async () => {
+  it('quarantines a corrupt intent and lets ordinary startup continue', async () => {
     const runtime = runtimeFixture();
     await seedRecoveryGrant(runtime, { pid: process.pid, incarnation: null });
     writeFileSync(upgradeIntentPath(runtime.paths.coral.coordinator.runDir), '{"version":');
     expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir).kind).toBe('corrupt');
 
-    const hold = await holdOf(resolveAt(runtime, 'startup-1'));
-    expect(hold).toMatchObject({ kind: 'unreadable-intent', source: 'corrupt' });
-    if (hold.kind !== 'unreadable-intent') throw new Error('Expected an unreadable intent hold.');
-    const subject = `${hold.kind}:${hold.fingerprint}`;
-    const patience = join(
-      runtime.paths.coral.coordinator.runDir,
-      'succession-startup-patience.v1',
-      `${runtime.ids.sha256(subject)}.json`,
-    );
-    expect(JSON.parse(runtime.storage.readFileSync(patience, 'utf-8'))).toMatchObject({
-      attemptId: subject,
-      startups: 1,
-    });
-    expect(await holdOf(resolveAt(runtime, 'startup-2'))).toMatchObject({
-      kind: 'unreadable-intent',
-      source: 'corrupt',
-    });
-    await expect(resolveAt(runtime, 'startup-3')).resolves.toEqual({ kind: 'none' });
-    await expect(resolveAt(runtime, 'startup-4')).resolves.toEqual({ kind: 'none' });
+    await expect(resolveAt(runtime, 'startup-1')).resolves.toEqual({ kind: 'none' });
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir).kind).toBe('absent');
+    expect(hasQuarantinedUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toBe(true);
+    await expect(resolveAt(runtime, 'startup-2')).resolves.toEqual({ kind: 'none' });
   });
 
   it('holds an unreadable active intent under the same bounded startup patience', async () => {

@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -107,5 +107,33 @@ describe('abandoned request status', () => {
       kind: 'found',
       status: { outcome: 'owner_exited' },
     });
+  });
+
+  it('leaves a continuing request with malformed owner identity unreadable', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-abandoned-invalid-owner-'));
+    roots.push(runDir);
+    const storage = createRealRuntime('prod').storage;
+    writeAbandonedRequestStatus(storage, runDir, {
+      recordId: 'invalid-owner',
+      method: 'jobs.detail',
+      requestId: 'request-1',
+      startedAt: '2026-09-27T00:00:00.000Z',
+      outcome: 'continuing',
+    });
+    writeFileSync(
+      join(runDir, 'abandoned-requests.v1', 'invalid-owner.json'),
+      JSON.stringify({
+        version: 1,
+        recordId: 'invalid-owner',
+        method: 'jobs.detail',
+        requestId: 'request-1',
+        startedAt: '2026-09-27T00:00:00.000Z',
+        outcome: 'continuing',
+        owner: { instanceId: 'coordinator', pid: process.pid, incarnation: null },
+      }),
+    );
+    expect(readAbandonedRequestStatus(storage, runDir, 'invalid-owner')).toEqual({ kind: 'unreadable' });
+    expect(reconcileAbandonedRequestStatuses(storage, runDir).updated).toBe(0);
+    expect(readAbandonedRequestStatus(storage, runDir, 'invalid-owner')).toEqual({ kind: 'unreadable' });
   });
 });

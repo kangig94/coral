@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { CoordinatorLaunchRecord } from '../infra/coordinator-launch.js';
 import { probeProcessIncarnation } from '../infra/node-process.js';
+import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
 import { installReplacementSupervisorChannel } from './succession-attempt.js';
 
@@ -72,10 +73,15 @@ export function startReplacementSupervisor(
     let channelReady = false;
     let bridgeReady = false;
     let offered: string | null = null;
+    let launchedIncarnation: string | null = null;
+    let retirementAt: number | null = null;
+    let termSent = false;
+    let killSent = false;
     const finish = (error: Error | null, repair = false): void => {
       if (settled) return;
       settled = true;
       clearInterval(poll);
+      clearInterval(retirementPoll);
       clearTimeout(deadline);
       record.close();
       if (error === null) {
@@ -113,6 +119,7 @@ export function startReplacementSupervisor(
         if (settled || !channelReady || offered !== null || supervisor.pid === undefined) return;
         const nomineeIncarnation = probeProcessIncarnation(supervisor.pid);
         if (nomineeIncarnation === null) return;
+        launchedIncarnation ??= nomineeIncarnation;
         const id = record.nominateRecovery(
           { pid: process.pid, incarnation: sourceIncarnation },
           { pid: supervisor.pid, incarnation: nomineeIncarnation },
@@ -126,7 +133,30 @@ export function startReplacementSupervisor(
       }
     }, 200);
     poll.unref();
-    const deadline = setTimeout(() => supervisor.kill('SIGTERM'), ACCEPTANCE_DEADLINE_MS);
+    const retirementPoll = setInterval(() => {
+      if (settled || accepted || retirementAt === null || supervisor.pid === undefined || killSent) return;
+      const observed = probeProcessIncarnation(supervisor.pid);
+      launchedIncarnation ??= observed;
+      if (observed === null || observed !== launchedIncarnation) return;
+      if (Date.now() - retirementAt < SENTINEL_TIMING.graceMs) {
+        if (termSent) return;
+        try {
+          termSent = supervisor.kill('SIGTERM');
+        } catch {
+          return;
+        }
+        return;
+      }
+      try {
+        killSent = supervisor.kill('SIGKILL');
+      } catch {
+        killSent = false;
+      }
+    }, 1_000);
+    retirementPoll.unref();
+    const deadline = setTimeout(() => {
+      retirementAt = Date.now();
+    }, ACCEPTANCE_DEADLINE_MS);
     deadline.unref();
     supervisor.once('error', finish);
     supervisor.on('message', (message: unknown) => {

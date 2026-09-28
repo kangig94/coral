@@ -2,7 +2,12 @@ import { dirname, join } from 'node:path';
 
 import type { StoragePort } from './port-types.js';
 import { isNoEntryError } from './fs-errors.js';
-import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
+import {
+  isProcessIncarnation,
+  observeProcessLiveness,
+  probeProcessIncarnation,
+  type ProcessIncarnation,
+} from './node-process.js';
 
 export type AbandonedRequestStatus = Readonly<{
   recordId: string;
@@ -56,7 +61,23 @@ export function readAbandonedRequestStatus(
       !('startedAt' in parsed) ||
       typeof parsed.startedAt !== 'string' ||
       !('outcome' in parsed) ||
-      !['continuing', 'completed', 'failed', 'cancelled', 'owner_exited'].includes(String(parsed.outcome))
+      !['continuing', 'completed', 'failed', 'cancelled', 'owner_exited'].includes(String(parsed.outcome)) ||
+      ('identity' in parsed &&
+        (typeof parsed.identity !== 'object' ||
+          parsed.identity === null ||
+          ('jobId' in parsed.identity && typeof parsed.identity.jobId !== 'string') ||
+          ('operationId' in parsed.identity && typeof parsed.identity.operationId !== 'string'))) ||
+      ('owner' in parsed &&
+        (typeof parsed.owner !== 'object' ||
+          parsed.owner === null ||
+          !('instanceId' in parsed.owner) ||
+          typeof parsed.owner.instanceId !== 'string' ||
+          parsed.owner.instanceId.length === 0 ||
+          !('pid' in parsed.owner) ||
+          !Number.isSafeInteger(parsed.owner.pid) ||
+          (parsed.owner.pid as number) <= 0 ||
+          !('incarnation' in parsed.owner) ||
+          !isProcessIncarnation(parsed.owner.incarnation)))
     )
       return { kind: 'unreadable' };
     return { kind: 'found', status: parsed as AbandonedRequestStatus };

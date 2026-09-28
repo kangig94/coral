@@ -119,6 +119,26 @@ describe('succession reconciler', () => {
     installedTargets.clear();
   });
 
+  it('quarantines a corrupt intent and accepts the next recorded target', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-corrupt-'));
+    directories.push(runDir);
+    writeFileSync(upgradeIntentPath(runDir), '{broken');
+    installedTargets.set('/installed/replacement', {});
+    const reconciler = servingReconciler(runDir);
+    try {
+      await reconciler.reconcile();
+      expect(readUpgradeIntent(runDir).kind).toBe('absent');
+      expect(
+        await reconciler.request({
+          requestId: 'replacement-request',
+          target: { build, pluginRootLabel: '/installed/replacement' },
+        }),
+      ).toMatchObject({ kind: 'registered', intent: { requestId: 'replacement-request' } });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
   it.each(['0.11.0', '0.10.50'])(
     'replaces a vanished target with an installed %s target that outranks the incumbent',
     async (version) => {

@@ -19,6 +19,27 @@ afterEach(() => {
 });
 
 describe('coordinator launch admission', () => {
+  it('keeps a refused KILL visible for the exact launch until that child exits', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-signal-hold-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    const owner = record.acquire(
+      { id: 'supervisor', process: { pid: process.pid, incarnation: 'parent' as ProcessIncarnation }, buildSetId: 'A' },
+      Date.now(),
+    );
+    if (owner === null) throw new Error('Owner was not admitted');
+    const reservation = record.reserve(owner, 'A', 'succession', Date.now());
+    if (reservation === null) throw new Error('Attempt was not reserved');
+    const child = { pid: 2001, incarnation: 'child' as ProcessIncarnation };
+    expect(record.admit(reservation, owner.process, child, Date.now())).toBe(true);
+    expect(record.holdSignalRefusal(owner, reservation, child, Date.now())).toBe(true);
+    expect(record.read().signalHolds).toEqual([
+      { launchId: reservation.id, pid: child.pid, incarnation: child.incarnation },
+    ]);
+    expect(record.exited(reservation, child)).toBe(true);
+    expect(record.read().signalHolds).toEqual([]);
+    record.close();
+  });
   it('normalizes a surviving attempt and re-accepts requests in the acquiring epoch', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-normalize-'));
     roots.push(runDir);

@@ -17,6 +17,7 @@ import {
 import { retainedBuildRoot } from '../../infra/retained-build-root.js';
 import { upgradeIntentPath } from '../../infra/path/index.js';
 import {
+  quarantineCorruptUpgradeIntent,
   readUpgradeIntent,
   parseUpgradeIntentSnapshot,
   retryUpgradeIntentCas,
@@ -491,7 +492,20 @@ export async function resolveIncompleteSuccessionAtStartup(
 ): Promise<IncompleteSuccessionResolution> {
   const { runtime } = options;
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-  if (observed.kind === 'unsupported' || observed.kind === 'corrupt' || observed.kind === 'unreadable') {
+  if (observed.kind === 'corrupt') {
+    if (await quarantineCorruptUpgradeIntent(runtime.paths.coral.coordinator.runDir)) return { kind: 'none' };
+    if (readUpgradeIntent(runtime.paths.coral.coordinator.runDir).kind === 'absent') return { kind: 'none' };
+    return {
+      kind: 'hold',
+      hold: {
+        kind: 'unreadable-intent',
+        attemptId: null,
+        source: 'corrupt',
+        fingerprint: startupIntentFingerprint(runtime),
+      },
+    };
+  }
+  if (observed.kind === 'unsupported' || observed.kind === 'unreadable') {
     const fingerprint = startupIntentFingerprint(runtime);
     const hold: SuccessionStartupHold =
       observed.kind === 'unsupported'

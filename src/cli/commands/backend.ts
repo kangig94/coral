@@ -155,6 +155,7 @@ import { emitError } from '../emit.js';
 import { errorCodeToExit } from '../errors.js';
 import { renderHandoffPublicationIncidents } from '../handoff-notice.js';
 import {
+  formatAbandonedRequestStatus,
   formatBackendStartResult,
   formatBackendStatusCommand,
   formatBackendStatus,
@@ -1507,7 +1508,8 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   statusCommand
     .description('Show backend daemon status')
     .option('--request <record-id>', 'Show one abandoned request by record ID')
-    .action(async (options: { request?: string }) => {
+    .option('--json', 'Show request status as JSON')
+    .action(async (options: { request?: string; json?: boolean }) => {
       try {
         if (options.request !== undefined) {
           const status = (
@@ -1517,7 +1519,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
               return readAbandonedRequestStatus(runtime.storage, runtime.paths.coral.coordinator.runDir, recordId);
             })
           )(options.request);
-          process.stdout.write(`${JSON.stringify(status)}\n`);
+          process.stdout.write(
+            `${options.json ? JSON.stringify(status) : formatAbandonedRequestStatus(options.request, status)}\n`,
+          );
           process.exitCode = status.kind === 'found' ? 0 : 75;
           return;
         }

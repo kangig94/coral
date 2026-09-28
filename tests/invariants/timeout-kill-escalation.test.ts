@@ -206,6 +206,10 @@ const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
     'the namespace supervisor holds each exact ChildProcess handle and retains its termination duty through exit',
   ],
   [
+    'src/runtime/supervisor-loss.ts',
+    'the serving coordinator retries refused signals against the replacement supervisor incarnation until ownership accepts or that exact process exits',
+  ],
+  [
     'src/providers/claude/appserver/controller.ts',
     'pre-existing Claude appserver child-shutdown escalation (two call sites: shutdown() and the replacement-child path), not yet migrated to gracefulKill',
   ],

@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { readCoordinatorLaunchState, type CoordinatorLaunchState } from '../infra/coordinator-launch.js';
 import { coordinatorLaunchPath } from '../infra/path/index.js';
 import {
+  hasQuarantinedUpgradeIntent,
   readUpgradeIntent,
   upgradeIntentProblem,
   visibleUpgradeIntent,
@@ -458,8 +459,10 @@ export type BackendStatusFull = BackendStatusFullBase & {
     NonNullable<CoordinatorLaunchState['hold']>,
     { kind: 'custody-unreadable' | 'no-eligible-build' }
   >;
+  launchSignalHolds?: NonNullable<CoordinatorLaunchState['signalHolds']>;
   upgrade?: UpgradeIntentVisibility;
   upgradeProblem?: UpgradeIntentProblem;
+  upgradeQuarantined?: boolean;
   legacyContenderDeferred?: boolean;
   supersededEpochs?: SupersededEpochClosures;
 };
@@ -1164,13 +1167,18 @@ async function getBackendStatusBase(pluginRoot: string): Promise<BackendStatusFu
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const status = await getBackendStatusBase(pluginRoot);
   const runDir = createRealRuntime(readBuildFlavor(pluginRoot)).paths.coral.coordinator.runDir;
-  if (!existsSync(coordinatorLaunchPath(runDir))) return status;
+  const quarantined = hasQuarantinedUpgradeIntent(runDir);
+  if (!existsSync(coordinatorLaunchPath(runDir))) return quarantined ? { ...status, upgradeQuarantined: true } : status;
   try {
-    const hold = readCoordinatorLaunchState(runDir).hold;
-    return hold?.kind === 'custody-unreadable' || hold?.kind === 'no-eligible-build'
-      ? { ...status, launchHold: hold }
-      : status;
+    const state = readCoordinatorLaunchState(runDir);
+    const hold = state.hold;
+    return {
+      ...status,
+      ...(hold?.kind === 'custody-unreadable' || hold?.kind === 'no-eligible-build' ? { launchHold: hold } : {}),
+      ...(state.signalHolds?.length ? { launchSignalHolds: state.signalHolds } : {}),
+      ...(quarantined ? { upgradeQuarantined: true } : {}),
+    };
   } catch {
-    return status;
+    return quarantined ? { ...status, upgradeQuarantined: true } : status;
   }
 }

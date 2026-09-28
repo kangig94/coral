@@ -1,16 +1,15 @@
 import { join } from 'node:path';
 
 import type { TimerHandle } from '../../infra/port-types.js';
-import { compareProductVersions } from '../../infra/product-version.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { SUCCESSION_CAPABILITY_VERSION } from '../../infra/bundle-manifest-address.js';
 import { SUCCESSION_PROTOCOL_VERSION } from '../../infra/succession-address.js';
 import {
+  quarantineCorruptUpgradeIntent,
   readUpgradeIntent,
   retryUpgradeIntentCas,
   revalidateUpgradeIntentTarget,
   type UpgradeIntent,
-  type UpgradeIntentCasOutcome,
   type UpgradeIntentCasStep,
   type UpgradeIntentChange,
   type UpgradeIntentRead,
@@ -33,6 +32,26 @@ import {
   type SuccessionOwnerId,
 } from './obligations.js';
 import { observeRecordedDeath } from './startup.js';
+import { createSuccessionReconciliationScheduler } from './reconciliation-scheduler.js';
+import {
+  createIntentTransitionRequests,
+  classifyTargetCustody,
+  settle,
+  decisionOf,
+  requestedIntent,
+  incumbentKey,
+  recordsSelf,
+  committing,
+  endedUnder,
+  holdsRecovery,
+  namedAttempts,
+  LAUNCH_IN_FLIGHT,
+  RECOVERY_HOLDS_INTENT,
+  ADOPTION_BLOCKER_OWNER,
+  withoutAdoptionBlocker,
+  TARGET_CHANGE_HOLD_OWNERS,
+  outranks,
+} from './intent-transitions.js';
 
 type IncumbentIdentity = UpgradeIntent['incumbent'];
 type Target = UpgradeIntent['target'];
@@ -70,32 +89,6 @@ export type SuccessionReconcilerOptions = Readonly<{
   retryIntervalMs?: number;
 }>;
 
-type TargetCustodyDisposition =
-  | Readonly<{ kind: 'blocked-by-jobs'; formatChanges: true; liveJobs: readonly string[] }>
-  | Readonly<{ kind: 'deferred' | 'eligible'; formatChanges: boolean }>;
-
-type TargetCustodyClassification =
-  | Readonly<{ kind: 'invalid-target' }>
-  | Readonly<{ kind: 'validated-target'; disposition: () => TargetCustodyDisposition }>;
-
-function classifyTargetCustody(
-  intent: UpgradeIntent,
-  options: SuccessionReconcilerOptions,
-): TargetCustodyClassification {
-  if (revalidateUpgradeIntentTarget(intent).kind !== 'validated') return { kind: 'invalid-target' };
-  return {
-    kind: 'validated-target',
-    disposition: () => {
-      const formatChanges =
-        options.storeFormatFingerprint !== undefined &&
-        intent.target.build.storeFormatFingerprint !== options.storeFormatFingerprint;
-      const liveJobs = formatChanges ? (options.liveJobIds?.() ?? []) : [];
-      if (liveJobs.length > 0) return { kind: 'blocked-by-jobs', formatChanges: true, liveJobs };
-      return { kind: intent.disposition === 'deferred' ? 'deferred' : 'eligible', formatChanges };
-    },
-  };
-}
-
 /**
  * How a launched attempt's commit ended while this process lives. `clear-owed` carries the write that clears the
  * attempt from the intent, which the commit could not land after reclaiming in place; until it lands, the intent
@@ -115,7 +108,6 @@ export type SuccessionDecision =
   | Readonly<{ kind: 'committed'; receipt: NonNullable<UpgradeIntent['completionReceipt']> }>
   | Readonly<{ kind: 'deferred'; reason: string; blockers?: readonly { owner: string; reason: string }[] }>
   | Readonly<{ kind: 'refused'; reason: string }>
-  /** Readiness for a preparation that no longer matches; `cause` names the change that ends the hold. */
   | Readonly<{ kind: 'stale'; reason: string; cause: 'target-change' | 'obligation-change' }>
   | Readonly<{ kind: 'aborted' }>;
 
@@ -138,150 +130,6 @@ export type SuccessionReconciler = Readonly<{
   notifyObligationChange: () => void;
   dispose: () => void;
 }>;
-
-function settle(decision: SuccessionDecision): UpgradeIntentCasStep<SuccessionDecision> {
-  return { kind: 'settle', value: decision };
-}
-
-function decisionOf(
-  outcome: UpgradeIntentCasOutcome<SuccessionDecision>,
-  refusal: 'refused' | 'deferred',
-): SuccessionDecision {
-  switch (outcome.kind) {
-    case 'settled':
-      return outcome.value;
-    case 'refused':
-      return { kind: refusal, reason: `upgrade intent is ${outcome.problem}` };
-    case 'exhausted':
-      return { kind: 'deferred', reason: 'upgrade intent changed concurrently' };
-  }
-}
-
-function sameTarget(left: Target, right: Target): boolean {
-  return successionTargetKey(left) === successionTargetKey(right);
-}
-
-/** Whether `candidate` is a strictly later build of `than`'s flavor; an unreadable version is never later. */
-function supersedes(candidate: Target, than: Target): boolean {
-  if (candidate.build.flavor !== than.build.flavor || sameTarget(candidate, than)) return false;
-  try {
-    return compareProductVersions(candidate.build.version, than.build.version) > 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * A fresh request replaces every attempt field this build knows, since the intent write keeps whatever a change
- * leaves out. Three survive: a queued target that still supersedes the request, the transient retry count, which is
- * keyed by its own target so a re-request cannot reset that target's bound, and an unserved mint discard, which is
- * owed to the store rather than to any target.
- */
-function requestedIntent(
-  request: TargetRequest,
-  incumbent: IncumbentIdentity,
-  queued: TargetRequest | null | undefined,
-  reason: 'upgrade' | 'supervision-repair' = 'upgrade',
-): UpgradeIntentChange {
-  return {
-    requestId: request.requestId,
-    reason,
-    incumbent,
-    target: request.target,
-    attemptId: null,
-    attemptChild: null,
-    attemptOwner: null,
-    disposition: 'pending',
-    blockers: [],
-    retryCondition: null,
-    attemptDeadline: null,
-    completionReceipt: null,
-    successionPreparation: null,
-    recoveryAttemptId: null,
-    recoveryBuildSetId: null,
-    recoveryGrantAttemptId: null,
-    recoveryRetry: null,
-    obligationRetry: null,
-    nextTarget: queued !== null && queued !== undefined && supersedes(queued.target, request.target) ? queued : null,
-  };
-}
-
-function incumbentKey(incumbent: IncumbentIdentity): string {
-  return JSON.stringify([
-    incumbent.instanceId,
-    incumbent.pid,
-    incumbent.incarnation,
-    incumbent.version,
-    incumbent.bundleHash,
-    incumbent.flavor,
-  ]);
-}
-
-/**
- * Whether `recorded` names the process `self` describes. An instance id is minted per boot, so a record that lacks
- * only the incarnation was written by this process before its incarnation could be read.
- */
-function recordsSelf(recorded: IncumbentIdentity, self: IncumbentIdentity): boolean {
-  return incumbentKey({ ...recorded, incarnation: recorded.incarnation ?? self.incarnation }) === incumbentKey(self);
-}
-
-/** An attempt this incumbent is committing; only its commit may release or clear it. */
-function committing(intent: UpgradeIntent): boolean {
-  return intent.disposition === 'attempting' && intent.attemptId !== null && intent.attemptOwner?.kind === 'incumbent';
-}
-
-/** The process an ended intent leaves serving: the successor its receipt names, or the incumbent that closed it. */
-function endedUnder(intent: UpgradeIntent, self: IncumbentIdentity): boolean {
-  return intent.disposition === 'completed'
-    ? intent.completionReceipt?.successor.instanceId === self.instanceId
-    : recordsSelf(intent.incumbent, self);
-}
-
-/** A same-build recovery grant stands in for a failed commit; only that recovery, or startup, may clear it. */
-function holdsRecovery(intent: UpgradeIntent): boolean {
-  return (
-    intent.attemptId !== null &&
-    intent.attemptOwner?.kind === 'incumbent' &&
-    intent.recoveryAttemptId === intent.attemptId
-  );
-}
-
-/** Startup reads a committing attempt or a same-build recovery grant as evidence of what may have been released. */
-function heldByCommit(intent: UpgradeIntent): boolean {
-  return committing(intent) || holdsRecovery(intent);
-}
-
-/** Every attempt whose grants the intent may still redeem, including those its preparation's receipts name. */
-function namedAttempts(intent: UpgradeIntent): string[] {
-  const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
-  return [
-    intent.attemptId,
-    intent.recoveryAttemptId,
-    intent.completionReceipt?.attemptId,
-    ...(preparation.success
-      ? [preparation.data.attemptId, ...preparation.data.receipts.map((receipt) => receipt.attemptId)]
-      : []),
-  ].filter((attemptId): attemptId is string => typeof attemptId === 'string');
-}
-
-const LAUNCH_IN_FLIGHT = 'launched attempt is settled only by its commit';
-const RECOVERY_HOLDS_INTENT = 'a same-build recovery attempt is settled only by its recovery or by startup';
-
-/** Reports why the serving incumbent has not adopted an intent another incumbent recorded. */
-const ADOPTION_BLOCKER_OWNER = 'succession-adoption';
-
-function withoutAdoptionBlocker(blockers: UpgradeIntent['blockers']): UpgradeIntent['blockers'] {
-  return blockers.filter((entry) => entry.owner !== ADOPTION_BLOCKER_OWNER);
-}
-
-/** Holds only a newer target can end; a pass that finds one leaves it for that target. */
-const TARGET_CHANGE_HOLD_OWNERS = new Set(['succession-commit', 'succession-prepare', 'succession-startup']);
-
-function outranks(target: Target, incumbent: IncumbentIdentity): boolean {
-  return (
-    target.build.flavor === incumbent.flavor && compareProductVersions(target.build.version, incumbent.version) > 0
-  );
-}
 
 function readPreparation(intent: UpgradeIntent): SuccessionPreparation | null {
   const parsed = successionPreparationSchema.safeParse(intent.successionPreparation);
@@ -345,7 +193,6 @@ function currentPreparation(
   );
 }
 
-/** A stale preparation whose target still validates with the same declaration was outdated by obligations. */
 function staleCause(
   intent: UpgradeIntent,
   preparation: SuccessionPreparation,
@@ -379,9 +226,6 @@ function emptyCapabilities(intent: UpgradeIntent): SuccessionCapabilities {
 export function createSuccessionReconciler(options: SuccessionReconcilerOptions): SuccessionReconciler {
   const newAttemptId = options.newAttemptId ?? (() => options.runtime.ids.uuid());
   let disposed = false;
-  let reconciling: Promise<SuccessionDecision> | null = null;
-  // A change that joins a running pass may postdate what that pass read, so it is owed one more pass.
-  let changedDuringReconcile = false;
   // The committer supervises one attempt at a time, so a second preparation while one runs could never launch.
   let launchedAttempt: string | null = null;
   let owedClear: Extract<SuccessionLaunchSettlement, { kind: 'clear-owed' }> | null = null;
@@ -389,12 +233,14 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   let pendingAttempt: Readonly<{ requestId: string; revision: number; attemptId: string }> | null = null;
   const preparingAttempts = new Map<string, number>();
   let backoffWake: TimerHandle | null = null;
-  const notifyObligationChange = (): void => {
-    if (disposed) return;
-    queueMicrotask(() => {
-      void reconcile().catch((error: unknown) => options.onReconcileError?.(error));
-    });
-  };
+  const scheduler = createSuccessionReconciliationScheduler({
+    time: options.runtime.time,
+    retryIntervalMs: options.retryIntervalMs ?? 30_000,
+    subscribe: options.subscribeObligationChanges,
+    runPass: () => reconcilePending(),
+    onError: options.onReconcileError,
+  });
+  const { reconcile, notifyObligationChange } = scheduler;
   const writeThen = (
     intent: UpgradeIntent,
     change: UpgradeIntentChange,
@@ -408,10 +254,6 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       return decision;
     },
   });
-  const unsubscribe = options.subscribeObligationChanges?.(notifyObligationChange);
-  const retryTimer = options.runtime.time.setInterval(notifyObligationChange, options.retryIntervalMs ?? 30_000);
-  retryTimer.unref?.();
-  queueMicrotask(notifyObligationChange);
 
   /** A backoff ends by this wake, so it never depends on another wake source arriving. */
   function wakeAt(atMs: number): void {
@@ -506,27 +348,19 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     return { kind: 'deferred', reason: 'a settled attempt was cleared from the upgrade intent' };
   }
 
-  function reconcile(): Promise<SuccessionDecision> {
-    if (reconciling !== null) {
-      changedDuringReconcile = true;
-      return reconciling;
-    }
-    const pending = reconcilePending().finally(() => {
-      reconciling = null;
-      if (!changedDuringReconcile) return;
-      changedDuringReconcile = false;
-      notifyObligationChange();
-    });
-    reconciling = pending;
-    return pending;
-  }
-
   async function reconcilePending(): Promise<SuccessionDecision> {
     if (!disposed && owedClear !== null) {
       const owed = await landOwedClear(owedClear);
       if (owed !== null) return owed;
     }
     const observed = status();
+    if (!disposed && observed.kind === 'corrupt' && launchedAttempt === null && owedClear === null) {
+      if (await quarantineCorruptUpgradeIntent(options.runDir)) {
+        options.onIntentChanged?.();
+        notifyObligationChange();
+        return { kind: 'deferred', reason: 'corrupt upgrade intent was quarantined for a fresh request' };
+      }
+    }
     if (disposed || observed.kind !== 'readable') return { kind: 'deferred', reason: 'no active upgrade intent' };
     const { intent } = observed;
     const discardHold = await retryUnservedMintDiscard(intent);
@@ -687,7 +521,6 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     return decisionOf(outcome, 'deferred');
   }
 
-  /** Replaces a settled intent with the target queued while its attempt held it; a stale target then closes. */
   async function adoptNextTarget(intent: UpgradeIntent, queued: TargetRequest): Promise<SuccessionDecision> {
     const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) => {
       if (observed.kind !== 'readable' || observed.intent.revision !== intent.revision) {
@@ -707,7 +540,6 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     return decisionOf(outcome, 'deferred');
   }
 
-  /** An intent whose target this incumbent already runs, or outranks, has nothing left to apply. */
   async function close(intent: UpgradeIntent): Promise<SuccessionDecision> {
     const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) =>
       observed.kind === 'readable' && observed.intent.revision === intent.revision
@@ -724,148 +556,15 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    options.runtime.time.clearInterval(retryTimer);
+    scheduler.dispose();
     options.runtime.time.clearTimeout(backoffWake);
-    unsubscribe?.();
   }
 
-  async function request(input: { requestId: string; target: Target }): Promise<SuccessionDecision> {
-    const self = options.incumbent();
-    try {
-      if (
-        input.target.build.flavor !== self.flavor ||
-        compareProductVersions(input.target.build.version, self.version) <= 0
-      ) {
-        return { kind: 'refused', reason: 'target does not strictly outrank the incumbent' };
-      }
-    } catch {
-      return { kind: 'refused', reason: 'target or incumbent version is invalid' };
-    }
-    const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) => {
-      if (observed.kind !== 'absent' && observed.kind !== 'readable') {
-        return settle({ kind: 'refused', reason: `upgrade intent is ${observed.kind}` });
-      }
-      const current = observed.kind === 'readable' ? observed.intent : null;
-      if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
-        if (
-          current.attemptId !== null &&
-          ((options.observeServing?.(current.attemptId) ?? null) !== null ||
-            (current.attemptChild?.attemptId === current.attemptId &&
-              observeRecordedDeath(current.attemptChild) !== 'absent') ||
-            (recordsSelf(current.incumbent, self) && (heldByCommit(current) || current.attemptId === launchedAttempt)))
-        ) {
-          return queueBehindAttempt(current, input);
-        }
-        let comparison: number;
-        try {
-          comparison = compareProductVersions(input.target.build.version, current.target.build.version);
-        } catch {
-          return settle({ kind: 'refused', reason: 'pending target version is invalid' });
-        }
-        if (
-          sameTarget(current.target, input.target) ||
-          (current.target.build.flavor === input.target.build.flavor &&
-            comparison <= 0 &&
-            revalidateUpgradeIntentTarget(current).kind === 'validated')
-        ) {
-          notifyObligationChange();
-          return settle({ kind: 'registered', intent: current });
-        }
-        if (current.target.build.flavor !== input.target.build.flavor) {
-          return settle({ kind: 'refused', reason: 'pending target has another build flavor' });
-        }
-      }
-      return {
-        kind: 'write',
-        expectedRevision: current?.revision ?? null,
-        change: requestedIntent(input, self, current?.nextTarget),
-        settle: (written) => {
-          options.onIntentChanged?.();
-          notifyObligationChange();
-          return { kind: 'registered', intent: written };
-        },
-      };
-    });
-    return decisionOf(outcome, 'refused');
-  }
-
-  async function repairSupervision(input: { requestId: string; target: Target }): Promise<SuccessionDecision> {
-    const self = options.incumbent();
-    if (
-      input.target.build.flavor !== self.flavor ||
-      input.target.build.version !== self.version ||
-      input.target.build.bundleHash !== self.bundleHash ||
-      (options.runningBuildSetId !== undefined && input.target.build.buildSetId !== options.runningBuildSetId)
-    )
-      return { kind: 'refused', reason: 'supervision repair must use the serving build' };
-    const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) => {
-      if (observed.kind !== 'absent' && observed.kind !== 'readable')
-        return settle({ kind: 'deferred', reason: `upgrade intent is ${observed.kind}` });
-      const current = observed.kind === 'readable' ? observed.intent : null;
-      const active = current !== null && current.disposition !== 'closed' && current.disposition !== 'completed';
-      if (active) {
-        let newerTargetCanTakeCustody = false;
-        if (current.reason !== 'supervision-repair' && supersedes(current.target, input.target)) {
-          const custody = classifyTargetCustody(current, options);
-          newerTargetCanTakeCustody = custody.kind === 'validated-target' && custody.disposition().kind === 'eligible';
-        }
-        if (current.reason === 'supervision-repair' || newerTargetCanTakeCustody) {
-          notifyObligationChange();
-          return settle({ kind: 'registered', intent: current });
-        }
-        if (current.attemptId !== null) {
-          notifyObligationChange();
-          return settle({ kind: 'deferred', reason: 'existing succession attempt must settle before repair' });
-        }
-      }
-      return {
-        kind: 'write',
-        expectedRevision: current?.revision ?? null,
-        change: requestedIntent(
-          input,
-          self,
-          !active
-            ? null
-            : current.nextTarget !== null &&
-                current.nextTarget !== undefined &&
-                supersedes(current.nextTarget.target, current.target)
-              ? current.nextTarget
-              : { requestId: current.requestId, target: current.target },
-          'supervision-repair',
-        ),
-        settle: (written) => {
-          options.onIntentChanged?.();
-          notifyObligationChange();
-          return { kind: 'registered', intent: written };
-        },
-      };
-    });
-    return decisionOf(outcome, 'deferred');
-  }
-
-  /**
-   * Only the attempt's commit may clear an attempt it holds, so a later target is queued beside it rather than
-   * replacing it, and the pass after that commit settles adopts it.
-   */
-  function queueBehindAttempt(current: UpgradeIntent, input: TargetRequest): UpgradeIntentCasStep<SuccessionDecision> {
-    notifyObligationChange();
-    const queued = current.nextTarget ?? null;
-    if (
-      !supersedes(input.target, current.target) ||
-      (queued !== null && (sameTarget(queued.target, input.target) || !supersedes(input.target, queued.target)))
-    ) {
-      return settle({ kind: 'registered', intent: current });
-    }
-    return {
-      kind: 'write',
-      expectedRevision: current.revision,
-      change: { ...current, nextTarget: { requestId: input.requestId, target: input.target } },
-      settle: (written) => {
-        options.onIntentChanged?.();
-        return { kind: 'registered', intent: written };
-      },
-    };
-  }
+  const { request, repairSupervision } = createIntentTransitionRequests(
+    options,
+    notifyObligationChange,
+    () => launchedAttempt,
+  );
 
   async function prepare(requestId: string): Promise<SuccessionDecision> {
     const heldAttempts = new Set<string>();
