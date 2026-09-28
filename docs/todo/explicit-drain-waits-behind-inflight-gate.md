@@ -1,34 +1,13 @@
-# An explicit drain can wait behind the pre-sequence in-flight gate forever
+# TODO — order listener close after the explicit drain's in-flight gate
 
-**Status**: open for explicit administrative shutdown. Succession commit has a separate bounded admission pause and listening-handle transfer; it does not resolve this pre-sequence shutdown gate.
+**Status**: partly implemented. Unary request leases now bound ordinary in-flight ownership; the listener-close ordering is still open.
 
-## What is wrong
+`IdleTimer.tryDrain` in `src/coordinator/live/idle.ts` starts an explicit administrative drain only when its in-flight count reaches zero. `createRequestLeaseOwner` in `src/coordinator/live/request-leases.ts` now aborts a request at its deadline and, after a settlement grace, records continuing work and releases its in-flight token. That removes the ordinary never-settling unary request from the gate. A failed abandoned-request status write still retains the token until recording succeeds, so the gate is not an unconditional wall-clock bound.
 
-`IdleTimer.tryDrain` (`src/coordinator/live/idle.ts`) does not start an explicitly requested drain while
-any request remains in flight. A long unary request can therefore keep `backend shutdown` before the
-sequence for as long as that request lives, with no ledger and no deadline governing the wait.
+`buildOpeningShutdownObligations` in `src/coordinator/shutdown.ts` calls `serverClose.start()` before it constructs the bounded `inflight drain` obligation. The gate is currently what keeps the listener available while admitted unary work finishes. Starting listener close before that wait makes the two ordering promises disagree.
 
-`buildOpeningShutdownObligations` (`src/coordinator/shutdown.ts`) calls
-`serverClose.start()` eagerly, before the `inflight drain` obligation is constructed, and the later
-`server close` obligation only joins that already-running task. The `inflight drain` obligation bounds
-only what is sequenced after it; the gate is the only thing keeping the transport answerable while unary
-work is in flight.
+## Remaining decision
 
-Wait subscriptions are outside this gate by decision, so a drain interrupts them. IPC listener release
-closes the socket; the client completes the iterator at that early EOF, and `coral-cli wait` exits 75 with
-a cursor-based resume command. HTTP shutdown destroys active connections before tracked SSE responses are
-ended, so `/jobs/wait` is also interrupted, but as a transport close rather than IPC's clean iterator EOF.
+Give listener close its own ordering after the in-flight wait, or decide explicitly that administrative drain stops answering new requests immediately. Include the abandoned-request-recording failure in that decision: elapsed lease time alone does not establish that the request's continuation has a durable owner.
 
-## Start condition
-
-Give listener close its own ordering so it cannot begin before the in-flight wait it is supposed to
-follow, or decide that an explicit drain stops answering immediately. Removing the gate before one of
-those is settled trades an unbounded wait for a coordinator that cannot report the drain it just entered.
-
-## Shared blocker
-
-The gate's unbounded member needs the same decision about who may end a coordinator that cannot end
-itself as [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md),
-[`discovery-withdrawal-is-unbounded-on-the-exit-path.md`](./discovery-withdrawal-is-unbounded-on-the-exit-path.md),
-and [`ensure-waits-less-than-the-drain-it-waits-for.md`](./ensure-waits-less-than-the-drain-it-waits-for.md).
-The listener-close ordering decision above remains its own prerequisite.
+`watchChild` in `src/coordinator-launch/supervisor.ts` provides independent current-build supervision if the coordinator stops making progress. It does not choose when a responsive coordinator should close its listener.

@@ -1,108 +1,13 @@
-# TODO — `~/.coral/exports/jobs/` has no lifecycle owner
+# TODO — give job exports a retention owner and a restore path
 
-**Status**: open, two parts. The epoch deletion gate now requires an independently readable result artifact through `JobLocationIndex.resultsReleased` in `src/jobs/location-index.ts`. That gate does not assign an expiry or prune `~/.coral/exports/jobs/`. Retention authority for the export tree and archived-session restore remain owed.
+**Status**: open for two ordered decisions. Epoch deletion now requires an independently readable result, but no policy expires exported results.
 
-## The fact both documents disagreed about
+`createStaleJobCleanupPolicy` in `src/coordinator/lifecycle.ts` removes `progressStore.jobDir(jobId)` and the durable CLI metadata row when a terminal scratch artifact is old or from an older bundle. `jobsDir` in `src/jobs/paths.ts` places that scratch under the system temporary root. Exported results and archived provider artifacts live under `runtime.paths.coral.exports.jobsRoot`, a separate tree. The scratch policy does not prune that tree, and no export-prune owner is established.
 
-Nothing prunes `~/.coral/exports/jobs/<id>/`. Ever.
+The epoch closure gate in `src/jobs/location-index.ts` protects result availability while a superseded store may be deleted. It does not set an expiry for user content. Decide whether `CORAL_JOBS_RETENTION_DAYS` includes exports or whether exports get their own policy, whether terminal state is required before pruning, and whether archived provider artifacts share the result's lifetime. Update the operator documentation with that decision.
 
-`CORAL_JOBS_RETENTION_DAYS` prunes `progressStore.jobDir(id)`, which `src/jobs/paths.ts` defines as
-`<tmpdir>/coral-jobs/<id>` — temporary scratch — plus the job's durable CLI-process metadata row
-(`src/coordinator/lifecycle.ts` → `src/jobs/runtime-meta-store.ts`, a `DELETE FROM meta`).
-
-The export tree is `runtime.paths.coral.exports.jobsRoot`, a different root. No removal targets it. The scratch prune is
-`STALE_ARTIFACT_PRUNE_OBLIGATION` (`src/coordinator/lifecycle.ts`), and it removes exactly
-`progressStore.jobDir(jobId)` and the `meta` row — never the export.
-
-**The source stated the false belief twice, and both are now gone.** `resolveJobRetentionMs`'s doc
-comment called the setting "the terminal-job **export** retention window" for a prune that touches only
-scratch. `cleanupStaleJobs`'s doc comment (both `src/coordinator/lifecycle.ts`) then said it prunes
-`<exports>/jobs/<id>/` and argued the safety of doing so from `result.md` being regenerable — a
-rationale belonging to the export tree, attached to a function that never touches it. A reader checking
-whether exports were pruned would have read that comment and stopped. Neither was found by a gate;
-both were found by measuring the directory.
-
-**Measured 2026-09-12** on the author's host, which is the scale this has reached with no owner:
-
-```
-~/.coral/exports/jobs   17G   across 7,545 directories
-~/.coral (total)        19G
-/tmp/coral-jobs        628K   across 154 directories   ← the root that IS pruned
-```
-
-### The archive-restore document was not inventing its constraint
-
-It recorded that the archive is pruned on the first boot after any version change, giving a restore
-window of "until the next upgrade", and built a blocking design question on that. The earlier merge
-dismissed this as a constraint that does not exist. **It exists — for a different directory.** The
-prune's eligibility test is `fromOldBundle || agedOut` (`src/coordinator/lifecycle.ts`), so a scratch artifact
-carrying a previous `bundleHash` is removed regardless of age. That is precisely "pruned on the first
-boot after any version change", and it is true of `progressStore.jobDir`.
-
-The error was applying a true fact about the scratch directory to the export tree — the same shape as
-the incorrect claim `build-identity-and-upgrade.md` had to retract. Two documents describing two
-different roots with one name is what produced the contradiction, and it is why this merge names the
-root every time it makes a claim.
-
-The retained-result gate for store epoch deletion protects result availability while an old epoch may be reclaimed. It does not retire the exported tree or provider artifacts, and it does not decide whether `CORAL_JOBS_RETENTION_DAYS` should apply to either.
-
-The preserved provider artifacts live **inside** the export tree —
-`exports.jobsRoot/<jobId>/provider-artifacts/<provider>/actions/<archiveActionId>/`
-(`src/sessions/provider-artifact-archive.ts`) — so they inherit its absent lifetime exactly,
-and no separate decision covers them.
-
-## What follows from getting the fact right
-
-The design pressure inverts. It is not "restore before it vanishes"; it is "this accumulates forever
-with no owner". Two consequences:
-
-- **Disk and privacy.** An operator shortening retention for either reason keeps every job result
-  indefinitely, including provider artifacts archived beside them. The setting's name implies otherwise.
-- **Restore is unblocked, but second in line.** Archived-session restore's real load-bearing question is
-  _who owns a restored file and what ends it_ — which is answerable by lookup once this directory has a
-  lifecycle authority, and is guesswork before that.
-
-## Part 1 — retention authority
-
-Decide who owns the export tree's lifetime, then implement it. The decision is genuinely a product one,
-because the content is user data:
-
-- Does the existing `CORAL_JOBS_RETENTION_DAYS` extend to cover exports, or does exports get its own
-  setting? Extending changes the meaning of a setting operators have already tuned.
-- Does pruning an export require the job to be terminal _and_ aged, as scratch cleanup does?
-- What happens to a provider artifact archived beside a result — same lifetime, or its own?
-
-The documentation must be corrected in the same change. It said the wrong thing for two review rounds
-before anyone checked, and elaborating on a false claim is how it survived that long.
-
-## Part 2 — archived session restore
-
-**Half already ships.** Coral removes the provider's native session file after a Coral-launched run,
-because leaving it in place fills the provider's own interactive `/resume` picker with sessions that
-were never a person's working session — a real UX regression in a tool Coral does not own. Before
-removing it, Coral preserves it. That preservation has been shipping since at least 2026-06-28.
-
-What does not exist is the restore direction: taking a preserved file and putting it back so the
-provider can resume it.
-
-Its open questions, with the false constraint removed:
-
-1. **Who owns a restored file, and what ends it?** Restoring re-creates exactly the picker pollution the
-   removal exists to prevent. Answerable once Part 1 defines lifetime authority.
-2. **What does the operator name?** A job id, a session id, or a picker of preserved sessions.
-3. **What happens if the provider's own store has moved on** — same session id present, different
-   content.
-
-## Ship as two PRs, in order
-
-Part 1 is a cleanup policy. Part 2 is a new user-facing verb. They do not belong in one change, and
-Part 2's first question is guesswork until Part 1 lands.
-
-## Explicitly out of scope
-
-The journal, the store fingerprint, and what `result.md` contains. This is only about how long the
-exported tree lives and who says so.
+Coral preserves a provider session file before removing the provider's native copy, avoiding pollution of the provider's interactive resume picker. There is still no restore command that places a preserved file back. Restore must follow the export-lifetime decision so its re-created file has a clear owner and end. It also needs a user-facing identity and a collision rule when the provider already has the same session id.
 
 ## Start condition
 
-Part 1 needs the product decisions above answered. Part 2 needs Part 1.
+Set export retention first, then design archived-session restore. The retained-result gate is not a substitute for either decision.
