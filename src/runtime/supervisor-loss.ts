@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { CoordinatorLaunchRecord } from '../infra/coordinator-launch.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
+import { installReplacementSupervisorChannel } from './succession-attempt.js';
 
 const RETRY_MS = 1_000;
 const ACCEPTANCE_DEADLINE_MS = 10_000;
@@ -23,7 +24,6 @@ export function startReplacementSupervisor(
   delete env.CORAL_STARTUP_ATTEMPT_ID;
   delete env.CORAL_SUCCESSION_ATTEMPT_ID;
 
-  const record = new CoordinatorLaunchRecord(runDir);
   let failing = false;
   const retry = (error: Error): void => {
     if (!failing) onError(error);
@@ -36,10 +36,11 @@ export function startReplacementSupervisor(
       retry(new Error('No validated supervisor executable for the running build'));
       return;
     }
+    const record = new CoordinatorLaunchRecord(runDir);
     const supervisor = spawn(
       process.execPath,
       [join(root, 'bridge', 'coral-sentinel.cjs'), join(root, 'bridge', 'coral-backend.cjs')],
-      { detached: true, stdio: 'ignore', env },
+      { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env },
     );
     let settled = false;
     const finish = (error: Error | null): void => {
@@ -47,8 +48,9 @@ export function startReplacementSupervisor(
       settled = true;
       clearInterval(poll);
       clearTimeout(deadline);
+      record.close();
       if (error === null) {
-        record.close();
+        installReplacementSupervisorChannel(supervisor);
         supervisor.unref();
       } else retry(error);
     };
@@ -70,11 +72,10 @@ export function startReplacementSupervisor(
     const deadline = setTimeout(() => supervisor.kill('SIGTERM'), ACCEPTANCE_DEADLINE_MS);
     deadline.unref();
     supervisor.once('error', finish);
-    supervisor.once('exit', (code, signal) =>
-      finish(
-        code === 0 ? null : new Error(`Replacement supervisor exited before accepting ownership (${code ?? signal})`),
-      ),
-    );
+    supervisor.once('exit', (code, signal) => {
+      if (settled) retry(new Error(`Replacement supervisor exited after accepting ownership (${code ?? signal})`));
+      else finish(new Error(`Replacement supervisor exited before accepting ownership (${code ?? signal})`));
+    });
   };
   start();
 }

@@ -8,6 +8,15 @@ import type { TimePort } from '../infra/port-types.js';
 
 export type SuccessionAttemptProcess = ChildProcess & { coordinatorPid?: Promise<number> };
 
+let replacementSupervisor: ChildProcess | null = null;
+
+export function installReplacementSupervisorChannel(supervisor: ChildProcess): void {
+  replacementSupervisor = supervisor;
+  supervisor.once('disconnect', () => {
+    if (replacementSupervisor === supervisor) replacementSupervisor = null;
+  });
+}
+
 export interface SuccessionAttemptPorts {
   readonly time: TimePort;
   spawn(bundleDir: string, attemptId: string): SuccessionAttemptProcess;
@@ -26,6 +35,7 @@ export interface SuccessionAttemptPorts {
 }
 
 function requestSupervisedAttempt(bundleDir: string, attemptId: string): SuccessionAttemptProcess {
+  const supervisor = (replacementSupervisor?.connected ? replacementSupervisor : process) as ChildProcess;
   const processView = new EventEmitter() as SuccessionAttemptProcess;
   let pid: number | undefined;
   let connected = true;
@@ -39,7 +49,7 @@ function requestSupervisedAttempt(bundleDir: string, attemptId: string): Success
   });
   Object.defineProperties(processView, {
     pid: { get: () => pid },
-    connected: { get: () => connected && process.connected },
+    connected: { get: () => connected && supervisor.connected },
     exitCode: { get: () => exitCode },
     signalCode: { get: () => signalCode },
     coordinatorPid: { value: coordinatorPid },
@@ -51,13 +61,13 @@ function requestSupervisedAttempt(bundleDir: string, attemptId: string): Success
       ) => {
         const sentHandle = typeof handle === 'function' ? undefined : handle;
         const done = typeof handle === 'function' ? handle : callback;
-        process.send?.({ kind: 'coral-supervisor-relay', attemptId, message }, sentHandle, done);
+        supervisor.send?.({ kind: 'coral-supervisor-relay', attemptId, message }, sentHandle, done);
         return true;
       },
     },
     kill: {
       value: (signal?: NodeJS.Signals) => {
-        process.send?.({ kind: 'coral-supervisor-retire-attempt', attemptId, signal });
+        supervisor.send?.({ kind: 'coral-supervisor-retire-attempt', attemptId, signal });
         return true;
       },
     },
@@ -87,7 +97,7 @@ function requestSupervisedAttempt(bundleDir: string, attemptId: string): Success
         exitCode = 'exitCode' in message && typeof message.exitCode === 'number' ? message.exitCode : null;
         signalCode =
           'signal' in message && typeof message.signal === 'string' ? (message.signal as NodeJS.Signals) : null;
-        process.off('message', onMessage);
+        supervisor.off('message', onMessage);
         processView.emit('exit', exitCode, signalCode);
         processView.emit('disconnect');
         break;
@@ -99,8 +109,8 @@ function requestSupervisedAttempt(bundleDir: string, attemptId: string): Success
       }
     }
   };
-  process.on('message', onMessage);
-  process.send?.({ kind: 'coral-supervisor-start-attempt', attemptId, bundleDir });
+  supervisor.on('message', onMessage);
+  supervisor.send?.({ kind: 'coral-supervisor-start-attempt', attemptId, bundleDir });
   return processView;
 }
 
@@ -109,7 +119,10 @@ export function createRealSuccessionAttemptPorts(): SuccessionAttemptPorts {
   return {
     time: createRealTimePort(),
     spawn: (bundleDir, attemptId) => {
-      if (process.env.CORAL_LAUNCH_ADMISSION !== '1' || process.send === undefined)
+      if (
+        process.env.CORAL_LAUNCH_ADMISSION !== '1' ||
+        (replacementSupervisor?.connected !== true && !process.connected)
+      )
         throw new Error('Succession launch requires a namespace supervisor channel');
       return requestSupervisedAttempt(bundleDir, attemptId);
     },

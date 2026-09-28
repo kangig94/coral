@@ -1203,6 +1203,12 @@ function createTrackedIpcListener(
     socket.on('data', onData);
     if (carriedFrame.length > 0) onData(carriedFrame);
     socket.resume();
+    // Succession's readStop() can leave libuv stopped after the stream resumes.
+    const handle = (socket as unknown as { _handle?: { reading?: boolean; readStart?: () => void } })._handle;
+    if (handle?.reading === false && typeof handle.readStart === 'function') {
+      handle.readStart();
+      handle.reading = true;
+    }
   };
   const server = createServer({ pauseOnConnect: true }, acceptSocket);
 

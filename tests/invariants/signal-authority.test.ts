@@ -338,6 +338,7 @@ function establishesSignalAuthority(
   const refreshesExactIdentity =
     /readProcessIncarnation\s*\(/u.test(text) ||
     /readIncarnation\s*\(/u.test(text) ||
+    /probeProcessIncarnation\s*\(/u.test(text) ||
     /observeRecordedTarget\s*\(/u.test(text);
   return refusesInsufficientPlatformAuthority && refreshesExactIdentity;
 }
@@ -405,6 +406,18 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
     `;
 
     expect(unguardedSignallingFunctions(fixture, 'negative-control.ts')).toEqual(['staleAuthority']);
+  });
+
+  it('recognizes a fresh process-incarnation probe under a platform signal guard', () => {
+    const fixture = `
+      function guarded(pid: number, incarnation: ProcessIncarnation, platform: NodeJS.Platform) {
+        if (!incarnationMayAuthorizeSignal(platform)) return;
+        if (probeProcessIncarnation(pid) !== incarnation) return;
+        process.kill(pid, 'SIGTERM');
+      }
+    `;
+
+    expect(unguardedSignallingFunctions(fixture, 'positive-control.ts')).toEqual([]);
   });
 
   it('accepts a branded live-child authority only when its collection guard dominates its pid signal', () => {

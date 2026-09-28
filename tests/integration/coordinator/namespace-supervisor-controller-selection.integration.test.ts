@@ -8,6 +8,7 @@ import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 
 import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { providerHandoffCapsulePath } from '#src/infra/path/provider-proxy.js';
@@ -16,6 +17,7 @@ import { createPluginFixture, createShippedPluginFixture } from '#tests/integrat
 import { validatedBuild } from '#src/coordinator-launch/selection.js';
 import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { supervisorAcceptedUpgrade } from '#src/transport/ipc/ensure.js';
 
 function fixtureBuildSetId(root: string): string {
   return (
@@ -26,6 +28,37 @@ function fixtureBuildSetId(root: string): string {
 }
 
 describe('namespace supervisor controller selection', () => {
+  it('requires a request accepted by the current owner before reporting upgrade acceptance', () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-acceptance-'));
+    roots.push(home);
+    const target = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
+    const paths = coordinatorPaths('prod', { baseDir: join(home, '.coral') });
+    const record = new CoordinatorLaunchRecord(paths.runDir);
+    try {
+      const manifest = validatedBuild(target.root);
+      const incarnation = probeProcessIncarnation(process.pid);
+      if (manifest === null || incarnation === null) throw new Error('Fixture identity is unavailable');
+      const desired = {
+        version: manifest.version,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: 'test',
+      };
+      const request = record.request(join(target.root, 'bridge', 'coral-backend.cjs'), manifest.buildSetId);
+      const owner = record.acquire(
+        { id: 'current', process: { pid: process.pid, incarnation }, buildSetId: manifest.buildSetId },
+        Date.now(),
+      );
+      if (owner === null) throw new Error('Owner did not acquire');
+      expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('unproven');
+      record.accept(owner, request.id, Date.now());
+      expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('accepted');
+    } finally {
+      record.close();
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('does not let a v1 capsule, which no build can take over, hold every launch', () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-v1-controller-'));
     try {

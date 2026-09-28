@@ -444,6 +444,46 @@ describe('real-process provider host transfer', () => {
     expect(hostsAlive(hosts)).toBe(true);
   }, 180_000);
 
+  it('transfers an active job when a replacement supervisor inherits its coordinator', async () => {
+    assertBuildArtifactsAvailable();
+    const world = createTransferWorld();
+    const { old, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
+    if (old.child.pid === undefined) throw new Error('Supervisor has no PID');
+    const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(world.home, 'prod').runDir);
+    try {
+      process.kill(old.child.pid, 'SIGKILL');
+      await waitForCondition(() => launch.read().owner?.process.pid !== old.child.pid, 20_000);
+      const { newerFixture } = await upgradeTo(world, incumbentPid);
+      await waitForCondition(() => launch.read().launch?.buildSetId === buildSetIdOf(newerFixture), 30_000);
+      expect(hostsAlive(hosts)).toBe(true);
+      writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
+      try {
+        await waitForCondition(() => existsSync(join(world.state, 'emitted-after-transfer')), 15_000);
+      } catch (error: unknown) {
+        throw new Error(
+          `Inherited transfer lost job progress: ${JSON.stringify({
+            launch: launch.read(),
+            intent: readUpgradeIntent(coordinatorFilesForHome(world.home, 'prod').runDir),
+            waiter: waiter.output(),
+            emitted: existsSync(join(world.state, 'emitted-after-transfer')),
+            hostsAlive: hostsAlive(hosts),
+            discovery: readDiscoveryRecordForHome(world.home, 'prod'),
+            outputs: coordinators.map((coordinator) => coordinator.output().slice(-4000)),
+          })}`,
+          { cause: error },
+        );
+      }
+      writeFileSync(join(world.state, 'release-job'), 'released');
+      await waitForCondition(() => existsSync(join(world.state, 'terminal-completed')), 15_000);
+      expect(await waiter.completed, waiter.output()).toBe(0);
+      expect(waiter.output()).toMatch(/completed/iu);
+      expect(await runCli(newerFixture, world, ['jobs', 'detail', jobId])).toMatch(/completed/iu);
+      expect(await runCli(newerFixture, world, ['wait', 'jobs', jobId, '--verbose'])).toMatch(/completed/iu);
+    } finally {
+      launch.close();
+    }
+  }, 240_000);
+
   it('recovers the retained controller before a newer installed build while its host is live', async () => {
     assertBuildArtifactsAvailable();
     const world = createTransferWorld();

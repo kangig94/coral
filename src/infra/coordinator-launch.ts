@@ -21,6 +21,7 @@ export type LaunchReservation = Readonly<{
   buildSetId: string;
   purpose: 'startup' | 'contender' | 'succession' | 'recovery' | 'legacy-retirement';
   phase: 'reserved' | 'admitted' | 'serving' | 'exited';
+  admittedAt?: number;
   parent?: LaunchProcess;
   child?: LaunchProcess;
 }>;
@@ -57,7 +58,8 @@ export type CoordinatorLaunchState = Readonly<{
   requests: readonly LaunchRequest[];
   hold?:
     | Readonly<{ kind: 'no-eligible-build'; controller: string }>
-    | Readonly<{ kind: 'target-indeterminate'; requestId: string }>;
+    | Readonly<{ kind: 'target-indeterminate'; requestId: string }>
+    | Readonly<{ kind: 'inherited-child-unresponsive'; launchId: string; pid: number }>;
 }>;
 
 export const LAUNCH_OWNER_LEASE_MS = 10 * 60_000;
@@ -258,6 +260,31 @@ export class CoordinatorLaunchRecord {
     });
   }
 
+  holdInheritedChild(owner: LaunchOwner, reservation: LaunchReservation, now: number): void {
+    this.#change((state) => {
+      if (!this.#current(state, owner, now) || reservation.child === undefined) return { state, result: undefined };
+      const hold = {
+        kind: 'inherited-child-unresponsive' as const,
+        launchId: reservation.id,
+        pid: reservation.child.pid,
+      };
+      if (state.hold?.kind === hold.kind && state.hold.launchId === hold.launchId) return { state, result: undefined };
+      return { state: { ...state, hold }, result: undefined };
+    });
+  }
+
+  clearInheritedChildHold(owner: LaunchOwner, reservation: LaunchReservation, now: number): void {
+    this.#change((state) => {
+      if (
+        !this.#current(state, owner, now) ||
+        state.hold?.kind !== 'inherited-child-unresponsive' ||
+        state.hold.launchId !== reservation.id
+      )
+        return { state, result: undefined };
+      return { state: { ...state, hold: undefined }, result: undefined };
+    });
+  }
+
   accept(owner: LaunchOwner, requestId: string, now: number): boolean {
     return this.#change((state) => {
       if (!this.#current(state, owner, now)) return { state, result: false };
@@ -364,7 +391,7 @@ export class CoordinatorLaunchRecord {
         launch.phase !== 'reserved'
       )
         return { state, result: false };
-      const admitted: LaunchReservation = { ...launch, phase: 'admitted', parent, child };
+      const admitted: LaunchReservation = { ...launch, phase: 'admitted', admittedAt: now, parent, child };
       return {
         state: slot === 'launch' ? { ...state, launch: admitted } : { ...state, attempt: admitted },
         result: true,
