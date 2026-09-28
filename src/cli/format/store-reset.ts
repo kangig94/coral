@@ -161,6 +161,9 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
       let next: string;
       if (epoch.role === 'current') {
         next = 'serving current epoch';
+      } else if (epoch.protectionUnreadable) {
+        next =
+          'pending protection marker is unreadable; the coordinator retries protection for a proven epoch and retains the marker';
       } else if (epoch.protectionPending !== undefined) {
         next = `automatic protection retry once its opener releases it (${epoch.protectionPending})`;
       } else if (epoch.role === 'removed') {

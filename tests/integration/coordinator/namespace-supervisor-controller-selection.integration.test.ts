@@ -467,11 +467,11 @@ describe('namespace supervisor controller selection', () => {
           return (
             requests.find((entry) => entry.id === rollback.id)?.status === 'unavailable' &&
             requests.find((entry) => entry.id === redundant.id)?.status === 'unavailable' &&
-            requests.find((entry) => entry.buildSetId === fixtureBuildSetId(newer.root))?.status === 'recorded'
+            requests.find((entry) => entry.buildSetId === fixtureBuildSetId(newer.root))?.status === 'accepted'
           );
         }, 5_000);
       } catch (error: unknown) {
-        throw new Error(`Starting request was not recorded: ${JSON.stringify({ state: record.read(), cliOutput })}`, {
+        throw new Error(`Starting request was not accepted: ${JSON.stringify({ state: record.read(), cliOutput })}`, {
           cause: error,
         });
       }

@@ -896,7 +896,7 @@ describe('namespace supervisor recovery', () => {
       Date.now(),
     );
     if (first === null) throw new Error('First owner did not acquire');
-    expect(record.accept(first, request.id, Date.now())).toBe(false);
+    expect(record.accept(first, request.id, Date.now())).toBe(true);
     const harness = join(home, 'supervisor.mjs');
     await build({
       entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],

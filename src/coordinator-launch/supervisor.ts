@@ -964,8 +964,7 @@ async function reconcileInheritedChildren(input: {
       const child = slot.child;
       if (child === undefined) continue;
       if (incumbentLiveness(child) === 'absent' || childHasExited(child.pid)) {
-        if (record.settleAbsentChild(owner.current, slot, Date.now()))
-          record.clearInheritedChildHold(owner.current, slot, Date.now());
+        record.settleAbsentChild(owner.current, slot, Date.now());
         inheritedWatch.delete(slot.id);
         continue;
       }
@@ -991,8 +990,6 @@ async function reconcileInheritedChildren(input: {
       if (healthy && watch.terminationAt === null) {
         watch.lastHealthy = now;
         record.observeInheritedHealth(owner.current, slot, now);
-        record.clearInheritedChildHold(owner.current, slot, now);
-        if (slot.phase === 'admitted') record.serving(slot, child);
         if (slot.buildSetId === originalManifest.buildSetId)
           settleRequests(record, owner.current, originalManifest, true);
         if (

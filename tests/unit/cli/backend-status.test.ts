@@ -286,6 +286,30 @@ describe('pending upgrade visibility', () => {
     expect(rendered).not.toContain('command=');
   });
 
+  it('shows an unreadable pending protection marker in backend status', () => {
+    const rendered = formatBackendStatus(
+      {
+        ...runningBackendStatus({}),
+        supersededEpochs: {
+          kind: 'observed',
+          epochs: [
+            {
+              epoch: '1',
+              epochKey: null,
+              role: 'preserved',
+              closure: 'pending',
+              reason: null,
+              protectionUnreadable: true,
+            },
+          ],
+        },
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('pending protection marker unreadable; retained for retry');
+  });
+
   it('shows the launch ID whose SIGKILL delivery is still held', () => {
     const rendered = formatBackendStatus(
       {

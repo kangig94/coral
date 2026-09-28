@@ -448,6 +448,7 @@ export type SupersededEpochClosure = Readonly<{
   role: StoreEpochListEntry['role'];
   closure: NonNullable<StoreEpochListEntry['closureDisposition']>;
   reason: string | null;
+  protectionUnreadable?: boolean;
 }>;
 
 /** Omitted from a status when every epoch but the serving one has been reclaimed. */
@@ -1092,6 +1093,7 @@ function readSupersededEpochClosures(
       role: entry.role,
       closure: entry.closureDisposition ?? 'pending',
       reason: entry.closureReason ?? null,
+      ...(entry.protectionUnreadable ? { protectionUnreadable: true } : {}),
     }));
   return epochs.length === 0 ? null : { kind: 'observed', epochs };
 }

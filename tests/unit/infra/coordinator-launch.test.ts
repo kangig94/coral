@@ -37,16 +37,16 @@ describe('coordinator launch admission', () => {
       const request = record.request('/bundle/B', 'B');
 
       expect(record.exited(launch, child)).toBe(true);
-      expect(record.accept(owner, request.id, 1_002)).toBe(false);
+      expect(record.accept(owner, request.id, 1_002)).toBe(true);
       expect(record.complete(owner, request.id, 1_002)).toBe(false);
-      expect(record.read().requests.find((entry) => entry.id === request.id)?.status).toBe('recorded');
+      expect(record.read().requests.find((entry) => entry.id === request.id)?.status).toBe('accepted');
       expect(record.release(owner)).toBe(false);
       expect(record.reserve(owner, 'B', 'recovery', 1_003)).not.toBeNull();
     } finally {
       record.close();
     }
   });
-  it('writes a legacy serving receipt only while the matching child serves', () => {
+  it('publishes a legacy serving child and its receipt together', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-serving-receipt-'));
     roots.push(runDir);
     const record = new CoordinatorLaunchRecord(runDir);
@@ -75,16 +75,154 @@ describe('coordinator launch admission', () => {
         recordedAt: '2026-09-29T00:00:00.000Z',
       };
       expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
-      expect(record.recordLegacyReceipt(child, request.id, receipt)).toBe(false);
-      expect(record.serving(launch, child)).toBe(true);
-      expect(record.recordLegacyReceipt(child, request.id, receipt)).toBe(true);
+      const revision = record.read().revision;
+      expect(record.publishLegacyServing(launch, child, request, receipt)).toBe(true);
+      expect(record.read()).toMatchObject({
+        revision: revision + 1,
+        launch: { phase: 'serving' },
+        requests: [expect.objectContaining({ id: request.id, completionReceipt: receipt })],
+      });
       expect(record.accept(owner, request.id, 1_002)).toBe(true);
       expect(record.complete(owner, request.id, 1_002)).toBe(true);
       expect(record.accept(owner, request.id, 1_003)).toBe(false);
       expect(record.complete(owner, request.id, 1_003)).toBe(false);
       const late = record.request('/bundle/B', 'B', request.incumbent);
       expect(record.exited(launch, child)).toBe(true);
-      expect(record.recordLegacyReceipt(child, late.id, receipt)).toBe(false);
+      expect(record.publishLegacyServing(launch, child, late, receipt)).toBe(false);
+    } finally {
+      record.close();
+    }
+  });
+  it('does not complete a legacy request between serving and its receipt', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-serving-race-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'B', 'legacy-retirement', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      const request = record.request('/bundle/B', 'B', {
+        instanceId: 'incumbent',
+        pid: 301,
+        incarnation: 'incumbent' as ProcessIncarnation,
+        version: '0.10.13',
+        bundleHash: 'incumbent',
+        flavor: 'prod',
+      });
+      expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
+      expect(record.serving(launch, child)).toBe(true);
+      expect(record.accept(owner, request.id, 1_002)).toBe(true);
+      expect(record.complete(owner, request.id, 1_002)).toBe(false);
+      expect(record.read().requests.find((entry) => entry.id === request.id)?.status).toBe('accepted');
+      const receipt = {
+        launchId: launch.id,
+        successor: { instanceId: 'successor', ...child },
+        epochKey: 'epoch-1',
+        controlGeneration: 1,
+        recordedAt: '2026-09-29T00:00:00.000Z',
+      };
+      expect(record.publishLegacyServing(launch, child, request, receipt)).toBe(true);
+      expect(record.complete(owner, request.id, 1_003)).toBe(true);
+    } finally {
+      record.close();
+    }
+  });
+  it('accepts ownership of a legacy request before its successor serves', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-request-acceptance-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const request = record.request('/bundle/B', 'B', {
+        instanceId: 'incumbent',
+        pid: 301,
+        incarnation: 'incumbent' as ProcessIncarnation,
+        version: '0.10.13',
+        bundleHash: 'incumbent',
+        flavor: 'prod',
+      });
+
+      expect(record.accept(owner, request.id, 1_001)).toBe(true);
+      expect(record.read().requests.find((entry) => entry.id === request.id)).toMatchObject({
+        status: 'accepted',
+        acceptedEpoch: owner.epoch,
+      });
+      expect(record.complete(owner, request.id, 1_002)).toBe(false);
+    } finally {
+      record.close();
+    }
+  });
+  it('does not publish or reuse a legacy receipt for a changed incumbent', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-incumbent-change-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'B', 'legacy-retirement', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      const incumbent = {
+        instanceId: 'incumbent-1',
+        pid: 301,
+        incarnation: 'incumbent-1' as ProcessIncarnation,
+        version: '0.10.13',
+        bundleHash: 'incumbent-1',
+        flavor: 'prod' as const,
+      };
+      const request = record.request('/bundle/B', 'B', incumbent);
+      expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
+      const receipt = {
+        launchId: launch.id,
+        successor: { instanceId: 'successor', ...child },
+        epochKey: 'epoch-1',
+        controlGeneration: 1,
+        recordedAt: '2026-09-29T00:00:00.000Z',
+      };
+      const changed = record.request('/bundle/B', 'B', { ...incumbent, instanceId: 'incumbent-2' });
+      expect(record.publishLegacyServing(launch, child, request, receipt)).toBe(false);
+      expect(record.publishLegacyServing(launch, child, changed, receipt)).toBe(true);
+      expect(record.accept(owner, request.id, 1_002)).toBe(true);
+      record.request('/bundle/B', 'B', { ...incumbent, instanceId: 'incumbent-3' });
+      expect(record.complete(owner, request.id, 1_003)).toBe(false);
+    } finally {
+      record.close();
+    }
+  });
+  it('records inherited health, serving, and hold release as one transition', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-inherited-health-transition-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
+      const admitted = record.read().launch;
+      if (admitted === null) throw new Error('launch not admitted');
+      expect(record.holdInheritedChild(owner, admitted, 1_002)).toBe(true);
+      const revision = record.read().revision;
+
+      record.observeInheritedHealth(owner, admitted, 1_003);
+
+      expect(record.read()).toMatchObject({ revision: revision + 1, inheritedHolds: [], launch: { phase: 'serving' } });
     } finally {
       record.close();
     }
@@ -104,7 +242,7 @@ describe('coordinator launch admission', () => {
       const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
       expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
       const request = record.request('/bundle/B', 'B');
-      expect(record.accept(owner, request.id, 1_001)).toBe(false);
+      expect(record.accept(owner, request.id, 1_001)).toBe(true);
       let resolveProbe: (ready: boolean) => void = () => {};
       const probe = new Promise<boolean>((resolve) => {
         resolveProbe = resolve;
@@ -114,9 +252,9 @@ describe('coordinator launch admission', () => {
       expect(record.commitTermination(owner, launch, child, 1_002, 100)).toBe(true);
       resolveProbe(true);
       expect(await promotion).toBe(false);
-      expect(record.accept(owner, request.id, 1_003)).toBe(false);
+      expect(record.accept(owner, request.id, 1_003)).toBe(true);
       expect(record.complete(owner, request.id, 1_003)).toBe(false);
-      expect(record.read().requests.find((entry) => entry.id === request.id)?.status).toBe('recorded');
+      expect(record.read().requests.find((entry) => entry.id === request.id)?.status).toBe('accepted');
       expect(record.exited(launch, child)).toBe(true);
       expect(record.complete(owner, request.id, 1_004)).toBe(false);
     } finally {
@@ -563,7 +701,7 @@ describe('coordinator launch admission', () => {
     expect(record.admit(launch, first.process, child, 1_001)).toBe(true);
     expect(record.serving(launch, child)).toBe(true);
     const request = record.request('/bundle/B', 'B');
-    expect(record.accept(first, request.id, 1_002)).toBe(false);
+    expect(record.accept(first, request.id, 1_002)).toBe(true);
     const takeoverAt = first.leaseUntil + 1;
     const provisional = record.acquire(
       { id: 'provisional', process: { pid: 112, incarnation: incarnation('provisional') }, buildSetId: 'B' },
@@ -593,7 +731,10 @@ describe('coordinator launch admission', () => {
     expect(record.read().signalHolds).toEqual([]);
     expect(accepted.mode).toBe('recovering');
     expect(record.read().launch).toMatchObject({ id: launch.id, admittedAt: 1_001, parent: first.process });
-    expect(record.read().requests.find((entry) => entry.id === request.id)?.status).toBe('recorded');
+    expect(record.read().requests.find((entry) => entry.id === request.id)).toMatchObject({
+      status: 'accepted',
+      acceptedEpoch: first.epoch,
+    });
     expect(record.renew(provisional, takeoverAt + 2)).toBeNull();
     expect(record.commitTermination(accepted, launch, child, takeoverAt + 2, 30_000)).toBe(true);
     expect(record.read().launch).toMatchObject({

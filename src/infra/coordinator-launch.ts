@@ -372,7 +372,7 @@ export class CoordinatorLaunchRecord {
             existing.incumbent.bundleHash === incumbent.bundleHash)
         )
           return { state, result: existing };
-        const updated = { ...existing, incumbent };
+        const updated = { ...existing, incumbent, completionReceipt: undefined };
         return {
           state: { ...state, requests: state.requests.map((entry) => (entry.id === existing.id ? updated : entry)) },
           result: updated,
@@ -455,20 +455,6 @@ export class CoordinatorLaunchRecord {
       return {
         state: { ...state, inheritedHolds: [...holds, { launchId: reservation.id, pid: reservation.child.pid }] },
         result: true,
-      };
-    });
-  }
-
-  clearInheritedChildHold(owner: LaunchOwner, reservation: LaunchReservation, now: number): void {
-    this.#change((state) => {
-      if (!this.#current(state, owner, now) || !state.inheritedHolds?.some((hold) => hold.launchId === reservation.id))
-        return { state, result: undefined };
-      return {
-        state: {
-          ...state,
-          inheritedHolds: (state.inheritedHolds ?? []).filter((hold) => hold.launchId !== reservation.id),
-        },
-        result: undefined,
       };
     });
   }
@@ -568,11 +554,7 @@ export class CoordinatorLaunchRecord {
     return this.#change((state) => {
       if (!this.#current(state, owner, now)) return { state, result: false };
       const target = state.requests.find((request) => request.id === requestId);
-      if (
-        target === undefined ||
-        (target.status !== 'recorded' && target.status !== 'accepted') ||
-        !this.#servingBuild(state, target.buildSetId)
-      )
+      if (target === undefined || (target.status !== 'recorded' && target.status !== 'accepted'))
         return { state, result: false };
       const requests = state.requests.map((request) =>
         request.id === requestId && (request.status === 'recorded' || request.status === 'accepted')
@@ -592,7 +574,16 @@ export class CoordinatorLaunchRecord {
       if (
         target?.status !== 'accepted' ||
         target.acceptedEpoch !== owner.epoch ||
-        !this.#servingBuild(state, target.buildSetId)
+        !this.#servingBuild(state, target.buildSetId) ||
+        (target.incumbent !== undefined &&
+          ![state.launch, state.attempt].some(
+            (slot) =>
+              slot?.purpose === 'legacy-retirement' &&
+              slot.buildSetId === target.buildSetId &&
+              slot.id === target.completionReceipt?.launchId &&
+              slot.phase === 'serving' &&
+              slot.terminationAt === undefined,
+          ))
       )
         return { state, result: false };
       const requests = state.requests.map((request) =>
@@ -646,32 +637,41 @@ export class CoordinatorLaunchRecord {
     return request === undefined ? null : { launch, request };
   }
 
-  recordLegacyReceipt(
+  publishLegacyServing(
+    reservation: LaunchReservation,
     child: LaunchProcess,
-    requestId: string,
+    requestAtServing: LaunchRequest,
     receipt: NonNullable<LaunchRequest['completionReceipt']>,
   ): boolean {
     return this.#change((state) => {
       const launch = state.launch;
-      const request = state.requests.find((entry) => entry.id === requestId);
+      const request = state.requests.find((entry) => entry.id === requestAtServing.id);
       if (
-        launch?.id !== receipt.launchId ||
+        launch?.id !== reservation.id ||
+        launch.id !== receipt.launchId ||
         launch.purpose !== 'legacy-retirement' ||
         launch.terminationAt !== undefined ||
-        launch.phase !== 'serving' ||
+        (launch.phase !== 'admitted' && launch.phase !== 'serving') ||
         launch.child?.pid !== child.pid ||
         launch.child.incarnation !== child.incarnation ||
+        receipt.successor.pid !== child.pid ||
+        receipt.successor.incarnation !== child.incarnation ||
         (request?.status !== 'recorded' && request?.status !== 'accepted') ||
         request.buildSetId !== launch.buildSetId ||
-        request.incumbent === undefined
+        request.incumbent === undefined ||
+        JSON.stringify(request.incumbent) !== JSON.stringify(requestAtServing.incumbent)
       )
         return { state, result: false };
       if (request.completionReceipt !== undefined)
-        return { state, result: JSON.stringify(request.completionReceipt) === JSON.stringify(receipt) };
+        return {
+          state,
+          result: launch.phase === 'serving' && JSON.stringify(request.completionReceipt) === JSON.stringify(receipt),
+        };
       const requests = state.requests.map((entry) =>
-        entry.id === requestId ? { ...entry, completionReceipt: receipt } : entry,
+        entry.id === requestAtServing.id ? { ...entry, completionReceipt: receipt } : entry,
       );
-      return { state: { ...state, requests }, result: true };
+      const serving: LaunchReservation = { ...launch, phase: 'serving', observedHealthyAt: Date.now() };
+      return { state: { ...state, launch: serving, requests }, result: true };
     });
   }
 
@@ -820,14 +820,23 @@ export class CoordinatorLaunchRecord {
 
   observeInheritedHealth(owner: LaunchOwner, reservation: LaunchReservation, now: number): void {
     this.#change((state) => {
-      if (!this.#current(state, owner, now)) return { state, result: undefined };
+      if (!this.#current(state, owner, now) || reservation.child === undefined) return { state, result: undefined };
       const slot = this.#slot(state, reservation);
       const child = slot === 'launch' ? state.launch : state.attempt;
-      if (slot === null || child?.id !== reservation.id || child.terminationAt !== undefined)
+      if (
+        slot === null ||
+        !this.#exactChild(child, reservation, reservation.child) ||
+        (child?.phase !== 'admitted' && child?.phase !== 'serving') ||
+        child.terminationAt !== undefined
+      )
         return { state, result: undefined };
-      const healthy = { ...child, observedHealthyAt: now };
+      const healthy: LaunchReservation = { ...child, phase: 'serving', observedHealthyAt: now };
+      const inheritedHolds = (state.inheritedHolds ?? []).filter((hold) => hold.launchId !== reservation.id);
       return {
-        state: slot === 'launch' ? { ...state, launch: healthy } : { ...state, attempt: healthy },
+        state:
+          slot === 'launch'
+            ? { ...state, launch: healthy, inheritedHolds }
+            : { ...state, attempt: healthy, inheritedHolds },
         result: undefined,
       };
     });

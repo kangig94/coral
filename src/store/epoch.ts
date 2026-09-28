@@ -147,6 +147,7 @@ export type StoreEpochListEntry = Readonly<{
   closureReason?: string | null;
   /** Why a superseded epoch still sits where a shipped older sweep can reach it; the post-ready sweep retries it. */
   protectionPending?: string;
+  protectionUnreadable?: boolean;
   bytes: number | null;
   publicationReason: StoreEpochClassification;
   supersededStoreVersion: string | null;
@@ -2036,6 +2037,11 @@ function selectSuccessor(
 const SUPERSEDED_OPENER_DRAIN_MS = 2_000;
 
 type PendingProtection = Readonly<{ storeRoot: string; epoch: StoreEpoch; reason: string; recordedAt: string }>;
+type PendingProtectionRead = Readonly<{
+  records: readonly PendingProtection[];
+  unreadableNames: readonly string[];
+  directoryUnreadable: boolean;
+}>;
 
 function pendingProtectionDirectory(runtime: Pick<Runtime, 'paths'>): string {
   return join(runtime.paths.coral.generation.dataRoot, 'store-epoch-protection-pending.v1');
@@ -2045,15 +2051,21 @@ function pendingProtectionPath(runtime: Pick<Runtime, 'paths' | 'ids'>, storeRoo
   return join(pendingProtectionDirectory(runtime), `${runtime.ids.sha256(epochDirectory(storeRoot, epoch))}.json`);
 }
 
-/** Unknown keys are kept for a newer writer; a record this build cannot read is skipped, never deleted. */
-function readPendingProtections(runtime: Pick<Runtime, 'paths' | 'storage'>): readonly PendingProtection[] {
+/** Unknown keys are kept for a newer writer; a record this build cannot read is reported and never deleted. */
+function readPendingProtections(runtime: Pick<Runtime, 'paths' | 'storage'>): PendingProtectionRead {
   let names: string[];
   try {
     names = runtime.storage.readdirSync(pendingProtectionDirectory(runtime));
-  } catch {
-    return [];
+  } catch (error: unknown) {
+    return {
+      records: [],
+      unreadableNames: [],
+      directoryUnreadable: !(error instanceof Error && 'code' in error && error.code === 'ENOENT'),
+    };
   }
-  return names.flatMap((name) => {
+  const records: PendingProtection[] = [];
+  const unreadableNames: string[] = [];
+  for (const name of names) {
     try {
       const value = JSON.parse(
         runtime.storage.readFileSync(join(pendingProtectionDirectory(runtime), name), 'utf-8'),
@@ -2073,13 +2085,32 @@ function readPendingProtections(runtime: Pick<Runtime, 'paths' | 'storage'>): re
         'recordedAt' in value &&
         typeof value.recordedAt === 'string'
       ) {
-        return [{ storeRoot: value.storeRoot, epoch: value.epoch, reason: value.reason, recordedAt: value.recordedAt }];
+        records.push({
+          storeRoot: value.storeRoot,
+          epoch: value.epoch,
+          reason: value.reason,
+          recordedAt: value.recordedAt,
+        });
+        continue;
       }
     } catch {
       // An undecodable record is retained for its writer to resolve.
     }
-    return [];
-  });
+    unreadableNames.push(name);
+  }
+  return { records, unreadableNames, directoryUnreadable: false };
+}
+
+function pendingProtectionUnreadable(
+  runtime: Pick<Runtime, 'ids'>,
+  read: PendingProtectionRead,
+  storeRoot: string,
+  epoch: StoreEpoch,
+): boolean {
+  return (
+    read.directoryUnreadable ||
+    read.unreadableNames.includes(`${runtime.ids.sha256(epochDirectory(storeRoot, epoch))}.json`)
+  );
 }
 
 /**
@@ -2139,11 +2170,15 @@ function recordPendingProtection(
   }
 }
 
-function clearPendingProtection(runtime: Runtime, storeRoot: string, epoch: StoreEpoch): void {
+function clearPendingProtection(runtime: Runtime, pending: PendingProtection): void {
+  const current = readPendingProtections(runtime).records.find(
+    (record) => record.storeRoot === pending.storeRoot && record.epoch === pending.epoch,
+  );
+  if (current === undefined || JSON.stringify(current) !== JSON.stringify(pending)) return;
   try {
-    runtime.storage.rmSync(pendingProtectionPath(runtime, storeRoot, epoch), { force: true });
+    runtime.storage.rmSync(pendingProtectionPath(runtime, pending.storeRoot, pending.epoch), { force: true });
   } catch (error: unknown) {
-    auditSweepFailure(epochDirectory(storeRoot, epoch), error);
+    auditSweepFailure(epochDirectory(pending.storeRoot, pending.epoch), error);
   }
 }
 
@@ -2152,29 +2187,31 @@ function clearPendingProtection(runtime: Runtime, storeRoot: string, epoch: Stor
  * Only an epoch older than the one this process opened is protected, and an epoch already gone needs nothing.
  */
 function retryPendingProtections(runtime: Runtime, storeRoot: string, openEpoch: StoreEpoch): void {
-  for (const pending of readPendingProtections(runtime)) {
+  const pendingRead = readPendingProtections(runtime);
+  for (const pending of pendingRead.records) {
     if (pending.storeRoot !== storeRoot || compareEpoch(pending.epoch, openEpoch) >= 0) continue;
     const directory = epochDirectory(storeRoot, pending.epoch);
     if (observeStorePath(runtime.storage, directory) === 'absent') {
-      clearPendingProtection(runtime, storeRoot, pending.epoch);
+      clearPendingProtection(runtime, pending);
     }
   }
-  const pendingEpochs = new Set(
-    readPendingProtections(runtime)
-      .filter((pending) => pending.storeRoot === storeRoot)
-      .map((pending) => pending.epoch),
+  const retryRead = readPendingProtections(runtime);
+  const pendingEpochs = new Map(
+    retryRead.records.filter((pending) => pending.storeRoot === storeRoot).map((pending) => [pending.epoch, pending]),
   );
   for (const observation of observeStoreEpochs(runtime.storage, storeRoot)) {
     if (
       observation.proof.kind !== 'proven' ||
       compareEpoch(observation.epoch, openEpoch) >= 0 ||
-      !pendingEpochs.has(observation.epoch)
+      (!pendingEpochs.has(observation.epoch) &&
+        !pendingProtectionUnreadable(runtime, retryRead, storeRoot, observation.epoch))
     )
       continue;
     const directory = epochDirectory(storeRoot, observation.epoch);
     try {
       protectStoreEpoch(runtime, resolvedStoreEpoch(storeRoot, observation.epoch));
-      clearPendingProtection(runtime, storeRoot, observation.epoch);
+      const pending = pendingEpochs.get(observation.epoch);
+      if (pending !== undefined) clearPendingProtection(runtime, pending);
     } catch (error: unknown) {
       if (!(error instanceof StoreEpochOpenerHeldError)) auditSweepFailure(directory, error);
     }
@@ -2192,7 +2229,7 @@ function mintNextEpoch(
 ): Readonly<{ kind: 'published'; lease: FileLockLease }> | Readonly<{ kind: 'contended' | 'swept' }> {
   reconcileProtectedEpochs(runtime, dbDir);
   const writerGeneration = observeSuccessionWriterGeneration(runtime);
-  const pendingProtections = readPendingProtections(runtime).filter((pending) => pending.storeRoot === dbDir);
+  const pendingProtections = readPendingProtections(runtime).records.filter((pending) => pending.storeRoot === dbDir);
   for (const observation of observeStoreEpochs(runtime.storage, dbDir)) {
     const directory = epochDirectory(dbDir, observation.epoch);
     const directoryProof = observeContainedDirectory(runtime.storage, dbDir, directory);
@@ -3031,12 +3068,14 @@ export function listStoreEpochs(
     return entries.every((entry) => entry.kind === 'absent') ? 'absent' : 'holding';
   };
 
-  const pendingProtections = readPendingProtections(runtime).filter((pending) => pending.storeRoot === dbDir);
+  const pendingRead = readPendingProtections(runtime);
+  const pendingProtections = pendingRead.records.filter((pending) => pending.storeRoot === dbDir);
   const canonical: StoreEpochListEntry[] = [...observations]
     .sort((left, right) => compareEpoch(right.epoch, left.epoch))
     .map((observation) => {
       const { epoch } = observation;
       const protectionPending = pendingProtections.find((pending) => pending.epoch === epoch)?.reason;
+      const protectionUnreadable = pendingProtectionUnreadable(runtime, pendingRead, dbDir, epoch);
       const publicationReason =
         observation.epochJson.kind === 'valid'
           ? observation.epochJson.value.classification
@@ -3058,6 +3097,7 @@ export function listStoreEpochs(
         closureReason:
           closure?.reason ?? (read?.kind === 'unsupported' ? `unsupported closure generation ${read.version}` : null),
         ...(protectionPending === undefined ? {} : { protectionPending }),
+        ...(protectionUnreadable ? { protectionUnreadable: true } : {}),
         role:
           observation.proof.kind === 'unobservable'
             ? 'unobservable'
@@ -3078,6 +3118,20 @@ export function listStoreEpochs(
     canonical.unshift({
       epoch: 'unobservable',
       role: 'unobservable',
+      bytes: null,
+      publicationReason: unavailableClassification(),
+      supersededStoreVersion: null,
+      epochJson: { kind: 'unreadable' },
+      resolved: null,
+    });
+  const unmatchedUnreadableMarkers = pendingRead.unreadableNames.filter(
+    (name) => !observations.some(({ epoch }) => name === `${runtime.ids.sha256(epochDirectory(dbDir, epoch))}.json`),
+  );
+  if (pendingRead.directoryUnreadable || unmatchedUnreadableMarkers.length > 0)
+    canonical.push({
+      epoch: 'unobservable',
+      role: 'unobservable',
+      protectionUnreadable: true,
       bytes: null,
       publicationReason: unavailableClassification(),
       supersededStoreVersion: null,

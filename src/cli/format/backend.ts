@@ -844,6 +844,7 @@ function formatSupersededEpochClosures(closures: SupersededEpochClosures): strin
       return (
         `  ${epoch.epochKey ?? 'unobservable'} (epoch ${epoch.epoch}, ${epoch.role}): ${epoch.closure}` +
         (epoch.reason === null ? '' : `; ${epoch.reason}`) +
+        (epoch.protectionUnreadable ? '; pending protection marker unreadable; retained for retry' : '') +
         `; ${disposition}`
       );
     }),

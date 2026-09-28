@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
+import { withSupersededEpochClosures, type BackendStatusFull } from '#src/cli/backend-status.js';
 import * as epochProtection from '#src/store/epoch-protection.js';
 import {
   discardCurrentStoreEpoch,
@@ -199,7 +200,7 @@ describe('superseded epoch protection', () => {
     }
   });
 
-  it('retains a canonical epoch when its pending-protection record cannot be decoded', async () => {
+  it('reports an unreadable pending marker and retries its proven epoch without deleting the marker', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-pending-protection-unreadable-'));
     roots.push(root);
     const runtime = createRealRuntime('prod', { baseDir: root });
@@ -227,14 +228,30 @@ describe('superseded epoch protection', () => {
       const pending = readdirSync(pendingDir).at(0);
       if (pending === undefined) throw new Error('Deferred protection was not recorded.');
       writeFileSync(join(pendingDir, pending), '{');
+      expect(listStoreEpochs(runtime).find((entry) => entry.epoch === '1')?.protectionUnreadable).toBe(true);
+      const status = withSupersededEpochClosures(runtime, {} as BackendStatusFull);
+      expect(status.supersededEpochs).toMatchObject({
+        kind: 'observed',
+        epochs: expect.arrayContaining([expect.objectContaining({ epoch: '1', protectionUnreadable: true })]),
+      });
     } finally {
       opener();
     }
 
     await sweepStoreEpochsPostReady(runtime, successor.store);
 
-    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(true);
-    expect(listStoreEpochs(runtime)).toContainEqual(expect.objectContaining({ epoch: '1', role: 'preserved' }));
+    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
+    expect(listStoreEpochs(runtime)).toContainEqual(expect.objectContaining({ epoch: '1', role: 'protected' }));
+    expect(
+      readFileSync(
+        join(
+          runtime.paths.coral.generation.dataRoot,
+          'store-epoch-protection-pending.v1',
+          `${sha256Hex(epochDirectory(dbDir, '1'))}.json`,
+        ),
+        'utf-8',
+      ),
+    ).toBe('{');
   });
 
   it('preserves an unsupported pending-protection generation during a sweep', async () => {
@@ -275,10 +292,90 @@ describe('superseded epoch protection', () => {
 
     await sweepStoreEpochsPostReady(runtime, { storeRoot: dbDir, epoch: '2', path: epochPath(dbDir, '2') });
 
+    expect(listStoreEpochs(runtime)).toContainEqual(expect.objectContaining({ epoch: '1', role: 'protected' }));
     expect(JSON.parse(readFileSync(pendingPath, 'utf8'))).toMatchObject({
       version: 'v2',
       futureReleaseCondition: 'controller-receipt-v2',
     });
+  });
+
+  it('reports an unreadable marker directory and retries protection for proven older epochs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-pending-protection-directory-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true });
+    const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
+    for (const epoch of ['1', '2']) {
+      const directory = epochDirectory(dbDir, epoch);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(storeEpochLockPath(dbDir, epoch), '');
+      openTestStoreDatabase({ path: epochPath(dbDir, epoch), storage: runtime.storage, storeFormat: format }).close();
+      writeFileSync(
+        join(directory, 'epoch.json'),
+        JSON.stringify({
+          supersedes: null,
+          classification: { kind: 'absent' },
+          build,
+          publishedAt: '2026-09-25T00:00:00.000Z',
+        }),
+      );
+    }
+    const pendingDir = join(runtime.paths.coral.generation.dataRoot, 'store-epoch-protection-pending.v1');
+    const readdir = runtime.storage.readdirSync;
+    vi.spyOn(runtime.storage, 'readdirSync').mockImplementation((path, options) => {
+      if (path === pendingDir) throw Object.assign(new Error('unreadable'), { code: 'EACCES' });
+      return readdir(path, options);
+    });
+
+    expect(listStoreEpochs(runtime).find((entry) => entry.epoch === '1')?.protectionUnreadable).toBe(true);
+    await sweepStoreEpochsPostReady(runtime, { storeRoot: dbDir, epoch: '2', path: epochPath(dbDir, '2') });
+    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
+  });
+
+  it('retains a marker that becomes unreadable while protection is in progress', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-pending-protection-replaced-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true });
+    const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
+    for (const epoch of ['1', '2']) {
+      const directory = epochDirectory(dbDir, epoch);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(storeEpochLockPath(dbDir, epoch), '');
+      openTestStoreDatabase({ path: epochPath(dbDir, epoch), storage: runtime.storage, storeFormat: format }).close();
+      writeFileSync(
+        join(directory, 'epoch.json'),
+        JSON.stringify({
+          supersedes: null,
+          classification: { kind: 'absent' },
+          build,
+          publishedAt: '2026-09-25T00:00:00.000Z',
+        }),
+      );
+    }
+    const pendingDir = join(runtime.paths.coral.generation.dataRoot, 'store-epoch-protection-pending.v1');
+    const pendingPath = join(pendingDir, `${sha256Hex(epochDirectory(dbDir, '1'))}.json`);
+    mkdirSync(pendingDir, { recursive: true });
+    writeFileSync(
+      pendingPath,
+      JSON.stringify({
+        version: 'v1',
+        storeRoot: dbDir,
+        epoch: '1',
+        reason: 'held',
+        recordedAt: '2026-09-25T00:00:00.000Z',
+      }),
+    );
+    const protect = epochProtection.protectStoreEpoch;
+    vi.spyOn(epochProtection, 'protectStoreEpoch').mockImplementation((...args) => {
+      if (args[1].epoch === '1') writeFileSync(pendingPath, '{');
+      return protect(...args);
+    });
+
+    await sweepStoreEpochsPostReady(runtime, { storeRoot: dbDir, epoch: '2', path: epochPath(dbDir, '2') });
+
+    expect(readFileSync(pendingPath, 'utf-8')).toBe('{');
+    expect(listStoreEpochs(runtime)).toContainEqual(expect.objectContaining({ protectionUnreadable: true }));
   });
 
   it('should refuse publication when a held epoch cannot be recorded for later protection', () => {
