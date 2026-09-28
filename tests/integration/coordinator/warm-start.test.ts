@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { observeProcessLiveness } from '#src/infra/node-process.js';
+import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
 import {
   buildArtifactsAvailable,
+  coordinatorFilesForHome,
   createPluginFixture,
   readDiscoveryRecordForHome,
   spawnCoordinator,
@@ -76,6 +78,12 @@ describe('coordinator warm-start integration', () => {
     const supervisor = spawnCoordinator({ fixture, home, tempRoots, supervised: true });
     coordinators.push(supervisor);
     await waitForDiscoveryRecord(home, 'prod', 15_000);
+    const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+    try {
+      await waitForCondition(() => launch.read().launch?.phase === 'serving', 15_000);
+    } finally {
+      launch.close();
+    }
 
     const shutdown = spawnSync(process.execPath, [join(fixture.root, 'bridge', 'coral-cli'), 'backend', 'shutdown'], {
       cwd: home,

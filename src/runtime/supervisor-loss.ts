@@ -20,6 +20,8 @@ export function startReplacementSupervisor(
   delete env.CORAL_LAUNCH_ADMISSION;
   delete env.CORAL_LAUNCH_PURPOSE;
   delete env.CORAL_SENTINEL_ID;
+  delete env.CORAL_STARTUP_ATTEMPT_ID;
+  delete env.CORAL_SUCCESSION_ATTEMPT_ID;
 
   const record = new CoordinatorLaunchRecord(runDir);
   let failing = false;

@@ -10,7 +10,7 @@ import {
   strictBundleManifestSchema,
   type StrictBundleManifest,
 } from '../infra/bundle-manifest.js';
-import { createForeignTargetValidator } from '../infra/handoff-target.js';
+import { createForeignTargetValidator, inspectValidatedHandoffTarget } from '../infra/handoff-target.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
 import {
@@ -27,6 +27,9 @@ import {
   providerProxySetKey,
 } from '../coordinator/services/provider-proxy-set/identity.js';
 import { servedControllerTransferForCapsule } from '../coordinator/succession/provider-host-transfer.js';
+import { prepareRetainedControllerHandoff } from '../coordinator/services/startup-retirement.js';
+import { JobLocationIndex } from '../jobs/location-index.js';
+import { readCustodyLedger } from '../store/custody-ledger.js';
 import {
   providerHandoffCapsuleCandidatePaths,
   readProviderHandoffCapsuleCandidate,
@@ -184,6 +187,28 @@ export function controllerBuild(
     }
   }
   const builds = new Set(buildsBySet.values());
+  try {
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const unresolved = new Set(
+      index
+        .locations()
+        .filter((location) => location.disposition !== 'terminal')
+        .map((location) => location.jobId),
+    );
+    const durableCliJob = readCustodyLedger(runtime, runDir).some(
+      (entry) =>
+        entry.kind !== 'unreadable' &&
+        entry.intent.owner === 'durable-cli' &&
+        unresolved.has(entry.intent.jobId ?? entry.intent.operationId),
+    );
+    if (durableCliJob) {
+      const handoff = prepareRetainedControllerHandoff(runtime, index);
+      if (handoff === null) return { kind: 'unknown' };
+      builds.add(inspectValidatedHandoffTarget(handoff.target).build.buildSetId);
+    }
+  } catch {
+    return { kind: 'unknown' };
+  }
   if (builds.size === 0) return { kind: 'none' };
   return builds.size === 1 ? { kind: 'required', buildSetId: [...builds][0] } : { kind: 'unknown' };
 }
@@ -270,10 +295,13 @@ function handOffLostOwnership(
   const root = validatedRunningBuildRoot(runDir, dirname(dirname(executable)), manifest);
   if (root === null) return;
   const script = existsSync(entry) ? entry : join(root, 'bridge', 'coral-sentinel.cjs');
+  const env: NodeJS.ProcessEnv = { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir };
+  delete env.CORAL_STARTUP_ATTEMPT_ID;
+  delete env.CORAL_SUCCESSION_ATTEMPT_ID;
   const successor = spawn(process.execPath, [script, join(root, 'bridge', 'coral-backend.cjs')], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir },
+    env,
   });
   successor.once('error', (error) => process.stderr.write(`Coordinator supervisor handoff failed: ${String(error)}\n`));
   successor.unref();
@@ -295,20 +323,22 @@ function spawnAdmittedChild(
   }
   const sentinelId = randomUUID();
   const legacy = !existsSync(join(dirname(executable), 'coral-sentinel.cjs'));
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CORAL_LAUNCH_ADMISSION: '1',
+    CORAL_LAUNCH_PURPOSE: reservation.purpose,
+    CORAL_SENTINEL_ID: sentinelId,
+    CORAL_SENTINEL_RUN_DIR: runDir,
+    CORAL_STARTUP_ATTEMPT_ID: attemptId ?? process.env.CORAL_STARTUP_ATTEMPT_ID ?? randomUUID(),
+  };
+  if (attemptId === undefined) delete env.CORAL_SUCCESSION_ATTEMPT_ID;
+  else env.CORAL_SUCCESSION_ATTEMPT_ID = attemptId;
   const child = spawn(
     process.execPath,
     legacy ? [process.argv[1], '--launch-legacy', executable, ...args] : [executable, ...args],
     {
       cwd: process.cwd(),
-      env: {
-        ...process.env,
-        CORAL_LAUNCH_ADMISSION: '1',
-        CORAL_LAUNCH_PURPOSE: reservation.purpose,
-        CORAL_SENTINEL_ID: sentinelId,
-        CORAL_SENTINEL_RUN_DIR: runDir,
-        CORAL_STARTUP_ATTEMPT_ID: attemptId ?? process.env.CORAL_STARTUP_ATTEMPT_ID ?? randomUUID(),
-        ...(attemptId === undefined ? {} : { CORAL_SUCCESSION_ATTEMPT_ID: attemptId }),
-      },
+      env,
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     },
   );
@@ -530,14 +560,20 @@ export async function runNamespaceSupervisor(
           )
             settleRequests(record, owner.current, originalManifest, true);
         }
-        const settled = record.read();
-        if (
-          [settled.launch, settled.attempt].every((slot) => slot === null || slot.phase === 'exited') &&
-          settled.requests.every((entry) => entry.status === 'completed' || entry.status === 'unavailable') &&
-          controllerBuild(runDir).kind === 'none' &&
-          record.release(owner.current)
-        )
-          return 0;
+      }
+      const settled = record.read();
+      const slots = [settled.launch, settled.attempt];
+      if (
+        slots.some(
+          (slot) => slot !== null && (slot.parent?.pid !== process.pid || slot.parent.incarnation !== incarnation),
+        ) &&
+        slots.every((slot) => slot === null || slot.phase === 'exited') &&
+        settled.requests.every((entry) => entry.status === 'completed' || entry.status === 'unavailable') &&
+        controllerBuild(runDir).kind === 'none' &&
+        record.release(owner.current)
+      )
+        return 0;
+      if (inherited.length > 0) {
         await sleep(POLL_MS);
         continue;
       }
