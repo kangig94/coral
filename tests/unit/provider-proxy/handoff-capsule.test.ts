@@ -1,8 +1,8 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -24,6 +24,9 @@ import type { ControlTenancyHolder } from '#src/provider-proxy/control-endpoint.
 import type { ControllerBuild } from '#src/provider-proxy/controller-succession.js';
 import type { OperationIdentity } from '#src/provider-proxy/protocol.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
+import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 
 const SECRET = 'c'.repeat(64);
 
@@ -592,6 +595,39 @@ describe('provider-proxy grant registry controller succession', () => {
 });
 
 describe('provider-proxy handoff capsule file I/O', () => {
+  it('counts V3 and V4 capsules left by a migration crash as one set', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-capsule-migration-'));
+    try {
+      const runtime = createRealRuntime('dev', { baseDir: join(root, '.coral') });
+      const runDir = runtime.paths.coral.coordinator.runDir;
+      const incarnation = probeProcessIncarnation(process.pid);
+      if (incarnation === null) throw new Error('Test process has no incarnation');
+      const oldCapsule: HandoffCapsuleV3 = {
+        ...capsuleV3For(),
+        flavor: 'dev',
+        proxyPid: process.pid,
+        proxyIncarnation: incarnation,
+      };
+      const newController = '66666666-6666-4666-8666-666666666666';
+      const newCapsule: HandoffCapsuleV4 = {
+        ...oldCapsule,
+        version: 4,
+        controllerBuildSetId: newController,
+      };
+      const pathOptions = { baseDir: dirname(runtime.paths.coral.generation.root) };
+      mkdirSync(runDir, { recursive: true });
+      const oldPath = providerHandoffCapsulePath(oldCapsule, 3, pathOptions);
+      writeFileSync(oldPath, `${JSON.stringify(oldCapsule)}\n`, { mode: 0o600 });
+      writeHandoffCapsuleFile(providerHandoffCapsulePath(newCapsule, 4, pathOptions), newCapsule, {
+        storage: runtime.storage,
+        uid: process.getuid?.() ?? 0,
+      });
+      expect(controllerBuild(runDir)).toEqual({ kind: 'required', buildSetId: newController });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   let tempRoot: string;
   let capsulePath: string;
   let env: HandoffCapsuleFileEnvironment;

@@ -18,6 +18,7 @@ import {
   acceptedControllerTransferHandsCapsule,
   createProviderHostTransfer,
   providerHostRecoveryGrantVerifies,
+  servedControllerTransferForCapsule,
 } from '#src/coordinator/succession/provider-host-transfer.js';
 import {
   currentHandoffCapsulePath,
@@ -32,6 +33,8 @@ import type { ProviderOperationPhase, ProviderOperationRecord } from '#src/store
 import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { successionPreparationSchema, type SuccessionPreparation } from '#src/coordinator/succession/protocol.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import type * as WriterGeneration from '#src/store/succession-writer-generation.js';
@@ -284,6 +287,35 @@ describe('provider host transfer owners', () => {
 });
 
 describe('accepted controller transfer', () => {
+  it.each([false, true])('selects the served controller before capsule completion (mixed sets: %s)', async (mixed) => {
+    const runtime = runtimeFor();
+    const capsule = capsuleFor(runtime, INCUMBENT_BUILD);
+    await preparedTransfer(runtime);
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Test process has no incarnation');
+    const live = { ...capsule, proxyPid: process.pid, proxyIncarnation: incarnation };
+    const pathOptions = { baseDir: dirname(runtime.paths.coral.generation.root) };
+    const writeLive = (entry: HandoffCapsuleV4): void => {
+      writeHandoffCapsuleFile(currentHandoffCapsulePath(entry, pathOptions), entry, {
+        storage: runtime.storage,
+        uid: process.getuid?.() ?? 0,
+      });
+    };
+    writeLive(live);
+    if (mixed)
+      writeLive({
+        ...live,
+        proxyInstanceId: '66666666-6666-4666-8666-666666666666',
+        hostFingerprint: 'f'.repeat(64),
+        controllerBuildSetId: SUCCESSOR_BUILD,
+      });
+    serving.attemptId = 'attempt-1';
+    expect(controllerBuild(runtime.paths.coral.coordinator.runDir)).toEqual({
+      kind: 'required',
+      buildSetId: SUCCESSOR_BUILD,
+    });
+  });
+
   function capsuleFor(runtime: Runtime, controllerBuildSetId: string): HandoffCapsuleV4 {
     const record = executing();
     const identity = providerProxySetIdentityFromRecord(record);
@@ -410,6 +442,10 @@ describe('accepted controller transfer', () => {
     expect(cleared.kind).toBe('written');
 
     const acceptance = acceptedControllerTransferHandsCapsule(runtime, SUCCESSOR_BUILD, null, capsule);
+    expect(servedControllerTransferForCapsule(runtime, capsule)).toEqual({
+      kind: 'served',
+      buildSetId: SUCCESSOR_BUILD,
+    });
     expect(classifyProviderProxySetInheritance(capsule, SUCCESSOR_BUILD, () => acceptance)).toMatchObject({
       kind: 'inheritable',
       via: 'transfer-served',

@@ -153,10 +153,11 @@ export class CoordinatorLaunchRecord {
 
   renew(owner: LaunchOwner, now: number): LaunchOwner | null {
     return this.#change((state) => {
-      if (!this.#current(state, owner, now)) return { state, result: null };
+      const current = state.owner;
+      if (current === null || !this.#current(state, owner, now)) return { state, result: null };
       const renewed = {
-        ...owner,
-        renewal: (state.owner?.renewal ?? owner.renewal) + 1,
+        ...current,
+        renewal: current.renewal + 1,
         leaseUntil: now + LAUNCH_OWNER_LEASE_MS,
       };
       return { state: { ...state, owner: renewed }, result: renewed };

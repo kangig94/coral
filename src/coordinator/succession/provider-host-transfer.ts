@@ -32,6 +32,7 @@ import {
 } from '../services/provider-proxy-set/identity.js';
 import {
   readPendingGrantTransfer,
+  readPendingGrantTransferController,
   recordPendingGrantTransfer,
 } from '../services/provider-proxy-set/pending-grant-transfer.js';
 import type { ProviderProxySetLifecycle } from '../services/provider-proxy-set/index.js';
@@ -112,6 +113,59 @@ function completedTransferServed(
       (obligation) => obligation.owner === PROVIDER_PROXY_SETS_OWNER && obligation.receiptId === receiptId,
     )
   );
+}
+
+/** A served transfer remains controller authority while the old capsule is awaiting completion. */
+export function servedControllerTransferForCapsule(
+  runtime: Runtime,
+  capsule: RedeemableHandoffCapsule,
+): { kind: 'none' | 'unknown' } | { kind: 'served'; buildSetId: string } {
+  const pending = readPendingGrantTransferController(runtime, capsule);
+  if (pending.kind === 'unreadable') return { kind: 'unknown' };
+  if (pending.kind === 'recorded') {
+    try {
+      if (observeSuccessionServing(runtime, pending.attemptId) !== null)
+        return { kind: 'served', buildSetId: pending.successorBuildSetId };
+    } catch {
+      return { kind: 'unknown' };
+    }
+  }
+  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  if (observed.kind === 'absent') return { kind: 'none' };
+  if (observed.kind !== 'readable') return { kind: 'unknown' };
+  if (
+    pending.kind === 'recorded' &&
+    completedTransferServed(
+      observed.intent,
+      pending.attemptId,
+      `${PROVIDER_PROXY_SETS_OWNER}:${pending.attemptId}`,
+      pending.successorBuildSetId,
+    )
+  )
+    return { kind: 'served', buildSetId: pending.successorBuildSetId };
+  const preparation = successionPreparationSchema.safeParse(observed.intent.successionPreparation);
+  if (!preparation.success) return { kind: 'none' };
+  const receipt = receiptOf(preparation.data, PROVIDER_PROXY_SETS_OWNER);
+  const transfer = receipt === null ? null : decodeProviderProxyControllerTransfer(receipt.payload);
+  if (receipt === null || transfer === null) return { kind: 'none' };
+  if (!controllerTransferHandsCapsuleTo(transfer, capsule, transfer.successorBuildSetId)) return { kind: 'none' };
+  if (
+    controllerTransferRecoveryGrantId(transfer.sets, (value) => runtime.ids.sha256(value)) !== receipt.recoveryGrantId
+  )
+    return { kind: 'unknown' };
+  try {
+    const served =
+      observeSuccessionServing(runtime, preparation.data.attemptId) !== null ||
+      completedTransferServed(
+        observed.intent,
+        preparation.data.attemptId,
+        receipt.receiptId,
+        transfer.successorBuildSetId,
+      );
+    return served ? { kind: 'served', buildSetId: transfer.successorBuildSetId } : { kind: 'none' };
+  } catch {
+    return { kind: 'unknown' };
+  }
 }
 
 /** A pre-serving transfer is valid only for its running attempt; a later controller needs durable serving evidence. */

@@ -61,6 +61,9 @@ const PROVIDER_PROXY_FORBIDDEN = [
 const SUPERVISOR_ROOT = 'src/coordinator-launch/';
 const SUPERVISOR_ALLOWED = [SUPERVISOR_ROOT, 'src/infra/', 'src/runtime/'] as const;
 const SUPERVISOR_ALLOWED_FILES = new Set([
+  // Read-only provider custody evidence used to choose a controller after a committed transfer.
+  'src/coordinator/services/provider-proxy-set/identity.ts',
+  'src/coordinator/succession/provider-host-transfer.ts',
   'src/provider-proxy/handoff-capsule.ts',
   'src/provider-proxy/handoff-capsule-discovery.ts',
 ]);

@@ -20,10 +20,16 @@ import {
 } from '../infra/coordinator-launch.js';
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessLiveness } from '../infra/node-process.js';
 import { SENTINEL_TIMING, validSentinelTiming, type SentinelTiming } from '../infra/sentinel-timing.js';
-import { handoffCapsuleControllerBuildSetId } from '../provider-proxy/handoff-capsule.js';
+import { handoffCapsuleControllerBuildSetId, type HandoffCapsule } from '../provider-proxy/handoff-capsule.js';
+import {
+  providerProxySetIdentityFromCapsule,
+  providerProxySetKey,
+} from '../coordinator/services/provider-proxy-set/identity.js';
+import { servedControllerTransferForCapsule } from '../coordinator/succession/provider-host-transfer.js';
 import {
   providerHandoffCapsuleCandidatePaths,
   readProviderHandoffCapsuleCandidate,
+  supersededHandoffCapsulePaths,
 } from '../provider-proxy/handoff-capsule-discovery.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { childIsUninterruptible } from './child-state.js';
@@ -86,9 +92,13 @@ function settleRequests(
         record.unavailable(owner, request.id, Date.now());
         continue;
       }
-      if (ready && order === 0 && request.buildSetId === serving.buildSetId) {
-        if (request.status === 'recorded') record.accept(owner, request.id, Date.now());
-        record.complete(owner, request.id, Date.now());
+      if (order === 0) {
+        if (request.buildSetId !== serving.buildSetId) {
+          record.unavailable(owner, request.id, Date.now());
+        } else if (ready) {
+          if (request.status === 'recorded') record.accept(owner, request.id, Date.now());
+          record.complete(owner, request.id, Date.now());
+        } else if (request.status === 'recorded') record.accept(owner, request.id, Date.now());
         continue;
       }
     }
@@ -124,7 +134,9 @@ function incumbentLiveness(incumbent: { pid: number; incarnation: string | null 
   return observeProcessLiveness(incumbent.pid);
 }
 
-function controllerBuild(runDir: string): { kind: 'none' | 'unknown' } | { kind: 'required'; buildSetId: string } {
+export function controllerBuild(
+  runDir: string,
+): { kind: 'none' | 'unknown' } | { kind: 'required'; buildSetId: string } {
   const runtime = createRealRuntime(runDir.endsWith('run-dev') ? 'dev' : 'prod', { baseDir: dirname(dirname(runDir)) });
   let paths: readonly string[];
   try {
@@ -132,7 +144,7 @@ function controllerBuild(runDir: string): { kind: 'none' | 'unknown' } | { kind:
   } catch (error: unknown) {
     return isNoEntryError(error) ? { kind: 'none' } : { kind: 'unknown' };
   }
-  const builds = new Set<string>();
+  const readable: { path: string; capsule: HandoffCapsule }[] = [];
   for (const path of paths) {
     let candidate: ReturnType<typeof readProviderHandoffCapsuleCandidate>;
     try {
@@ -144,7 +156,12 @@ function controllerBuild(runDir: string): { kind: 'none' | 'unknown' } | { kind:
       return { kind: 'unknown' };
     }
     if (candidate.kind !== 'readable') return { kind: 'unknown' };
-    const capsule = candidate.capsule;
+    readable.push(candidate);
+  }
+  const superseded = supersededHandoffCapsulePaths(readable);
+  const buildsBySet = new Map<string, string>();
+  for (const { path, capsule } of readable) {
+    if (superseded.has(path)) continue;
     if (capsule.version === 1) continue;
     if (capsule.version === 2) {
       if (observeProcessLiveness(capsule.proxyPid) !== 'absent') return { kind: 'unknown' };
@@ -155,9 +172,17 @@ function controllerBuild(runDir: string): { kind: 'none' | 'unknown' } | { kind:
       if (observeProcessLiveness(capsule.proxyPid) !== 'absent') return { kind: 'unknown' };
       continue;
     }
-    if (observed === capsule.proxyIncarnation && observeProcessLiveness(capsule.proxyPid) !== 'absent')
-      builds.add(handoffCapsuleControllerBuildSetId(capsule));
+    if (observed === capsule.proxyIncarnation && observeProcessLiveness(capsule.proxyPid) !== 'absent') {
+      const transfer = servedControllerTransferForCapsule(runtime, capsule);
+      if (transfer.kind === 'unknown') return { kind: 'unknown' };
+      const buildSetId = transfer.kind === 'served' ? transfer.buildSetId : handoffCapsuleControllerBuildSetId(capsule);
+      const setKey = providerProxySetKey(providerProxySetIdentityFromCapsule(capsule));
+      const existing = buildsBySet.get(setKey);
+      if (existing !== undefined && existing !== buildSetId) return { kind: 'unknown' };
+      buildsBySet.set(setKey, buildSetId);
+    }
   }
+  const builds = new Set(buildsBySet.values());
   if (builds.size === 0) return { kind: 'none' };
   return builds.size === 1 ? { kind: 'required', buildSetId: [...builds][0] } : { kind: 'unknown' };
 }
@@ -214,6 +239,21 @@ type WatchResult = Readonly<{
   wedged: boolean;
 }>;
 type RunningChild = Readonly<{ child: ChildProcess; identity: LaunchProcess; sentinelId: string; executable: string }>;
+type OwnerHandle = { current: LaunchOwner; lost: boolean };
+
+function handOffLostOwnership(owner: OwnerHandle, executable: string, runDir: string): void {
+  if (owner.lost) return;
+  owner.lost = true;
+  const entry = process.argv[1];
+  if (entry === undefined) return;
+  const successor = spawn(process.execPath, [entry, executable], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir },
+  });
+  successor.once('error', (error) => process.stderr.write(`Coordinator supervisor handoff failed: ${String(error)}\n`));
+  successor.unref();
+}
 
 function spawnAdmittedChild(
   record: CoordinatorLaunchRecord,
@@ -262,7 +302,7 @@ async function watchChild(
   sentinelId: string,
   record: CoordinatorLaunchRecord,
   runDir: string,
-  owner: { current: LaunchOwner },
+  owner: OwnerHandle,
   timing: SentinelTiming,
   startupBudgetMs: number,
   route: (message: unknown, handle: unknown) => boolean = () => false,
@@ -291,6 +331,7 @@ async function watchChild(
       if (message.kind === 'coral-launch-admitted' && 'pid' in message && message.pid === child.pid) admitted = true;
       if (message.kind === 'coral-sentinel-hello' && 'id' in message && message.id === sentinelId) {
         pendingHello = true;
+        lastAnswer = Date.now();
         if (armed) child.send({ kind: 'coral-sentinel-armed', id: sentinelId });
       }
       if (message.kind === 'coral-sentinel-answer' && 'id' in message && message.id === outstanding) {
@@ -324,6 +365,7 @@ async function watchChild(
     if (now - lastRenewal >= 30_000) {
       const renewed = record.renew(owner.current, now);
       if (renewed !== null) owner.current = renewed;
+      else handOffLostOwnership(owner, executable, runDir);
       lastRenewal = now;
     }
     if (child.exitCode !== null || child.signalCode !== null) return;
@@ -340,9 +382,10 @@ async function watchChild(
       outstanding = null;
     }
     if (
-      (!served && now >= startupDeadline) ||
-      now - lastAnswer >= timing.lapseMs ||
-      (dStateSince !== null && now - dStateSince >= timing.dStateDeferralMs)
+      pendingHello &&
+      ((!served && now >= startupDeadline) ||
+        now - lastAnswer >= timing.lapseMs ||
+        (dStateSince !== null && now - dStateSince >= timing.dStateDeferralMs))
     ) {
       if (child.pid !== undefined && childIsUninterruptible(child.pid) && dStateSince === null) dStateSince = now;
       if (dStateSince !== null && now - dStateSince < timing.dStateDeferralMs) {
@@ -354,7 +397,7 @@ async function watchChild(
       }
       return;
     }
-    if (admitted && armed && outstanding === null && child.connected) {
+    if (admitted && armed && pendingHello && outstanding === null && child.connected) {
       outstanding = ++sequence;
       child.send({ kind: 'coral-sentinel-challenge', id: outstanding });
     }
@@ -408,25 +451,38 @@ export async function runNamespaceSupervisor(
   if (originalManifest === null) return 1;
   const record = new CoordinatorLaunchRecord(runDir);
   try {
-    record.request(executable, originalManifest.buildSetId);
+    const request = record.request(executable, originalManifest.buildSetId);
     const incarnation = probeProcessIncarnation(process.pid);
     if (incarnation === null) return 1;
-    const holder = record.acquire(
-      {
-        id: randomUUID(),
-        process: { pid: process.pid, incarnation },
-        buildSetId: originalManifest.buildSetId,
-      },
-      Date.now(),
-    );
-    if (holder === null) return 0;
-    const owner = { current: holder };
+    const holderIdentity = {
+      id: randomUUID(),
+      process: { pid: process.pid, incarnation },
+      buildSetId: originalManifest.buildSetId,
+    };
+    let holder = record.acquire(holderIdentity, Date.now());
+    while (holder === null) {
+      const state = record.read();
+      const pending = state.requests.find((entry) => entry.id === request.id);
+      if (pending?.status === 'completed' || pending?.status === 'unavailable') return 0;
+      if (
+        pending?.status === 'accepted' &&
+        pending.acceptedEpoch === state.owner?.epoch &&
+        (state.owner?.leaseUntil ?? 0) > Date.now()
+      )
+        return 0;
+      await sleep(POLL_MS);
+      holder = record.acquire(holderIdentity, Date.now());
+    }
+    const owner = { current: holder, lost: false };
     const original = { executable, buildSetId: originalManifest.buildSetId };
     const tried = new Set<string>();
     let firstLaunch = true;
     while (true) {
       const renewed = record.renew(owner.current, Date.now());
-      if (renewed === null) return 1;
+      if (renewed === null || owner.lost) {
+        handOffLostOwnership(owner, executable, runDir);
+        return 1;
+      }
       owner.current = renewed;
       settleRequests(record, owner.current, null);
       const inherited = [record.read().launch, record.read().attempt].filter(
@@ -439,7 +495,22 @@ export async function runNamespaceSupervisor(
         for (const slot of inherited) {
           if (slot.child !== undefined && incumbentLiveness(slot.child) === 'absent')
             record.settleAbsentChild(owner.current, slot, Date.now());
+          else if (
+            slot.phase === 'serving' &&
+            slot.child !== undefined &&
+            slot.buildSetId === originalManifest.buildSetId &&
+            (await replacementServing(runDir, originalManifest.flavor, slot.child.pid))
+          )
+            settleRequests(record, owner.current, originalManifest, true);
         }
+        const settled = record.read();
+        if (
+          [settled.launch, settled.attempt].every((slot) => slot === null || slot.phase === 'exited') &&
+          settled.requests.every((entry) => entry.status === 'completed' || entry.status === 'unavailable') &&
+          controllerBuild(runDir).kind === 'none' &&
+          record.release(owner.current)
+        )
+          return 0;
         await sleep(POLL_MS);
         continue;
       }
@@ -533,6 +604,14 @@ export async function runNamespaceSupervisor(
         attemptId: string,
         bundleDir: string,
       ): Promise<void> => {
+        if (owner.lost) {
+          incumbentChild.send({
+            kind: 'coral-supervisor-attempt-error',
+            attemptId,
+            reason: 'Launch ownership was lost',
+          });
+          return;
+        }
         const target = join(bundleDir, 'coral-backend.cjs');
         const manifest = validatedExecutable(target);
         const contender = pending.value;
@@ -673,14 +752,20 @@ export async function runNamespaceSupervisor(
       );
       const requestPoll = setInterval(() => {
         try {
-          if (pending.value !== null || current.child.exitCode !== null || current.child.signalCode !== null) return;
+          if (
+            owner.lost ||
+            pending.value !== null ||
+            current.child.exitCode !== null ||
+            current.child.signalCode !== null
+          )
+            return;
           const state = record.read();
           const currentManifest = validatedExecutable(current.executable);
           const serving = state.launch?.phase === 'serving' ? currentManifest : null;
           settleRequests(record, owner.current, currentManifest, serving !== null);
           if (serving === null) return;
           const currentBuild = serving.buildSetId;
-          for (const request of state.requests) {
+          for (const request of record.read().requests) {
             if (
               request.buildSetId === currentBuild &&
               (request.status === 'recorded' || request.status === 'accepted')

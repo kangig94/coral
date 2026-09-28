@@ -56,6 +56,31 @@ export function readPendingGrantTransfer(
       waitingFor: 'grant-install-or-host-retirement';
       exit: 'provider-host-grant-install-retry';
     }> {
+  const pending = readPendingGrantTransferController(runtime, capsule);
+  if (pending.kind !== 'recorded') return pending;
+  return pending.successorBuildSetId === successorBuildSetId
+    ? {
+        kind: 'recorded',
+        attemptId: pending.attemptId,
+        disposition: pending.disposition,
+        waitingFor: pending.waitingFor,
+        exit: pending.exit,
+      }
+    : { kind: 'absent' };
+}
+
+export function readPendingGrantTransferController(
+  runtime: Runtime,
+  capsule: RedeemableHandoffCapsule,
+):
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{
+      kind: 'unreadable';
+      disposition: 'held';
+      waitingFor: 'durable-status-read';
+      exit: 'provider-set-inheritance-retry';
+    }>
+  | Readonly<PendingGrantTransfer & { kind: 'recorded' }> {
   const path = statusPath(runtime, capsule);
   const unreadable = {
     kind: 'unreadable',
@@ -70,14 +95,10 @@ export function readPendingGrantTransfer(
     const status = parsed.data;
     return status.setKey === providerProxySetKey(providerProxySetIdentityFromCapsule(capsule)) &&
       status.incumbentBuildSetId === handoffCapsuleControllerBuildSetId(capsule) &&
-      status.grantId === capsule.grantId &&
-      status.successorBuildSetId === successorBuildSetId
+      status.grantId === capsule.grantId
       ? {
+          ...status,
           kind: 'recorded',
-          attemptId: status.attemptId,
-          disposition: status.disposition,
-          waitingFor: status.waitingFor,
-          exit: status.exit,
         }
       : { kind: 'absent' };
   } catch {

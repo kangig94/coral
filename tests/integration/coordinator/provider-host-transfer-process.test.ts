@@ -409,25 +409,19 @@ describe('real-process provider host transfer', () => {
   it('preserves a live provider job when its supervisor disappears', async () => {
     assertBuildArtifactsAvailable();
     const world = createTransferWorld();
-    const { oldFixture, old, incumbentPid, jobId, hosts } = await startProxiedJob(world);
+    const { oldFixture, old, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
     if (old.child.pid === undefined) throw new Error('Supervisor has no PID');
+    const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
+    const launch = new CoordinatorLaunchRecord(runDir);
     process.kill(old.child.pid, 'SIGKILL');
-    await waitForCondition(() => observeProcessLiveness(incumbentPid) === 'absent', 20_000);
+    try {
+      await waitForCondition(() => launch.read().owner?.process.pid !== old.child.pid, 20_000);
+      expect(launch.read().launch).toMatchObject({ phase: 'serving', child: { pid: incumbentPid } });
+      expect(observeProcessLiveness(incumbentPid)).toBe('alive');
+    } finally {
+      launch.close();
+    }
     expect(hostsAlive(hosts)).toBe(true);
-
-    const replacement = spawnCoordinator({
-      fixture: oldFixture,
-      home: world.home,
-      tempRoots: roots,
-      env: world.env,
-      supervised: true,
-    });
-    coordinators.push(replacement);
-    await waitForCondition(() => {
-      const discovery = readDiscoveryRecordForHome(world.home, 'prod');
-      return discovery !== null && discovery.pid !== incumbentPid;
-    }, 30_000);
-    const waiter = startCli(oldFixture, world, ['wait', 'jobs', jobId, '--verbose']);
     writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
     try {
       await waitForCondition(() => existsSync(join(world.state, 'emitted-after-transfer')), 60_000);
@@ -435,7 +429,7 @@ describe('real-process provider host transfer', () => {
       throw new Error(
         `Recovered provider made no progress: ${JSON.stringify({
           waiter: waiter.output(),
-          replacement: replacement.output(),
+          supervisor: old.output(),
           hostsAlive: hostsAlive(hosts),
           interrupted: existsSync(join(world.state, 'terminal-interrupted')),
           completed: existsSync(join(world.state, 'terminal-completed')),

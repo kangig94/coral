@@ -27,6 +27,7 @@ import { assertNever } from '../infra/error-format.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { startReplacementSupervisor } from '../runtime/supervisor-loss.js';
 import { createRealSuccessionAttemptPorts } from '../runtime/succession-attempt.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
@@ -340,7 +341,14 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
     throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
   }
 
-  let shutdownAfterSentinelLoss: (() => void) | null = null;
+  const replaceSupervisor = (): void =>
+    startReplacementSupervisor(__PLUGIN_ROOT__, (error) =>
+      backendLog.error('Could not replace coordinator supervisor', error),
+    );
+  let shutdownAfterSentinelLoss = (): void => {
+    replaceSupervisor();
+    bootstrapProbeExitGate.requestExit(1);
+  };
   let sentinelArm: Promise<void> | null = null;
   if (process.env.CORAL_SENTINEL_ID !== undefined) {
     const sentinelId = process.env.CORAL_SENTINEL_ID;
@@ -376,8 +384,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
       }
     });
     process.on('disconnect', () => {
-      if (shutdownAfterSentinelLoss === null) bootstrapProbeExitGate.requestExit(1);
-      else shutdownAfterSentinelLoss();
+      shutdownAfterSentinelLoss();
     });
   }
   if (sentinelArm !== null) await sentinelArm;
@@ -420,9 +427,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
         bootstrapProbeExitGate.requestExit(1);
       },
     });
-    shutdownAfterSentinelLoss = () => {
-      bootstrapProbeExitGate.requestExit(1);
-    };
+    shutdownAfterSentinelLoss = replaceSupervisor;
 
     const handleShutdownSignal = createCoordinatorShutdownSignalHandler({
       shutdown: coordinator.shutdown,
