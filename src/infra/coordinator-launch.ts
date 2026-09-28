@@ -353,29 +353,27 @@ export class CoordinatorLaunchRecord {
     });
   }
 
-  hold(owner: LaunchOwner, controller: string, now: number): void {
-    this.#change((state) => {
-      if (!this.#current(state, owner, now))
-        throw new Error('Coordinator launch hold refused: owner is no longer current');
+  hold(owner: LaunchOwner, controller: string, now: number): boolean {
+    return this.#change((state) => {
+      if (!this.#current(state, owner, now)) return { state, result: false };
       const retry = controller === 'unknown' ? 'controller-evidence-change' : 'eligible-build-appears';
       if (
         state.hold?.kind === 'no-eligible-build' &&
         state.hold.controller === controller &&
         state.hold.retry === retry
       )
-        return { state, result: undefined };
-      return { state: { ...state, hold: { kind: 'no-eligible-build', controller, retry } }, result: undefined };
+        return { state, result: true };
+      return { state: { ...state, hold: { kind: 'no-eligible-build', controller, retry } }, result: true };
     });
   }
 
-  holdUnreadableCustody(owner: LaunchOwner, path: string, now: number): void {
-    this.#change((state) => {
-      if (!this.#current(state, owner, now))
-        throw new Error('Coordinator launch hold refused: owner is no longer current');
-      if (state.hold?.kind === 'custody-unreadable' && state.hold.path === path) return { state, result: undefined };
+  holdUnreadableCustody(owner: LaunchOwner, path: string, now: number): boolean {
+    return this.#change((state) => {
+      if (!this.#current(state, owner, now)) return { state, result: false };
+      if (state.hold?.kind === 'custody-unreadable' && state.hold.path === path) return { state, result: true };
       return {
         state: { ...state, hold: { kind: 'custody-unreadable', path, retry: 'restore-readable-custody-record' } },
-        result: undefined,
+        result: true,
       };
     });
   }
@@ -391,11 +389,10 @@ export class CoordinatorLaunchRecord {
     });
   }
 
-  holdTarget(owner: LaunchOwner, requestId: string, now: number): void {
-    this.#change((state) => {
-      if (!this.#current(state, owner, now))
-        throw new Error('Coordinator launch hold refused: owner is no longer current');
-      return { state: { ...state, hold: { kind: 'target-indeterminate', requestId } }, result: undefined };
+  holdTarget(owner: LaunchOwner, requestId: string, now: number): boolean {
+    return this.#change((state) => {
+      if (!this.#current(state, owner, now)) return { state, result: false };
+      return { state: { ...state, hold: { kind: 'target-indeterminate', requestId } }, result: true };
     });
   }
 
@@ -407,22 +404,21 @@ export class CoordinatorLaunchRecord {
     });
   }
 
-  holdInheritedChild(owner: LaunchOwner, reservation: LaunchReservation, now: number): void {
-    this.#change((state) => {
-      if (!this.#current(state, owner, now) || reservation.child === undefined)
-        throw new Error('Coordinator launch hold refused: owner or child is no longer current');
+  holdInheritedChild(owner: LaunchOwner, reservation: LaunchReservation, now: number): boolean {
+    return this.#change((state) => {
+      if (!this.#current(state, owner, now) || reservation.child === undefined) return { state, result: false };
       const slot = this.#slot(state, reservation);
       const launch = slot === 'launch' ? state.launch : state.attempt;
       if (
         !this.#exactChild(launch, reservation, reservation.child) ||
         (launch?.phase !== 'admitted' && launch?.phase !== 'serving')
       )
-        throw new Error('Coordinator launch hold refused: child is no longer current');
+        return { state, result: false };
       const holds = state.inheritedHolds ?? [];
-      if (holds.some((hold) => hold.launchId === reservation.id)) return { state, result: undefined };
+      if (holds.some((hold) => hold.launchId === reservation.id)) return { state, result: true };
       return {
         state: { ...state, inheritedHolds: [...holds, { launchId: reservation.id, pid: reservation.child.pid }] },
-        result: undefined,
+        result: true,
       };
     });
   }

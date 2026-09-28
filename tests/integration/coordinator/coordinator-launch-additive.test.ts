@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -126,6 +126,34 @@ it('forwards every durable launch hold through backend status', async () => {
     } finally {
       record.close();
     }
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmpdir;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+it('reports an unreadable launch record separately from an absent record', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'coral-unreadable-launch-status-'));
+  const previousHome = process.env.HOME;
+  const previousTmpdir = process.env.TMPDIR;
+  process.env.HOME = home;
+  process.env.TMPDIR = home;
+  try {
+    const runDir = createRealRuntime('prod').paths.coral.coordinator.runDir;
+    const absent = await getBackendStatusFull('/plugin-root');
+    expect(absent.launchRecordProblem).toBeUndefined();
+    const record = new CoordinatorLaunchRecord(runDir);
+    record.close();
+    writeFileSync(coordinatorLaunchPath(runDir), 'invalid sqlite');
+    const unreadable = await getBackendStatusFull('/plugin-root');
+    expect(unreadable.launchRecordProblem).toBe('unreadable');
+    expect(formatBackendStatus(unreadable, { kind: 'absent' }, null)).toContain(
+      'Coordinator launch record is unreadable',
+    );
+    expect(formatBackendStatus(unreadable, { kind: 'absent' }, null)).not.toContain('Run the start command below');
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;

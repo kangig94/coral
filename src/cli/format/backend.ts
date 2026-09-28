@@ -751,6 +751,8 @@ export function formatBackendStatus(
       ? formatLiveShutdownGuidance(daemonStatus.health)
       : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
   const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
+  if (daemonStatus.launchRecordProblem === 'unreadable')
+    sections.push('Coordinator launch record is unreadable. Launch cannot proceed until the record can be read.');
   for (const hold of daemonStatus.launchSignalHolds ?? []) {
     if (hold.launchId.startsWith('replacement:'))
       sections.push(
@@ -918,22 +920,26 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
-        result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
-          ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch record reports the hold below.'
-          : [
-              'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
-              formatBackendOperatorCommand({ kind: 'backend-start' }),
-            ].join('\n'),
+        result.launchRecordProblem !== undefined
+          ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch record problem is reported below.'
+          : result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
+            ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch record reports the hold below.'
+            : [
+                'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
+                formatBackendOperatorCommand({ kind: 'backend-start' }),
+              ].join('\n'),
         result.shutdownRemainder,
       );
     case 'recorded_process_absent':
       return withShutdownRemainderSection(
-        result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
-          ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch record reports the hold below.`
-          : [
-              `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
-              formatBackendOperatorCommand({ kind: 'backend-start' }),
-            ].join('\n'),
+        result.launchRecordProblem !== undefined
+          ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch record problem is reported below.`
+          : result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
+            ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch record reports the hold below.`
+            : [
+                `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
+                formatBackendOperatorCommand({ kind: 'backend-start' }),
+              ].join('\n'),
         result.shutdownRemainder,
       );
     case 'undecodable_record':

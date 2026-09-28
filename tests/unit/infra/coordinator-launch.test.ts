@@ -92,10 +92,10 @@ describe('coordinator launch admission', () => {
     const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
     expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
     const expired = owner.leaseUntil;
-    expect(() => record.hold(owner, 'unknown', expired)).toThrow('launch hold');
-    expect(() => record.holdUnreadableCustody(owner, '/custody', expired)).toThrow('launch hold');
-    expect(() => record.holdTarget(owner, 'request-1', expired)).toThrow('launch hold');
-    expect(() => record.holdInheritedChild(owner, { ...launch, child }, expired)).toThrow('launch hold');
+    expect(record.hold(owner, 'unknown', expired)).toBe(false);
+    expect(record.holdUnreadableCustody(owner, '/custody', expired)).toBe(false);
+    expect(record.holdTarget(owner, 'request-1', expired)).toBe(false);
+    expect(record.holdInheritedChild(owner, { ...launch, child }, expired)).toBe(false);
     expect(record.read().hold).toBeUndefined();
     record.close();
   });
@@ -310,22 +310,18 @@ describe('coordinator launch admission', () => {
       if (attempt === null) throw new Error('Attempt was not reserved');
       const second = { pid: 202, incarnation: 'second' as ProcessIncarnation };
       expect(record.admit(attempt, owner.process, second, 1_003)).toBe(true);
-      record.holdInheritedChild(owner, { ...launch, child: first }, 1_004);
-      record.holdInheritedChild(owner, { ...attempt, child: second }, 1_004);
+      expect(record.holdInheritedChild(owner, { ...launch, child: first }, 1_004)).toBe(true);
+      expect(record.holdInheritedChild(owner, { ...attempt, child: second }, 1_004)).toBe(true);
       expect(record.read().inheritedHolds).toEqual([
         { launchId: launch.id, pid: first.pid },
         { launchId: attempt.id, pid: second.pid },
       ]);
       expect(record.exited(launch, first)).toBe(true);
       expect(record.read().inheritedHolds).toEqual([{ launchId: attempt.id, pid: second.pid }]);
-      expect(() => record.holdInheritedChild(owner, { ...launch, child: first }, 1_005)).toThrow(
-        'child is no longer current',
-      );
+      expect(record.holdInheritedChild(owner, { ...launch, child: first }, 1_005)).toBe(false);
       expect(record.settleAbsentChild(owner, { ...attempt, child: second }, 1_005)).toBe(true);
       expect(record.read().inheritedHolds).toEqual([]);
-      expect(() => record.holdInheritedChild(owner, { ...attempt, child: second }, 1_006)).toThrow(
-        'child is no longer current',
-      );
+      expect(record.holdInheritedChild(owner, { ...attempt, child: second }, 1_006)).toBe(false);
     } finally {
       record.close();
     }

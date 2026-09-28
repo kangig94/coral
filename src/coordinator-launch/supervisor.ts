@@ -463,6 +463,7 @@ async function watchChild(
   let admitted = false;
   let startupDeadline = Date.now() + startupBudgetMs;
   let lastRenewal = Date.now();
+  let disconnectedAt: number | null = null;
 
   const childExit = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
@@ -502,8 +503,9 @@ async function watchChild(
     else closeHandle(handle);
   };
   if (forwardParentMessages) process.on('message', parentMessage);
-  const escalateChild = (now: number): 'sent' | 'absent' | 'held' => {
+  const escalateChild = (now: number): 'sent' | 'absent' | 'held' | 'refused' => {
     const state = record.read();
+    if (owner.lost || state.owner?.epoch !== owner.current.epoch) return 'refused';
     const slot = [state.launch, state.attempt].find((entry) => entry?.id === reservation.id);
     if (
       slot?.child?.pid === identity.pid &&
@@ -525,9 +527,7 @@ async function watchChild(
       record.settleAbsentChild(owner.current, reservation, now);
       return 'absent';
     }
-    if (!record.holdSignalRefusal(owner.current, reservation, identity, now))
-      throw new Error(`Coordinator launch signal hold refused for ${reservation.id} (PID ${identity.pid})`);
-    return 'held';
+    return record.holdSignalRefusal(owner.current, reservation, identity, now) ? 'held' : 'refused';
   };
   const interval = setInterval(() => {
     const now = Date.now();
@@ -542,7 +542,7 @@ async function watchChild(
       owner.lost = true;
       return;
     }
-    if (child.connected && now - lastRenewal >= 30_000) {
+    if (now - lastRenewal >= 30_000) {
       const renewed = record.renew(owner.current, now);
       if (renewed !== null) owner.current = renewed;
       else {
@@ -563,7 +563,7 @@ async function watchChild(
       }
       return;
     }
-    if (!child.connected) return;
+    disconnectedAt = child.connected ? null : (disconnectedAt ?? now);
     if (dStateSince !== null && child.pid !== undefined && !childIsUninterruptible(child.pid)) {
       dStateSince = null;
       lastAnswer = now;
@@ -571,7 +571,9 @@ async function watchChild(
     }
     if (
       (!served && now >= startupDeadline) ||
-      (pendingHello &&
+      (disconnectedAt !== null && now - disconnectedAt >= timing.lapseMs) ||
+      (child.connected &&
+        pendingHello &&
         (now - lastAnswer >= timing.lapseMs || (dStateSince !== null && now - dStateSince >= timing.dStateDeferralMs)))
     ) {
       if (child.pid !== undefined && childIsUninterruptible(child.pid) && dStateSince === null) dStateSince = now;
@@ -579,6 +581,10 @@ async function watchChild(
         lastAnswer = now;
       } else {
         wedged = true;
+        if (record.read().owner?.epoch !== owner.current.epoch) {
+          owner.lost = true;
+          return;
+        }
         child.kill('SIGTERM');
         escalationAt = now;
       }
@@ -915,8 +921,22 @@ async function reconcileInheritedChildren(input: {
       (slot.phase === 'admitted' || slot.phase === 'serving') &&
       (slot.parent?.pid !== process.pid || slot.parent.incarnation !== incarnation),
   );
+  const currentInheritedChild = (snapshot: LaunchReservation, child: LaunchProcess): LaunchReservation | null => {
+    const state = record.read();
+    const current = [state.launch, state.attempt].find((entry) => entry?.id === snapshot.id);
+    return !owner.lost &&
+      state.owner?.epoch === owner.current.epoch &&
+      current !== undefined &&
+      current !== null &&
+      (current.phase === 'admitted' || current.phase === 'serving') &&
+      current.child?.pid === child.pid &&
+      current.child.incarnation === child.incarnation
+      ? current
+      : null;
+  };
   if (inherited.length > 0) {
-    for (const slot of inherited) {
+    for (const snapshot of inherited) {
+      let slot = snapshot;
       const child = slot.child;
       if (child === undefined) continue;
       if (incumbentLiveness(child) === 'absent' || childHasExited(child.pid)) {
@@ -925,7 +945,7 @@ async function reconcileInheritedChildren(input: {
         inheritedWatch.delete(slot.id);
         continue;
       }
-      const now = Date.now();
+      let now = Date.now();
       const watch = inheritedWatch.get(slot.id) ?? {
         firstSeen: now,
         lastHealthy: slot.observedHealthyAt ?? slot.admittedAt ?? now,
@@ -936,6 +956,14 @@ async function reconcileInheritedChildren(input: {
       const healthy =
         probeProcessIncarnation(child.pid) === child.incarnation &&
         (await replacementServing(runDir, originalManifest.flavor, child.pid));
+      const current = currentInheritedChild(snapshot, child);
+      if (current === null) {
+        inheritedWatch.delete(snapshot.id);
+        continue;
+      }
+      slot = current;
+      watch.terminationAt = slot.terminationAt ?? watch.terminationAt;
+      now = Date.now();
       if (healthy && watch.terminationAt === null) {
         watch.lastHealthy = now;
         record.observeInheritedHealth(owner.current, slot, now);
@@ -977,6 +1005,14 @@ async function reconcileInheritedChildren(input: {
           }
         }
       }
+      const live = currentInheritedChild(snapshot, child);
+      if (live === null) {
+        inheritedWatch.delete(snapshot.id);
+        continue;
+      }
+      slot = live;
+      watch.terminationAt = slot.terminationAt ?? watch.terminationAt;
+      now = Date.now();
       const overdue =
         (slot.phase === 'admitted' && now >= (slot.admittedAt ?? watch.firstSeen) + startupBudgetMs) ||
         (slot.phase === 'serving' && now - watch.lastHealthy >= timing.lapseMs);
@@ -985,8 +1021,9 @@ async function reconcileInheritedChildren(input: {
         if (
           now >= (slot.killAt ?? watch.terminationAt + timing.graceMs) &&
           !signalInheritedChild(record, owner.current, slot, 'SIGKILL')
-        )
-          record.holdInheritedChild(owner.current, slot, now);
+        ) {
+          if (!record.holdInheritedChild(owner.current, slot, now)) inheritedWatch.delete(slot.id);
+        }
         continue;
       }
       if (childIsUninterruptible(child.pid)) {
@@ -997,9 +1034,10 @@ async function reconcileInheritedChildren(input: {
       }
       if (record.commitTermination(owner.current, slot, now, timing.graceMs)) {
         watch.terminationAt = now;
-        if (!signalInheritedChild(record, owner.current, slot, 'SIGTERM'))
-          record.holdInheritedChild(owner.current, slot, now);
-      } else record.holdInheritedChild(owner.current, slot, now);
+        if (!signalInheritedChild(record, owner.current, slot, 'SIGTERM')) {
+          if (!record.holdInheritedChild(owner.current, slot, now)) inheritedWatch.delete(slot.id);
+        }
+      } else if (!record.holdInheritedChild(owner.current, slot, now)) inheritedWatch.delete(slot.id);
     }
   }
   return { inherited, repairBridge };
@@ -1268,6 +1306,8 @@ export async function runNamespaceSupervisor(
       }
       if (renewed === null || owner.lost) {
         owner.lost = true;
+        repairBridge?.close();
+        repairBridge = null;
         while (true) {
           let ownsUnsettledChild = false;
           for (const slot of [record.read().launch, record.read().attempt]) {
@@ -1305,6 +1345,12 @@ export async function runNamespaceSupervisor(
       });
       const { inherited } = reconciled;
       repairBridge = reconciled.repairBridge;
+      if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+        owner.lost = true;
+        repairBridge?.close();
+        repairBridge = null;
+        continue;
+      }
       record.normalize(owner.current, Date.now());
       const adoptedChild = repairBridge?.child(record.read().launch?.id);
       if (adoptedChild !== null && adoptedChild !== undefined) {
@@ -1423,13 +1469,18 @@ export async function runNamespaceSupervisor(
           }),
           runDir,
         ).find((entry) => entry.kind === 'unreadable');
-        if (unreadable?.kind === 'unreadable') record.holdUnreadableCustody(owner.current, unreadable.path, Date.now());
-        else if (record.read().hold?.kind !== 'target-indeterminate')
-          record.hold(
-            owner.current,
-            controller.kind === 'required' ? controller.buildSetId : controller.kind,
-            Date.now(),
-          );
+        if (unreadable?.kind === 'unreadable') {
+          if (!record.holdUnreadableCustody(owner.current, unreadable.path, Date.now())) continue;
+        } else if (record.read().hold?.kind !== 'target-indeterminate') {
+          if (
+            !record.hold(
+              owner.current,
+              controller.kind === 'required' ? controller.buildSetId : controller.kind,
+              Date.now(),
+            )
+          )
+            continue;
+        }
         tried.clear();
         await sleep(2_000);
         continue;

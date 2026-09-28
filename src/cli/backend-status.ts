@@ -1,6 +1,7 @@
 import { observeCoordinator, type CoordinatorObservation } from '../transport/http/backend/coordinator-observation.js';
 import { dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
+import { isNoEntryError } from '../infra/fs-errors.js';
 import { readCoordinatorLaunchState, type CoordinatorLaunchState } from '../infra/coordinator-launch.js';
 import { coordinatorLaunchPath } from '../infra/path/index.js';
 import {
@@ -455,6 +456,7 @@ export type SupersededEpochClosures =
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
 export type BackendStatusFull = BackendStatusFullBase & {
+  launchRecordProblem?: 'unreadable';
   launchHold?: NonNullable<CoordinatorLaunchState['hold']>;
   launchInheritedHolds?: NonNullable<CoordinatorLaunchState['inheritedHolds']>;
   launchSignalHolds?: NonNullable<CoordinatorLaunchState['signalHolds']>;
@@ -1166,7 +1168,6 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   const status = await getBackendStatusBase(pluginRoot);
   const runDir = createRealRuntime(readBuildFlavor(pluginRoot)).paths.coral.coordinator.runDir;
   const quarantined = hasQuarantinedUpgradeIntent(runDir);
-  if (!existsSync(coordinatorLaunchPath(runDir))) return quarantined ? { ...status, upgradeQuarantined: true } : status;
   try {
     const state = readCoordinatorLaunchState(runDir);
     const hold = state.hold;
@@ -1178,6 +1179,11 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       ...(quarantined ? { upgradeQuarantined: true } : {}),
     };
   } catch {
-    return quarantined ? { ...status, upgradeQuarantined: true } : status;
+    try {
+      statSync(coordinatorLaunchPath(runDir));
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) return quarantined ? { ...status, upgradeQuarantined: true } : status;
+    }
+    return { ...status, launchRecordProblem: 'unreadable', ...(quarantined ? { upgradeQuarantined: true } : {}) };
   }
 }
