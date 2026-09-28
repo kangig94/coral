@@ -335,10 +335,23 @@ type RunningChild = Readonly<{
 }>;
 type OwnerHandle = { current: LaunchOwner; lost: boolean };
 type ChildRetirement = { at: number | null };
-function retireOwnedChild(running: RunningChild, retirement: ChildRetirement): void {
-  retirement.at ??= Date.now();
+function retireOwnedChild(
+  record: CoordinatorLaunchRecord,
+  owner: OwnerHandle,
+  reservation: LaunchReservation,
+  running: RunningChild,
+  retirement: ChildRetirement,
+  graceMs: number,
+): void {
+  const now = Date.now();
+  if (!record.commitTermination(owner.current, reservation, running.identity, now, graceMs)) return;
+  retirement.at ??= now;
   try {
-    running.child.kill('SIGTERM');
+    if (
+      terminationCommitted(record, owner.current, reservation, running.identity) &&
+      probeProcessIncarnation(running.identity.pid) === running.identity.incarnation
+    )
+      running.child.kill('SIGTERM');
   } catch {
     return;
   }
@@ -350,6 +363,23 @@ type InheritedWatch = {
   terminationAt: number | null;
 };
 
+function terminationCommitted(
+  record: CoordinatorLaunchRecord,
+  owner: LaunchOwner,
+  reservation: LaunchReservation,
+  identity: LaunchProcess,
+): boolean {
+  const state = record.read();
+  const slot = [state.launch, state.attempt].find((entry) => entry?.id === reservation.id);
+  return (
+    state.owner?.epoch === owner.epoch &&
+    slot?.terminationAt !== undefined &&
+    slot.terminationOwnerEpoch === owner.epoch &&
+    slot.child?.pid === identity.pid &&
+    slot.child.incarnation === identity.incarnation
+  );
+}
+
 function signalInheritedChild(
   record: CoordinatorLaunchRecord,
   owner: LaunchOwner,
@@ -358,15 +388,7 @@ function signalInheritedChild(
 ): boolean {
   const child = slot.child;
   if (child === undefined || !incarnationMayAuthorizeSignal(process.platform)) return false;
-  const state = record.read();
-  const current = [state.launch, state.attempt].find((entry) => entry?.id === slot.id);
-  if (
-    state.owner?.id !== owner.id ||
-    current?.terminationAt === undefined ||
-    current?.child?.pid !== child.pid ||
-    current.child.incarnation !== child.incarnation ||
-    probeProcessIncarnation(child.pid) !== child.incarnation
-  )
+  if (!terminationCommitted(record, owner, slot, child) || probeProcessIncarnation(child.pid) !== child.incarnation)
     return false;
   try {
     process.kill(child.pid, signal);
@@ -504,12 +526,10 @@ async function watchChild(
   };
   if (forwardParentMessages) process.on('message', parentMessage);
   const escalateChild = (now: number): 'sent' | 'absent' | 'held' | 'refused' => {
-    const state = record.read();
-    if (owner.lost || state.owner?.epoch !== owner.current.epoch) return 'refused';
-    const slot = [state.launch, state.attempt].find((entry) => entry?.id === reservation.id);
+    if (owner.lost || !record.commitTermination(owner.current, reservation, identity, now, timing.graceMs))
+      return 'refused';
     if (
-      slot?.child?.pid === identity.pid &&
-      slot.child.incarnation === identity.incarnation &&
+      terminationCommitted(record, owner.current, reservation, identity) &&
       probeProcessIncarnation(identity.pid) === identity.incarnation
     ) {
       let sent: boolean;
@@ -581,11 +601,15 @@ async function watchChild(
         lastAnswer = now;
       } else {
         wedged = true;
-        if (record.read().owner?.epoch !== owner.current.epoch) {
+        if (!record.commitTermination(owner.current, reservation, identity, now, timing.graceMs)) {
           owner.lost = true;
           return;
         }
-        child.kill('SIGTERM');
+        if (
+          terminationCommitted(record, owner.current, reservation, identity) &&
+          probeProcessIncarnation(identity.pid) === identity.incarnation
+        )
+          child.kill('SIGTERM');
         escalationAt = now;
       }
       return;
@@ -777,7 +801,7 @@ function createRepairBridge(
     const attempt = attemptId === undefined ? null : (children.get(attemptId) ?? null);
     if (attempt === null || !('attemptId' in message) || message.attemptId !== attempt.attemptId) return;
     if (message.kind === 'coral-supervisor-retire-attempt') {
-      retireOwnedChild(attempt.running, attempt.retirement);
+      retireOwnedChild(record, owner, attempt.reservation, attempt.running, attempt.retirement, timing.graceMs);
       return;
     }
     if (message.kind !== 'coral-supervisor-relay') return;
@@ -788,7 +812,7 @@ function createRepairBridge(
       'kind' in payload &&
       payload.kind === 'coral-sentinel-retire-child'
     )
-      retireOwnedChild(attempt.running, attempt.retirement);
+      retireOwnedChild(record, owner, attempt.reservation, attempt.running, attempt.retirement, timing.graceMs);
     else if (attempt.running.child.connected)
       attempt.running.child.send(payload as Parameters<ChildProcess['send']>[0], handle as SendHandle, () =>
         closeHandle(handle),
@@ -1020,6 +1044,7 @@ async function reconcileInheritedChildren(input: {
       if (watch.terminationAt !== null) {
         if (
           now >= (slot.killAt ?? watch.terminationAt + timing.graceMs) &&
+          record.commitTermination(owner.current, slot, child, now, timing.graceMs) &&
           !signalInheritedChild(record, owner.current, slot, 'SIGKILL')
         ) {
           if (!record.holdInheritedChild(owner.current, slot, now)) inheritedWatch.delete(slot.id);
@@ -1032,7 +1057,7 @@ async function reconcileInheritedChildren(input: {
       } else {
         watch.uninterruptibleSince = null;
       }
-      if (record.commitTermination(owner.current, slot, now, timing.graceMs)) {
+      if (record.commitTermination(owner.current, slot, child, now, timing.graceMs)) {
         watch.terminationAt = now;
         if (!signalInheritedChild(record, owner.current, slot, 'SIGTERM')) {
           if (!record.holdInheritedChild(owner.current, slot, now)) inheritedWatch.delete(slot.id);
@@ -1058,6 +1083,7 @@ async function superviseActiveChild(input: {
   let current = initial;
   type PendingAttempt = Readonly<{
     attemptId?: string;
+    reservation: LaunchReservation;
     running: RunningChild;
     retirement: ChildRetirement;
     watch: Promise<WatchResult>;
@@ -1079,7 +1105,14 @@ async function superviseActiveChild(input: {
         beforeReserve: async () => {
           const contender = pending.value;
           if (contender !== null && contender.attemptId === undefined) {
-            retireOwnedChild(contender.running, contender.retirement);
+            retireOwnedChild(
+              record,
+              owner,
+              contender.reservation,
+              contender.running,
+              contender.retirement,
+              timing.graceMs,
+            );
             await contender.watch;
             if (pending.value === contender) pending.value = null;
           }
@@ -1136,7 +1169,7 @@ async function superviseActiveChild(input: {
           'kind' in payload &&
           payload.kind === 'coral-sentinel-retire-child'
         )
-          retireOwnedChild(attempt.running, attempt.retirement);
+          retireOwnedChild(record, owner, attempt.reservation, attempt.running, attempt.retirement, timing.graceMs);
         else if (target.connected)
           target.send(payload as Parameters<typeof target.send>[0], handle as SendHandle, () => closeHandle(handle));
         else closeHandle(handle);
@@ -1148,7 +1181,7 @@ async function superviseActiveChild(input: {
         attempt !== null &&
         attempt.attemptId === message.attemptId
       ) {
-        retireOwnedChild(attempt.running, attempt.retirement);
+        retireOwnedChild(record, owner, attempt.reservation, attempt.running, attempt.retirement, timing.graceMs);
         return true;
       }
     } else if (attempt !== null && source === attempt.running.child) {
@@ -1234,7 +1267,7 @@ async function superviseActiveChild(input: {
           retirement,
           (message, handle) => route(running.child, message, handle),
         );
-        pending.value = { running, retirement, watch };
+        pending.value = { reservation: contenderReservation, running, retirement, watch };
         void watch.then(() => {
           if (pending.value?.running.child === running.child && current.child !== running.child) pending.value = null;
         });
@@ -1296,6 +1329,7 @@ export async function runNamespaceSupervisor(
     let repairBridge: ReturnType<typeof createRepairBridge> | null = null;
     let firstLaunch = true;
     while (true) {
+      record.reconcileReplacementSignalHolds();
       const renewed = record.renew(owner.current, Date.now());
       if (renewed === null && !owner.lost) {
         const reacquired = record.acquire(holderIdentity, Date.now());

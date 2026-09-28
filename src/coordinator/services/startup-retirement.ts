@@ -465,10 +465,14 @@ export function createStartupMintAuthorizer(
     const countedAt = repeated === null ? now : (repeated.countedAt ?? now);
     runtime.storage.mkdirSync(dirname(attemptsPath), { recursive: true, mode: 0o700 });
     if (
-      !runtime.storage.writeAtomicDurableSync(attemptsPath, `${JSON.stringify({ startupId, attempts, countedAt })}\n`, {
-        encoding: 'utf8',
-        mode: 0o600,
-      })
+      !runtime.storage.writeAtomicDurableSync(
+        attemptsPath,
+        `${JSON.stringify({ ...previous, startupId, attempts, countedAt })}\n`,
+        {
+          encoding: 'utf8',
+          mode: 0o600,
+        },
+      )
     )
       throw new Error('Retirement patience could not be recorded durably.');
     const holdsNoWork =

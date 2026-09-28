@@ -45,6 +45,76 @@ afterEach(() => {
 });
 
 describe('job location additive records', () => {
+  it.each(['recordObserved', 'recordTerminal'] as const)(
+    'preserves unknown detail fields at every nesting level in %s',
+    (method) => {
+      const { root, index } = fixture();
+      const jobId = 'job-1';
+      index.register(jobId, 'lineage-1:1', {
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
+      });
+      const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+      const detail = terminalDetail(jobId);
+      writeFileSync(
+        path,
+        `${JSON.stringify({
+          ...JSON.parse(readFileSync(path, 'utf-8')),
+          detail: {
+            ...detail,
+            futureRoot: 'keep',
+            status: {
+              ...detail.status,
+              futureStatus: 'keep',
+              result: { ...detail.status.result, futureResult: 'keep' },
+            },
+            events: [
+              {
+                ...detail.events[0],
+                futureEvent: 'keep',
+                result: { ...detail.status.result, futureEventResult: 'keep' },
+              },
+            ],
+            exit: {
+              ...detail.exit,
+              futureExit: 'keep',
+              diagnostics: { ...detail.exit!.diagnostics, futureDiagnostics: 'keep' },
+            },
+          },
+        })}\n`,
+      );
+
+      if (method === 'recordTerminal') index.recordTerminal(jobId, detail, join(root, 'result.md'), 2);
+      else index.recordObserved(jobId, detail);
+
+      expect(JSON.parse(readFileSync(path, 'utf-8')).detail).toMatchObject({
+        futureRoot: 'keep',
+        status: { futureStatus: 'keep', result: { futureResult: 'keep' } },
+        events: [{ futureEvent: 'keep', result: { futureEventResult: 'keep' } }],
+        exit: { futureExit: 'keep', diagnostics: { futureDiagnostics: 'keep' } },
+      });
+    },
+  );
+  it('does not retain a removed known status field while preserving unknown fields', () => {
+    const { root, index } = fixture();
+    const jobId = 'job-1';
+    index.register(jobId, 'lineage-1:1', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const detail = terminalDetail(jobId);
+    index.recordObserved(jobId, { ...detail, status: { ...detail.status, futureStatus: 'keep' } } as JobDetailResponse);
+    const { result: _result, ...status } = detail.status;
+
+    index.recordObserved(jobId, { ...detail, status });
+
+    const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+    const stored = JSON.parse(readFileSync(path, 'utf-8')) as { detail: { status: Record<string, unknown> } };
+    expect(stored.detail.status).toMatchObject({ futureStatus: 'keep' });
+    expect(stored.detail.status).not.toHaveProperty('result');
+  });
   it('does not release a certified result whose existing artifact cannot be synced', () => {
     const { root, index } = fixture();
     const epochKey = 'lineage-1:1';

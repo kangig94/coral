@@ -113,10 +113,21 @@ export function recordPendingGrantTransfer(
   successorBuildSetId: string,
   attemptId: string,
 ): Readonly<{ kind: 'recorded' } | typeof unconfirmed> {
-  const current = readPendingGrantTransfer(runtime, capsule, successorBuildSetId);
-  if (current.kind === 'recorded' && current.attemptId === attemptId) return { kind: 'recorded' };
+  const current = readPendingGrantTransferController(runtime, capsule);
+  if (
+    current.kind === 'recorded' &&
+    current.attemptId === attemptId &&
+    current.successorBuildSetId === successorBuildSetId
+  )
+    return { kind: 'recorded' };
   if (current.kind === 'unreadable') return unconfirmed;
+  let previous: Partial<PendingGrantTransfer> = {};
+  if (current.kind === 'recorded') {
+    const { kind: _kind, ...stored } = current;
+    previous = stored;
+  }
   const status: PendingGrantTransfer = {
+    ...previous,
     version: 1,
     disposition: 'awaiting-grant-install',
     waitingFor: 'grant-install-or-host-retirement',

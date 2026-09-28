@@ -450,6 +450,32 @@ describe('startup mint authorizer', () => {
     expect(startUp(runtime, index, 'startup-2')).toMatchObject({ kind: 'unopenable' });
   });
 
+  it('preserves additive retirement patience fields across startup observations', () => {
+    const base = unreadableEpochRuntime();
+    let now = Date.now();
+    const runtime: Runtime = { ...base, time: { ...base.time, now: () => now } };
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const registerJob = (observation: StoreMintObservation): void => {
+      if (observation.incumbent === null) throw new Error('Expected the unreadable epoch as incumbent.');
+      index.register('job-in-unreadable-epoch', encodeResolvedStoreEpoch(runtime, observation.incumbent), {
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
+      });
+    };
+    expect(startUp(runtime, index, 'startup-1', registerJob)).toBeNull();
+    const directory = join(runtime.paths.coral.coordinator.runDir, 'retirement-patience.v1');
+    const name = runtime.storage.readdirSync(directory)[0];
+    if (name === undefined) throw new Error('Expected retirement patience record.');
+    const path = join(directory, name);
+    const prior = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify({ ...prior, futureField: 'keep' })}\n`);
+
+    now += 10_000;
+    expect(startUp(runtime, index, 'startup-2')).toMatchObject({ kind: 'unopenable' });
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({ attempts: 2, futureField: 'keep' });
+  });
+
   it('should count startups racing within one patience interval as a single observation', () => {
     const base = unreadableEpochRuntime();
     let now = Date.now();

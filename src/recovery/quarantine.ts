@@ -17,7 +17,7 @@ const RECOVERY_QUARANTINE_KEY_PREFIX = 'rqk1-';
 const ENCODED_CODE_UNIT_WIDTH = 4;
 const STRUCTURED_DETAIL_PREFIX = 'recovery-quarantine-detail.v1:';
 
-const recoveryQuarantineListCommandSchema = z.object({ kind: z.literal('list') }).strict();
+const recoveryQuarantineListCommandSchema = z.object({ kind: z.literal('list') }).passthrough();
 const recoveryQuarantineClearCommandSchema = z
   .object({
     kind: z.literal('clear'),
@@ -25,7 +25,7 @@ const recoveryQuarantineClearCommandSchema = z
     key: z.string(),
     revision: z.string(),
   })
-  .strict();
+  .passthrough();
 const recoveryQuarantineDiscardCommandSchema = z
   .object({
     kind: z.literal('discard-provider-operation'),
@@ -33,34 +33,34 @@ const recoveryQuarantineDiscardCommandSchema = z
     revision: z.string(),
     allowReadable: z.boolean(),
   })
-  .strict();
+  .passthrough();
 
 const recoveryQuarantineRemedySchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('restart-coordinator') }).strict(),
-  z.object({ kind: z.literal('remote-settlement') }).strict(),
+  z.object({ kind: z.literal('restart-coordinator') }).passthrough(),
+  z.object({ kind: z.literal('remote-settlement') }).passthrough(),
   z
     .object({
       kind: z.literal('recovery-quarantine-discard'),
       command: z.union([recoveryQuarantineListCommandSchema, recoveryQuarantineDiscardCommandSchema]),
     })
-    .strict(),
+    .passthrough(),
   z
     .object({
       kind: z.literal('recovery-quarantine-clear'),
       command: z.union([recoveryQuarantineListCommandSchema, recoveryQuarantineClearCommandSchema]),
     })
-    .strict(),
-  z.object({ kind: z.literal('external-repair') }).strict(),
-  z.object({ kind: z.literal('abort-job'), jobId: z.string() }).strict(),
-  z.object({ kind: z.literal('jobs-detail'), jobId: z.string() }).strict(),
+    .passthrough(),
+  z.object({ kind: z.literal('external-repair') }).passthrough(),
+  z.object({ kind: z.literal('abort-job'), jobId: z.string() }).passthrough(),
+  z.object({ kind: z.literal('jobs-detail'), jobId: z.string() }).passthrough(),
 ]);
 
 const structuredRecoveryQuarantineDetailSchema = z
   .object({
     detail: z.string(),
-    remedy: recoveryQuarantineRemedySchema,
+    remedy: recoveryQuarantineRemedySchema.optional(),
   })
-  .strict();
+  .passthrough();
 
 export type RecoveryQuarantineKeyDecode = Readonly<{ kind: 'decoded'; key: string }> | Readonly<{ kind: 'invalid' }>;
 
@@ -196,9 +196,42 @@ type RecoveryQuarantineColumns = {
   readonly dispositionDetail: string;
 };
 
-function encodeDispositionDetail(detail: string, remedy: RecoveryQuarantineRemedy | undefined): string {
-  if (remedy === undefined) return detail;
-  return `${STRUCTURED_DETAIL_PREFIX}${JSON.stringify({ detail, remedy })}`;
+function recordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function preserveDispositionFields(previous: unknown, next: unknown): unknown {
+  if (!recordValue(previous) || !recordValue(next) || (previous.kind !== undefined && previous.kind !== next.kind)) {
+    return next;
+  }
+  return Object.fromEntries(
+    Object.entries({ ...previous, ...next }).map(([key, value]) => [
+      key,
+      key in next ? preserveDispositionFields(previous[key], value) : value,
+    ]),
+  );
+}
+
+function encodeDispositionDetail(
+  detail: string,
+  remedy: RecoveryQuarantineRemedy | undefined,
+  previous: string | undefined,
+): string {
+  if (remedy === undefined && (previous === undefined || !previous.startsWith(STRUCTURED_DETAIL_PREFIX))) return detail;
+  let old: unknown;
+  if (previous?.startsWith(STRUCTURED_DETAIL_PREFIX)) {
+    try {
+      old = JSON.parse(previous.slice(STRUCTURED_DETAIL_PREFIX.length)) as unknown;
+    } catch {
+      old = undefined;
+    }
+  }
+  const next = preserveDispositionFields(old, { detail, ...(remedy === undefined ? {} : { remedy }) }) as Record<
+    string,
+    unknown
+  >;
+  if (remedy === undefined) delete next.remedy;
+  return `${STRUCTURED_DETAIL_PREFIX}${JSON.stringify(next)}`;
 }
 
 function decodeDispositionDetail(value: string): Readonly<{
@@ -210,7 +243,9 @@ function decodeDispositionDetail(value: string): Readonly<{
     const decoded = structuredRecoveryQuarantineDetailSchema.safeParse(
       JSON.parse(value.slice(STRUCTURED_DETAIL_PREFIX.length)) as unknown,
     );
-    return decoded.success ? decoded.data : { detail: value, remedy: null };
+    return decoded.success
+      ? { detail: decoded.data.detail, remedy: decoded.data.remedy ?? null }
+      : { detail: value, remedy: null };
   } catch {
     return { detail: value, remedy: null };
   }
@@ -220,7 +255,7 @@ function revisionValue(subject: RecoverySubject): string | null {
   return subject.revision.kind === 'fingerprint' ? subject.revision.value : null;
 }
 
-function writeColumns(write: RecoveryQuarantineWrite): RecoveryQuarantineColumns {
+function writeColumns(write: RecoveryQuarantineWrite, previousDetail: string | undefined): RecoveryQuarantineColumns {
   if (write.state === 'continuation' && write.continuation === undefined) {
     throw new Error(`Recovery continuation is missing for ${write.boundary}:${write.subject.key}`);
   }
@@ -234,7 +269,7 @@ function writeColumns(write: RecoveryQuarantineWrite): RecoveryQuarantineColumns
     continuationKind: write.state === 'continuation' ? (write.continuation?.kind ?? null) : null,
     continuationKey: write.state === 'continuation' ? (write.continuation?.key ?? null) : null,
     errorMessage: write.errorMessage,
-    dispositionDetail: encodeDispositionDetail(write.detail, write.remedy),
+    dispositionDetail: encodeDispositionDetail(write.detail, write.remedy, previousDetail),
   };
 }
 
@@ -417,7 +452,24 @@ export class RecoveryQuarantineStore implements RecoveryQuarantinePort {
   }
 
   upsert(write: RecoveryQuarantineWrite): boolean {
-    const row = writeColumns(write);
+    if (this.db.isTransaction) return this.upsertWithinTransaction(write);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = this.upsertWithinTransaction(write);
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error: unknown) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private upsertWithinTransaction(write: RecoveryQuarantineWrite): boolean {
+    const previous = prepareCached<[string, string], { disposition_detail: string }>(
+      this.db,
+      `SELECT disposition_detail FROM recovery_quarantine WHERE boundary_id = ? AND subject_key = ?`,
+    ).get(write.boundary, write.subject.key);
+    const row = writeColumns(write, previous?.disposition_detail);
     if (write.expectedRetry !== undefined) {
       if (write.expectedRetry.subject.key !== write.subject.key) {
         throw new Error(

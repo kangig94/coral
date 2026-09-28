@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -53,6 +53,23 @@ function capsule(): HandoffCapsuleV4 {
 }
 
 describe('pending provider grant transfer', () => {
+  it('preserves an additive field when a later attempt rewrites the same grant status', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-pending-grant-additive-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: join(root, '.coral') });
+    const handoff = capsule();
+    expect(recordPendingGrantTransfer(runtime, handoff, SUCCESSOR_BUILD, 'attempt-1')).toEqual({ kind: 'recorded' });
+    const name = runtime.storage
+      .readdirSync(runtime.paths.coral.coordinator.runDir)
+      .find((entry) => entry.startsWith('provider-grant-transfer-'));
+    if (name === undefined) throw new Error('expected pending transfer status');
+    const path = join(runtime.paths.coral.coordinator.runDir, name);
+    const prior = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify({ ...prior, futureField: 'keep' })}\n`);
+
+    expect(recordPendingGrantTransfer(runtime, handoff, SUCCESSOR_BUILD, 'attempt-2')).toEqual({ kind: 'recorded' });
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({ attemptId: 'attempt-2', futureField: 'keep' });
+  });
   it('holds an unreadable newer status with its retry exit instead of accepting it', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-red-pending-grant-'));
     roots.push(root);

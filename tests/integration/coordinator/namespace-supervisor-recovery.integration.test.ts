@@ -657,7 +657,7 @@ describe('namespace supervisor recovery', () => {
       const attempt = record.reserve(old, buildSetId(recovery.root), 'succession', Date.now());
       if (attempt === null) throw new Error('Other fixture reservation failed');
       expect(record.admit(attempt, old.process, otherIdentity, Date.now() - 30_000)).toBe(true);
-      expect(record.commitTermination(old, slot, Date.now(), 80)).toBe(true);
+      expect(record.commitTermination(old, slot, identity, Date.now(), 80)).toBe(true);
       const server = createServer((socket) => {
         expect(record.exited(slot, identity)).toBe(true);
         child.kill('SIGKILL');

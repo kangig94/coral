@@ -131,7 +131,8 @@ export function startReplacementSupervisor(
           finish(null, repair);
           return;
         }
-        if (settled || !channelReady || offered !== null || supervisor.pid === undefined) return;
+        if (settled || retirementAt !== null || !channelReady || offered !== null || supervisor.pid === undefined)
+          return;
         const nomineeIncarnation = probeProcessIncarnation(supervisor.pid);
         if (nomineeIncarnation === null) return;
         launchedIncarnation ??= nomineeIncarnation;
@@ -154,6 +155,8 @@ export function startReplacementSupervisor(
       launchedIncarnation ??= observed;
       if (observed === null || observed !== launchedIncarnation) return;
       const replacement = { pid: supervisor.pid, incarnation: observed };
+      if (!record.cancelRecoveryForTermination({ pid: process.pid, incarnation: sourceIncarnation }, replacement))
+        return;
       if (Date.now() - retirementAt < SENTINEL_TIMING.graceMs) {
         if (termSent) return;
         try {

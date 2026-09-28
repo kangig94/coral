@@ -19,6 +19,254 @@ afterEach(() => {
 });
 
 describe('coordinator launch admission', () => {
+  it('reconciles orphaned replacement holds only on decisive absence', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-orphan-replacement-hold-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const source = { pid: 201, incarnation: 'source' as ProcessIncarnation };
+      expect(record.admit(launch, owner.process, source, 1_001)).toBe(true);
+      const live = { pid: process.pid, incarnation: probeProcessIncarnation(process.pid)! };
+      const gone = { pid: 999_999, incarnation: 'gone' as ProcessIncarnation };
+      expect(record.holdReplacementSignalRefusal(source, live)).toBe(true);
+      expect(record.holdReplacementSignalRefusal(source, gone)).toBe(true);
+
+      record.reconcileReplacementSignalHolds();
+
+      expect(record.read().signalHolds).toEqual([{ launchId: `replacement:${live.pid}:${live.incarnation}`, ...live }]);
+    } finally {
+      record.close();
+    }
+  });
+  it('orders recovery transfer and termination for the exact serving child', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-termination-transfer-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const first = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (first === null) throw new Error('first owner not admitted');
+      const launch = record.reserve(first, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      expect(record.admit(launch, first.process, child, 1_001)).toBe(true);
+      expect(record.serving(launch, child)).toBe(true);
+      const nominee = { pid: 301, incarnation: 'nominee' as ProcessIncarnation };
+      const recovery = record.nominateRecovery(child, nominee, 'challenge');
+      if (recovery === null) throw new Error('recovery not nominated');
+      expect(record.commitTermination(first, launch, child, 1_002, 100)).toBe(true);
+      expect(record.read().launch?.terminationOwnerEpoch).toBe(first.epoch);
+      expect(
+        record.acceptRecoveryTransfer(
+          { id: 'nominee', process: nominee, buildSetId: 'A' },
+          recovery,
+          'challenge',
+          1_003,
+        ),
+      ).toBeNull();
+      expect(record.read().owner?.epoch).toBe(first.epoch);
+    } finally {
+      record.close();
+    }
+  });
+  it('does not transfer an expired owner while it can still signal a committed child', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-expired-termination-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const parent = { pid: process.pid, incarnation: probeProcessIncarnation(process.pid)! };
+      const owner = record.acquire({ id: 'first', process: parent, buildSetId: 'A' }, 1_000);
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      expect(record.admit(launch, parent, child, 1_001)).toBe(true);
+      expect(record.commitTermination(owner, launch, child, 1_002, 100)).toBe(true);
+      expect(
+        record.acquire(
+          {
+            id: 'replacement',
+            process: { pid: 301, incarnation: 'replacement' as ProcessIncarnation },
+            buildSetId: 'A',
+          },
+          owner.leaseUntil + 1,
+        ),
+      ).toBeNull();
+      expect(record.read().owner?.epoch).toBe(owner.epoch);
+      const reacquired = record.acquire({ id: 'first', process: parent, buildSetId: 'A' }, owner.leaseUntil + 1);
+      expect(reacquired).not.toBeNull();
+      if (reacquired === null) throw new Error('original parent did not reacquire');
+      expect(
+        record.acquire(
+          {
+            id: 'replacement',
+            process: { pid: 301, incarnation: 'replacement' as ProcessIncarnation },
+            buildSetId: 'A',
+          },
+          reacquired.leaseUntil + 1,
+        ),
+      ).toBeNull();
+      expect(record.commitTermination(reacquired, launch, child, owner.leaseUntil + 2, 100)).toBe(true);
+      expect(record.read().launch?.terminationOwnerEpoch).toBe(reacquired.epoch);
+    } finally {
+      record.close();
+    }
+  });
+
+  it('commits termination of a reserved spawned child without admitting it', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-reserved-termination-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      expect(record.commitTermination(owner, launch, child, 1_001, 100)).toBe(true);
+      expect(record.read().launch).toMatchObject({
+        id: launch.id,
+        phase: 'reserved',
+        child,
+        terminationAt: 1_001,
+        terminationOwnerEpoch: owner.epoch,
+      });
+      expect(record.admit(launch, owner.process, child, 1_002)).toBe(false);
+      expect(record.cancelReservation(owner, launch, 1_002)).toBe(false);
+      expect(record.exited(launch, child)).toBe(true);
+    } finally {
+      record.close();
+    }
+  });
+
+  it('does not permit the former owner to commit termination after transfer', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-transfer-termination-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const first = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (first === null) throw new Error('first owner not admitted');
+      const launch = record.reserve(first, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      expect(record.admit(launch, first.process, child, 1_001)).toBe(true);
+      expect(record.serving(launch, child)).toBe(true);
+      const nominee = { pid: 301, incarnation: 'nominee' as ProcessIncarnation };
+      const recovery = record.nominateRecovery(child, nominee, 'challenge');
+      if (recovery === null) throw new Error('recovery not nominated');
+      expect(
+        record.acceptRecoveryTransfer(
+          { id: 'nominee', process: nominee, buildSetId: 'A' },
+          recovery,
+          'challenge',
+          1_002,
+        ),
+      ).not.toBeNull();
+      expect(record.commitTermination(first, launch, child, 1_003, 100)).toBe(false);
+      expect(record.read().launch?.terminationAt).toBeUndefined();
+    } finally {
+      record.close();
+    }
+  });
+  it('keeps a transferred child alive when transfer commits between owner check and signal', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-transfer-signal-race-'));
+    roots.push(runDir);
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    await once(child, 'spawn');
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const first = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (first === null || child.pid === undefined) throw new Error('fixture not admitted');
+      const launch = record.reserve(first, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const identity = { pid: child.pid, incarnation: 'child' as ProcessIncarnation };
+      expect(record.admit(launch, first.process, identity, 1_001)).toBe(true);
+      expect(record.serving(launch, identity)).toBe(true);
+      const nominee = { pid: 301, incarnation: 'nominee' as ProcessIncarnation };
+      const recovery = record.nominateRecovery(identity, nominee, 'challenge');
+      if (recovery === null) throw new Error('recovery not nominated');
+      const checkedEpoch = record.read().owner?.epoch;
+      expect(
+        record.acceptRecoveryTransfer(
+          { id: 'nominee', process: nominee, buildSetId: 'A' },
+          recovery,
+          'challenge',
+          1_002,
+        ),
+      ).not.toBeNull();
+      if (checkedEpoch === first.epoch && record.commitTermination(first, launch, identity, 1_003, 100))
+        child.kill('SIGTERM');
+      expect(observeProcessLiveness(child.pid)).toBe('alive');
+      expect(record.read().launch?.terminationAt).toBeUndefined();
+    } finally {
+      record.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+        await once(child, 'exit');
+      }
+    }
+  });
+
+  it('cancels a pending replacement before signaling and refuses cancellation after transfer', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-cancellation-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        { id: 'first', process: { pid: 101, incarnation: 'first' as ProcessIncarnation }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const source = { pid: 201, incarnation: 'source' as ProcessIncarnation };
+      const nominee = { pid: 301, incarnation: 'nominee' as ProcessIncarnation };
+      expect(record.admit(launch, owner.process, source, 1_001)).toBe(true);
+      expect(record.serving(launch, source)).toBe(true);
+      const recovery = record.nominateRecovery(source, nominee, 'challenge');
+      if (recovery === null) throw new Error('recovery not nominated');
+      expect(record.cancelRecoveryForTermination(source, nominee)).toBe(true);
+      expect(
+        record.acceptRecoveryTransfer(
+          { id: 'nominee', process: nominee, buildSetId: 'A' },
+          recovery,
+          'challenge',
+          1_002,
+        ),
+      ).toBeNull();
+      const second = record.nominateRecovery(source, nominee, 'challenge-2');
+      if (second === null) throw new Error('second recovery not nominated');
+      expect(
+        record.acceptRecoveryTransfer(
+          { id: 'nominee', process: nominee, buildSetId: 'A' },
+          second,
+          'challenge-2',
+          1_003,
+        ),
+      ).not.toBeNull();
+      expect(record.cancelRecoveryForTermination(source, nominee)).toBe(false);
+    } finally {
+      record.close();
+    }
+  });
   it('holds a replacement signal refusal by process identity', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-hold-'));
     roots.push(runDir);
@@ -212,7 +460,7 @@ describe('coordinator launch admission', () => {
     expect(record.read().launch).toMatchObject({ id: launch.id, admittedAt: 1_001, parent: first.process });
     expect(record.read().requests.find((entry) => entry.id === request.id)?.acceptedEpoch).toBe(accepted.epoch);
     expect(record.renew(provisional, takeoverAt + 2)).toBeNull();
-    expect(record.commitTermination(accepted, launch, takeoverAt + 2, 30_000)).toBe(true);
+    expect(record.commitTermination(accepted, launch, child, takeoverAt + 2, 30_000)).toBe(true);
     expect(record.read().launch).toMatchObject({
       terminationAt: takeoverAt + 2,
       killAt: takeoverAt + 30_002,

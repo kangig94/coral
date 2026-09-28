@@ -31,6 +31,7 @@ export type LaunchReservation = Readonly<{
   parent?: LaunchProcess;
   child?: LaunchProcess;
   terminationAt?: number;
+  terminationOwnerEpoch?: number;
   killAt?: number;
 }>;
 export type LaunchRequest = Readonly<{
@@ -181,12 +182,19 @@ export class CoordinatorLaunchRecord {
 
   acquire(holder: Omit<LaunchOwner, 'epoch' | 'renewal' | 'leaseUntil' | 'mode'>, now: number): LaunchOwner | null {
     return this.#change((state) => {
-      if (state.owner !== null && state.owner.leaseUntil > now) {
+      if (state.owner !== null) {
         const observed = probeProcessIncarnation(state.owner.process.pid);
-        if (
+        const ownerPresent =
           observed === state.owner.process.incarnation ||
-          (observed === null && observeProcessLiveness(state.owner.process.pid) !== 'absent')
-        )
+          (observed === null && observeProcessLiveness(state.owner.process.pid) !== 'absent');
+        const sameHolder =
+          holder.id === state.owner.id &&
+          holder.process.pid === state.owner.process.pid &&
+          holder.process.incarnation === state.owner.process.incarnation;
+        const committedChild = [state.launch, state.attempt].some(
+          (slot) => slot !== null && slot.phase !== 'exited' && slot.terminationAt !== undefined,
+        );
+        if (ownerPresent && (state.owner.leaseUntil > now || (committedChild && !sameHolder)))
           return { state, result: null };
       }
       const launch = state.launch?.phase === 'reserved' ? null : state.launch;
@@ -221,7 +229,10 @@ export class CoordinatorLaunchRecord {
       const normalized = this.#normalize(state);
       const selected = [normalized.launch, normalized.attempt].find(
         (slot) =>
-          slot?.phase === 'serving' && slot.child?.pid === source.pid && slot.child.incarnation === source.incarnation,
+          slot?.phase === 'serving' &&
+          slot.terminationAt === undefined &&
+          slot.child?.pid === source.pid &&
+          slot.child.incarnation === source.incarnation,
       );
       if (selected === undefined || selected === null) return { state, result: null };
       const recovery = { id: randomUUID(), sourceLaunchId: selected.id, nominee, challenge };
@@ -244,7 +255,8 @@ export class CoordinatorLaunchRecord {
         recovery.nominee.pid !== holder.process.pid ||
         recovery.nominee.incarnation !== holder.process.incarnation ||
         ![normalized.launch, normalized.attempt].some(
-          (slot) => slot?.id === recovery.sourceLaunchId && slot.phase === 'serving',
+          (slot) =>
+            slot?.id === recovery.sourceLaunchId && slot.phase === 'serving' && slot.terminationAt === undefined,
         )
       )
         return { state, result: null };
@@ -272,6 +284,24 @@ export class CoordinatorLaunchRecord {
         },
         result: owner,
       };
+    });
+  }
+
+  cancelRecoveryForTermination(source: LaunchProcess, nominee: LaunchProcess): boolean {
+    return this.#change((state) => {
+      if (state.owner?.process.pid === nominee.pid && state.owner.process.incarnation === nominee.incarnation)
+        return { state, result: false };
+      if (
+        state.recovery !== undefined &&
+        (state.recovery.nominee.pid !== nominee.pid || state.recovery.nominee.incarnation !== nominee.incarnation)
+      )
+        return { state, result: false };
+      const selected = [state.launch, state.attempt].find(
+        (slot) =>
+          slot?.phase === 'serving' && slot.child?.pid === source.pid && slot.child.incarnation === source.incarnation,
+      );
+      if (selected === undefined) return { state, result: false };
+      return { state: state.recovery === undefined ? state : { ...state, recovery: undefined }, result: true };
     });
   }
 
@@ -505,6 +535,27 @@ export class CoordinatorLaunchRecord {
     });
   }
 
+  reconcileReplacementSignalHolds(): void {
+    if (!this.read().signalHolds?.some((hold) => hold.launchId.startsWith('replacement:'))) return;
+    this.#change((state) => {
+      const holds = state.signalHolds ?? [];
+      const remaining: (typeof holds)[number][] = [];
+      for (const hold of holds) {
+        if (!hold.launchId.startsWith('replacement:')) {
+          remaining.push(hold);
+          continue;
+        }
+        const observed = probeProcessIncarnation(hold.pid);
+        if (observed === hold.incarnation || (observed === null && observeProcessLiveness(hold.pid) !== 'absent'))
+          remaining.push(hold);
+      }
+      return {
+        state: remaining.length === holds.length ? state : { ...state, signalHolds: remaining },
+        result: undefined,
+      };
+    });
+  }
+
   accept(owner: LaunchOwner, requestId: string, now: number): boolean {
     return this.#change((state) => {
       if (!this.#current(state, owner, now)) return { state, result: false };
@@ -608,7 +659,8 @@ export class CoordinatorLaunchRecord {
         state.owner.process.pid !== parent.pid ||
         state.owner.process.incarnation !== parent.incarnation ||
         launch?.id !== reservation.id ||
-        launch.phase !== 'reserved'
+        launch.phase !== 'reserved' ||
+        launch.terminationAt !== undefined
       )
         return { state, result: false };
       const admitted: LaunchReservation = { ...launch, phase: 'admitted', admittedAt: now, parent, child };
@@ -623,7 +675,12 @@ export class CoordinatorLaunchRecord {
     return this.#change((state) => {
       const slot = this.#slot(state, reservation);
       const launch = slot === 'launch' ? state.launch : state.attempt;
-      if (!this.#current(state, owner, now) || launch?.id !== reservation.id || launch.phase !== 'reserved')
+      if (
+        !this.#current(state, owner, now) ||
+        launch?.id !== reservation.id ||
+        launch.phase !== 'reserved' ||
+        launch.terminationAt !== undefined
+      )
         return { state, result: false };
       return { state: slot === 'launch' ? { ...state, launch: null } : { ...state, attempt: null }, result: true };
     });
@@ -695,15 +752,34 @@ export class CoordinatorLaunchRecord {
     });
   }
 
-  commitTermination(owner: LaunchOwner, reservation: LaunchReservation, now: number, graceMs: number): boolean {
+  commitTermination(
+    owner: LaunchOwner,
+    reservation: LaunchReservation,
+    identity: LaunchProcess,
+    now: number,
+    graceMs: number,
+  ): boolean {
     return this.#change((state) => {
       if (!this.#current(state, owner, now)) return { state, result: false };
       const slot = this.#slot(state, reservation);
       const child = slot === 'launch' ? state.launch : state.attempt;
-      if (slot === null || child?.id !== reservation.id || child.phase === 'exited' || child.child === undefined)
+      if (
+        slot === null ||
+        child?.id !== reservation.id ||
+        child.phase === 'exited' ||
+        (child.child !== undefined &&
+          (child.child.pid !== identity.pid || child.child.incarnation !== identity.incarnation))
+      )
         return { state, result: false };
-      if (child.terminationAt !== undefined) return { state, result: true };
-      const committed = { ...child, terminationAt: now, killAt: now + graceMs };
+      if (child.terminationAt !== undefined && child.terminationOwnerEpoch === owner.epoch)
+        return { state, result: true };
+      const committed = {
+        ...child,
+        child: identity,
+        terminationAt: child.terminationAt ?? now,
+        killAt: child.killAt ?? now + graceMs,
+        terminationOwnerEpoch: owner.epoch,
+      };
       return {
         state: slot === 'launch' ? { ...state, launch: committed } : { ...state, attempt: committed },
         result: true,

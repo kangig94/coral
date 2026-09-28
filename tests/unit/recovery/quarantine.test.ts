@@ -206,6 +206,85 @@ describe('RecoveryQuarantineStore', () => {
     expect(readRow(db)?.updated_at).not.toBe('2026-08-03T01:01:00.000Z');
   });
 
+  it('preserves nested extension fields when rewriting structured disposition detail', () => {
+    const subject = fingerprintSubject();
+    expect(
+      quarantine.upsert({
+        ...activeWrite(subject),
+        remedy: {
+          kind: 'recovery-quarantine-discard',
+          command: { kind: 'discard-provider-operation', key: 'old', revision: 'old', allowReadable: true },
+        },
+      }),
+    ).toBe(true);
+    const initial = readRow(db);
+    const prefix = 'recovery-quarantine-detail.v1:';
+    const initialDetail = JSON.parse(initial?.disposition_detail.slice(prefix.length) ?? '{}') as Record<
+      string,
+      unknown
+    >;
+    db.prepare<[string]>(
+      `UPDATE recovery_quarantine SET disposition_detail = ? WHERE boundary_id = 'test-boundary' AND subject_key = 'subject-1'`,
+    ).run(
+      `${prefix}${JSON.stringify({
+        ...initialDetail,
+        futureTop: { retained: true },
+        remedy: {
+          ...(initialDetail.remedy as Record<string, unknown>),
+          futureRemedy: { retained: true },
+          command: {
+            ...((initialDetail.remedy as Record<string, unknown>).command as Record<string, unknown>),
+            futureCommand: { retained: true },
+          },
+        },
+      })}`,
+    );
+
+    expect(
+      quarantine.upsert({
+        ...activeWrite(subject),
+        detail: 'updated detail',
+        remedy: {
+          kind: 'recovery-quarantine-discard',
+          command: { kind: 'discard-provider-operation', key: 'new', revision: 'new', allowReadable: false },
+        },
+      }),
+    ).toBe(true);
+    expect(JSON.parse(readRow(db)?.disposition_detail.slice(prefix.length) ?? '{}')).toEqual({
+      detail: 'updated detail',
+      futureTop: { retained: true },
+      remedy: {
+        kind: 'recovery-quarantine-discard',
+        futureRemedy: { retained: true },
+        command: {
+          kind: 'discard-provider-operation',
+          key: 'new',
+          revision: 'new',
+          allowReadable: false,
+          futureCommand: { retained: true },
+        },
+      },
+    });
+    expect(quarantine.list()[0]).toMatchObject({
+      detail: 'updated detail',
+      remedy: { kind: 'recovery-quarantine-discard' },
+    });
+
+    expect(quarantine.claimRetry({ boundary, subject, retry: { owner: 'owner-1', token: 'token-1' } })).toBe(true);
+    expect(
+      quarantine.upsert({
+        ...activeWrite(subject),
+        expectedRetry: { owner: 'owner-1', token: 'token-1', subject },
+        detail: 'settled detail',
+      }),
+    ).toBe(true);
+    expect(JSON.parse(readRow(db)?.disposition_detail.slice(prefix.length) ?? '{}')).toEqual({
+      detail: 'settled detail',
+      futureTop: { retained: true },
+    });
+    expect(quarantine.list()[0]).toMatchObject({ detail: 'settled detail', remedy: null });
+  });
+
   it('should stamp every persisted transition from the runtime clock', () => {
     const subject = fingerprintSubject();
     expect(quarantine.upsert(activeWrite(subject))).toBe(true);

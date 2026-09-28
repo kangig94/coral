@@ -111,6 +111,52 @@ function viewLocation(stored: StoredJobLocation): JobLocation {
   return { ...identity, detail: parsed.success ? { kind: 'recorded', value: parsed.data } : { kind: 'unreadable' } };
 }
 
+const omittedDetailKeys: Record<string, readonly string[]> = {
+  status: [
+    'bundleHash',
+    'parentWorkflowJobId',
+    'workflowSlotId',
+    'workflowSlotGeneration',
+    'replacesWorkflowJobId',
+    'lastSeq',
+    'result',
+  ],
+  'events[]': ['message', 'timing', 'result', 'usage'],
+  'exit.diagnostics': ['warnings', 'usage', 'processExit', 'byteCounts'],
+};
+
+function preserveStoredDetail<T>(stored: unknown, next: T, path = ''): T {
+  if (Array.isArray(next)) {
+    const previous = Array.isArray(stored) ? stored : [];
+    return next.map((item, index) => {
+      const event = typeof item === 'object' && item !== null && 'seq' in item && 'type' in item;
+      const matching = event
+        ? previous.find(
+            (candidate) =>
+              typeof candidate === 'object' &&
+              candidate !== null &&
+              candidate.seq === item.seq &&
+              candidate.type === item.type,
+          )
+        : previous[index];
+      return preserveStoredDetail(matching, item, `${path}[]`);
+    }) as T;
+  }
+  if (
+    typeof next !== 'object' ||
+    next === null ||
+    typeof stored !== 'object' ||
+    stored === null ||
+    Array.isArray(stored)
+  )
+    return next;
+  const result: Record<string, unknown> = { ...stored };
+  for (const key of omittedDetailKeys[path] ?? []) if (!(key in next)) delete result[key];
+  for (const [key, value] of Object.entries(next))
+    result[key] = preserveStoredDetail(result[key], value, path ? `${path}.${key}` : key);
+  return result as T;
+}
+
 export function hasReadableTerminalDetail(location: JobLocation): boolean {
   if (
     location.disposition !== 'terminal' ||
@@ -273,7 +319,7 @@ export class JobLocationIndex {
         disposition: 'terminal',
         terminalSeq,
         resultPath,
-        detail,
+        detail: preserveStoredDetail(current.detail, detail),
       };
       atomicJson(this.runtime, this.jobPath(jobId), location);
       return viewLocation(location);
@@ -286,7 +332,10 @@ export class JobLocationIndex {
     this.withRevisionLock(existing.epochKey, () => {
       const current = this.readStored(jobId);
       if (current === null || current.disposition === 'terminal') return;
-      atomicJson(this.runtime, this.jobPath(jobId), { ...current, detail });
+      atomicJson(this.runtime, this.jobPath(jobId), {
+        ...current,
+        detail: preserveStoredDetail(current.detail, detail),
+      });
     });
   }
 
