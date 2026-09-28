@@ -217,7 +217,7 @@ export class CoordinatorLaunchRecord {
           recovery: undefined,
           requests: state.requests.map((request) =>
             (request.status === 'recorded' || request.status === 'accepted') &&
-            !this.#terminatingBuild(normalized, request.buildSetId)
+            this.#servingBuild(normalized, request.buildSetId)
               ? { ...request, status: 'accepted' as const, acceptedEpoch: owner.epoch }
               : request,
           ),
@@ -281,7 +281,7 @@ export class CoordinatorLaunchRecord {
           ),
           requests: normalized.requests.map((request) =>
             (request.status === 'recorded' || request.status === 'accepted') &&
-            !this.#terminatingBuild(normalized, request.buildSetId)
+            this.#servingBuild(normalized, request.buildSetId)
               ? { ...request, status: 'accepted' as const, acceptedEpoch: owner.epoch }
               : request,
           ),
@@ -568,7 +568,12 @@ export class CoordinatorLaunchRecord {
     return this.#change((state) => {
       if (!this.#current(state, owner, now)) return { state, result: false };
       const target = state.requests.find((request) => request.id === requestId);
-      if (target === undefined || this.#terminatingBuild(state, target.buildSetId)) return { state, result: false };
+      if (
+        target === undefined ||
+        (target.status !== 'recorded' && target.status !== 'accepted') ||
+        !this.#servingBuild(state, target.buildSetId)
+      )
+        return { state, result: false };
       const requests = state.requests.map((request) =>
         request.id === requestId && (request.status === 'recorded' || request.status === 'accepted')
           ? { ...request, status: 'accepted' as const, acceptedEpoch: owner.epoch }
@@ -584,11 +589,10 @@ export class CoordinatorLaunchRecord {
     return this.#change((state) => {
       if (!this.#current(state, owner, now)) return { state, result: false };
       const target = state.requests.find((request) => request.id === requestId);
-      const matching = [state.launch, state.attempt].filter((slot) => slot?.buildSetId === target?.buildSetId);
       if (
-        target === undefined ||
-        (matching.some((slot) => slot?.terminationAt !== undefined) &&
-          !matching.some((slot) => slot?.phase === 'serving' && slot.terminationAt === undefined))
+        target?.status !== 'accepted' ||
+        target.acceptedEpoch !== owner.epoch ||
+        !this.#servingBuild(state, target.buildSetId)
       )
         return { state, result: false };
       const requests = state.requests.map((request) =>
@@ -634,7 +638,10 @@ export class CoordinatorLaunchRecord {
     )
       return null;
     const request = state.requests.find(
-      (entry) => entry.buildSetId === buildSetId && entry.incumbent !== undefined && entry.status === 'accepted',
+      (entry) =>
+        entry.buildSetId === buildSetId &&
+        entry.incumbent !== undefined &&
+        (entry.status === 'recorded' || entry.status === 'accepted'),
     );
     return request === undefined ? null : { launch, request };
   }
@@ -651,10 +658,10 @@ export class CoordinatorLaunchRecord {
         launch?.id !== receipt.launchId ||
         launch.purpose !== 'legacy-retirement' ||
         launch.terminationAt !== undefined ||
-        launch.phase !== 'admitted' ||
+        launch.phase !== 'serving' ||
         launch.child?.pid !== child.pid ||
         launch.child.incarnation !== child.incarnation ||
-        request?.status !== 'accepted' ||
+        (request?.status !== 'recorded' && request?.status !== 'accepted') ||
         request.buildSetId !== launch.buildSetId ||
         request.incumbent === undefined
       )
@@ -843,9 +850,9 @@ export class CoordinatorLaunchRecord {
     return state.owner?.id === owner.id && state.owner.epoch === owner.epoch && state.owner.leaseUntil > now;
   }
 
-  #terminatingBuild(state: CoordinatorLaunchState, buildSetId: string): boolean {
+  #servingBuild(state: CoordinatorLaunchState, buildSetId: string): boolean {
     return [state.launch, state.attempt].some(
-      (slot) => slot?.buildSetId === buildSetId && slot.phase !== 'exited' && slot.terminationAt !== undefined,
+      (slot) => slot?.buildSetId === buildSetId && slot.phase === 'serving' && slot.terminationAt === undefined,
     );
   }
 

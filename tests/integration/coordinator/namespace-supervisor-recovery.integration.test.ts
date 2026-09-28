@@ -597,7 +597,10 @@ describe('namespace supervisor recovery', () => {
       );
       const secondPid = record.read().launch?.child?.pid;
       if (secondPid !== undefined) pids.push(secondPid);
-      expect(record.read().requests.find((entry) => entry.id === next.id)?.status).toBe('completed');
+      await waitForCondition(
+        () => record.read().requests.find((entry) => entry.id === next.id)?.status === 'completed',
+        5_000,
+      );
       const last = record.request(join(third.root, 'bridge', 'coral-backend.cjs'), buildSetId(third.root));
       await waitForCondition(
         () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === buildSetId(third.root),
@@ -605,7 +608,10 @@ describe('namespace supervisor recovery', () => {
       );
       const thirdPid = record.read().launch?.child?.pid;
       if (thirdPid !== undefined) pids.push(thirdPid);
-      expect(record.read().requests.find((entry) => entry.id === last.id)?.status).toBe('completed');
+      await waitForCondition(
+        () => record.read().requests.find((entry) => entry.id === last.id)?.status === 'completed',
+        5_000,
+      );
     } finally {
       record.close();
       if (supervisor.exitCode === null) supervisor.kill('SIGKILL');
@@ -709,7 +715,10 @@ describe('namespace supervisor recovery', () => {
         recoveredPid = record.read().launch?.child?.pid;
         expect(supervisor.exitCode).toBeNull();
         expect(probeProcessIncarnation(otherChild.pid)).toBeNull();
-        expect(record.read().requests.find((entry) => entry.id === request.id)?.status).toBe('completed');
+        await waitForCondition(
+          () => record.read().requests.find((entry) => entry.id === request.id)?.status === 'completed',
+          5_000,
+        );
       } finally {
         if (server.listening) server.close();
         if (supervisor !== null && supervisor.exitCode === null) supervisor.kill('SIGKILL');
@@ -887,7 +896,7 @@ describe('namespace supervisor recovery', () => {
       Date.now(),
     );
     if (first === null) throw new Error('First owner did not acquire');
-    expect(record.accept(first, request.id, Date.now())).toBe(true);
+    expect(record.accept(first, request.id, Date.now())).toBe(false);
     const harness = join(home, 'supervisor.mjs');
     await build({
       entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
@@ -905,6 +914,10 @@ describe('namespace supervisor recovery', () => {
     try {
       await waitForCondition(() => record.read().owner?.process.pid === supervisor.pid, 10_000);
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
+      await waitForCondition(
+        () => record.read().requests.find((entry) => entry.id === request.id)?.status === 'completed',
+        5_000,
+      );
       expect(record.read().requests.find((entry) => entry.id === request.id)).toMatchObject({
         status: 'completed',
         acceptedEpoch: record.read().owner?.epoch,
@@ -1348,7 +1361,10 @@ describe('namespace supervisor recovery', () => {
         () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === targetBuildSetId,
         20_000,
       );
-      expect(record.read().requests.find((entry) => entry.buildSetId === targetBuildSetId)?.status).toBe('completed');
+      await waitForCondition(
+        () => record.read().requests.find((entry) => entry.buildSetId === targetBuildSetId)?.status === 'completed',
+        5_000,
+      );
     } finally {
       const currentChildPid = record.read().launch?.child?.pid;
       record.close();

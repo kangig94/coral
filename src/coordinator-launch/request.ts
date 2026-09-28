@@ -64,6 +64,18 @@ export async function requestLegacyUpgrade(
       const accepted = current.requests.find((entry) => entry.id === request.id);
       if (accepted?.status === 'accepted' || accepted?.status === 'completed')
         return { kind: 'waiting', requestId: request.id, supervisorPid: current.owner?.process.pid ?? null };
+      if (
+        accepted?.status === 'recorded' &&
+        current.owner?.leaseUntil !== undefined &&
+        current.owner.leaseUntil > Date.now()
+      ) {
+        const incarnation = probeProcessIncarnation(current.owner.process.pid);
+        if (
+          incarnation === current.owner.process.incarnation ||
+          (incarnation === null && observeProcessLiveness(current.owner.process.pid) !== 'absent')
+        )
+          return { kind: 'waiting', requestId: request.id, supervisorPid: current.owner.process.pid };
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     return { kind: 'refused', reason: 'supervisor did not accept the upgrade request', disposition: 'deferred' };

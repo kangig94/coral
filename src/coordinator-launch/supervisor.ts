@@ -1016,7 +1016,11 @@ async function reconcileInheritedChildren(input: {
         if (incumbentManifest !== undefined && incumbentManifest !== null) {
           for (const request of record.read().requests) {
             if (record.read().attempt !== null && record.read().attempt?.phase !== 'exited') break;
-            if (request.status !== 'accepted' || request.buildSetId === slot.buildSetId) continue;
+            if (
+              (request.status !== 'recorded' && request.status !== 'accepted') ||
+              request.buildSetId === slot.buildSetId
+            )
+              continue;
             const target = validatedExecutable(request.executable);
             if (target === null || compareProductVersions(target.version, incumbentManifest.version) <= 0) continue;
             if (now - (lastInheritedRequest.get(request.id) ?? 0) < 10_000) continue;
@@ -1394,7 +1398,7 @@ export async function runNamespaceSupervisor(
             if (record.read().launch?.phase !== 'serving') return;
             settleRequests(record, owner.current, current.running.manifest, true);
             for (const request of record.read().requests) {
-              if (request.status !== 'accepted') continue;
+              if (request.status !== 'recorded' && request.status !== 'accepted') continue;
               const target = validatedExecutable(request.executable);
               if (
                 target === null ||

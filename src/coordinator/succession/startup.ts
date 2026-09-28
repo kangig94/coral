@@ -1392,6 +1392,7 @@ export async function completeSupervisorLegacyUpgrade(
       backendLog.warn(`Legacy upgrade could not record serving: ${formatError(error)}`);
       throw new SuccessionAttemptStartupHoldError('legacy launch has no serving receipt');
     }
+    record.serving(admitted.launch, { pid, incarnation });
     if (
       !record.recordLegacyReceipt({ pid, incarnation }, admitted.request.id, {
         launchId: attemptId,

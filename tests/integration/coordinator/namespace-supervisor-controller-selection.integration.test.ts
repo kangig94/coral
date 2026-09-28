@@ -205,7 +205,7 @@ describe('namespace supervisor controller selection', () => {
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
   }, 25_000);
-  it('reports acceptance after acquisition atomically accepts the request', () => {
+  it('reports acceptance only after the requested build starts serving', () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-acceptance-'));
     roots.push(home);
@@ -229,8 +229,17 @@ describe('namespace supervisor controller selection', () => {
         Date.now(),
       );
       if (owner === null) throw new Error('Owner did not acquire');
+      expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('unproven');
+      const launch = record.reserve(owner, manifest.buildSetId, 'startup', Date.now());
+      if (launch === null) throw new Error('Launch was not reserved');
+      const child = { pid: process.pid, incarnation };
+      expect(record.admit(launch, owner.process, child, Date.now())).toBe(true);
+      expect(record.serving(launch, child)).toBe(true);
+      expect(record.accept(owner, request.id, Date.now())).toBe(true);
       expect(record.read().requests.find((entry) => entry.id === request.id)?.acceptedEpoch).toBe(owner.epoch);
       expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('accepted');
+      expect(record.exited(launch, child)).toBe(true);
+      expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('unproven');
     } finally {
       record.close();
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
@@ -458,11 +467,11 @@ describe('namespace supervisor controller selection', () => {
           return (
             requests.find((entry) => entry.id === rollback.id)?.status === 'unavailable' &&
             requests.find((entry) => entry.id === redundant.id)?.status === 'unavailable' &&
-            requests.find((entry) => entry.buildSetId === fixtureBuildSetId(newer.root))?.status === 'accepted'
+            requests.find((entry) => entry.buildSetId === fixtureBuildSetId(newer.root))?.status === 'recorded'
           );
         }, 5_000);
       } catch (error: unknown) {
-        throw new Error(`Starting request was not accepted: ${JSON.stringify({ state: record.read(), cliOutput })}`, {
+        throw new Error(`Starting request was not recorded: ${JSON.stringify({ state: record.read(), cliOutput })}`, {
           cause: error,
         });
       }

@@ -845,6 +845,13 @@ export function supervisorAcceptedUpgrade(
       return 'unproven';
     return state.requests.some((request) => {
       if (request.status !== 'accepted' || request.acceptedEpoch !== owner.epoch) return false;
+      if (
+        ![state.launch, state.attempt].some(
+          (slot) =>
+            slot?.buildSetId === request.buildSetId && slot.phase === 'serving' && slot.terminationAt === undefined,
+        )
+      )
+        return false;
       const adjacent = readBoundedAdjacentManifest(dirname(request.executable));
       if (!adjacent.ok) return false;
       const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
