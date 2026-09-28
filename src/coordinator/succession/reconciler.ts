@@ -519,7 +519,8 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     }
     if (!recordsSelf(intent.incumbent, self)) return adopt(intent);
     // A target requested while an attempt held the intent supersedes whatever that attempt left behind.
-    if (intent.attemptId === null && queued !== null) return adoptNextTarget(intent, queued);
+    if (intent.attemptId === null && queued !== null && intent.reason !== 'supervision-repair')
+      return adoptNextTarget(intent, queued);
     let applies: boolean;
     try {
       applies = outranks(intent.target, self);
@@ -775,8 +776,17 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if (observed.kind !== 'absent' && observed.kind !== 'readable')
         return settle({ kind: 'deferred', reason: `upgrade intent is ${observed.kind}` });
       const current = observed.kind === 'readable' ? observed.intent : null;
-      if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
-        if (current.reason === 'supervision-repair' || supersedes(current.target, input.target)) {
+      const active = current !== null && current.disposition !== 'closed' && current.disposition !== 'completed';
+      if (active) {
+        const newerTargetCanTakeCustody =
+          current.reason !== 'supervision-repair' &&
+          supersedes(current.target, input.target) &&
+          current.disposition !== 'deferred' &&
+          revalidateUpgradeIntentTarget(current).kind === 'validated' &&
+          (options.storeFormatFingerprint === undefined ||
+            current.target.build.storeFormatFingerprint === options.storeFormatFingerprint ||
+            (options.liveJobIds?.().length ?? 0) === 0);
+        if (current.reason === 'supervision-repair' || newerTargetCanTakeCustody) {
           notifyObligationChange();
           return settle({ kind: 'registered', intent: current });
         }
@@ -788,7 +798,18 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       return {
         kind: 'write',
         expectedRevision: current?.revision ?? null,
-        change: requestedIntent(input, self, null, 'supervision-repair'),
+        change: requestedIntent(
+          input,
+          self,
+          !active
+            ? null
+            : current.nextTarget !== null &&
+                current.nextTarget !== undefined &&
+                supersedes(current.nextTarget.target, current.target)
+              ? current.nextTarget
+              : { requestId: current.requestId, target: current.target },
+          'supervision-repair',
+        ),
         settle: (written) => {
           options.onIntentChanged?.();
           notifyObligationChange();

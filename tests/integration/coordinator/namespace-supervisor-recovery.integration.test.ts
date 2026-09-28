@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
@@ -16,12 +17,15 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
-import { build } from 'esbuild';
+import { build, type PluginBuild } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 
 import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
+import {
+  CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+  SUCCESSION_CAPABILITIES_FILE,
+} from '#src/infra/bundle-manifest-address.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { coordinatorLaunchPath } from '#src/infra/path/index.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
@@ -1138,6 +1142,222 @@ describe('namespace supervisor recovery', () => {
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
   }, 40_000);
+
+  it('repairs supervision before a format-blocked upgrade while its job stays live', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-blocked-supervision-repair-'));
+    roots.push(home);
+    const incumbent = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14', accepts: 'bundled' });
+    const upgrade = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15', accepts: 'bundled' });
+    const bridge = join(upgrade.root, 'bridge');
+    const strictPath = join(bridge, CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
+    const strict = JSON.parse(readFileSync(strictPath, 'utf8')) as {
+      version: string;
+      buildSetId: string;
+      flavor: string;
+      storeFormatFingerprint: string;
+      bundleHash: string;
+      cliBundleHash: string;
+      claudeAppserverBundleHash: string;
+      durableWrapperBundleHash: string;
+    };
+    const oldFingerprint = strict.storeFormatFingerprint;
+    const backendPath = join(bridge, 'coral-backend.cjs');
+    const buildChangingBackend = async (): Promise<void> => {
+      await build({
+        entryPoints: [join(process.cwd(), 'tests', 'fixtures', 'durable-succession-provider.ts')],
+        outfile: backendPath,
+        bundle: true,
+        platform: 'node',
+        target: 'node22',
+        format: 'cjs',
+        external: ['node:*', '@lydell/node-pty'],
+        loader: { '.sql': 'text' },
+        minify: true,
+        plugins: [
+          {
+            name: 'schema-changing-fixture',
+            setup(builder: PluginBuild) {
+              builder.onLoad({ filter: /schema\.sql$/ }, (args) => ({
+                contents: `${readFileSync(args.path, 'utf8')}\nCREATE TABLE repair_test_generation (id INTEGER PRIMARY KEY);\n`,
+                loader: 'text',
+              }));
+            },
+          },
+        ],
+        banner: {
+          js:
+            `var __CORAL_BUILD_IDENTITY__=${JSON.stringify({
+              version: strict.version,
+              buildSetId: strict.buildSetId,
+              flavor: strict.flavor,
+              storeFormatFingerprint: strict.storeFormatFingerprint,
+            })};` +
+            'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' +
+            'var __BUNDLE_DIR__=__dirname;' +
+            'var __importMetaUrl=require("url").pathToFileURL(__filename).href;',
+        },
+        define: {
+          __VERSION__: JSON.stringify(strict.version),
+          __BUILD_SET_ID__: JSON.stringify(strict.buildSetId),
+          __BUILD_FLAVOR__: JSON.stringify(strict.flavor),
+          __STORE_FORMAT_FINGERPRINT__: JSON.stringify(strict.storeFormatFingerprint),
+          __IS_CORAL_BACKEND_MAIN__: 'true',
+          'import.meta.url': '__importMetaUrl',
+        },
+      });
+    };
+    await buildChangingBackend();
+    strict.storeFormatFingerprint = execFileSync(process.execPath, [backendPath, '--print-store-format-fingerprint'], {
+      encoding: 'utf8',
+    }).trim();
+    expect(strict.storeFormatFingerprint).not.toBe(oldFingerprint);
+    await buildChangingBackend();
+    for (const [name, hashKey] of [
+      ['coral-cli', 'cliBundleHash'],
+      ['coral-claude-appserver.cjs', 'claudeAppserverBundleHash'],
+      ['coral-durable-wrapper.cjs', 'durableWrapperBundleHash'],
+    ] as const) {
+      const path = join(bridge, name);
+      writeFileSync(path, readFileSync(path, 'utf8').replaceAll(oldFingerprint, strict.storeFormatFingerprint));
+      strict[hashKey] = createHash('sha256').update(readFileSync(path)).digest('hex').slice(0, 16);
+    }
+    strict.bundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
+    writeFileSync(strictPath, `${JSON.stringify(strict)}\n`);
+    writeFileSync(join(bridge, 'manifest.json'), `${JSON.stringify(strict)}\n`);
+    const capabilitiesPath = join(bridge, SUCCESSION_CAPABILITIES_FILE);
+    const capabilities = JSON.parse(readFileSync(capabilitiesPath, 'utf8')) as { bundleHash: string };
+    capabilities.bundleHash = strict.bundleHash;
+    writeFileSync(capabilitiesPath, `${JSON.stringify(capabilities)}\n`);
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const binDir = join(home, 'bin');
+    const stateDir = join(home, '.fake-codex-state');
+    const projectRoot = join(home, 'project');
+    mkdirSync(binDir);
+    mkdirSync(stateDir);
+    mkdirSync(projectRoot);
+    mkdirSync(join(home, '.codex'));
+    mkdirSync(join(home, '.claude'));
+    writeFileSync(
+      join(home, '.codex', 'auth.json'),
+      JSON.stringify({ tokens: { access_token: 'fake-access-token', account_id: 'fake-account-id' } }),
+    );
+    const fakeCodex = join(binDir, 'codex');
+    copyFileSync(join(process.cwd(), 'tests', 'fixtures', 'transfer-codex-appserver.cjs'), fakeCodex);
+    chmodSync(fakeCodex, 0o755);
+    const supervisor = spawn(process.execPath, [harness, join(incumbent.root, 'bridge', 'coral-backend.cjs')], {
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+      },
+      stdio: 'ignore',
+    });
+    const record = new CoordinatorLaunchRecord(runDir);
+    const pids = new Set<number>();
+    let cli: ReturnType<typeof spawn> | null = null;
+    try {
+      await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
+      const originalPid = record.read().launch?.child?.pid;
+      if (originalPid === undefined) throw new Error('Serving coordinator has no PID');
+      pids.add(originalPid);
+      const prompt = join(projectRoot, 'prompt.txt');
+      writeFileSync(prompt, 'Keep this job running through supervisor replacement.');
+      cli = spawn('node', [join(incumbent.root, 'bridge', 'coral-cli'), 'codex', '-i', prompt, '--detach'], {
+        cwd: projectRoot,
+        env: { ...process.env, HOME: home, TMPDIR: home, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+        stdio: 'ignore',
+      });
+      await waitForCondition(() => cli?.exitCode !== null && existsSync(join(stateDir, 'job-running')), 30_000);
+      expect(cli.exitCode).toBe(0);
+      const jobPid = Number(readFileSync(join(stateDir, 'job-running'), 'utf8'));
+      const jobIncarnation = probeProcessIncarnation(jobPid);
+      if (jobIncarnation === null) throw new Error('Provider job process has no incarnation');
+      const requested = record.request(join(upgrade.root, 'bridge', 'coral-backend.cjs'), buildSetId(upgrade.root));
+      try {
+        await waitForCondition(() => {
+          const intent = readUpgradeIntent(runDir);
+          return (
+            intent.kind === 'readable' &&
+            intent.intent.blockers.some((blocker) => blocker.reason.includes('blocking(format)'))
+          );
+        }, 20_000);
+      } catch (error: unknown) {
+        throw new Error(
+          `Format blocker was not recorded: ${JSON.stringify(readUpgradeIntent(runDir))}; launch=${JSON.stringify(record.read())}`,
+          { cause: error },
+        );
+      }
+      supervisor.kill('SIGKILL');
+      await waitForCondition(() => record.read().owner?.process.pid !== supervisor.pid, 10_000);
+      const replacementPid = record.read().owner?.process.pid;
+      if (replacementPid === undefined) throw new Error('Replacement supervisor has no PID');
+      pids.add(replacementPid);
+      try {
+        await waitForCondition(
+          () =>
+            record.read().launch?.phase === 'serving' &&
+            record.read().launch?.child?.pid !== originalPid &&
+            record.read().launch?.buildSetId === buildSetId(incumbent.root) &&
+            record.read().launch?.parent?.pid === replacementPid &&
+            record.read().owner?.mode === 'supervised',
+          25_000,
+        );
+      } catch (error: unknown) {
+        throw new Error(
+          `Same-build repair did not serve: ${JSON.stringify(record.read())}; intent=${JSON.stringify(readUpgradeIntent(runDir))}`,
+          { cause: error },
+        );
+      }
+      const intent = readUpgradeIntent(runDir);
+      expect(intent.kind).toBe('readable');
+      if (intent.kind !== 'readable') throw new Error('Queued upgrade intent is unavailable');
+      expect(intent.intent.target.build.buildSetId).toBe(buildSetId(upgrade.root));
+      expect(intent.intent.disposition).toBe('deferred');
+      expect(intent.intent.blockers.some((blocker) => blocker.reason.includes('blocking(format)'))).toBe(true);
+      expect(record.read().requests.find((entry) => entry.id === requested.id)?.status).not.toBe('completed');
+      expect(probeProcessIncarnation(jobPid)).toBe(jobIncarnation);
+      writeFileSync(join(stateDir, 'release-job'), '');
+      await waitForCondition(() => existsSync(join(stateDir, 'terminal-completed')), 20_000);
+      await waitForCondition(() => record.read().attempt?.buildSetId === buildSetId(upgrade.root), 20_000);
+    } finally {
+      const state = record.read();
+      for (const pid of [state.owner?.process.pid, state.launch?.child?.pid, state.attempt?.child?.pid]) {
+        if (pid !== undefined) pids.add(pid);
+      }
+      record.close();
+      cli?.kill('SIGKILL');
+      supervisor.kill('SIGKILL');
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // The process may already have exited.
+        }
+      }
+      const jobPath = join(stateDir, 'job-running');
+      if (existsSync(jobPath)) {
+        try {
+          process.kill(Number(readFileSync(jobPath, 'utf8')), 'SIGKILL');
+        } catch {
+          // The provider job may already have exited.
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 70_000);
 
   it('keeps ownership after an unconfirmed replacement fails and serves from a retained fallback', async () => {
     const roots: string[] = [];
