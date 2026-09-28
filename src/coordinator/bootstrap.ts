@@ -341,10 +341,17 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
     throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
   }
 
-  const replaceSupervisor = (): void =>
-    startReplacementSupervisor(__PLUGIN_ROOT__, (error) =>
+  const runningIdentity = resolveStrictBundleIdentity();
+  const replaceSupervisor = (): void => {
+    const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
+    if (!runningIdentity.ok || runDir === undefined) {
+      backendLog.error('Could not replace coordinator supervisor: running build identity is unavailable');
+      return;
+    }
+    startReplacementSupervisor(__PLUGIN_ROOT__, runDir, runningIdentity.manifest, (error) =>
       backendLog.error('Could not replace coordinator supervisor', error),
     );
+  };
   let shutdownAfterSentinelLoss = (): void => {
     replaceSupervisor();
     bootstrapProbeExitGate.requestExit(1);

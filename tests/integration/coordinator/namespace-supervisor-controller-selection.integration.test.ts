@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { build } from 'esbuild';
@@ -10,8 +10,11 @@ import { describe, expect, it } from 'vitest';
 import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { providerHandoffCapsulePath } from '#src/infra/path/provider-proxy.js';
+import { handoffCapsuleV1Schema } from '#src/provider-proxy/handoff-capsule.js';
 import { createPluginFixture, createShippedPluginFixture } from '#tests/integration/coordinator/helpers.js';
 import { validatedBuild } from '#src/coordinator-launch/selection.js';
+import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 function fixtureBuildSetId(root: string): string {
@@ -23,6 +26,37 @@ function fixtureBuildSetId(root: string): string {
 }
 
 describe('namespace supervisor controller selection', () => {
+  it('does not let a v1 capsule, which no build can take over, hold every launch', () => {
+    const home = mkdtempSync(join(tmpdir(), 'coral-v1-controller-'));
+    try {
+      const baseDir = join(home, '.coral');
+      const capsule = handoffCapsuleV1Schema.parse({
+        version: 1,
+        grantId: '11111111-1111-4111-8111-111111111111',
+        secret: 'a'.repeat(64),
+        generation: 'gen2',
+        flavor: 'prod',
+        buildSetId: '22222222-2222-4222-8222-222222222222',
+        hostFingerprint: 'b'.repeat(64),
+        guardianInstanceId: '33333333-3333-4333-8333-333333333333',
+        reaperInstanceId: '44444444-4444-4444-8444-444444444444',
+        proxyInstanceId: '55555555-5555-4555-8555-555555555555',
+        guardianControlEndpoint: join(home, 'guardian.sock'),
+        reaperControlEndpoint: join(home, 'reaper.sock'),
+        proxyEndpoint: join(home, 'proxy.sock'),
+        orphanTimeoutMs: 60_000,
+        teardownReserveMs: 10_000,
+      });
+      const path = providerHandoffCapsulePath(capsule, capsule.version, { baseDir });
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(capsule), { mode: 0o600 });
+
+      expect(controllerBuild(coordinatorPaths('prod', { baseDir }).runDir)).toEqual({ kind: 'none' });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('settles an equal-version different-build request as redundant', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-equal-version-request-'));

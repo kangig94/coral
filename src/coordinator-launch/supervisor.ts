@@ -12,6 +12,7 @@ import {
 } from '../infra/bundle-manifest.js';
 import { createForeignTargetValidator } from '../infra/handoff-target.js';
 import { compareProductVersions } from '../infra/product-version.js';
+import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
 import {
   CoordinatorLaunchRecord,
   type LaunchOwner,
@@ -187,7 +188,12 @@ export function controllerBuild(
   return builds.size === 1 ? { kind: 'required', buildSetId: [...builds][0] } : { kind: 'unknown' };
 }
 
-function candidates(record: CoordinatorLaunchRecord, runDir: string, original: Candidate): Candidate[] {
+function candidates(
+  record: CoordinatorLaunchRecord,
+  runDir: string,
+  original: Candidate,
+  originalManifest: StrictBundleManifest,
+): Candidate[] {
   const controller = controllerBuild(runDir);
   if (controller.kind === 'unknown') return [];
   const requested = record
@@ -198,8 +204,8 @@ function candidates(record: CoordinatorLaunchRecord, runDir: string, original: C
         ? [{ executable: request.executable, buildSetId: request.buildSetId }]
         : [],
     );
-  const manifest = validatedExecutable(original.executable);
-  const recovery = relaunchRoots(runDir, manifest).flatMap((root) => {
+  const originalRoot = validatedRunningBuildRoot(runDir, dirname(dirname(original.executable)), originalManifest);
+  const recovery = relaunchRoots(runDir, originalManifest).flatMap((root) => {
     const build = validatedBuild(root);
     return build === null
       ? []
@@ -211,7 +217,7 @@ function candidates(record: CoordinatorLaunchRecord, runDir: string, original: C
   const controllerCandidate =
     retainedController !== null &&
     retainedController.buildSetId === requiredBuild &&
-    (manifest === null || retainedController.flavor === manifest.flavor)
+    retainedController.flavor === originalManifest.flavor
       ? [
           {
             executable: join(dirname(runDir), 'builds', requiredBuild, 'bridge', 'coral-backend.cjs'),
@@ -221,10 +227,14 @@ function candidates(record: CoordinatorLaunchRecord, runDir: string, original: C
       : [];
   const choices = [
     ...new Map(
-      [...requested, ...controllerCandidate, ...recovery, ...(manifest === null ? [] : [original])].map((candidate) => [
-        candidate.executable,
-        candidate,
-      ]),
+      [
+        ...requested,
+        ...controllerCandidate,
+        ...recovery,
+        ...(originalRoot === null
+          ? []
+          : [{ executable: join(originalRoot, 'bridge', 'coral-backend.cjs'), buildSetId: original.buildSetId }]),
+      ].map((candidate) => [candidate.executable, candidate]),
     ).values(),
   ];
   return controller.kind === 'required'
@@ -238,15 +248,29 @@ type WatchResult = Readonly<{
   served: boolean;
   wedged: boolean;
 }>;
-type RunningChild = Readonly<{ child: ChildProcess; identity: LaunchProcess; sentinelId: string; executable: string }>;
+type RunningChild = Readonly<{
+  child: ChildProcess;
+  identity: LaunchProcess;
+  sentinelId: string;
+  executable: string;
+  manifest: StrictBundleManifest;
+}>;
 type OwnerHandle = { current: LaunchOwner; lost: boolean };
 
-function handOffLostOwnership(owner: OwnerHandle, executable: string, runDir: string): void {
+function handOffLostOwnership(
+  owner: OwnerHandle,
+  executable: string,
+  manifest: StrictBundleManifest,
+  runDir: string,
+): void {
   if (owner.lost) return;
   owner.lost = true;
   const entry = process.argv[1];
   if (entry === undefined) return;
-  const successor = spawn(process.execPath, [entry, executable], {
+  const root = validatedRunningBuildRoot(runDir, dirname(dirname(executable)), manifest);
+  if (root === null) return;
+  const script = existsSync(entry) ? entry : join(root, 'bridge', 'coral-sentinel.cjs');
+  const successor = spawn(process.execPath, [script, join(root, 'bridge', 'coral-backend.cjs')], {
     detached: true,
     stdio: 'ignore',
     env: { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir },
@@ -264,6 +288,11 @@ function spawnAdmittedChild(
   runDir: string,
   attemptId?: string,
 ): RunningChild | null {
+  const manifest = validatedExecutable(executable);
+  if (manifest === null) {
+    record.cancelReservation(owner, reservation, Date.now());
+    return null;
+  }
   const sentinelId = randomUUID();
   const legacy = !existsSync(join(dirname(executable), 'coral-sentinel.cjs'));
   const child = spawn(
@@ -291,12 +320,13 @@ function spawnAdmittedChild(
     record.cancelReservation(owner, reservation, Date.now());
     return null;
   }
-  return { child, identity: { pid, incarnation }, sentinelId, executable };
+  return { child, identity: { pid, incarnation }, sentinelId, executable, manifest };
 }
 
 async function watchChild(
   child: ChildProcess,
   executable: string,
+  manifest: StrictBundleManifest,
   reservation: LaunchReservation,
   identity: LaunchProcess,
   sentinelId: string,
@@ -365,7 +395,7 @@ async function watchChild(
     if (now - lastRenewal >= 30_000) {
       const renewed = record.renew(owner.current, now);
       if (renewed !== null) owner.current = renewed;
-      else handOffLostOwnership(owner, executable, runDir);
+      else handOffLostOwnership(owner, executable, manifest, runDir);
       lastRenewal = now;
     }
     if (child.exitCode !== null || child.signalCode !== null) return;
@@ -382,10 +412,9 @@ async function watchChild(
       outstanding = null;
     }
     if (
-      pendingHello &&
-      ((!served && now >= startupDeadline) ||
-        now - lastAnswer >= timing.lapseMs ||
-        (dStateSince !== null && now - dStateSince >= timing.dStateDeferralMs))
+      (!served && now >= startupDeadline) ||
+      (pendingHello &&
+        (now - lastAnswer >= timing.lapseMs || (dStateSince !== null && now - dStateSince >= timing.dStateDeferralMs)))
     ) {
       if (child.pid !== undefined && childIsUninterruptible(child.pid) && dStateSince === null) dStateSince = now;
       if (dStateSince !== null && now - dStateSince < timing.dStateDeferralMs) {
@@ -418,9 +447,7 @@ async function watchChild(
     const state = record.read();
     if (![state.launch, state.attempt].some((launch) => launch?.id === reservation.id && launch.phase === 'admitted'))
       return;
-    const candidateManifest = validatedExecutable(executable);
-    if (candidateManifest === null) return;
-    void replacementServing(runDir, candidateManifest.flavor, child.pid).then((ready) => {
+    void replacementServing(runDir, manifest.flavor, child.pid).then((ready) => {
       if (ready && record.serving(reservation, identity)) {
         served = true;
         for (const request of record.read().requests) {
@@ -480,7 +507,7 @@ export async function runNamespaceSupervisor(
     while (true) {
       const renewed = record.renew(owner.current, Date.now());
       if (renewed === null || owner.lost) {
-        handOffLostOwnership(owner, executable, runDir);
+        handOffLostOwnership(owner, executable, originalManifest, runDir);
         return 1;
       }
       owner.current = renewed;
@@ -524,7 +551,7 @@ export async function runNamespaceSupervisor(
         const liveness = incumbentLiveness(recorded);
         if (liveness === 'alive' || liveness === 'unknown') incumbentHeld = true;
       }
-      if (!firstLaunch && incumbentHeld) {
+      if (incumbentHeld) {
         await sleep(POLL_MS);
         continue;
       }
@@ -538,7 +565,7 @@ export async function runNamespaceSupervisor(
         await sleep(POLL_MS);
         continue;
       }
-      const eligible = candidates(record, runDir, original);
+      const eligible = candidates(record, runDir, original, originalManifest);
       const available = eligible.filter((candidate) => !tried.has(candidate.executable));
       if (available.length === 0) {
         const controller = controllerBuild(runDir);
@@ -563,7 +590,6 @@ export async function runNamespaceSupervisor(
       }
       record.clearHold(owner.current, Date.now());
       const candidate = available[0];
-      const wasFirstLaunch = firstLaunch;
       firstLaunch = false;
       tried.add(candidate.executable);
       const legacyRequest = record
@@ -574,12 +600,7 @@ export async function runNamespaceSupervisor(
             request.incumbent !== undefined &&
             (request.status === 'accepted' || request.status === 'recorded'),
         );
-      const purpose =
-        legacyRequest !== undefined && !wasFirstLaunch
-          ? 'legacy-retirement'
-          : tried.size === 1
-            ? 'startup'
-            : 'recovery';
+      const purpose = legacyRequest !== undefined ? 'legacy-retirement' : tried.size === 1 ? 'startup' : 'recovery';
       const reservation = record.reserve(owner.current, candidate.buildSetId, purpose, Date.now());
       if (reservation === null) {
         await sleep(POLL_MS);
@@ -649,6 +670,7 @@ export async function runNamespaceSupervisor(
         const watch = watchChild(
           running.child,
           running.executable,
+          running.manifest,
           attemptReservation,
           running.identity,
           running.sentinelId,
@@ -740,6 +762,7 @@ export async function runNamespaceSupervisor(
       let watched = watchChild(
         current.child,
         current.executable,
+        current.manifest,
         reservation,
         current.identity,
         current.sentinelId,
@@ -760,9 +783,11 @@ export async function runNamespaceSupervisor(
           )
             return;
           const state = record.read();
-          const currentManifest = validatedExecutable(current.executable);
-          const serving = state.launch?.phase === 'serving' ? currentManifest : null;
-          settleRequests(record, owner.current, currentManifest, serving !== null);
+          const serving =
+            state.launch?.phase === 'serving' && state.launch.child?.pid === current.identity.pid
+              ? current.manifest
+              : null;
+          settleRequests(record, owner.current, current.manifest, serving !== null);
           if (serving === null) return;
           const currentBuild = serving.buildSetId;
           for (const request of record.read().requests) {
@@ -800,6 +825,7 @@ export async function runNamespaceSupervisor(
             const watch = watchChild(
               running.child,
               running.executable,
+              running.manifest,
               contenderReservation,
               running.identity,
               running.sentinelId,
@@ -838,7 +864,7 @@ export async function runNamespaceSupervisor(
         pending.value = null;
       }
       clearInterval(requestPoll);
-      if (result.served) settleRequests(record, owner.current, validatedExecutable(current.executable), true);
+      if (result.served) settleRequests(record, owner.current, current.manifest, true);
       if (
         result.served &&
         result.exitCode === 0 &&

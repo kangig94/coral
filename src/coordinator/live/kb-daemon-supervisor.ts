@@ -47,7 +47,8 @@ import {
   type KbDaemonParentRequestMessage,
   type KbDaemonErrorEnvelope,
 } from '../../kb-daemon/protocol.js';
-import { readBundleHash } from '../../infra/bundle-manifest.js';
+import { readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
+import { validatedRetainedBuildRoot } from '../../infra/retained-build-root.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import {
   CoralSetupError,
@@ -365,6 +366,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   const { runtime, pluginRoot } = options;
   const command = options.command ?? process.execPath;
   const entrypoint = options.entrypoint ?? resolveDefaultKbDaemonEntrypoint(pluginRoot);
+  const runningIdentity = resolveStrictBundleIdentity();
   const startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -998,10 +1000,13 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     let spawned: DaemonProcessLike | null = null;
     let pipedHandles: ReturnType<typeof requirePipedHandles> | undefined;
     try {
+      const root =
+        (runningIdentity.ok ? validatedRetainedBuildRoot(runtime, runningIdentity.manifest.buildSetId) : null) ??
+        pluginRoot;
       spawned = runtime.process.spawn({
         command,
-        args: [entrypoint],
-        cwd: pluginRoot,
+        args: [root === pluginRoot ? entrypoint : join(root, 'bridge', 'coral-backend.cjs')],
+        cwd: root,
         envAdditions: {
           // Daemon-identity vars below override any collision.
           ...forwardedKbDaemonEnv,

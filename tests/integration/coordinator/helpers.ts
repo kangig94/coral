@@ -66,7 +66,7 @@ function readSourceManifest(buildDir: string | null): SourceManifest {
   ) as SourceManifest;
 }
 
-const interpositionBundles = new Map<'succession-interposition' | 'sentinel-freeze', string>();
+const interpositionBundles = new Map<'succession-interposition' | 'sentinel-freeze' | 'admission-freeze', string>();
 
 /**
  * Builds the succession interposition entry point with the bridge build's embedded identity, so a fixture that
@@ -74,7 +74,7 @@ const interpositionBundles = new Map<'succession-interposition' | 'sentinel-free
  */
 function buildInterpositionBundle(
   manifest: SourceManifest,
-  kind: 'succession-interposition' | 'sentinel-freeze',
+  kind: 'succession-interposition' | 'sentinel-freeze' | 'admission-freeze',
 ): string {
   const cached = interpositionBundles.get(kind);
   if (cached !== undefined && existsSync(cached)) {
@@ -187,7 +187,7 @@ export function createPluginFixture(
     bundleHash?: string;
     version?: string;
     /** Ships a backend whose succession protocol follows the fault plan in its environment. */
-    backend?: 'succession-interposition' | 'sentinel-freeze';
+    backend?: 'succession-interposition' | 'sentinel-freeze' | 'admission-freeze';
     /** Declares the owner acceptances the bridge build ships, instead of accepting no transferred obligation. */
     accepts?: 'bundled';
     /** Builds the fixture from another build's `clients/build` instead of this tree's. */

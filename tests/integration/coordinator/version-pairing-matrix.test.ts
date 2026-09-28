@@ -457,6 +457,41 @@ describe('AC18 first-release version pairing', () => {
     }
   }, 90_000);
 
+  it('watches a serving shipped incumbent before the first launch, then launches the legacy retirement', async () => {
+    assertBuildArtifactsAvailable();
+    const home = newHome();
+    const shipped = createShippedPluginFixture(roots, 'v0.10.13');
+    const incumbent = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
+    coordinators.push(incumbent);
+    await waitForDiscoveryRecord(home, 'prod', 20_000);
+
+    const branch = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const contender = spawnCoordinator({ fixture: branch, home, tempRoots: roots });
+    coordinators.push(contender);
+    const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+    try {
+      expect(await waitForProcessExit(contender, 30_000), contender.output()).toEqual({ code: 0, signal: null });
+      expect(launch.read().requests).toContainEqual(
+        expect.objectContaining({
+          status: 'accepted',
+          incumbent: expect.objectContaining({ pid: incumbent.child.pid }),
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(launch.read().launch).toBeNull();
+
+      await stopCoordinator(incumbent);
+      await waitForCondition(() => launch.read().launch?.phase === 'serving', 40_000);
+      expect(launch.read().launch).toMatchObject({ purpose: 'legacy-retirement' });
+      const successor = readDiscoveryRecordForHome(home, 'prod');
+      if (successor === null) throw new Error('Legacy retirement did not reach a successor.');
+      rememberSuccessor(successor.pid);
+      expect(successor.bundleHash).toBe(branch.bundleHash);
+    } finally {
+      launch.close();
+    }
+  }, 90_000);
+
   it('refuses a shipped contender while the newer incumbent is starting', async () => {
     assertBuildArtifactsAvailable();
     const home = newHome();

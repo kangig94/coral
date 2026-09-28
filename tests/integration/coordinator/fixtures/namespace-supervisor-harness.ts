@@ -15,7 +15,7 @@ if (executable === '--launch-legacy') {
       process.env.CORAL_FIXTURE_REAL_BACKEND === '1'
         ? { challengeMs: 100, schedulingGapMs: 1_000, lapseMs: 8_000, graceMs: 200, dStateDeferralMs: 4_000 }
         : { challengeMs: 20, schedulingGapMs: 80, lapseMs: 300, graceMs: 80, dStateDeferralMs: 120 },
-    startupBudgetMs: 25_000,
+    startupBudgetMs: Number(process.env.CORAL_FIXTURE_STARTUP_BUDGET_MS ?? 25_000),
   }).then((code) => {
     process.exitCode = code;
   });

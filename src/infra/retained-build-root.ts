@@ -55,6 +55,19 @@ export function validatedRetainedBuildRoot(runtime: Runtime, buildSetId: string)
   return createForeignTargetValidator()(bundleDir, manifest.data).kind === 'validated' ? root : null;
 }
 
+/** Resolve a running build by its manifest, even after its installed directory has been replaced. */
+export function validatedRunningBuildRoot(
+  runDir: string,
+  installedRoot: string,
+  manifest: StrictBundleManifest,
+): string | null {
+  const validate = createForeignTargetValidator();
+  for (const root of [installedRoot, join(dirname(runDir), 'builds', manifest.buildSetId)]) {
+    if (validate(join(root, 'bridge'), manifest).kind === 'validated') return root;
+  }
+  return null;
+}
+
 /**
  * Retains the running build as a whole plugin root whose `bridge/` is the bundle directory this process runs from.
  * A retained copy that no longer validates is replaced, because nothing but this process will ever repair it.
