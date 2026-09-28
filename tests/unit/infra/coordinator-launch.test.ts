@@ -43,6 +43,62 @@ describe('coordinator launch admission', () => {
     expect(record.read().signalHolds).toEqual([]);
     record.close();
   });
+  it.each(['admitted launch', 'admitted attempt', 'serving attempt'] as const)(
+    'holds a replacement signal refusal from an %s child',
+    (sourceState) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-source-hold-'));
+      roots.push(runDir);
+      const record = new CoordinatorLaunchRecord(runDir);
+      const incarnation = (value: string) => value as ProcessIncarnation;
+      const owner = record.acquire(
+        { id: 'supervisor', process: { pid: 101, incarnation: incarnation('supervisor') }, buildSetId: 'A' },
+        1_000,
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      const launch = record.reserve(owner, 'A', 'startup', 1_000);
+      if (launch === null) throw new Error('launch not reserved');
+      const original = { pid: 201, incarnation: incarnation('original') };
+      expect(record.admit(launch, owner.process, original, 1_001)).toBe(true);
+      if (sourceState !== 'admitted launch') expect(record.serving(launch, original)).toBe(true);
+      const source = sourceState === 'admitted launch' ? original : { pid: 202, incarnation: incarnation('source') };
+      if (sourceState !== 'admitted launch') {
+        const attempt = record.reserve(owner, 'B', 'succession', 1_002);
+        if (attempt === null) throw new Error('attempt not reserved');
+        expect(record.admit(attempt, owner.process, source, 1_003)).toBe(true);
+        if (sourceState === 'serving attempt') expect(record.serving(attempt, source)).toBe(true);
+      }
+      const replacement = { pid: 301, incarnation: incarnation('replacement') };
+      expect(record.holdReplacementSignalRefusal({ ...source, incarnation: incarnation('other') }, replacement)).toBe(
+        false,
+      );
+      expect(record.holdReplacementSignalRefusal(source, replacement)).toBe(true);
+      expect(record.read().signalHolds).toEqual([
+        { launchId: `replacement:${replacement.pid}:${replacement.incarnation}`, ...replacement },
+      ]);
+      record.close();
+    },
+  );
+  it('makes rejected launch-hold writes observable', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-rejected-hold-'));
+    roots.push(runDir);
+    const record = new CoordinatorLaunchRecord(runDir);
+    const owner = record.acquire(
+      { id: 'supervisor', process: { pid: 101, incarnation: 'supervisor' as ProcessIncarnation }, buildSetId: 'A' },
+      1_000,
+    );
+    if (owner === null) throw new Error('owner not admitted');
+    const launch = record.reserve(owner, 'A', 'startup', 1_000);
+    if (launch === null) throw new Error('launch not reserved');
+    const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+    expect(record.admit(launch, owner.process, child, 1_001)).toBe(true);
+    const expired = owner.leaseUntil;
+    expect(() => record.hold(owner, 'unknown', expired)).toThrow('launch hold');
+    expect(() => record.holdUnreadableCustody(owner, '/custody', expired)).toThrow('launch hold');
+    expect(() => record.holdTarget(owner, 'request-1', expired)).toThrow('launch hold');
+    expect(() => record.holdInheritedChild(owner, { ...launch, child }, expired)).toThrow('launch hold');
+    expect(record.read().hold).toBeUndefined();
+    record.close();
+  });
   it('keeps a refused KILL visible for the exact launch until that child exits', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-signal-hold-'));
     roots.push(runDir);

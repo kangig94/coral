@@ -754,23 +754,42 @@ export function formatBackendStatus(
   for (const hold of daemonStatus.launchSignalHolds ?? []) {
     if (hold.launchId.startsWith('replacement:'))
       sections.push(
-        `Replacement supervisor (PID ${hold.pid}) is held because a retirement signal was refused. The coordinator retries this exact process; once it exits, recovery launches the next replacement.`,
+        `Replacement supervisor ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because a retirement signal was refused. The coordinator retries this exact process; once it exits, recovery launches the next replacement.`,
       );
     else
       sections.push(
-        `Coordinator launch ${hold.launchId} (PID ${hold.pid}) is held because SIGKILL delivery could not be confirmed. The owning supervisor retries for this exact child until it exits or is decisively absent.`,
+        `Coordinator launch ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because SIGKILL delivery could not be confirmed. The owning supervisor retries for this exact child until it exits or is decisively absent.`,
       );
   }
-  if (daemonStatus.launchHold?.kind === 'custody-unreadable')
-    sections.push(
-      `Coordinator launch is quarantined by unreadable custody at ${daemonStatus.launchHold.path}. The supervisor retries automatically when that record becomes readable.`,
-    );
-  if (daemonStatus.launchHold?.kind === 'no-eligible-build')
-    sections.push(
-      daemonStatus.launchHold.controller === 'unknown'
-        ? 'Coordinator launch is quarantined by indeterminate controller evidence. The supervisor retries when custody, transfer, or process evidence changes.'
-        : `Coordinator launch requires build ${daemonStatus.launchHold.controller}. The supervisor retries when an eligible executable is available.`,
-    );
+  const launchHold = daemonStatus.launchHold;
+  if (launchHold !== undefined) {
+    switch (launchHold.kind) {
+      case 'custody-unreadable':
+        sections.push(
+          `Coordinator launch is quarantined by unreadable custody at ${launchHold.path}. The supervisor retries automatically when that record becomes readable.`,
+        );
+        break;
+      case 'no-eligible-build':
+        sections.push(
+          launchHold.controller === 'unknown'
+            ? 'Coordinator launch is quarantined by indeterminate controller evidence. The supervisor retries when custody, transfer, or process evidence changes.'
+            : `Coordinator launch requires build ${launchHold.controller}. The supervisor retries when an eligible executable is available.`,
+        );
+        break;
+      case 'target-indeterminate':
+        sections.push(
+          `Coordinator launch request ${launchHold.requestId} has an indeterminate target. The supervisor retries when target executable evidence becomes conclusive or the target disappears.`,
+        );
+        break;
+      case 'inherited-child-unresponsive':
+        sections.push(
+          `Coordinator launch ${launchHold.launchId} (PID ${launchHold.pid}) is held by an unresponsive inherited child. The supervisor retries on cooperation or confirmed absence.`,
+        );
+        break;
+      default:
+        assertNever(launchHold);
+    }
+  }
   const upgrade =
     daemonStatus.status === 'ok' ? (daemonStatus.health.succession ?? daemonStatus.upgrade) : daemonStatus.upgrade;
   if (upgrade !== undefined) sections.push(formatPendingUpgrade(upgrade));
@@ -895,18 +914,22 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
-        [
-          'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
-          formatBackendOperatorCommand({ kind: 'backend-start' }),
-        ].join('\n'),
+        result.launchHold !== undefined || result.launchSignalHolds?.length
+          ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch record reports the hold below.'
+          : [
+              'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
+              formatBackendOperatorCommand({ kind: 'backend-start' }),
+            ].join('\n'),
         result.shutdownRemainder,
       );
     case 'recorded_process_absent':
       return withShutdownRemainderSection(
-        [
-          `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
-          formatBackendOperatorCommand({ kind: 'backend-start' }),
-        ].join('\n'),
+        result.launchHold !== undefined || result.launchSignalHolds?.length
+          ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch record reports the hold below.`
+          : [
+              `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
+              formatBackendOperatorCommand({ kind: 'backend-start' }),
+            ].join('\n'),
         result.shutdownRemainder,
       );
     case 'undecodable_record':

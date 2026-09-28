@@ -296,6 +296,7 @@ describe('pending upgrade visibility', () => {
       null,
     );
     expect(rendered).toContain('attempt-1');
+    expect(rendered).toContain(`incarnation ${testIncarnation('attempt')}`);
     expect(rendered).toContain('SIGKILL');
     expect(rendered).toContain('retries');
   });
@@ -311,7 +312,9 @@ describe('pending upgrade visibility', () => {
       { kind: 'absent' },
       null,
     );
-    expect(rendered).toContain('Replacement supervisor (PID 123)');
+    expect(rendered).toContain('Replacement supervisor replacement:123:incarnation (PID 123');
+    expect(rendered).toContain('replacement:123:incarnation');
+    expect(rendered).toContain(`incarnation ${testIncarnation('incarnation')}`);
     expect(rendered).toContain('retirement signal was refused');
     expect(rendered).toContain('once it exits, recovery launches the next replacement');
   });

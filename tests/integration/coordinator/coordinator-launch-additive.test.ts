@@ -6,6 +6,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { expect, it } from 'vitest';
 
 import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { getBackendStatusFull } from '#src/cli/backend-status.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { coordinatorLaunchPath } from '#src/infra/path/index.js';
 
@@ -54,5 +57,49 @@ it('keeps additive SQLite columns and JSON fields across a launch-state transiti
     database.close();
     record.close();
     rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('forwards every durable launch hold through backend status', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'coral-launch-status-'));
+  const previousHome = process.env.HOME;
+  const previousTmpdir = process.env.TMPDIR;
+  process.env.HOME = home;
+  process.env.TMPDIR = home;
+  try {
+    const runDir = createRealRuntime('prod').paths.coral.coordinator.runDir;
+    const record = new CoordinatorLaunchRecord(runDir);
+    try {
+      const owner = record.acquire(
+        {
+          id: 'supervisor',
+          process: { pid: process.pid, incarnation: 'supervisor' as ProcessIncarnation },
+          buildSetId: 'A',
+        },
+        Date.now(),
+      );
+      if (owner === null) throw new Error('owner not admitted');
+      record.holdTarget(owner, 'request-1', Date.now());
+      const target = await getBackendStatusFull('/plugin-root');
+      expect(target.launchHold).toEqual({ kind: 'target-indeterminate', requestId: 'request-1' });
+      expect(formatBackendStatus(target, { kind: 'absent' }, null)).toContain('request-1');
+
+      const launch = record.reserve(owner, 'A', 'startup', Date.now());
+      if (launch === null) throw new Error('launch not reserved');
+      const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
+      expect(record.admit(launch, owner.process, child, Date.now())).toBe(true);
+      record.holdInheritedChild(owner, { ...launch, child }, Date.now());
+      const inherited = await getBackendStatusFull('/plugin-root');
+      expect(inherited.launchHold).toEqual({ kind: 'inherited-child-unresponsive', launchId: launch.id, pid: 201 });
+      expect(formatBackendStatus(inherited, { kind: 'absent' }, null)).toContain(launch.id);
+    } finally {
+      record.close();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmpdir;
+    rmSync(home, { recursive: true, force: true });
   }
 });

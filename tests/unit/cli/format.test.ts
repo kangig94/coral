@@ -93,6 +93,21 @@ it('shows the custody quarantine path and retry action in backend status', () =>
   ).toContain('retries when custody, transfer, or process evidence changes');
 });
 
+it('renders every launch hold with its identity and exit condition', () => {
+  const statuses: BackendStatusFull['launchHold'][] = [
+    { kind: 'target-indeterminate', requestId: 'request-1' },
+    { kind: 'inherited-child-unresponsive', launchId: 'launch-1', pid: 321 },
+  ];
+  const target = formatBackendStatus({ status: 'no_record_no_socket', launchHold: statuses[0] });
+  expect(target).toContain('request-1');
+  expect(target).toContain('retries');
+  const inherited = formatBackendStatus({ status: 'no_record_no_socket', launchHold: statuses[1] });
+  expect(inherited).toContain('launch-1');
+  expect(inherited).toContain('PID 321');
+  expect(inherited).toContain('cooperation or confirmed absence');
+  expect(inherited).not.toContain('command=');
+});
+
 const runningDecision = {
   kind: 'provider-session',
   launchState: 'running',

@@ -340,10 +340,13 @@ export class CoordinatorLaunchRecord {
 
   hold(owner: LaunchOwner, controller: string, now: number): void {
     this.#change((state) => {
+      if (!this.#current(state, owner, now))
+        throw new Error('Coordinator launch hold refused: owner is no longer current');
       const retry = controller === 'unknown' ? 'controller-evidence-change' : 'eligible-build-appears';
       if (
-        !this.#current(state, owner, now) ||
-        (state.hold?.kind === 'no-eligible-build' && state.hold.controller === controller && state.hold.retry === retry)
+        state.hold?.kind === 'no-eligible-build' &&
+        state.hold.controller === controller &&
+        state.hold.retry === retry
       )
         return { state, result: undefined };
       return { state: { ...state, hold: { kind: 'no-eligible-build', controller, retry } }, result: undefined };
@@ -352,8 +355,9 @@ export class CoordinatorLaunchRecord {
 
   holdUnreadableCustody(owner: LaunchOwner, path: string, now: number): void {
     this.#change((state) => {
-      if (!this.#current(state, owner, now) || (state.hold?.kind === 'custody-unreadable' && state.hold.path === path))
-        return { state, result: undefined };
+      if (!this.#current(state, owner, now))
+        throw new Error('Coordinator launch hold refused: owner is no longer current');
+      if (state.hold?.kind === 'custody-unreadable' && state.hold.path === path) return { state, result: undefined };
       return {
         state: { ...state, hold: { kind: 'custody-unreadable', path, retry: 'restore-readable-custody-record' } },
         result: undefined,
@@ -374,7 +378,8 @@ export class CoordinatorLaunchRecord {
 
   holdTarget(owner: LaunchOwner, requestId: string, now: number): void {
     this.#change((state) => {
-      if (!this.#current(state, owner, now)) return { state, result: undefined };
+      if (!this.#current(state, owner, now))
+        throw new Error('Coordinator launch hold refused: owner is no longer current');
       return { state: { ...state, hold: { kind: 'target-indeterminate', requestId } }, result: undefined };
     });
   }
@@ -389,7 +394,12 @@ export class CoordinatorLaunchRecord {
 
   holdInheritedChild(owner: LaunchOwner, reservation: LaunchReservation, now: number): void {
     this.#change((state) => {
-      if (!this.#current(state, owner, now) || reservation.child === undefined) return { state, result: undefined };
+      if (!this.#current(state, owner, now) || reservation.child === undefined)
+        throw new Error('Coordinator launch hold refused: owner or child is no longer current');
+      const slot = this.#slot(state, reservation);
+      const launch = slot === 'launch' ? state.launch : state.attempt;
+      if (!this.#exactChild(launch, reservation, reservation.child))
+        throw new Error('Coordinator launch hold refused: child is no longer current');
       const hold = {
         kind: 'inherited-child-unresponsive' as const,
         launchId: reservation.id,
@@ -445,9 +455,12 @@ export class CoordinatorLaunchRecord {
   holdReplacementSignalRefusal(source: LaunchProcess, replacement: LaunchProcess): boolean {
     return this.#change((state) => {
       if (
-        state.launch?.phase !== 'serving' ||
-        state.launch.child?.pid !== source.pid ||
-        state.launch.child.incarnation !== source.incarnation
+        ![state.launch, state.attempt].some(
+          (slot) =>
+            (slot?.phase === 'admitted' || slot?.phase === 'serving') &&
+            slot.child?.pid === source.pid &&
+            slot.child.incarnation === source.incarnation,
+        )
       )
         return { state, result: false };
       const launchId = replacementSignalHoldId(replacement);

@@ -455,10 +455,7 @@ export type SupersededEpochClosures =
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
 export type BackendStatusFull = BackendStatusFullBase & {
-  launchHold?: Extract<
-    NonNullable<CoordinatorLaunchState['hold']>,
-    { kind: 'custody-unreadable' | 'no-eligible-build' }
-  >;
+  launchHold?: NonNullable<CoordinatorLaunchState['hold']>;
   launchSignalHolds?: NonNullable<CoordinatorLaunchState['signalHolds']>;
   upgrade?: UpgradeIntentVisibility;
   upgradeProblem?: UpgradeIntentProblem;
@@ -1174,7 +1171,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     const hold = state.hold;
     return {
       ...status,
-      ...(hold?.kind === 'custody-unreadable' || hold?.kind === 'no-eligible-build' ? { launchHold: hold } : {}),
+      ...(hold === undefined ? {} : { launchHold: hold }),
       ...(state.signalHolds?.length ? { launchSignalHolds: state.signalHolds } : {}),
       ...(quarantined ? { upgradeQuarantined: true } : {}),
     };

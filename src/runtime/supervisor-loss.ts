@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
-import { CoordinatorLaunchRecord } from '../infra/coordinator-launch.js';
+import { CoordinatorLaunchRecord, type LaunchProcess } from '../infra/coordinator-launch.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
@@ -77,6 +77,19 @@ export function startReplacementSupervisor(
     let retirementAt: number | null = null;
     let termSent = false;
     let killSent = false;
+    let holdRefusalReported = false;
+    const holdRefusedSignal = (replacement: LaunchProcess): void => {
+      const held = record.holdReplacementSignalRefusal(
+        { pid: process.pid, incarnation: sourceIncarnation },
+        replacement,
+      );
+      if (held) {
+        holdRefusalReported = false;
+      } else if (!holdRefusalReported) {
+        holdRefusalReported = true;
+        onError(new Error(`Replacement supervisor signal hold refused for PID ${replacement.pid}`));
+      }
+    };
     const finish = (error: Error | null, repair = false): void => {
       if (settled) return;
       settled = true;
@@ -149,7 +162,7 @@ export function startReplacementSupervisor(
           termSent = false;
         }
         if (termSent) record.clearReplacementSignalRefusal(replacement);
-        else record.holdReplacementSignalRefusal({ pid: process.pid, incarnation: sourceIncarnation }, replacement);
+        else holdRefusedSignal(replacement);
         return;
       }
       try {
@@ -158,7 +171,7 @@ export function startReplacementSupervisor(
         killSent = false;
       }
       if (killSent) record.clearReplacementSignalRefusal(replacement);
-      else record.holdReplacementSignalRefusal({ pid: process.pid, incarnation: sourceIncarnation }, replacement);
+      else holdRefusedSignal(replacement);
     }, 1_000);
     retirementPoll.unref();
     const deadline = setTimeout(() => {

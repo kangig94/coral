@@ -517,7 +517,8 @@ async function watchChild(
       record.settleAbsentChild(owner.current, reservation, now);
       return 'absent';
     }
-    record.holdSignalRefusal(owner.current, reservation, identity, now);
+    if (!record.holdSignalRefusal(owner.current, reservation, identity, now))
+      throw new Error(`Coordinator launch signal hold refused for ${reservation.id} (PID ${identity.pid})`);
     return 'held';
   };
   const interval = setInterval(() => {
