@@ -55,7 +55,10 @@ import type { StoragePort } from '../../../src/infra/port-types.js';
 import { createCoordinatorCore } from '../../../src/coordinator/composition/index.js';
 import type { CoordinatorCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '../../../src/coordinator/composition/store-services-ref.js';
-import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../../../src/coordinator/live/kb-daemon-supervisor.js';
+import type {
+  KbDaemonHealthSnapshot,
+  KbDaemonSupervisor,
+} from '../../../src/coordinator/live/kb-daemon-supervisor/index.js';
 import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';

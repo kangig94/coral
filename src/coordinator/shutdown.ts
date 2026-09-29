@@ -26,7 +26,7 @@ import type {
   ProviderHostLifecycle,
   ProviderHostQuiescenceReceipt,
 } from './live/provider-hosts/index.js';
-import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
+import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor/index.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from './live/provider-proxy/authority.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import type { ProviderOperationReconcilerStopDisposition } from './services/provider-operation-reconciler.js';

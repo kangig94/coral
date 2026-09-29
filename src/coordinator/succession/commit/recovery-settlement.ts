@@ -1,13 +1,7 @@
 import { formatError } from '../../../infra/error-format.js';
 import type { SuccessionAttempt } from '../attempt-child.js';
-import type {
-  CommitOutcome,
-  CommitState,
-  FailedCommit,
-  IncumbentWriterPorts,
-  SuccessionCommitPorts,
-} from '../commit.js';
-import type { SuccessionLaunchSettlement } from '../reconciler.js';
+import type { CommitOutcome, CommitState, FailedCommit, IncumbentWriterPorts, SuccessionCommitPorts } from './index.js';
+import type { SuccessionLaunchSettlement } from '../reconciler/index.js';
 import type { createCommitAttemptRecorder } from './attempt-recording.js';
 import type { createCommitReclaim } from './reclaim.js';
 import type { createSameBuildRecovery } from './same-build-recovery.js';

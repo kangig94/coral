@@ -9,7 +9,7 @@ import {
   type UpgradeIntentChange,
 } from '../../infra/upgrade-intent.js';
 import { successionPreparationSchema, successionTargetKey } from './protocol.js';
-import type { SuccessionDecision, SuccessionReconciler, SuccessionReconcilerOptions } from './reconciler.js';
+import type { SuccessionDecision, SuccessionReconciler, SuccessionReconcilerOptions } from './reconciler/index.js';
 
 type IncumbentIdentity = UpgradeIntent['incumbent'];
 type Target = UpgradeIntent['target'];

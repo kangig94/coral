@@ -1,9 +1,9 @@
 import type { Runtime } from '../../../runtime/ports.js';
 import type { KbDaemonSupervisorState } from './state.js';
-import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from '../kb-daemon-supervisor.js';
+import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from './index.js';
 type KbDaemonRequestMethod = KbDaemonWireTypes['requestMethod'];
 type KbDaemonResponseMessage = KbDaemonWireTypes['responseMessage'];
-import type { KbDaemonHealthSnapshot } from '../kb-daemon-supervisor.js';
+import type { KbDaemonHealthSnapshot } from './index.js';
 
 export function createKbDaemonRequests(
   runtime: Runtime,

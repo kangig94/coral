@@ -11,10 +11,10 @@ import { discardUnservedRetirementMint, encodeResolvedStoreEpoch, inspectCurrent
 import { readProviderOperations } from '../../store/provider-operation-journal.js';
 import { observeSuccessionServing } from '../../store/succession-writer-generation.js';
 import type { createIpcServer } from '../../transport/ipc/server.js';
-import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import { RetiringCustodyCertificate } from '../services/recovery/epoch-closure.js';
 import { currentSuccessionAttemptChild, startSuccessionAttempt } from '../succession/attempt-child.js';
-import { createSuccessionCommitter } from '../succession/commit.js';
+import { createSuccessionCommitter } from '../succession/commit/index.js';
 import { createSuccessionCoordinator } from '../succession/index.js';
 import { NO_SUCCESSION_INTERPOSITION } from '../succession/interposition.js';
 import { createProviderHostTransfer } from '../succession/provider-host-transfer.js';
@@ -22,7 +22,7 @@ import type { createCoordinatorCoreContext } from './core-context.js';
 import { createCustodyReconciliationScheduler } from './custody-reconciliation-scheduler.js';
 import type { createCoordinatorExecutionAssembly } from './execution-assembly.js';
 import type { createProviderHostOwners } from './provider-host-owners.js';
-import { createSuccessionOwners } from './succession-owners.js';
+import { createSuccessionOwners } from './succession-owners/index.js';
 import type { CoordinatorCoreOptions } from './types.js';
 
 type CoreContext = ReturnType<typeof createCoordinatorCoreContext>;

@@ -1,21 +1,21 @@
-import type { Runtime } from '../../runtime/ports.js';
+import type { Runtime } from '../../../runtime/ports.js';
 import {
   readUpgradeIntent,
   retryUpgradeIntentCas,
   type UpgradeIntent,
   type UpgradeIntentCasStep,
   type UpgradeIntentChange,
-} from '../../infra/upgrade-intent.js';
-import type { SuccessionPreparation, SuccessionReady } from './protocol.js';
-import type { UnservedMintDiscard } from '../../store/epoch.js';
-import type { SuccessionOwner, SuccessionOwnerId } from './obligations.js';
-import { createSuccessionIntentAdoption } from './reconciler/adoption.js';
-import { createSuccessionReconcilerState } from './reconciler/state.js';
-import { createSuccessionSettlement } from './reconciler/settlement.js';
-import { createSuccessionReconciliationPass } from './reconciler/pass.js';
-import { prepareObservedIntent, readPreparation } from './reconciler/preparation.js';
-import { createSuccessionReconciliationScheduler } from './reconciliation-scheduler.js';
-import { createIntentTransitionRequests, decisionOf } from './intent-transitions.js';
+} from '../../../infra/upgrade-intent.js';
+import type { SuccessionPreparation, SuccessionReady } from '../protocol.js';
+import type { UnservedMintDiscard } from '../../../store/epoch.js';
+import type { SuccessionOwner, SuccessionOwnerId } from '../obligations.js';
+import { createSuccessionIntentAdoption } from './adoption.js';
+import { createSuccessionReconcilerState } from './state.js';
+import { createSuccessionSettlement } from './settlement.js';
+import { createSuccessionReconciliationPass } from './pass.js';
+import { prepareObservedIntent, readPreparation } from './preparation.js';
+import { createSuccessionReconciliationScheduler } from '../reconciliation-scheduler.js';
+import { createIntentTransitionRequests, decisionOf } from '../intent-transitions.js';
 
 type IncumbentIdentity = UpgradeIntent['incumbent'];
 type Target = UpgradeIntent['target'];

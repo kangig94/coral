@@ -132,7 +132,7 @@ import { validateForeignHandoffTarget } from './handoff-routing/runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import { RETIREMENT_PATIENCE_INTERVAL_MS } from './services/startup-retirement.js';
 import { selectProtectedPredecessorFromControllers } from './services/recovery/epoch-closure.js';
-import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
+import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor/index.js';
 import type { SystemProviderScope } from '../infra/provider-scope.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { StoreFormatDescription } from '../store/format-fingerprint.js';
@@ -150,7 +150,7 @@ import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../recovery
 import { RecoveryQuarantineStore } from '../recovery/quarantine.js';
 import { createCoordinatorSocketAddressClaim } from './socket-address-claim.js';
 import { currentSuccessionAttemptChild } from './succession/attempt-child.js';
-import type { RetiringStoreProtection, SuccessionShutdownPort } from './succession/commit.js';
+import type { RetiringStoreProtection, SuccessionShutdownPort } from './succession/commit/index.js';
 import { NO_SUCCESSION_INTERPOSITION, type SuccessionInterposition } from './succession/interposition.js';
 import {
   completeSupervisorLegacyUpgrade,

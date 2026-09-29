@@ -27,7 +27,7 @@ import {
   RECOVERY_HOLDS_INTENT,
 } from '../intent-transitions.js';
 import { REQUIRED_SUCCESSION_OWNERS, prepareOwnerObligations } from '../obligations.js';
-import type { SuccessionDecision, SuccessionReconcilerOptions } from '../reconciler.js';
+import type { SuccessionDecision, SuccessionReconcilerOptions } from './index.js';
 
 export function readPreparation(intent: UpgradeIntent): SuccessionPreparation | null {
   const parsed = successionPreparationSchema.safeParse(intent.successionPreparation);

@@ -1,9 +1,9 @@
 import { errorMessage } from '../../../infra/error-format.js';
 import type { KbDaemonSupervisorState } from './state.js';
-import type { KbDaemonProtocolBindings } from '../kb-daemon-supervisor.js';
+import type { KbDaemonProtocolBindings } from './index.js';
 import { serializeCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { KbDaemonDisposalSettlement, KbDaemonHealthSnapshot, KbDaemonPhase } from '../kb-daemon-supervisor.js';
+import type { KbDaemonDisposalSettlement, KbDaemonHealthSnapshot, KbDaemonPhase } from './index.js';
 import type { createKbDaemonRequests } from './requests.js';
 
 type ProbeDependencies = Pick<ReturnType<typeof createKbDaemonRequests>, 'sendRequest' | 'runExclusive'> &

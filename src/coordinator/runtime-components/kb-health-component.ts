@@ -1,4 +1,4 @@
-import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import { KB_COMPONENT_ID, type RuntimeComponent, type RuntimeComponentStatus } from './contract.js';
 
 function statusFromDaemon(snapshot: KbDaemonHealthSnapshot): RuntimeComponentStatus {

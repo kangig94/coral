@@ -1,18 +1,18 @@
 import { basename, join } from 'node:path';
-import type { ChildProcessLike } from '../../infra/port-types.js';
+import type { ChildProcessLike } from '../../../infra/port-types.js';
 import {
   gracefulKill,
   safeKill,
   type GracefulKillDisposition,
   type GracefulKillOutcome,
   type GracefulKillPendingDisposition,
-} from '../../infra/process-supervision.js';
-import { readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
-import { pluginRootNamespace } from '../../infra/plugin-identity.js';
-import type { Runtime } from '../../runtime/ports.js';
-import type { SerializedCoralSetupError } from '../../runtime/errors.js';
-import type { ResolvedStoreEpoch } from '../../store/epoch.js';
-import type { SuccessionWriterGeneration } from '../../store/succession-writer-generation.js';
+} from '../../../infra/process-supervision.js';
+import { readBundleHash, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
+import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
+import type { Runtime } from '../../../runtime/ports.js';
+import type { SerializedCoralSetupError } from '../../../runtime/errors.js';
+import type { ResolvedStoreEpoch } from '../../../store/epoch.js';
+import type { SuccessionWriterGeneration } from '../../../store/succession-writer-generation.js';
 import {
   KB_DAEMON_REQUEST_MESSAGE,
   KB_DAEMON_PARENT_RESPONSE_MESSAGE,
@@ -30,7 +30,7 @@ import {
   isKbDaemonParentRequestMessage,
   isKbDaemonReadyMessage,
   isKbDaemonResponseMessage,
-} from '../../kb-daemon/protocol.js';
+} from '../../../kb-daemon/protocol.js';
 import type {
   KbDaemonAbortResult,
   KbDaemonCurateAssistantCompleteRequest,
@@ -47,15 +47,15 @@ import type {
   KbDaemonResponseMessage,
   KbDaemonParentRequestMessage,
   KbDaemonErrorEnvelope,
-} from '../../kb-daemon/protocol.js';
-import { createKbDaemonHealth } from './kb-daemon-supervisor/health.js';
-import { createKbDaemonRequests } from './kb-daemon-supervisor/requests.js';
-import { createKbDaemonParentRequests } from './kb-daemon-supervisor/parent-requests.js';
-import { createKbDaemonStarter } from './kb-daemon-supervisor/process-start.js';
-import { createKbDaemonProcessStop } from './kb-daemon-supervisor/process-stop.js';
-import { createKbDaemonSupervisorState } from './kb-daemon-supervisor/state.js';
-import { createKbDaemonSupervisorPorts } from './kb-daemon-supervisor/ports.js';
-import { createKbDaemonServiceRequests } from './kb-daemon-supervisor/service-requests.js';
+} from '../../../kb-daemon/protocol.js';
+import { createKbDaemonHealth } from './health.js';
+import { createKbDaemonRequests } from './requests.js';
+import { createKbDaemonParentRequests } from './parent-requests.js';
+import { createKbDaemonStarter } from './process-start.js';
+import { createKbDaemonProcessStop } from './process-stop.js';
+import { createKbDaemonSupervisorState } from './state.js';
+import { createKbDaemonSupervisorPorts } from './ports.js';
+import { createKbDaemonServiceRequests } from './service-requests.js';
 
 const daemonProtocol = {
   KB_DAEMON_REQUEST_MESSAGE,

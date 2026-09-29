@@ -1,7 +1,7 @@
-import type { KbDaemonProtocolBindings } from '../kb-daemon-supervisor.js';
+import type { KbDaemonProtocolBindings } from './index.js';
 import type { KbDaemonSupervisorState } from './state.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { DaemonProcessLike, KbDaemonDisposalSettlement } from '../kb-daemon-supervisor.js';
+import type { DaemonProcessLike, KbDaemonDisposalSettlement } from './index.js';
 import type { createKbDaemonHealth } from './health.js';
 import type { createKbDaemonRequests } from './requests.js';
 

@@ -1,7 +1,7 @@
 import { formatError } from '../../../infra/error-format.js';
 import { retryUpgradeIntentCas, type UpgradeIntent } from '../../../infra/upgrade-intent.js';
-import type { SuccessionCommitPorts } from '../commit.js';
-import type { SuccessionLaunchSettlement } from '../reconciler.js';
+import type { SuccessionCommitPorts } from './index.js';
+import type { SuccessionLaunchSettlement } from '../reconciler/index.js';
 
 export function createCommitAttemptRecorder(ports: SuccessionCommitPorts) {
   const runDir = ports.runtime.paths.coral.coordinator.runDir;

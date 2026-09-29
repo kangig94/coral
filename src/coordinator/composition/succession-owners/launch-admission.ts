@@ -6,9 +6,9 @@ import {
   prepareDurableCliRecoveryGrant,
 } from '../../services/durable-cli-transfer.js';
 import type { SuccessionOwner } from '../../succession/obligations.js';
-import type { createSuccessionOwners } from '../succession-owners.js';
+import type { SuccessionOwnersInput } from './index.js';
 
-export function createLaunchSuccessionOwners(input: Parameters<typeof createSuccessionOwners>[0]): SuccessionOwner[] {
+export function createLaunchSuccessionOwners(input: SuccessionOwnersInput): SuccessionOwner[] {
   const { runtime, world, getProgressStore, readSuccessionJobs } = input;
   const identity = world.identity;
   return [

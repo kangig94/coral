@@ -4,9 +4,9 @@ import {
   type SuccessionWriterGeneration,
 } from '../../../store/succession-writer-generation.js';
 import { failedAttemptRetry } from '../attempt-retry.js';
-import type { FailedCommit, IncumbentWriterPorts, SuccessionCommitPorts, reclaimIncumbentWriter } from '../commit.js';
+import type { FailedCommit, IncumbentWriterPorts, SuccessionCommitPorts, reclaimIncumbentWriter } from './index.js';
 import { recordControllerOpen } from '../controller-open.js';
-import type { SuccessionLaunchSettlement } from '../reconciler.js';
+import type { SuccessionLaunchSettlement } from '../reconciler/index.js';
 import type { createCommitAttemptRecorder } from './attempt-recording.js';
 import type { createCommitPause } from './pause.js';
 

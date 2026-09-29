@@ -2,7 +2,7 @@ import type { TimerHandle } from '../../../infra/port-types.js';
 import { readUpgradeIntent } from '../../../infra/upgrade-intent.js';
 import type { SuccessionAttempt } from '../attempt-child.js';
 import { TRANSIENT_RETRY_BASE_MS } from '../attempt-retry.js';
-import type { CommitPlan, SuccessionCommitPorts } from '../commit.js';
+import type { CommitPlan, SuccessionCommitPorts } from './index.js';
 import type { SuccessionPreparation } from '../protocol.js';
 import { observeRetirementDisposition } from '../retirement-disposition.js';
 import { waitForAttemptReady } from './attempt-readiness.js';

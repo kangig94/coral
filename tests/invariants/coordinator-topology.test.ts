@@ -95,7 +95,7 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/startup-recovery.ts',
   'src/coordinator/live/admission.ts',
   'src/coordinator/live/durable-transport.ts',
-  'src/coordinator/live/kb-daemon-supervisor.ts',
+  'src/coordinator/live/kb-daemon-supervisor/index.ts',
 ]);
 
 // `src/coordinator/runtime-components/` is deliberately not here: every one of its files imports only

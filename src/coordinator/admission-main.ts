@@ -16,7 +16,7 @@ const utilityInvocation =
 
 void (utilityInvocation ? Promise.resolve(true) : claimCoordinatorLaunch())
   .then(async (admitted) => {
-    if (admitted) await import('../coordinator/bootstrap.js');
+    if (admitted) await import('./bootstrap.js');
     else process.exitCode = 1;
   })
   .catch((error: unknown) => {

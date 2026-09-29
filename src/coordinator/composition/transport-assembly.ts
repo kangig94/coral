@@ -9,7 +9,7 @@ import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { createIpcServer } from '../../transport/ipc/server.js';
 import type { HttpHandlerPorts } from '../../transport/server-ports.js';
 import { createRequestLeaseOwner } from '../live/request-leases.js';
-import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import { createCoordinatorHealthReader } from './health-observation.js';
 import { createCoordinatorEventStreamPorts } from './event-stream-ports.js';
 import type { createCoordinatorCoreContext } from './core-context.js';

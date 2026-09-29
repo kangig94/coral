@@ -4,7 +4,7 @@ import { readOrCreateEpochKey } from '../../store/epoch-key.js';
 import { encodeResolvedStoreEpoch, type ResolvedStoreEpoch } from '../../store/epoch.js';
 import { closeIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import { createLifecycle, type LifecycleDeps, type RunStartupRecoveryOrchestratorFn } from '../lifecycle.js';
-import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
 import { currentSuccessionAttemptChild } from '../succession/attempt-child.js';
 import { NO_SUCCESSION_INTERPOSITION } from '../succession/interposition.js';

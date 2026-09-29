@@ -6,72 +6,85 @@ import { readUpgradeIntent } from '../../../infra/upgrade-intent.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { SuccessionAttempt } from '../attempt-child.js';
 
+type ObservedAbsent = Readonly<{ kind: 'observed-absent' }>;
+
+function verifyAttemptIdentity(runtime: Runtime, attempt: SuccessionAttempt, required: boolean): void {
+  const recorded = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  const identityRecord = recorded.kind === 'readable' ? recorded.intent.attemptChild : null;
+  if (
+    required &&
+    (identityRecord?.attemptId !== attempt.attemptId ||
+      identityRecord.pid !== attempt.childIdentity.pid ||
+      identityRecord.incarnation !== attempt.childIdentity.incarnation)
+  ) {
+    throw new Error('Failed successor identity does not match the durable attempt record.');
+  }
+}
+
+async function waitForSentinelRetirement(runtime: Runtime, attempt: SuccessionAttempt): Promise<void> {
+  if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const onExit = (): void => finish(null);
+    const timeout = runtime.time.setTimeout(
+      () => finish(new Error('Succession sentinel did not retire its child within its grace')),
+      SENTINEL_TIMING.graceMs + 5_000,
+    );
+    const finish = (error: Error | null): void => {
+      if (settled) return;
+      settled = true;
+      runtime.time.clearTimeout(timeout);
+      attempt.child.off('exit', onExit);
+      if (error === null) resolve();
+      else reject(error);
+    };
+    attempt.child.once('exit', onExit);
+    if (attempt.child.connected) {
+      attempt.child.send({ kind: 'coral-sentinel-retire-child' }, (error) => {
+        if (error !== null) finish(error);
+      });
+    }
+  });
+}
+
+async function reapSentinelAttempt(runtime: Runtime, attempt: SuccessionAttempt): Promise<ObservedAbsent> {
+  await waitForSentinelRetirement(runtime, attempt);
+  const { pid, incarnation } = attempt.childIdentity;
+  const observed = probeProcessIncarnation(pid);
+  if (observeProcessLiveness(pid) === 'absent' || (observed !== null && observed !== incarnation)) {
+    return { kind: 'observed-absent' };
+  }
+  throw new Error('Succession sentinel exited before its coordinator was proven absent.');
+}
+
+async function reapOwnedAttempt(runtime: Runtime, attempt: SuccessionAttempt): Promise<ObservedAbsent> {
+  const { pid, incarnation } = attempt.childIdentity;
+  if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) return { kind: 'observed-absent' };
+  if (probeProcessIncarnation(pid) !== incarnation) {
+    throw new Error('Failed successor identity cannot be verified for reaping.');
+  }
+  // The owned child's exit is decisive absence evidence; reaping must not wait for the escalation deadline.
+  const exited = new Promise<ObservedAbsent>((resolve) => {
+    if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) resolve({ kind: 'observed-absent' });
+    else attempt.child.once('exit', () => resolve({ kind: 'observed-absent' }));
+  });
+  const termination = gracefulKillByPid(runtime, pid, incarnation);
+  if (termination.kind !== 'escalation-scheduled') {
+    throw new Error(`Failed successor reaping was ${termination.kind}.`);
+  }
+  const settled = await Promise.race([termination.settlement, exited]);
+  if (settled.kind !== 'observed-absent') {
+    throw new Error(`Failed successor reaping remained ${settled.kind}.`);
+  }
+  return settled;
+}
+
 export function createCommitAttemptReaper(runtime: Runtime) {
-  const runDir = runtime.paths.coral.coordinator.runDir;
-  async function reapAttempt(
-    attempt: SuccessionAttempt,
-    requireDurableIdentity: boolean,
-  ): Promise<Readonly<{ kind: 'observed-absent' }>> {
-    const recorded = readUpgradeIntent(runDir);
-    const identityRecord = recorded.kind === 'readable' ? recorded.intent.attemptChild : null;
-    if (
-      requireDurableIdentity &&
-      (identityRecord?.attemptId !== attempt.attemptId ||
-        identityRecord.pid !== attempt.childIdentity.pid ||
-        identityRecord.incarnation !== attempt.childIdentity.incarnation)
-    ) {
-      throw new Error('Failed successor identity does not match the durable attempt record.');
-    }
-    const { pid, incarnation } = attempt.childIdentity;
-    if (attempt.child.coordinatorPid !== undefined) {
-      if (attempt.child.exitCode === null && attempt.child.signalCode === null) {
-        await new Promise<void>((resolve, reject) => {
-          let settled = false;
-          const onExit = (): void => finish(null);
-          const timeout = runtime.time.setTimeout(
-            () => finish(new Error('Succession sentinel did not retire its child within its grace')),
-            SENTINEL_TIMING.graceMs + 5_000,
-          );
-          const finish = (error: Error | null): void => {
-            if (settled) return;
-            settled = true;
-            runtime.time.clearTimeout(timeout);
-            attempt.child.off('exit', onExit);
-            if (error === null) resolve();
-            else reject(error);
-          };
-          attempt.child.once('exit', onExit);
-          if (attempt.child.connected) {
-            attempt.child.send({ kind: 'coral-sentinel-retire-child' }, (error) => {
-              if (error !== null) finish(error);
-            });
-          }
-        });
-      }
-      const observed = probeProcessIncarnation(pid);
-      if (observeProcessLiveness(pid) === 'absent' || (observed !== null && observed !== incarnation)) {
-        return { kind: 'observed-absent' };
-      }
-      throw new Error('Succession sentinel exited before its coordinator was proven absent.');
-    }
-    if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) return { kind: 'observed-absent' };
-    if (probeProcessIncarnation(pid) !== incarnation) {
-      throw new Error('Failed successor identity cannot be verified for reaping.');
-    }
-    // The owned child's exit is decisive absence evidence; reaping must not wait for the escalation deadline.
-    const exited = new Promise<Readonly<{ kind: 'observed-absent' }>>((resolve) => {
-      if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) resolve({ kind: 'observed-absent' });
-      else attempt.child.once('exit', () => resolve({ kind: 'observed-absent' }));
-    });
-    const termination = gracefulKillByPid(runtime, pid, incarnation);
-    if (termination.kind !== 'escalation-scheduled') {
-      throw new Error(`Failed successor reaping was ${termination.kind}.`);
-    }
-    const settled = await Promise.race([termination.settlement, exited]);
-    if (settled.kind !== 'observed-absent') {
-      throw new Error(`Failed successor reaping remained ${settled.kind}.`);
-    }
-    return settled;
+  async function reapAttempt(attempt: SuccessionAttempt, requireDurableIdentity: boolean): Promise<ObservedAbsent> {
+    verifyAttemptIdentity(runtime, attempt, requireDurableIdentity);
+    return attempt.child.coordinatorPid !== undefined
+      ? reapSentinelAttempt(runtime, attempt)
+      : reapOwnedAttempt(runtime, attempt);
   }
 
   /**

@@ -67,7 +67,7 @@ import {
   createDefaultKbDaemonSupervisor,
   createDisabledKbDaemonSupervisor,
   type KbDaemonSupervisor,
-} from './live/kb-daemon-supervisor.js';
+} from './live/kb-daemon-supervisor/index.js';
 import type { KbDaemonEventMessage } from '../kb-daemon/protocol.js';
 import { createKbCurateAssistantHandler, createKbCurateUsageBudgetHandler } from './services/kb-curate-assistant.js';
 import { createProviderEventHandler } from './services/provider-event-application.js';

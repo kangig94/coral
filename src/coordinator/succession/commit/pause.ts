@@ -1,6 +1,6 @@
 import { SUCCESSION_PAUSE_ROLLING_WINDOW_MS } from '../../live/admission.js';
 import { TRANSIENT_RETRY_BASE_MS } from '../attempt-retry.js';
-import type { CommitState, SuccessionCommitPorts } from '../commit.js';
+import type { CommitState, SuccessionCommitPorts } from './index.js';
 import { TransientCommitFailure } from './failure.js';
 
 export function createCommitPause(ports: SuccessionCommitPorts, state: CommitState) {

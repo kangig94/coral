@@ -14,7 +14,7 @@ import {
   settle,
   withoutAdoptionBlocker,
 } from '../intent-transitions.js';
-import type { SuccessionDecision, SuccessionReconcilerOptions } from '../reconciler.js';
+import type { SuccessionDecision, SuccessionReconcilerOptions } from './index.js';
 
 type TargetRequest = Readonly<{ requestId: string; target: UpgradeIntent['target'] }>;
 

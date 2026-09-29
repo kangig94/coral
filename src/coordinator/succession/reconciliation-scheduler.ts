@@ -1,5 +1,5 @@
 import type { Runtime } from '../../runtime/ports.js';
-import type { SuccessionDecision } from './reconciler.js';
+import type { SuccessionDecision } from './reconciler/index.js';
 
 export function createSuccessionReconciliationScheduler(input: {
   time: Runtime['time'];

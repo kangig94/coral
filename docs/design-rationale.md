@@ -539,7 +539,7 @@ a slot already removed. Do not duplicate that check in the private sinks or remo
 
 ### 13.1 Why version preference grants no shutdown authority
 
-A newer installed build is a preferred future coordinator, but only the serving coordinator and its obligation owners can say whether their work may move. A contender observing health cannot safely infer that from `activeJobs`: admission may race its observation, and a live carrier may have no projected status row. `createSuccessionReconciler` in `src/coordinator/succession/reconciler.ts` therefore gathers owner dispositions against the exact target capability declaration and admission revision. `decideLegacyShutdown` in `src/coordinator/composition/job-control.ts` refuses an unnegotiated IPC shutdown. Administrative HTTP shutdown retains its separate authenticated route. This keeps a shipped contender's refusal from becoming permission to kill accepted work.
+A newer installed build is a preferred future coordinator, but only the serving coordinator and its obligation owners can say whether their work may move. A contender observing health cannot safely infer that from `activeJobs`: admission may race its observation, and a live carrier may have no projected status row. `createSuccessionReconciler` in `src/coordinator/succession/reconciler/index.ts` therefore gathers owner dispositions against the exact target capability declaration and admission revision. `decideLegacyShutdown` in `src/coordinator/composition/job-control.ts` refuses an unnegotiated IPC shutdown. Administrative HTTP shutdown retains its separate authenticated route. This keeps a shipped contender's refusal from becoming permission to kill accepted work.
 
 ### 13.2 Why intent outlives a contender, but a pause does not
 

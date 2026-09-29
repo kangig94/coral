@@ -10,7 +10,7 @@ import { isLivePhase } from '../../jobs/phase.js';
 import type { LaunchPermitReclamationDiagnostic, LaunchReleaseDiagnostic } from '../../jobs/contracts/admission.js';
 import type { HealthSnapshot } from '../../transport/server-ports.js';
 import { type createRuntimeState, type LifecycleController } from '../lifecycle.js';
-import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
 import { type createCoordinatorWorld } from './world.js';
 import type { CoordinatorCoreOptions } from './types.js';

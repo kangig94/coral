@@ -3,11 +3,11 @@ import type { KbDaemonSupervisorState } from './state.js';
 import { appendBuffer } from '../../../infra/process-supervision.js';
 import type { requirePipedHandles } from '../../../infra/process-supervision.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from '../kb-daemon-supervisor.js';
+import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from './index.js';
 type KbDaemonEventMessage = KbDaemonWireTypes['eventMessage'];
 type KbDaemonParentRequestMessage = KbDaemonWireTypes['parentRequestMessage'];
 import { createKbDaemonStdoutReceiver } from './stdout.js';
-import type { DaemonProcessLike } from '../kb-daemon-supervisor.js';
+import type { DaemonProcessLike } from './index.js';
 
 type ReadyDependencies = Readonly<{
   startTimeoutMs: number;

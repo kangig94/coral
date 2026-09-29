@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createSuccessionReconciler } from '#src/coordinator/succession/reconciler.js';
+import { createSuccessionReconciler } from '#src/coordinator/succession/reconciler/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createSuccessionCoordinator } from '#src/coordinator/succession/index.js';
 import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';

@@ -6,7 +6,7 @@ import {
   type SuccessionWriterEntitlement,
 } from '../../../store/succession-writer-generation.js';
 import { TRANSIENT_RETRY_BASE_MS } from '../attempt-retry.js';
-import type { CommitState, CommitWindow, SuccessionCommitPorts } from '../commit.js';
+import type { CommitState, CommitWindow, SuccessionCommitPorts } from './index.js';
 import { TransientCommitFailure } from './failure.js';
 
 const SERVING_POLL_MS = 25;
@@ -16,32 +16,41 @@ type ServingDependencies = Readonly<{
   retryAfterFailure: (error: unknown) => AttemptRetry;
 }>;
 
-export function createCommitServing(
+function createServingObservation(
   ports: SuccessionCommitPorts,
   state: CommitState,
-  dependencies: ServingDependencies,
+  retirementServes: ServingDependencies['retirementServes'],
 ) {
   const { runtime } = ports;
-  const { retirementServes, retryAfterFailure } = dependencies;
+
+  async function acceptServing(
+    window: CommitWindow,
+    writer: SuccessionWriterEntitlement,
+    serving: NonNullable<ReturnType<typeof observeSuccessionServing>>,
+  ): Promise<void> {
+    const { attempt, preparation, recovering } = window;
+    if (
+      (serving.epochKey !== preparation.epochKey && !retirementServes(attempt.attemptId, preparation.epochKey)) ||
+      serving.controlGeneration <= writer.generation.generation
+    ) {
+      throw new Error('Durable serving record does not match the prepared takeover.');
+    }
+    if (!recovering) {
+      const committed = await ports.reconciler().commit(attempt.attemptId);
+      if (committed.kind !== 'committed') {
+        ports.log(`Succession serves, but completion receipt is ${committed.kind}.\n`);
+      }
+    }
+    await ports.interposition.at('incumbent-release', { recovery: recovering });
+  }
+
   /** Resolves once the successor durably serves the prepared takeover; every other ending throws. */
   async function awaitServing(window: CommitWindow, writer: SuccessionWriterEntitlement): Promise<void> {
-    const { attempt, preparation, deadlineAt, recovering } = window;
+    const { attempt, deadlineAt } = window;
     for (;;) {
       const serving = observeSuccessionServing(runtime, attempt.attemptId);
       if (serving !== null) {
-        if (
-          (serving.epochKey !== preparation.epochKey && !retirementServes(attempt.attemptId, preparation.epochKey)) ||
-          serving.controlGeneration <= writer.generation.generation
-        ) {
-          throw new Error('Durable serving record does not match the prepared takeover.');
-        }
-        if (!recovering) {
-          const committed = await ports.reconciler().commit(attempt.attemptId);
-          if (committed.kind !== 'committed') {
-            ports.log(`Succession serves, but completion receipt is ${committed.kind}.\n`);
-          }
-        }
-        await ports.interposition.at('incumbent-release', { recovery: recovering });
+        await acceptServing(window, writer, serving);
         return;
       }
       if (window.hold !== null) throw new Error(window.hold);
@@ -53,6 +62,18 @@ export function createCommitServing(
       await runtime.time.sleep(SERVING_POLL_MS);
     }
   }
+
+  return awaitServing;
+}
+
+export function createCommitServing(
+  ports: SuccessionCommitPorts,
+  state: CommitState,
+  dependencies: ServingDependencies,
+) {
+  const { runtime } = ports;
+  const { retirementServes, retryAfterFailure } = dependencies;
+  const awaitServing = createServingObservation(ports, state, retirementServes);
 
   /** At its deadline the successor fences itself, so whatever it reports afterwards is that deadline's doing. */
   const retryAfterWindowFailure = (window: CommitWindow, error: unknown): AttemptRetry =>

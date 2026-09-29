@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { subscribeSuccessionObligationChanges } from '#src/coordinator/composition/index.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { createSuccessionReconciler } from '#src/coordinator/succession/reconciler.js';
+import { createSuccessionReconciler } from '#src/coordinator/succession/reconciler/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 

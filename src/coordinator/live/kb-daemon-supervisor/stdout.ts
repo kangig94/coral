@@ -1,10 +1,10 @@
 import { formatError } from '../../../infra/error-format.js';
 import type { KbDaemonSupervisorState } from './state.js';
-import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from '../kb-daemon-supervisor.js';
+import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from './index.js';
 type KbDaemonEventMessage = KbDaemonWireTypes['eventMessage'];
 type KbDaemonParentRequestMessage = KbDaemonWireTypes['parentRequestMessage'];
 import type { Runtime } from '../../../runtime/ports.js';
-import type { DaemonProcessLike } from '../kb-daemon-supervisor.js';
+import type { DaemonProcessLike } from './index.js';
 
 export function createKbDaemonStdoutReceiver(
   runtime: Runtime,

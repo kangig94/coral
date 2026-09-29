@@ -34,7 +34,7 @@ import type { KbJobRecorder } from '../../jobs/kb/recorder.js';
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
 import type { HealthSnapshot } from '../../transport/server-ports.js';
-import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import type { ProviderScope } from '../../infra/provider-scope.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import type { ProcessExitRemainder, ProcessExitRemainderAcceptance } from '../shutdown-settlement.js';

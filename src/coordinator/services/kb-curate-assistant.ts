@@ -2,8 +2,8 @@ import type { SystemProviderScope } from '../../infra/provider-scope.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
-import type { KbDaemonCurateAssistantHandler } from '../live/kb-daemon-supervisor.js';
-import type { KbDaemonCurateUsageBudgetHandler } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonCurateAssistantHandler } from '../live/kb-daemon-supervisor/index.js';
+import type { KbDaemonCurateUsageBudgetHandler } from '../live/kb-daemon-supervisor/index.js';
 import { providerBindingFailureCode } from '../../providers/contracts/binding.js';
 import { canonicalizeWorkDir } from '../../runtime/canonical-work-dir.js';
 

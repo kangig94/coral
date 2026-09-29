@@ -11,7 +11,7 @@ import type {
   KbDaemonHealthSnapshot,
   KbDaemonProtocolBindings,
   KbDaemonWireTypes,
-} from '../kb-daemon-supervisor.js';
+} from './index.js';
 import type { createKbDaemonHealth } from './health.js';
 import type { createKbDaemonRequests } from './requests.js';
 import type { createKbDaemonParentRequests } from './parent-requests.js';

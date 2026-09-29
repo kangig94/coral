@@ -1,6 +1,6 @@
 import type { AttemptRetry } from '../../../infra/upgrade-intent.js';
 import { TRANSIENT_RETRY_BASE_MS } from '../attempt-retry.js';
-import type { CommitState } from '../commit.js';
+import type { CommitState } from './index.js';
 import { TransientCommitFailure } from './failure.js';
 
 export function createCommitFailurePolicy(state: CommitState) {

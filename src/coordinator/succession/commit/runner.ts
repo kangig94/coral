@@ -2,7 +2,7 @@ import { formatError } from '../../../infra/error-format.js';
 import type { AttemptRetry } from '../../../infra/upgrade-intent.js';
 import { observeSuccessionServing } from '../../../store/succession-writer-generation.js';
 import type { SuccessionAttempt } from '../attempt-child.js';
-import type { CommitOutcome, RecoveryContext, SuccessionCommitPorts } from '../commit.js';
+import type { CommitOutcome, RecoveryContext, SuccessionCommitPorts } from './index.js';
 import type { SuccessionPreparation } from '../protocol.js';
 import type { createCommitAttemptReaper } from './attempt-reaping.js';
 import type { createCommitReadiness } from './readiness.js';

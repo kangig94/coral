@@ -1,4 +1,4 @@
-import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../kb-daemon-supervisor.js';
+import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from './index.js';
 import type { KbDaemonSupervisorState } from './state.js';
 import type { createKbDaemonHealth } from './health.js';
 import type { createKbDaemonRequests } from './requests.js';

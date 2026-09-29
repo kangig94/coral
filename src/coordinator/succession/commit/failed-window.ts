@@ -8,7 +8,7 @@ import type {
   CommitWindow,
   FailedCommit,
   SuccessionCommitPorts,
-} from '../commit.js';
+} from './index.js';
 import type { createCommitAttemptRecorder } from './attempt-recording.js';
 import type { createCommitAttemptReaper } from './attempt-reaping.js';
 import type { createCommitServing } from './serving.js';

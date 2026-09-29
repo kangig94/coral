@@ -2,11 +2,9 @@ import type { JsonValue } from '../../../infra/json-value.js';
 import { readJobLaunchOriginNamespace } from '../../../jobs/succession-coverage.js';
 import { createDefaultStoreReadContext } from '../../../read-model/read-context.js';
 import type { SuccessionOwner } from '../../succession/obligations.js';
-import type { createSuccessionOwners } from '../succession-owners.js';
+import type { SuccessionOwnersInput } from './index.js';
 
-export function createChildPrincipalSuccessionOwner(
-  input: Parameters<typeof createSuccessionOwners>[0],
-): SuccessionOwner {
+export function createChildPrincipalSuccessionOwner(input: SuccessionOwnersInput): SuccessionOwner {
   const { runtime, world, getProgressStore, readSuccessionJobs } = input;
   return {
     id: 'child-principals',

@@ -22,7 +22,7 @@ import type {
   SuccessionLaunchSettlement,
   SuccessionReconcilerOptions,
   SuccessionStatus,
-} from '../reconciler.js';
+} from './index.js';
 import type { SuccessionReconcilerState } from './state.js';
 
 type ReconciliationContext = Readonly<{
@@ -140,7 +140,7 @@ async function landOwedClear(
 }
 
 async function reconcilePending(context: ReconciliationContext): Promise<SuccessionDecision> {
-  const { options, state, status, notifyObligationChange, adopt, adoptNextTarget, close, commit } = context;
+  const { options, state, status, notifyObligationChange, adopt, adoptNextTarget, commit } = context;
   if (!state.disposed && state.owedClear !== null) {
     const owed = await landOwedClear(context, state.owedClear);
     if (owed !== null) return owed;
@@ -170,6 +170,16 @@ async function reconcilePending(context: ReconciliationContext): Promise<Success
     return commit(intent.attemptId);
   }
   if (!recordsSelf(intent.incumbent, self)) return adopt(intent);
+  return reconcileOwnedIntent(context, intent, self, queued);
+}
+
+async function reconcileOwnedIntent(
+  context: ReconciliationContext,
+  intent: UpgradeIntent,
+  self: ReturnType<ReconciliationContext['options']['incumbent']>,
+  queued: NonNullable<UpgradeIntent['nextTarget']> | null,
+): Promise<SuccessionDecision> {
+  const { options, state, adoptNextTarget, close } = context;
   // A target requested while an attempt held the intent supersedes whatever that attempt left behind.
   if (intent.attemptId === null && queued !== null && intent.reason !== 'supervision-repair')
     return adoptNextTarget(intent, queued);

@@ -1,6 +1,9 @@
 import { vi } from 'vitest';
 
-import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../../src/coordinator/live/kb-daemon-supervisor.js';
+import type {
+  KbDaemonHealthSnapshot,
+  KbDaemonSupervisor,
+} from '../../src/coordinator/live/kb-daemon-supervisor/index.js';
 
 export function createOnlineKbDaemonHealth(overrides: Partial<KbDaemonHealthSnapshot> = {}): KbDaemonHealthSnapshot {
   return {

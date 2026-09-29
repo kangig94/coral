@@ -14,7 +14,7 @@ import {
   createSuccessionReconciler,
   type SuccessionReconciler,
   type SuccessionReconcilerOptions,
-} from './reconciler.js';
+} from './reconciler/index.js';
 
 export function createSuccessionCoordinator(options: SuccessionReconcilerOptions): Readonly<{
   dispatch: (method: string, params: unknown) => Promise<unknown>;

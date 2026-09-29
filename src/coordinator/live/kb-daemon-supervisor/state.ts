@@ -1,15 +1,10 @@
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ResolvedStoreEpoch } from '../../../store/epoch.js';
 import type { SerializedCoralSetupError } from '../../../runtime/errors.js';
-import type { KbDaemonWireTypes } from '../kb-daemon-supervisor.js';
+import type { KbDaemonWireTypes } from './index.js';
 type KbDaemonKbReadHealth = KbDaemonWireTypes['readHealth'];
 type KbDaemonResponseMessage = KbDaemonWireTypes['responseMessage'];
-import type {
-  DaemonProcessLike,
-  KbDaemonExit,
-  KbDaemonHealthSnapshot,
-  KbDaemonPhase,
-} from '../kb-daemon-supervisor.js';
+import type { DaemonProcessLike, KbDaemonExit, KbDaemonHealthSnapshot, KbDaemonPhase } from './index.js';
 
 type PendingRequest = {
   generation: number;

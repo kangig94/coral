@@ -68,7 +68,7 @@ const RECORDED_CONTAINMENT_OWNER_FILES = [
 // decision that must carry a justification.
 const ALLOWLIST = new Map<string, string>([
   [
-    'src/coordinator/live/kb-daemon-supervisor.ts',
+    'src/coordinator/live/kb-daemon-supervisor/index.ts',
     // The single bare call is the spawn-error catch: the child either failed to
     // spawn or lacks piped stdio, so it is not a live process awaiting graceful
     // shutdown. The timeout/stop paths in this file use `gracefulKill`.

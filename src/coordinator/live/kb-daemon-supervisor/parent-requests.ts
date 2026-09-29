@@ -1,14 +1,10 @@
 import { errorMessage, formatError } from '../../../infra/error-format.js';
 import type { KbDaemonSupervisorState } from './state.js';
 import { serializeCoralSetupError } from '../../../runtime/errors.js';
-import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from '../kb-daemon-supervisor.js';
+import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from './index.js';
 type KbDaemonErrorEnvelope = KbDaemonWireTypes['errorEnvelope'];
 type KbDaemonParentRequestMessage = KbDaemonWireTypes['parentRequestMessage'];
-import type {
-  DaemonProcessLike,
-  KbDaemonCurateAssistantHandler,
-  KbDaemonCurateUsageBudgetHandler,
-} from '../kb-daemon-supervisor.js';
+import type { DaemonProcessLike, KbDaemonCurateAssistantHandler, KbDaemonCurateUsageBudgetHandler } from './index.js';
 
 type ParentResponseWriter = (
   target: DaemonProcessLike,

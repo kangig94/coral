@@ -13,7 +13,7 @@ import type {
   IncumbentWriterPorts,
   RecoveryContext,
   SuccessionCommitPorts,
-} from '../commit.js';
+} from './index.js';
 import type { SuccessionPreparation } from '../protocol.js';
 import type { createCommitAttemptRecorder } from './attempt-recording.js';
 import type { createCommitPause } from './pause.js';

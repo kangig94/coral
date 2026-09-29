@@ -22,7 +22,7 @@ import {
   RECOVERY_HOLDS_INTENT,
   settle,
 } from '../intent-transitions.js';
-import type { SuccessionDecision, SuccessionReconcilerOptions, SuccessionStatus } from '../reconciler.js';
+import type { SuccessionDecision, SuccessionReconcilerOptions, SuccessionStatus } from './index.js';
 import { currentPreparation, emptyCapabilities, staleCause } from './preparation.js';
 import type { SuccessionReconcilerState } from './state.js';
 

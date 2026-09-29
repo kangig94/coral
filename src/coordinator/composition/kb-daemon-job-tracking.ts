@@ -4,7 +4,7 @@ import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { JobStore } from '../../jobs/store.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
-import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import { type createCoordinatorWorld } from './world.js';
 
 const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;

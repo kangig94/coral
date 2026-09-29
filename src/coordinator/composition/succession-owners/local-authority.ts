@@ -2,11 +2,9 @@ import { readSuccessionJobIdsByKind } from '../../../jobs/succession-coverage.js
 import { listProjectionSessionEntries } from '../../../sessions/projections.js';
 import { knownDiscussSources } from '../../../discuss/shell/session-read-service.js';
 import type { SuccessionOwner } from '../../succession/obligations.js';
-import type { createSuccessionOwners } from '../succession-owners.js';
+import type { SuccessionOwnersInput } from './index.js';
 
-export function createLocalAuthoritySuccessionOwners(
-  input: Parameters<typeof createSuccessionOwners>[0],
-): SuccessionOwner[] {
+export function createLocalAuthoritySuccessionOwners(input: SuccessionOwnersInput): SuccessionOwner[] {
   const {
     getProgressStore,
     getRecoveryQuarantineStore,

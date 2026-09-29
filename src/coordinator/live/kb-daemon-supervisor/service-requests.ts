@@ -1,9 +1,5 @@
 import type { Runtime } from '../../../runtime/ports.js';
-import type {
-  KbDaemonDisposalSettlement,
-  KbDaemonHealthSnapshot,
-  KbDaemonProtocolBindings,
-} from '../kb-daemon-supervisor.js';
+import type { KbDaemonDisposalSettlement, KbDaemonHealthSnapshot, KbDaemonProtocolBindings } from './index.js';
 import type { KbDaemonSupervisorState } from './state.js';
 import type { createKbDaemonHealth } from './health.js';
 import type { createKbDaemonRequests } from './requests.js';

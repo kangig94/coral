@@ -33,7 +33,7 @@ import type { RpcPorts } from '../../transport/rpc/ports.js';
 import type { TypedEventBus } from '../event-bus.js';
 import { type RunStartupRecoveryOrchestratorFn } from '../lifecycle.js';
 import { type LaunchCoordinator } from '../live/admission.js';
-import { type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import { type KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import { createCoordinatorCoreContext } from './core-context.js';
 import { createCoordinatorExecutionAssembly, prepareCoordinatorExecutionAssembly } from './execution-assembly.js';
 import { createExecutionServices } from './execution-services.js';

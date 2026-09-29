@@ -126,21 +126,21 @@ const COMPOSITION_DEBTS = new Map<string, CompositionDebt>([
     ),
   ],
   [
-    'src/coordinator/live/kb-daemon-supervisor.ts#createKbDaemonSupervisor.acceptKbDaemonKill',
+    'src/coordinator/live/kb-daemon-supervisor/index.ts#createKbDaemonSupervisor.acceptKbDaemonKill',
     debt(
       'daemon lifecycle callbacks retain and observe graceful-kill settlement while their public lifecycle result remains the daemon snapshot',
       'acceptKbDaemonKill consumes immediate failure and its settlement callback consumes scheduled outcomes',
     ),
   ],
   [
-    'src/coordinator/live/kb-daemon-supervisor.ts#createKbDaemonSupervisor.acceptKbDaemonKill.then',
+    'src/coordinator/live/kb-daemon-supervisor/index.ts#createKbDaemonSupervisor.acceptKbDaemonKill.then',
     debt(
       'the settlement callback consumes non-absence into the retained daemon supervisor failure state',
       'the daemon close observer or a later stopNow retry resolves the retained daemon obligation',
     ),
   ],
   [
-    'src/coordinator/live/kb-daemon-supervisor.ts#requestKbDaemonKill.then',
+    'src/coordinator/live/kb-daemon-supervisor/index.ts#requestKbDaemonKill.then',
     debt(
       'the settlement callback releases the completed attempt from kbDaemonKills single-flight ownership',
       'acceptKbDaemonKill consumes the settlement outcome',

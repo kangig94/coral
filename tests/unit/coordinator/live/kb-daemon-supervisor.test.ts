@@ -9,7 +9,7 @@ import {
   createKbDaemonSupervisor,
   type KbDaemonCurateAssistantHandler,
   type KbDaemonCurateUsageBudgetHandler,
-} from '#src/coordinator/live/kb-daemon-supervisor.js';
+} from '#src/coordinator/live/kb-daemon-supervisor/index.js';
 import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 import { CORAL_KB_EXTRA_LANGS_ENV } from '#src/kb/extra-langs.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';

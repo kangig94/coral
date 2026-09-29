@@ -12,7 +12,7 @@ import {
   type IncumbentWriterPorts,
   type SuccessionCommitPorts,
   type SuccessionCommitter,
-} from '#src/coordinator/succession/commit.js';
+} from '#src/coordinator/succession/commit/index.js';
 import { successionTargetKey } from '#src/coordinator/succession/protocol.js';
 import { recordRetirementDisposition } from '#src/coordinator/succession/retirement-disposition.js';
 import { dischargeDeadSuccessionAttempt } from '#src/coordinator/succession/startup.js';
@@ -23,8 +23,8 @@ import {
   type SuccessionDecision,
   type SuccessionLaunch,
   type SuccessionReconciler,
-} from '#src/coordinator/succession/reconciler.js';
-import { createDisabledKbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
+} from '#src/coordinator/succession/reconciler/index.js';
+import { createDisabledKbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor/index.js';
 import type { SuccessionRelease } from '#src/coordinator/shutdown.js';
 import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';

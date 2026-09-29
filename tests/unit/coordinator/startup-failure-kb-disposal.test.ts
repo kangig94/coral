@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
 import { createLifecycle } from '#src/coordinator/lifecycle.js';
-import type { KbDaemonDisposalSettlement } from '#src/coordinator/live/kb-daemon-supervisor.js';
+import type { KbDaemonDisposalSettlement } from '#src/coordinator/live/kb-daemon-supervisor/index.js';
 import type { BackendInfoRemovalResult } from '#src/infra/backend-discovery.js';
 
 type RaceOutcome<T> =

@@ -1,5 +1,5 @@
 import { rehydrateCoralSetupError } from '../../../runtime/errors.js';
-import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from '../kb-daemon-supervisor.js';
+import type { KbDaemonProtocolBindings, KbDaemonWireTypes } from './index.js';
 type KbDaemonAbortResult = KbDaemonWireTypes['abortResult'];
 type KbDaemonExpansionRequest = KbDaemonWireTypes['expansionRequest'];
 type KbDaemonExpansionResult = KbDaemonWireTypes['expansionResult'];

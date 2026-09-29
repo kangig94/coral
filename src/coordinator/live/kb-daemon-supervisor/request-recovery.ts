@@ -2,7 +2,7 @@ import { errorMessage } from '../../../infra/error-format.js';
 import type { KbDaemonSupervisorState } from './state.js';
 import { throwIfRequestAborted } from '../../../runtime/request-lease-identity.js';
 import { CoralSetupError } from '../../../runtime/errors.js';
-import type { KbDaemonWireTypes } from '../kb-daemon-supervisor.js';
+import type { KbDaemonWireTypes } from './index.js';
 type KbDaemonExpansionRequest = KbDaemonWireTypes['expansionRequest'];
 type KbDaemonExpansionResult = KbDaemonWireTypes['expansionResult'];
 type KbDaemonKbMutationRequest = KbDaemonWireTypes['mutationRequest'];
@@ -18,12 +18,8 @@ type RequestRecoveryDependencies = Pick<ReturnType<typeof createKbDaemonProbes>,
     'kbUnavailable' | 'sendKbReadRequest' | 'sendKbMutationRequest' | 'sendExpansionRpcRequest'
   >;
 
-export function createKbDaemonRequestRecovery(
-  state: KbDaemonSupervisorState,
-  dependencies: RequestRecoveryDependencies,
-) {
-  const { kbUnavailable, sendKbReadRequest, sendKbMutationRequest, sendExpansionRpcRequest, recoverForRequest } =
-    dependencies;
+function createKbDaemonReadRecovery(state: KbDaemonSupervisorState, dependencies: RequestRecoveryDependencies) {
+  const { kbUnavailable, sendKbReadRequest, recoverForRequest } = dependencies;
   const readKbNow = async (
     request: KbDaemonKbReadRequest,
     options: { signal?: AbortSignal } = {},
@@ -66,6 +62,11 @@ export function createKbDaemonRequestRecovery(
     }
   };
 
+  return readKbNow;
+}
+
+function createKbDaemonMutationRecovery(state: KbDaemonSupervisorState, dependencies: RequestRecoveryDependencies) {
+  const { kbUnavailable, sendKbMutationRequest, sendExpansionRpcRequest, recoverForRequest } = dependencies;
   const mutateKbNow = async (
     request: KbDaemonKbMutationRequest,
     signal?: AbortSignal,
@@ -124,5 +125,14 @@ export function createKbDaemonRequestRecovery(
     }
   };
 
+  return { mutateKbNow, expansionRpcNow };
+}
+
+export function createKbDaemonRequestRecovery(
+  state: KbDaemonSupervisorState,
+  dependencies: RequestRecoveryDependencies,
+) {
+  const readKbNow = createKbDaemonReadRecovery(state, dependencies);
+  const { mutateKbNow, expansionRpcNow } = createKbDaemonMutationRecovery(state, dependencies);
   return { readKbNow, mutateKbNow, expansionRpcNow };
 }

@@ -67,7 +67,7 @@ import {
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
 import { MAX_EVENT_STREAM_CONNECTIONS } from '#src/coordinator/composition/index.js';
-import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
+import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';

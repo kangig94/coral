@@ -2,7 +2,7 @@ import { formatError } from '../../../infra/error-format.js';
 import type { RetiringCustodyCertificate } from '../../services/recovery/epoch-closure.js';
 import { TRANSIENT_RETRY_BASE_MS } from '../attempt-retry.js';
 import type { SuccessionAttempt } from '../attempt-child.js';
-import type { CommitState, IncumbentWriterPorts, RetiringStoreProtection, SuccessionCommitPorts } from '../commit.js';
+import type { CommitState, IncumbentWriterPorts, RetiringStoreProtection, SuccessionCommitPorts } from './index.js';
 import type { SuccessionPreparation } from '../protocol.js';
 import { recordRetirementDisposition } from '../retirement-disposition.js';
 import { TransientCommitFailure } from './failure.js';

@@ -1,6 +1,6 @@
 import type { UpgradeIntent } from '../../../infra/upgrade-intent.js';
 import type { SuccessionAttempt } from '../attempt-child.js';
-import type { IncumbentWriterPorts, SuccessionCommitPorts } from '../commit.js';
+import type { IncumbentWriterPorts, SuccessionCommitPorts } from './index.js';
 
 const CONNECTION_HANDOVER_MS = 500;
 

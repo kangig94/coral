@@ -1,45 +1,45 @@
-import { formatError } from '../../infra/error-format.js';
-import type { StrictBundleManifest } from '../../infra/bundle-manifest.js';
-import type { TimerHandle } from '../../infra/port-types.js';
-import type { AttemptRetry, UpgradeIntent } from '../../infra/upgrade-intent.js';
-import type { Runtime } from '../../runtime/ports.js';
-import type { Database } from '../../store/db.js';
+import { formatError } from '../../../infra/error-format.js';
+import type { StrictBundleManifest } from '../../../infra/bundle-manifest.js';
+import type { TimerHandle } from '../../../infra/port-types.js';
+import type { AttemptRetry, UpgradeIntent } from '../../../infra/upgrade-intent.js';
+import type { Runtime } from '../../../runtime/ports.js';
+import type { Database } from '../../../store/db.js';
 import {
   acquireProviderOperationMutationAdmission,
   type ProviderOperationMutationAdmission,
-} from '../../store/provider-operation-journal.js';
+} from '../../../store/provider-operation-journal.js';
 import {
   handbackSuccessionWriterGeneration,
   SuccessionServingCommittedError,
   type SuccessionWriterEntitlement,
   type SuccessionWriterGeneration,
-} from '../../store/succession-writer-generation.js';
-import type { IpcListener } from '../../transport/ipc/server.js';
-import type { ChildPrincipalRegistry } from '../child-principal-registry.js';
-import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
-import type { LaunchCoordinator } from '../live/admission.js';
-import type { RetiringCustodyCertificate } from '../services/recovery/epoch-closure.js';
-import type { SuccessionRelease } from '../shutdown.js';
-import type { SuccessionAttempt } from './attempt-child.js';
-import type { SuccessionInterposition } from './interposition.js';
-import type { SuccessionPreparation } from './protocol.js';
-import type { SuccessionLaunch, SuccessionLaunchSettlement, SuccessionReconciler } from './reconciler.js';
-import { createCommitAttemptRecorder } from './commit/attempt-recording.js';
-import { createCommitAttemptReaper } from './commit/attempt-reaping.js';
-import { createCommitPause } from './commit/pause.js';
-import { createCommitReadiness } from './commit/readiness.js';
-import { createCommitWriterPreparation } from './commit/writer-preparation.js';
-import { createCommitWindowAdmission } from './commit/window-admission.js';
-import { createCommitServing } from './commit/serving.js';
-import { createFailedCommitWindow } from './commit/failed-window.js';
-import { createCommitRunner } from './commit/runner.js';
-import { createCommitReclaim } from './commit/reclaim.js';
-import { createSameBuildRecovery } from './commit/same-build-recovery.js';
-import { createCommitRecoverySettlement } from './commit/recovery-settlement.js';
-import { createCommitSupervisor } from './commit/supervision.js';
-import { createCommitLaunch } from './commit/launch.js';
-import { createCommitAuthority } from './commit/authority.js';
-import { createCommitFailurePolicy } from './commit/failure-policy.js';
+} from '../../../store/succession-writer-generation.js';
+import type { IpcListener } from '../../../transport/ipc/server.js';
+import type { ChildPrincipalRegistry } from '../../child-principal-registry.js';
+import type { KbDaemonSupervisor } from '../../live/kb-daemon-supervisor/index.js';
+import type { LaunchCoordinator } from '../../live/admission.js';
+import type { RetiringCustodyCertificate } from '../../services/recovery/epoch-closure.js';
+import type { SuccessionRelease } from '../../shutdown.js';
+import type { SuccessionAttempt } from '../attempt-child.js';
+import type { SuccessionInterposition } from '../interposition.js';
+import type { SuccessionPreparation } from '../protocol.js';
+import type { SuccessionLaunch, SuccessionLaunchSettlement, SuccessionReconciler } from '../reconciler/index.js';
+import { createCommitAttemptRecorder } from './attempt-recording.js';
+import { createCommitAttemptReaper } from './attempt-reaping.js';
+import { createCommitPause } from './pause.js';
+import { createCommitReadiness } from './readiness.js';
+import { createCommitWriterPreparation } from './writer-preparation.js';
+import { createCommitWindowAdmission } from './window-admission.js';
+import { createCommitServing } from './serving.js';
+import { createFailedCommitWindow } from './failed-window.js';
+import { createCommitRunner } from './runner.js';
+import { createCommitReclaim } from './reclaim.js';
+import { createSameBuildRecovery } from './same-build-recovery.js';
+import { createCommitRecoverySettlement } from './recovery-settlement.js';
+import { createCommitSupervisor } from './supervision.js';
+import { createCommitLaunch } from './launch.js';
+import { createCommitAuthority } from './authority.js';
+import { createCommitFailurePolicy } from './failure-policy.js';
 
 export type IncumbentWriterReclaim =
   | Readonly<{

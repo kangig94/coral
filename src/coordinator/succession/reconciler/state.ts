@@ -1,5 +1,5 @@
 import type { TimerHandle } from '../../../infra/port-types.js';
-import type { SuccessionLaunchSettlement } from '../reconciler.js';
+import type { SuccessionLaunchSettlement } from './index.js';
 
 export type SuccessionReconcilerState = {
   disposed: boolean;
