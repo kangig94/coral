@@ -26,7 +26,6 @@ export interface SuccessionAttemptPorts {
     readonly available: boolean;
     readonly connected: boolean;
     send(message: unknown, callback?: (error: Error | null) => void): void;
-    /** Sends a connection's handle; the handle is closed in this process once sent. */
     sendHandle(message: unknown, handle: Socket, callback: (error: Error | null) => void): void;
     on(event: 'disconnect', listener: () => void): void;
     on(event: 'message', listener: (message: unknown, handle: unknown) => void): void;

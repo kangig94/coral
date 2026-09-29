@@ -100,7 +100,6 @@ export function readControllerReceipts(
     });
 }
 
-/** Removes every recovery grant whose key is outside `retained`. */
 export function dischargeControllerRecoveryGrants(
   runtime: Pick<Runtime, 'storage'>,
   runDir: string,

@@ -98,9 +98,8 @@ export interface ProviderHostManager {
    */
   routeAppServerOperation(spec: ProviderServerSpec): ProviderProxyOperationAuthority | null;
   /**
-   * The live proxy set for `spec`, acquiring one first when none is live. Work that must outlive this
-   * coordinator cannot run in a coordinator-local host, so a launch waits for an independently living host
-   * and falls back to local placement only when none can be established within the acquisition's own deadline.
+   * Work that must outlive the coordinator requires an independently living host; local placement follows only
+   * after acquisition times out.
    */
   awaitAppServerOperationRoute?(
     spec: ProviderServerSpec,
@@ -109,7 +108,6 @@ export interface ProviderHostManager {
   providerProxySlotReleased?(routeKey: string): void;
 }
 
-/** What a proxy-set acquisition needs from the host it is acquired for: its executable identity. */
 type ProxySetAcquisitionTarget = Pick<ProviderHostEntry, 'identityKey' | 'spec'>;
 
 export type ProviderHostQuiescenceReceipt = Readonly<{

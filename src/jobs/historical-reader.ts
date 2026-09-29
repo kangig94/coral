@@ -110,7 +110,7 @@ export function retryUnknownHistoricalEpochs(index: JobLocationIndex): void {
         source.storage,
       );
     } catch {
-      // Another held epoch can still be retried on this pass.
+      // One held epoch must not prevent retrying others.
     }
   }
 }

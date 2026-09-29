@@ -161,10 +161,7 @@ export async function requestUpgradeFromContender(
   });
 }
 
-/**
- * Against a live, answering incumbent a contender exits as a redundant one does, unless it cannot read what it would
- * wait on. A deferral is recorded where status reads it, and names its exit there.
- */
+/** A live, answering incumbent defers a contender only when the contender can read what it must wait on. */
 export async function settleContenderUpgrade(
   runDir: string,
   waiting: LegacyUpgradeStart | Readonly<{ kind: 'incumbent-commit-capable' }>,

@@ -106,11 +106,7 @@ export const PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS =
 export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   runtime: Runtime;
   pluginRoot: string;
-  /**
-   * This build's retained whole plugin root, when it validates. Roles spawned from it keep their own bundle
-   * and assets after the installed plugin directory is replaced, which a host that outlives its coordinator
-   * across an upgrade depends on.
-   */
+  /** A host that outlives its coordinator across an upgrade must retain its own bundle and assets. */
   retainedHostRoot?: string | null;
   /** This coordinator's own identity — the set's `buildSetId`/`generation`/`flavor` are its own, since every
    *  role dispatches from the exact same backend artifact this coordinator is running. */

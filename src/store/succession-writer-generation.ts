@@ -40,14 +40,12 @@ type SuccessionWriterRecord = SuccessionWriterGeneration &
     refusedAttemptIds?: readonly string[];
   }>;
 
-/** Why an attempt the incumbent failed can no longer take the writer generation. */
 export class SuccessionAttemptRefusedError extends Error {
   constructor(attemptId: string) {
     super(`Succession attempt ${attemptId} was refused by its incumbent.`);
   }
 }
 
-/** Whether a failed attempt's successor won the writer guard first, or is fenced out of it. */
 export type SuccessionAttemptRefusal =
   | Readonly<{ kind: 'refused' }>
   | Readonly<{ kind: 'serving'; serving: CommittedSuccessionServing }>;

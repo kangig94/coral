@@ -128,7 +128,6 @@ export function closureCandidates(runtime: Runtime): ClosureCandidate[] {
   }
   const canonical = listStoreEpochs(runtime).flatMap((entry) => {
     if (entry.role === 'protected' || entry.resolved === null) return [];
-    // The coordinator is the new-build observer that binds an unmarked legacy directory's lineage.
     let epochKey: string;
     try {
       epochKey = entry.epochKey ?? readOrCreateEpochKey(runtime, entry.resolved);
@@ -280,10 +279,8 @@ function observeShippedDurableCliProcesses(
 }
 
 /**
- * How a certification decides a recorded durable-cli process's absence. Reaping may wait out a disappearance;
- * `confirmed-only` never waits and accepts only absence already confirmed. Confirmed absence stays decisive: an
- * exact incarnation never returns, and an emptied group ceases to exist, so a later group reusing its id holds none
- * of the recorded processes.
+ * Confirmed absence remains decisive: an exact incarnation never returns, and an emptied group no longer holds
+ * its recorded processes.
  */
 type AbsenceProof =
   | Readonly<{ kind: 'reap'; confirmed: Set<string> }>
@@ -354,7 +351,7 @@ async function decideRecordedAbsence(
         try {
           await closeProxySet(proxyInstanceId, identity, signal);
         } catch {
-          // Process observation below still decides whether custody is discharged.
+          // Failed proxy containment must not settle custody; process observation still decides.
         }
       }
     }
@@ -574,10 +571,7 @@ async function certifyRetiringEpochCustody(
   return settlement.executionDischarge === 'certified';
 }
 
-/**
- * Custody a retiring epoch discharged before its commit window opened. Only `certify` issues one; the window
- * re-checks it with `confirm`, which never waits on a process and refuses any obligation `certify` did not discharge.
- */
+/** Only `certify` may discharge custody; `confirm` must neither wait on a process nor discharge a new obligation. */
 export class RetiringCustodyCertificate {
   readonly #epochKey: string;
   readonly #confirmedAbsent: ReadonlySet<string>;

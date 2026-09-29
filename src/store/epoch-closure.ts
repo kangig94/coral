@@ -122,10 +122,7 @@ export function observeEpochClosure(
     : { kind: 'unreadable', path };
 }
 
-/**
- * Moves an unreadable closure aside, bytes intact, so the epoch can be certified again from its custody evidence.
- * Kept in place, it would retain the epoch with no event able to end the hold. False leaves it in place.
- */
+/** An unreadable closure must be moved aside intact before recertification; it must never be overwritten. */
 export function setAsideUnreadableEpochClosure(runtime: Runtime, stateRoot: string, epochKey: string): boolean {
   const path = closurePath(stateRoot, epochKey);
   try {

@@ -20,7 +20,6 @@ export function validatedBuild(root: string): StrictBundleManifest | null {
   return parsed.data;
 }
 
-/** Find validated installed and retained roots; the caller applies controller eligibility before choosing. */
 export function relaunchRoots(runDir: string, original: StrictBundleManifest | null): string[] {
   let installedRoots: string[];
   try {

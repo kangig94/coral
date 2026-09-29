@@ -19,10 +19,8 @@ import { readProviderOperation } from '../../../store/provider-operation-journal
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import type { ProviderProxySetIdentity } from './identity.js';
 
-/** The contract generation of the `provider-operations` succession owner. */
 export const PROVIDER_OPERATIONS_TRANSFER_GENERATION = 1;
 
-/** A saga phase whose execution already runs in the host and whose next step belongs to whoever controls it. */
 const TRANSFERABLE_OPERATION_PHASES = new Set<ProviderOperationRecord['phase']>(['executing', 'settlement-pending']);
 
 export function providerOperationPhaseTransfers(phase: ProviderOperationRecord['phase']): boolean {
@@ -42,10 +40,7 @@ const transferredSetSchema = z
 
 export type TransferredProviderProxySet = z.infer<typeof transferredSetSchema>;
 
-/**
- * The `provider-proxy-sets` receipt payload. Each set names the recovery grant its host holds for the
- * attempt; the secret stays in the set's capsule, which only this user's coordinators can read.
- */
+/** The recovery grant secret must stay in the set capsule, readable only by this user’s coordinators. */
 const providerProxyControllerTransferSchema = z
   .object({
     version: z.literal(1),
@@ -58,7 +53,6 @@ const providerProxyControllerTransferSchema = z
 
 export type ProviderProxyControllerTransfer = z.infer<typeof providerProxyControllerTransferSchema>;
 
-/** The `provider-operations` receipt payload: the saga rows whose control travels with their sets. */
 const providerOperationTransferSchema = z
   .object({
     version: z.literal(1),
@@ -107,7 +101,7 @@ export function transferredSetOf(
   };
 }
 
-/** One id for the whole receipt, recomputable from its sets, so a verifier needs nothing the receipt omits. */
+/** A verifier must be able to recompute the receipt id from its sets alone. */
 export function controllerTransferRecoveryGrantId(
   sets: readonly TransferredProviderProxySet[],
   sha256: (value: string) => string,
@@ -129,11 +123,7 @@ function capsuleNamesTransferredSet(capsule: RedeemableHandoffCapsule, set: Tran
   );
 }
 
-/**
- * Whether `transfer` hands the set this capsule describes to `ownBuildSetId`. The capsule must still name the
- * incumbent as controller and hold the very grant the host authorized the transfer on: a capsule a later
- * controller rewrote is that controller's, and nothing the old receipt says can hand it on again.
- */
+/** The capsule must still name the incumbent controller and hold the grant the host authorized for this transfer. */
 export function controllerTransferHandsCapsuleTo(
   transfer: ProviderProxyControllerTransfer,
   capsule: RedeemableHandoffCapsule,
@@ -147,10 +137,8 @@ export function controllerTransferHandsCapsuleTo(
 }
 
 /**
- * Reads the capsule of every transferred set and requires it to hold the recorded recovery grant under an
- * accepted controller build. Before the successor serves only the incumbent's build is accepted: that is the
- * grant a failed attempt's recovery redeems, so without it the transfer has no exit back. Once the successor
- * serves, its own build may already have taken the grant over.
+ * Before serving, only the incumbent build’s grant is accepted so a failed attempt remains recoverable. After
+ * serving, the successor may have taken the grant over.
  */
 export function controllerTransferRecoveryGrantsVerify(
   runtime: Pick<Runtime, 'storage' | 'ids' | 'paths'>,
@@ -193,11 +181,8 @@ export function controllerTransferRecoveryGrantsVerify(
 }
 
 /**
- * The jobs a `provider-operations` receipt hands over, each still a transferable saga row on a set the
- * matching `provider-proxy-sets` receipt names. Before the successor serves nothing may have moved — the
- * incumbent's writers are parked — so a row that disappeared or moved on means the receipt no longer describes
- * the custody it hands over, and the answer is null. Once the successor serves, its own settlement may have
- * retired a row, and that job is no longer the receipt's to hand over.
+ * Before serving, a missing or moved saga row invalidates the receipt; after serving, the successor may have
+ * retired it.
  */
 export function verifyProviderOperationTransfer(
   db: Database,

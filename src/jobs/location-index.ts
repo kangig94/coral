@@ -391,9 +391,8 @@ export class JobLocationIndex {
   }
 
   /**
-   * Retires a location no committed launch backs. The caller must hold the epoch's store write lock while it
-   * observes that no launch event exists: `beforeAppend` registers inside the launch's own write transaction, so
-   * under that lock a missing event means the launch rolled back or its writer died, never that it is in flight.
+   * The caller must hold the epoch store write lock while proving no launch event exists; without it, a launch may
+   * still be in flight.
    */
   retireNeverAccepted(jobId: string, epochKey: string): void {
     this.withRevisionLock(epochKey, () => {
@@ -436,8 +435,8 @@ export class JobLocationIndex {
   }
 
   /**
-   * Readable records, plus every record this build cannot decode — a newer build's, say — reported by file with
-   * the epoch it names, or `null` when even that is unreadable and it may belong to any epoch.
+   * Records this build cannot decode must be reported by file and epoch, or with null when even the epoch is
+   * unreadable.
    */
   private scan(): { readable: JobLocation[]; unreadable: Array<{ file: string; epochKey: string | null }> } {
     const dir = join(this.root, 'jobs');
@@ -471,7 +470,7 @@ export class JobLocationIndex {
     return this.locations().filter((location) => location.epochKey === epochKey);
   }
 
-  /** Records this build cannot decode that may belong to `epochKey`; each keeps that epoch from being certified. */
+  /** An unreadable location that may belong to an epoch must keep that epoch from being certified. */
   private unreadableLocationsFor(epochKey: string): string[] {
     return this.scan()
       .unreadable.filter((entry) => entry.epochKey === null || entry.epochKey === epochKey)

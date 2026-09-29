@@ -66,21 +66,8 @@ import type {
 } from './recorded-containment-reaper.js';
 
 /**
- * The branch of proxy-set acquisition that redeems a predecessor's continuously recoverable set instead of
- * spawning a new one. Fresh acquisition installs the role digests and durable capsule before publishing the
- * set; this file is the read half.
- *
- * The capsule is addressable, never discovered: its address takes `flavor`/`generation` from this successor (a
- * grant is build-bound) and `buildSetId`/`hostFingerprint`/`proxyInstanceId` from the locator, so no directory is
- * scanned. Absent, stale, or wrong-identity capsules mean no credential exists for this exact address. Redemption and proof failures
- * remain errors so transport ambiguity cannot be mistaken for authority absence.
- *
- * Lives in `coordinator/services/`, not `coordinator/live/provider-hosts/` (where `DefaultProviderHostManager`,
- * this module's only production caller, itself lives): it composes durable operation locators with a live
- * control capability, which
- * `coordinator/live/**` may not do freely (`architecture-layering.test.ts`'s coordinator-contract-entrypoint
- * rule) — the same reason `provider-proxy-operation-activation.ts` sits here rather than beside the route it
- * backs.
+ * Absent, stale, or wrong-identity capsules grant no authority at that address. Redemption and proof failures
+ * must remain errors so transport ambiguity cannot be mistaken for authority absence.
  */
 
 const INHERITANCE_REDEMPTION_DEADLINE_MS = 45_000;
@@ -286,25 +273,12 @@ const NOTHING_TO_INHERIT_REASON = 'no capsule at this address';
 export type ProviderProxySetInheritanceRefusal = 'other-build' | 'unreadable-identity';
 
 /**
- * Whether this build may inherit a set, and why not when it may not. One home because the rule is enforced at
- * two entry points that cannot be merged — discovery classifying a capsule it found, and a claimed record
- * reading the capsule at its derived address — and the two disagreeing is how a foreign set gets dialed.
- *
- * Dialing a set whose grant does not authorize this build is not a failed attempt but a fatal one: the host
- * answers `identity_mismatch`, and the recovery policy retires that fatally — taking this coordinator down over
- * a set it does not control.
- *
- * Host provenance never decides it. The capsule names the build its grant authorizes (V3 implicitly its host's
- * own), and an accepted succession receipt may hand the set to the successor it names; a capsule this build
- * cannot derive a set identity from is represented, never dialed.
+ * A set whose grant does not authorize this build must never be dialed. A capsule without a derivable set
+ * identity may be represented only.
  */
 export type ControllerTransferAcceptance = 'not-accepted' | 'before-serving' | 'served' | 'unconfirmed';
 
-/**
- * How this build may take a set over. `transfer-before-serving` redeems without taking the grant over: the
- * grant must keep authorizing the incumbent's build until this successor serves, because that is the recovery
- * path of an attempt that fails before then.
- */
+/** Before the successor serves, transfer must keep the incumbent build’s recovery grant valid. */
 export type ProviderProxySetInheritanceRoute = 'controller' | 'transfer-before-serving' | 'transfer-served';
 
 export type ProviderProxySetInheritanceVerdict =
@@ -669,7 +643,6 @@ export async function attemptProviderProxySetInheritance(
   throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`);
 }
 
-/** A discovered capsule was already classified inheritable; this recovers which route made it so. */
 function discoveredCapsuleRoute(
   capsule: RedeemableHandoffCapsule,
   deps: ProviderProxySetInheritanceDeps,

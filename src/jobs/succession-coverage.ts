@@ -18,10 +18,7 @@ export function readSuccessionLiveJobIds(
   return [...new Set([...rows.map((row) => row.job_id), ...pendingLaunchIds, ...carrierIds, ...custodyJobIds])];
 }
 
-/**
- * Jobs of the serving epoch whose recorded external effect is neither bound to an identity nor proven absent: a
- * process may exist that no projection row still names. An unreadable entry may be any of them, so it throws.
- */
+/** An unreadable entry may name an unbound external effect, so it must not certify coverage. */
 export function readSuccessionCustodyJobIds(
   entries: readonly CustodyEntry[],
   epoch: Readonly<{ epochPath: string; lineageKey: string | null }>,

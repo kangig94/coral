@@ -29,10 +29,7 @@ export function asReadonlyDatabase(db: Database): ReadonlyDatabase {
   return db as unknown as ReadonlyDatabase;
 }
 
-/**
- * Presents a read-only connection where a full `Database` handle is required. SQLite refuses every write
- * through it, so a holder rebound to it stops writing without its callers changing type.
- */
+/** A read-only connection must refuse writes even when rebound to a full `Database` handle. */
 export function asDatabase(db: ReadonlyDatabase): Database {
   return db as unknown as Database;
 }

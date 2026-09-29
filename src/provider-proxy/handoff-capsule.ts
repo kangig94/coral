@@ -266,21 +266,8 @@ function durableProcessIncarnation() {
 }
 
 /**
- * Shipped in v0.10.6 through v0.10.8, and read-only from here on: nothing writes a V2 again.
- *
- * Its three process fields are **seconds**, derived as `/proc/stat` btime plus the process's start ticks.
- * That derivation was unsound — btime is recomputed on every read, so the value is an identity plus a
- * probe-time noise sample — which is why V3 exists. The numbers are kept in the schema exactly as they
- * shipped rather than renamed in place, because a build that renames a field while keeping its version
- * number leaves two incompatible shapes claiming to be the same thing, and the reader that then rejects
- * one of them cannot boot at all.
- *
- * A decoded V2 yields **address only**. Its seconds must never be carried into a `ProcessIncarnation`:
- * `assertProcessIdentity` (`infra/process-containment.ts`) accepts any non-empty string, so `String(secs)`
- * would pass, and `observeProcessIdentity` would then compare it against a real token, take the
- * "read something, and it differs" branch, and report a **live** process as absent — minting a
- * disappearance receipt for a running set. `providerProxySetIdentityFromCapsule` therefore accepts only
- * generations that record incarnations, and the compiler is what keeps that true.
+ * V2 process fields are seconds, not incarnation tokens; carrying them into `ProcessIncarnation` could report a
+ * live process as absent.
  */
 export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   .omit({ version: true })
@@ -297,7 +284,7 @@ export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   })
   .strict();
 
-/** V2's field set with the process identity carried as opaque incarnation tokens. Read-only: V4 superseded it. */
+/** V3 capsules are read-only; writers must emit V4. */
 export const handoffCapsuleV3Schema = handoffCapsuleV1Schema
   .omit({ version: true })
   .extend({
@@ -314,9 +301,8 @@ export const handoffCapsuleV3Schema = handoffCapsuleV1Schema
   .strict();
 
 /**
- * V3 plus the build whose coordinators the capsule's grant authorizes. A V3 capsule implies its host's own
- * build; once a set has been handed to a controller of another build, that implication is false, and a
- * capsule that could not say so would let the host's build dial a set it no longer controls.
+ * After transfer, a capsule must name the build whose coordinators its grant authorizes; host provenance alone
+ * cannot establish controller authority.
  */
 export const handoffCapsuleV4Schema = handoffCapsuleV3Schema
   .omit({ version: true })
@@ -372,8 +358,8 @@ export function currentHandoffCapsulePath(
 }
 
 /**
- * Where a capsule read at `path` goes when this build rewrites it. A rewrite emits only the current generation,
- * and current-generation bytes under an older generation's name are what an older build opens and cannot parse.
+ * A rewrite must use the current-generation address; older builds cannot parse current-generation bytes at an
+ * older address.
  */
 export function currentHandoffCapsulePathBeside(
   path: string,
@@ -395,7 +381,6 @@ export type HandoffCapsuleV2 = z.output<typeof handoffCapsuleV2Schema>;
 export type HandoffCapsuleV3 = z.output<typeof handoffCapsuleV3Schema>;
 export type HandoffCapsuleV4 = z.output<typeof handoffCapsuleV4Schema>;
 export type HandoffCapsule = HandoffCapsuleV1 | HandoffCapsuleV2 | HandoffCapsuleV3 | HandoffCapsuleV4;
-/** The generations whose process identity this build can act on. */
 export type RedeemableHandoffCapsule = HandoffCapsuleV3 | HandoffCapsuleV4;
 
 /** The build whose coordinators a capsule's grant authorizes: its host's own build until a transfer says otherwise. */
@@ -538,16 +523,8 @@ function assertPrivateHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEn
 }
 
 /**
- * Writes the successor half of a grant durably: one strict mode-0600, at-most-64-KiB capsule per proxy,
- * atomically renamed into place and fsynced (`StoragePort.writeAtomicDurableSync`). A grant with no durable
- * capsule is unredeemable no matter how many authorities acknowledge it, so this is the one write in the
- * install sequence that must survive a
- * `SIGKILL` landing the instant after it returns.
- *
- * V4 only, at the type and again at runtime. The union stays readable so older capsules can be recognised
- * and refused, but "older generations are read-only" is a property of this boundary rather than of a comment —
- * a writer that accepts the whole readable union is one edit away from emitting a shape it cannot itself
- * verify. Legacy shapes belong in test fixtures written as literal bytes, never in what production can produce.
+ * An installed grant must have a durable capsule before it can be redeemed. Writers must emit V4 only; legacy
+ * generations remain read-only.
  */
 export function writeHandoffCapsuleFile(
   path: string,
@@ -625,7 +602,6 @@ export type GrantRedemption = Readonly<{
   grant: InstalledGrant;
   redemptionReceipt: string;
   successor: ControlTenancyHolder;
-  /** The build the redeemer was admitted under, which becomes the set's controller build. */
   successorBuild: ControllerBuild;
 }>;
 
@@ -715,11 +691,7 @@ export interface GrantRegistry {
     binding: GrantBinding;
   }): GrantRedemption;
   redemption(): GrantRedemption | null;
-  /**
-   * Records a redemption another role verified. Only a role that never sees the secret uses it — the reaper,
-   * which learns of a redemption solely through its paired guardian — so that the redeemer's own reinstall can
-   * replace the grant here exactly as it does where the secret was checked.
-   */
+  /** Only a role that never sees the secret may record another role’s verified redemption. */
   recordForwardedRedemption(
     redemption: Readonly<{
       grantId: string;
@@ -753,7 +725,6 @@ export function createGrantRegistry(
     left.orphanTimeoutMs === right.orphanTimeoutMs &&
     sameControllerBuild(left.controllerBuild, right.controllerBuild);
 
-  /** Every field a redeemer names, and nothing only an installer names. */
   const sameRedeemedSet = (left: InstalledGrant, right: GrantBinding): boolean =>
     left.generation === right.generation &&
     left.flavor === right.flavor &&

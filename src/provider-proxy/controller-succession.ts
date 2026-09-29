@@ -9,11 +9,7 @@ import {
   type CoordinatorIdentity,
 } from './protocol.js';
 
-/**
- * The controller-succession generation this build's guardian, reaper, and proxy accept, and the one its
- * coordinator drives. It is also the contract generation of the `provider-proxy-sets` succession owner, so a
- * successor build declares it in its capability file to say it can take these hosts over.
- */
+/** A successor build must declare the controller-succession contract generation it can accept. */
 export const PROVIDER_PROXY_CONTROL_GENERATION = 1;
 
 /**
@@ -37,11 +33,7 @@ export function sameControllerBuild(left: ControllerBuild, right: ControllerBuil
   return left.generation === right.generation && left.flavor === right.flavor && left.buildSetId === right.buildSetId;
 }
 
-/**
- * `guardian.controller-transfer.v1` and `controller-transfer.v1`'s shared request: the current controller
- * authorizes one successor build to redeem the recovery grant the host already holds. Naming that grant is how
- * the host proves it recorded the attempt's recovery grant before it accepted the transfer.
- */
+/** The host must already hold the named recovery grant before accepting controller transfer. */
 export const controllerTransferParamsSchema = z
   .object({
     grantId: canonicalUuidSchema,
@@ -81,7 +73,7 @@ export interface ControllerBuildLedger {
   buildOf(holder: ControlTenancyHolder | null): ControllerBuild;
 }
 
-/** Only the most recent admissions matter: every earlier holder has already been displaced. */
+/** A displaced control holder must not retain admission authority. */
 const CONTROLLER_BUILD_LEDGER_CAPACITY = 8;
 
 export function createControllerBuildLedger(hostBuild: ControllerBuild): ControllerBuildLedger {

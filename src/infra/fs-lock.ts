@@ -37,7 +37,6 @@ export type DirectoryLockOwner = Readonly<{
   pidNamespace: string | null;
 }>;
 
-/** Who this process records as a lock's owner, and how it observes an owner another process recorded. */
 export type DirectoryLockOwnerProbe = Readonly<{
   self: DirectoryLockOwner;
   observe: RecordedProcessObserver;

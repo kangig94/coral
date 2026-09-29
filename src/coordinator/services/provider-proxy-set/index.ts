@@ -286,10 +286,7 @@ type EstablishedSlot = {
   operatorExitGeneration: number;
   protection: ProviderProxySetProtection;
   containmentCommitStatus: 'not-sent' | 'outcome-unknown' | null;
-  /**
-   * Set while this coordinator has released control so a successor it authorized can take the set over. The
-   * slot keeps its kind for status, but routes nothing and answers no incident until reclaimed or released.
-   */
+  /** While control is released, the slot must route nothing and answer no incident until reclaimed or released. */
   controllerTransfer: Readonly<{ attemptId: string }> | null;
 };
 
@@ -721,11 +718,7 @@ type AbsenceDeliveryState =
   | Readonly<{ kind: 'fatal'; error: ProviderProxySetLifecycleFatalError }>;
 
 export type ProviderProxySetLifecycleDeps = Readonly<{
-  /**
-   * This coordinator's own build set. Discovery needs it to tell a capsule it may redeem from one it may
-   * only represent: redemption is bound at the role to the build a grant authorizes, so dialing a set another
-   * build controls is not a failed attempt but a fatal one.
-   */
+  /** Dialing a set another build controls is fatal rather than a failed acquisition attempt. */
   buildSetId: string;
   /** An accepted succession receipt may hand a set another build controls to this one. */
   acceptsControllerTransfer?(capsule: RedeemableHandoffCapsule): ControllerTransferAcceptance;
@@ -2252,16 +2245,14 @@ export class ProviderProxySetLifecycle {
   }
 
   /**
-   * Releases control of every set this coordinator serves so the successor of `attemptId`, which each host has
-   * already authorized, can redeem it. Nothing is torn down: the hosts keep running and buffer their events,
-   * and this coordinator keeps the authority it needs to reclaim them if the attempt fails before it serves.
+   * Released hosts must keep running and buffering events; the incumbent must retain authority to reclaim them if
+   * the attempt fails before serving.
    */
   async releaseControlForTransfer(attemptId: string): Promise<readonly ProviderProxySetIdentity[]> {
     const released: EstablishedSlot[] = [];
     for (const slot of this.#slots.values()) {
       if ((slot.kind !== 'available' && slot.kind !== 'draining') || slot.controllerTransfer !== null) continue;
       slot.controllerTransfer = { attemptId };
-      // A new token disowns every fault and incident the closing control still reports.
       slot.attemptToken += 1;
       this.#removeRoute(slot);
       slot.authority.stopHeartbeats();
@@ -2272,11 +2263,7 @@ export class ProviderProxySetLifecycle {
     return released.map((slot) => slot.identity);
   }
 
-  /**
-   * Takes back every released set through its own recovery grant, which each host kept authorizing this build
-   * while the attempt was open. A successor still holding control refuses the redemption; the reattachment
-   * hold then retries until that successor's control lapses.
-   */
+  /** A successor still holding control refuses redemption; reattachment must retry until that control lapses. */
   reclaimTransferredControl(): void {
     for (const slot of this.#slots.values()) {
       if ((slot.kind !== 'available' && slot.kind !== 'draining') || slot.controllerTransfer === null) continue;
@@ -3728,18 +3715,8 @@ export class ProviderProxySetLifecycle {
     this.#capsuleAddresses.set(addressKey, path);
     this.#capsuleGrants.set(capsule.grantId, path);
 
-    // Decided before anything is attached to a claim, because a capsule that names a durable operation is
-    // exactly the capsule an upgrade finds, and attaching it is what makes it get dialed.
-    //
-    // Reaching a role is what makes an un-inheritable capsule fatal rather than merely useless.
-    // `handoff.redeem` is gated on the build a grant authorizes, so a set another build controls answers
-    // `identity_mismatch`; the recovery policy reads that as `refused`, and `refused` retires fatally
-    // *before* any seam can weigh the absence evidence gathered beside it — taking this whole coordinator
-    // down over a set it never owned.
-    //
-    // A V2 capsule is the same problem from the other side: this build can reach it, but its process
-    // identity is in seconds it can no longer verify, and carrying those numbers into a token would make a
-    // live process read as absent.
+    // A capsule naming a durable operation must be classified before attachment. Dialing a foreign-controlled set
+    // can fatally retire this coordinator; V2 process seconds cannot be verified as incarnation tokens.
     const classified = this.#classifyCapsule(capsule);
     const uninheritable = classified.kind === 'uninheritable' ? classified.reason : null;
 

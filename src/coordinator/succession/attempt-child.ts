@@ -396,7 +396,6 @@ export async function receiveSuccessionAttemptChild(
   let releaseTimedOut = false;
   const returningSockets = new Set<Socket>();
   const returnSends = new Set<Promise<void>>();
-  // Set by the commit window's deadline, which also ends every park; before it, the incumbent is still serving.
   let windowOpen = false;
   const returnConnection = (connection: ParkedConnection): Promise<void> => {
     const returned = new Promise<void>((resolve) => {

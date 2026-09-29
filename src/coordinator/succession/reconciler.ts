@@ -60,10 +60,7 @@ type TargetRequest = Readonly<{ requestId: string; target: Target }>;
 export type SuccessionReconcilerOptions = Readonly<{
   runtime: Pick<Runtime, 'time' | 'ids' | 'storage'>;
   runDir: string;
-  /**
-   * This process's own identity. Every write of it into the intent reads this one source, so a late-settling
-   * incarnation never makes the process mistake its own intent for another incumbent's.
-   */
+  /** Every intent write of this process’s identity must use one source so a late incarnation cannot appear foreign. */
   incumbent: () => IncumbentIdentity;
   runningBuildSetId?: string;
   owners: readonly SuccessionOwner[];
@@ -90,9 +87,8 @@ export type SuccessionReconcilerOptions = Readonly<{
 }>;
 
 /**
- * How a launched attempt's commit ended while this process lives. `clear-owed` carries the write that clears the
- * attempt from the intent, which the commit could not land after reclaiming in place; until it lands, the intent
- * still claims a commit that nothing supervises.
+ * `clear-owed` must persist until the write clearing the attempt lands; otherwise the intent claims an
+ * unsupervised commit.
  */
 export type SuccessionLaunchSettlement =
   | Readonly<{ kind: 'settled' }>

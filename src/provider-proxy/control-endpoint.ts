@@ -353,7 +353,6 @@ type ActiveControlAuthorizationRecord = Readonly<{
 
 const activeControlAuthorizationRecords = new WeakMap<object, ActiveControlAuthorizationRecord>();
 
-/** The holder whose admitted tenancy made the call `authorization` was minted for. */
 export function activeControlHolder(authorization: ActiveControlAuthorization): ControlTenancyHolder | null {
   return activeControlAuthorizationRecords.get(authorization)?.holder ?? null;
 }

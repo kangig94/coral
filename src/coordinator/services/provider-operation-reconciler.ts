@@ -360,7 +360,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
   batchSize?: number;
   onFatal(error: ProviderOperationReconcilerFatalError): void;
   onError?: (message: string) => void;
-  /** A removed record is an obligation change its observers may be waiting on, so it is reported after the delete. */
+  /** A removed record must be reported after deletion because observers may be waiting on that obligation change. */
   onRecordRemoved?: () => void;
 }>;
 

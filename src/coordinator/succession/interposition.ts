@@ -1,7 +1,3 @@
-/**
- * Named points of the succession protocol where a test harness may interpose. Production composes
- * `NO_SUCCESSION_INTERPOSITION`, so every point proceeds at once and nothing here is reachable from ambient state.
- */
 export type SuccessionInterpositionPoint =
   | 'successor-writer-fence'
   | 'successor-committed-open'

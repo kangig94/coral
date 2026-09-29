@@ -48,17 +48,13 @@ const INSTALL_RETRY_MAX_MS = 30_000;
 export type ProviderHostTransferPorts = Readonly<{
   runtime: Runtime;
   flavor: 'prod' | 'dev';
-  /** This coordinator's own build, which is the controller build of every set it serves. */
   buildSetId: string;
   lifecycle: () => ProviderProxySetLifecycle | null;
   db: () => Database;
-  /** Whether a job already reached its terminal, so no host is left to take over for it. */
   jobSettled: (jobId: string) => boolean;
-  /** Jobs with an in-process operation this coordinator is still driving. */
   localOperationJobIds: () => readonly string[];
   /** A host that keeps running after its install is replaced must run from a root that outlives it. */
   hostRootRetained: (buildSetId: string) => boolean;
-  /** The attempt this process runs as the successor of, when it is one. */
   attemptId: () => string | null;
   /** Hosts move only with the exact epoch their saga rows live in, which a successor of another format cannot open. */
   targetChangesStoreFormat: () => boolean;
@@ -239,7 +235,6 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
   transfersHosts(preparation: SuccessionPreparation): boolean;
   verifyReceipts(preparation: SuccessionPreparation, committedSuccessorServed?: boolean): readonly string[];
   adoptReceipts(preparation: SuccessionPreparation): void;
-  /** The jobs a `provider-operations` receipt names, without re-reading the journal they may have moved on in. */
   transferredJobIds(preparation: SuccessionPreparation): readonly string[];
   completeTransfers(): Promise<void>;
 }> {

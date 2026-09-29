@@ -44,7 +44,6 @@ export function retainedBuildRoot(runtime: Runtime, buildSetId: string): string 
   return join(dirname(runtime.paths.coral.coordinator.runDir), 'builds', buildSetId);
 }
 
-/** The retained root of `buildSetId` when its own manifest names that build and its bundles still validate. */
 export function validatedRetainedBuildRoot(runtime: Runtime, buildSetId: string): string | null {
   const root = retainedBuildRoot(runtime, buildSetId);
   const bundleDir = join(root, 'bridge');
@@ -68,10 +67,7 @@ export function validatedRunningBuildRoot(
   return null;
 }
 
-/**
- * Retains the running build as a whole plugin root whose `bridge/` is the bundle directory this process runs from.
- * A retained copy that no longer validates is replaced, because nothing but this process will ever repair it.
- */
+/** A retained copy that no longer validates must be replaced; no other process will repair it. */
 export function pinRunningBuildRoot(runtime: Runtime, pluginRoot: string, manifest: StrictBundleManifest): string {
   const runningBundleDir = resolveRunningBundleDir(pluginRoot);
   if (runningBundleDir === null) throw new Error('Running bundle directory is unobservable.');

@@ -17,14 +17,14 @@ export interface ActiveJobAccess {
 const HISTORICAL_POLL_MS = 250;
 
 /**
- * Whether a store written before the epoch layout exists. Only its existence may be observed: its jobs are never
- * indexed, opened, or read, so an id absent from every epoch may still name one of them.
+ * A store predating epoch layout may only be observed for existence; its jobs must never be indexed, opened, or
+ * read.
  */
 export type PreEpochHistoryProbe = () => boolean;
 
 /**
- * Whether anything could still record a terminal in a superseded epoch. A missing historical source cannot
- * decide closure; a conclusive read must establish the job's outcome before this decision can finalize it.
+ * A missing historical source cannot decide closure; a conclusive read must establish the job outcome before
+ * finalization.
  */
 export type HistoricalClosureProbe = (epochKey: string) => 'pending' | 'decided';
 
@@ -50,7 +50,6 @@ export class JobAddressing {
     return this.preEpochHistoryExists() ? 'pre-epoch-history' : 'not-found';
   }
 
-  /** A historical job still without a terminal after a refresh, in an epoch whose closure is decided. */
   private outcomeUnrecoverableLocation(location: JobLocation): boolean {
     if (location.epochKey === this.active.epochKey()) return false;
     const read = refreshHistoricalEpoch(this.locations, location.epochKey, [location.jobId]);
@@ -366,7 +365,6 @@ export class JobAddressing {
         }
         for (const jobId of request.jobIds) {
           const location = locations.find((candidate) => candidate.jobId === jobId);
-          // The active epoch's own stream replays its jobs' progress before their terminals.
           if (location === undefined || location.epochKey === activeEpochKey) continue;
           const latest = this.locations.read(jobId);
           if (latest === null) continue;

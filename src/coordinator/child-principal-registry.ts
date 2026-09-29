@@ -282,7 +282,6 @@ export class ChildPrincipalRegistry {
     );
   }
 
-  /** Removes the nonce grants of every attempt outside `retainedAttemptIds`. */
   dischargeGrants(retainedAttemptIds: ReadonlySet<string>): void {
     this.ledger?.dischargeGrants(retainedAttemptIds);
   }

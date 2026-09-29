@@ -43,10 +43,7 @@ export function attemptRetryAtMs(intent: UpgradeIntent): number | null {
   return backoffs.length === 0 ? null : Math.max(...backoffs);
 }
 
-/**
- * The retry condition a failed attempt leaves on the intent's target. Transient failures are counted on the
- * intent, so a restart neither resets the backoff nor the bound; exhausting the bound closes the failed request.
- */
+/** Transient failures are counted on the intent, so a restart must not reset the backoff or bound. */
 export function failedAttemptRetry(
   intent: UpgradeIntent,
   retry: AttemptRetry,

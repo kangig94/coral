@@ -107,7 +107,6 @@ export const kbDaemonRequestContextWireSchema = z
   })
   .strict();
 
-/** The writer generation the parent hands back to the daemon on `writer.reclaim`. */
 export const kbDaemonWriterReclaimParamsSchema = z.object({
   generation: z.number().int().refine(Number.isSafeInteger),
   storeRoot: z.string(),

@@ -1385,16 +1385,23 @@ async function superviseActiveChild(input: {
     pending.value = null;
   }
   clearInterval(requestPoll);
-  if (result.served) settleRequests(record, owner.current, current.manifest, true);
-  if (
+  return releaseAfterSettledServedExit(record, owner, current.manifest, result);
+}
+
+function releaseAfterSettledServedExit(
+  record: CoordinatorLaunchRecord,
+  owner: OwnerHandle,
+  manifest: StrictBundleManifest,
+  result: WatchResult,
+): boolean {
+  if (result.served) settleRequests(record, owner.current, manifest, true);
+  return (
     result.served &&
     result.exitCode === 0 &&
     !result.wedged &&
-    record.read().requests.every((request) => request.status === 'completed' || request.status === 'unavailable')
-  ) {
-    if (record.release(owner.current)) return true;
-  }
-  return false;
+    record.read().requests.every((request) => request.status === 'completed' || request.status === 'unavailable') &&
+    record.release(owner.current)
+  );
 }
 
 async function superviseAdoptedChild(input: {
@@ -1450,16 +1457,7 @@ async function superviseAdoptedChild(input: {
     clearInterval(requestPoll);
     repairBridge?.close();
   }
-  if (result.served) settleRequests(record, owner.current, current.running.manifest, true);
-  if (
-    result.served &&
-    result.exitCode === 0 &&
-    !result.wedged &&
-    record.read().requests.every((entry) => entry.status === 'completed' || entry.status === 'unavailable') &&
-    record.release(owner.current)
-  )
-    return true;
-  return false;
+  return releaseAfterSettledServedExit(record, owner, current.running.manifest, result);
 }
 
 async function selectNextCandidate(input: {

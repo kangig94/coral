@@ -45,11 +45,7 @@ export type JobsWaitFields = Readonly<{
   cursor?: WaitCursor;
 }>;
 
-/**
- * The request `jobs.wait` sends to a coordinator that advertised `extensions`. A vector cursor is omitted for a
- * coordinator without `supportsWaitV2`: it cannot parse one, and resubscribing without a cursor only replays
- * what the client already rendered.
- */
+/** A vector cursor must be omitted for a coordinator without `supportsWaitV2`; it cannot parse one. */
 export function jobsWaitRequest(fields: JobsWaitFields, extensions: readonly string[]): Record<string, unknown> {
   const waitV2 = extensions.includes('supportsWaitV2');
   const cursor =

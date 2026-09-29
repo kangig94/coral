@@ -23,7 +23,6 @@ import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transpor
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { createRequestLeaseOwner } from '../live/request-leases.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
-import {} from '../../transport/rpc/catalog.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import {

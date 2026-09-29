@@ -64,7 +64,6 @@ export function prepareDurableCliRecoveryGrant(
   return `durable-cli:${recorded.attemptId}`;
 }
 
-/** Removes the recovery grant of every attempt outside `retainedAttemptIds`. */
 export function dischargeDurableCliRecoveryGrants(
   runtime: Pick<Runtime, 'storage'>,
   runDir: string,
@@ -152,10 +151,7 @@ export function prepareDurableCliTransfer(
   return collectDurableCliTransfer(runtime, db, progressStore, runDir, epoch, [...jobIds].sort());
 }
 
-/**
- * Re-verifies a receipt against runtime and custody for its unsettled jobs. A settled job has nothing left to transfer,
- * and a dead committed successor's own cleanup may have retired its runtime record.
- */
+/** A settled job has nothing left to transfer; a dead committed successor may have retired its runtime record. */
 export function verifyUnsettledDurableCliTransfer(
   runtime: Runtime,
   payload: unknown,

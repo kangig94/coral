@@ -136,11 +136,6 @@ export function providerProxySetIdentityFromCapsule(capsule: RedeemableHandoffCa
   });
 }
 
-/**
- * V3 and V4 alone carry a comparable process identity, so only they are compared in full. V1 has none, and V2's is
- * seconds from a retired derivation — comparing those against a token would manufacture a disagreement
- * rather than find one, so both are held to the fields that mean the same thing in every version.
- */
 export function providerProxySetCapsuleMatchesIdentity(
   capsule: HandoffCapsule,
   identity: ProviderProxySetIdentity,

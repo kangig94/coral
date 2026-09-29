@@ -93,9 +93,8 @@ export class SuccessionAttemptStartupHoldError extends Error {
 }
 
 /**
- * Why a startup could not resolve an incomplete succession attempt. Each disposition is distinct: an
- * unreadable record can never become decisive by waiting, while unproven deaths may, and a positively
- * observed live owner ends only when that process exits.
+ * An unreadable record cannot become decisive by waiting; an unproven death may, and a live owner ends its hold
+ * only by exiting.
  */
 export type SuccessionStartupHold =
   | Readonly<{ kind: 'unsupported-intent'; attemptId: null; reason: string; fingerprint: string }>
@@ -181,7 +180,6 @@ function startupIntentFingerprint(runtime: Runtime): string {
   }
 }
 
-/** Every recorded process is absent, any is alive, or else the answer is unknown. */
 function observeRecordedDeaths(
   recorded: readonly Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>[],
 ): ProcessLiveness {
@@ -1407,7 +1405,6 @@ export async function completeSupervisorLegacyUpgrade(
   }
 }
 
-/** What a succession startup needs to open or mint its committed store. */
 export type SuccessionStoreContext = Readonly<{
   runtime: Runtime;
   storeFormat: StoreFormatDescription;
@@ -1422,7 +1419,6 @@ export type SuccessionStoreOpen = Readonly<{
   generation: SuccessionWriterGeneration;
 }>;
 
-/** Reopens a dead committed successor's exact epoch under a fresh generation this recovery process owns. */
 export async function openCommittedRecoveryStore(
   context: SuccessionStoreContext,
   recovery: Readonly<{ store: ResolvedStoreEpoch; intent: UpgradeIntent }>,
@@ -1476,16 +1472,11 @@ export async function openCommittedRecoveryStore(
   };
 }
 
-/** The historical-job evidence a retirement disposition was certified against. */
 export type RetirementCertificatePort = Readonly<{
   certificate(epochKey: string): Readonly<{ revision: number; jobIds: readonly string[] }> | null;
   resultsReleased(epochKey: string): boolean;
 }>;
 
-/**
- * Takes the incumbent's parked epoch as the attempt child: advances the writer generation, then opens that
- * exact epoch, or mints its successor only under the incumbent's recorded retirement disposition.
- */
 export async function openSuccessionAttemptStore(
   context: SuccessionStoreContext,
   child: SuccessionAttemptChild,
@@ -1556,7 +1547,6 @@ export async function openSuccessionAttemptStore(
 
 export type SuccessionServingPublication = Readonly<{
   instanceId: string;
-  /** Receives every accepted receipt's new controller once serving is durable. */
   recordControllerReceipts?: (
     preparation: SuccessionPreparation,
     epochKey: string,
@@ -1645,7 +1635,6 @@ export async function publishAttemptServing(
     .catch(() => {});
 }
 
-/** Records this recovery process as the committed successor's serving controller under its fresh generation. */
 export async function publishCommittedRecoveryServing(
   runtime: Runtime,
   recovery: Readonly<{ intent: UpgradeIntent }>,

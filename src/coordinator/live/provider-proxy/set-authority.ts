@@ -118,10 +118,7 @@ export type ControllerTransferIncident = Readonly<{
   exchange: ControlInstallIncidentExchange;
 }>;
 
-/**
- * What asking a host to accept another build as its next controller produced. `legacy-host` is the one answer
- * that no retry can change: a role that does not serve the transfer method predates controller succession.
- */
+/** `legacy-host` cannot change on retry: a role without controller transfer cannot accept a successor. */
 export type ControllerTransferOutcome =
   | Readonly<{ kind: 'authorized'; recoveryGrantId: string }>
   | Readonly<{ kind: 'legacy-host'; role: ControllerTransferRole }>
@@ -208,8 +205,7 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
   reaperIdentity: ReaperIdentity;
   proxyIdentityFields: ProxyIdentity;
   heartbeats: ProviderProxyRoleHeartbeats;
-  /** This coordinator's own identity — named on every install call so a peer can refuse a grant that names a
-   *  build other than the one it admitted this controller under (`requireInstallerBuild`). */
+  /** Every install must name this coordinator’s own identity so a peer can reject a grant for another build. */
   coordinatorIdentity: CoordinatorIdentity;
   /** Where fresh acquisition writes this set's recovery capsule. Precomputed by the caller
    *  (`establishControl`), which already resolves `baseDir`/generation/flavor the same way every other
@@ -259,8 +255,7 @@ export function createProviderProxySetAuthority(
     heartbeatHoldBound: providerProxyHeartbeatHoldBound(deadlineConfiguration),
   });
 
-  // Distinct from `deps.recoveryCapsule` on purpose: this one is *this* build's, and the writer accepts only
-  // V4. Conflating them let a redeemed V1 reach a write that must never emit a shape this build cannot verify.
+  // The writer must emit only a V4 shape this build can verify.
   let mintedRecoveryCapsule: HandoffCapsuleV4 | null = null;
   const mintRecoveryCapsule = (): HandoffCapsuleV4 => {
     if (mintedRecoveryCapsule !== null) return mintedRecoveryCapsule;
@@ -395,7 +390,6 @@ export function createProviderProxySetAuthority(
         },
         { storage: runtime.storage, uid: process.getuid?.() ?? 0 },
       );
-      // A set speaks through one capsule, and the superseded one names a controller the roles now refuse.
       if (currentCapsulePath !== handoffCapsulePath) {
         const retirement = retireProviderHandoffCapsule(runtime.storage, handoffCapsulePath);
         if (retirement.kind !== 'retired') throw new Error('provider_proxy_capsule_migration_retirement_unavailable');

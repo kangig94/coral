@@ -645,7 +645,6 @@ export function enableInheritedIpcCleanup(listener: IpcListener): void {
   for (const compatibility of listener.compatibilityListeners ?? []) enableInheritedIpcCleanup(compatibility);
 }
 
-/** A subscriber that declared `supportsHandover` is told of a handover by its own stream's notice. */
 function declaresHandover(request: JsonRpcRequestEnvelope): boolean {
   return (
     typeof request.params === 'object' &&

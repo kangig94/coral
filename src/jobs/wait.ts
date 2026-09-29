@@ -162,10 +162,8 @@ export type WaitStreamEvent =
     };
 
 /**
- * Wire-only notice that the coordinator serving this subscription has handed its jobs to a successor. The
- * stream ends right after it; a subscriber that resubscribes with the cursor it already holds continues the
- * same wait there. It is sent only to a subscriber that declared `supportsHandover`, because to any other
- * subscriber the end that follows it would read as final.
+ * A handover notice may be sent only to a subscriber that declared `supportsHandover`; others would read the
+ * following end as final.
  */
 export type WaitHandoverNotice = { type: 'handover' };
 

@@ -835,11 +835,7 @@ export class JobStore implements JobProgressStore {
     return appended[0]?.seq ?? 0;
   }
 
-  /**
-   * Announces job-stream events another writer committed on this store's database, so in-process listeners
-   * and waiters learn of them as they would of this store's own commits. Only events already durable may be
-   * passed here.
-   */
+  /** Only durable job-stream events may be announced to in-process listeners and waiters. */
   announceCommitted(appended: readonly AppendedEvent[]): void {
     this.publishAppendedEvents(appended, new Map());
   }

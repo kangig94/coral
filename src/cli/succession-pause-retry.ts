@@ -14,8 +14,7 @@ export async function retrySuccessionPausedRequest<TResult>(
     try {
       return await issue(Math.max(1, remainingMs));
     } catch (error: unknown) {
-      // A paused admission refuses before any effect. `succession_writer_parked` is never re-issued here: the
-      // park can land after a mutation already took effect.
+      // `succession_writer_parked` must never be re-issued: the park can land after a mutation took effect.
       if (!(error instanceof IpcRpcError) || error.code !== 'succession_admission_paused') throw error;
       pauseError = error;
       const retryAfterMs = deadline - performance.now();

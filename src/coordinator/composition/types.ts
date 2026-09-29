@@ -75,7 +75,6 @@ export type CoordinatorCoreOptions = {
     publishedCompatibilitySocketAddresses?: readonly PublishedIpcSocketAddress[],
   ) => Promise<ListenIpcServerResult>;
   createIdleTimer?: () => IdleTimer;
-  /** Supplied by a test harness to exercise request deadline and drain behavior. */
   requestLeaseTiming?: RequestLeaseTiming;
   createExecutionService?: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
   writeBackendInfoFn?: (info: BackendInfo) => boolean | void;
@@ -90,7 +89,6 @@ export type CoordinatorCoreOptions = {
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   providerHostManager?: ProviderHostManager;
   providerHostAdmission?: HostAdmissionCollection;
-  /** Supplied only by a test harness; production composes no interposition. */
   successionInterposition?: SuccessionInterposition;
   /**
    * Builds the durable-effect handler for a proxy's `provider.event.v1` pushes (W2.3), fresh, once per proxy

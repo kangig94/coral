@@ -121,8 +121,8 @@ type RunShutdownSequenceContext = {
 };
 
 /**
- * The authority a succession hands on when this incumbent exits: to a successor that durably serves, or to
- * the next startup of this build through the same-build recovery grant it recorded.
+ * A succession release must hand authority to a serving successor or to this build’s next startup through its
+ * recorded recovery grant.
  */
 export type SuccessionRelease =
   | Readonly<{ kind: 'successor'; handOver: () => Promise<void> }>
@@ -1222,10 +1222,7 @@ export async function runShutdownSequence({
   return ledger.gate(authorityRelease);
 }
 
-/**
- * Every authority this release hands on is already owned by its successor, so the boundary carries no IPC
- * capability: closing a handed-over listener would unlink the address the successor now serves.
- */
+/** A handed-over listener must stay open until exit; closing it would unlink the successor’s address. */
 export async function runSuccessionReleaseSequence({
   release,
   runtime,

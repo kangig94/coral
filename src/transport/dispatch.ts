@@ -289,9 +289,8 @@ async function* withInterruptedGate(
 }
 
 /**
- * Ends the stream with a handover notice once the jobs belong to a successor. The inner stream is released
- * without awaiting it: it is parked on its own wait, which ends only when the subscription aborts, and the
- * subscription aborts only after this generator returns.
+ * An inner stream waiting on subscription abort must be released without awaiting it; abort occurs only after
+ * this generator returns.
  */
 async function* withSuccessionHandover(
   events: AsyncIterable<WaitStreamEvent>,

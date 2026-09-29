@@ -480,9 +480,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       providerRegistry,
       runtime,
       emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
-      // Not the lifecycle reactor: this path has never fed it, and widening that is a separate change. The
-      // announcement is owed, because a terminal committed here must still release what the job held in
-      // process, such as its child principal handles.
+      // A terminal committed here must release its in-process holdings, including child principal handles.
       observeCommitted: (appended) => {
         exportTerminalResults(appended);
         getStoreServices().progressStore.announceCommitted(appended);

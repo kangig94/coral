@@ -1,6 +1,5 @@
 import { claimCoordinatorLaunch } from '../infra/coordinator-admission.js';
 
-/** Admit a shipped backend with this supervisor's protocol before loading its entry point. */
 export async function launchLegacyBackend(executable: string, args: readonly string[]): Promise<void> {
   if (!(await claimCoordinatorLaunch())) {
     process.exitCode = 1;

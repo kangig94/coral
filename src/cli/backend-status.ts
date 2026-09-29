@@ -451,7 +451,6 @@ export type SupersededEpochClosure = Readonly<{
   protectionUnreadable?: boolean;
 }>;
 
-/** Omitted from a status when every epoch but the serving one has been reclaimed. */
 export type SupersededEpochClosures =
   | Readonly<{ kind: 'observed'; epochs: readonly SupersededEpochClosure[] }>
   | Readonly<{ kind: 'unobservable'; reason: string }>;
@@ -656,7 +655,6 @@ function recordedAuthorIdentity(value: Record<string, unknown>): SetupErrorAutho
  * `provenSelfIdentity` is deferred because proving this build's own identity hashes bundle artifacts; a status
  * probe that finds no setup-error diagnostic must not pay for an attribution it never makes.
  */
-/** An older contender refused by a newer incumbent deferred its upgrade; the incumbent keeps serving. */
 function isDeferredUpgradeRefusal(code: unknown): boolean {
   return code === 'handoff_shutdown_capability_rejected' || code === 'handoff_shutdown_credential_unavailable';
 }
@@ -1098,7 +1096,6 @@ function readSupersededEpochClosures(
   return epochs.length === 0 ? null : { kind: 'observed', epochs };
 }
 
-/** Each superseded epoch's closure is read from local records, whether or not a coordinator answers. */
 export function withSupersededEpochClosures(
   runtime: Pick<Runtime, 'paths' | 'storage' | 'ids' | 'env'>,
   status: BackendStatusFull,

@@ -171,7 +171,7 @@ export type SuccessionCommitPorts = Readonly<{
   runtime: Runtime;
   log: (message: string) => void;
   listener: () => IpcListener;
-  /** The identity this incumbent writes into the intent comes only from `reconciler().incumbent()`. */
+  /** Every write of the incumbent identity to the intent must use `reconciler().incumbent()`. */
   incumbent: Readonly<{
     instanceId: string;
     pluginRoot: string;
@@ -220,7 +220,6 @@ export type RetiringEpochPorts = Readonly<{
   confirmCustody(certificate: RetiringCustodyCertificate, signal: AbortSignal): Promise<boolean>;
 }>;
 
-/** What shutdown needs from an attempt that may still be committing. */
 export type SuccessionShutdownPort = Readonly<{
   /** True once the active attempt's successor durably serves; shutdown then releases instead of tearing down. */
   committed(): boolean;
@@ -899,8 +898,8 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
   }
 
   /**
-   * Runs one attempt through the commit window. A first attempt that fails before the window opens throws,
-   * because nothing was parked; every later failure returns the parked state it leaves.
+   * A failure before the first commit window opens leaves nothing parked; every later failure must return the
+   * parked state it leaves.
    */
   async function runCommit(
     attempt: SuccessionAttempt,
@@ -1071,7 +1070,6 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     return settlement;
   }
 
-  /** Records the same-build recovery grant a relaunched child or the next startup of this build serves from. */
   async function recordRecoveryAttempt(failure: FailedCommit): Promise<SuccessionPreparation> {
     const recoveryPreparation: SuccessionPreparation = {
       ...failure.preparation,

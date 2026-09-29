@@ -145,7 +145,6 @@ export type StoreEpochListEntry = Readonly<{
   dataOutcome?: 'retained' | 'unreadable' | 'unknown';
   custodyState?: 'certified' | 'undecidable' | 'holding' | 'absent' | 'unobserved';
   closureReason?: string | null;
-  /** Why a superseded epoch still sits where a shipped older sweep can reach it; the post-ready sweep retries it. */
   protectionPending?: string;
   protectionUnreadable?: boolean;
   bytes: number | null;
@@ -494,7 +493,7 @@ export function lineageJobEpochKey(storeRoot: string, lineageKey: string): strin
   return fullEpochKey(resolvedStoreEpoch(storeRoot, lineageKey.slice(lineageKey.lastIndexOf(':') + 1)), lineageKey);
 }
 
-/** Store inspection derives the key without the epoch lock and without creating a missing marker. */
+/** Store inspection must not take the epoch lock or create a missing marker. */
 export function inspectResolvedStoreEpochKey(
   runtime: Pick<Runtime, 'storage'>,
   resolved: ResolvedStoreEpoch,
@@ -2030,10 +2029,7 @@ function selectSuccessor(
   return { kind: 'selected', epoch: candidate };
 }
 
-/**
- * How long a mint waits for an opener still holding a superseded epoch before it publishes the successor anyway and
- * leaves that epoch's protection to the post-ready sweep. The wait blocks startup, so it stays short.
- */
+/** A mint must wait only briefly for an opener; this wait blocks startup. */
 const SUPERSEDED_OPENER_DRAIN_MS = 2_000;
 
 type PendingProtection = Readonly<{ storeRoot: string; epoch: StoreEpoch; reason: string; recordedAt: string }>;
@@ -2113,10 +2109,7 @@ function pendingProtectionUnreadable(
   );
 }
 
-/**
- * The superseded epoch stays where a shipped older sweep can reach it until a later protection succeeds, so the
- * record is the status the store listing shows and the post-ready sweep acts on.
- */
+/** A superseded epoch must remain reachable to shipped older sweeps until protection succeeds. */
 function recordPendingProtection(
   runtime: Runtime,
   storeRoot: string,
@@ -2182,10 +2175,7 @@ function clearPendingProtection(runtime: Runtime, pending: PendingProtection): v
   }
 }
 
-/**
- * The one owner of a deferred protection, retried on the sweep's cadence for as long as a coordinator serves.
- * Only an epoch older than the one this process opened is protected, and an epoch already gone needs nothing.
- */
+/** Only an epoch older than the one this process opened may be protected; an epoch already gone needs nothing. */
 function retryPendingProtections(runtime: Runtime, storeRoot: string, openEpoch: StoreEpoch): void {
   const pendingRead = readPendingProtections(runtime);
   for (const pending of pendingRead.records) {

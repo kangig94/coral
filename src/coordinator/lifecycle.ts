@@ -820,7 +820,7 @@ export type StartupRecoveryInputs = {
    * sets this to `'handoff'`.
    */
   readonly interruptedAppServerReason?: InterruptedAppServerReason;
-  /** Jobs whose execution host an accepted receipt handed over; they continue in that host, never finalize. */
+  /** Jobs handed over with their execution host must continue there, never finalize. */
   readonly transferredJobIds?: ReadonlySet<string>;
 };
 
@@ -887,7 +887,6 @@ export type LifecycleDeps = {
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void | BackendInfoRemovalResult;
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
   readonly readSelfIncarnationFn: () => ProcessIncarnation | null;
-  /** This process's identity in the upgrade intent; the succession reconciler writes it from the same source. */
   readonly successionIncumbent: () => UpgradeIntent['incumbent'];
   readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   readonly settlePendingLaunchesFn: SettlePendingLaunchesFn;
@@ -925,7 +924,6 @@ export type LifecycleDeps = {
     epoch: ResolvedStoreEpoch,
     committedSuccessorInstanceId: string | null,
   ) => readonly string[];
-  /** The jobs an accepted preparation hands over together with the execution host that runs them. */
   readonly transferredHostJobIds?: (preparation: SuccessionPreparation) => readonly string[];
   readonly adoptSuccessionReceipts?: (
     preparation: SuccessionPreparation,
@@ -1052,7 +1050,7 @@ type LifecycleStartupContext = {
   shutdown: (reason: ShutdownReason) => Promise<LifecycleShutdownDisposition>;
 };
 
-/** What a startup no coordinator answers owes a committed successor or dead attempt; a hold ends it. */
+/** A startup with no answering coordinator must resolve a committed successor or dead attempt before proceeding. */
 type UnservedSuccession = Readonly<{
   hold: SuccessionStartupHold | null;
   committedRecovery: Extract<CommittedSuccessorRecovery, { kind: 'recover' }> | null;
@@ -1078,7 +1076,7 @@ export async function yieldPastKernelReadyResponse(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-/** The newer build the active selection names, once it validates. Reading the selection takes no lock. */
+/** Reading the active selection must not take a lock. */
 function selectedNewerBuild(runtime: Runtime, currentSelection: ActiveStoreSelection): ValidatedHandoffTarget | null {
   const read = readActiveStoreSelection(runtime);
   if (read.kind !== 'valid' || classifyActiveStoreSelection(read.selection, currentSelection) !== 'selected-newer') {
@@ -1232,10 +1230,7 @@ async function runLifecycleStartup({
       coordinatorAtStartup !== null &&
       (coordinatorAtStartup.kind === 'absent' ||
         (coordinatorAtStartup.kind === 'unobservable' && coordinatorAtStartup.reason === 'recorded-process-absent'));
-    /**
-     * Resolves a committed successor or dead attempt for a startup no coordinator answers. A handoff is thrown at once;
-     * a hold is returned, because only a startup that goes on to bind may act on it.
-     */
+    /** Only a startup that goes on to bind may act on a hold. */
     const resolveUnservedSuccession = async (): Promise<UnservedSuccession> => {
       const committed = await prepareCommittedSuccessorRecovery(
         runtime,
@@ -1338,8 +1333,7 @@ async function runLifecycleStartup({
       }
     }
     signal.throwIfAborted();
-    // The probe reads only whether a recorded process lives, which a reused pid satisfies; a bind that met no holder
-    // is what proves no coordinator answers, and only a startup that binds may act on what either decided.
+    // A pid probe cannot prove no coordinator answers; only a startup that binds may act on that decision.
     const boundUnanswered =
       !noCoordinatorServes && coordinatorAtStartup !== null && bound !== null && !bound.acquiredViaHandoff;
     const unserved = boundUnanswered ? await resolveUnservedSuccession() : unservedBeforeBind;
@@ -1621,8 +1615,7 @@ async function runLifecycleStartup({
     recoveryCoordinator.retireAbsentSupersededProviderOperations();
     signal.throwIfAborted();
 
-    // Ordinary startup binds HTTP and signals kernel-ready before recovery so the CLI can return promptly.
-    // A supervised legacy successor binds HTTP before its serving receipt, with admission still fenced.
+    // A supervised legacy successor must keep admission fenced until its serving receipt.
     if (!legacySupervisedChild) ({ port, host, bindHost: localBindHost } = await listenFn(server));
     signal.throwIfAborted();
     runtimeState.setStartedAt(now());

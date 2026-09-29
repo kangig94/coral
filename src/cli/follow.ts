@@ -135,7 +135,7 @@ function initialSerializedCursor(start: FollowStart): string | undefined {
   return start.kind === 'jobs' ? start.serializedCursor : undefined;
 }
 
-/** The handle closes before the wait subscribes, so no wait holds the epoch lock a succession must take. */
+/** A wait must not hold the epoch lock that a succession needs. */
 function readJobStatuses(projectRoot: string, jobIds: readonly string[]): Map<string, JobStatus> {
   let handle: ReadCoralStoreHandle;
   try {

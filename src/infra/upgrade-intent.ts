@@ -151,7 +151,6 @@ const attemptRetrySchema = z.discriminatedUnion('kind', [
 
 export type AttemptRetry = z.infer<typeof attemptRetrySchema>;
 
-/** Transient failures one target has spent in total, and the earliest time its next attempt may launch. */
 const transientRetrySchema = z
   .object({
     targetKey: z.string().min(1),
@@ -160,7 +159,6 @@ const transientRetrySchema = z
   })
   .passthrough();
 
-/** Attempts of one target an obligation change outdated, and the earliest time its next attempt may launch. */
 const obligationRetrySchema = z
   .object({
     targetKey: z.string().min(1),
@@ -176,7 +174,6 @@ const targetSchema = z
   })
   .passthrough();
 
-/** A newer target requested while an attempt held the intent; it replaces the intent once that attempt settles. */
 const nextTargetSchema = z
   .object({
     requestId: z.string().min(1),
@@ -184,7 +181,6 @@ const nextTargetSchema = z
   })
   .passthrough();
 
-/** A retirement mint whose attempt never served and whose discard has not yet succeeded. */
 const unservedMintDiscardSchema = z
   .object({
     attemptId: z.string().min(1),
@@ -221,7 +217,6 @@ const upgradeIntentFields = z
     completionReceipt: servingReceiptSchema.nullable(),
     transientRetry: transientRetrySchema.optional().catch(undefined),
     obligationRetry: obligationRetrySchema.nullable().optional().catch(undefined),
-    /** The failure a same-build recovery grant stands in for. */
     recoveryRetry: attemptRetrySchema.nullable().optional(),
     recoveryGrantAttemptId: z.string().min(1).nullable().optional(),
     // Losing an unreadable next target only waits for its build to contend again.
@@ -231,11 +226,7 @@ const upgradeIntentFields = z
   })
   .passthrough();
 
-/**
- * The same record with its decision vocabularies open. A value this build does not know was written by a newer
- * build, which owns what it means: reading it as corrupt would claim a defect, and reading it as any known value
- * would let this build decide, or overwrite, a state it cannot interpret.
- */
+/** Unknown decision values belong to a newer build and must not be treated as corrupt or overwritten. */
 const newerVocabularySchema = upgradeIntentFields.extend({
   disposition: z.string().min(1),
   attemptOwner: attemptOwnerSchema.extend({ kind: z.string().min(1) }).nullable(),
@@ -366,7 +357,6 @@ function retainCompletedSuccessionReceipt(runDir: string, intent: UpgradeIntent)
   });
 }
 
-/** Superseded attempts retain the same durable shape as an active intent. */
 export function parseUpgradeIntentSnapshot(value: unknown): UpgradeIntent | null {
   const parsed = upgradeIntentSchema.safeParse(value);
   return parsed.success ? parsed.data : null;

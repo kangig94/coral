@@ -4,7 +4,6 @@ import { DatabaseSync } from 'node:sqlite';
 import type { StoragePort } from './port-types.js';
 
 const GRANT_ID_PREFIX = 'child-principal-nonces:';
-/** Separates the attempt from the generation in a grant a recovered transfer records. */
 export const RECOVERY_GRANT_INFIX = ':recovery:';
 
 export function verifyChildPrincipalRecoveryGrant(
@@ -165,7 +164,6 @@ export class ChildPrincipalNonceLedger {
     }
   }
 
-  /** Removes every grant recorded for an attempt outside `retainedAttemptIds`, recovery grants included. */
   dischargeGrants(retainedAttemptIds: ReadonlySet<string>): void {
     const grants = this.db.prepare('SELECT grant_id FROM child_principal_grant').all();
     const remove = this.db.prepare('DELETE FROM child_principal_grant WHERE grant_id = ?');
