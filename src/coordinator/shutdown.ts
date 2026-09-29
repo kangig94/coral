@@ -6,6 +6,7 @@ import {
   type ProcessIncarnationProbeCleanupDisposition,
 } from '../infra/node-process.js';
 import {
+  HANDOFF_DRAIN_TIMEOUT_MS,
   shutdownModeFromReason,
   type ShutdownRemainderObservation,
   type ShutdownUndischarged,
@@ -42,7 +43,6 @@ import {
 } from './shutdown-settlement.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
-export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
 
 export type ShutdownIncident = Readonly<{

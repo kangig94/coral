@@ -123,7 +123,8 @@ import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 } from '#src/recovery/source-registry.js';
 import { MAX_SETTLED_UNBOUND_STATUS_ENTRIES } from '#src/coordinator/services/recovery/settled-unbound-status.js';
-import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_POLL_MS } from '#src/coordinator/shutdown.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS } from '#src/infra/shutdown-contract.js';
+import { SHUTDOWN_POLL_MS } from '#src/coordinator/shutdown.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
 

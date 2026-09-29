@@ -49,9 +49,9 @@ import {
   type ShutdownIncidentOccurrence,
   type ShutdownIncident,
   type TerminateRegisteredChildrenFn,
-  HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
 import {
+  HANDOFF_DRAIN_TIMEOUT_MS,
   shutdownModeFromReason,
   type ShutdownAutomaticRetry,
   type ShutdownHoldExit,
@@ -1654,7 +1654,7 @@ async function runLifecycleStartup({
         publishDiscovery();
         legacyDiscoveryPublished = true;
       } catch (error: unknown) {
-        backendLog.warn(`Waiter-launched coordinator discovery publication failed: ${formatError(error)}`);
+        backendLog.warn(`Supervisor legacy-retirement discovery publication failed: ${formatError(error)}`);
         if (state.started && !legacyDiscoveryRetryScheduled) {
           legacyDiscoveryRetryScheduled = true;
           void runtime.time.sleep(2_000).then(
@@ -1664,7 +1664,7 @@ async function runLifecycleStartup({
             },
             (retryError: unknown) => {
               legacyDiscoveryRetryScheduled = false;
-              backendLog.warn(`Waiter-launched discovery retry wait failed: ${formatError(retryError)}`);
+              backendLog.warn(`Supervisor legacy-retirement discovery retry wait failed: ${formatError(retryError)}`);
             },
           );
         }
@@ -1917,7 +1917,7 @@ async function runLifecycleStartup({
   } catch (error: unknown) {
     if (legacyServingCompleted && !signal.aborted) {
       backendLog.error(
-        'Waiter-launched coordinator startup failed after serving was recorded; retaining listeners',
+        'Supervisor legacy-retirement startup failed after serving was recorded; retaining listeners',
         error,
       );
       if (runtimeState.getLifecycle() === 'starting') runtimeState.setLifecycle('kernel-ready');

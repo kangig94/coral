@@ -4,11 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorShutdownSignalHandler } from '#src/coordinator/bootstrap.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS } from '#src/infra/shutdown-contract.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
 import { statusFromParsedHealth } from '#src/cli/backend-status.js';
 import { createLifecycle, isLifecycleShutdownTerminal } from '#src/coordinator/lifecycle.js';
 import {
-  HANDOFF_DRAIN_TIMEOUT_MS,
   SHUTDOWN_DRAIN_TIMEOUT_MS,
   SHUTDOWN_POLL_MS,
   childTerminationRemainder,

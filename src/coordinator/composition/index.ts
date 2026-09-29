@@ -1,18 +1,14 @@
 import type { ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
-import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { ZodError } from 'zod';
 import { readCustodyLedger } from '../../store/custody-ledger.js';
 import { RetiringCustodyCertificate } from '../services/recovery/epoch-closure.js';
 import { createEpochClosureRetryPlan } from '../services/recovery/epoch-closure-retry-plan.js';
-import { providerProxySetAddress } from '../services/provider-proxy-set/identity.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { validatedRetainedBuildRoot } from '../../infra/retained-build-root.js';
-import { assertNever, formatError } from '../../infra/error-format.js';
+import { formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
-import { identifyDurableRequest, throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
-import { nowIsoString } from '../../infra/time.js';
+import { identifyDurableRequest } from '../../runtime/request-lease-identity.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
@@ -21,37 +17,13 @@ import { createJobLocationRecoveryRetryPlan, recoverJobLocations } from '../../j
 import { readOrCreateEpochKey } from '../../store/epoch-key.js';
 import { observeEpochClosure } from '../../store/epoch-closure.js';
 import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
-import type { StoragePort } from '../../infra/port-types.js';
-import {
-  knownDiscussSources,
-  loadDiscussDetail,
-  listDiscussSessions,
-} from '../../discuss/shell/session-read-service.js';
-import { listAttachedSessions } from '../../discuss/shell/live-registry.js';
-import {
-  handleDiscussAbort,
-  handleDiscussBid,
-  handleDiscussSeed,
-  handleDiscussSpeech,
-  handleDiscussStart,
-  handleDiscussWatch,
-} from '../../discuss/shell/tools.js';
+import { knownDiscussSources } from '../../discuss/shell/session-read-service.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { createRequestLeaseOwner } from '../live/request-leases.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
-import {
-  providerHostEvictResponseSchema,
-  providerHostInspectResponseSchema,
-  providerHostListV2ResponseSchema,
-  providerProxySetContainBooleanResponseSchema,
-  providerProxySetContainResponseSchema,
-  unreadableProviderOperationDiscardResultSchema,
-  type ProviderProxySetContainBooleanResponse,
-  type ProviderProxySetContainRequest,
-  type ProviderProxySetContainResponse,
-} from '../../transport/rpc/catalog.js';
+import {} from '../../transport/rpc/catalog.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import {
@@ -63,7 +35,6 @@ import type { Principal } from '../../security/principal.js';
 import type { TypedEventBus } from '../event-bus.js';
 import { principalToWire } from '../../security/principal-wire.js';
 import { CoralSetupError } from '../../runtime/errors.js';
-import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import {
   createCrashedJobTerminalizationRetryPlan,
@@ -74,7 +45,6 @@ import {
   type LifecycleDeps,
   type RunStartupRecoveryOrchestratorFn,
 } from '../lifecycle.js';
-import { createUnreadableProviderOperationDiscardService } from '../services/recovery/unreadable-provider-operation-discard.js';
 import { createSettledUnboundStatusPort } from '../services/recovery/settled-unbound-status.js';
 import {
   observeProviderOperationRecord,
@@ -83,17 +53,21 @@ import {
 } from '../../store/provider-operation-journal.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
-import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
-import { workflowCommands } from '../../workflow/dispatch.js';
 import { createCoordinatorControl } from './job-control.js';
 import { resolveCoordinatorDefaults } from './defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import { createExecutionServices } from './execution-services.js';
+import { createCoordinatorRpcPorts } from './rpc-ports.js';
+import { createCoordinatorHealthReader } from './health-observation.js';
+import { createCoordinatorEventStreamPorts } from './event-stream-ports.js';
+import { createSuccessionOwners } from './succession-owners.js';
+import { createKbDaemonJobTracking } from './kb-daemon-job-tracking.js';
+import { createProviderProxyContainment } from './provider-proxy-containment.js';
+import { createRecoveryQuarantinePorts } from './recovery-quarantine-ports.js';
 import { createCoordinatorWorld, createStartupRecoveryBarrier } from './world.js';
 import { createCustodyReconciliationScheduler } from './custody-reconciliation-scheduler.js';
 import { createStoreEpochSweepScheduler } from './store-epoch-sweep-scheduler.js';
 import { createLifecycleRecoveryDependencies } from './lifecycle-recovery-dependencies.js';
-import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
 import { storeServicesStartupNotReadyError } from './store-services-ref.js';
 import { isLivePhase, isTerminalPhase, type JobPhase } from '../../jobs/phase.js';
 import type {
@@ -110,7 +84,7 @@ import type {
   UnequipExpansionResult,
 } from '../../expansion/rpc-contract.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../../jobs/kb/recorder.js';
-import { type KbDaemonHealthSnapshot, type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import { type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 import type { ProviderHostAdministrationAuthority, ProviderHostManager } from '../live/provider-hosts/index.js';
 import {
   ProviderHostAdministrationService,
@@ -127,12 +101,7 @@ import {
   type ResolvedStoreEpoch,
 } from '../../store/epoch.js';
 import { observeSuccessionServing } from '../../store/succession-writer-generation.js';
-import {
-  readUpgradeIntent,
-  upgradeIntentProblem,
-  visibleUpgradeIntent,
-  type UpgradeIntent,
-} from '../../infra/upgrade-intent.js';
+import { readUpgradeIntent, type UpgradeIntent } from '../../infra/upgrade-intent.js';
 import {
   reconcileAbandonedRequestStatuses,
   writeAbandonedRequestStatus,
@@ -143,29 +112,9 @@ import { currentSuccessionAttemptChild, startSuccessionAttempt } from '../succes
 import { createProviderHostTransfer } from '../succession/provider-host-transfer.js';
 import { createSuccessionCommitter } from '../succession/commit.js';
 import { NO_SUCCESSION_INTERPOSITION } from '../succession/interposition.js';
-import {
-  dischargeDurableCliRecoveryGrants,
-  prepareDurableCliTransfer,
-  prepareDurableCliRecoveryGrant,
-} from '../services/durable-cli-transfer.js';
-import { createDefaultStoreReadContext } from '../../read-model/read-context.js';
 import { createSuccessionCoordinator } from '../succession/index.js';
-import type { SuccessionOwner } from '../succession/obligations.js';
-import {
-  readSuccessionJobIdsByKind,
-  readSuccessionLiveJobIds,
-  readJobLaunchOriginNamespace,
-  readSuccessionCustodyJobIds,
-} from '../../jobs/succession-coverage.js';
-import { listProjectionSessionEntries } from '../../sessions/projections.js';
-import type { JsonValue } from '../../infra/json-value.js';
-import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
-import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
-import type {
-  LaunchPermitReclamationDiagnostic,
-  LaunchReclamationProbeResult,
-  LaunchReleaseDiagnostic,
-} from '../../jobs/contracts/admission.js';
+import { readSuccessionLiveJobIds, readSuccessionCustodyJobIds } from '../../jobs/succession-coverage.js';
+import type { LaunchReclamationProbeResult } from '../../jobs/contracts/admission.js';
 import {
   LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS,
   MAX_LAUNCH_RELEASE_DIAGNOSTICS,
@@ -197,13 +146,10 @@ import {
   createTerminalRetentionOutcomeRetryPlan,
 } from '../../sessions/lifecycle-reactor.js';
 import { createWorkflowRecoveryRetryPlan } from '../../workflow/recover.js';
-import { jobInCallerScope } from '../../jobs/scope.js';
-import type { ProviderProxySetBooleanOperatorExitResult } from '../services/provider-proxy-set/index.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 export const LAUNCH_PERMIT_REPORT_AGE_MS = 15 * 60 * 1000;
 export const MAX_SETTLEMENT_REFUSAL_DIAGNOSTICS = 100;
-const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
 
 type KbReadRpcPort = Pick<
   RpcPorts['kb'],
@@ -223,11 +169,6 @@ type KbReadRpcPort = Pick<
   | 'listPrinciples'
   | 'wakeUp'
 >;
-
-const EVENT_STREAM_CAPACITY_RESPONSE = {
-  code: 'too_many_event_streams',
-  message: 'Too many event stream connections',
-};
 
 const TERMINAL_DISCUSS_STATUSES = new Set(['ended', 'completed', 'aborted', 'error', 'failed', 'closed']);
 
@@ -251,99 +192,8 @@ export function subscribeSuccessionObligationChanges(
   };
 }
 
-type ProviderProxySetContainSuccess = Extract<ProviderProxySetContainResponse, { kind: 'contained' | 'abandoned' }>;
-type ProviderProxySetContainBooleanSuccess = Extract<
-  ProviderProxySetContainBooleanResponse,
-  { kind: 'contained' | 'abandoned' | 'unattributable-group-abandoned' }
->;
-
-function providerProxySetContainBooleanClaimDischarge(
-  discharge: ProviderProxySetContainSuccess['claimDischarge'],
-): ProviderProxySetContainBooleanSuccess['claimDischarge'] {
-  switch (discharge.kind) {
-    case 'completed':
-      return discharge;
-    case 'initial-disposition-pending':
-      return { kind: 'initial-disposition-retry-owned' };
-    case 'operational-retry-owned':
-      return { kind: discharge.kind, incidents: discharge.incidents };
-    case 'released-undischarged':
-      return discharge;
-    default:
-      return assertNever(discharge);
-  }
-}
-
-function providerProxySetContainBooleanResponse(
-  response: ProviderProxySetBooleanOperatorExitResult,
-): ProviderProxySetContainBooleanResponse {
-  if (response.kind === 'contained') {
-    return providerProxySetContainBooleanResponseSchema.parse({
-      ...response,
-      claimDischarge: providerProxySetContainBooleanClaimDischarge(response.claimDischarge),
-    });
-  }
-  if (response.kind === 'unattributable-group-abandoned') {
-    return providerProxySetContainBooleanResponseSchema.parse({
-      ...response,
-      claimDischarge: providerProxySetContainBooleanClaimDischarge(response.claimDischarge),
-    });
-  }
-  if (response.kind === 'abandoned') {
-    return providerProxySetContainBooleanResponseSchema.parse({
-      ...response,
-      claimDischarge: providerProxySetContainBooleanClaimDischarge(response.claimDischarge),
-    });
-  }
-  if (response.kind === 'not-held' && response.state === 'reattachment-hold') {
-    return providerProxySetContainBooleanResponseSchema.parse({ ...response, state: 'reattaching' });
-  }
-  return providerProxySetContainBooleanResponseSchema.parse(response);
-}
-
 function isTerminalDiscussStatus(status: string): boolean {
   return TERMINAL_DISCUSS_STATUSES.has(status);
-}
-
-let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
-
-function readEventLoopLagMs(): number {
-  if (eventLoopDelayMonitor === null) {
-    eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 20 });
-    eventLoopDelayMonitor.enable();
-    return 0;
-  }
-
-  const meanNs = eventLoopDelayMonitor.mean;
-  if (!Number.isFinite(meanNs)) {
-    return 0;
-  }
-  return Math.max(0, Math.round(meanNs / 1_000_000));
-}
-
-function readFdCount(storage: Pick<StoragePort, 'readdirSync'>): number | undefined {
-  try {
-    return storage.readdirSync('/proc/self/fd').length;
-  } catch {
-    return undefined;
-  }
-}
-
-function readResourceSnapshot(
-  storage: Pick<StoragePort, 'readdirSync'>,
-  ipcOpenSockets: number,
-  eventStreamResponses: number,
-): NonNullable<HealthSnapshot['resources']> {
-  const memory = process.memoryUsage();
-  const fdCount = readFdCount(storage);
-  return {
-    rssBytes: memory.rss,
-    heapUsedBytes: memory.heapUsed,
-    eventLoopLagMs: readEventLoopLagMs(),
-    ipcOpenSockets,
-    eventStreamResponses,
-    ...(fdCount === undefined ? {} : { fdCount }),
-  };
 }
 
 export function createKbDaemonReadPort(kbDaemonSupervisor: KbDaemonSupervisor): KbReadRpcPort {
@@ -633,11 +483,6 @@ export function createCoordinatorCore(
   const strictHealthIdentity = resolveStrictBundleIdentity();
   const strictHealthBundleDir = strictHealthIdentity.ok ? resolveRunningBundleDir(world.pluginRoot) : null;
   const storeServicesRef = world.storeServicesRef;
-  // Local indirection: callers in non-health/handoff paths use this to get
-  // the post-bind progressStore. Equivalent to `storeServicesRef.get()` but
-  // intentionally wrapped so the file-level "tryGet-only" invariant for
-  // health/handoff identity code doesn't flag it as a direct `.get()` call
-  // in a mixed-concern composition file.
   const getStoreServices = () => {
     const storeServices = storeServicesRef.tryGet();
     if (storeServices === null) {
@@ -931,67 +776,18 @@ export function createCoordinatorCore(
     quarantine: recoveryQuarantineStore,
     sources: recoverySources,
   });
-  const recoveryQuarantine: RpcPorts['recoveryQuarantine'] = {
-    clear: async (request, signal) => {
-      const result = await recoveryQuarantineRetry.clear(request, signal);
-      notifySuccessionObligationChange();
-      return result;
-    },
-    discardProviderOperation: async (request) => {
-      if (runtimeState.getLaunchFenceActive()) {
-        return unreadableProviderOperationDiscardResultSchema.parse({
-          ...request,
-          kind: 'recovery-in-progress',
-          code: 'backend_recovering',
-          message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
-          remedy: {
-            kind: 'recovery-quarantine-discard',
-            command: {
-              kind: 'discard-provider-operation',
-              key: request.key,
-              revision: `fingerprint:${request.revision}`,
-              allowReadable: request.allowReadable === true,
-            },
-          },
-        });
-      }
-      const discard = createUnreadableProviderOperationDiscardService({
-        instanceId: world.identity.instanceId,
-        ids: runtime.ids,
-        db: recoveryDb(),
-        time: runtime.time,
-      });
-      const result = unreadableProviderOperationDiscardResultSchema.parse(discard.discard(request));
-      if (result.kind === 'discarded' || result.kind === 'absent') {
-        const ownership = await releaseUnreadableProviderOperationStartupOwnership(result.key);
-        if (ownership.kind === 'adoption-refused') {
-          const observedAtMs = runtime.time.now();
-          for (const refusal of ownership.refusals) {
-            providerOperationAdoptionRefusals.delete(refusal.recordKey);
-            providerOperationAdoptionRefusals.set(refusal.recordKey, {
-              triggerRecordKey: result.key,
-              rowDisposition: result.kind,
-              releasedLaunchPermits: ownership.releasedLaunchPermits,
-              ...refusal,
-              observedAtMs,
-            });
-            if (providerOperationAdoptionRefusals.size > MAX_LAUNCH_RELEASE_DIAGNOSTICS) {
-              const oldestRecordKey = providerOperationAdoptionRefusals.keys().next().value;
-              if (oldestRecordKey !== undefined) providerOperationAdoptionRefusals.delete(oldestRecordKey);
-            }
-          }
-          return unreadableProviderOperationDiscardResultSchema.parse({
-            ...result,
-            kind: 'adoption-refused',
-            rowDisposition: result.kind,
-            releasedLaunchPermits: ownership.releasedLaunchPermits,
-            refusals: ownership.refusals,
-          });
-        }
-      }
-      return result;
-    },
-  };
+  const recoveryQuarantine = createRecoveryQuarantinePorts({
+    runtime,
+    instanceId: world.identity.instanceId,
+    runtimeState,
+    recoveryQuarantineRetry,
+    recoveryDb,
+    releaseUnreadableProviderOperationStartupOwnership: (key) =>
+      releaseUnreadableProviderOperationStartupOwnership(key),
+    providerOperationAdoptionRefusals,
+    notifySuccessionObligationChange: () => notifySuccessionObligationChange(),
+    maxAdoptionRefusals: MAX_LAUNCH_RELEASE_DIAGNOSTICS,
+  });
 
   // Eager defaults resolve from `runtime` alone.
   const defaults = defaultsPlan.finalizeWithWorld({
@@ -1110,50 +906,6 @@ export function createCoordinatorCore(
       world.log(`[kb-daemon] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
     }
   };
-  const daemonOwnedKbJobs = new Map<string, { cleanupTimer: ReturnType<typeof runtime.time.setTimeout> }>();
-  const cleanupDaemonJobAbortProxy = (jobId: string): void => {
-    const tracked = daemonOwnedKbJobs.get(jobId);
-    if (tracked !== undefined) {
-      runtime.time.clearTimeout(tracked.cleanupTimer);
-      daemonOwnedKbJobs.delete(jobId);
-    }
-    internalJobAbortRegistry.remove(jobId);
-    if (daemonOwnedKbJobs.size === 0) {
-      disposeDaemonJobTerminalListeners();
-    }
-  };
-  const cleanupTerminalDaemonJobAbortProxy = (jobId: string, phase: string): void => {
-    if (!isTerminalPhase(phase) || !daemonOwnedKbJobs.has(jobId)) {
-      return;
-    }
-    cleanupDaemonJobAbortProxy(jobId);
-  };
-  const onDaemonJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
-    cleanupTerminalDaemonJobAbortProxy(event.jobId, event.phase);
-  };
-  const onDaemonJobCompleted = (event: { jobId: string }): void => {
-    if (!daemonOwnedKbJobs.has(event.jobId)) {
-      return;
-    }
-    cleanupDaemonJobAbortProxy(event.jobId);
-  };
-  let daemonJobTerminalListenersRegistered = false;
-  const ensureDaemonJobTerminalListeners = (): void => {
-    if (daemonJobTerminalListenersRegistered) {
-      return;
-    }
-    daemonJobTerminalListenersRegistered = true;
-    world.eventBus.on('job:phase_changed', onDaemonJobPhaseChanged);
-    world.eventBus.on('job:completed', onDaemonJobCompleted);
-  };
-  const disposeDaemonJobTerminalListeners = (): void => {
-    if (!daemonJobTerminalListenersRegistered) {
-      return;
-    }
-    daemonJobTerminalListenersRegistered = false;
-    world.eventBus.off('job:phase_changed', onDaemonJobPhaseChanged);
-    world.eventBus.off('job:completed', onDaemonJobCompleted);
-  };
   const onChildPrincipalJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
     if (isTerminalPhase(event.phase)) {
       world.childPrincipalRegistry.revokeParentJob(event.jobId);
@@ -1186,106 +938,12 @@ export function createCoordinatorCore(
     world.eventBus.off('job:completed', onChildPrincipalJobCompleted);
     world.eventBus.off('discuss:updated', onChildPrincipalDiscussUpdated);
   };
-  const describeKbDaemonExit = (snapshot: KbDaemonHealthSnapshot): string => {
-    const exit = snapshot.lastExit;
-    const suffix =
-      exit === undefined
-        ? ''
-        : ` (code=${String(exit.code)}, signal=${String(exit.signal)}, generation=${snapshot.generation})`;
-    return `KB daemon exited${suffix}: ${snapshot.lastError ?? snapshot.reason ?? snapshot.phase}`;
-  };
-  const listDurableDaemonOwnedKbJobs = (progressStore: JobProgressStore): string[] => {
-    const jobIds: string[] = [];
-    for (const jobId of progressStore.listJobIds()) {
-      const status = progressStore.readStatus(jobId);
-      if (status === null || !isLivePhase(status.phase) || status.jobKind !== 'kb') {
-        continue;
-      }
-      const runtime = progressStore.readRuntimeProjection(jobId);
-      if (runtime?.transport === 'internal' && runtime.owner === 'kb-daemon') {
-        jobIds.push(jobId);
-      }
-    }
-    return jobIds;
-  };
-  const failTrackedDaemonJobs = (snapshot: KbDaemonHealthSnapshot): void => {
-    const message = describeKbDaemonExit(snapshot);
-    try {
-      const progressStore = getProgressStore();
-      const daemonOwnedJobIds = new Set([...daemonOwnedKbJobs.keys(), ...listDurableDaemonOwnedKbJobs(progressStore)]);
-      if (daemonOwnedJobIds.size === 0) {
-        return;
-      }
-      const failed: string[] = [];
-      for (const jobId of daemonOwnedJobIds) {
-        const status = progressStore.readStatus(jobId);
-        if (status === null || !isLivePhase(status.phase) || status.jobKind !== 'kb') {
-          cleanupDaemonJobAbortProxy(jobId);
-          continue;
-        }
-        markJobAsError(
-          progressStore,
-          status,
-          { kind: 'wrapper_crashed', cause: { message } },
-          runtime.time.now(),
-          (line) => world.log(`${line}\n`),
-        );
-        cleanupDaemonJobAbortProxy(jobId);
-        failed.push(jobId);
-      }
-      if (failed.length > 0) {
-        world.log(`[kb-daemon] marked ${failed.length} daemon-owned KB job(s) as error after daemon exit\n`);
-      }
-    } catch (error: unknown) {
-      world.log(`[kb-daemon] failed to reconcile daemon-owned KB jobs after daemon exit: ${formatError(error)}\n`);
-    }
-  };
-  const registerDaemonJobAbortProxy = (jobId: string): void => {
-    cleanupDaemonJobAbortProxy(jobId);
-    ensureDaemonJobTerminalListeners();
-    const cleanupTimer = runtime.time.setTimeout(() => {
-      cleanupDaemonJobAbortProxy(jobId);
-    }, KB_DAEMON_JOB_ABORT_PROXY_TTL_MS);
-    cleanupTimer.unref?.();
-    daemonOwnedKbJobs.set(jobId, { cleanupTimer });
-    internalJobAbortRegistry.register(jobId, () => {
-      const tracked = daemonOwnedKbJobs.get(jobId);
-      if (tracked !== undefined) {
-        runtime.time.clearTimeout(tracked.cleanupTimer);
-      }
-      const abortResult =
-        kbDaemonSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
-      void abortResult.finally(() => {
-        cleanupDaemonJobAbortProxy(jobId);
-      });
-    });
-  };
-  const trackActiveDaemonKbJobs = async (reason: string, signal?: AbortSignal): Promise<void> => {
-    try {
-      const activeJobs = (await kbDaemonSupervisor.listActiveKbJobs?.({ signal }))?.active ?? [];
-      for (const jobId of activeJobs) {
-        registerDaemonJobAbortProxy(jobId);
-      }
-      if (activeJobs.length > 0) {
-        world.log(`[kb-daemon] tracking ${activeJobs.length} active KB job(s) before ${reason}\n`);
-      }
-    } catch (error: unknown) {
-      world.log(`[kb-daemon] failed to list active KB jobs before ${reason}: ${formatError(error)}\n`);
-    }
-  };
-  const kbDaemonSupervisorWithTrackedShutdown: KbDaemonSupervisor = {
-    ...kbDaemonSupervisor,
-    restart: async (reason, signal) => {
-      await trackActiveDaemonKbJobs(reason ?? 'restart', signal);
-      signal?.throwIfAborted();
-      return kbDaemonSupervisor.restart(reason, signal);
-    },
-    dispose: async (reason, disposeOptions) => {
-      await trackActiveDaemonKbJobs(reason ?? 'dispose', disposeOptions?.signal);
-      return kbDaemonSupervisor.dispose(reason, disposeOptions);
-    },
-  };
-  const disposeKbDaemonExitListener = kbDaemonSupervisor.onExit?.(failTrackedDaemonJobs) ?? (() => {});
+  const {
+    kbDaemonSupervisorWithTrackedShutdown,
+    disposeKbDaemonExitListener,
+    disposeDaemonJobTerminalListeners,
+    registerDaemonJobAbortProxy,
+  } = createKbDaemonJobTracking({ runtime, world, kbDaemonSupervisor, getProgressStore, internalJobAbortRegistry });
   const daemonKbReadPort = createKbDaemonReadPort(kbDaemonSupervisorWithTrackedShutdown);
   const kbRpcPort = createKbDaemonMutationPort(
     daemonKbReadPort,
@@ -1346,98 +1004,10 @@ export function createCoordinatorCore(
     },
   });
 
-  const containProviderProxySet = async (
-    request: ProviderProxySetContainRequest,
-    contract: 'current' | 'boolean',
-    abandonWithoutAbsence: boolean,
-    signal?: AbortSignal,
-  ): Promise<ProviderProxySetBooleanOperatorExitResult | Readonly<{ kind: 'unsupported-contract' }>> => {
-    const lifecycle = world.providerProxyLifecycleRef.get();
-    if (lifecycle === null) throw new Error('provider_proxy_set_operator_exit_unavailable');
-    const authorization =
-      contract === 'boolean'
-        ? lifecycle.authorizeBooleanOperatorExit(request.setIdentity)
-        : lifecycle.authorizeOperatorExit(request.setIdentity);
-    if (authorization.kind === 'unsupported-contract') return authorization;
-    if (authorization.kind !== 'authorized') {
-      if (contract === 'current' && authorization.kind === 'set-not-found' && abandonWithoutAbsence) {
-        const abandonment = lifecycle.abandonDurableAcquisition(request.setIdentity);
-        if (abandonment.kind === 'retired') {
-          return {
-            kind: 'representation-release-abandoned',
-            setIdentity: request.setIdentity,
-            successor: { owner: 'coordinator', acceptance: 'accepted' },
-            effect: {
-              signalsSent: [],
-              containmentAbsent: false,
-              representationAction: 'fatal-release-abandoned',
-            },
-          };
-        }
-        if (abandonment.kind === 'held') {
-          return {
-            kind: 'store-unreadable',
-            setIdentity: request.setIdentity,
-            effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
-          };
-        }
-        if (abandonment.kind === 'transfer-pending') {
-          return {
-            kind: 'containment-unconfirmed',
-            setIdentity: request.setIdentity,
-            recoveryAction: { kind: 'retry-exact-set-containment' },
-            effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
-          };
-        }
-      }
-      return {
-        ...authorization,
-        setIdentity: request.setIdentity,
-        effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
-      };
-    }
-    try {
-      const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
-        authorization.capability.containmentProofAuthorization,
-        getProgressStore().getDb(),
-        signal ?? new AbortController().signal,
-      );
-      return contract === 'boolean'
-        ? await lifecycle.completeBooleanOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal)
-        : await lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal);
-    } finally {
-      try {
-        authorization.capability.handback();
-      } catch {
-        authorization.capability.handback();
-      }
-    }
-  };
-
-  const closeProxySetForEpochClosure = async (
-    proxyInstanceId: string,
-    guardian: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,
-    signal: AbortSignal,
-  ): Promise<boolean> => {
-    const set = world.providerProxyLifecycleRef
-      .get()
-      ?.liveSets()
-      .find(
-        (candidate) =>
-          candidate.setIdentity.proxyInstanceId === proxyInstanceId &&
-          candidate.setIdentity.guardianPid === guardian.pid &&
-          candidate.setIdentity.guardianIncarnation === guardian.incarnation,
-      );
-    if (set === undefined) return false;
-    const result = await containProviderProxySet(
-      { setIdentity: providerProxySetAddress(set.setIdentity), mode: 'contain' },
-      'current',
-      false,
-      signal,
-    );
-    return 'effect' in result && result.effect.containmentAbsent;
-  };
-
+  const { containProviderProxySet, closeProxySetForEpochClosure } = createProviderProxyContainment({
+    world,
+    getProgressStore,
+  });
   const activeJobDetail = (jobId: string) => {
     const progressStore = getProgressStore();
     const detail = progressStore.loadJobProjectionDetail(jobId);
@@ -1477,129 +1047,19 @@ export function createCoordinatorCore(
   );
 
   let waitHandover = new AbortController();
-  const rpcPorts: RpcPorts = {
-    sessions: {
-      start: (providerName, input, ctx, signal) =>
-        services.getExecutionService(ctx).start(providerName, input, ctx, signal),
-    },
-    jobs: {
-      scopeCheck: (jobIds, callerRoot, relation) => jobAddressing.scopeCheck(jobIds, callerRoot, relation),
-      abort: (jobIds) => jobAddressing.abort(jobIds),
-      validateWait: (request) => jobAddressing.validateWait(request),
-      waitStream: (request) => jobAddressing.waitStream(request),
-      waitHandoverSignal: () => waitHandover.signal,
-      list: (filters) => {
-        const progressStore = getProgressStore();
-        const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
-        for (const entry of progressStore.listJobProjections()) {
-          if (filters.all !== true && !isLivePhase(entry.status.phase)) {
-            continue;
-          }
-          if (filters.projectRoot !== undefined && !jobInCallerScope(entry.status, filters.projectRoot, 'exact')) {
-            continue;
-          }
-          if (filters.phase !== undefined && entry.status.phase !== filters.phase) {
-            continue;
-          }
-          if (filters.provider !== undefined && entry.status.provider !== filters.provider) {
-            continue;
-          }
-          jobs.push(entry);
-        }
-
-        return jobs;
-      },
-      detail: (jobId) => jobAddressing.detail(jobId),
-      unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
-      outcomeUnrecoverable: (jobIds) => jobAddressing.outcomeUnrecoverable(jobIds),
-    },
-    workflows: {
-      execute: async (request, ctx, signal) => {
-        try {
-          throwIfRequestAborted(signal);
-          const compiled = workflowCompiler.compile(request, world.providerRegistry);
-          const decision =
-            'status' in compiled
-              ? compiled
-              : await workflowCommands.execute(services.getExecutionService(ctx), compiled, ctx, signal);
-          return { kind: 'decision' as const, decision };
-        } catch (error: unknown) {
-          if (isWorkflowInputFailure(error)) {
-            if (error instanceof ZodError) {
-              const first = error.issues[0];
-              const path = first?.path.join('.') ?? '';
-              let message = error.message;
-              if (first !== undefined) {
-                message = path.length > 0 ? `${path}: ${first.message}` : first.message;
-              }
-              return { kind: 'invalid_request' as const, message, detail: { issues: error.issues } };
-            }
-            return { kind: 'invalid_request' as const, message: error.message };
-          }
-          throw error;
-        }
-      },
-    },
+  const rpcPorts = createCoordinatorRpcPorts({
+    services,
+    jobAddressing,
+    waitHandoverSignal: () => waitHandover.signal,
+    getProgressStore,
+    world,
     recoveryQuarantine,
-    providerHosts: {
-      list: async () => {
-        const { rows, tornDownOwnerIds } = await providerHostAdministration.list();
-        return providerHostListV2ResponseSchema.parse({ hosts: rows, tornDownOwnerIds });
-      },
-      inspect: async (selector) =>
-        providerHostInspectResponseSchema.parse({
-          host: await providerHostAdministration.inspect(selector),
-        }),
-      evict: async (selector, signal) =>
-        providerHostEvictResponseSchema.parse(await providerHostAdministration.evict(selector, signal)),
-    },
-    providerProxySets: {
-      contain: async (request, signal) =>
-        providerProxySetContainResponseSchema.parse(
-          await containProviderProxySet(request, 'current', request.mode === 'abandon', signal),
-        ),
-      containBoolean: async (request, signal) => {
-        const result = await containProviderProxySet(
-          { setIdentity: request.setIdentity, mode: 'contain' },
-          'boolean',
-          request.abandonWithoutAbsence,
-          signal,
-        );
-        return result.kind === 'unsupported-contract' ? result : providerProxySetContainBooleanResponse(result);
-      },
-    },
-    kb: kbRpcPort,
-    discuss: {
-      seed: handleDiscussSeed,
-      start: (args, ctx, signal) =>
-        handleDiscussStart(args, ctx, { getDiscussContext: discuss.getDiscussContext }, signal),
-      listSessions: () => listDiscussSessions(discuss.readHelpersDeps),
-      loadDetail: (projectRoot, sessionId, view) =>
-        loadDiscussDetail(discuss.readHelpersDeps, world.resolveProjectSource(projectRoot), sessionId, view),
-      watch: (args, ctx) => handleDiscussWatch(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
-      bid: (args, ctx) => handleDiscussBid(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
-      speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
-      abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
-    },
+    providerHostAdministration,
+    containProviderProxySet,
+    kbRpcPort,
+    discuss,
     expansion: createKbDaemonExpansionRpc(kbDaemonSupervisorWithTrackedShutdown),
-  };
-  /**
-   * This process's own incarnation, probed until it is known and then never again.
-   *
-   * It was probed per health response, and a health response is the most frequently served thing this daemon
-   * does. On macOS the probe is two synchronous `execFileSync` calls — `sysctl` and `ps` — so every reader
-   * asking whether the coordinator is up forked twice and blocked the loop that was supposed to answer.
-   *
-   * Remembering a *success* carries no staleness question: an incarnation names the process that holds it,
-   * `world.backendPid` is this process, and nothing can change it while there is anyone left to read it.
-   *
-   * Remembering a *failure* is a different thing entirely, and reading it exactly once got that wrong. The
-   * discovery record runs its own probe (`infra/backend-discovery.ts`), so one transient failure here while
-   * that one succeeded leaves discovery publishing an incarnation and health publishing none — and
-   * `discoveryMatchesHealth` (`coordinator/handoff-routing/runner.ts`) compares the two for equality. A single
-   * unlucky read at composition would have made every later takeover fail identity for the life of the
-   * daemon, with no path back. So `null` is retried, and only success is kept.
-   */
+  });
   let rememberedSelfIncarnation: ProcessIncarnation | null = null;
   const readSelfIncarnation = (): ProcessIncarnation | null => {
     try {
@@ -1679,198 +1139,19 @@ export function createCoordinatorCore(
     },
     log: world.log,
   });
-  const successionOwners: readonly SuccessionOwner[] = [
-    {
-      id: 'launch-admission',
-      classify: async () => {
-        const pending = world.launchCoordinator.pendingLaunchJobIds();
-        const acquiring = world.launchCoordinator
-          .activeLaunchPermits()
-          .filter(
-            (permit) =>
-              permit.holder.kind === 'local-execution' &&
-              getProgressStore().readRuntimeProjection(permit.jobId) === null,
-          )
-          .map((permit) => permit.jobId);
-        const jobIds = [...new Set([...pending, ...acquiring])];
-        const unidentified =
-          world.launchCoordinator.pendingDurableLaunchCount() > world.launchCoordinator.pendingDurableJobIds().length;
-        return jobIds.length === 0 && !unidentified
-          ? { kind: 'completed', reason: 'no queued or carrier-acquiring launches' }
-          : { kind: 'blocking', reason: 'launch admission still owns queued or carrier-acquiring work', jobIds };
-      },
-    },
-    {
-      id: 'durable-cli',
-      recordsGrants: true,
-      dischargeGrants: (retained) =>
-        dischargeDurableCliRecoveryGrants(runtime, runtime.paths.coral.coordinator.runDir, retained),
-      classify: async (attemptId) => {
-        const jobIds = readSuccessionJobs().filter(
-          (jobId) => getProgressStore().readRuntimeProjection(jobId)?.transport === 'durable-cli',
-        );
-        if (jobIds.length === 0) return { kind: 'completed', reason: 'no live durable-cli carrier' };
-        const inspected = inspectCurrentStore(runtime);
-        if (inspected.kind !== 'current') {
-          return { kind: 'blocking', reason: 'exact durable-cli epoch is unavailable', jobIds };
-        }
-        const transfer = prepareDurableCliTransfer(
-          runtime,
-          getProgressStore().getDb(),
-          getProgressStore(),
-          runtime.paths.coral.coordinator.runDir,
-          inspected.epoch,
-          jobIds,
-        );
-        if (transfer === null) {
-          return { kind: 'blocking', reason: 'durable-cli runtime or custody evidence is incomplete', jobIds };
-        }
-        const recoveryGrantId = prepareDurableCliRecoveryGrant(runtime, runtime.paths.coral.coordinator.runDir, {
-          version: 'v1',
-          attemptId,
-          epochKey: encodeResolvedStoreEpoch(runtime, inspected.epoch),
-          incumbentInstanceId: identity.instanceId,
-          incumbentBuildSetId: identity.buildSetId,
-          transfer,
-        });
-        return {
-          kind: 'transferable',
-          reason: 'durable-cli runtime and custody evidence is recorded',
-          jobIds,
-          receipt: {
-            owner: 'durable-cli',
-            generation: 1,
-            attemptId,
-            receiptId: `durable-cli:${attemptId}`,
-            recoveryGrantId,
-            payload: JSON.parse(JSON.stringify(transfer)) as JsonValue,
-          },
-        };
-      },
-    },
-    ...providerHostTransfer.owners,
-    {
-      id: 'provider-hosts',
-      classify: async () => {
-        const hosts = liveProviderHosts();
-        const jobIds = hosts
-          .map((host) => host.host.ownerJobId)
-          .filter((jobId): jobId is string => typeof jobId === 'string');
-        return hosts.length === 0
-          ? { kind: 'completed', reason: 'no live local provider host' }
-          : { kind: 'blocking', reason: 'local provider host cannot survive coordinator exit', jobIds };
-      },
-    },
-    {
-      id: 'recovery',
-      classify: async () => {
-        const quarantines = getRecoveryQuarantineStore().list();
-        const registry = lifecycleController?.getRecoveryRegistry();
-        const jobIds = [...(registry ?? [])]
-          .map(([jobId]) => jobId)
-          .filter((jobId) => getProgressStore().readRuntimeProjection(jobId) === null);
-        return quarantines.length === 0 && jobIds.length === 0
-          ? { kind: 'completed', reason: 'no recovery hold' }
-          : { kind: 'blocking', reason: 'recovery registry or quarantine retains authority', jobIds };
-      },
-    },
-    {
-      id: 'workflow',
-      classify: async () => {
-        const jobIds = readSuccessionJobIdsByKind(getProgressStore().getDb(), 'workflow');
-        return jobIds.length === 0
-          ? { kind: 'completed', reason: 'no live workflow execution' }
-          : { kind: 'blocking', reason: 'workflow execution is coordinator-local', jobIds };
-      },
-    },
-    {
-      id: 'kb-daemon',
-      classify: async () => {
-        const daemon = kbDaemonSupervisor.read();
-        const active =
-          daemon.phase === 'online'
-            ? await kbDaemonSupervisor.listActiveKbJobsForSuccession?.()
-            : { active: [] as string[] };
-        if (active === undefined) throw new Error('KB daemon work inventory is unavailable');
-        const jobIds = [
-          ...new Set([...readSuccessionJobIdsByKind(getProgressStore().getDb(), 'kb'), ...active.active]),
-        ];
-        const daemonIdle =
-          daemon.phase === 'disabled' ||
-          daemon.phase === 'stopped' ||
-          (daemon.phase === 'online' && daemon.pendingRequests === 0);
-        return jobIds.length === 0 && daemonIdle
-          ? { kind: 'completed', reason: 'no KB daemon work' }
-          : { kind: 'blocking', reason: 'KB daemon work has not been transferred', jobIds };
-      },
-    },
-    {
-      id: 'discuss',
-      classify: async () => {
-        const liveSnapshots = [...knownDiscussSources(discuss.readHelpersDeps)]
-          .flatMap((source) => discuss.getDiscussStoreForSource(source).listSummaries())
-          .filter((summary) => !TERMINAL_DISCUSS_STATUSES.has(summary.status));
-        return discuss.hooks.onIdleCheck() || liveSnapshots.length > 0
-          ? { kind: 'blocking', reason: 'live discuss session retains coordinator-local state' }
-          : { kind: 'completed', reason: 'no live discuss session' };
-      },
-    },
-    {
-      id: 'session-continuation',
-      classify: async () => {
-        const sessions = listProjectionSessionEntries(getProgressStore().getDb());
-        const held = sessions.filter(
-          (session) =>
-            session.continuationLease?.status === 'pending' ||
-            session.continuationLease?.status === 'claimed' ||
-            session.retentionDiscard.attempts.some((attempt) => attempt.status !== 'completed'),
-        );
-        return held.length === 0
-          ? { kind: 'completed', reason: 'no continuation lease or retention hold' }
-          : { kind: 'blocking', reason: 'session continuation or retention work needs an accepted receipt' };
-      },
-    },
-    {
-      id: 'child-principals',
-      recordsGrants: true,
-      dischargeGrants: (retained) => world.childPrincipalRegistry.dischargeGrants(retained),
-      classify: async (attemptId) => {
-        const snapshot = world.childPrincipalRegistry.transferSnapshot(runtime.time.now());
-        if (snapshot.entries.length === 0) return { kind: 'completed', reason: 'no live child handle' };
-        const transfer = world.childPrincipalRegistry.prepareTransfer(attemptId, runtime.time.now());
-        if (transfer?.recoveryGrantId === undefined) {
-          return { kind: 'blocking', reason: 'child nonce recovery grant could not be recorded' };
-        }
-        const liveJobs = new Set(readSuccessionJobs());
-        if (transfer.entries.some((entry) => !liveJobs.has(entry.parentJobId))) {
-          return { kind: 'blocking', reason: 'child handle has no accepted live parent job' };
-        }
-        if (
-          transfer.entries.some(
-            (entry) =>
-              readJobLaunchOriginNamespace(
-                getProgressStore().getDb(),
-                entry.parentJobId,
-                createDefaultStoreReadContext(),
-              ) !== entry.authorization.namespace,
-          )
-        )
-          return { kind: 'blocking', reason: 'child origin launch evidence is missing or conflicting' };
-        return {
-          kind: 'transferable',
-          reason: 'handles and consumed nonces are recorded for fenced adoption',
-          receipt: {
-            owner: 'child-principals',
-            generation: 1,
-            attemptId,
-            receiptId: `child-principals:${attemptId}`,
-            recoveryGrantId: transfer.recoveryGrantId,
-            payload: JSON.parse(JSON.stringify(transfer)) as JsonValue,
-          },
-        };
-      },
-    },
-  ];
+  const successionOwners = createSuccessionOwners({
+    runtime,
+    world,
+    getProgressStore,
+    getRecoveryQuarantineStore,
+    lifecycleController: () => lifecycleController,
+    kbDaemonSupervisor,
+    discuss,
+    providerHostTransfer,
+    liveProviderHosts,
+    readSuccessionJobs,
+    isTerminalDiscussStatus,
+  });
   const successionIncumbent = (): UpgradeIntent['incumbent'] => ({
     instanceId: identity.instanceId,
     pid: world.backendPid,
@@ -2002,258 +1283,30 @@ export function createCoordinatorCore(
       restartKbDaemon: (reason, signal) => kbDaemonSupervisorWithTrackedShutdown.restart(reason, signal),
     },
     health: {
-      read: () => {
-        const env = { ...world.coralEnvSnapshot };
-        delete env.CORAL_SYSTEM_PROVIDER_SCOPE;
-        const storeServices = storeServicesRef.tryGet();
-        const lifecycleState = runtimeState.getLifecycle();
-        const shutdownObservation = lifecycleController?.observeShutdown();
-        const upgrade = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-        const succession = upgrade.kind === 'readable' ? visibleUpgradeIntent(upgrade.intent) : null;
-        const successionProblem = upgradeIntentProblem(upgrade);
-        // Coarse `status` field for clients that validate the strict
-        // `'starting' | 'ok' | 'draining'` enum. Consumers that need the full
-        // lifecycle read `kernel.phase`.
-        let coarseStatus: 'starting' | 'ok' | 'draining';
-        if (world.idleTimer.isDraining || lifecycleState === 'draining' || lifecycleState === 'stopped') {
-          coarseStatus = 'draining';
-        } else if (lifecycleState === 'running' && storeServices !== null) {
-          coarseStatus = 'ok';
-        } else {
-          coarseStatus = 'starting';
-        }
-        const platform = runtime.env.platform() as NodeJS.Platform;
-        const incarnation = readSelfIncarnation();
-
-        // Strip the branded `RuntimeComponentId` to plain string at the wire boundary;
-        // transport types use `string` because the brand is enforced producer-side.
-        const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
-        const kbDaemon = kbDaemonSupervisor.read();
-        const systemProviderScope = world.systemProviderScope;
-        let activeJobs = 0;
-        let carrierLivenessByJobId = new Map<string, 'live' | 'absent' | 'unknown'>();
-        let carrierDiagnostics: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
-        if (storeServices === null) {
-          carrierDiagnostics = {
-            coverage: 'unknown',
-            liveJobs: 0,
-            unknownJobs: activeJobs,
-            recoveryDefectJobs: 0,
-          };
-        } else {
-          const progressStore = storeServices.progressStore;
-          try {
-            const jobIds = progressStore.listStoredNonterminalJobIds();
-            const observedMaxJournalSeq =
-              progressStore
-                .getDb()
-                .prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events')
-                .get()?.seq ?? 0;
-            const observations = classifyLocalCarriers(
-              jobIds,
-              {
-                getDb: () => progressStore.getDb(),
-                loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
-                platform,
-                hasStartupRecoveryPassed: () => world.startupRecoveryBarrier.hasPassed(),
-                isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
-                registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
-              },
-              observedMaxJournalSeq,
-            );
-            if (
-              observations.length !== jobIds.length ||
-              observations.some(({ observation }) => !isLivePhase(observation.storedPhase))
-            ) {
-              throw new Error('carrier_health_projection_mapping_incomplete');
-            }
-            const liveJobs = observations.filter(({ observation }) => observation.liveness === 'live').length;
-            const unknownJobs = observations.filter(({ observation }) => observation.liveness === 'unknown').length;
-            const recoveryDefectJobs = observations.filter(
-              ({ observation }) => observation.defect === 'local-unknown-after-recovery-decision',
-            ).length;
-            carrierLivenessByJobId = new Map(
-              observations.map(({ jobId, observation }) => [jobId, observation.liveness]),
-            );
-            activeJobs = liveJobs + unknownJobs;
-            carrierDiagnostics = { coverage: 'complete', liveJobs, unknownJobs, recoveryDefectJobs };
-          } catch {
-            try {
-              activeJobs = progressStore.liveJobCount();
-            } catch {
-              activeJobs = 0;
-            }
-            carrierDiagnostics = {
-              coverage: 'unknown',
-              liveJobs: 0,
-              unknownJobs: activeJobs,
-              recoveryDefectJobs: 0,
-            };
-          }
-        }
-
-        const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
-          storeServices === null ? [] : (options.getConsumerStuck() ?? []);
-        const mutationBlocked = kbDaemon.kbWrite?.mutationBlocked;
-        const diagnostics: {
-          carriers?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
-          mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
-          consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
-          providerProxySets?: NonNullable<HealthSnapshot['diagnostics']>['providerProxySets'];
-          providerProxyDispositionSkips?: NonNullable<
-            NonNullable<HealthSnapshot['diagnostics']>['providerProxyDispositionSkips']
-          >;
-          settlementRefusalRecordingFailures?: NonNullable<
-            NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']
-          >;
-          providerOperationAdoptionRefusals?: NonNullable<
-            NonNullable<HealthSnapshot['diagnostics']>['providerOperationAdoptionRefusals']
-          >;
-          launchPermits?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['launchPermits']>;
-          launchReleaseDispositions?: LaunchReleaseDiagnostic[];
-          launchReclamations?: LaunchPermitReclamationDiagnostic[];
-        } = { carriers: carrierDiagnostics };
-        if (mutationBlocked !== undefined) {
-          diagnostics.mutationBlocked = mutationBlocked;
-        }
-        if (consumerStuck.length > 0) {
-          diagnostics.consumerStuck = consumerStuck;
-        }
-        const providerProxySnapshot = world.providerProxyLifecycleRef.get()?.snapshot();
-        const providerProxySets = [...(providerProxySnapshot?.operatorSets ?? [])] satisfies NonNullable<
-          NonNullable<HealthSnapshot['diagnostics']>['providerProxySets']
-        >;
-        if (providerProxySets.length > 0) {
-          diagnostics.providerProxySets = providerProxySets;
-        }
-        const providerProxyDispositionSkips = providerProxySnapshot?.skippedDurableOperatorDispositions ?? [];
-        if (providerProxyDispositionSkips.length > 0) {
-          diagnostics.providerProxyDispositionSkips = [...providerProxyDispositionSkips];
-        }
-        if (settlementRefusalRecordingFailures.size > 0) {
-          diagnostics.settlementRefusalRecordingFailures = [...settlementRefusalRecordingFailures.values()];
-        }
-        if (providerOperationAdoptionRefusals.size > 0) {
-          diagnostics.providerOperationAdoptionRefusals = [...providerOperationAdoptionRefusals.values()];
-        }
-        const launchPermits = world.launchCoordinator
-          .activeLaunchPermits()
-          .filter(
-            ({ jobId, heldForMs }) =>
-              heldForMs > LAUNCH_PERMIT_REPORT_AGE_MS || carrierLivenessByJobId.get(jobId) !== 'live',
-          );
-        if (launchPermits.length > 0) {
-          diagnostics.launchPermits = launchPermits;
-        }
-        const launchReleaseDispositions = world.launchCoordinator.launchReleaseDiagnostics();
-        if (launchReleaseDispositions.length > 0) {
-          diagnostics.launchReleaseDispositions = launchReleaseDispositions;
-        }
-        const launchReclamations = world.launchCoordinator.launchReclamationDiagnostics();
-        if (launchReclamations.length > 0) {
-          diagnostics.launchReclamations = launchReclamations;
-        }
-        const hasDiagnostics =
-          diagnostics.carriers !== undefined ||
-          diagnostics.mutationBlocked !== undefined ||
-          diagnostics.consumerStuck !== undefined ||
-          diagnostics.providerProxySets !== undefined ||
-          diagnostics.providerProxyDispositionSkips !== undefined ||
-          diagnostics.settlementRefusalRecordingFailures !== undefined ||
-          diagnostics.providerOperationAdoptionRefusals !== undefined ||
-          diagnostics.launchPermits !== undefined ||
-          diagnostics.launchReleaseDispositions !== undefined ||
-          diagnostics.launchReclamations !== undefined;
-
-        const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
-        return {
-          status: coarseStatus,
-          ...(succession === null ? {} : { succession }),
-          ...(successionProblem === null ? {} : { successionProblem }),
-          kernel: {
-            phase: lifecycleState,
-            readyAt: lifecycleState === 'starting' ? null : runtimeState.getStartedAt(),
-          },
-          version: identity.version,
-          bundleHash: identity.bundleHash,
-          ...(strictHealthIdentity.ok && strictHealthBundleDir !== null
-            ? { manifest: strictHealthIdentity.manifest, bundleDir: strictHealthBundleDir }
-            : {}),
-          flavor: identity.flavor,
-          namespace: identity.namespace,
-          instanceId: identity.instanceId,
-          pid: world.backendPid,
-          ...(sentinelId === undefined ? {} : { sentinel: { version: 1 as const, id: sentinelId } }),
-          ...(incarnation !== null ? { incarnation } : {}),
-          uptimeMs: identity.now() - runtimeState.getStartedAt(),
-          active: world.launchCoordinator.active,
-          activeJobs,
-          liveDiscuss: listAttachedSessions(world.discussRegistry).length,
-          queueDepth: world.launchCoordinator.queueDepth(),
-          inflightRequests: world.idleTimer.inflightRequests,
-          textProjectionState: options.getTextProjectionState?.() ?? 'idle',
-          resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
-          components,
-          kbDaemon,
-          ...(shutdownObservation === undefined ? {} : { shutdown: shutdownObservation }),
-          ...(hasDiagnostics ? { diagnostics } : {}),
-          env,
-          ...(systemProviderScope === undefined
-            ? {}
-            : {
-                systemProviderScope: {
-                  name: systemProviderScope.name,
-                  providers: systemProviderScope.profiles.map((profile) => profile.provider).sort(),
-                },
-              }),
-        };
-      },
+      read: createCoordinatorHealthReader({
+        runtime,
+        world,
+        options,
+        runtimeState,
+        lifecycleController: () => lifecycleController,
+        strictHealthIdentity,
+        strictHealthBundleDir,
+        readSelfIncarnation,
+        kbDaemonSupervisor,
+        settlementRefusalRecordingFailures,
+        providerOperationAdoptionRefusals,
+        readIpcOpenSockets: () => readIpcOpenSockets(),
+        eventStreamResponseCount: () => streamResponses.size,
+        launchPermitReportAgeMs: LAUNCH_PERMIT_REPORT_AGE_MS,
+      }),
     },
-    events: {
-      addResponse: (res) => {
-        if (streamResponses.has(res)) {
-          return;
-        }
-        if (streamResponses.size >= MAX_EVENT_STREAM_CONNECTIONS) {
-          if (!res.headersSent && !res.writableEnded && !res.destroyed) {
-            sendJson(res, 503, EVENT_STREAM_CAPACITY_RESPONSE);
-            return;
-          }
-          if (!res.writableEnded && !res.destroyed) {
-            res.end();
-          }
-          return;
-        }
-        streamResponses.add(res);
-      },
-      removeResponse: (res) => {
-        streamResponses.delete(res);
-      },
-      bus: world.eventBus,
-      createStreamId: () => runtime.ids.uuid(),
-      nowIsoString: () => nowIsoString(runtime.time),
-      subscribe: (handlers: EventStreamHandlers) => {
-        eventStreamSubscriptions.get(handlers)?.();
-        eventStreamSubscriptions.set(
-          handlers,
-          subscribeAll(world.eventBus, {
-            'job:created': handlers.onJobCreated,
-            'job:phase_changed': handlers.onPhaseChanged,
-            'job:progress': handlers.onProgress,
-            'job:completed': handlers.onCompleted,
-            'discuss:updated': handlers.onDiscussUpdated,
-          }),
-        );
-      },
-      unsubscribe: (handlers: EventStreamHandlers) => {
-        const cleanup = eventStreamSubscriptions.get(handlers);
-        if (!cleanup) {
-          return;
-        }
-        eventStreamSubscriptions.delete(handlers);
-        cleanup();
-      },
-    },
+    events: createCoordinatorEventStreamPorts({
+      runtime,
+      world,
+      streamResponses,
+      eventStreamSubscriptions,
+      maxConnections: MAX_EVENT_STREAM_CONNECTIONS,
+    }),
     ...rpcPorts,
   };
 

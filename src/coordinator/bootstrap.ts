@@ -287,7 +287,7 @@ export type BackendHarness = Readonly<{
   afterReady?: () => void;
 }>;
 
-export async function main(harness: BackendHarness = {}): Promise<number> {
+async function dispatchBackendRole(): Promise<number | null> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
 
@@ -308,9 +308,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
     return runRetainedEpochCommand(retainedEpochCommand, createRealRuntime, currentCoralStoreFormat());
   }
 
-  // Provider-proxy role dispatch runs before ordinary coordinator construction: a guardian, reaper, or proxy
-  // process is a role of this same backend artifact, never a coordinator. Parsing lives in `role-argv.ts`
-  // and running in `role-main.ts` — this is dispatch only.
+  // Provider-proxy roles must be dispatched before coordinator construction.
   const providerRole = parseProviderRoleArgv(process.argv);
   if (providerRole.role !== 'none') {
     try {
@@ -318,11 +316,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
         pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
       });
     } catch (error: unknown) {
-      // A guardian/reaper/proxy role failing to start is not a coordinator startup failure — it must not
-      // reach `writeBootstrapDiagnostic`/`auditBootstrapFailure` below, which are the coordinator's own
-      // diagnostic surface, or an operator reading them would see a role's own crash reported as if this
-      // process had tried and failed to become the backend itself. Distinct codes, mirroring this file's own
-      // `70` for `--print-store-reset-build-identity`, are what let the two be told apart from the outside.
+      // Provider role failures must not be recorded as coordinator bootstrap failures.
       backendLog.error(`Provider ${providerRole.role} role failed to start`, error);
       return PROVIDER_ROLE_STARTUP_FAILURE_EXIT_CODES[providerRole.role];
     }
@@ -338,33 +332,10 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
     return handleSmokeOpenStore(process.argv);
   }
 
-  if (typeof __PLUGIN_ROOT__ !== 'string') {
-    throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
-  }
+  return null;
+}
 
-  const runningIdentity = resolveStrictBundleIdentity();
-  let repairAfterSupervisorAccepted = (_pluginRoot: string): Promise<void> => Promise.resolve();
-  let replacingSupervisor = false;
-  const replaceSupervisor = (): void => {
-    if (replacingSupervisor) return;
-    const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
-    if (!runningIdentity.ok || runDir === undefined) {
-      backendLog.error('Could not replace coordinator supervisor: running build identity is unavailable');
-      return;
-    }
-    replacingSupervisor = true;
-    startReplacementSupervisor(
-      __PLUGIN_ROOT__,
-      runDir,
-      runningIdentity.manifest,
-      (error) => backendLog.error('Could not replace coordinator supervisor', error),
-      (pluginRoot) => repairAfterSupervisorAccepted(pluginRoot),
-    );
-  };
-  let shutdownAfterSentinelLoss = (): void => {
-    replaceSupervisor();
-    bootstrapProbeExitGate.requestExit(1);
-  };
+async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLoss: () => void): Promise<void> {
   let sentinelArm: Promise<void> | null = null;
   if (process.env.CORAL_SENTINEL_ID !== undefined) {
     const sentinelId = process.env.CORAL_SENTINEL_ID;
@@ -430,20 +401,108 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
       }
     });
     process.on('disconnect', () => {
-      shutdownAfterSentinelLoss();
+      onSentinelLoss();
     });
   }
   if (sentinelArm !== null) await sentinelArm;
+}
+
+async function handleCoordinatorStartupFailure(
+  pluginRoot: string,
+  successionAttempt: Awaited<ReturnType<typeof receiveSuccessionAttemptChild>>,
+  error: unknown,
+): Promise<number> {
+  if (successionAttempt !== null) {
+    backendLog.warn(
+      error instanceof SuccessionAttemptStartupHoldError
+        ? error.message
+        : `Succession attempt startup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return 1;
+  }
+  if (error instanceof BackendAlreadyRunningError) {
+    backendLog.info(error.message);
+    return 0;
+  }
+  if ((error as { name?: string } | null)?.name === 'AbortError') {
+    return 0;
+  }
+
+  let startupError = error;
+  let startupExitCode = 1;
+  if (error instanceof StartupStoreHandoffError) {
+    const handoff = await handoffStartupToSelectedBuild(pluginRoot, error);
+    switch (handoff.kind) {
+      case 'started':
+        return 0;
+      case 'undetermined':
+        backendLog.warn(
+          `This process delegated startup to the selected Coral build and could not observe whether that build ` +
+            `is now serving (${handoff.cause}). No startup failure is recorded, because none was observed. Run ` +
+            `'coral-cli backend status' to see whether the selected build is serving, and to settle the routing ` +
+            `invocation this process left unresolved.`,
+        );
+        return UNOBSERVED_STARTUP_DELEGATION_EXIT_CODE;
+      case 'failed':
+        startupError = handoff.error;
+        startupExitCode = handoff.exitCode;
+        break;
+      default:
+        return assertNever(handoff);
+    }
+  }
+
+  backendLog.error('Fatal startup error', startupError);
+  const diagnosticFile = writeBootstrapDiagnostic(pluginRoot, 'startup_failed', startupError, startupExitCode);
+  writeStartupErrorSentinel(pluginRoot, startupError, diagnosticFile);
+  auditBootstrapFailure(
+    'bootstrap_startup_failed',
+    pluginRoot,
+    'startup_failed',
+    startupError,
+    startupExitCode,
+    diagnosticFile,
+  );
+  return startupExitCode;
+}
+
+export async function main(harness: BackendHarness = {}): Promise<number> {
+  const dispatched = await dispatchBackendRole();
+  if (dispatched !== null) return dispatched;
+
+  if (typeof __PLUGIN_ROOT__ !== 'string') {
+    throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
+  }
+
+  const runningIdentity = resolveStrictBundleIdentity();
+  let repairAfterSupervisorAccepted = (_pluginRoot: string): Promise<void> => Promise.resolve();
+  let replacingSupervisor = false;
+  const replaceSupervisor = (): void => {
+    if (replacingSupervisor) return;
+    const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
+    if (!runningIdentity.ok || runDir === undefined) {
+      backendLog.error('Could not replace coordinator supervisor: running build identity is unavailable');
+      return;
+    }
+    replacingSupervisor = true;
+    startReplacementSupervisor(
+      __PLUGIN_ROOT__,
+      runDir,
+      runningIdentity.manifest,
+      (error) => backendLog.error('Could not replace coordinator supervisor', error),
+      (pluginRoot) => repairAfterSupervisorAccepted(pluginRoot),
+    );
+  };
+  let shutdownAfterSentinelLoss = (): void => {
+    replaceSupervisor();
+    bootstrapProbeExitGate.requestExit(1);
+  };
+  await armSupervisorSentinel(replaceSupervisor, () => shutdownAfterSentinelLoss());
 
   const successionAttempt = await receiveSuccessionAttemptChild(createRealSuccessionAttemptPorts());
   installSuccessionAttemptChild(successionAttempt);
 
-  // Hold a ref'd keepalive for the duration of startup. Without it, a contender
-  // entering `bindWithHandoff`'s retry sleep can drain the event loop and exit
-  // silently with code 0: `runtime.time.sleep` uses `timer.unref()` (real.ts),
-  // and no other ref-holding I/O exists between IPC client close and the next
-  // bind attempt. After `start()` resolves the bound IPC + HTTP servers keep
-  // the loop alive on their own.
+  // Startup must retain a referenced handle until `start()` resolves.
   const startupKeepalive = setInterval(() => {}, 60_000);
 
   try {
@@ -492,58 +551,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
     backendLog.info(`Running on ${info.host}:${info.port}`);
     return 0;
   } catch (error: unknown) {
-    if (successionAttempt !== null) {
-      backendLog.warn(
-        error instanceof SuccessionAttemptStartupHoldError
-          ? error.message
-          : `Succession attempt startup failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return 1;
-    }
-    if (error instanceof BackendAlreadyRunningError) {
-      backendLog.info(error.message);
-      return 0;
-    }
-    if ((error as { name?: string } | null)?.name === 'AbortError') {
-      return 0;
-    }
-
-    let startupError = error;
-    let startupExitCode = 1;
-    if (error instanceof StartupStoreHandoffError) {
-      const handoff = await handoffStartupToSelectedBuild(__PLUGIN_ROOT__, error);
-      switch (handoff.kind) {
-        case 'started':
-          return 0;
-        case 'undetermined':
-          backendLog.warn(
-            `This process delegated startup to the selected Coral build and could not observe whether that build ` +
-              `is now serving (${handoff.cause}). No startup failure is recorded, because none was observed. Run ` +
-              `'coral-cli backend status' to see whether the selected build is serving, and to settle the routing ` +
-              `invocation this process left unresolved.`,
-          );
-          return UNOBSERVED_STARTUP_DELEGATION_EXIT_CODE;
-        case 'failed':
-          startupError = handoff.error;
-          startupExitCode = handoff.exitCode;
-          break;
-        default:
-          return assertNever(handoff);
-      }
-    }
-
-    backendLog.error('Fatal startup error', startupError);
-    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', startupError, startupExitCode);
-    writeStartupErrorSentinel(__PLUGIN_ROOT__, startupError, diagnosticFile);
-    auditBootstrapFailure(
-      'bootstrap_startup_failed',
-      __PLUGIN_ROOT__,
-      'startup_failed',
-      startupError,
-      startupExitCode,
-      diagnosticFile,
-    );
-    return startupExitCode;
+    return await handleCoordinatorStartupFailure(__PLUGIN_ROOT__, successionAttempt, error);
   } finally {
     clearInterval(startupKeepalive);
   }

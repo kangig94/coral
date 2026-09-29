@@ -405,7 +405,6 @@ async function holdUnlessAbandoned(runtime: Runtime, startupId: string, hold: Su
   backendLog.warn(`Abandoned a succession hold for ordinary store selection: ${describeStartupHold(hold)}`);
 }
 
-/** The dead attempt a startup acts on; serving from it discharges the attempt (see dischargeDeadSuccessionAttempt). */
 export type DeadAttemptRecovery = Readonly<{
   attemptId: string;
   epochKey: string;

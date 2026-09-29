@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS } from '#src/infra/shutdown-contract.js';
 import {
   compareAndSwapUpgradeIntent,
   readCompletedSuccessionReceipts,
@@ -1306,7 +1307,7 @@ describe('ipc ensure', () => {
     };
     mockState.request.mockResolvedValue({ aborted: [] });
 
-    const { ensure, HANDOFF_DRAIN_TIMEOUT_MS } = await importEnsure();
+    const { ensure } = await importEnsure();
 
     mockState.health.mockResolvedValue({ ...health, status: 'draining' });
     await (await ensure('jobs.abort', root)).request('jobs.abort', {}, { timeoutMs: TOOL_TIMEOUT_MS });
@@ -1352,7 +1353,7 @@ describe('ipc ensure', () => {
       namespace: pluginRootNamespace(root),
     });
 
-    const { ensure, HANDOFF_DRAIN_TIMEOUT_MS } = await importEnsure();
+    const { ensure } = await importEnsure();
     const { IpcDrainRequestUnanswered, IpcRequestTimeout } = await import('#src/transport/ipc/client.js');
 
     mockState.request.mockRejectedValue(new IpcRequestTimeout('IPC request timed out after 29876ms'));
@@ -1449,7 +1450,7 @@ describe('ipc ensure', () => {
         drainingIncumbent(root);
         mockState.bindSocket.mockResolvedValue({ kind: 'incumbent', reason: 'live-listener' });
 
-        const { issueWithSuccessorAfterLifecycleRefusal, HANDOFF_DRAIN_TIMEOUT_MS } = await importEnsure();
+        const { issueWithSuccessorAfterLifecycleRefusal } = await importEnsure();
         const { IpcLifecycleRefusal } = await import('#src/transport/ipc/client.js');
         const { buildErrorEnvelope } = await import('#src/cli/errors.js');
         const issue = vi.fn(async () => {

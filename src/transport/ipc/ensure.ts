@@ -63,6 +63,7 @@ import { assertNever } from '../../infra/error-format.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
 import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
 import { readCompletedSuccessionReceipts, readUpgradeIntent } from '../../infra/upgrade-intent.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS } from '../../infra/shutdown-contract.js';
 export const STARTUP_POLL_MS = 200;
 /**
  * Time budget for an already-starting incumbent to reach a usable lifecycle phase (kernel-ready or running).
@@ -70,13 +71,6 @@ export const STARTUP_POLL_MS = 200;
  * budget may cut that wait short.
  */
 export const KERNEL_READY_DEADLINE_MS = 15_000;
-/**
- * Time budget for administrative drain to release the socket.
- * Mirrors `HANDOFF_DRAIN_TIMEOUT_MS` in `coordinator/shutdown.ts` —
- * defined locally here to avoid a transport→coordinator import cycle. The
- * coordinator side is canonical; the two must stay in sync.
- */
-export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 export const SENTINEL_RECOVERY_BUDGET_MS = 660_000;
 export const LEGACY_RECOVERY_BUDGET_MS = 30_000;
@@ -130,7 +124,6 @@ export type EnsuredIpcClient = IpcClient & {
   readonly host: string;
   readonly port: number;
   readonly version: string;
-  /** Empty for a coordinator that advertises none, which is every build through v0.10.13. */
   readonly jobsWaitExtensions: readonly string[];
 };
 

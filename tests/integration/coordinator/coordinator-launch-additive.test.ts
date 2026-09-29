@@ -118,9 +118,17 @@ it('forwards every durable launch hold through backend status', async () => {
       if (launch === null) throw new Error('launch not reserved');
       const child = { pid: 201, incarnation: 'child' as ProcessIncarnation };
       expect(record.admit(launch, owner.process, child, Date.now())).toBe(true);
+      const replacement = { pid: 301, incarnation: 'replacement' as ProcessIncarnation };
+      expect(record.holdSignalRefusal(owner, launch, child, Date.now())).toBe(true);
+      expect(record.holdReplacementSignalRefusal(child, replacement)).toBe(true);
       record.holdInheritedChild(owner, { ...launch, child }, Date.now());
       const inherited = await getBackendStatusFull('/plugin-root');
       expect(inherited.launchInheritedHolds).toEqual([{ launchId: launch.id, pid: 201 }]);
+      expect(inherited.launchSignalHolds).toContainEqual({ launchId: launch.id, ...child });
+      expect(inherited.launchSignalHolds).toContainEqual({
+        launchId: `replacement:${replacement.pid}:${replacement.incarnation}`,
+        ...replacement,
+      });
       expect(formatBackendStatus(inherited, { kind: 'absent' }, null)).toContain(launch.id);
       expect(formatBackendStatus(inherited, { kind: 'absent' }, null)).not.toContain('Run the start command below');
     } finally {
@@ -150,6 +158,7 @@ it('reports an unreadable launch record separately from an absent record', async
     writeFileSync(coordinatorLaunchPath(runDir), 'invalid sqlite');
     const unreadable = await getBackendStatusFull('/plugin-root');
     expect(unreadable.launchRecordProblem).toBe('unreadable');
+    expect(unreadable.launchSignalHolds).toBeUndefined();
     expect(formatBackendStatus(unreadable, { kind: 'absent' }, null)).toContain(
       'Coordinator launch record is unreadable',
     );

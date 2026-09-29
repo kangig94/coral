@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { HANDOFF_DRAIN_TIMEOUT_MS, KERNEL_READY_DEADLINE_MS } from '#src/transport/ipc/ensure.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS } from '#src/infra/shutdown-contract.js';
+import { KERNEL_READY_DEADLINE_MS } from '#src/transport/ipc/ensure.js';
 
 describe('kernel-ready timeout constants', () => {
   it('ready deadline is 15s', () => {
