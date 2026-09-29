@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
   closeSync,
-  existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -19,8 +18,8 @@ import { writeAuditEvent } from './audit-log.js';
 import { createForeignTargetValidator, type ForeignTargetValidationResult } from './handoff-target.js';
 import { processIncarnationSchema } from './node-process.js';
 import { upgradeIntentPath } from './path/index.js';
-import { coordinatorLaunchPath } from './path/index.js';
-import { readCoordinatorLaunchState } from './coordinator-launch.js';
+import { listLaunchAdmissions } from './launch-admission-record.js';
+import { probeProcessIncarnation } from './node-process.js';
 
 const buildIdentitySchema = z
   .object({
@@ -195,6 +194,7 @@ const upgradeIntentFields = z
     version: z.literal('v1'),
     requestId: z.string().min(1),
     reason: z.enum(['upgrade', 'supervision-repair']).optional(),
+    legacyRetirement: z.boolean().optional(),
     requestedAt: z.string().datetime().optional(),
     revision: z.number().int().nonnegative(),
     incumbent: incumbentIdentitySchema,
@@ -510,15 +510,30 @@ export async function quarantineCorruptUpgradeIntent(runDir: string): Promise<bo
   const lease = await acquireDirectoryLock(join(runDir, 'upgrade.v1.lock'));
   try {
     if (readUpgradeIntentAtPath(upgradeIntentPath(runDir)).kind !== 'corrupt') return false;
-    if (existsSync(coordinatorLaunchPath(runDir))) {
-      let activeAttempt: boolean;
-      try {
-        const attempt = readCoordinatorLaunchState(runDir).attempt;
-        activeAttempt = attempt !== null && attempt.phase !== 'exited';
-      } catch {
+    if (
+      listLaunchAdmissions(runDir).some(
+        (entry) =>
+          entry.kind === 'readable' &&
+          (entry.admission.purpose === 'succession' || entry.admission.purpose === 'contender') &&
+          probeProcessIncarnation(entry.admission.child.pid) === entry.admission.child.incarnation,
+      )
+    )
+      return false;
+    try {
+      const discovery = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as {
+        pid?: number;
+        incarnation?: string;
+        supervision?: { purpose?: string };
+      };
+      if (
+        (discovery.supervision?.purpose === 'succession' || discovery.supervision?.purpose === 'contender') &&
+        discovery.pid !== undefined &&
+        discovery.incarnation !== undefined &&
+        probeProcessIncarnation(discovery.pid) === discovery.incarnation
+      )
         return false;
-      }
-      if (activeAttempt) return false;
+    } catch {
+      /* Absent or unreadable discovery supplies no active-attempt proof. */
     }
     lease.assertOwned();
     renameSync(upgradeIntentPath(runDir), join(runDir, `upgrade.v1.corrupt-${randomUUID()}.json`));

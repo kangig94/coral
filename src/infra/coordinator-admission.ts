@@ -1,12 +1,13 @@
-import { CoordinatorLaunchRecord, type LaunchProcess } from './coordinator-launch.js';
-import { probeProcessIncarnation } from './node-process.js';
+import { publishLaunchAdmission, removeOwnLaunchAdmission } from './launch-admission-record.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
 
 type AdmissionMessage = Readonly<{
   kind: 'coral-launch-admit';
   runDir: string;
   launchId: string;
-  ownerEpoch: number;
-  parent: LaunchProcess;
+  build: Readonly<{ version: string; buildSetId: string; bundleHash: string; flavor: 'prod' | 'dev' }>;
+  purpose: 'startup' | 'contender' | 'succession' | 'recovery' | 'legacy-retirement';
+  parent: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
 }>;
 
 function admissionMessage(value: unknown): value is AdmissionMessage {
@@ -15,30 +16,73 @@ function admissionMessage(value: unknown): value is AdmissionMessage {
 
 export async function claimCoordinatorLaunch(): Promise<boolean> {
   if (process.env.CORAL_LAUNCH_ADMISSION !== '1') return true;
-  const admitted = await new Promise<boolean>((resolve) => {
-    const timeout = setTimeout(() => resolve(false), 10_000);
-    process.once('message', (message: unknown) => {
+  return new Promise<boolean>((resolve) => {
+    let launchId: string | null = null;
+    let runDir = '';
+    let settled = false;
+    const finish = (admitted: boolean): void => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
-      if (!admissionMessage(message) || process.ppid !== message.parent.pid) return resolve(false);
+      process.off('disconnect', disconnected);
+      process.off('message', receiveAdmission);
+      process.off('message', acknowledged);
+      if (admitted) {
+        const abortBeforeArm = (): void => process.exit(1);
+        const armed = (message: unknown): void => {
+          if (typeof message !== 'object' || message === null || !('kind' in message)) return;
+          if (message.kind !== 'coral-sentinel-armed') return;
+          process.off('disconnect', abortBeforeArm);
+          process.off('message', armed);
+        };
+        process.on('disconnect', abortBeforeArm);
+        process.on('message', armed);
+      } else if (launchId !== null) removeOwnLaunchAdmission(runDir, launchId);
+      resolve(admitted);
+    };
+    const disconnected = (): void => finish(false);
+    const acknowledged = (message: unknown): void => {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'kind' in message &&
+        message.kind === 'coral-launch-acknowledged' &&
+        'launchId' in message &&
+        message.launchId === launchId
+      )
+        finish(true);
+    };
+    const receiveAdmission = (message: unknown): void => {
+      if (!admissionMessage(message) || process.ppid !== message.parent.pid) return finish(false);
       const parentIncarnation = probeProcessIncarnation(message.parent.pid);
       const childIncarnation = probeProcessIncarnation(process.pid);
-      if (parentIncarnation !== message.parent.incarnation || childIncarnation === null) return resolve(false);
-      const record = new CoordinatorLaunchRecord(message.runDir);
-      try {
-        const state = record.read();
-        const reservation = [state.launch, state.attempt].find((launch) => launch?.id === message.launchId);
-        const accepted =
-          reservation !== undefined &&
-          reservation !== null &&
-          reservation.ownerEpoch === message.ownerEpoch &&
-          record.admit(reservation, message.parent, { pid: process.pid, incarnation: childIncarnation }, Date.now());
-        if (accepted) process.env.CORAL_LAUNCH_ID = reservation.id;
-        resolve(accepted);
-      } finally {
-        record.close();
-      }
-    });
+      if (parentIncarnation !== message.parent.incarnation || childIncarnation === null || !process.connected)
+        return finish(false);
+      runDir = message.runDir;
+      launchId = message.launchId;
+      publishLaunchAdmission(message.runDir, {
+        version: 1,
+        launchId: message.launchId,
+        child: { pid: process.pid, incarnation: childIncarnation },
+        parent: message.parent,
+        admittedAt: Date.now(),
+        build: message.build,
+        purpose: message.purpose,
+      });
+      if (!process.connected) return finish(false);
+      process.env.CORAL_LAUNCH_ID = message.launchId;
+      process.on('exit', () => removeOwnLaunchAdmission(message.runDir, message.launchId));
+      process.on('message', acknowledged);
+      process.send?.({ kind: 'coral-launch-admitted', pid: process.pid, launchId: message.launchId });
+    };
+    const timeout = setTimeout(() => finish(false), 10_000);
+    process.once('disconnect', disconnected);
+    process.once('message', receiveAdmission);
   });
-  if (admitted) process.send?.({ kind: 'coral-launch-admitted', pid: process.pid });
-  return admitted;
+}
+
+/** Discovery now names the admitted child, so its self-record is superseded and its parent learns it was published. */
+export function supersedeLaunchAdmissionByDiscovery(runDir: string, launchId: string): void {
+  removeOwnLaunchAdmission(runDir, launchId);
+  if (process.connected) process.send?.({ kind: 'coral-launch-discovered', pid: process.pid, launchId });
 }

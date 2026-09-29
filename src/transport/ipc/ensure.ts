@@ -19,18 +19,11 @@ import { HEALTH_TIMEOUT_MS } from '../health.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
-import {
-  readBoundedAdjacentManifest,
-  readBuildFlavor,
-  readBundleHash,
-  resolveStrictBundleIdentity,
-  strictBundleManifestSchema,
-} from '../../infra/bundle-manifest.js';
-import {
-  CoordinatorLaunchRecord,
-  readCoordinatorLaunchDisposition,
-  type CoordinatorLaunchState,
-} from '../../infra/coordinator-launch.js';
+import { readBuildFlavor, readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
+import { readLaunchAdmission } from '../../infra/launch-admission-record.js';
+import { attemptExclusiveFileLockSync } from '../../infra/fs-lock.js';
+import { supervisorLockPath } from '../../infra/path/index.js';
+import type { CoordinatorDiscoveryRecord } from '../../infra/backend-discovery.js';
 import {
   createIpcClient,
   IpcDrainRequestUnanswered,
@@ -118,6 +111,7 @@ export type VerifiedBackendInfo = {
   instanceId: string;
   incarnation?: ProcessIncarnation;
   sentinel?: { version: 1; id: string };
+  supervision?: CoordinatorDiscoveryRecord['supervision'];
 };
 
 export type EnsuredIpcClient = IpcClient & {
@@ -333,6 +327,18 @@ const verifiedBackendInfoSchema = z
     incarnation: processIncarnationSchema.optional(),
     sentinel: z
       .object({ version: z.literal(1), id: z.string().min(1) })
+      .optional()
+      .catch(undefined),
+    supervision: z
+      .object({
+        version: z.literal(1),
+        launchId: z.string().uuid(),
+        buildSetId: nonEmptyStringSchema,
+        admittedAt: z.number().int().positive(),
+        purpose: z.enum(['startup', 'contender', 'succession', 'recovery', 'legacy-retirement']),
+        parent: z.object({ pid: z.number().int().positive(), incarnation: processIncarnationSchema }).passthrough(),
+      })
+      .passthrough()
       .optional()
       .catch(undefined),
   })
@@ -601,31 +607,20 @@ function matchingStartupError(
     }
     if (waitContext.sentinel && sentinel.launchId !== undefined) {
       if (sentinel.incarnation === undefined || sentinel.incarnation === null) return null;
-      try {
-        const launchRecord = new CoordinatorLaunchRecord(paths.runDir);
-        let state: CoordinatorLaunchState;
-        try {
-          state = launchRecord.read();
-        } finally {
-          launchRecord.close();
-        }
-        const child = [state.launch, state.attempt].find((slot) => slot?.id === sentinel.launchId);
-        if (
-          child?.child?.pid !== sentinel.pid ||
-          child.child.incarnation !== sentinel.incarnation ||
-          child.phase === 'exited'
-        )
-          return null;
-        const owner = state.owner;
-        if (
-          owner !== null &&
-          owner.leaseUntil > Date.now() &&
-          probeProcessIncarnation(owner.process.pid) === owner.process.incarnation
-        )
-          return null;
-      } catch {
-        return null;
-      }
+      const admission = readLaunchAdmission(paths.runDir, sentinel.launchId);
+      const discovery = readDiscoverySnapshot(paths);
+      const identity =
+        admission.kind === 'readable' &&
+        admission.admission.child.pid === sentinel.pid &&
+        admission.admission.child.incarnation === sentinel.incarnation
+          ? admission.admission.parent
+          : discovery?.supervision?.launchId === sentinel.launchId &&
+              discovery.pid === sentinel.pid &&
+              discovery.incarnation === sentinel.incarnation
+            ? discovery.supervision.parent
+            : null;
+      if (identity === null) return null;
+      if (probeProcessIncarnation(identity.pid) === identity.incarnation) return null;
     }
     return readOperatorFacingCoralSetupError(sentinel.error, sentinelAuthorship(sentinel, desired));
   }
@@ -825,47 +820,44 @@ function endedStartupMessage(
 export function supervisorAcceptedUpgrade(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
-  now: number,
+  _now: number,
 ): 'accepted' | 'unproven' {
-  if (!existsSync(paths.launchFile)) return 'unproven';
-  let record: CoordinatorLaunchRecord | null = null;
-  try {
-    record = new CoordinatorLaunchRecord(paths.runDir);
-    const state = record.read();
-    const owner = state.owner;
-    if (
-      owner === null ||
-      owner.leaseUntil <= now ||
-      observeProcessLiveness(owner.process.pid) !== 'alive' ||
-      probeProcessIncarnation(owner.process.pid) !== owner.process.incarnation
-    )
-      return 'unproven';
-    return state.requests.some((request) => {
-      if (request.status !== 'accepted' || request.acceptedEpoch !== owner.epoch) return false;
-      if (
-        ![state.launch, state.attempt].some(
-          (slot) =>
-            slot?.buildSetId === request.buildSetId && slot.phase === 'serving' && slot.terminationAt === undefined,
-        )
-      )
-        return false;
-      const adjacent = readBoundedAdjacentManifest(dirname(request.executable));
-      if (!adjacent.ok) return false;
-      const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
-      return (
-        parsed.success &&
-        parsed.data.version === desired.version &&
-        parsed.data.bundleHash === desired.bundleHash &&
-        parsed.data.flavor === desired.flavor
-      );
-    })
-      ? 'accepted'
-      : 'unproven';
-  } catch {
+  const observed = readUpgradeIntent(paths.runDir);
+  if (
+    observed.kind !== 'readable' ||
+    observed.intent.legacyRetirement !== true ||
+    observed.intent.target.build.version !== desired.version ||
+    observed.intent.target.build.bundleHash !== desired.bundleHash ||
+    observed.intent.target.build.flavor !== desired.flavor
+  )
     return 'unproven';
-  } finally {
-    record?.close();
-  }
+  const discovery = readDiscoverySnapshot(paths);
+  const parent = discovery?.supervision?.parent;
+  return discovery !== null &&
+    parent !== undefined &&
+    discovery.supervision?.buildSetId === observed.intent.target.build.buildSetId &&
+    discovery.version === desired.version &&
+    discovery.bundleHash === desired.bundleHash &&
+    discovery.flavor === desired.flavor &&
+    probeProcessIncarnation(parent.pid) === parent.incarnation
+    ? 'accepted'
+    : 'unproven';
+}
+
+function supervisorHasPendingUpgrade(paths: CoordinatorPaths, desired: DesiredCoordinator): boolean {
+  const observed = readUpgradeIntent(paths.runDir);
+  if (
+    observed.kind !== 'readable' ||
+    observed.intent.legacyRetirement !== true ||
+    observed.intent.disposition === 'closed' ||
+    observed.intent.target.build.version !== desired.version ||
+    observed.intent.target.build.bundleHash !== desired.bundleHash ||
+    observed.intent.target.build.flavor !== desired.flavor
+  )
+    return false;
+  const lock = attemptExclusiveFileLockSync(supervisorLockPath(paths.runDir));
+  if (lock.kind === 'acquired') lock.lease();
+  return lock.kind === 'contended';
 }
 
 /**
@@ -1044,7 +1036,7 @@ async function observeBackendReady(
         terminalOutcome = null;
         continue;
       }
-      if (supervisorAcceptedUpgrade(paths, desired, timePort.now()) === 'accepted') {
+      if (supervisorHasPendingUpgrade(paths, desired)) {
         monitoring = 'available';
         await timePort.sleep(
           Math.max(1, Math.min(STARTUP_POLL_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt))),
@@ -1078,33 +1070,6 @@ function hasCommittedSuccessionReceipt(
   incumbent: ReturnType<typeof existingIncumbentIdentity>,
   successor: RawCoordinatorHealth,
 ): boolean {
-  const launchDisposition = readCoordinatorLaunchDisposition(runDir);
-  if (launchDisposition.kind === 'readable') {
-    const completed = launchDisposition.state.requests.some((request) => {
-      const prior = request.incumbent;
-      const receipt = request.completionReceipt;
-      if (request.status !== 'completed' || prior === undefined || receipt === undefined) return false;
-      const adjacent = readBoundedAdjacentManifest(dirname(request.executable));
-      if (!adjacent.ok) return false;
-      const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
-      return (
-        parsed.success &&
-        prior.instanceId === incumbent.instanceId &&
-        prior.version === incumbent.version &&
-        prior.bundleHash === incumbent.bundleHash &&
-        prior.flavor === incumbent.flavor &&
-        (incumbent.pid === undefined || prior.pid === incumbent.pid) &&
-        (incumbent.incarnation === undefined || prior.incarnation === incumbent.incarnation) &&
-        receipt.successor.instanceId === successor.instanceId &&
-        receipt.successor.pid === successor.pid &&
-        receipt.successor.incarnation === successor.incarnation &&
-        parsed.data.version === successor.version &&
-        parsed.data.bundleHash === successor.bundleHash &&
-        parsed.data.flavor === successor.flavor
-      );
-    });
-    if (completed) return true;
-  }
   const observed = readUpgradeIntent(runDir);
   const current =
     observed.kind === 'readable' &&

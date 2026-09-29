@@ -27,8 +27,7 @@ void claimCoordinatorLaunch().then((admitted) => {
         }),
         undefined,
       );
-      process.exitCode = 1;
-      return;
+      process.exit(1);
     }
   }
   void runBackendMain();

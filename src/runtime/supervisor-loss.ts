@@ -1,13 +1,15 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
-import { CoordinatorLaunchRecord, type LaunchProcess } from '../infra/coordinator-launch.js';
+import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
+import { updateLaunchStatus } from '../infra/launch-status.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
+import { createRealRuntime } from './real.js';
 import { installReplacementSupervisorChannel } from './succession-attempt.js';
 
 const RETRY_MS = 1_000;
@@ -26,23 +28,17 @@ type ReplacementSupervisorControl = {
 type ReplacementSupervisorAttempt = {
   control: ReplacementSupervisorControl;
   root: string;
-  sourceIncarnation: ProcessIncarnation;
-  record: CoordinatorLaunchRecord;
   challenge: string;
-  supervisor: ReturnType<typeof spawn>;
+  supervisor: ChildProcess;
   settled: boolean;
   accepted: boolean;
-  channelReady: boolean;
   bridgeReady: boolean;
-  offered: string | null;
   launchedIncarnation: ProcessIncarnation | null;
   retirementAt: number | null;
   termSent: boolean;
   killSent: boolean;
-  holdRefusalReported: boolean;
-  poll: ReturnType<typeof setInterval> | null;
-  retirementPoll: ReturnType<typeof setInterval> | null;
-  deadline: ReturnType<typeof setTimeout> | null;
+  retirementPoll: ReturnType<typeof setInterval>;
+  deadline: ReturnType<typeof setTimeout>;
 };
 
 function retryReplacementSupervisor(control: ReplacementSupervisorControl, error: Error): void {
@@ -58,86 +54,36 @@ function repairReplacementSupervisor(control: ReplacementSupervisorControl, root
   });
 }
 
-function finishReplacementAttempt(attempt: ReplacementSupervisorAttempt, error: Error | null, repair = false): void {
+function finishReplacementAttempt(attempt: ReplacementSupervisorAttempt, error: Error | null): void {
   if (attempt.settled) return;
   attempt.settled = true;
-  if (attempt.poll !== null) clearInterval(attempt.poll);
-  if (attempt.retirementPoll !== null) clearInterval(attempt.retirementPoll);
-  if (attempt.deadline !== null) clearTimeout(attempt.deadline);
-  attempt.record.close();
+  clearInterval(attempt.retirementPoll);
+  clearTimeout(attempt.deadline);
   if (error === null) {
-    if (repair) repairReplacementSupervisor(attempt.control, attempt.root);
+    repairReplacementSupervisor(attempt.control, attempt.root);
     attempt.supervisor.unref();
   } else retryReplacementSupervisor(attempt.control, error);
 }
 
-function holdReplacementSignalRefusal(attempt: ReplacementSupervisorAttempt, replacement: LaunchProcess): void {
-  const { control, record, sourceIncarnation } = attempt;
-  const held = record.holdReplacementSignalRefusal({ pid: process.pid, incarnation: sourceIncarnation }, replacement);
-  if (held) {
-    attempt.holdRefusalReported = false;
-  } else if (!attempt.holdRefusalReported) {
-    attempt.holdRefusalReported = true;
-    control.onError(new Error(`Replacement supervisor signal hold refused for PID ${replacement.pid}`));
-  }
-}
-
-function pollReplacementOwnership(attempt: ReplacementSupervisorAttempt): void {
-  const { control, record, supervisor, sourceIncarnation, challenge } = attempt;
+function replacementHold(attempt: ReplacementSupervisorAttempt, held: boolean): void {
+  const pid = attempt.supervisor.pid;
+  const incarnation = attempt.launchedIncarnation;
+  if (pid === undefined || incarnation === null) return;
+  const launchId = `replacement:${pid}:${incarnation}`;
   try {
-    const state = record.read();
-    const owner = state.owner;
-    if (
-      !attempt.accepted &&
-      owner !== null &&
-      owner.process.pid === supervisor.pid &&
-      owner.process.incarnation === probeProcessIncarnation(supervisor.pid) &&
-      owner.buildSetId === control.manifest.buildSetId &&
-      owner.leaseUntil > Date.now() &&
-      attempt.channelReady
-    ) {
-      attempt.accepted = true;
-      if (attempt.deadline !== null) clearTimeout(attempt.deadline);
-      if (attempt.launchedIncarnation !== null && supervisor.pid !== undefined)
-        record.clearReplacementSignalRefusal({ pid: supervisor.pid, incarnation: attempt.launchedIncarnation });
-      supervisor.unref();
-    }
-    if (attempt.accepted) {
-      if (state.attempt !== null && state.attempt.phase !== 'exited') return;
-      const repair =
-        state.launch?.phase === 'serving' &&
-        state.launch.child?.pid === process.pid &&
-        state.launch.child.incarnation === sourceIncarnation;
-      if (repair && !attempt.bridgeReady) return;
-      finishReplacementAttempt(attempt, null, repair);
-      return;
-    }
-    if (
-      attempt.settled ||
-      attempt.retirementAt !== null ||
-      !attempt.channelReady ||
-      attempt.offered !== null ||
-      supervisor.pid === undefined
-    )
-      return;
-    const nomineeIncarnation = probeProcessIncarnation(supervisor.pid);
-    if (nomineeIncarnation === null) return;
-    attempt.launchedIncarnation ??= nomineeIncarnation;
-    const id = record.nominateRecovery(
-      { pid: process.pid, incarnation: sourceIncarnation },
-      { pid: supervisor.pid, incarnation: nomineeIncarnation },
-      challenge,
-    );
-    if (id === null) return;
-    attempt.offered = id;
-    supervisor.send({ kind: 'coral-recovery-offer', id, challenge });
+    updateLaunchStatus(attempt.control.runDir, (status) => ({
+      ...status,
+      signalHolds: held
+        ? [...status.signalHolds.filter((entry) => entry.launchId !== launchId), { launchId, pid, incarnation }]
+        : status.signalHolds.filter((entry) => entry.launchId !== launchId),
+    }));
   } catch (error: unknown) {
-    control.onError(error instanceof Error ? error : new Error(String(error)));
+    attempt.control.onError(new Error(`Replacement supervisor signal status could not be written: ${String(error)}`));
   }
 }
 
 function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void {
-  const { record, supervisor, sourceIncarnation } = attempt;
+  const { supervisor } = attempt;
   if (
     attempt.settled ||
     attempt.accepted ||
@@ -149,85 +95,65 @@ function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void 
   const observed = probeProcessIncarnation(supervisor.pid);
   attempt.launchedIncarnation ??= observed;
   if (observed === null || observed !== attempt.launchedIncarnation) return;
-  const replacement = { pid: supervisor.pid, incarnation: observed };
-  if (!record.cancelRecoveryForTermination({ pid: process.pid, incarnation: sourceIncarnation }, replacement)) return;
-  if (Date.now() - attempt.retirementAt < SENTINEL_TIMING.graceMs) {
-    if (attempt.termSent) return;
+  const killDue = Date.now() - attempt.retirementAt >= SENTINEL_TIMING.graceMs;
+  if (!killDue && attempt.termSent) return;
+  let sent = false;
+  if (killDue) {
     try {
-      attempt.termSent = supervisor.kill('SIGTERM');
+      sent = supervisor.kill('SIGKILL');
     } catch {
-      attempt.termSent = false;
+      /* The exact child may already have exited. */
     }
-    if (attempt.termSent) record.clearReplacementSignalRefusal(replacement);
-    else holdReplacementSignalRefusal(attempt, replacement);
-    return;
+    attempt.killSent = sent;
+  } else {
+    try {
+      sent = supervisor.kill('SIGTERM');
+    } catch {
+      /* The exact child may already have exited. */
+    }
+    attempt.termSent = sent;
   }
-  try {
-    attempt.killSent = supervisor.kill('SIGKILL');
-  } catch {
-    attempt.killSent = false;
-  }
-  if (attempt.killSent) record.clearReplacementSignalRefusal(replacement);
-  else holdReplacementSignalRefusal(attempt, replacement);
+  replacementHold(attempt, !sent);
 }
 
 function receiveReplacementMessage(attempt: ReplacementSupervisorAttempt, message: unknown): void {
   if (
-    typeof message === 'object' &&
-    message !== null &&
-    'kind' in message &&
-    message.kind === 'coral-repair-bridge-ready' &&
-    'challenge' in message &&
-    message.challenge === attempt.challenge
-  ) {
-    attempt.bridgeReady = true;
-    return;
-  }
-  if (
     typeof message !== 'object' ||
     message === null ||
     !('kind' in message) ||
-    message.kind !== 'coral-recovery-ready' ||
     !('challenge' in message) ||
     message.challenge !== attempt.challenge
   )
     return;
-  attempt.channelReady = true;
-  installReplacementSupervisorChannel(attempt.supervisor);
+  if (message.kind === 'coral-recovery-ready') {
+    installReplacementSupervisorChannel(attempt.supervisor);
+    attempt.supervisor.send({ kind: 'coral-recovery-offer', challenge: attempt.challenge });
+  } else if (message.kind === 'coral-recovery-owned') {
+    attempt.accepted = true;
+    clearTimeout(attempt.deadline);
+    replacementHold(attempt, false);
+    attempt.supervisor.unref();
+    if (attempt.bridgeReady) finishReplacementAttempt(attempt, null);
+  } else if (message.kind === 'coral-repair-bridge-ready') {
+    attempt.bridgeReady = true;
+    if (attempt.accepted) finishReplacementAttempt(attempt, null);
+  }
 }
 
-function observeReplacementExit(
-  attempt: ReplacementSupervisorAttempt,
-  code: number | null,
-  signal: NodeJS.Signals | null,
-): void {
-  const { control, record, supervisor, sourceIncarnation } = attempt;
-  if (!attempt.settled) {
-    if (attempt.launchedIncarnation !== null && supervisor.pid !== undefined)
-      record.clearReplacementSignalRefusal({ pid: supervisor.pid, incarnation: attempt.launchedIncarnation });
-    finishReplacementAttempt(
-      attempt,
-      new Error(`Replacement supervisor exited before accepting ownership (${code ?? signal})`),
-    );
-    return;
-  }
-  const current = new CoordinatorLaunchRecord(control.runDir);
+function servingSourceStillPresent(
+  control: ReplacementSupervisorControl,
+  sourceIncarnation: ProcessIncarnation,
+): boolean {
   try {
-    if (attempt.launchedIncarnation !== null && supervisor.pid !== undefined)
-      current.clearReplacementSignalRefusal({ pid: supervisor.pid, incarnation: attempt.launchedIncarnation });
-    const state = current.read();
-    if (
-      [state.launch, state.attempt].some(
-        (slot) =>
-          slot?.phase === 'serving' && slot.child?.pid === process.pid && slot.child.incarnation === sourceIncarnation,
-      )
-    )
-      retryReplacementSupervisor(
-        control,
-        new Error(`Replacement supervisor exited after accepting ownership (${code ?? signal})`),
-      );
-  } finally {
-    current.close();
+    const runtime = createRealRuntime(control.manifest.flavor, { baseDir: join(control.runDir, '..', '..') });
+    const observed = readDiscoveryRecordDisposition(runtime);
+    return (
+      observed.kind === 'record' &&
+      observed.record.pid === process.pid &&
+      observed.record.incarnation === sourceIncarnation
+    );
+  } catch {
+    return true;
   }
 }
 
@@ -242,7 +168,6 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
     retryReplacementSupervisor(control, new Error('No validated supervisor executable for the running build'));
     return;
   }
-  const record = new CoordinatorLaunchRecord(control.runDir);
   const challenge = randomUUID();
   const supervisor = spawn(
     process.execPath,
@@ -261,26 +186,18 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
   const attempt: ReplacementSupervisorAttempt = {
     control,
     root,
-    sourceIncarnation,
-    record,
     challenge,
     supervisor,
     settled: false,
     accepted: false,
-    channelReady: false,
     bridgeReady: false,
-    offered: null,
     launchedIncarnation: null,
     retirementAt: null,
     termSent: false,
     killSent: false,
-    holdRefusalReported: false,
-    poll: null,
-    retirementPoll: null,
-    deadline: null,
+    retirementPoll: null as unknown as ReturnType<typeof setInterval>,
+    deadline: null as unknown as ReturnType<typeof setTimeout>,
   };
-  attempt.poll = setInterval(() => pollReplacementOwnership(attempt), 200);
-  attempt.poll.unref();
   attempt.retirementPoll = setInterval(() => pollReplacementRetirement(attempt), 1_000);
   attempt.retirementPoll.unref();
   attempt.deadline = setTimeout(() => {
@@ -289,10 +206,22 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
   attempt.deadline.unref();
   supervisor.once('error', (error) => finishReplacementAttempt(attempt, error));
   supervisor.on('message', (message: unknown) => receiveReplacementMessage(attempt, message));
-  supervisor.once('exit', (code, signal) => observeReplacementExit(attempt, code, signal));
+  supervisor.once('exit', (code, signal) => {
+    replacementHold(attempt, false);
+    if (!attempt.settled)
+      finishReplacementAttempt(
+        attempt,
+        new Error(`Replacement supervisor exited before accepting ownership (${code ?? signal})`),
+      );
+    else if (servingSourceStillPresent(control, sourceIncarnation))
+      retryReplacementSupervisor(
+        control,
+        new Error(`Replacement supervisor exited after accepting ownership (${code ?? signal})`),
+      );
+  });
 }
 
-/** A surviving coordinator keeps serving until a replacement accepts launch ownership; exit 0 is read as acceptance. */
+/** A surviving coordinator keeps serving until a replacement accepts launch ownership. */
 export function startReplacementSupervisor(
   pluginRoot: string,
   runDir: string,

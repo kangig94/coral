@@ -429,10 +429,13 @@ describe('real-process succession commit', () => {
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+    let abortedAttemptId: string | null;
     try {
       await waitForCondition(() => existsSync(servingGate), 30_000);
       const attempting = readUpgradeIntent(runDir);
       expect(attempting.kind === 'readable' ? attempting.intent.attemptChild?.pid : null).toBeGreaterThan(0);
+      abortedAttemptId = attempting.kind === 'readable' ? attempting.intent.attemptId : null;
+      expect(abortedAttemptId).not.toBeNull();
       process.kill(initial.pid, 'SIGTERM');
       await waitForCondition(() => {
         const observed = readUpgradeIntent(runDir);
@@ -447,7 +450,9 @@ describe('real-process succession commit', () => {
     await waitForProcessExit(contender, 30_000);
     await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
     const observed = readUpgradeIntent(runDir);
-    expect(observed.kind === 'readable' && observed.intent.disposition === 'completed').toBe(false);
+    expect(observed.kind === 'readable' && observed.intent.completionReceipt?.attemptId === abortedAttemptId).toBe(
+      false,
+    );
     expect(existsSync(storeDbPathForHome(home, 'prod', '2'))).toBe(false);
     expect(readDiscoveryRecordForHome(home, 'prod')?.pid).not.toBe(initial.pid);
   });

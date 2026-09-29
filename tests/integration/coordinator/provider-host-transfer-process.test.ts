@@ -17,10 +17,11 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
+import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
-import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { coordinatorPaths, supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import {
   handoffCapsuleControllerBuildSetId,
@@ -49,6 +50,12 @@ const coordinators: SpawnedCoordinator[] = [];
 const cliChildren: ChildProcess[] = [];
 const hostProcesses: { pid: number; incarnation: ProcessIncarnation }[] = [];
 const successors: { pid: number; incarnation: ProcessIncarnation | null }[] = [];
+
+function supervisorLockHeld(runDir: string): boolean {
+  const attempt = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+  if (attempt.kind === 'acquired') attempt.lease();
+  return attempt.kind === 'contended';
+}
 
 /** Recorded host processes are not this test's children, so only their incarnation disappearing proves an exit. */
 async function killRecordedProcesses(recorded: readonly { pid: number; incarnation: ProcessIncarnation }[]) {
@@ -290,11 +297,12 @@ async function upgradeTo(
         discovery !== null &&
         discovery.pid !== incumbentPid &&
         intent.kind === 'readable' &&
-        intent.intent.disposition === 'completed'
+        intent.intent.disposition === 'completed' &&
+        intent.intent.completionReceipt?.successor.build.buildSetId === buildSetIdOf(newerFixture)
       );
     }, 30_000);
   } catch (error: unknown) {
-    const launch = new CoordinatorLaunchRecord(runDir);
+    const launch = new SupervisorEvidence(runDir);
     try {
       throw new Error(
         `Provider transfer did not serve: ${JSON.stringify({
@@ -358,7 +366,7 @@ describe('real-process provider host transfer', () => {
     let output = '';
     supervisor.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
     supervisor.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
-    const launch = new CoordinatorLaunchRecord(runDir);
+    const launch = new SupervisorEvidence(runDir);
     try {
       const original = await waitForDiscoveryRecord(world.home, 'prod', 20_000);
       const jobId = launchedJobId(await runCli(fixture, world, ['codex', '-i', world.prompt, '--detach']));
@@ -412,8 +420,9 @@ describe('real-process provider host transfer', () => {
     const { oldFixture, old, incumbentPid, jobId, hosts } = await startProxiedJob(world);
     if (old.child.pid === undefined) throw new Error('Supervisor has no PID');
     const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
-    const launch = new CoordinatorLaunchRecord(runDir);
+    const launch = new SupervisorEvidence(runDir);
     let claimant: SpawnedCoordinator | null = null;
+    await waitForCondition(() => launch.read().launch?.phase === 'serving', 5_000);
     process.kill(old.child.pid, 'SIGSTOP');
     process.kill(incumbentPid, 'SIGSTOP');
     try {
@@ -425,10 +434,14 @@ describe('real-process provider host transfer', () => {
         supervised: true,
       });
       coordinators.push(claimant);
-      await waitForCondition(() => launch.read().requests.some((request) => request.status === 'recorded'), 10_000);
+      expect(claimant.child.exitCode).toBeNull();
+      expect(launch.read().owner?.process.pid).toBe(old.child.pid);
       process.kill(old.child.pid, 'SIGKILL');
-      await waitForCondition(() => launch.read().owner?.process.pid === claimant?.child.pid, 20_000);
-      expect(launch.read().owner?.mode).toBe('recovering');
+      await waitForCondition(
+        () => old.child.signalCode !== null && claimant?.child.exitCode === null && supervisorLockHeld(runDir),
+        20_000,
+      );
+      expect(launch.read().launch?.parent?.pid).toBe(old.child.pid);
       expect(claimant.child.exitCode).toBeNull();
       expect(launch.read().launch).toMatchObject({ phase: 'serving', child: { pid: incumbentPid } });
       expect(observeProcessLiveness(incumbentPid)).toBe('alive');
@@ -490,12 +503,22 @@ describe('real-process provider host transfer', () => {
     const world = createTransferWorld();
     const { old, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
     if (old.child.pid === undefined) throw new Error('Supervisor has no PID');
-    const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(world.home, 'prod').runDir);
+    const launch = new SupervisorEvidence(coordinatorFilesForHome(world.home, 'prod').runDir);
     try {
       process.kill(old.child.pid, 'SIGKILL');
-      await waitForCondition(() => launch.read().owner?.process.pid !== old.child.pid, 20_000);
+      await waitForCondition(
+        () => launch.read().owner?.process.pid !== undefined && launch.read().owner?.process.pid !== old.child.pid,
+        20_000,
+      );
       const { newerFixture } = await upgradeTo(world, incumbentPid);
-      await waitForCondition(() => launch.read().launch?.buildSetId === buildSetIdOf(newerFixture), 30_000);
+      try {
+        await waitForCondition(() => launch.read().launch?.buildSetId === buildSetIdOf(newerFixture), 30_000);
+      } catch (error: unknown) {
+        throw new Error(
+          `Replacement launch not observed: ${JSON.stringify({ expected: buildSetIdOf(newerFixture), launch: launch.read(), intent: readUpgradeIntent(coordinatorFilesForHome(world.home, 'prod').runDir), discovery: readDiscoveryRecordForHome(world.home, 'prod') })}`,
+          { cause: error },
+        );
+      }
       expect(hostsAlive(hosts)).toBe(true);
       writeFileSync(join(world.state, 'emit-after-transfer'), 'emit');
       try {
@@ -563,7 +586,7 @@ describe('real-process provider host transfer', () => {
     });
     let oldPid: number | null = null;
     let recoveredPid: number | null = null;
-    const launch = new CoordinatorLaunchRecord(runDir);
+    const launch = new SupervisorEvidence(runDir);
     try {
       const original = await waitForDiscoveryRecord(world.home, 'prod', 25_000);
       oldPid = original.pid;

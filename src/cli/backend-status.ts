@@ -1,10 +1,7 @@
 import { observeCoordinator, type CoordinatorObservation } from '../transport/http/backend/coordinator-observation.js';
 import { dirname, join } from 'node:path';
-import {
-  quarantinedCoordinatorLaunchRecords,
-  readCoordinatorLaunchDisposition,
-  type CoordinatorLaunchState,
-} from '../infra/coordinator-launch.js';
+import { listLaunchAdmissions } from '../infra/launch-admission-record.js';
+import { readLaunchStatus, type LaunchStatus } from '../infra/launch-status.js';
 import {
   hasQuarantinedUpgradeIntent,
   readUpgradeIntent,
@@ -457,11 +454,10 @@ export type SupersededEpochClosures =
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
 export type BackendStatusFull = BackendStatusFullBase & {
-  launchRecordProblem?: 'unreadable' | 'newer';
-  launchRecordQuarantines?: readonly string[];
-  launchHold?: NonNullable<CoordinatorLaunchState['hold']>;
-  launchInheritedHolds?: NonNullable<CoordinatorLaunchState['inheritedHolds']>;
-  launchSignalHolds?: NonNullable<CoordinatorLaunchState['signalHolds']>;
+  launchStatusProblem?: 'unreadable';
+  launchHold?: NonNullable<LaunchStatus['hold']>;
+  launchInheritedHolds?: LaunchStatus['inheritedHolds'];
+  launchSignalHolds?: LaunchStatus['signalHolds'];
   upgrade?: UpgradeIntentVisibility;
   upgradeProblem?: UpgradeIntentProblem;
   upgradeQuarantined?: boolean;
@@ -1169,26 +1165,20 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   const status = await getBackendStatusBase(pluginRoot);
   const runDir = createRealRuntime(readBuildFlavor(pluginRoot)).paths.coral.coordinator.runDir;
   const quarantined = hasQuarantinedUpgradeIntent(runDir);
-  const launchQuarantines = quarantinedCoordinatorLaunchRecords(runDir);
-  const launchQuarantineStatus = launchQuarantines.length ? { launchRecordQuarantines: launchQuarantines } : {};
   const upgradeQuarantineStatus = quarantined ? { upgradeQuarantined: true } : {};
-  const disposition = readCoordinatorLaunchDisposition(runDir);
-  if (disposition.kind === 'readable') {
-    const state = disposition.state;
-    const hold = state.hold;
-    return {
-      ...status,
-      ...(hold === undefined ? {} : { launchHold: hold }),
-      ...(state.inheritedHolds?.length ? { launchInheritedHolds: state.inheritedHolds } : {}),
-      ...(state.signalHolds?.length ? { launchSignalHolds: state.signalHolds } : {}),
-      ...launchQuarantineStatus,
-      ...upgradeQuarantineStatus,
-    };
-  }
+  const disposition = readLaunchStatus(runDir);
+  const unreadableAdmission = listLaunchAdmissions(runDir).find((entry) => entry.kind === 'unreadable');
+  const state = disposition.kind === 'readable' ? disposition.status : null;
   return {
     ...status,
-    ...(disposition.kind === 'absent' ? {} : { launchRecordProblem: disposition.kind }),
-    ...launchQuarantineStatus,
+    ...(state?.hold !== undefined
+      ? { launchHold: state.hold }
+      : unreadableAdmission?.kind === 'unreadable'
+        ? { launchHold: { kind: 'admission-unreadable' as const, path: unreadableAdmission.path } }
+        : {}),
+    ...(state?.inheritedHolds.length ? { launchInheritedHolds: state.inheritedHolds } : {}),
+    ...(state?.signalHolds.length ? { launchSignalHolds: state.signalHolds } : {}),
+    ...(disposition.kind === 'unreadable' ? { launchStatusProblem: 'unreadable' as const } : {}),
     ...upgradeQuarantineStatus,
   };
 }

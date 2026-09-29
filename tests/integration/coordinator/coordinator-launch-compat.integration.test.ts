@@ -1,92 +1,89 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import { describe, expect, it } from 'vitest';
 
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
-import { coordinatorLaunchPath } from '#src/infra/path/index.js';
+import {
+  readLaunchAdmission,
+  publishLaunchAdmission,
+  launchAdmissionPath,
+} from '#src/infra/launch-admission-record.js';
+import { readDiscoveryRecordDisposition } from '#src/infra/backend-discovery.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 
-describe('coordinator launch durable compatibility', () => {
-  it('preserves unknown request and launch fields through their transitions', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-nested-shape-'));
+describe('supervision identity compatibility', () => {
+  it('preserves unknown child admission fields while reading the exact child', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-admission-shape-'));
+    const launchId = '00000000-0000-4000-8000-000000000001';
     try {
-      const record = new CoordinatorLaunchRecord(runDir);
-      const now = Date.now();
-      const owner = record.acquire(
-        {
-          id: 'owner',
-          process: { pid: 1, incarnation: 'known-process' as ProcessIncarnation },
-          buildSetId: 'known-build',
-        },
-        now,
-      );
-      if (owner === null) throw new Error('owner was not acquired');
-      const request = record.request('/known/backend', 'known-build');
-      const reservation = record.reserve(owner, 'known-build', 'startup', now);
-      if (reservation === null) throw new Error('launch was not reserved');
-      record.close();
-
-      const database = new DatabaseSync(coordinatorLaunchPath(runDir));
-      const row = database.prepare('SELECT state FROM control WHERE id = 1').get() as { state: string };
-      const state = JSON.parse(row.state) as {
-        launch: Record<string, unknown>;
-        requests: Record<string, unknown>[];
-      };
-      state.launch.futureAdmissionProof = { generation: 2 };
-      state.requests[0].futureRequestProof = { generation: 3 };
-      database.prepare('UPDATE control SET state = ? WHERE id = 1').run(JSON.stringify(state));
-      database.close();
-
-      const reopened = new CoordinatorLaunchRecord(runDir);
-      const child = { pid: 2, incarnation: 'known-child' as ProcessIncarnation };
-      expect(reopened.accept(owner, request.id, now + 1)).toBe(true);
-      expect(reopened.admit(reservation, owner.process, child, now + 1)).toBe(true);
-      expect(reopened.serving(reservation, child)).toBe(true);
-      expect(reopened.complete(owner, request.id, now + 1)).toBe(true);
-      expect(reopened.exited(reservation, child)).toBe(true);
-      const settled = reopened.read();
-      expect((settled.launch as unknown as Record<string, unknown>).futureAdmissionProof).toEqual({ generation: 2 });
-      expect((settled.requests[0] as unknown as Record<string, unknown>).futureRequestProof).toEqual({
-        generation: 3,
+      publishLaunchAdmission(runDir, {
+        version: 1,
+        launchId,
+        child: { pid: 201, incarnation: 'child' as ProcessIncarnation },
+        parent: { pid: 101, incarnation: 'parent' as ProcessIncarnation },
+        admittedAt: 1_000,
+        build: { version: '0.10.14', buildSetId: 'known-build', bundleHash: 'known-hash', flavor: 'prod' },
+        purpose: 'startup',
       });
-      reopened.close();
+      const path = launchAdmissionPath(runDir, launchId);
+      const withFutureField = {
+        ...(JSON.parse(readFileSync(path, 'utf8')) as object),
+        futureAdmissionProof: { generation: 2 },
+      };
+      writeFileSync(path, JSON.stringify(withFutureField));
+      expect(readLaunchAdmission(runDir, launchId)).toMatchObject({
+        kind: 'readable',
+        admission: {
+          ...withFutureField,
+          child: { pid: 201, incarnation: 'child' },
+          parent: { pid: 101, incarnation: 'parent' },
+        },
+      });
     } finally {
       rmSync(runDir, { recursive: true, force: true });
     }
   });
 
-  it('preserves an unknown owner field while renewing the lease', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-owner-shape-'));
+  it('lets older discovery readers ignore additive supervision identity', () => {
+    const home = mkdtempSync(join(tmpdir(), 'coral-supervision-discovery-'));
     try {
-      const record = new CoordinatorLaunchRecord(runDir);
-      const owner = record.acquire(
-        {
-          id: 'owner',
-          process: { pid: 1, incarnation: 'known-process' as ProcessIncarnation },
-          buildSetId: 'known-build',
-        },
-        1_000,
+      const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+      const path = runtime.paths.coral.coordinator.infoFile;
+      mkdirSync(runtime.paths.coral.coordinator.runDir, { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          pid: 201,
+          port: 12345,
+          socketPath: '/tmp/coral.sock',
+          bundleHash: 'bundle',
+          flavor: 'prod',
+          namespace: 'namespace',
+          startedAt: 1_000,
+          token: 'token',
+          bootToken: 'boot',
+          supervision: {
+            version: 1,
+            launchId: '00000000-0000-4000-8000-000000000001',
+            admittedAt: 999,
+            buildSetId: 'known-build',
+            purpose: 'startup',
+            parent: { pid: 101, incarnation: 'parent' },
+            futureOwnerProof: { generation: 2 },
+          },
+        }),
       );
-      if (owner === null) throw new Error('owner was not acquired');
-      record.close();
-
-      const database = new DatabaseSync(coordinatorLaunchPath(runDir));
-      const row = database.prepare('SELECT state FROM control WHERE id = 1').get() as { state: string };
-      const state = JSON.parse(row.state) as { owner: Record<string, unknown> | null };
-      if (state.owner === null) throw new Error('durable owner is missing');
-      state.owner.futureLeaseProof = { generation: 2 };
-      database.prepare('UPDATE control SET state = ? WHERE id = 1').run(JSON.stringify(state));
-      database.close();
-
-      const reopened = new CoordinatorLaunchRecord(runDir);
-      expect(reopened.renew(owner, 1_001)).not.toBeNull();
-      expect((reopened.read().owner as unknown as Record<string, unknown>).futureLeaseProof).toEqual({ generation: 2 });
-      reopened.close();
+      expect(readDiscoveryRecordDisposition(runtime)).toMatchObject({
+        kind: 'record',
+        record: {
+          pid: 201,
+          supervision: { buildSetId: 'known-build', futureOwnerProof: { generation: 2 } },
+        },
+      });
     } finally {
-      rmSync(runDir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

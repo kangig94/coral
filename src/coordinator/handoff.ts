@@ -104,6 +104,7 @@ export async function requestUpgradeFromContender(
       options: Readonly<{
         runDir: string;
         socketPath: string;
+        requestId: string;
         incumbent: UpgradeIntent['incumbent'];
         target: UpgradeIntent['target'];
       }>,
@@ -149,6 +150,7 @@ export async function requestUpgradeFromContender(
   return options.startLegacy({
     runDir: options.runDir,
     socketPath: options.socketPath,
+    requestId: options.requestId,
     incumbent: {
       instanceId,
       pid: incumbent.pid,

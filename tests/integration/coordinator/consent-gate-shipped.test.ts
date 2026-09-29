@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import {
   coordinatorFilesForHome,
   createPluginFixture,
@@ -39,7 +39,7 @@ describe('AC1 consent gate against shipped v0.10.13', () => {
     const contender = spawnCoordinator({ fixture: branch, home, tempRoots: roots, supervised: true });
     coordinators.push(contender);
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     try {
       await waitForCondition(
         () =>

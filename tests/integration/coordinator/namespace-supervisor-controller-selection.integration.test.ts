@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -7,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
@@ -37,7 +38,7 @@ describe('namespace supervisor controller selection', () => {
     roots.push(home);
     const plugin = createPluginFixture(roots, { flavor: 'prod', backend: 'setup-error-once' });
     const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     const cli = spawn(process.execPath, [join(plugin.root, 'bridge', 'coral-cli'), 'backend', 'start'], {
       cwd: home,
       env: {
@@ -52,7 +53,11 @@ describe('namespace supervisor controller selection', () => {
     cli.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
     cli.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
     try {
-      await waitForCondition(() => cli.exitCode !== null, 30_000);
+      try {
+        await waitForCondition(() => cli.exitCode !== null, 30_000);
+      } catch (error: unknown) {
+        throw new Error(`CLI did not finish: ${output}; ${JSON.stringify(record.read())}`, { cause: error });
+      }
       expect(cli.exitCode, output).toBe(0);
       expect(existsSync(join(runDir, 'setup-error-once.fixture'))).toBe(true);
       await waitForCondition(() => record.read().launch?.phase === 'serving', 10_000);
@@ -122,7 +127,7 @@ describe('namespace supervisor controller selection', () => {
       env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     try {
       await waitForCondition(() => record.read().hold?.kind === 'custody-unreadable', 10_000);
       expect(record.read().hold).toEqual({
@@ -153,7 +158,7 @@ describe('namespace supervisor controller selection', () => {
     const roots = [home];
     const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
     let supervisor: ReturnType<typeof spawn> | null = null;
-    let record: CoordinatorLaunchRecord | null = null;
+    let record: SupervisorEvidence | null = null;
     try {
       const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
       const runDir = runtime.paths.coral.coordinator.runDir;
@@ -188,7 +193,7 @@ describe('namespace supervisor controller selection', () => {
         env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
         stdio: 'ignore',
       });
-      record = new CoordinatorLaunchRecord(runDir);
+      record = new SupervisorEvidence(runDir);
       await waitForCondition(() => record?.read().launch?.phase === 'serving', 15_000);
       expect(index.locations().find((location) => location.jobId === 'absent-job')?.disposition).not.toBe('terminal');
     } finally {
@@ -205,13 +210,13 @@ describe('namespace supervisor controller selection', () => {
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
   }, 25_000);
-  it('reports acceptance only after the requested build starts serving', () => {
+  it('reports acceptance only after the requested build publishes supervised discovery', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-acceptance-'));
     roots.push(home);
     const target = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
     const paths = coordinatorPaths('prod', { baseDir: join(home, '.coral') });
-    const record = new CoordinatorLaunchRecord(paths.runDir);
+    const record = new SupervisorEvidence(paths.runDir);
     try {
       const manifest = validatedBuild(target.root);
       const incarnation = probeProcessIncarnation(process.pid);
@@ -222,23 +227,38 @@ describe('namespace supervisor controller selection', () => {
         flavor: manifest.flavor,
         namespace: 'test',
       };
-      const request = record.request(join(target.root, 'bridge', 'coral-backend.cjs'), manifest.buildSetId);
+      await record.request(join(target.root, 'bridge', 'coral-backend.cjs'), manifest.buildSetId);
       expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('unproven');
-      const owner = record.acquire(
-        { id: 'current', process: { pid: process.pid, incarnation }, buildSetId: manifest.buildSetId },
-        Date.now(),
+      mkdirSync(paths.runDir, { recursive: true });
+      expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('unproven');
+      writeFileSync(
+        paths.infoFile,
+        JSON.stringify({
+          pid: process.pid,
+          port: 1,
+          socketPath: 'test-socket',
+          bundleHash: manifest.bundleHash,
+          flavor: manifest.flavor,
+          namespace: 'test',
+          startedAt: Date.now(),
+          token: 'token',
+          bootToken: 'boot',
+          host: '127.0.0.1',
+          version: manifest.version,
+          instanceId: randomUUID(),
+          incarnation,
+          supervision: {
+            version: 1,
+            launchId: randomUUID(),
+            admittedAt: Date.now(),
+            buildSetId: manifest.buildSetId,
+            purpose: 'legacy-retirement',
+            parent: { pid: process.pid, incarnation },
+          },
+        }),
       );
-      if (owner === null) throw new Error('Owner did not acquire');
-      expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('unproven');
-      const launch = record.reserve(owner, manifest.buildSetId, 'startup', Date.now());
-      if (launch === null) throw new Error('Launch was not reserved');
-      const child = { pid: process.pid, incarnation };
-      expect(record.admit(launch, owner.process, child, Date.now())).toBe(true);
-      expect(record.serving(launch, child)).toBe(true);
-      expect(record.accept(owner, request.id, Date.now())).toBe(true);
-      expect(record.read().requests.find((entry) => entry.id === request.id)?.acceptedEpoch).toBe(owner.epoch);
       expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('accepted');
-      expect(record.exited(launch, child)).toBe(true);
+      rmSync(paths.infoFile);
       expect(supervisorAcceptedUpgrade(paths, desired, Date.now())).toBe('unproven');
     } finally {
       record.close();
@@ -297,10 +317,10 @@ describe('namespace supervisor controller selection', () => {
       env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
-      const request = record.request(
+      const request = await record.request(
         join(rebuilt.root, 'bridge', 'coral-backend.cjs'),
         fixtureBuildSetId(rebuilt.root),
       );
@@ -345,7 +365,7 @@ describe('namespace supervisor controller selection', () => {
       env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     let childPid: number | undefined;
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
@@ -389,7 +409,7 @@ describe('namespace supervisor controller selection', () => {
       env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
       expect(record.read().launch?.buildSetId).toBe(fixtureBuildSetId(shipped.root));
@@ -441,12 +461,18 @@ describe('namespace supervisor controller selection', () => {
       },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     let cli: ReturnType<typeof spawn> | null = null;
     try {
       await waitForCondition(() => record.read().launch?.phase === 'admitted', 10_000);
-      const rollback = record.request(join(older.root, 'bridge', 'coral-backend.cjs'), fixtureBuildSetId(older.root));
-      const redundant = record.request(join(equal.root, 'bridge', 'coral-backend.cjs'), fixtureBuildSetId(equal.root));
+      const rollback = await record.request(
+        join(older.root, 'bridge', 'coral-backend.cjs'),
+        fixtureBuildSetId(older.root),
+      );
+      const redundant = await record.request(
+        join(equal.root, 'bridge', 'coral-backend.cjs'),
+        fixtureBuildSetId(equal.root),
+      );
       const runningCli = spawn(process.execPath, [join(newer.root, 'bridge', 'coral-cli'), 'backend', 'start'], {
         cwd: home,
         env: {
@@ -477,7 +503,7 @@ describe('namespace supervisor controller selection', () => {
       }
       expect(record.read().launch?.buildSetId).toBe(fixtureBuildSetId(current.root));
       await waitForCondition(() => runningCli.exitCode !== null, 20_000);
-      expect(runningCli.exitCode, cliOutput).toBe(0);
+      expect(runningCli.exitCode, `${cliOutput}; ${JSON.stringify(record.read())}`).toBe(0);
     } finally {
       const childPid = record.read().launch?.child?.pid;
       record.close();
@@ -502,8 +528,8 @@ describe('namespace supervisor controller selection', () => {
     const missing = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
     const baseDir = join(home, '.coral');
     const runDir = coordinatorPaths('prod', { baseDir }).runDir;
-    const initialRecord = new CoordinatorLaunchRecord(runDir);
-    const missingRequest = initialRecord.request(
+    const initialRecord = new SupervisorEvidence(runDir);
+    const missingRequest = await initialRecord.request(
       join(missing.root, 'bridge', 'coral-backend.cjs'),
       fixtureBuildSetId(missing.root),
     );
@@ -531,7 +557,7 @@ describe('namespace supervisor controller selection', () => {
       },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
       await new Promise((resolve) => setTimeout(resolve, 750));

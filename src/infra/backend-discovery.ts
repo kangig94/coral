@@ -32,6 +32,14 @@ export interface CoordinatorDiscoveryRecord {
   incarnation?: ProcessIncarnation;
   storeEpoch?: string;
   sentinel?: { version: 1; id: string };
+  supervision?: {
+    version: 1;
+    launchId: string;
+    admittedAt: number;
+    buildSetId: string;
+    purpose: 'startup' | 'contender' | 'succession' | 'recovery' | 'legacy-retirement';
+    parent: { pid: number; incarnation: ProcessIncarnation };
+  };
 }
 
 export interface BackendInfo extends CoordinatorDiscoveryRecord {
@@ -88,6 +96,18 @@ const coordinatorDiscoveryRecordSchema = z
       .optional(),
     sentinel: z
       .object({ version: z.literal(1), id: nonEmptyStringSchema })
+      .optional()
+      .catch(undefined),
+    supervision: z
+      .object({
+        version: z.literal(1),
+        launchId: z.string().uuid(),
+        admittedAt: positiveIntegerSchema,
+        buildSetId: nonEmptyStringSchema,
+        purpose: z.enum(['startup', 'contender', 'succession', 'recovery', 'legacy-retirement']),
+        parent: z.object({ pid: positiveIntegerSchema, incarnation: durableProcessIncarnationSchema }).passthrough(),
+      })
+      .passthrough()
       .optional()
       .catch(undefined),
   })

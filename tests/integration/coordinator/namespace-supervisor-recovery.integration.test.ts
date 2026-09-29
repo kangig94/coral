@@ -1,4 +1,4 @@
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -14,32 +14,25 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
 
 import { build, type PluginBuild } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
-import { tryAcquireDirectoryLock } from '#src/infra/fs-lock.js';
+import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
+import { replacementServing } from '#src/coordinator-launch/health.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
+import { listLaunchAdmissions, readLaunchAdmission } from '#src/infra/launch-admission-record.js';
 import {
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   SUCCESSION_CAPABILITIES_FILE,
 } from '#src/infra/bundle-manifest-address.js';
 import { coordinatorPaths, socketPathForRunDir } from '#src/infra/path/coordinator.js';
-import { coordinatorLaunchPath, generationAdmissionLockPath } from '#src/infra/path/index.js';
-import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import {
-  createPluginFixture,
-  spawnCoordinator,
-  stopCoordinator,
-  terminateChildProcess,
-  waitForDiscoveryRecord,
-} from '#tests/integration/coordinator/helpers.js';
+import { createPluginFixture } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
@@ -49,6 +42,21 @@ function buildSetId(root: string): string {
       buildSetId: string;
     }
   ).buildSetId;
+}
+
+function admittedBuild(root: string): string {
+  const manifest = JSON.parse(readFileSync(join(root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8')) as {
+    version: string;
+    buildSetId: string;
+    bundleHash: string;
+    flavor: 'prod' | 'dev';
+  };
+  return JSON.stringify({
+    version: manifest.version,
+    buildSetId: manifest.buildSetId,
+    bundleHash: manifest.bundleHash,
+    flavor: manifest.flavor,
+  });
 }
 
 describe('namespace supervisor recovery', () => {
@@ -72,7 +80,7 @@ describe('namespace supervisor recovery', () => {
       env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     const pids = new Set<number>();
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
@@ -122,7 +130,7 @@ describe('namespace supervisor recovery', () => {
         env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       });
-      const record = new CoordinatorLaunchRecord(runDir);
+      const record = new SupervisorEvidence(runDir);
       const pids = new Set<number>();
       let stoppedPid: number | undefined;
       try {
@@ -197,11 +205,12 @@ describe('namespace supervisor recovery', () => {
           TMPDIR: home,
           PATH: `${join(home, 'bin')}:${process.env.PATH ?? ''}`,
           CORAL_SENTINEL_RUN_DIR: runDir,
+          CORAL_FIXTURE_REAL_BACKEND: '1',
           ...(successor === null ? {} : { CORAL_TEST_SUCCESSION_RELEASE_DELAY_MS: '10000' }),
         },
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       });
-      const record = new CoordinatorLaunchRecord(runDir);
+      const record = new SupervisorEvidence(runDir);
       const pids = new Set<number>();
       const hosts: { pid: number; incarnation: ProcessIncarnation }[] = [];
       let cli: ReturnType<typeof spawn> | null = null;
@@ -209,6 +218,12 @@ describe('namespace supervisor recovery', () => {
         await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
         const originalPid = record.read().launch?.child?.pid;
         if (originalPid === undefined) throw new Error('Serving child has no PID');
+        let initialHealthy = false;
+        for (let retry = 0; retry < 100 && !initialHealthy; retry += 1) {
+          initialHealthy = await replacementServing(runDir, 'prod', originalPid);
+          if (!initialHealthy) await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        expect(initialHealthy).toBe(true);
         pids.add(originalPid);
         const binDir = join(home, 'bin');
         const stateDir = join(home, '.fake-codex-state');
@@ -270,11 +285,10 @@ describe('namespace supervisor recovery', () => {
         const jobIncarnation = probeProcessIncarnation(jobPid);
         if (jobIncarnation === null) throw new Error('Provider job process has no incarnation');
         hosts.push({ pid: jobPid, incarnation: jobIncarnation });
-        const healthBeforeDisconnect = record.read().attempt?.observedHealthyAt ?? 0;
         let disconnectedPid = originalPid;
         if (successor === null) supervisor.send('disconnect-coordinator');
         else {
-          record.request(join(successor.root, 'bridge', 'coral-backend.cjs'), buildSetId(successor.root));
+          await record.request(join(successor.root, 'bridge', 'coral-backend.cjs'), buildSetId(successor.root));
           await waitForCondition(() => record.read().attempt?.phase === 'serving', 30_000);
           const attemptPid = record.read().attempt?.child?.pid;
           if (attemptPid === undefined) throw new Error('Serving attempt has no PID');
@@ -282,7 +296,10 @@ describe('namespace supervisor recovery', () => {
           pids.add(attemptPid);
           process.kill(attemptPid, 'SIGUSR2');
         }
-        await waitForCondition(() => record.read().owner?.process.pid !== supervisor.pid, 10_000);
+        await waitForCondition(
+          () => record.read().owner?.process.pid !== undefined && record.read().owner?.process.pid !== supervisor.pid,
+          10_000,
+        );
         const replacementPid = record.read().owner?.process.pid;
         if (replacementPid !== undefined) pids.add(replacementPid);
         expect(supervisor.exitCode).toBeNull();
@@ -297,10 +314,12 @@ describe('namespace supervisor recovery', () => {
         }, 20_000);
         if (source === 'launch') expect(record.read().owner?.mode).toBe('supervised');
         else {
-          await waitForCondition(
-            () => (record.read().attempt?.observedHealthyAt ?? 0) > healthBeforeDisconnect,
-            10_000,
-          );
+          let healthy = false;
+          for (let retry = 0; retry < 100 && !healthy; retry += 1) {
+            healthy = await replacementServing(runDir, 'prod', disconnectedPid);
+            if (!healthy) await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          expect(healthy).toBe(true);
           expect(record.read().owner?.mode).toBe('recovering');
           expect(record.read().launch?.child?.pid).toBe(originalPid);
         }
@@ -358,6 +377,7 @@ describe('namespace supervisor recovery', () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-pending-attempt-repair-'));
     roots.push(home);
     const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const target = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16', backend: 'admission-freeze' });
     const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
     const harness = join(home, 'supervisor.mjs');
     await build({
@@ -373,28 +393,30 @@ describe('namespace supervisor recovery', () => {
       env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
       stdio: 'ignore',
     });
-    const attempt = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     const pids = new Set<number>();
+    let attemptPid: number | undefined;
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
       const original = record.read();
       const owner = original.owner;
       const servingPid = original.launch?.child?.pid;
-      const attemptIncarnation = attempt.pid === undefined ? null : probeProcessIncarnation(attempt.pid);
-      if (owner === null || servingPid === undefined || attempt.pid === undefined || attemptIncarnation === null)
-        throw new Error('Fixture processes are unavailable');
+      if (owner === null || servingPid === undefined) throw new Error('Fixture processes are unavailable');
       pids.add(servingPid);
-      const reserved = record.reserve(owner, 'unused-build', 'succession', Date.now());
-      if (reserved === null) throw new Error('Attempt was not reserved');
-      expect(
-        record.admit(reserved, owner.process, { pid: attempt.pid, incarnation: attemptIncarnation }, Date.now()),
-      ).toBe(true);
+      await record.request(join(target.root, 'bridge', 'coral-backend.cjs'), buildSetId(target.root));
+      await waitForCondition(() => record.read().attempt?.phase === 'admitted', 10_000);
+      attemptPid = record.read().attempt?.child.pid;
+      if (attemptPid === undefined) throw new Error('Attempt has no PID');
+      pids.add(attemptPid);
       supervisor.kill('SIGKILL');
-      await waitForCondition(() => record.read().owner?.process.pid !== supervisor.pid, 10_000);
+      await waitForCondition(
+        () => record.read().owner?.process.pid !== undefined && record.read().owner?.process.pid !== supervisor.pid,
+        10_000,
+      );
       const replacementPid = record.read().owner?.process.pid;
       if (replacementPid !== undefined) pids.add(replacementPid);
-      attempt.kill('SIGKILL');
+      rmSync(target.root, { recursive: true, force: true });
+      if (probeProcessIncarnation(attemptPid) !== null) process.kill(attemptPid, 'SIGKILL');
       await waitForCondition(() => record.read().attempt?.phase === 'exited', 10_000);
       await waitForCondition(
         () =>
@@ -410,7 +432,6 @@ describe('namespace supervisor recovery', () => {
       }
       record.close();
       supervisor.kill('SIGKILL');
-      attempt.kill('SIGKILL');
       for (const pid of pids) {
         try {
           process.kill(pid, 'SIGKILL');
@@ -473,7 +494,7 @@ describe('namespace supervisor recovery', () => {
         },
         stdio: 'ignore',
       });
-      const record = new CoordinatorLaunchRecord(runDir);
+      const record = new SupervisorEvidence(runDir);
       const incumbentBuildSetId = buildSetId(incumbent.root);
       const successorBuildSetId = buildSetId(successor.root);
       const retainedIncumbent = join(home, '.coral', 'gen2', 'builds', incumbentBuildSetId);
@@ -497,8 +518,12 @@ describe('namespace supervisor recovery', () => {
 
       try {
         await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
-        record.request(join(successor.root, 'bridge', 'coral-backend.cjs'), buildSetId(successor.root));
-        await waitForCondition(() => record.read().attempt?.phase === 'serving', 30_000);
+        await record.request(join(successor.root, 'bridge', 'coral-backend.cjs'), buildSetId(successor.root));
+        try {
+          await waitForCondition(() => record.read().attempt?.phase === 'serving', 30_000);
+        } catch (error: unknown) {
+          throw new Error(`Serving attempt was not observed: ${JSON.stringify(record.read())}`, { cause: error });
+        }
         rememberProcesses();
 
         await waitForCondition(() => existsSync(retainedSuccessor) && existsSync(retainedIncumbent), 10_000);
@@ -508,6 +533,7 @@ describe('namespace supervisor recovery', () => {
         expect(record.read().attempt).toMatchObject({ phase: 'serving', buildSetId: successorBuildSetId });
         await waitForCondition(
           () =>
+            record.read().owner?.process.pid !== undefined &&
             record.read().owner?.process.pid !== supervisor.pid &&
             record.read().owner?.buildSetId === (winner === 'predecessor' ? incumbentBuildSetId : successorBuildSetId),
           20_000,
@@ -524,7 +550,7 @@ describe('namespace supervisor recovery', () => {
           throw new Error(`Serving successor was not normalized: ${JSON.stringify(record.read())}`, { cause: error });
         }
         await waitForCondition(() => record.read().owner?.buildSetId === successorBuildSetId, 20_000);
-        const requested = record.request(join(later.root, 'bridge', 'coral-backend.cjs'), buildSetId(later.root));
+        const requested = await record.request(join(later.root, 'bridge', 'coral-backend.cjs'), buildSetId(later.root));
         try {
           await waitForCondition(
             () =>
@@ -536,7 +562,10 @@ describe('namespace supervisor recovery', () => {
         } catch (error: unknown) {
           throw new Error(`Later upgrade remained unserved: ${JSON.stringify(record.read())}`, { cause: error });
         }
-        const finalRequest = record.request(join(last.root, 'bridge', 'coral-backend.cjs'), buildSetId(last.root));
+        const finalRequest = await record.request(
+          join(last.root, 'bridge', 'coral-backend.cjs'),
+          buildSetId(last.root),
+        );
         await waitForCondition(
           () =>
             record.read().launch?.phase === 'serving' &&
@@ -586,7 +615,7 @@ describe('namespace supervisor recovery', () => {
       env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     const pids: number[] = [];
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
@@ -594,10 +623,13 @@ describe('namespace supervisor recovery', () => {
       if (firstPid === undefined) throw new Error('First coordinator has no PID');
       pids.push(firstPid);
       supervisor.kill('SIGKILL');
-      await waitForCondition(() => record.read().owner?.process.pid !== supervisor.pid, 10_000);
+      await waitForCondition(
+        () => record.read().owner?.process.pid !== undefined && record.read().owner?.process.pid !== supervisor.pid,
+        10_000,
+      );
       const replacementPid = record.read().owner?.process.pid;
       if (replacementPid !== undefined) pids.push(replacementPid);
-      const next = record.request(join(second.root, 'bridge', 'coral-backend.cjs'), buildSetId(second.root));
+      const next = await record.request(join(second.root, 'bridge', 'coral-backend.cjs'), buildSetId(second.root));
       await waitForCondition(
         () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === buildSetId(second.root),
         25_000,
@@ -608,7 +640,7 @@ describe('namespace supervisor recovery', () => {
         () => record.read().requests.find((entry) => entry.id === next.id)?.status === 'completed',
         5_000,
       );
-      const last = record.request(join(third.root, 'bridge', 'coral-backend.cjs'), buildSetId(third.root));
+      const last = await record.request(join(third.root, 'bridge', 'coral-backend.cjs'), buildSetId(third.root));
       await waitForCondition(
         () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === buildSetId(third.root),
         25_000,
@@ -641,44 +673,58 @@ describe('namespace supervisor recovery', () => {
       const original = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
       const recovery = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
       const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
-      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-      const otherChild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-      const record = new CoordinatorLaunchRecord(runDir);
+      const fixture = join(home, 'inherited-child.mjs');
+      await build({
+        entryPoints: [fileURLToPath(new URL('./fixtures/inherited-admission-child.ts', import.meta.url))],
+        outfile: fixture,
+        bundle: true,
+        platform: 'node',
+        target: 'node22',
+        format: 'esm',
+        external: ['node:*'],
+      });
+      const child = spawn(
+        process.execPath,
+        [fixture, runDir, admittedBuild(original.root), 'startup', String(process.pid), 'dead-parent', '30000'],
+        { stdio: 'ignore' },
+      );
+      const otherChild = spawn(
+        process.execPath,
+        [fixture, runDir, admittedBuild(recovery.root), 'succession', String(process.pid), 'dead-parent', '30000'],
+        { stdio: 'ignore' },
+      );
+      const record = new SupervisorEvidence(runDir);
       let supervisor: ReturnType<typeof spawn> | null = null;
       let recoveredPid: number | undefined;
       if (child.pid === undefined) throw new Error('Fixture child has no PID');
-      const incarnation = probeProcessIncarnation(child.pid);
-      if (incarnation === null) throw new Error('Fixture child has no incarnation');
-      const identity = { pid: child.pid, incarnation };
       if (otherChild.pid === undefined) throw new Error('Other fixture child has no PID');
-      const otherIncarnation = probeProcessIncarnation(otherChild.pid);
-      if (otherIncarnation === null) throw new Error('Other fixture child has no incarnation');
-      const otherIdentity = { pid: otherChild.pid, incarnation: otherIncarnation };
-      const old = record.acquire(
-        {
-          id: 'dead-parent',
-          process: { pid: process.pid, incarnation: 'dead-parent' as ProcessIncarnation },
-          buildSetId: buildSetId(original.root),
-        },
-        Date.now(),
+      await waitForCondition(
+        () => record.read().launch?.child.pid === child.pid && record.read().attempt?.child.pid === otherChild.pid,
+        5_000,
       );
-      if (old === null) throw new Error('Fixture owner did not acquire');
-      const slot = record.reserve(old, buildSetId(original.root), 'startup', Date.now());
-      if (slot === null) throw new Error('Fixture reservation failed');
-      expect(record.admit(slot, old.process, identity, Date.now() - 30_000)).toBe(true);
-      expect(record.serving(slot, identity)).toBe(true);
-      const attempt = record.reserve(old, buildSetId(recovery.root), 'succession', Date.now());
-      if (attempt === null) throw new Error('Other fixture reservation failed');
-      expect(record.admit(attempt, old.process, otherIdentity, Date.now() - 30_000)).toBe(true);
-      expect(record.commitTermination(old, slot, identity, Date.now(), 80)).toBe(true);
       const server = createServer((socket) => {
-        expect(record.exited(slot, identity)).toBe(true);
         child.kill('SIGKILL');
         rmSync(join(runDir, 'coordinator.json'), { force: true });
         socket.destroy();
         server.close();
       });
-      const request = record.request(join(recovery.root, 'bridge', 'coral-backend.cjs'), buildSetId(recovery.root));
+      const oldManifest = JSON.parse(
+        readFileSync(join(original.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
+      ) as { bundleHash: string };
+      const childIncarnation = probeProcessIncarnation(child.pid);
+      if (childIncarnation === null) throw new Error('Inherited child incarnation is unavailable');
+      const request = await record.request(
+        join(recovery.root, 'bridge', 'coral-backend.cjs'),
+        buildSetId(recovery.root),
+        {
+          instanceId: 'probe',
+          pid: child.pid,
+          incarnation: childIncarnation,
+          version: '0.10.14',
+          bundleHash: oldManifest.bundleHash,
+          flavor: 'prod',
+        },
+      );
       writeFileSync(join(runDir, 'coordinator.json'), JSON.stringify({ pid: child.pid, bootToken: 'probe' }));
       await new Promise<void>((resolve) =>
         server.listen(socketPathForRunDir(runDir, 'prod', { platform: process.platform }), resolve),
@@ -701,9 +747,15 @@ describe('namespace supervisor recovery', () => {
             TMPDIR: home,
             CORAL_SENTINEL_RUN_DIR: runDir,
           },
-          stdio: 'ignore',
+          stdio: ['ignore', 'ignore', 'pipe'],
         });
-        await waitForCondition(() => record.read().launch?.phase === 'exited', 5_000);
+        let supervisorErrors = '';
+        supervisor.stderr?.on('data', (chunk: Buffer) => {
+          supervisorErrors += chunk.toString('utf8');
+        });
+        const inheritedPid = child.pid;
+        if (inheritedPid === undefined) throw new Error('Inherited child has no PID');
+        await waitForCondition(() => probeProcessIncarnation(inheritedPid) === null, 5_000);
         try {
           await waitForCondition(
             () =>
@@ -722,10 +774,17 @@ describe('namespace supervisor recovery', () => {
         recoveredPid = record.read().launch?.child?.pid;
         expect(supervisor.exitCode).toBeNull();
         expect(probeProcessIncarnation(otherChild.pid)).toBeNull();
-        await waitForCondition(
-          () => record.read().requests.find((entry) => entry.id === request.id)?.status === 'completed',
-          5_000,
-        );
+        try {
+          await waitForCondition(
+            () => record.read().requests.find((entry) => entry.id === request.id)?.status === 'completed',
+            5_000,
+          );
+        } catch (error: unknown) {
+          throw new Error(
+            `Recovered request not completed: ${JSON.stringify(record.read())}; stderr=${supervisorErrors}`,
+            { cause: error },
+          );
+        }
       } finally {
         if (server.listening) server.close();
         if (supervisor !== null && supervisor.exitCode === null) supervisor.kill('SIGKILL');
@@ -753,29 +812,50 @@ describe('namespace supervisor recovery', () => {
       const original = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
       const recovery = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
       const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
-      const stalled = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {
-        stdio: 'ignore',
+      const fixture = join(home, 'inherited-child.mjs');
+      await build({
+        entryPoints: [fileURLToPath(new URL('./fixtures/inherited-admission-child.ts', import.meta.url))],
+        outfile: fixture,
+        bundle: true,
+        platform: 'node',
+        target: 'node22',
+        format: 'esm',
+        external: ['node:*'],
       });
-      const record = new CoordinatorLaunchRecord(runDir);
+      const termPath = join(home, 'sigterm-at');
+      const stalled = spawn(
+        process.execPath,
+        [
+          fixture,
+          runDir,
+          admittedBuild(original.root),
+          'startup',
+          String(process.pid),
+          'dead-parent',
+          '30000',
+          termPath,
+        ],
+        { stdio: 'ignore' },
+      );
+      const record = new SupervisorEvidence(runDir);
       let supervisor: ReturnType<typeof spawn> | null = null;
       try {
         if (stalled.pid === undefined) throw new Error('Fixture child has no PID');
         let incarnation = probeProcessIncarnation(stalled.pid);
         await waitForCondition(() => (incarnation = probeProcessIncarnation(stalled.pid!)) !== null, 5_000);
         if (incarnation === null) throw new Error('Fixture child has no incarnation');
-        const old = record.acquire(
-          {
-            id: 'dead-parent',
-            process: { pid: process.pid, incarnation: 'dead-parent' as typeof incarnation },
-            buildSetId: buildSetId(original.root),
-          },
-          Date.now(),
-        );
-        if (old === null) throw new Error('Fixture owner did not acquire');
-        const slot = record.reserve(old, buildSetId(original.root), 'startup', Date.now());
-        if (slot === null) throw new Error('Fixture reservation failed');
-        expect(record.admit(slot, old.process, { pid: stalled.pid, incarnation }, Date.now())).toBe(true);
-        expect(record.serving(slot, { pid: stalled.pid, incarnation })).toBe(true);
+        await waitForCondition(() => record.read().launch?.child.pid === stalled.pid, 5_000);
+        const oldManifest = JSON.parse(
+          readFileSync(join(original.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
+        ) as { bundleHash: string };
+        await record.request(join(recovery.root, 'bridge', 'coral-backend.cjs'), buildSetId(recovery.root), {
+          instanceId: 'wedged',
+          pid: stalled.pid,
+          incarnation,
+          version: '0.10.14',
+          bundleHash: oldManifest.bundleHash,
+          flavor: 'prod',
+        });
         const harness = join(home, 'supervisor.mjs');
         await build({
           entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
@@ -790,8 +870,8 @@ describe('namespace supervisor recovery', () => {
           env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
           stdio: 'ignore',
         });
-        await waitForCondition(() => record.read().launch?.terminationAt !== undefined, 5_000);
-        expect(record.read().launch?.killAt).toBeGreaterThan(record.read().launch?.terminationAt ?? Infinity);
+        await waitForCondition(() => existsSync(termPath), 5_000);
+        const termAt = Number(readFileSync(termPath, 'utf8'));
         try {
           await waitForCondition(
             () =>
@@ -804,6 +884,7 @@ describe('namespace supervisor recovery', () => {
         }
         await waitForCondition(() => stalled.exitCode !== null || stalled.signalCode !== null, 5_000);
         expect(stalled.signalCode).toBe('SIGKILL');
+        expect(Date.now() - termAt).toBeGreaterThanOrEqual(80);
         expect(probeProcessIncarnation(stalled.pid)).not.toBe(incarnation);
       } finally {
         const currentPid = record.read().launch?.child?.pid;
@@ -866,7 +947,7 @@ describe('namespace supervisor recovery', () => {
       },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
       expect(record.read().launch?.buildSetId).toBe(buildSetId(newer.root));
@@ -884,7 +965,7 @@ describe('namespace supervisor recovery', () => {
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
-  it('re-accepts an inherited request before completing it in the new owner epoch', async () => {
+  it('completes a deferred request under the new supervisor', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-owner-epoch-request-'));
     roots.push(home);
@@ -896,14 +977,17 @@ describe('namespace supervisor recovery', () => {
       }
     ).buildSetId;
     const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
-    const record = new CoordinatorLaunchRecord(runDir);
-    const request = record.request(executable, buildSetId);
-    const first = record.acquire(
-      { id: 'first', process: { pid: process.pid, incarnation: 'first' as ProcessIncarnation }, buildSetId },
-      Date.now(),
-    );
-    if (first === null) throw new Error('First owner did not acquire');
-    expect(record.accept(first, request.id, Date.now())).toBe(true);
+    const record = new SupervisorEvidence(runDir);
+    const request = await record.request(executable, buildSetId);
+    const pending = readUpgradeIntent(runDir);
+    if (pending.kind !== 'readable') throw new Error('Requested upgrade intent is unavailable');
+    expect(
+      await compareAndSwapUpgradeIntent(runDir, pending.intent.revision, {
+        ...pending.intent,
+        disposition: 'deferred',
+        retryCondition: { kind: 'incumbent-retirement', evidence: 'earlier supervisor exited' },
+      }),
+    ).toMatchObject({ kind: 'written' });
     const harness = join(home, 'supervisor.mjs');
     await build({
       entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
@@ -915,20 +999,46 @@ describe('namespace supervisor recovery', () => {
       external: ['node:*'],
     });
     const supervisor = spawn(process.execPath, [harness, executable], {
-      env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
-      stdio: 'ignore',
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_FIXTURE_REAL_BACKEND: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let supervisorOutput = '';
+    supervisor.stdout?.on('data', (chunk: Buffer) => {
+      supervisorOutput += chunk.toString();
+    });
+    supervisor.stderr?.on('data', (chunk: Buffer) => {
+      supervisorOutput += chunk.toString();
     });
     try {
       await waitForCondition(() => record.read().owner?.process.pid === supervisor.pid, 10_000);
-      await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
-      await waitForCondition(
-        () => record.read().requests.find((entry) => entry.id === request.id)?.status === 'completed',
-        5_000,
-      );
+      try {
+        await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
+      } catch (error: unknown) {
+        throw new Error(`Deferred request did not serve: ${JSON.stringify(record.read())}; ${supervisorOutput}`, {
+          cause: error,
+        });
+      }
+      try {
+        await waitForCondition(
+          () => record.read().requests.find((entry) => entry.id === request.id)?.status === 'completed',
+          5_000,
+        );
+      } catch (error: unknown) {
+        throw new Error(`Deferred request not completed: ${JSON.stringify(record.read())}; ${supervisorOutput}`, {
+          cause: error,
+        });
+      }
       expect(record.read().requests.find((entry) => entry.id === request.id)).toMatchObject({
         status: 'completed',
-        acceptedEpoch: record.read().owner?.epoch,
       });
+      expect(record.read().intent?.completionReceipt?.kind).toBe('serving');
+      expect(record.read().launch?.parent?.pid).toBe(supervisor.pid);
       const childPid = record.read().launch?.child?.pid;
       if (childPid === undefined) throw new Error('Serving child has no PID');
       process.kill(childPid, 'SIGINT');
@@ -991,8 +1101,9 @@ describe('namespace supervisor recovery', () => {
       });
       const registry = join(home, 'installed.json');
       writeFileSync(registry, JSON.stringify({ plugins: { 'coral@fixture': [{ installPath: installed.root }] } }));
-      const record = new CoordinatorLaunchRecord(runDir);
-      record.request(join(installed.root, 'bridge', 'coral-backend.cjs'), installedBuildSetId);
+      const record = new SupervisorEvidence(runDir);
+      await record.request(join(installed.root, 'bridge', 'coral-backend.cjs'), installedBuildSetId);
+      const childPidPath = join(home, 'first-child.pid');
       const supervisor = spawn(process.execPath, [harness, join(retained, 'bridge', 'coral-backend.cjs')], {
         env: {
           ...process.env,
@@ -1004,16 +1115,28 @@ describe('namespace supervisor recovery', () => {
           CORAL_FIXTURE_FREEZE_PHASE: phase,
           CORAL_FIXTURE_IGNORE_SIGTERM: refuseKill ? '1' : '0',
           CORAL_FIXTURE_REFUSE_KILL_ONCE: refuseKill ? '1' : '0',
+          CORAL_FIXTURE_CHILD_PID_PATH: childPidPath,
         },
-        stdio: 'ignore',
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let supervisorErrors = '';
+      supervisor.stderr?.on('data', (chunk: Buffer) => {
+        supervisorErrors += chunk.toString('utf8');
       });
       let stalledPid: number | undefined;
       try {
-        await waitForCondition(
-          () => record.read().launch?.phase === observed && record.read().launch?.buildSetId === installedBuildSetId,
-          10_000,
-        );
-        stalledPid = record.read().launch?.child?.pid;
+        if (observed === 'reserved') {
+          await waitForCondition(() => existsSync(childPidPath), 10_000);
+          stalledPid = Number(readFileSync(childPidPath, 'utf8'));
+          expect(probeProcessIncarnation(stalledPid)).not.toBeNull();
+          expect(listLaunchAdmissions(runDir)).toEqual([]);
+        } else {
+          await waitForCondition(
+            () => record.read().launch?.phase === observed && record.read().launch?.buildSetId === installedBuildSetId,
+            10_000,
+          );
+          stalledPid = record.read().launch?.child?.pid;
+        }
         if (refuseKill) {
           await waitForCondition(
             () => record.read().signalHolds?.some((hold) => hold.launchId === record.read().launch?.id) === true,
@@ -1026,7 +1149,10 @@ describe('namespace supervisor recovery', () => {
             15_000,
           );
         } catch (error: unknown) {
-          throw new Error(`Fallback did not serve: ${JSON.stringify(record.read())}`, { cause: error });
+          throw new Error(
+            `Fallback did not serve: ${JSON.stringify(record.read())}; supervisor=${supervisor.pid}/${supervisor.exitCode}/${supervisor.signalCode}; stalled=${stalledPid}/${stalledPid === undefined ? 'none' : probeProcessIncarnation(stalledPid)}; stderr=${supervisorErrors}`,
+            { cause: error },
+          );
         }
         expect(record.read().launch?.child?.pid).not.toBe(stalledPid);
         if (refuseKill) expect(record.read().signalHolds).toEqual([]);
@@ -1073,9 +1199,13 @@ describe('namespace supervisor recovery', () => {
         CORAL_SENTINEL_RUN_DIR: runDir,
         CORAL_FIXTURE_IGNORE_SIGTERM: '1',
       },
-      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    let supervisorErrors = '';
+    supervisor.stderr?.on('data', (chunk: Buffer) => {
+      supervisorErrors += chunk.toString('utf8');
+    });
+    const record = new SupervisorEvidence(runDir);
     let attemptPid: number | undefined;
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
@@ -1086,7 +1216,14 @@ describe('namespace supervisor recovery', () => {
           bundleDir: join(target.root, 'bridge'),
         },
       });
-      await waitForCondition(() => record.read().attempt?.child !== undefined, 5_000);
+      try {
+        await waitForCondition(() => record.read().attempt?.child !== undefined, 5_000);
+      } catch (error: unknown) {
+        throw new Error(
+          `Explicit attempt was not admitted: ${JSON.stringify(record.read())}; stderr=${supervisorErrors}`,
+          { cause: error },
+        );
+      }
       attemptPid = record.read().attempt?.child?.pid;
       supervisor.send({
         fixtureChildMessage: { kind: 'coral-supervisor-retire-attempt', attemptId: 'explicit-retirement' },
@@ -1137,14 +1274,20 @@ describe('namespace supervisor recovery', () => {
       external: ['node:*'],
     });
     const supervisor = spawn(process.execPath, [harness, join(original.root, 'bridge', 'coral-backend.cjs')], {
-      env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_FIXTURE_REAL_BACKEND: '1',
+      },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
     let supervisorErrors = '';
     supervisor.stderr?.on('data', (chunk: Buffer) => {
       supervisorErrors += chunk.toString('utf8');
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     let firstPid: number | undefined;
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
@@ -1154,7 +1297,7 @@ describe('namespace supervisor recovery', () => {
         10_000,
       );
       rmSync(original.root, { recursive: true, force: true });
-      const request = record.request(join(target.root, 'bridge', 'coral-backend.cjs'), targetBuildSetId);
+      const request = await record.request(join(target.root, 'bridge', 'coral-backend.cjs'), targetBuildSetId);
       try {
         await waitForCondition(
           () => record.read().requests.find((entry) => entry.id === request.id)?.status === 'completed',
@@ -1168,6 +1311,10 @@ describe('namespace supervisor recovery', () => {
           },
         );
       }
+      await waitForCondition(
+        () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === targetBuildSetId,
+        5_000,
+      );
       expect(record.read().launch).toMatchObject({ phase: 'serving', buildSetId: targetBuildSetId });
     } finally {
       const currentPid = record.read().launch?.child?.pid;
@@ -1212,7 +1359,7 @@ describe('namespace supervisor recovery', () => {
       env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     let childPid: number | undefined;
     let replacementPid: number | undefined;
     try {
@@ -1223,9 +1370,13 @@ describe('namespace supervisor recovery', () => {
       renameSync(retained, heldRetained);
       supervisor.kill('SIGKILL');
       await new Promise((resolve) => setTimeout(resolve, 1_200));
-      expect(record.read().owner?.process.pid).toBe(supervisor.pid);
+      expect(record.read().owner).toBeNull();
+      expect(record.read().launch).toMatchObject({ phase: 'serving', child: { pid: childPid } });
       renameSync(heldRetained, retained);
-      await waitForCondition(() => record.read().owner?.process.pid !== supervisor.pid, 15_000);
+      await waitForCondition(
+        () => record.read().owner?.process.pid !== undefined && record.read().owner?.process.pid !== supervisor.pid,
+        15_000,
+      );
       replacementPid = record.read().owner?.process.pid;
       if (replacementPid === undefined) throw new Error('Replacement owner has no PID');
       const command = readFileSync(`/proc/${replacementPid}/cmdline`, 'utf8');
@@ -1247,7 +1398,7 @@ describe('namespace supervisor recovery', () => {
     }
   }, 40_000);
 
-  it('reacquires an expired lease while it still parents the child and serves a pending request', async () => {
+  it('keeps the launch lock while it parents the child and serves a pending request', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-lost-renewal-'));
     roots.push(home);
@@ -1270,35 +1421,48 @@ describe('namespace supervisor recovery', () => {
       external: ['node:*'],
     });
     const supervisor = spawn(process.execPath, [harness, join(original.root, 'bridge', 'coral-backend.cjs')], {
-      env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_FIXTURE_REAL_BACKEND: '1',
+      },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     let childPid: number | undefined;
     let successorPid: number | undefined;
+    let claimant: ReturnType<typeof spawn> | null = null;
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
       childPid = record.read().launch?.child?.pid;
       if (childPid === undefined) throw new Error('Serving child has no PID');
-      const database = new DatabaseSync(coordinatorLaunchPath(runDir));
-      const row = database.prepare('SELECT state FROM control WHERE id = 1').get() as { state: string };
-      const state = JSON.parse(row.state) as { owner: { leaseUntil: number } };
-      state.owner.leaseUntil = Date.now() - 1;
-      database.prepare('UPDATE control SET state = ? WHERE id = 1').run(JSON.stringify(state));
-      database.close();
-      record.request(join(target.root, 'bridge', 'coral-backend.cjs'), targetBuildSetId);
-      process.kill(childPid, 'SIGINT');
+      claimant = spawn(process.execPath, [harness, join(target.root, 'bridge', 'coral-backend.cjs')], {
+        env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+        stdio: 'ignore',
+      });
+      await waitForCondition(
+        () => record.read().requests.some((entry) => entry.buildSetId === targetBuildSetId),
+        5_000,
+      );
+      expect(claimant.exitCode).toBeNull();
+      expect(record.lockHolder()?.pid).toBe(supervisor.pid);
       await waitForCondition(
         () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === targetBuildSetId,
         20_000,
       );
       successorPid = record.read().owner?.process.pid;
       expect(successorPid).toBe(supervisor.pid);
-      expect(record.read().owner).toMatchObject({ epoch: 2, mode: 'supervised' });
+      expect(record.lockHolder()?.pid).toBe(supervisor.pid);
+      expect(record.read().owner?.mode).toBe('supervised');
+      await waitForCondition(() => claimant?.exitCode !== null, 15_000);
+      expect(claimant.exitCode).toBe(0);
     } finally {
       const currentChildPid = record.read().launch?.child?.pid;
       record.close();
       if (supervisor.exitCode === null) supervisor.kill('SIGKILL');
+      if (claimant !== null && claimant.exitCode === null) claimant.kill('SIGKILL');
       for (const pid of [childPid, currentChildPid, successorPid]) {
         if (pid === undefined) continue;
         try {
@@ -1311,7 +1475,7 @@ describe('namespace supervisor recovery', () => {
     }
   }, 40_000);
 
-  it('keeps a claimant alive across another supervisor lease expiry', async () => {
+  it('does not let a claimant steal the lock from a stopped supervisor', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-claimant-'));
     roots.push(home);
@@ -1338,7 +1502,7 @@ describe('namespace supervisor recovery', () => {
       env,
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     let claimant: ReturnType<typeof spawn> | null = null;
     let childPid: number | undefined;
     try {
@@ -1346,12 +1510,6 @@ describe('namespace supervisor recovery', () => {
       childPid = record.read().launch?.child?.pid;
       if (childPid === undefined) throw new Error('Serving child has no PID');
       incumbent.kill('SIGSTOP');
-      const database = new DatabaseSync(coordinatorLaunchPath(runDir));
-      const row = database.prepare('SELECT state FROM control WHERE id = 1').get() as { state: string };
-      const state = JSON.parse(row.state) as { owner: { leaseUntil: number } };
-      state.owner.leaseUntil = Date.now() + 1_000;
-      database.prepare('UPDATE control SET state = ? WHERE id = 1').run(JSON.stringify(state));
-      database.close();
       claimant = spawn(process.execPath, [harness, join(target.root, 'bridge', 'coral-backend.cjs')], {
         env,
         stdio: 'ignore',
@@ -1360,10 +1518,10 @@ describe('namespace supervisor recovery', () => {
         () => record.read().requests.some((entry) => entry.buildSetId === targetBuildSetId),
         5_000,
       );
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
       expect(claimant.exitCode).toBeNull();
-      await waitForCondition(() => record.read().owner?.process.pid === claimant?.pid, 5_000);
+      expect(record.lockHolder()?.pid).toBe(incumbent.pid);
       incumbent.kill('SIGCONT');
-      process.kill(childPid, 'SIGINT');
       await waitForCondition(
         () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === targetBuildSetId,
         20_000,
@@ -1372,6 +1530,9 @@ describe('namespace supervisor recovery', () => {
         () => record.read().requests.find((entry) => entry.buildSetId === targetBuildSetId)?.status === 'completed',
         5_000,
       );
+      expect(record.lockHolder()?.pid).toBe(incumbent.pid);
+      await waitForCondition(() => claimant?.exitCode !== null, 15_000);
+      expect(claimant.exitCode).toBe(0);
     } finally {
       const currentChildPid = record.read().launch?.child?.pid;
       record.close();
@@ -1414,7 +1575,7 @@ describe('namespace supervisor recovery', () => {
     supervisor.stderr?.on('data', (chunk: Buffer) => {
       coordinatorErrors += chunk.toString('utf8');
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     let childPid: number | undefined;
     let replacementPid: number | undefined;
     let repairedPid: number | undefined;
@@ -1423,7 +1584,10 @@ describe('namespace supervisor recovery', () => {
       childPid = record.read().launch?.child?.pid;
       if (childPid === undefined) throw new Error('Serving coordinator has no PID');
       supervisor.kill('SIGKILL');
-      await waitForCondition(() => record.read().owner?.process.pid !== supervisor.pid, 10_000);
+      await waitForCondition(
+        () => record.read().owner?.process.pid !== undefined && record.read().owner?.process.pid !== supervisor.pid,
+        10_000,
+      );
       replacementPid = record.read().owner?.process.pid;
       expect(record.read().launch).toMatchObject({ phase: 'serving', child: { pid: childPid } });
       expect(() => process.kill(childPid!, 0)).not.toThrow();
@@ -1590,11 +1754,15 @@ describe('namespace supervisor recovery', () => {
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
         CORAL_SENTINEL_RUN_DIR: runDir,
       },
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     const pids = new Set<number>();
     let cli: ReturnType<typeof spawn> | null = null;
+    let coordinatorErrors = '';
+    supervisor.stderr?.on('data', (chunk: Buffer) => {
+      coordinatorErrors += chunk.toString('utf8');
+    });
     try {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
       const originalPid = record.read().launch?.child?.pid;
@@ -1612,7 +1780,10 @@ describe('namespace supervisor recovery', () => {
       const jobPid = Number(readFileSync(join(stateDir, 'job-running'), 'utf8'));
       const jobIncarnation = probeProcessIncarnation(jobPid);
       if (jobIncarnation === null) throw new Error('Provider job process has no incarnation');
-      const requested = record.request(join(upgrade.root, 'bridge', 'coral-backend.cjs'), buildSetId(upgrade.root));
+      const requested = await record.request(
+        join(upgrade.root, 'bridge', 'coral-backend.cjs'),
+        buildSetId(upgrade.root),
+      );
       try {
         await waitForCondition(() => {
           const intent = readUpgradeIntent(runDir);
@@ -1628,7 +1799,17 @@ describe('namespace supervisor recovery', () => {
         );
       }
       supervisor.kill('SIGKILL');
-      await waitForCondition(() => record.read().owner?.process.pid !== supervisor.pid, 10_000);
+      await waitForCondition(() => supervisor.exitCode !== null || supervisor.signalCode !== null, 5_000);
+      try {
+        await waitForCondition(
+          () => record.read().owner?.process.pid !== undefined && record.read().owner?.process.pid !== supervisor.pid,
+          15_000,
+        );
+      } catch (error: unknown) {
+        throw new Error(`Replacement not observed: ${JSON.stringify(record.read())}; stderr=${coordinatorErrors}`, {
+          cause: error,
+        });
+      }
       const replacementPid = record.read().owner?.process.pid;
       if (replacementPid === undefined) throw new Error('Replacement supervisor has no PID');
       pids.add(replacementPid);
@@ -1644,7 +1825,7 @@ describe('namespace supervisor recovery', () => {
         );
       } catch (error: unknown) {
         throw new Error(
-          `Same-build repair did not serve: ${JSON.stringify(record.read())}; intent=${JSON.stringify(readUpgradeIntent(runDir))}`,
+          `Same-build repair did not serve: original=${originalPid} replacement=${replacementPid} healthy=${await replacementServing(runDir, 'prod', originalPid)} discovery=${existsSync(join(runDir, 'coordinator.json')) ? readFileSync(join(runDir, 'coordinator.json'), 'utf8') : 'absent'} state=${JSON.stringify(record.read())}; intent=${JSON.stringify(readUpgradeIntent(runDir))}; stderr=${coordinatorErrors}`,
           { cause: error },
         );
       }
@@ -1658,7 +1839,22 @@ describe('namespace supervisor recovery', () => {
       expect(probeProcessIncarnation(jobPid)).toBe(jobIncarnation);
       writeFileSync(join(stateDir, 'release-job'), '');
       await waitForCondition(() => existsSync(join(stateDir, 'terminal-completed')), 20_000);
-      await waitForCondition(() => record.read().attempt?.buildSetId === buildSetId(upgrade.root), 20_000);
+      try {
+        await waitForCondition(() => {
+          const state = record.read();
+          const targetBuildSetId = buildSetId(upgrade.root);
+          return (
+            [state.launch, state.attempt].some(
+              (slot) =>
+                slot?.buildSetId === targetBuildSetId && (slot.phase === 'admitted' || slot.phase === 'serving'),
+            ) ||
+            (state.intent?.completionReceipt?.kind === 'serving' &&
+              state.intent.completionReceipt.successor.build.buildSetId === targetBuildSetId)
+          );
+        }, 20_000);
+      } catch (error: unknown) {
+        throw new Error(`Queued target did not launch: ${JSON.stringify(record.read())}`, { cause: error });
+      }
     } finally {
       const state = record.read();
       for (const pid of [state.owner?.process.pid, state.launch?.child?.pid, state.attempt?.child?.pid]) {
@@ -1725,7 +1921,7 @@ describe('namespace supervisor recovery', () => {
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     let firstPid: number | null = null;
     let finalPid: number | null = null;
     try {
@@ -1798,14 +1994,14 @@ describe('namespace supervisor recovery', () => {
       },
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     try {
       await waitForCondition(() => record.read().launch?.phase === 'admitted', 10_000);
       writeFileSync(registry, JSON.stringify({ plugins: { 'coral@fixture': [{ installPath: upgrade.root }] } }));
-      record.request(join(rollback.root, 'bridge', 'coral-backend.cjs'), buildSetId(rollback.root));
-      record.request(join(upgrade.root, 'bridge', 'coral-backend.cjs'), buildSetId(upgrade.root));
+      await record.request(join(rollback.root, 'bridge', 'coral-backend.cjs'), buildSetId(rollback.root));
+      await record.request(join(upgrade.root, 'bridge', 'coral-backend.cjs'), buildSetId(upgrade.root));
 
-      await waitForCondition(() => record.read().launch?.buildSetId !== buildSetId(starting.root), 20_000);
+      await waitForCondition(() => record.read().launch?.buildSetId === buildSetId(upgrade.root), 20_000);
 
       expect(record.read().launch?.buildSetId).toBe(buildSetId(upgrade.root));
     } finally {
@@ -1851,15 +2047,21 @@ describe('namespace supervisor recovery', () => {
       env,
       stdio: 'ignore',
     });
-    const record = new CoordinatorLaunchRecord(runDir);
+    const record = new SupervisorEvidence(runDir);
     let replacement: ReturnType<typeof spawn> | null = null;
     let stalledPid: number | undefined;
     try {
       await waitForCondition(() => record.read().launch?.phase === 'admitted', 10_000);
       const admittedAt = record.read().launch?.admittedAt;
+      const launchId = record.read().launch?.id;
       if (admittedAt === undefined) throw new Error('Admitted child has no admission time');
+      if (launchId === undefined) throw new Error('Admitted child has no launch ID');
       stalledPid = record.read().launch?.child?.pid;
       if (stalledPid === undefined) throw new Error('Admitted child has no PID');
+      expect(readLaunchAdmission(runDir, launchId)).toMatchObject({
+        kind: 'readable',
+        admission: { admittedAt, child: { pid: stalledPid } },
+      });
       parent.kill('SIGKILL');
 
       replacement = spawn(process.execPath, [harness, join(recovery.root, 'bridge', 'coral-backend.cjs')], {
@@ -1867,12 +2069,12 @@ describe('namespace supervisor recovery', () => {
         stdio: 'ignore',
       });
       await waitForCondition(() => record.read().owner?.process.pid === replacement?.pid, 10_000);
-      expect(record.read().launch?.admittedAt).toBe(admittedAt);
       await waitForCondition(
         () =>
           record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === buildSetId(recovery.root),
         10_000,
       );
+      expect(readLaunchAdmission(runDir, launchId).kind).toBe('absent');
     } finally {
       const currentPid = record.read().launch?.child?.pid;
       record.close();
@@ -1929,7 +2131,7 @@ describe('namespace supervisor recovery', () => {
         env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
         stdio: 'ignore',
       });
-      const record = new CoordinatorLaunchRecord(runDir);
+      const record = new SupervisorEvidence(runDir);
       const pids = new Set<number>();
       const remember = (): ReturnType<typeof record.read> => {
         const state = record.read();
@@ -1953,7 +2155,11 @@ describe('namespace supervisor recovery', () => {
         supervisor.kill('SIGKILL');
         await waitForCondition(() => {
           const state = remember();
-          return state.owner?.process.pid !== supervisor.pid && state.owner?.mode === 'recovering';
+          return (
+            state.owner?.process.pid !== undefined &&
+            state.owner?.process.pid !== supervisor.pid &&
+            state.owner?.mode === 'recovering'
+          );
         }, 15_000);
         let doomedChild = firstChild;
         if (phase === 'promotion') {
@@ -1975,6 +2181,7 @@ describe('namespace supervisor recovery', () => {
           return (
             state.launch?.phase === 'serving' &&
             state.launch.child?.pid !== doomedChild &&
+            state.owner?.process.pid !== undefined &&
             state.owner?.process.pid !== doomedSupervisor &&
             state.owner?.mode === 'supervised'
           );
@@ -2002,199 +2209,3 @@ describe('namespace supervisor recovery', () => {
     75_000,
   );
 });
-async function supervisorHarness(home: string): Promise<string> {
-  const harness = join(home, 'supervisor.mjs');
-  await build({
-    entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
-    outfile: harness,
-    bundle: true,
-    platform: 'node',
-    target: 'node22',
-    format: 'esm',
-    external: ['node:*'],
-  });
-  return harness;
-}
-
-function launchSupervisor(
-  harness: string,
-  executable: string,
-  home: string,
-  runDir: string,
-  extraEnv: Record<string, string> = {},
-): ChildProcess {
-  return spawn(process.execPath, [harness, executable], {
-    env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir, ...extraEnv },
-    stdio: 'ignore',
-  });
-}
-
-for (const corruption of ['byte-corrupt SQLite', 'malformed state JSON', 'schema-invalid state JSON'] as const) {
-  it(`recovers ${corruption} and serves a coordinator with original bytes quarantined`, async () => {
-    const roots: string[] = [];
-    const home = mkdtempSync(join(tmpdir(), 'coral-corrupt-launch-record-'));
-    roots.push(home);
-    const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
-    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
-    const launchPath = coordinatorLaunchPath(runDir);
-    mkdirSync(dirname(launchPath), { recursive: true });
-    if (corruption === 'byte-corrupt SQLite') writeFileSync(launchPath, 'not a SQLite database');
-    else {
-      const record = new CoordinatorLaunchRecord(runDir);
-      record.close();
-      const database = new DatabaseSync(launchPath);
-      database
-        .prepare('UPDATE control SET state = ? WHERE id = 1')
-        .run(
-          corruption === 'malformed state JSON'
-            ? '{broken json'
-            : JSON.stringify({ schemaGeneration: 1, namespaceId: 'invalid', revision: 0, ownerEpoch: 0, owner: [] }),
-        );
-      database.close();
-    }
-    const original = readFileSync(launchPath);
-    const supervisor = launchSupervisor(
-      await supervisorHarness(home),
-      join(plugin.root, 'bridge', 'coral-backend.cjs'),
-      home,
-      runDir,
-    );
-    const pids = new Set<number>();
-    try {
-      await waitForCondition(() => {
-        try {
-          const record = new CoordinatorLaunchRecord(runDir);
-          try {
-            const child = record.read().launch?.child;
-            if (child !== undefined) pids.add(child.pid);
-            return record.read().launch?.phase === 'serving' && child !== undefined;
-          } finally {
-            record.close();
-          }
-        } catch {
-          return false;
-        }
-      }, 25_000);
-      expect(supervisor.exitCode).toBeNull();
-      const quarantine = readdirSync(runDir).find((name) =>
-        name.startsWith('coordinator-launch.v1.sqlite.quarantine-'),
-      );
-      expect(quarantine).toBeDefined();
-      expect(readFileSync(join(runDir, quarantine!))).toEqual(original);
-      const output = execFileSync(process.execPath, [join(plugin.root, 'bridge', 'coral-cli'), 'backend', 'status'], {
-        env: topLevelCliEnvironment(home),
-        encoding: 'utf8',
-        timeout: 15_000,
-      });
-      expect(output).toContain(join(runDir, quarantine!));
-    } finally {
-      await terminateChildProcess(supervisor, 'SIGKILL').catch(() => {});
-      for (const pid of pids) {
-        try {
-          process.kill(pid, 'SIGKILL');
-        } catch {
-          /* Already exited. */
-        }
-      }
-      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
-    }
-  }, 40_000);
-}
-
-it('leaves a live coordinator serving CLI calls when its launch record is corrupt', async () => {
-  const roots: string[] = [];
-  const home = mkdtempSync(join(tmpdir(), 'coral-live-corrupt-launch-record-'));
-  roots.push(home);
-  const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
-  const incumbent = spawnCoordinator({ fixture: plugin, home, tempRoots: roots });
-  let supervisor: ChildProcess | null = null;
-  try {
-    const discovery = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
-    writeFileSync(coordinatorLaunchPath(runDir), 'not a SQLite database');
-    supervisor = launchSupervisor(
-      await supervisorHarness(home),
-      join(plugin.root, 'bridge', 'coral-backend.cjs'),
-      home,
-      runDir,
-    );
-    await waitForCondition(() => supervisor?.exitCode !== null, 10_000);
-    expect(supervisor.exitCode).toBe(0);
-    expect(incumbent.child.exitCode).toBeNull();
-    const output = execFileSync(process.execPath, [join(plugin.root, 'bridge', 'coral-cli'), 'backend', 'status'], {
-      env: topLevelCliEnvironment(home),
-      encoding: 'utf8',
-      timeout: 15_000,
-    });
-    expect(output).toContain('Coordinator launch record is unreadable');
-    expect((await waitForDiscoveryRecord(home, 'prod')).pid).toBe(discovery.pid);
-    expect(readFileSync(coordinatorLaunchPath(runDir), 'utf8')).toBe('not a SQLite database');
-  } finally {
-    if (supervisor !== null) await terminateChildProcess(supervisor, 'SIGKILL').catch(() => {});
-    await stopCoordinator(incumbent);
-    for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
-  }
-}, 40_000);
-
-it('hands an inconclusive lock hold to a successor that rebuilds after the lock releases', async () => {
-  const roots: string[] = [];
-  const home = mkdtempSync(join(tmpdir(), 'coral-held-corrupt-launch-record-'));
-  roots.push(home);
-  const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
-  const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
-  const launchPath = coordinatorLaunchPath(runDir);
-  mkdirSync(dirname(launchPath), { recursive: true });
-  writeFileSync(launchPath, 'not a SQLite database');
-  const admissionPath = generationAdmissionLockPath(
-    createRealRuntime('prod', { baseDir: join(home, '.coral') }).paths.coral.generation,
-  );
-  mkdirSync(dirname(admissionPath), { recursive: true });
-  const admission = tryAcquireDirectoryLock(admissionPath);
-  if (admission === null) throw new Error('Could not hold admission lock');
-  const sourceIncarnation = probeProcessIncarnation(process.pid);
-  if (sourceIncarnation === null) throw new Error('Could not identify test process');
-  const supervisor = launchSupervisor(
-    await supervisorHarness(home),
-    join(plugin.root, 'bridge', 'coral-backend.cjs'),
-    home,
-    runDir,
-    {
-      CORAL_RECOVERY_SOURCE_PID: String(process.pid),
-      CORAL_RECOVERY_SOURCE_INCARNATION: sourceIncarnation,
-      CORAL_RECOVERY_CHALLENGE: 'one-time-challenge',
-    },
-  );
-  const pids = new Set<number>();
-  try {
-    await waitForCondition(() => supervisor.exitCode !== null, 10_000);
-    expect(supervisor.exitCode).toBe(0);
-    expect(readFileSync(launchPath, 'utf8')).toBe('not a SQLite database');
-    admission();
-    await waitForCondition(() => {
-      try {
-        const record = new CoordinatorLaunchRecord(runDir);
-        try {
-          const state = record.read();
-          if (state.owner !== null) pids.add(state.owner.process.pid);
-          if (state.launch?.child !== undefined) pids.add(state.launch.child.pid);
-          return state.launch?.phase === 'serving' && state.owner?.process.pid !== supervisor.pid;
-        } finally {
-          record.close();
-        }
-      } catch {
-        return false;
-      }
-    }, 20_000);
-  } finally {
-    admission();
-    await terminateChildProcess(supervisor, 'SIGKILL').catch(() => {});
-    for (const pid of pids) {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // The process may already have exited.
-      }
-    }
-    for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
-  }
-}, 35_000);

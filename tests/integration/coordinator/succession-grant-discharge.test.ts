@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { observeProcessLiveness, probeProcessIncarnation } from '#src/infra/node-process.js';
-import { coordinatorLaunchPath } from '#src/infra/path/coordinator.js';
+import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type AttemptRetry } from '#src/infra/upgrade-intent.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { encodeResolvedStoreEpoch, inspectCurrentStore } from '#src/store/epoch.js';
@@ -34,8 +34,8 @@ afterEach(async () => {
   for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   for (const root of roots) {
     const runDir = coordinatorFilesForHome(root, 'prod').runDir;
-    if (!existsSync(coordinatorLaunchPath(runDir))) continue;
-    const launch = new CoordinatorLaunchRecord(runDir);
+    if (!existsSync(supervisorLockPath(runDir))) continue;
+    const launch = new SupervisorEvidence(runDir);
     try {
       const state = launch.read();
       for (const identity of [state.owner?.process, state.launch?.child, state.attempt?.child]) {
@@ -147,7 +147,7 @@ async function restartGrantScenario(recoveryRetry: AttemptRetry) {
       return discovery !== null && discovery.pid !== initial.pid && discovery.bundleHash === oldFixture.bundleHash;
     }, 20_000);
   } catch (error: unknown) {
-    const record = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+    const record = new SupervisorEvidence(coordinatorFilesForHome(home, 'prod').runDir);
     try {
       throw new Error(
         `Grant recovery did not serve: ${JSON.stringify({

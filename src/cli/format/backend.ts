@@ -751,18 +751,10 @@ export function formatBackendStatus(
       ? formatLiveShutdownGuidance(daemonStatus.health)
       : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
   const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
-  if (daemonStatus.launchRecordProblem === 'unreadable')
+  if (daemonStatus.launchStatusProblem === 'unreadable')
     sections.push(
-      daemonStatus.status === 'ok'
-        ? 'Coordinator launch record is unreadable. The serving coordinator remains untouched; the next supervisor spawn after it exits rebuilds the record.'
-        : 'Coordinator launch record is unreadable. The supervisor checks coordinator health, discovery, and lock holders, then quarantines and rebuilds it when absence is established. An inconclusive check starts a successor supervisor after a bounded retry.',
+      'Coordinator launch status is unreadable. This diagnostic cannot authorize a signal or prevent startup.',
     );
-  if (daemonStatus.launchRecordProblem === 'newer')
-    sections.push(
-      'Coordinator launch record was written by a newer build. A compatible supervisor must read it before launch ownership can change.',
-    );
-  for (const address of daemonStatus.launchRecordQuarantines ?? [])
-    sections.push(`Coordinator launch record was quarantined at ${address}; its original bytes are preserved.`);
   for (const hold of daemonStatus.launchSignalHolds ?? []) {
     if (hold.launchId.startsWith('replacement:'))
       sections.push(
@@ -795,6 +787,11 @@ export function formatBackendStatus(
       case 'target-indeterminate':
         sections.push(
           `Coordinator launch request ${launchHold.requestId} has an indeterminate target. The supervisor retries when target executable evidence becomes conclusive or the target disappears.`,
+        );
+        break;
+      case 'admission-unreadable':
+        sections.push(
+          `Coordinator admission identity at ${launchHold.path} is unreadable. The supervisor holds exact-child recovery and checks discovery; this file cannot veto startup or authorize a signal.`,
         );
         break;
       case 'inherited-child-unresponsive':
@@ -931,10 +928,10 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
-        result.launchRecordProblem !== undefined
-          ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch record problem is reported below.'
+        result.launchStatusProblem !== undefined
+          ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch status problem is reported below.'
           : result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
-            ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch record reports the hold below.'
+            ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch status reports the hold below.'
             : [
                 'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
                 formatBackendOperatorCommand({ kind: 'backend-start' }),
@@ -943,10 +940,10 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'recorded_process_absent':
       return withShutdownRemainderSection(
-        result.launchRecordProblem !== undefined
-          ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch record problem is reported below.`
+        result.launchStatusProblem !== undefined
+          ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch status problem is reported below.`
           : result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
-            ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch record reports the hold below.`
+            ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch status reports the hold below.`
             : [
                 `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
                 formatBackendOperatorCommand({ kind: 'backend-start' }),

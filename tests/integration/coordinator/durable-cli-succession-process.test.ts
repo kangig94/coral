@@ -24,7 +24,7 @@ import {
   SUCCESSION_CAPABILITY_VERSION,
 } from '#src/infra/bundle-manifest-address.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import { readDurableCliControllerReceipts } from '#src/coordinator/services/durable-cli-transfer.js';
 import { successionPreparationSchema } from '#src/coordinator/succession/protocol.js';
@@ -842,7 +842,7 @@ describe('real-process durable-cli succession', () => {
       }, 30_000);
     } catch (error: unknown) {
       const runDir = coordinatorFilesForHome(home, 'prod').runDir;
-      const record = new CoordinatorLaunchRecord(runDir);
+      const record = new SupervisorEvidence(runDir);
       try {
         const launch = record.read();
         throw new Error(

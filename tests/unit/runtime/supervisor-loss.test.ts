@@ -7,8 +7,8 @@ import type * as fsModule from 'node:fs';
 
 import { afterEach, expect, it, vi } from 'vitest';
 
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import { readLaunchStatus } from '#src/infra/launch-status.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type * as nodeProcessModule from '#src/infra/node-process.js';
 import { startReplacementSupervisor } from '#src/runtime/supervisor-loss.js';
@@ -41,17 +41,6 @@ it('keeps an accepted replacement alive while its repair bridge waits for an unh
     (pid) =>
       (pid === process.pid ? 'source' : pid === replacement.pid ? 'replacement' : null) as ProcessIncarnation | null,
   );
-  const record = new CoordinatorLaunchRecord(runDir);
-  const owner = record.acquire(
-    { id: 'old-supervisor', process: { pid: 100, incarnation: 'old' as ProcessIncarnation }, buildSetId: 'build' },
-    Date.now(),
-  );
-  if (owner === null) throw new Error('owner not admitted');
-  const launch = record.reserve(owner, 'build', 'startup', Date.now());
-  if (launch === null) throw new Error('launch not reserved');
-  const source = { pid: process.pid, incarnation: 'source' as ProcessIncarnation };
-  record.admit(launch, owner.process, source, Date.now());
-  record.serving(launch, source);
   const onAccepted = vi.fn(async () => {});
   const onError = vi.fn();
   try {
@@ -64,19 +53,8 @@ it('keeps an accepted replacement alive while its repair bridge waits for an unh
     );
     const challenge = vi.mocked(spawn).mock.calls[0]?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
     replacement.emit('message', { kind: 'coral-recovery-ready', challenge });
-    await vi.advanceTimersByTimeAsync(200);
-    const recovery = record.read().recovery;
-    if (recovery === undefined) throw new Error('recovery not nominated');
-    record.acceptRecoveryTransfer(
-      {
-        id: 'replacement',
-        process: { pid: replacement.pid, incarnation: 'replacement' as ProcessIncarnation },
-        buildSetId: 'build',
-      },
-      recovery.id,
-      challenge!,
-      Date.now(),
-    );
+    expect(replacement.send).toHaveBeenCalledWith({ kind: 'coral-recovery-offer', challenge });
+    replacement.emit('message', { kind: 'coral-recovery-owned', challenge });
     await vi.advanceTimersByTimeAsync(46_000);
     expect(replacement.kill).not.toHaveBeenCalled();
     expect(onAccepted).not.toHaveBeenCalled();
@@ -85,7 +63,6 @@ it('keeps an accepted replacement alive while its repair bridge waits for an unh
     expect(onAccepted).toHaveBeenCalledOnce();
     expect(onError).not.toHaveBeenCalled();
   } finally {
-    record.close();
     rmSync(runDir, { recursive: true, force: true });
   }
 });
@@ -104,31 +81,26 @@ it('records refused replacement retirement signals until the replacement exits',
     (pid) =>
       (pid === process.pid ? 'source' : pid === replacement.pid ? 'replacement' : null) as ProcessIncarnation | null,
   );
-  const record = new CoordinatorLaunchRecord(runDir);
-  const owner = record.acquire(
-    { id: 'old-supervisor', process: { pid: 100, incarnation: 'old' as ProcessIncarnation }, buildSetId: 'build' },
-    Date.now(),
-  );
-  if (owner === null) throw new Error('owner not admitted');
-  const launch = record.reserve(owner, 'build', 'startup', Date.now());
-  if (launch === null) throw new Error('launch not reserved');
-  const source = { pid: process.pid, incarnation: 'source' as ProcessIncarnation };
-  record.admit(launch, owner.process, source, Date.now());
-  record.serving(launch, source);
   try {
     startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
     await vi.advanceTimersByTimeAsync(11_000);
     expect(replacement.kill).toHaveBeenCalledWith('SIGTERM');
-    expect(record.read().signalHolds).toEqual([
-      { launchId: `replacement:${replacement.pid}:replacement`, pid: replacement.pid, incarnation: 'replacement' },
-    ]);
+    expect(readLaunchStatus(runDir)).toMatchObject({
+      kind: 'readable',
+      status: {
+        signalHolds: [
+          { launchId: `replacement:${replacement.pid}:replacement`, pid: replacement.pid, incarnation: 'replacement' },
+        ],
+      },
+    });
     await vi.advanceTimersByTimeAsync(31_000);
     expect(replacement.kill).toHaveBeenCalledWith('SIGKILL');
-    expect(record.read().signalHolds).toHaveLength(1);
+    const held = readLaunchStatus(runDir);
+    expect(held.kind === 'readable' ? held.status.signalHolds : []).toHaveLength(1);
     replacement.emit('exit', null, 'SIGKILL');
-    expect(record.read().signalHolds).toEqual([]);
+    const cleared = readLaunchStatus(runDir);
+    expect(cleared.kind === 'readable' ? cleared.status.signalHolds : []).toEqual([]);
   } finally {
-    record.close();
     rmSync(runDir, { recursive: true, force: true });
   }
 });

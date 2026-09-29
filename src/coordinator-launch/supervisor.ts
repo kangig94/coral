@@ -14,16 +14,9 @@ import {
 import { createForeignTargetValidator, inspectValidatedHandoffTarget } from '../infra/handoff-target.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
-import {
-  CoordinatorLaunchRecord,
-  quarantineCoordinatorLaunchRecord,
-  readCoordinatorLaunchDisposition,
-  type LaunchOwner,
-  type LaunchProcess,
-  type LaunchReservation,
-} from '../infra/coordinator-launch.js';
-import { attemptExclusiveFileLockSync, tryAcquireDirectoryLock } from '../infra/fs-lock.js';
-import { coordinatorLaunchPath, generationAdmissionLockPath, socketPathForRunDir } from '../infra/path/index.js';
+import { SupervisorLaunchMemory, type LaunchOwner, type LaunchProcess, type LaunchReservation } from './state.js';
+import { attemptExclusiveFileLockSync, createSharedFileLockSync, type FileLockLease } from '../infra/fs-lock.js';
+import { socketPathForRunDir, supervisorLockPath } from '../infra/path/index.js';
 import {
   incarnationMayAuthorizeSignal,
   observeProcessLiveness,
@@ -31,7 +24,7 @@ import {
   type ProcessLiveness,
 } from '../infra/node-process.js';
 import { SENTINEL_TIMING, validSentinelTiming, type SentinelTiming } from '../infra/sentinel-timing.js';
-import { readUpgradeIntent } from '../infra/upgrade-intent.js';
+import { readUpgradeIntent, retryUpgradeIntentCas, type UpgradeIntent } from '../infra/upgrade-intent.js';
 import { handoffCapsuleControllerBuildSetId, type HandoffCapsule } from '../provider-proxy/handoff-capsule.js';
 import {
   providerProxySetIdentityFromCapsule,
@@ -48,99 +41,14 @@ import {
 } from '../provider-proxy/handoff-capsule-discovery.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { childHasExited, childIsUninterruptible } from './child-state.js';
+import { listLaunchAdmissions, readLaunchAdmission } from '../infra/launch-admission-record.js';
 import { replacementServing, requestInheritedSuccession } from './health.js';
+import { recordLegacyUpgradeIntent } from './request.js';
 import { relaunchRoots, validatedBuild } from './selection.js';
 
 const STARTUP_BUDGET_MS = 120_000;
 const POLL_MS = 200;
-
-type UnreadableRecordLiveness = 'live' | 'absent' | 'unknown';
-
-async function socketPresence(path: string): Promise<'accepting' | 'absent' | 'unknown'> {
-  return new Promise((resolve) => {
-    const socket = createConnection(path);
-    let settled = false;
-    const finish = (result: 'accepting' | 'absent' | 'unknown'): void => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(result);
-    };
-    socket.setTimeout(500, () => finish('unknown'));
-    socket.once('connect', () => finish('accepting'));
-    socket.once('error', (error: NodeJS.ErrnoException) =>
-      finish(error.code === 'ENOENT' || error.code === 'ECONNREFUSED' ? 'absent' : 'unknown'),
-    );
-  });
-}
-
-async function unreadableRecordLiveness(
-  runDir: string,
-  flavor: StrictBundleManifest['flavor'],
-): Promise<UnreadableRecordLiveness> {
-  const runtime = createRealRuntime(flavor, { baseDir: dirname(dirname(runDir)) });
-  let discovery: ReturnType<typeof readDiscoveryRecordDisposition>;
-  try {
-    discovery = readDiscoveryRecordDisposition(runtime);
-  } catch {
-    return 'unknown';
-  }
-  if (discovery.kind === 'record') {
-    if (await replacementServing(runDir, flavor, discovery.record.pid)) return 'live';
-    const observed = discovery.record.incarnation === undefined ? null : probeProcessIncarnation(discovery.record.pid);
-    if (observed !== null && observed !== discovery.record.incarnation) return 'absent';
-    if (observeProcessLiveness(discovery.record.pid) !== 'absent') return 'unknown';
-  }
-  if ((await socketPresence(socketPathForRunDir(runDir, flavor, { platform: process.platform }))) !== 'absent')
-    return 'unknown';
-
-  const lock = attemptExclusiveFileLockSync(coordinatorLaunchPath(runDir));
-  if (lock.kind === 'contended' || lock.kind === 'unobservable') return 'unknown';
-  if (lock.kind === 'acquired') lock.lease();
-  const admissionPath = generationAdmissionLockPath(runtime.paths.coral.generation);
-  if (existsSync(admissionPath)) {
-    try {
-      const admission = tryAcquireDirectoryLock(admissionPath);
-      if (admission === null) return 'unknown';
-      admission();
-    } catch {
-      return 'unknown';
-    }
-  }
-  return 'absent';
-}
-
-async function recoverLaunchRecord(
-  runDir: string,
-  flavor: StrictBundleManifest['flavor'],
-): Promise<'ready' | 'live' | 'newer' | 'retry'> {
-  for (let retry = 0; retry < 25; retry += 1) {
-    const disposition = readCoordinatorLaunchDisposition(runDir);
-    if (disposition.kind === 'absent' || disposition.kind === 'readable') return 'ready';
-    if (disposition.kind === 'newer') return 'newer';
-    const liveness = await unreadableRecordLiveness(runDir, flavor);
-    if (liveness === 'live') return 'live';
-    if (liveness === 'unknown') {
-      await sleep(POLL_MS);
-      continue;
-    }
-    const release = tryAcquireDirectoryLock(`${coordinatorLaunchPath(runDir)}.recovery.lock`);
-    if (release === null) {
-      await sleep(POLL_MS);
-      continue;
-    }
-    try {
-      if (
-        readCoordinatorLaunchDisposition(runDir).kind === 'unreadable' &&
-        (await unreadableRecordLiveness(runDir, flavor)) === 'absent'
-      )
-        quarantineCoordinatorLaunchRecord(runDir);
-    } finally {
-      release();
-    }
-  }
-  return 'retry';
-}
+const UNIDENTIFIED_INCUMBENT = 'unidentified-starting-incumbent';
 
 type Candidate = Readonly<{ executable: string; buildSetId: string }>;
 
@@ -171,43 +79,42 @@ function targetValidation(executable: string): 'absent' | 'indeterminate' | Stri
   return validatedExecutable(executable) ?? 'indeterminate';
 }
 
-function settleRequests(
-  record: CoordinatorLaunchRecord,
-  owner: LaunchOwner,
-  serving: StrictBundleManifest | null,
-  ready = false,
-): void {
-  let indeterminate: string | null = null;
-  for (const request of record.read().requests) {
-    if (request.status !== 'recorded' && request.status !== 'accepted') continue;
-    if (request.acceptedEpoch !== owner.epoch) record.accept(owner, request.id, Date.now());
-    const target = targetValidation(request.executable);
-    if (target === 'absent') {
-      record.unavailable(owner, request.id, Date.now());
-      continue;
-    }
-    if (target === 'indeterminate' || target.buildSetId !== request.buildSetId) {
-      indeterminate ??= request.id;
-      continue;
-    }
-    if (serving !== null && serving.flavor === target.flavor) {
-      const order = compareProductVersions(target.version, serving.version);
-      if (order < 0) {
-        record.unavailable(owner, request.id, Date.now());
-        continue;
-      }
-      if (order === 0) {
-        if (request.buildSetId !== serving.buildSetId) {
-          record.unavailable(owner, request.id, Date.now());
-        } else if (ready) {
-          record.complete(owner, request.id, Date.now());
-        }
-        continue;
-      }
-    }
-  }
-  if (indeterminate === null) record.clearTargetHold(owner, Date.now());
-  else record.holdTarget(owner, indeterminate, Date.now());
+function pendingIntent(runDir: string): UpgradeIntent | null {
+  const observed = readUpgradeIntent(runDir);
+  return observed.kind === 'readable' &&
+    observed.intent.legacyRetirement === true &&
+    (observed.intent.disposition === 'pending' ||
+      observed.intent.disposition === 'deferred' ||
+      observed.intent.disposition === 'attempting')
+    ? observed.intent
+    : null;
+}
+
+function pendingExecutable(intent: UpgradeIntent): string {
+  return join(intent.target.pluginRootLabel, 'bridge', 'coral-backend.cjs');
+}
+
+async function closeUnavailableLegacyRequest(runDir: string, requestId: string): Promise<void> {
+  await retryUpgradeIntentCas(runDir, (observed) => {
+    if (observed.kind !== 'readable') return { kind: 'settle', value: undefined };
+    const intent = observed.intent;
+    if (
+      intent.requestId !== requestId ||
+      intent.legacyRetirement !== true ||
+      intent.disposition === 'closed' ||
+      intent.disposition === 'completed' ||
+      intent.attemptId !== null ||
+      intent.attemptChild !== null ||
+      targetValidation(pendingExecutable(intent)) !== 'absent'
+    )
+      return { kind: 'settle', value: undefined };
+    return {
+      kind: 'write',
+      expectedRevision: intent.revision,
+      change: { ...intent, disposition: 'closed' as const, retryCondition: null },
+      settle: () => undefined,
+    };
+  });
 }
 
 function sleep(ms: number): Promise<void> {
@@ -332,10 +239,10 @@ export function controllerBuild(
 }
 
 function candidates(
-  record: CoordinatorLaunchRecord,
   runDir: string,
   original: Candidate,
   originalManifest: StrictBundleManifest,
+  originalOutstanding: boolean,
 ): Candidate[] {
   const controller = controllerBuild(runDir);
   if (controller.kind === 'unknown') return [];
@@ -358,14 +265,11 @@ function candidates(
           executable: join(committedRoot, 'bridge', 'coral-backend.cjs'),
           buildSetId: committedIntent.target.build.buildSetId,
         };
-  const requested = record
-    .read()
-    .requests.filter((request) => request.status === 'recorded' || request.status === 'accepted')
-    .flatMap((request) =>
-      validatedExecutable(request.executable)?.buildSetId === request.buildSetId
-        ? [{ executable: request.executable, buildSetId: request.buildSetId }]
-        : [],
-    );
+  const pending = pendingIntent(runDir);
+  const requested =
+    pending !== null && validatedExecutable(pendingExecutable(pending))?.buildSetId === pending.target.build.buildSetId
+      ? [{ executable: pendingExecutable(pending), buildSetId: pending.target.build.buildSetId }]
+      : [];
   const originalRoot = validatedRunningBuildRoot(runDir, dirname(dirname(original.executable)), originalManifest);
   const recovery = relaunchRoots(runDir, originalManifest).flatMap((root) => {
     const build = validatedBuild(root);
@@ -394,6 +298,7 @@ function candidates(
         ...(committed === null ? [] : [committed]),
         ...controllerCandidate,
         ...recovery,
+        ...(originalOutstanding ? [original] : []),
         ...(originalRoot === null
           ? []
           : [{ executable: join(originalRoot, 'bridge', 'coral-backend.cjs'), buildSetId: original.buildSetId }]),
@@ -425,10 +330,10 @@ type RunningChild = Readonly<{
   executable: string;
   manifest: StrictBundleManifest;
 }>;
-type OwnerHandle = { current: LaunchOwner; lost: boolean };
+type OwnerHandle = { current: LaunchOwner; lost: boolean; release: FileLockLease };
 type ChildRetirement = { at: number | null };
 function retireOwnedChild(
-  record: CoordinatorLaunchRecord,
+  record: SupervisorLaunchMemory,
   owner: OwnerHandle,
   reservation: LaunchReservation,
   running: RunningChild,
@@ -456,7 +361,7 @@ type InheritedWatch = {
 };
 
 function terminationCommitted(
-  record: CoordinatorLaunchRecord,
+  record: SupervisorLaunchMemory,
   owner: LaunchOwner,
   reservation: LaunchReservation,
   identity: LaunchProcess,
@@ -464,16 +369,15 @@ function terminationCommitted(
   const state = record.read();
   const slot = [state.launch, state.attempt].find((entry) => entry?.id === reservation.id);
   return (
-    state.owner?.epoch === owner.epoch &&
+    state.owner.id === owner.id &&
     slot?.terminationAt !== undefined &&
-    slot.terminationOwnerEpoch === owner.epoch &&
     slot.child?.pid === identity.pid &&
     slot.child.incarnation === identity.incarnation
   );
 }
 
 function signalInheritedChild(
-  record: CoordinatorLaunchRecord,
+  record: SupervisorLaunchMemory,
   owner: LaunchOwner,
   slot: LaunchReservation,
   signal: NodeJS.Signals,
@@ -491,7 +395,7 @@ function signalInheritedChild(
 }
 
 function spawnAdmittedChild(
-  record: CoordinatorLaunchRecord,
+  record: SupervisorLaunchMemory,
   owner: LaunchOwner,
   reservation: LaunchReservation,
   executable: string,
@@ -501,7 +405,7 @@ function spawnAdmittedChild(
 ): RunningChild | null {
   const manifest = validatedExecutable(executable);
   if (manifest === null) {
-    record.cancelReservation(owner, reservation, Date.now());
+    record.cancelReservation(reservation);
     return null;
   }
   const sentinelId = randomUUID();
@@ -532,7 +436,7 @@ function spawnAdmittedChild(
   if (pid === undefined || incarnation === null) {
     const finish = (): void => {
       clearInterval(retry);
-      record.cancelReservation(owner, reservation, Date.now());
+      record.cancelReservation(reservation);
     };
     const retry = setInterval(() => {
       if (child.exitCode !== null || child.signalCode !== null) return;
@@ -543,13 +447,15 @@ function spawnAdmittedChild(
     if (pid === undefined) finish();
     return null;
   }
+  if (!record.spawned(reservation, owner.process, { pid, incarnation }))
+    throw new Error('Spawned child lost its reservation');
   return { child, identity: { pid, incarnation }, sentinelId, executable, manifest };
 }
 
 type WatchChildContext = Readonly<{
   running: RunningChild;
   reservation: LaunchReservation;
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   runDir: string;
   owner: OwnerHandle;
   timing: SentinelTiming;
@@ -572,15 +478,15 @@ type ChildWatchState = {
   wedged: boolean;
   dStateSince: number | null;
   served: boolean;
+  discovered: boolean;
   admitted: boolean;
   startupDeadline: number;
-  lastRenewal: number;
   disconnectedAt: number | null;
 };
 
 function monitorChildHeartbeat(input: {
   child: ChildProcess;
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   reservation: LaunchReservation;
   identity: LaunchProcess;
@@ -598,23 +504,12 @@ function monitorChildHeartbeat(input: {
     state.outstanding = null;
     state.startupDeadline += gap;
   }
-  if (record.read().owner?.epoch !== owner.current.epoch) {
+  if (record.read().owner.id !== owner.current.id) {
     owner.lost = true;
     return;
   }
-  if (now - state.lastRenewal >= 30_000) {
-    const renewed = record.renew(owner.current, now);
-    if (renewed !== null) owner.current = renewed;
-    else {
-      const { id, process: holderProcess, buildSetId } = owner.current;
-      const reacquired = record.acquire({ id, process: holderProcess, buildSetId }, now);
-      if (reacquired === null) owner.lost = true;
-      else owner.current = reacquired;
-    }
-    state.lastRenewal = now;
-  }
   if (child.exitCode !== null || child.signalCode !== null) return;
-  if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) return;
+  if (owner.lost || record.read().owner.id !== owner.current.id) return;
   state.escalationAt ??= retirement.at;
   if (state.escalationAt !== null) {
     if (!state.killed && now - state.escalationAt >= timing.graceMs && now - state.lastKillAttemptAt >= 1_000) {
@@ -666,20 +561,50 @@ function relayWatchedChildMessage(input: {
   message: unknown;
   handle: unknown;
   child: ChildProcess;
+  reservation: LaunchReservation;
+  identity: LaunchProcess;
+  runDir: string;
   sentinelId: string;
   owner: OwnerHandle;
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   state: ChildWatchState;
   route: (message: unknown, handle: unknown) => boolean;
 }): void {
-  const { message, handle, child, sentinelId, owner, record, state, route } = input;
-  if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+  const { message, handle, child, reservation, identity, runDir, sentinelId, owner, record, state, route } = input;
+  if (owner.lost || record.read().owner.id !== owner.current.id) {
     closeHandle(handle);
     return;
   }
   if (typeof message === 'object' && message !== null && 'kind' in message) {
-    if (message.kind === 'coral-launch-admitted' && 'pid' in message && message.pid === child.pid)
-      state.admitted = true;
+    if (
+      message.kind === 'coral-launch-admitted' &&
+      'pid' in message &&
+      message.pid === child.pid &&
+      'launchId' in message &&
+      typeof message.launchId === 'string'
+    ) {
+      const admission = readLaunchAdmission(runDir, message.launchId);
+      if (
+        admission.kind === 'readable' &&
+        admission.admission.child.pid === child.pid &&
+        admission.admission.child.incarnation === identity.incarnation &&
+        admission.admission.parent.pid === process.pid &&
+        admission.admission.parent.incarnation === owner.current.process.incarnation &&
+        record.admit(reservation, owner.current.process, identity, admission.admission.admittedAt)
+      ) {
+        state.admitted = true;
+        child.send({ kind: 'coral-launch-acknowledged', launchId: reservation.id });
+      }
+    }
+    if (
+      message.kind === 'coral-launch-discovered' &&
+      state.admitted &&
+      'pid' in message &&
+      message.pid === child.pid &&
+      'launchId' in message &&
+      message.launchId === reservation.id
+    )
+      state.discovered = true;
     if (message.kind === 'coral-sentinel-hello' && 'id' in message && message.id === sentinelId) {
       state.pendingHello = true;
       state.lastAnswer = Date.now();
@@ -701,7 +626,7 @@ function relayWatchedChildMessage(input: {
 
 function escalateWatchedChild(input: {
   child: ChildProcess;
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   reservation: LaunchReservation;
   identity: LaunchProcess;
@@ -722,15 +647,15 @@ function escalateWatchedChild(input: {
       sent = false;
     }
     if (sent) {
-      record.clearSignalRefusal(reservation, identity);
+      record.clearSignalRefusal(reservation);
       return 'sent';
     }
   }
   if (observeProcessLiveness(identity.pid) === 'absent') {
-    record.settleAbsentChild(owner.current, reservation, now);
+    record.settleAbsentChild(reservation);
     return 'absent';
   }
-  return record.holdSignalRefusal(owner.current, reservation, identity, now) ? 'held' : 'refused';
+  return record.holdSignalRefusal(owner.current, reservation, identity) ? 'held' : 'refused';
 }
 
 function pollWatchedChildServing(input: {
@@ -738,12 +663,11 @@ function pollWatchedChildServing(input: {
   manifest: StrictBundleManifest;
   reservation: LaunchReservation;
   identity: LaunchProcess;
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   runDir: string;
-  owner: OwnerHandle;
   state: ChildWatchState;
 }): void {
-  const { child, manifest, reservation, identity, record, runDir, owner, state } = input;
+  const { child, manifest, reservation, identity, record, runDir, state } = input;
   if (!state.admitted || child.pid === undefined || state.served) return;
   const launchState = record.read();
   if (
@@ -753,13 +677,7 @@ function pollWatchedChildServing(input: {
   )
     return;
   void replacementServing(runDir, manifest.flavor, child.pid).then((ready) => {
-    if (ready && record.serving(reservation, identity)) {
-      state.served = true;
-      for (const request of record.read().requests) {
-        if (request.buildSetId === reservation.buildSetId && request.status === 'accepted')
-          record.complete(owner.current, request.id, Date.now());
-      }
-    }
+    if (ready && record.serving(reservation, identity)) state.served = true;
   });
 }
 
@@ -789,9 +707,9 @@ async function watchChild({
     wedged: false,
     dStateSince: null,
     served: false,
+    discovered: false,
     admitted: false,
     startupDeadline: Date.now() + startupBudgetMs,
-    lastRenewal: Date.now(),
     disconnectedAt: null,
   };
 
@@ -799,10 +717,22 @@ async function watchChild({
     child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
   });
   child.on('message', (message: unknown, handle: unknown) =>
-    relayWatchedChildMessage({ message, handle, child, sentinelId, owner, record, state, route }),
+    relayWatchedChildMessage({
+      message,
+      handle,
+      child,
+      reservation,
+      identity,
+      runDir,
+      sentinelId,
+      owner,
+      record,
+      state,
+      route,
+    }),
   );
   const parentMessage = (message: unknown, handle: unknown): void => {
-    if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+    if (owner.lost || record.read().owner.id !== owner.current.id) {
       closeHandle(handle);
       return;
     }
@@ -823,23 +753,54 @@ async function watchChild({
       kind: 'coral-launch-admit',
       runDir,
       launchId: reservation.id,
-      ownerEpoch: reservation.ownerEpoch,
+      build: {
+        version: manifest.version,
+        buildSetId: manifest.buildSetId,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+      },
+      purpose: reservation.purpose,
       parent: owner.current.process,
     });
     state.armed = true;
     if (state.pendingHello) child.send({ kind: 'coral-sentinel-armed', id: sentinelId });
   });
   const servingPoll = setInterval(
-    () => pollWatchedChildServing({ child, manifest, reservation, identity, record, runDir, owner, state }),
+    () => pollWatchedChildServing({ child, manifest, reservation, identity, record, runDir, state }),
     POLL_MS,
   );
+  // A disconnected child can only be handed to a replacement supervisor that takes the released lock; until one does,
+  // this parent reacquires before the disconnect lapse, so a child that wedges after release is still retired.
+  let handoffReleasedAt: number | null = null;
+  const detachedHealthPoll = setInterval(() => {
+    if (child.connected || owner.lost) return;
+    if (handoffReleasedAt !== null) {
+      const attempt = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+      if (attempt.kind === 'contended') owner.lost = true;
+      else if (attempt.kind === 'acquired') {
+        if (Date.now() - handoffReleasedAt < timing.lapseMs / 2) attempt.lease();
+        else {
+          owner.release = attempt.lease;
+          handoffReleasedAt = null;
+        }
+      }
+      return;
+    }
+    void replacementServing(runDir, manifest.flavor, identity.pid).then((healthy) => {
+      if (!healthy || child.connected || owner.lost || handoffReleasedAt !== null) return;
+      if (!state.served && record.serving(reservation, identity)) state.served = true;
+      owner.release();
+      handoffReleasedAt = Date.now();
+    });
+  }, POLL_MS);
   const { exitCode, signal } = await childExit;
   clearInterval(interval);
   clearInterval(servingPoll);
+  clearInterval(detachedHealthPoll);
   if (forwardParentMessages) process.off('message', parentMessage);
   removeExitedChildDiscovery(runDir, identity);
-  if (!record.exited(reservation, identity)) record.cancelReservation(owner.current, reservation, Date.now());
-  return { exitCode, signal, served: state.served, wedged: state.wedged };
+  if (!record.exited(reservation, identity)) record.cancelReservation(reservation);
+  return { exitCode, signal, served: state.served || (state.discovered && exitCode === 0), wedged: state.wedged };
 }
 
 type RepairChild = Readonly<{
@@ -858,7 +819,7 @@ type SuccessionAttemptLaunch = Readonly<{
 }>;
 
 async function launchSuccessionAttempt(input: {
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   runDir: string;
   bundleDir: string;
@@ -876,9 +837,16 @@ async function launchSuccessionAttempt(input: {
   if (manifest === null) throw new Error('Succession target is unavailable');
   await input.beforeReserve?.();
   if (input.owner.lost) throw new Error('Launch ownership was lost');
+  const launch = input.record.read().launch;
+  if (
+    launch?.phase === 'admitted' &&
+    launch.child !== undefined &&
+    (await replacementServing(input.runDir, manifest.flavor, launch.child.pid))
+  )
+    input.record.serving(launch, launch.child);
   const active = input.record.read().attempt;
   if (active !== null && active.phase !== 'exited') throw new Error('Succession attempt is already active');
-  const reservation = input.record.reserve(input.owner.current, manifest.buildSetId, 'succession', Date.now());
+  const reservation = input.record.reserve(input.owner.current, manifest.buildSetId, 'succession');
   if (reservation === null) throw new Error('Succession reservation was refused');
   const running = spawnAdmittedChild(
     input.record,
@@ -909,7 +877,7 @@ async function launchSuccessionAttempt(input: {
 }
 
 function createRepairBridge(
-  record: CoordinatorLaunchRecord,
+  record: SupervisorLaunchMemory,
   owner: OwnerHandle,
   runDir: string,
   timing: SentinelTiming,
@@ -932,7 +900,7 @@ function createRepairBridge(
     else closeHandle(handle);
   };
   const onMessage = (message: unknown, handle: unknown): void => {
-    if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+    if (owner.lost || record.read().owner.id !== owner.current.id) {
       closeHandle(handle);
       return;
     }
@@ -1014,89 +982,242 @@ type OwnershipAcquisition =
   | Readonly<{ kind: 'finished'; exitCode: 0 | 1 }>
   | Readonly<{
       kind: 'owned';
+      record: SupervisorLaunchMemory;
       owner: OwnerHandle;
-      holderIdentity: Omit<LaunchOwner, 'epoch' | 'renewal' | 'leaseUntil' | 'mode'>;
       incarnation: NonNullable<ReturnType<typeof probeProcessIncarnation>>;
       replacement: boolean;
       recoveryChallenge: string | undefined;
     }>;
 
+function observedLaunchIncumbent(
+  runDir: string,
+  flavor: StrictBundleManifest['flavor'],
+): UpgradeIntent['incumbent'] | null {
+  const runtime = createRealRuntime(flavor, { baseDir: dirname(dirname(runDir)) });
+  const discovery = readDiscoveryRecordDisposition(runtime);
+  if (
+    discovery.kind === 'record' &&
+    discovery.record.instanceId !== undefined &&
+    discovery.record.version !== undefined &&
+    discovery.record.incarnation !== undefined &&
+    probeProcessIncarnation(discovery.record.pid) === discovery.record.incarnation
+  )
+    return {
+      instanceId: discovery.record.instanceId,
+      pid: discovery.record.pid,
+      incarnation: discovery.record.incarnation,
+      version: discovery.record.version,
+      bundleHash: discovery.record.bundleHash,
+      flavor,
+    };
+  const admission = listLaunchAdmissions(runDir)
+    .filter((entry): entry is Extract<typeof entry, { kind: 'readable' }> => entry.kind === 'readable')
+    .map((entry) => entry.admission)
+    .filter((entry) => probeProcessIncarnation(entry.child.pid) === entry.child.incarnation)
+    .sort((a, b) => b.admittedAt - a.admittedAt)[0];
+  if (admission === undefined) return null;
+  if (admission.build.flavor !== flavor) return null;
+  return {
+    instanceId: `launch:${admission.launchId}`,
+    pid: admission.child.pid,
+    incarnation: admission.child.incarnation,
+    version: admission.build.version,
+    bundleHash: admission.build.bundleHash,
+    flavor,
+  };
+}
+
+function publishedNativeSupervision(runDir: string, slot: LaunchReservation): boolean {
+  const child = slot.child;
+  if (child === undefined) return false;
+  const runtime = createRealRuntime(runDir.endsWith('run-dev') ? 'dev' : 'prod', {
+    baseDir: dirname(dirname(runDir)),
+  });
+  const discovery = readDiscoveryRecordDisposition(runtime);
+  return (
+    discovery.kind === 'record' &&
+    discovery.record.pid === child.pid &&
+    discovery.record.incarnation === child.incarnation &&
+    discovery.record.supervision?.launchId === slot.id
+  );
+}
+
+function upgradeOutstanding(runDir: string, buildSetId: string): boolean {
+  const observed = readUpgradeIntent(runDir);
+  if (
+    observed.kind !== 'readable' ||
+    observed.intent.disposition === 'completed' ||
+    observed.intent.disposition === 'closed'
+  )
+    return false;
+  return (
+    observed.intent.target.build.buildSetId === buildSetId ||
+    observed.intent.nextTarget?.target.build.buildSetId === buildSetId
+  );
+}
+
+async function socketClaimedBeforeDiscovery(runDir: string, flavor: StrictBundleManifest['flavor']): Promise<boolean> {
+  return await new Promise((resolve) => {
+    const socket = createConnection(socketPathForRunDir(runDir, flavor, { platform: process.platform }));
+    const finish = (claimed: boolean): void => {
+      socket.destroy();
+      resolve(claimed);
+    };
+    socket.setTimeout(500, () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
+async function recordUnidentifiedIncumbentRequest(
+  runDir: string,
+  owner: LaunchOwner,
+  target: UpgradeIntent['target'],
+): Promise<void> {
+  await retryUpgradeIntentCas(runDir, (observed) => {
+    if (observed.kind !== 'absent' && observed.kind !== 'readable') return { kind: 'settle', value: undefined };
+    const current = observed.kind === 'readable' ? observed.intent : null;
+    if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed')
+      return { kind: 'settle', value: undefined };
+    return {
+      kind: 'write',
+      expectedRevision: current?.revision ?? null,
+      change: {
+        requestId: randomUUID(),
+        incumbent: {
+          instanceId: UNIDENTIFIED_INCUMBENT,
+          pid: owner.process.pid,
+          incarnation: owner.process.incarnation,
+          version: '0.0.0',
+          bundleHash: 'unidentified',
+          flavor: target.build.flavor,
+        },
+        target,
+        legacyRetirement: true,
+        attemptId: null,
+        attemptChild: null,
+        attemptOwner: null,
+        disposition: 'deferred' as const,
+        blockers: [{ owner: 'protocol', reason: 'bound incumbent has not published its identity' }],
+        retryCondition: { kind: 'obligation-change' as const, evidence: 'incumbent discovery' },
+        attemptDeadline: null,
+        completionReceipt: null,
+      },
+      settle: () => undefined,
+    };
+  });
+}
+
 async function acquireLaunchOwnership(
-  record: CoordinatorLaunchRecord,
+  runDir: string,
   executable: string,
   manifest: StrictBundleManifest,
 ): Promise<OwnershipAcquisition> {
-  const request = record.request(executable, manifest.buildSetId);
   const incarnation = probeProcessIncarnation(process.pid);
   if (incarnation === null) return { kind: 'finished', exitCode: 1 };
-  const holderIdentity = {
-    id: randomUUID(),
-    process: { pid: process.pid, incarnation },
-    buildSetId: manifest.buildSetId,
-  };
-  const recoverySourcePid = Number(process.env.CORAL_RECOVERY_SOURCE_PID);
+  const sourcePid = Number(process.env.CORAL_RECOVERY_SOURCE_PID);
   const recoveryChallenge = process.env.CORAL_RECOVERY_CHALLENGE;
-  const recoverySourceIncarnation = process.env.CORAL_RECOVERY_SOURCE_INCARNATION;
+  const sourceIncarnation = process.env.CORAL_RECOVERY_SOURCE_INCARNATION;
   const replacement =
-    Number.isSafeInteger(recoverySourcePid) &&
-    recoverySourcePid > 0 &&
+    Number.isSafeInteger(sourcePid) &&
+    sourcePid > 0 &&
     recoveryChallenge !== undefined &&
-    recoverySourceIncarnation !== undefined;
-  let offered: LaunchOwner | null = null;
-  const onRecoveryOffer = (message: unknown): void => {
+    sourceIncarnation !== undefined;
+  let offered = false;
+  const onOffer = (message: unknown): void => {
     if (
       !replacement ||
-      process.ppid !== recoverySourcePid ||
-      probeProcessIncarnation(recoverySourcePid) !== recoverySourceIncarnation ||
+      process.ppid !== sourcePid ||
+      probeProcessIncarnation(sourcePid) !== sourceIncarnation ||
       typeof message !== 'object' ||
       message === null ||
       !('kind' in message) ||
       message.kind !== 'coral-recovery-offer' ||
-      !('id' in message) ||
-      typeof message.id !== 'string' ||
       !('challenge' in message) ||
       message.challenge !== recoveryChallenge
     )
       return;
-    offered = record.acceptRecoveryTransfer(holderIdentity, message.id, recoveryChallenge, Date.now());
+    offered = true;
   };
   if (replacement) {
-    process.on('message', onRecoveryOffer);
+    process.on('message', onOffer);
     process.send?.({ kind: 'coral-recovery-ready', challenge: recoveryChallenge });
   }
   try {
-    const recoveryWaitStartedAt = Date.now();
-    let holder = replacement ? null : record.acquire(holderIdentity, Date.now());
-    while (holder === null) {
-      if (offered !== null) {
-        holder = offered;
-        break;
+    const path = supervisorLockPath(runDir);
+    let requested = false;
+    for (let retry = 0; !replacement || retry < 150; retry += 1) {
+      if (replacement && (!process.connected || process.ppid !== sourcePid)) return { kind: 'finished', exitCode: 1 };
+      if (replacement && !offered) {
+        await sleep(POLL_MS);
+        continue;
       }
-      if (replacement && (!process.connected || process.ppid !== recoverySourcePid))
-        return { kind: 'finished', exitCode: 1 };
-      const state = record.read();
-      const pending = state.requests.find((entry) => entry.id === request.id);
-      if (pending?.status === 'completed' || pending?.status === 'unavailable')
-        return { kind: 'finished', exitCode: 0 };
+      if (requested && !upgradeOutstanding(runDir, manifest.buildSetId)) return { kind: 'finished', exitCode: 0 };
+      if (!existsSync(path)) {
+        try {
+          createSharedFileLockSync(path)();
+        } catch {
+          await sleep(POLL_MS);
+          continue;
+        }
+      }
+      const attempt = attemptExclusiveFileLockSync(path);
+      if (attempt.kind === 'acquired') {
+        try {
+          const record = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, manifest.buildSetId);
+          if (replacement) process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });
+          return {
+            kind: 'owned',
+            record,
+            owner: { current: record.read().owner, lost: false, release: attempt.lease },
+            incarnation,
+            replacement,
+            recoveryChallenge,
+          };
+        } catch (error: unknown) {
+          attempt.lease();
+          throw error;
+        }
+      }
+      if (attempt.kind === 'malformed') throw new Error(`Supervisor lock is malformed: ${path}`);
+      if (attempt.kind === 'unobservable') throw attempt.cause;
+      if (!replacement) {
+        if (requested) {
+          await sleep(POLL_MS);
+          continue;
+        }
+        const incumbent = observedLaunchIncumbent(runDir, manifest.flavor);
+        if (
+          incumbent !== null &&
+          incumbent.version === manifest.version &&
+          incumbent.bundleHash === manifest.bundleHash
+        ) {
+          if (await replacementServing(runDir, manifest.flavor, incumbent.pid))
+            return { kind: 'finished', exitCode: 0 };
+        } else if (incumbent !== null) {
+          const recorded = await recordLegacyUpgradeIntent({
+            runDir,
+            requestId: randomUUID(),
+            incumbent,
+            target: { build: manifest, pluginRootLabel: dirname(dirname(executable)) },
+          });
+          if (recorded.kind !== 'refused' || recorded.disposition !== 'deferred') {
+            if (recorded.kind !== 'waiting') return { kind: 'finished', exitCode: 0 };
+            requested = true;
+            continue;
+          }
+        }
+      }
       await sleep(POLL_MS);
-      if (!replacement || Date.now() - recoveryWaitStartedAt >= 1_000)
-        holder = record.acquire(holderIdentity, Date.now());
     }
-    return {
-      kind: 'owned',
-      owner: { current: holder, lost: false },
-      holderIdentity,
-      incarnation,
-      replacement,
-      recoveryChallenge,
-    };
+    return { kind: 'finished', exitCode: 1 };
   } finally {
-    if (replacement) process.off('message', onRecoveryOffer);
+    if (replacement) process.off('message', onOffer);
   }
 }
 
 type ReconcileInheritedInput = {
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   runDir: string;
   originalManifest: StrictBundleManifest;
@@ -1132,7 +1253,7 @@ async function reconcileInheritedChild(
   const child = slot.child;
   if (child === undefined) return repairBridge;
   if (incumbentLiveness(child) === 'absent' || childHasExited(child.pid)) {
-    record.settleAbsentChild(owner.current, slot, Date.now());
+    record.settleAbsentChild(slot);
     inheritedWatch.delete(slot.id);
     return repairBridge;
   }
@@ -1157,8 +1278,7 @@ async function reconcileInheritedChild(
   now = Date.now();
   if (healthy && watch.terminationAt === null) {
     watch.lastHealthy = now;
-    record.observeInheritedHealth(owner.current, slot, now);
-    if (slot.buildSetId === originalManifest.buildSetId) settleRequests(record, owner.current, originalManifest, true);
+    record.observeInheritedHealth(slot, now);
     if (process.connected && process.ppid === child.pid && probeProcessIncarnation(child.pid) === child.incarnation) {
       if (repairBridge === null) {
         repairBridge = createRepairBridge(record, owner, runDir, timing, startupBudgetMs);
@@ -1168,25 +1288,20 @@ async function reconcileInheritedChild(
     const incumbentManifest =
       slot.buildSetId === originalManifest.buildSetId
         ? originalManifest
-        : record
-            .read()
-            .requests.filter((request) => request.buildSetId === slot.buildSetId)
-            .map((request) => validatedExecutable(request.executable))
-            .find((manifest) => manifest !== null);
-    if (incumbentManifest !== undefined && incumbentManifest !== null) {
-      for (const request of record.read().requests) {
-        if (record.read().attempt !== null && record.read().attempt?.phase !== 'exited') break;
-        if ((request.status !== 'recorded' && request.status !== 'accepted') || request.buildSetId === slot.buildSetId)
-          continue;
-        const target = validatedExecutable(request.executable);
-        if (target === null || compareProductVersions(target.version, incumbentManifest.version) <= 0) continue;
-        if (now - (lastInheritedRequest.get(request.id) ?? 0) < 10_000) continue;
-        lastInheritedRequest.set(request.id, now);
-        await requestInheritedSuccession(runDir, incumbentManifest.flavor, child.pid, request.id, {
-          build: target,
-          pluginRootLabel: dirname(dirname(request.executable)),
-        });
-        break;
+        : validatedBuild(join(dirname(runDir), 'builds', slot.buildSetId));
+    const intent = pendingIntent(runDir);
+    if (
+      repairBridge !== null &&
+      incumbentManifest !== null &&
+      intent !== null &&
+      (record.read().attempt === null || record.read().attempt?.phase === 'exited') &&
+      intent.target.build.buildSetId !== slot.buildSetId &&
+      now - (lastInheritedRequest.get(intent.requestId) ?? 0) >= 10_000
+    ) {
+      const target = validatedExecutable(pendingExecutable(intent));
+      if (target !== null && compareProductVersions(target.version, incumbentManifest.version) > 0) {
+        lastInheritedRequest.set(intent.requestId, now);
+        await requestInheritedSuccession(runDir, incumbentManifest.flavor, child.pid, intent.requestId, intent.target);
       }
     }
   }
@@ -1208,7 +1323,7 @@ async function reconcileInheritedChild(
       record.commitTermination(owner.current, slot, child, now, timing.graceMs) &&
       !signalInheritedChild(record, owner.current, slot, 'SIGKILL')
     ) {
-      if (!record.holdInheritedChild(owner.current, slot, now)) inheritedWatch.delete(slot.id);
+      if (!record.holdInheritedChild(owner.current, slot)) inheritedWatch.delete(slot.id);
     }
     return repairBridge;
   }
@@ -1221,9 +1336,9 @@ async function reconcileInheritedChild(
   if (record.commitTermination(owner.current, slot, child, now, timing.graceMs)) {
     watch.terminationAt = now;
     if (!signalInheritedChild(record, owner.current, slot, 'SIGTERM')) {
-      if (!record.holdInheritedChild(owner.current, slot, now)) inheritedWatch.delete(slot.id);
+      if (!record.holdInheritedChild(owner.current, slot)) inheritedWatch.delete(slot.id);
     }
-  } else if (!record.holdInheritedChild(owner.current, slot, now)) inheritedWatch.delete(slot.id);
+  } else if (!record.holdInheritedChild(owner.current, slot)) inheritedWatch.delete(slot.id);
   return repairBridge;
 }
 
@@ -1242,7 +1357,7 @@ async function reconcileInheritedChildren(
     const state = record.read();
     const current = [state.launch, state.attempt].find((entry) => entry?.id === snapshot.id);
     return !owner.lost &&
-      state.owner?.epoch === owner.current.epoch &&
+      state.owner.id === owner.current.id &&
       current !== undefined &&
       current !== null &&
       (current.phase === 'admitted' || current.phase === 'serving') &&
@@ -1268,7 +1383,7 @@ type PendingAttempt = Readonly<{
 }>;
 
 function dispatchPendingRequest(input: {
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   current: RunningChild;
   pending: { value: PendingAttempt | null };
@@ -1283,33 +1398,27 @@ function dispatchPendingRequest(input: {
     if (owner.lost || pending.value !== null || current.child.exitCode !== null || current.child.signalCode !== null)
       return;
     const state = record.read();
-    const serving =
-      state.launch?.phase === 'serving' && state.launch.child?.pid === current.identity.pid ? current.manifest : null;
-    settleRequests(record, owner.current, current.manifest, serving !== null);
-    if (serving === null) return;
-    const currentBuild = serving.buildSetId;
-    for (const request of record.read().requests) {
-      if (request.buildSetId === currentBuild && (request.status === 'recorded' || request.status === 'accepted')) {
-        record.complete(owner.current, request.id, Date.now());
-        continue;
-      }
-      if (
-        (request.status !== 'recorded' && request.status !== 'accepted') ||
-        Date.now() - (lastDispatch.get(request.id) ?? 0) < 10_000
-      )
-        continue;
-      const manifest = targetValidation(request.executable);
-      if (manifest === 'absent') {
-        record.unavailable(owner.current, request.id, Date.now());
-        continue;
-      }
-      if (manifest === 'indeterminate') continue;
-      if (manifest?.buildSetId !== request.buildSetId) continue;
-      const contenderReservation = record.reserve(owner.current, manifest.buildSetId, 'contender', Date.now());
-      if (contenderReservation === null) continue;
-      lastDispatch.set(request.id, Date.now());
-      const running = spawnAdmittedChild(record, owner.current, contenderReservation, request.executable, [], runDir);
-      if (running === null) break;
+    if (state.launch?.phase !== 'serving' || state.launch.child?.pid !== current.identity.pid) return;
+    const intent = pendingIntent(runDir);
+    if (
+      intent === null ||
+      intent.target.build.buildSetId === current.manifest.buildSetId ||
+      Date.now() - (lastDispatch.get(intent.requestId) ?? 0) < 10_000
+    )
+      return;
+    const executable = pendingExecutable(intent);
+    const manifest = targetValidation(executable);
+    if (manifest === 'absent') {
+      void closeUnavailableLegacyRequest(runDir, intent.requestId);
+      return;
+    }
+    if (manifest === 'indeterminate' || manifest.buildSetId !== intent.target.build.buildSetId) return;
+    {
+      const contenderReservation = record.reserve(owner.current, manifest.buildSetId, 'contender');
+      if (contenderReservation === null) return;
+      lastDispatch.set(intent.requestId, Date.now());
+      const running = spawnAdmittedChild(record, owner.current, contenderReservation, executable, [], runDir);
+      if (running === null) return;
       const retirement: ChildRetirement = { at: null };
       const watch = watchChild({
         running,
@@ -1326,7 +1435,6 @@ function dispatchPendingRequest(input: {
       void watch.then(() => {
         if (pending.value?.running.child === running.child && current.child !== running.child) pending.value = null;
       });
-      break;
     }
   } catch (error: unknown) {
     process.stderr.write(`Coordinator request observation failed: ${String(error)}\n`);
@@ -1342,14 +1450,14 @@ function createActiveChildRouter({
   startAttempt,
 }: {
   owner: OwnerHandle;
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   pending: { value: PendingAttempt | null };
   current: () => RunningChild;
   timing: SentinelTiming;
   startAttempt: (source: ChildProcess, attemptId: string, bundleDir: string) => void;
 }): (source: ChildProcess, message: unknown, handle: unknown) => boolean {
   return (source, message, handle) => {
-    if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+    if (owner.lost || record.read().owner.id !== owner.current.id) {
       closeHandle(handle);
       return true;
     }
@@ -1418,7 +1526,7 @@ function createActiveChildRouter({
 }
 
 async function superviseActiveChild(input: {
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   initial: RunningChild;
   reservation: LaunchReservation;
@@ -1512,67 +1620,56 @@ async function superviseActiveChild(input: {
     const successor = pending.value;
     if (successor === null || successor.running.child.exitCode !== null || successor.running.child.signalCode !== null)
       break;
-    if (record.normalize(owner.current, Date.now()) === null) break;
+    if (record.normalize() === null) break;
     current = successor.running;
     watched = successor.watch;
     pending.value = null;
   }
   clearInterval(requestPoll);
-  return releaseAfterSettledServedExit(record, owner, current.manifest, result);
+  return releaseAfterSettledServedExit(record, runDir, result);
 }
 
-function releaseAfterSettledServedExit(
-  record: CoordinatorLaunchRecord,
-  owner: OwnerHandle,
-  manifest: StrictBundleManifest,
-  result: WatchResult,
-): boolean {
-  if (result.served) settleRequests(record, owner.current, manifest, true);
+function releaseAfterSettledServedExit(record: SupervisorLaunchMemory, runDir: string, result: WatchResult): boolean {
+  const pending = pendingIntent(runDir);
   return (
     result.served &&
     result.exitCode === 0 &&
     !result.wedged &&
-    record.read().requests.every((request) => request.status === 'completed' || request.status === 'unavailable') &&
-    record.release(owner.current)
+    (pending === null || targetValidation(pendingExecutable(pending)) === 'absent') &&
+    record.release()
   );
 }
 
 async function superviseAdoptedChild(input: {
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   runDir: string;
   repairBridge: ReturnType<typeof createRepairBridge>;
   adoptedChild: RepairChild;
   lastInheritedRequest: Map<string, number>;
 }): Promise<boolean> {
-  const { record, owner, runDir, repairBridge, adoptedChild, lastInheritedRequest } = input;
+  const { record, runDir, repairBridge, adoptedChild, lastInheritedRequest } = input;
   let current: RepairChild = adoptedChild;
   const requestPoll = setInterval(() => {
     try {
       if (record.read().launch?.phase !== 'serving') return;
-      settleRequests(record, owner.current, current.running.manifest, true);
-      for (const request of record.read().requests) {
-        if (request.status !== 'recorded' && request.status !== 'accepted') continue;
-        const target = validatedExecutable(request.executable);
-        if (
-          target === null ||
-          compareProductVersions(target.version, current.running.manifest.version) <= 0 ||
-          Date.now() - (lastInheritedRequest.get(request.id) ?? 0) < 10_000
-        )
-          continue;
-        lastInheritedRequest.set(request.id, Date.now());
-        void requestInheritedSuccession(
-          runDir,
-          current.running.manifest.flavor,
-          current.running.identity.pid,
-          request.id,
-          {
-            build: target,
-            pluginRootLabel: dirname(dirname(request.executable)),
-          },
-        );
-        break;
-      }
+      const intent = pendingIntent(runDir);
+      if (intent === null) return;
+      const target = validatedExecutable(pendingExecutable(intent));
+      if (
+        target === null ||
+        compareProductVersions(target.version, current.running.manifest.version) <= 0 ||
+        Date.now() - (lastInheritedRequest.get(intent.requestId) ?? 0) < 10_000
+      )
+        return;
+      lastInheritedRequest.set(intent.requestId, Date.now());
+      void requestInheritedSuccession(
+        runDir,
+        current.running.manifest.flavor,
+        current.running.identity.pid,
+        intent.requestId,
+        intent.target,
+      );
     } catch (error: unknown) {
       process.stderr.write(`Inherited successor request observation failed: ${String(error)}\n`);
     }
@@ -1581,7 +1678,7 @@ async function superviseAdoptedChild(input: {
   try {
     while (true) {
       result = await current.watch;
-      record.normalize(owner.current, Date.now());
+      record.normalize();
       const next = repairBridge?.child(record.read().launch?.id);
       if (next === null || next === undefined || next.reservation.id === current.reservation.id) break;
       current = next;
@@ -1590,11 +1687,11 @@ async function superviseAdoptedChild(input: {
     clearInterval(requestPoll);
     repairBridge?.close();
   }
-  return releaseAfterSettledServedExit(record, owner, current.running.manifest, result);
+  return releaseAfterSettledServedExit(record, runDir, result);
 }
 
 async function selectNextCandidate(input: {
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   runDir: string;
   original: Candidate;
@@ -1603,10 +1700,42 @@ async function selectNextCandidate(input: {
   firstLaunch: boolean;
 }): Promise<{ kind: 'released' } | { kind: 'retry' } | { kind: 'candidate'; candidate: Candidate }> {
   const { record, owner, runDir, original, originalManifest, tried, firstLaunch } = input;
-  const recordedIncumbents = record
-    .read()
-    .requests.filter((request) => request.status === 'recorded' || request.status === 'accepted')
-    .flatMap((request) => (request.incumbent === undefined ? [] : [request.incumbent]));
+  let requested = pendingIntent(runDir);
+  if (incumbentAt(runDir) === null && (await socketClaimedBeforeDiscovery(runDir, originalManifest.flavor))) {
+    if (requested === null)
+      await recordUnidentifiedIncumbentRequest(runDir, owner.current, {
+        build: originalManifest,
+        pluginRootLabel: dirname(dirname(original.executable)),
+      });
+    await sleep(POLL_MS);
+    return { kind: 'retry' };
+  }
+  if (requested?.incumbent.instanceId === UNIDENTIFIED_INCUMBENT) {
+    const identified = observedLaunchIncumbent(runDir, originalManifest.flavor);
+    if (identified !== null && identified.pid !== process.pid) {
+      const refreshed = await recordLegacyUpgradeIntent({
+        runDir,
+        requestId: requested.requestId,
+        incumbent: identified,
+        target: requested.target,
+      });
+      if (refreshed.kind === 'refused' && refreshed.disposition === 'redundant')
+        await retryUpgradeIntentCas(runDir, (observed) =>
+          observed.kind === 'readable' && observed.intent.requestId === requested?.requestId
+            ? {
+                kind: 'write',
+                expectedRevision: observed.intent.revision,
+                change: { ...observed.intent, disposition: 'closed' as const },
+                settle: () => undefined,
+              }
+            : { kind: 'settle', value: undefined },
+        );
+      requested = pendingIntent(runDir);
+    }
+  }
+  if (requested !== null && targetValidation(pendingExecutable(requested)) === 'absent')
+    await closeUnavailableLegacyRequest(runDir, requested.requestId);
+  const recordedIncumbents = requested === null ? [] : [requested.incumbent];
   let incumbentHeld = false;
   for (const recorded of recordedIncumbents) {
     if (recorded.pid === process.pid) continue;
@@ -1627,7 +1756,7 @@ async function selectNextCandidate(input: {
     await sleep(POLL_MS);
     return { kind: 'retry' };
   }
-  const eligible = candidates(record, runDir, original, originalManifest);
+  const eligible = candidates(runDir, original, originalManifest, !record.hasServed(original.buildSetId));
   const available = eligible.filter((candidate) => !tried.has(candidate.executable));
   if (available.length === 0) {
     const controller = controllerBuild(runDir);
@@ -1635,9 +1764,9 @@ async function selectNextCandidate(input: {
     if (
       eligible.length === 0 &&
       controller.kind === 'none' &&
-      state.requests.every((request) => request.status === 'completed' || request.status === 'unavailable') &&
+      (requested === null || targetValidation(pendingExecutable(requested)) === 'absent') &&
       [state.launch, state.attempt].every((slot) => slot === null || slot.phase === 'exited') &&
-      record.release(owner.current)
+      record.release()
     )
       return { kind: 'released' };
     const unreadable = readCustodyLedger(
@@ -1647,15 +1776,9 @@ async function selectNextCandidate(input: {
       runDir,
     ).find((entry) => entry.kind === 'unreadable');
     if (unreadable?.kind === 'unreadable') {
-      if (!record.holdUnreadableCustody(owner.current, unreadable.path, Date.now())) return { kind: 'retry' };
-    } else if (record.read().hold?.kind !== 'target-indeterminate') {
-      if (
-        !record.hold(
-          owner.current,
-          controller.kind === 'required' ? controller.buildSetId : controller.kind,
-          Date.now(),
-        )
-      )
+      if (!record.holdUnreadableCustody(owner.current, unreadable.path)) return { kind: 'retry' };
+    } else {
+      if (!record.hold(owner.current, controller.kind === 'required' ? controller.buildSetId : controller.kind))
         return { kind: 'retry' };
     }
     tried.clear();
@@ -1665,12 +1788,7 @@ async function selectNextCandidate(input: {
   return { kind: 'candidate', candidate: available[0] };
 }
 
-function releaseSettledInheritedLaunch(
-  record: CoordinatorLaunchRecord,
-  owner: LaunchOwner,
-  incarnation: string,
-  runDir: string,
-): boolean {
+function releaseSettledInheritedLaunch(record: SupervisorLaunchMemory, incarnation: string, runDir: string): boolean {
   const settled = record.read();
   const slots = [settled.launch, settled.attempt];
   return (
@@ -1678,14 +1796,14 @@ function releaseSettledInheritedLaunch(
       (slot) => slot !== null && (slot.parent?.pid !== process.pid || slot.parent.incarnation !== incarnation),
     ) &&
     slots.every((slot) => slot === null || slot.phase === 'exited') &&
-    settled.requests.every((entry) => entry.status === 'completed' || entry.status === 'unavailable') &&
+    pendingIntent(runDir) === null &&
     controllerBuild(runDir).kind === 'none' &&
-    record.release(owner)
+    record.release()
   );
 }
 
 async function superviseSelectedCandidate(input: {
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   candidate: Candidate;
   triedCount: number;
@@ -1696,16 +1814,14 @@ async function superviseSelectedCandidate(input: {
   onChild?: (child: ChildProcess) => void;
 }): Promise<boolean> {
   const { record, owner, candidate, triedCount, args, runDir, timing, startupBudgetMs, onChild } = input;
-  const legacyRequest = record
-    .read()
-    .requests.find(
-      (request) =>
-        request.executable === candidate.executable &&
-        request.incumbent !== undefined &&
-        (request.status === 'accepted' || request.status === 'recorded'),
-    );
-  const purpose = legacyRequest !== undefined ? 'legacy-retirement' : triedCount === 1 ? 'startup' : 'recovery';
-  const reservation = record.reserve(owner.current, candidate.buildSetId, purpose, Date.now());
+  const intent = pendingIntent(runDir);
+  const purpose =
+    intent !== null && pendingExecutable(intent) === candidate.executable
+      ? 'legacy-retirement'
+      : triedCount === 1
+        ? 'startup'
+        : 'recovery';
+  const reservation = record.reserve(owner.current, candidate.buildSetId, purpose);
   if (reservation === null) {
     await sleep(POLL_MS);
     return false;
@@ -1719,7 +1835,7 @@ async function superviseSelectedCandidate(input: {
 }
 
 async function selectAndSuperviseCandidate(input: {
-  record: CoordinatorLaunchRecord;
+  record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   runDir: string;
   original: Candidate;
@@ -1756,7 +1872,7 @@ async function selectAndSuperviseCandidate(input: {
   if (selection.kind === 'released') return { released: true, firstLaunch };
   if (selection.kind === 'retry') return { released: false, firstLaunch };
   const candidate = selection.candidate;
-  record.clearHold(owner.current, Date.now());
+  record.clearHold();
   tried.add(candidate.executable);
   const released = await superviseSelectedCandidate({
     record,
@@ -1787,28 +1903,10 @@ export async function runNamespaceSupervisor(
   const startupBudgetMs = options.startupBudgetMs ?? STARTUP_BUDGET_MS;
   const originalManifest = validatedExecutable(executable);
   if (originalManifest === null) return 1;
-  const recovery = await recoverLaunchRecord(runDir, originalManifest.flavor);
-  if (recovery === 'live') return 0;
-  if (recovery === 'newer') return 1;
-  if (recovery === 'retry') {
-    const successorEnv: NodeJS.ProcessEnv = { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir };
-    delete successorEnv.CORAL_RECOVERY_SOURCE_PID;
-    delete successorEnv.CORAL_RECOVERY_SOURCE_INCARNATION;
-    delete successorEnv.CORAL_RECOVERY_CHALLENGE;
-    const successor = spawn(process.execPath, [...process.argv.slice(1)], {
-      detached: true,
-      stdio: 'ignore',
-      env: successorEnv,
-    });
-    successor.once('error', () => undefined);
-    successor.unref();
-    return 0;
-  }
-  const record = new CoordinatorLaunchRecord(runDir);
+  const acquisition = await acquireLaunchOwnership(runDir, executable, originalManifest);
+  if (acquisition.kind === 'finished') return acquisition.exitCode;
+  const { record, owner, incarnation, replacement, recoveryChallenge } = acquisition;
   try {
-    const acquisition = await acquireLaunchOwnership(record, executable, originalManifest);
-    if (acquisition.kind === 'finished') return acquisition.exitCode;
-    const { owner, holderIdentity, incarnation, replacement, recoveryChallenge } = acquisition;
     const original = { executable, buildSetId: originalManifest.buildSetId };
     const tried = new Set<string>();
     const inheritedWatch = new Map<string, InheritedWatch>();
@@ -1816,40 +1914,21 @@ export async function runNamespaceSupervisor(
     let repairBridge: ReturnType<typeof createRepairBridge> | null = null;
     let firstLaunch = true;
     while (true) {
-      record.reconcileReplacementSignalHolds();
-      const renewed = record.renew(owner.current, Date.now());
-      if (renewed === null && !owner.lost) {
-        const reacquired = record.acquire(holderIdentity, Date.now());
-        if (reacquired !== null) {
-          owner.current = reacquired;
-          continue;
-        }
-      }
-      if (renewed === null || owner.lost) {
-        owner.lost = true;
+      if (owner.lost) {
         repairBridge?.close();
         repairBridge = null;
         while (true) {
-          let ownsUnsettledChild = false;
+          let ownedChildMayLive = false;
           for (const slot of [record.read().launch, record.read().attempt]) {
-            if (
-              slot === null ||
-              (slot.phase !== 'admitted' && slot.phase !== 'serving') ||
-              slot.parent?.pid !== process.pid ||
-              slot.parent.incarnation !== incarnation ||
-              slot.child === undefined
-            )
-              continue;
+            if (slot?.parent?.pid !== process.pid || slot.child === undefined) continue;
             const liveness = incumbentLiveness(slot.child);
-            if (liveness === 'alive' || liveness === 'unknown') ownsUnsettledChild = true;
+            if (liveness === 'alive' || liveness === 'unknown') ownedChildMayLive = true;
           }
-          if (!ownsUnsettledChild) break;
+          if (!ownedChildMayLive) break;
           await sleep(POLL_MS);
         }
         return 1;
       }
-      owner.current = renewed;
-      settleRequests(record, owner.current, null);
       const reconciled = await reconcileInheritedChildren({
         record,
         owner,
@@ -1866,13 +1945,42 @@ export async function runNamespaceSupervisor(
       });
       const { inherited } = reconciled;
       repairBridge = reconciled.repairBridge;
-      if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+      if (owner.lost || record.read().owner.id !== owner.current.id) {
         owner.lost = true;
         repairBridge?.close();
         repairBridge = null;
         continue;
       }
-      record.normalize(owner.current, Date.now());
+      const observedInherited = record.read().launch;
+      if (
+        observedInherited !== null &&
+        observedInherited.phase === 'serving' &&
+        observedInherited.observedHealthyAt !== undefined &&
+        observedInherited.parent?.pid !== process.pid &&
+        observedInherited.child?.pid !== process.ppid &&
+        repairBridge === null &&
+        publishedNativeSupervision(runDir, observedInherited)
+      ) {
+        const incumbent = observedLaunchIncumbent(runDir, originalManifest.flavor);
+        if (incumbent !== null)
+          await recordLegacyUpgradeIntent({
+            runDir,
+            requestId: randomUUID(),
+            incumbent,
+            target: { build: originalManifest, pluginRootLabel: dirname(dirname(executable)) },
+          });
+        return 0;
+      }
+      if (
+        replacement &&
+        inherited.length === 1 &&
+        inherited[0].phase === 'serving' &&
+        inherited[0].child?.pid !== process.ppid &&
+        repairBridge === null &&
+        pendingIntent(runDir) !== null
+      )
+        return 0;
+      record.normalize();
       const adoptedChild = repairBridge?.child(record.read().launch?.id);
       if (adoptedChild !== null && adoptedChild !== undefined && repairBridge !== null) {
         const released = await superviseAdoptedChild({
@@ -1887,7 +1995,7 @@ export async function runNamespaceSupervisor(
         if (released) return 0;
         continue;
       }
-      if (releaseSettledInheritedLaunch(record, owner.current, incarnation, runDir)) return 0;
+      if (releaseSettledInheritedLaunch(record, incarnation, runDir)) return 0;
       if (inherited.length > 0) {
         await sleep(POLL_MS);
         continue;
@@ -1909,6 +2017,6 @@ export async function runNamespaceSupervisor(
       if (selection.released) return 0;
     }
   } finally {
-    record.close();
+    owner.release();
   }
 }

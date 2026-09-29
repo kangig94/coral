@@ -31,8 +31,8 @@ import { startReplacementSupervisor } from '../runtime/supervisor-loss.js';
 import { createRealSuccessionAttemptPorts } from '../runtime/succession-attempt.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
-import { CoordinatorLaunchRecord } from '../infra/coordinator-launch.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
+import { updateLaunchStatus } from '../infra/launch-status.js';
 import { parseProviderRoleArgv, type ProviderRole } from '../provider-proxy/role-argv.js';
 import { runProviderRoleMain } from '../provider-proxy/role-main.js';
 import { currentCoralStoreFormat } from '../store-format.js';
@@ -40,6 +40,8 @@ import { generationMutationCoordinationSeam } from '../store/generation-mutation
 import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import {
   processIncarnationProbeRegistrySize,
+  incarnationMayAuthorizeSignal,
+  probeProcessIncarnation,
   snapshotProcessIncarnationProbeSubjects,
   terminateProcessIncarnationProbes,
 } from '../infra/node-process.js';
@@ -339,35 +341,57 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
   let sentinelArm: Promise<void> | null = null;
   if (process.env.CORAL_SENTINEL_ID !== undefined) {
     const sentinelId = process.env.CORAL_SENTINEL_ID;
-    const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
+    const parentPid = process.ppid;
+    const parentIncarnation = probeProcessIncarnation(parentPid);
+    let parentRetirementAt: number | null = null;
     let lastParentProgress = Date.now();
     let lastWake = lastParentProgress;
-    if (runDir !== undefined) {
-      const supervisorMonitor = setInterval(() => {
-        const now = Date.now();
-        const gap = now - lastWake;
-        lastWake = now;
-        if (gap > SENTINEL_TIMING.schedulingGapMs) {
-          lastParentProgress = now;
-          return;
-        }
+    const holdParentSignal = (): void => {
+      const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
+      if (runDir === undefined || parentIncarnation === null) return;
+      try {
+        updateLaunchStatus(runDir, (status) => ({
+          ...status,
+          signalHolds: [
+            ...status.signalHolds.filter((hold) => hold.launchId !== `parent:${parentPid}`),
+            { launchId: `parent:${parentPid}`, pid: parentPid, incarnation: parentIncarnation },
+          ],
+        }));
+      } catch (error: unknown) {
+        backendLog.error('Could not record unresponsive supervisor hold', error);
+      }
+    };
+    const supervisorMonitor = setInterval(() => {
+      const now = Date.now();
+      const gap = now - lastWake;
+      lastWake = now;
+      if (gap > SENTINEL_TIMING.schedulingGapMs) {
+        lastParentProgress = now;
+        return;
+      }
+      if (now - lastParentProgress < SENTINEL_TIMING.lapseMs) return;
+      parentRetirementAt ??= now;
+      if (!incarnationMayAuthorizeSignal(process.platform)) {
+        holdParentSignal();
+        replaceSupervisor();
+        return;
+      }
+      if (
+        parentIncarnation !== null &&
+        process.ppid === parentPid &&
+        probeProcessIncarnation(parentPid) === parentIncarnation
+      ) {
         try {
-          const record = new CoordinatorLaunchRecord(runDir);
-          const owner = record.read().owner;
-          record.close();
-          if (
-            owner === null ||
-            owner.process.pid !== process.ppid ||
-            owner.leaseUntil <= now ||
-            now - lastParentProgress >= SENTINEL_TIMING.lapseMs
-          )
-            replaceSupervisor();
+          process.kill(parentPid, now - parentRetirementAt < SENTINEL_TIMING.graceMs ? 'SIGTERM' : 'SIGKILL');
         } catch (error: unknown) {
-          backendLog.error('Could not observe coordinator supervisor', error);
+          backendLog.error('Could not retire unresponsive coordinator supervisor', error);
         }
-      }, SENTINEL_TIMING.challengeMs);
-      supervisorMonitor.unref();
-    }
+      } else {
+        holdParentSignal();
+      }
+      replaceSupervisor();
+    }, SENTINEL_TIMING.challengeMs);
+    supervisorMonitor.unref();
     sentinelArm = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Coordinator sentinel did not arm before startup')), 30_000);
       const onArm = (message: unknown): void => {

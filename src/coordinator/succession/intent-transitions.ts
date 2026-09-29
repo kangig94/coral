@@ -190,6 +190,9 @@ async function requestSuccessionIntent(
     }
     const current = observed.kind === 'readable' ? observed.intent : null;
     if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
+      if (current.reason === 'supervision-repair') {
+        return queueBehindSuccessionAttempt(current, input, options, notifyObligationChange);
+      }
       if (
         current.attemptId !== null &&
         ((options.observeServing?.(current.attemptId) ?? null) !== null ||
@@ -253,7 +256,12 @@ async function requestSuccessionSupervisionRepair(
     const active = current !== null && current.disposition !== 'closed' && current.disposition !== 'completed';
     if (active) {
       let newerTargetCanTakeCustody = false;
-      if (current.reason !== 'supervision-repair' && supersedes(current.target, input.target)) {
+      if (
+        current.reason !== 'supervision-repair' &&
+        current.disposition !== 'deferred' &&
+        current.blockers.length === 0 &&
+        supersedes(current.target, input.target)
+      ) {
         const custody = classifyTargetCustody(current, options);
         newerTargetCanTakeCustody = custody.kind === 'validated-target' && custody.disposition().kind === 'eligible';
       }

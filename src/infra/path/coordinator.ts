@@ -12,7 +12,7 @@ export interface CoordinatorPaths {
   legacySocketPath: string;
   legacyInfoFile: string;
   upgradeIntentFile: string;
-  launchFile: string;
+  supervisorLockFile: string;
   socketPath: string;
   infoFile: string;
   startupErrorFile: string;
@@ -54,8 +54,8 @@ export function upgradeIntentPath(runDir: string): string {
   return join(runDir, 'upgrade.v1.json');
 }
 
-export function coordinatorLaunchPath(runDir: string): string {
-  return join(runDir, 'coordinator-launch.v1.sqlite');
+export function supervisorLockPath(runDir: string): string {
+  return join(runDir, 'namespace-supervisor.v1.lock');
 }
 
 export function handoffRoutingStatusPath(
@@ -149,7 +149,7 @@ export function coordinatorPaths(flavor: BuildFlavor, opts?: CoordinatorPathOpti
     legacySocketPath: join(legacyRunDir, 'coordinator.sock'),
     legacyInfoFile: join(legacyRunDir, 'coordinator.json'),
     upgradeIntentFile: upgradeIntentPath(runDir),
-    launchFile: coordinatorLaunchPath(runDir),
+    supervisorLockFile: supervisorLockPath(runDir),
     socketPath,
     infoFile: join(runDir, 'coordinator.json'),
     startupErrorFile: join(runDir, 'startup-error.json'),

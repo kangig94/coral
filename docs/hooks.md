@@ -155,7 +155,7 @@ Evidence whose filename and decoded target do not agree is moved to `~/.coral/st
 
 ## Backend Warm-start
 
-`clients/hooks/session-start.mjs` launches a detached bundled namespace supervisor attempt on every valid SessionStart invocation. The supervisor consults `run/coordinator-launch.v1.sqlite` and may exit without starting a child. When it admits a child, it keeps that exact child under heartbeat supervision and stays alive while an upgrade request waits for a shipped incumbent to retire. Later invocations may start a fresh supervisor after clean release. The hook does not decide upgrade policy or signal an incumbent; startup failures remain nonfatal to session start.
+`clients/hooks/session-start.mjs` launches a detached bundled namespace supervisor attempt on every valid SessionStart invocation. The supervisor tries the kernel released `run/namespace-supervisor.v1.lock` and may exit without starting a child. When it admits a child, it keeps that exact child under heartbeat supervision and stays alive while an upgrade request waits for a shipped incumbent to retire. Later invocations may start a fresh supervisor after clean release. The hook does not decide upgrade policy or signal an incumbent; startup failures remain nonfatal to session start.
 
 ## Compact Recovery
 

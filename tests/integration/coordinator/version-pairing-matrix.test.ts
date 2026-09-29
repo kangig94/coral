@@ -17,8 +17,8 @@ import { dirname, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
-import { coordinatorLaunchPath, v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
+import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
+import { supervisorLockPath, v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { readUpgradeIntent, visibleUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { retainedBuildRoot } from '#src/infra/retained-build-root.js';
 import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
@@ -94,8 +94,8 @@ const LEGACY_CLI_REPLACEMENT_TAGS = ['v0.10.0', 'v0.10.1', 'v0.10.2', 'v0.10.3',
 afterEach(async () => {
   for (const home of homes.splice(0)) {
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
-    if (!existsSync(coordinatorLaunchPath(runDir))) continue;
-    const launch = new CoordinatorLaunchRecord(runDir);
+    if (!existsSync(supervisorLockPath(runDir))) continue;
+    const launch = new SupervisorEvidence(runDir);
     try {
       const state = launch.read();
       const owner = state.owner?.process;
@@ -342,7 +342,7 @@ describe('AC18 first-release version pairing', () => {
       expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
       expect(incumbent.child.exitCode).toBeNull();
       expect(await probeCoordinatorSocket(initial.socketPath)).toBe('accepting');
-      const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+      const launch = new SupervisorEvidence(coordinatorFilesForHome(home, 'prod').runDir);
       try {
         expect(launch.read().requests).toContainEqual(
           expect.objectContaining({
@@ -387,8 +387,9 @@ describe('AC18 first-release version pairing', () => {
       expect(serving.version).toBe(shipped.version);
       expect(serving.bundleHash).toBe(shipped.bundleHash);
       expect(await probeCoordinatorSocket(serving.socketPath)).toBe('accepting');
-      const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+      const launch = new SupervisorEvidence(coordinatorFilesForHome(home, 'prod').runDir);
       try {
+        await waitForCondition(() => launch.read().owner !== null, 5_000);
         expect(launch.read()).toMatchObject({ owner: { process: { pid: expect.any(Number) } } });
         expect(launch.read().requests).toContainEqual(
           expect.objectContaining({
@@ -427,20 +428,27 @@ describe('AC18 first-release version pairing', () => {
     const branch = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
     const supervisor = spawnCoordinator({ fixture: branch, home, tempRoots: roots, supervised: true });
     coordinators.push(supervisor);
-    const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+    const launch = new SupervisorEvidence(coordinatorFilesForHome(home, 'prod').runDir);
     try {
-      await waitForCondition(
-        () =>
-          launch
-            .read()
-            .requests.some(
-              (request) =>
-                request.executable === join(branch.root, 'bridge', 'coral-backend.cjs') &&
-                request.status === 'accepted' &&
-                readDiscoveryRecordForHome(home, 'prod') === null,
-            ),
-        10_000,
-      );
+      try {
+        await waitForCondition(
+          () =>
+            launch
+              .read()
+              .requests.some(
+                (request) =>
+                  request.executable === join(branch.root, 'bridge', 'coral-backend.cjs') &&
+                  request.status === 'accepted' &&
+                  readDiscoveryRecordForHome(home, 'prod') === null,
+              ),
+          10_000,
+        );
+      } catch (error: unknown) {
+        throw new Error(
+          `Starting predecessor request missing: ${JSON.stringify({ state: launch.read(), intent: readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir), supervisor: supervisor.output(), exitCode: supervisor.child.exitCode })}`,
+          { cause: error },
+        );
+      }
       expect(supervisor.child.exitCode).toBeNull();
       const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
       expect(initial.pid).toBe(incumbent.child.pid);
@@ -469,7 +477,7 @@ describe('AC18 first-release version pairing', () => {
     const branch = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
     const contender = spawnCoordinator({ fixture: branch, home, tempRoots: roots });
     coordinators.push(contender);
-    const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+    const launch = new SupervisorEvidence(coordinatorFilesForHome(home, 'prod').runDir);
     try {
       expect(await waitForProcessExit(contender, 30_000), contender.output()).toEqual({ code: 0, signal: null });
       expect(launch.read().requests).toContainEqual(
@@ -609,7 +617,7 @@ describe('AC18 first-release version pairing', () => {
           return current !== null && current.pid !== initial.pid && current.bundleHash === branch.bundleHash;
         }, 60_000);
       } catch (error: unknown) {
-        const record = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+        const record = new SupervisorEvidence(coordinatorFilesForHome(home, 'prod').runDir);
         try {
           throw new Error(`Legacy upgrade did not serve; launch=${JSON.stringify(record.read())}`, { cause: error });
         } finally {
@@ -635,7 +643,7 @@ describe('AC18 first-release version pairing', () => {
         expect(detail).toContain(`Job ${completedJobId}`);
         expect(detail).toContain('Phase: completed');
       }
-      const launch = new CoordinatorLaunchRecord(coordinatorFilesForHome(home, 'prod').runDir);
+      const launch = new SupervisorEvidence(coordinatorFilesForHome(home, 'prod').runDir);
       try {
         await waitForCondition(
           () =>
@@ -909,7 +917,7 @@ describe('AC18 first-release version pairing', () => {
         }, 30_000);
       } catch (error: unknown) {
         const runDir = coordinatorFilesForHome(home, 'prod').runDir;
-        const launch = new CoordinatorLaunchRecord(runDir);
+        const launch = new SupervisorEvidence(runDir);
         const state = launch.read();
         launch.close();
         throw new Error(

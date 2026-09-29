@@ -393,7 +393,10 @@ clients/bridge/coral-cli                        -> CLI bundle
 clients/bridge/coral-claude-appserver.cjs       -> Claude broker helper bundle
 clients/bridge/manifest.json                    -> embedded build identity + hashes for backend, CLI, and Claude helper
 
-~/.coral/gen2/run*/coordinator.json            -> active coordinator discovery record
+~/.coral/gen2/run*/coordinator.json            -> active coordinator discovery record with additive supervision identity
+~/.coral/gen2/run*/namespace-supervisor.v1.lock -> data-free kernel lock held by the launch supervisor
+~/.coral/gen2/run*/launch-admissions.v1/       -> child-written admitted identity until discovery is published
+~/.coral/gen2/run*/launch-status.v1.json       -> visible diagnostic holds; never launch authority
 ~/.coral/gen2/run*/coordinator.lock            -> per-flavor coordinator singleton lock
 ~/.coral/gen2/data*/store/epoch-<N>/store.db   -> Journal authority and projections by flavor; retained epochs may live at protected mapped addresses
 ~/.coral/gen2/run*/upgrade.v1.json            -> durable pending upgrade, blockers, attempt, and completion receipt

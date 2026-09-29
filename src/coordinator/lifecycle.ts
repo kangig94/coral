@@ -2,6 +2,8 @@ import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
+import { supersedeLaunchAdmissionByDiscovery } from '../infra/coordinator-admission.js';
+import { readLaunchAdmission } from '../infra/launch-admission-record.js';
 import { errorMessage, formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
 import { sha256Hex } from '../infra/hash.js';
 import { type LaunchCoordinator } from './live/admission.js';
@@ -1719,6 +1721,11 @@ function publishStartupDiscovery(
   const { version, bundleHash, flavor, namespace, instanceId } = identity;
   const socketPath = runtime.paths.coral.coordinator.socketPath;
   const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
+  const launchId = runtime.env.get('CORAL_LAUNCH_ID');
+  const admission =
+    launchId === undefined ? null : readLaunchAdmission(runtime.paths.coral.coordinator.runDir, launchId);
+  if (admission !== null && admission.kind !== 'readable')
+    throw new Error('Admitted coordinator identity is unavailable before discovery publication.');
   const discoveryPublished = writeBackendInfoFn({
     pid: backendPid,
     port: address.port,
@@ -1735,9 +1742,22 @@ function publishStartupDiscovery(
     instanceId,
     startedAt: address.startedAt,
     ...(sentinelId === undefined ? {} : { sentinel: { version: 1 as const, id: sentinelId } }),
+    ...(admission?.kind === 'readable'
+      ? {
+          supervision: {
+            version: 1 as const,
+            launchId: admission.admission.launchId,
+            admittedAt: admission.admission.admittedAt,
+            buildSetId: admission.admission.build.buildSetId,
+            purpose: admission.admission.purpose,
+            parent: admission.admission.parent,
+          },
+        }
+      : {}),
     ...(openedStore === null ? {} : { storeEpoch: openedStore.epoch }),
   });
   if (discoveryPublished === false) throw new Error('Coordinator discovery publication failed.');
+  if (launchId !== undefined) supersedeLaunchAdmissionByDiscovery(runtime.paths.coral.coordinator.runDir, launchId);
 }
 
 type LegacyDiscoveryState = {

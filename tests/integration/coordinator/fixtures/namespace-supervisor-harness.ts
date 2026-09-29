@@ -1,6 +1,7 @@
 import { runNamespaceSupervisor } from '#src/coordinator-launch/supervisor.js';
 import { launchLegacyBackend } from '#src/coordinator-launch/legacy-bootstrap.js';
 import type { ChildProcess } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 
 const executable = process.argv[2];
 if (executable === '--launch-legacy') {
@@ -27,6 +28,8 @@ if (executable === '--launch-legacy') {
     startupBudgetMs: Number(process.env.CORAL_FIXTURE_STARTUP_BUDGET_MS ?? 25_000),
     onChild: (child) => {
       coordinator = child;
+      if (process.env.CORAL_FIXTURE_CHILD_PID_PATH !== undefined && child.pid !== undefined)
+        writeFileSync(process.env.CORAL_FIXTURE_CHILD_PID_PATH, String(child.pid));
       if (process.env.CORAL_FIXTURE_REFUSE_KILL_ONCE === '1' && !refusedKill) {
         const kill = child.kill.bind(child);
         child.kill = ((signal) => {

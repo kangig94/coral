@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
 import { backendLog } from '../../infra/backend-log.js';
-import { CoordinatorLaunchRecord } from '../../infra/coordinator-launch.js';
+import { readLaunchAdmission } from '../../infra/launch-admission-record.js';
 import { resolveRunningBundleDir, type StrictBundleManifest } from '../../infra/bundle-manifest.js';
 import { verifyChildPrincipalRecoveryGrant } from '../../infra/child-principal-nonce-ledger.js';
 import { errorMessage, formatError } from '../../infra/error-format.js';
@@ -18,6 +18,7 @@ import { retainedBuildRoot } from '../../infra/retained-build-root.js';
 import { upgradeIntentPath } from '../../infra/path/index.js';
 import {
   quarantineCorruptUpgradeIntent,
+  compareAndSwapUpgradeIntent,
   readUpgradeIntent,
   parseUpgradeIntentSnapshot,
   retryUpgradeIntentCas,
@@ -1347,14 +1348,18 @@ export async function recordSupervisorLegacyChild(
 ): Promise<boolean> {
   if (runtime.env.get('CORAL_LAUNCH_PURPOSE') !== 'legacy-retirement') return false;
   if (incarnation === null) throw new SuccessionAttemptStartupHoldError('legacy launch child identity is unavailable');
-  const record = new CoordinatorLaunchRecord(runtime.paths.coral.coordinator.runDir);
-  try {
-    if (record.legacyLaunch({ pid, incarnation }, currentBuild.buildSetId) === null)
-      throw new SuccessionAttemptStartupHoldError('legacy launch admission is no longer current');
-    return true;
-  } finally {
-    record.close();
-  }
+  const launchId = runtime.env.get('CORAL_LAUNCH_ID');
+  const admission =
+    launchId === undefined ? null : readLaunchAdmission(runtime.paths.coral.coordinator.runDir, launchId);
+  if (
+    admission?.kind !== 'readable' ||
+    admission.admission.purpose !== 'legacy-retirement' ||
+    admission.admission.child.pid !== pid ||
+    admission.admission.child.incarnation !== incarnation ||
+    admission.admission.build.buildSetId !== currentBuild.buildSetId
+  )
+    throw new SuccessionAttemptStartupHoldError('legacy launch admission is no longer current');
+  return true;
 }
 
 export async function completeSupervisorLegacyUpgrade(
@@ -1367,53 +1372,64 @@ export async function completeSupervisorLegacyUpgrade(
 ): Promise<{ kind: 'not-legacy' } | { kind: 'completed' }> {
   if (!(await recordSupervisorLegacyChild(runtime, currentBuild, pid, incarnation))) return { kind: 'not-legacy' };
   if (incarnation === null) throw new SuccessionAttemptStartupHoldError('legacy launch child identity is unavailable');
-  const record = new CoordinatorLaunchRecord(runtime.paths.coral.coordinator.runDir);
+  const runDir = runtime.paths.coral.coordinator.runDir;
+  const launchId = runtime.env.get('CORAL_LAUNCH_ID');
+  const admission = launchId === undefined ? null : readLaunchAdmission(runDir, launchId);
+  const observed = readUpgradeIntent(runDir);
+  if (
+    admission?.kind !== 'readable' ||
+    observed.kind !== 'readable' ||
+    observed.intent.legacyRetirement !== true ||
+    observed.intent.target.build.buildSetId !== currentBuild.buildSetId
+  )
+    throw new SuccessionAttemptStartupHoldError('legacy launch admission is no longer current');
+  const attemptId = admission.admission.launchId;
+  const recordedAt = new Date(runtime.time.now()).toISOString();
+  const epochKey = encodeResolvedStoreEpoch(runtime, openedStore);
+  let generation = observeSuccessionWriterGeneration(runtime);
+  if (generation === null) throw new SuccessionAttemptStartupHoldError('legacy writer generation is unavailable');
+  let serving: ReturnType<typeof recordSuccessionServing>;
   try {
-    const admitted = record.legacyLaunch({ pid, incarnation }, currentBuild.buildSetId);
-    if (admitted === null || admitted.request.incumbent === undefined)
-      throw new SuccessionAttemptStartupHoldError('legacy launch admission is no longer current');
-    const attemptId = admitted.launch.id;
-    const recordedAt = new Date(runtime.time.now()).toISOString();
-    const epochKey = encodeResolvedStoreEpoch(runtime, openedStore);
-    let generation = observeSuccessionWriterGeneration(runtime);
-    if (generation === null) throw new SuccessionAttemptStartupHoldError('legacy writer generation is unavailable');
-    let serving: ReturnType<typeof recordSuccessionServing>;
-    try {
-      const previous = observeCurrentSuccessionServing(runtime);
-      if (previous !== null && previous.attemptId !== attemptId) {
-        if (observeRecordedDeaths([admitted.request.incumbent]) !== 'absent')
-          throw new Error('Previous serving owner is not proven gone after legacy retirement.');
-        const writer = joinSuccessionWriterGeneration(runtime, openedStore);
-        writer.park();
-        generation = generationForLegacySuccessor(runtime, generation, attemptId, previous.attemptId);
-        writer.rebind(generation);
-        writer.unpark();
-      }
-      serving = recordSuccessionServing(runtime, generation, {
-        attemptId,
-        epochKey,
-        successorInstanceId: instanceId,
-        controlGeneration: generation.generation,
-        recordedAt,
-      });
-    } catch (error: unknown) {
-      backendLog.warn(`Legacy upgrade could not record serving: ${formatError(error)}`);
-      throw new SuccessionAttemptStartupHoldError('legacy launch has no serving receipt');
+    const previous = observeCurrentSuccessionServing(runtime);
+    if (previous !== null && previous.attemptId !== attemptId) {
+      if (observeRecordedDeaths([observed.intent.incumbent]) !== 'absent')
+        throw new Error('Previous serving owner is not proven gone after legacy retirement.');
+      const writer = joinSuccessionWriterGeneration(runtime, openedStore);
+      writer.park();
+      generation = generationForLegacySuccessor(runtime, generation, attemptId, previous.attemptId);
+      writer.rebind(generation);
+      writer.unpark();
     }
-    if (
-      !record.publishLegacyServing(admitted.launch, { pid, incarnation }, admitted.request, {
-        launchId: attemptId,
-        successor: { instanceId, pid, incarnation },
-        epochKey: serving.epochKey,
-        controlGeneration: serving.controlGeneration,
-        recordedAt: serving.recordedAt,
-      })
-    )
-      throw new SuccessionAttemptStartupHoldError('legacy launch has no serving receipt');
-    return { kind: 'completed' };
-  } finally {
-    record.close();
+    serving = recordSuccessionServing(runtime, generation, {
+      attemptId,
+      epochKey,
+      successorInstanceId: instanceId,
+      controlGeneration: generation.generation,
+      recordedAt,
+    });
+  } catch (error: unknown) {
+    backendLog.warn(`Legacy upgrade could not record serving: ${formatError(error)}`);
+    throw new SuccessionAttemptStartupHoldError('legacy launch has no serving receipt');
   }
+  const completion = await compareAndSwapUpgradeIntent(runDir, observed.intent.revision, {
+    ...observed.intent,
+    attemptId,
+    attemptChild: { attemptId, pid, incarnation },
+    attemptOwner: { kind: 'incumbent', ...observed.intent.incumbent },
+    disposition: 'completed',
+    completionReceipt: {
+      kind: 'serving',
+      attemptId,
+      successor: { instanceId, pid, incarnation, build: currentBuild },
+      epochKey: serving.epochKey,
+      controlGeneration: serving.controlGeneration,
+      acceptedObligations: [],
+      recordedAt: serving.recordedAt,
+    },
+  });
+  if (completion.kind !== 'written')
+    throw new SuccessionAttemptStartupHoldError('legacy launch has no serving receipt');
+  return { kind: 'completed' };
 }
 
 export type SuccessionStoreContext = Readonly<{
