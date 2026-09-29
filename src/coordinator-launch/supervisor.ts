@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type SendHandle } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { Server, Socket } from 'node:net';
+import { createConnection, Server, Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 
 import { isNoEntryError } from '../infra/fs-errors.js';
@@ -16,10 +16,14 @@ import { compareProductVersions } from '../infra/product-version.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
 import {
   CoordinatorLaunchRecord,
+  quarantineCoordinatorLaunchRecord,
+  readCoordinatorLaunchDisposition,
   type LaunchOwner,
   type LaunchProcess,
   type LaunchReservation,
 } from '../infra/coordinator-launch.js';
+import { attemptExclusiveFileLockSync, tryAcquireDirectoryLock } from '../infra/fs-lock.js';
+import { coordinatorLaunchPath, generationAdmissionLockPath, socketPathForRunDir } from '../infra/path/index.js';
 import {
   incarnationMayAuthorizeSignal,
   observeProcessLiveness,
@@ -49,6 +53,94 @@ import { relaunchRoots, validatedBuild } from './selection.js';
 
 const STARTUP_BUDGET_MS = 120_000;
 const POLL_MS = 200;
+
+type UnreadableRecordLiveness = 'live' | 'absent' | 'unknown';
+
+async function socketPresence(path: string): Promise<'accepting' | 'absent' | 'unknown'> {
+  return new Promise((resolve) => {
+    const socket = createConnection(path);
+    let settled = false;
+    const finish = (result: 'accepting' | 'absent' | 'unknown'): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(500, () => finish('unknown'));
+    socket.once('connect', () => finish('accepting'));
+    socket.once('error', (error: NodeJS.ErrnoException) =>
+      finish(error.code === 'ENOENT' || error.code === 'ECONNREFUSED' ? 'absent' : 'unknown'),
+    );
+  });
+}
+
+async function unreadableRecordLiveness(
+  runDir: string,
+  flavor: StrictBundleManifest['flavor'],
+): Promise<UnreadableRecordLiveness> {
+  const runtime = createRealRuntime(flavor, { baseDir: dirname(dirname(runDir)) });
+  let discovery: ReturnType<typeof readDiscoveryRecordDisposition>;
+  try {
+    discovery = readDiscoveryRecordDisposition(runtime);
+  } catch {
+    return 'unknown';
+  }
+  if (discovery.kind === 'record') {
+    if (await replacementServing(runDir, flavor, discovery.record.pid)) return 'live';
+    const observed = discovery.record.incarnation === undefined ? null : probeProcessIncarnation(discovery.record.pid);
+    if (observed !== null && observed !== discovery.record.incarnation) return 'absent';
+    if (observeProcessLiveness(discovery.record.pid) !== 'absent') return 'unknown';
+  }
+  if ((await socketPresence(socketPathForRunDir(runDir, flavor, { platform: process.platform }))) !== 'absent')
+    return 'unknown';
+
+  const lock = attemptExclusiveFileLockSync(coordinatorLaunchPath(runDir));
+  if (lock.kind === 'contended' || lock.kind === 'unobservable') return 'unknown';
+  if (lock.kind === 'acquired') lock.lease();
+  const admissionPath = generationAdmissionLockPath(runtime.paths.coral.generation);
+  if (existsSync(admissionPath)) {
+    try {
+      const admission = tryAcquireDirectoryLock(admissionPath);
+      if (admission === null) return 'unknown';
+      admission();
+    } catch {
+      return 'unknown';
+    }
+  }
+  return 'absent';
+}
+
+async function recoverLaunchRecord(
+  runDir: string,
+  flavor: StrictBundleManifest['flavor'],
+): Promise<'ready' | 'live' | 'newer' | 'retry'> {
+  for (let retry = 0; retry < 25; retry += 1) {
+    const disposition = readCoordinatorLaunchDisposition(runDir);
+    if (disposition.kind === 'absent' || disposition.kind === 'readable') return 'ready';
+    if (disposition.kind === 'newer') return 'newer';
+    const liveness = await unreadableRecordLiveness(runDir, flavor);
+    if (liveness === 'live') return 'live';
+    if (liveness === 'unknown') {
+      await sleep(POLL_MS);
+      continue;
+    }
+    const release = tryAcquireDirectoryLock(`${coordinatorLaunchPath(runDir)}.recovery.lock`);
+    if (release === null) {
+      await sleep(POLL_MS);
+      continue;
+    }
+    try {
+      if (
+        readCoordinatorLaunchDisposition(runDir).kind === 'unreadable' &&
+        (await unreadableRecordLiveness(runDir, flavor)) === 'absent'
+      )
+        quarantineCoordinatorLaunchRecord(runDir);
+    } finally {
+      release();
+    }
+  }
+  return 'retry';
+}
 
 type Candidate = Readonly<{ executable: string; buildSetId: string }>;
 
@@ -1695,6 +1787,23 @@ export async function runNamespaceSupervisor(
   const startupBudgetMs = options.startupBudgetMs ?? STARTUP_BUDGET_MS;
   const originalManifest = validatedExecutable(executable);
   if (originalManifest === null) return 1;
+  const recovery = await recoverLaunchRecord(runDir, originalManifest.flavor);
+  if (recovery === 'live') return 0;
+  if (recovery === 'newer') return 1;
+  if (recovery === 'retry') {
+    const successorEnv: NodeJS.ProcessEnv = { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir };
+    delete successorEnv.CORAL_RECOVERY_SOURCE_PID;
+    delete successorEnv.CORAL_RECOVERY_SOURCE_INCARNATION;
+    delete successorEnv.CORAL_RECOVERY_CHALLENGE;
+    const successor = spawn(process.execPath, [...process.argv.slice(1)], {
+      detached: true,
+      stdio: 'ignore',
+      env: successorEnv,
+    });
+    successor.once('error', () => undefined);
+    successor.unref();
+    return 0;
+  }
   const record = new CoordinatorLaunchRecord(runDir);
   try {
     const acquisition = await acquireLaunchOwnership(record, executable, originalManifest);

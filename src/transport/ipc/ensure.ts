@@ -14,7 +14,7 @@ import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { CoordinatorPaths } from '../../infra/path/index.js';
-import { coordinatorLaunchPath, v0109CoordinatorSocketGuardSetForRunDir } from '../../infra/path/index.js';
+import { v0109CoordinatorSocketGuardSetForRunDir } from '../../infra/path/index.js';
 import { HEALTH_TIMEOUT_MS } from '../health.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
@@ -26,7 +26,11 @@ import {
   resolveStrictBundleIdentity,
   strictBundleManifestSchema,
 } from '../../infra/bundle-manifest.js';
-import { CoordinatorLaunchRecord, type CoordinatorLaunchState } from '../../infra/coordinator-launch.js';
+import {
+  CoordinatorLaunchRecord,
+  readCoordinatorLaunchDisposition,
+  type CoordinatorLaunchState,
+} from '../../infra/coordinator-launch.js';
 import {
   createIpcClient,
   IpcDrainRequestUnanswered,
@@ -1074,38 +1078,32 @@ function hasCommittedSuccessionReceipt(
   incumbent: ReturnType<typeof existingIncumbentIdentity>,
   successor: RawCoordinatorHealth,
 ): boolean {
-  if (existsSync(coordinatorLaunchPath(runDir))) {
-    const record = new CoordinatorLaunchRecord(runDir);
-    try {
-      const completed = record.read().requests.some((request) => {
-        const prior = request.incumbent;
-        const receipt = request.completionReceipt;
-        if (request.status !== 'completed' || prior === undefined || receipt === undefined) return false;
-        const adjacent = readBoundedAdjacentManifest(dirname(request.executable));
-        if (!adjacent.ok) return false;
-        const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
-        return (
-          parsed.success &&
-          prior.instanceId === incumbent.instanceId &&
-          prior.version === incumbent.version &&
-          prior.bundleHash === incumbent.bundleHash &&
-          prior.flavor === incumbent.flavor &&
-          (incumbent.pid === undefined || prior.pid === incumbent.pid) &&
-          (incumbent.incarnation === undefined || prior.incarnation === incumbent.incarnation) &&
-          receipt.successor.instanceId === successor.instanceId &&
-          receipt.successor.pid === successor.pid &&
-          receipt.successor.incarnation === successor.incarnation &&
-          parsed.data.version === successor.version &&
-          parsed.data.bundleHash === successor.bundleHash &&
-          parsed.data.flavor === successor.flavor
-        );
-      });
-      if (completed) return true;
-    } catch {
-      return false;
-    } finally {
-      record.close();
-    }
+  const launchDisposition = readCoordinatorLaunchDisposition(runDir);
+  if (launchDisposition.kind === 'readable') {
+    const completed = launchDisposition.state.requests.some((request) => {
+      const prior = request.incumbent;
+      const receipt = request.completionReceipt;
+      if (request.status !== 'completed' || prior === undefined || receipt === undefined) return false;
+      const adjacent = readBoundedAdjacentManifest(dirname(request.executable));
+      if (!adjacent.ok) return false;
+      const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
+      return (
+        parsed.success &&
+        prior.instanceId === incumbent.instanceId &&
+        prior.version === incumbent.version &&
+        prior.bundleHash === incumbent.bundleHash &&
+        prior.flavor === incumbent.flavor &&
+        (incumbent.pid === undefined || prior.pid === incumbent.pid) &&
+        (incumbent.incarnation === undefined || prior.incarnation === incumbent.incarnation) &&
+        receipt.successor.instanceId === successor.instanceId &&
+        receipt.successor.pid === successor.pid &&
+        receipt.successor.incarnation === successor.incarnation &&
+        parsed.data.version === successor.version &&
+        parsed.data.bundleHash === successor.bundleHash &&
+        parsed.data.flavor === successor.flavor
+      );
+    });
+    if (completed) return true;
   }
   const observed = readUpgradeIntent(runDir);
   const current =

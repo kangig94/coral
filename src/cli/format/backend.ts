@@ -752,7 +752,17 @@ export function formatBackendStatus(
       : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
   const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
   if (daemonStatus.launchRecordProblem === 'unreadable')
-    sections.push('Coordinator launch record is unreadable. Launch cannot proceed until the record can be read.');
+    sections.push(
+      daemonStatus.status === 'ok'
+        ? 'Coordinator launch record is unreadable. The serving coordinator remains untouched; the next supervisor spawn after it exits rebuilds the record.'
+        : 'Coordinator launch record is unreadable. The supervisor checks coordinator health, discovery, and lock holders, then quarantines and rebuilds it when absence is established. An inconclusive check starts a successor supervisor after a bounded retry.',
+    );
+  if (daemonStatus.launchRecordProblem === 'newer')
+    sections.push(
+      'Coordinator launch record was written by a newer build. A compatible supervisor must read it before launch ownership can change.',
+    );
+  for (const address of daemonStatus.launchRecordQuarantines ?? [])
+    sections.push(`Coordinator launch record was quarantined at ${address}; its original bytes are preserved.`);
   for (const hold of daemonStatus.launchSignalHolds ?? []) {
     if (hold.launchId.startsWith('replacement:'))
       sections.push(

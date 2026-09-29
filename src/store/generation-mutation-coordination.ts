@@ -1,8 +1,9 @@
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { backendLog } from '../infra/backend-log.js';
 import { assertNever } from '../infra/error-format.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
+import { generationAdmissionLockPath } from '../infra/path/index.js';
 import {
   acquireDirectoryLock,
   createDirectoryLockParent,
@@ -99,8 +100,8 @@ const WRITER_IDENTITY_FILE = 'identity.json';
 
 export function resolveGenerationBoundaryPaths(runtime: Pick<Runtime, 'paths'>): GenerationBoundaryPaths {
   const generation = runtime.paths.coral.generation;
-  const flavorDir = basename(generation.dataRoot);
-  const coordinationRoot = join(generation.root, `.mutation-${flavorDir}`);
+  const admissionLock = generationAdmissionLockPath(generation);
+  const coordinationRoot = dirname(admissionLock);
   return {
     baseDir: dirname(generation.legacyDataRoot),
     generationRoot: generation.root,
@@ -108,7 +109,7 @@ export function resolveGenerationBoundaryPaths(runtime: Pick<Runtime, 'paths'>):
     legacyFlavorRoot: generation.legacyDataRoot,
     adoptionLock: generation.adoptionLock,
     coordinationRoot,
-    admissionLock: join(coordinationRoot, 'admission.lock'),
+    admissionLock,
     maintenanceLock: join(coordinationRoot, 'maintenance.lock'),
     writersRoot: join(coordinationRoot, 'writers'),
   };

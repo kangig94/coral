@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { expect, it } from 'vitest';
 
-import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { CoordinatorLaunchRecord, readCoordinatorLaunchDisposition } from '#src/infra/coordinator-launch.js';
 import { getBackendStatusFull } from '#src/cli/backend-status.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -169,5 +169,19 @@ it('reports an unreadable launch record separately from an absent record', async
     if (previousTmpdir === undefined) delete process.env.TMPDIR;
     else process.env.TMPDIR = previousTmpdir;
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+it('keeps a parseable newer launch record outside corrupt-record recovery', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-newer-launch-record-'));
+  const record = new CoordinatorLaunchRecord(runDir);
+  record.close();
+  const database = new DatabaseSync(coordinatorLaunchPath(runDir));
+  try {
+    database.prepare('UPDATE control SET state = ? WHERE id = 1').run(JSON.stringify({ schemaGeneration: 2 }));
+    expect(readCoordinatorLaunchDisposition(runDir)).toEqual({ kind: 'newer', schemaGeneration: 2 });
+  } finally {
+    database.close();
+    rmSync(runDir, { recursive: true, force: true });
   }
 });

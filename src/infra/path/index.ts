@@ -58,6 +58,10 @@ export interface GenerationPaths {
   readonly adoptionLock: string;
 }
 
+export function generationAdmissionLockPath(generation: Pick<GenerationPaths, 'root' | 'dataRoot'>): string {
+  return join(generation.root, `.mutation-${basename(generation.dataRoot)}`, 'admission.lock');
+}
+
 export type CoralPaths = {
   readonly generation: GenerationPaths;
   readonly store: StorePaths;

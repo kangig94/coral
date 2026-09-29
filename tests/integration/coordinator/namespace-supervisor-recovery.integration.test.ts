@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -22,17 +22,24 @@ import { build, type PluginBuild } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 
 import { CoordinatorLaunchRecord } from '#src/infra/coordinator-launch.js';
+import { tryAcquireDirectoryLock } from '#src/infra/fs-lock.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import {
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   SUCCESSION_CAPABILITIES_FILE,
 } from '#src/infra/bundle-manifest-address.js';
 import { coordinatorPaths, socketPathForRunDir } from '#src/infra/path/coordinator.js';
-import { coordinatorLaunchPath } from '#src/infra/path/index.js';
+import { coordinatorLaunchPath, generationAdmissionLockPath } from '#src/infra/path/index.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createPluginFixture } from '#tests/integration/coordinator/helpers.js';
+import {
+  createPluginFixture,
+  spawnCoordinator,
+  stopCoordinator,
+  terminateChildProcess,
+  waitForDiscoveryRecord,
+} from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
@@ -1995,3 +2002,199 @@ describe('namespace supervisor recovery', () => {
     75_000,
   );
 });
+async function supervisorHarness(home: string): Promise<string> {
+  const harness = join(home, 'supervisor.mjs');
+  await build({
+    entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+    outfile: harness,
+    bundle: true,
+    platform: 'node',
+    target: 'node22',
+    format: 'esm',
+    external: ['node:*'],
+  });
+  return harness;
+}
+
+function launchSupervisor(
+  harness: string,
+  executable: string,
+  home: string,
+  runDir: string,
+  extraEnv: Record<string, string> = {},
+): ChildProcess {
+  return spawn(process.execPath, [harness, executable], {
+    env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir, ...extraEnv },
+    stdio: 'ignore',
+  });
+}
+
+for (const corruption of ['byte-corrupt SQLite', 'malformed state JSON', 'schema-invalid state JSON'] as const) {
+  it(`recovers ${corruption} and serves a coordinator with original bytes quarantined`, async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-corrupt-launch-record-'));
+    roots.push(home);
+    const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const launchPath = coordinatorLaunchPath(runDir);
+    mkdirSync(dirname(launchPath), { recursive: true });
+    if (corruption === 'byte-corrupt SQLite') writeFileSync(launchPath, 'not a SQLite database');
+    else {
+      const record = new CoordinatorLaunchRecord(runDir);
+      record.close();
+      const database = new DatabaseSync(launchPath);
+      database
+        .prepare('UPDATE control SET state = ? WHERE id = 1')
+        .run(
+          corruption === 'malformed state JSON'
+            ? '{broken json'
+            : JSON.stringify({ schemaGeneration: 1, namespaceId: 'invalid', revision: 0, ownerEpoch: 0, owner: [] }),
+        );
+      database.close();
+    }
+    const original = readFileSync(launchPath);
+    const supervisor = launchSupervisor(
+      await supervisorHarness(home),
+      join(plugin.root, 'bridge', 'coral-backend.cjs'),
+      home,
+      runDir,
+    );
+    const pids = new Set<number>();
+    try {
+      await waitForCondition(() => {
+        try {
+          const record = new CoordinatorLaunchRecord(runDir);
+          try {
+            const child = record.read().launch?.child;
+            if (child !== undefined) pids.add(child.pid);
+            return record.read().launch?.phase === 'serving' && child !== undefined;
+          } finally {
+            record.close();
+          }
+        } catch {
+          return false;
+        }
+      }, 25_000);
+      expect(supervisor.exitCode).toBeNull();
+      const quarantine = readdirSync(runDir).find((name) =>
+        name.startsWith('coordinator-launch.v1.sqlite.quarantine-'),
+      );
+      expect(quarantine).toBeDefined();
+      expect(readFileSync(join(runDir, quarantine!))).toEqual(original);
+      const output = execFileSync(process.execPath, [join(plugin.root, 'bridge', 'coral-cli'), 'backend', 'status'], {
+        env: topLevelCliEnvironment(home),
+        encoding: 'utf8',
+        timeout: 15_000,
+      });
+      expect(output).toContain(join(runDir, quarantine!));
+    } finally {
+      await terminateChildProcess(supervisor, 'SIGKILL').catch(() => {});
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          /* Already exited. */
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+}
+
+it('leaves a live coordinator serving CLI calls when its launch record is corrupt', async () => {
+  const roots: string[] = [];
+  const home = mkdtempSync(join(tmpdir(), 'coral-live-corrupt-launch-record-'));
+  roots.push(home);
+  const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+  const incumbent = spawnCoordinator({ fixture: plugin, home, tempRoots: roots });
+  let supervisor: ChildProcess | null = null;
+  try {
+    const discovery = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    writeFileSync(coordinatorLaunchPath(runDir), 'not a SQLite database');
+    supervisor = launchSupervisor(
+      await supervisorHarness(home),
+      join(plugin.root, 'bridge', 'coral-backend.cjs'),
+      home,
+      runDir,
+    );
+    await waitForCondition(() => supervisor?.exitCode !== null, 10_000);
+    expect(supervisor.exitCode).toBe(0);
+    expect(incumbent.child.exitCode).toBeNull();
+    const output = execFileSync(process.execPath, [join(plugin.root, 'bridge', 'coral-cli'), 'backend', 'status'], {
+      env: topLevelCliEnvironment(home),
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    expect(output).toContain('Coordinator launch record is unreadable');
+    expect((await waitForDiscoveryRecord(home, 'prod')).pid).toBe(discovery.pid);
+    expect(readFileSync(coordinatorLaunchPath(runDir), 'utf8')).toBe('not a SQLite database');
+  } finally {
+    if (supervisor !== null) await terminateChildProcess(supervisor, 'SIGKILL').catch(() => {});
+    await stopCoordinator(incumbent);
+    for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+  }
+}, 40_000);
+
+it('hands an inconclusive lock hold to a successor that rebuilds after the lock releases', async () => {
+  const roots: string[] = [];
+  const home = mkdtempSync(join(tmpdir(), 'coral-held-corrupt-launch-record-'));
+  roots.push(home);
+  const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+  const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+  const launchPath = coordinatorLaunchPath(runDir);
+  mkdirSync(dirname(launchPath), { recursive: true });
+  writeFileSync(launchPath, 'not a SQLite database');
+  const admissionPath = generationAdmissionLockPath(
+    createRealRuntime('prod', { baseDir: join(home, '.coral') }).paths.coral.generation,
+  );
+  mkdirSync(dirname(admissionPath), { recursive: true });
+  const admission = tryAcquireDirectoryLock(admissionPath);
+  if (admission === null) throw new Error('Could not hold admission lock');
+  const sourceIncarnation = probeProcessIncarnation(process.pid);
+  if (sourceIncarnation === null) throw new Error('Could not identify test process');
+  const supervisor = launchSupervisor(
+    await supervisorHarness(home),
+    join(plugin.root, 'bridge', 'coral-backend.cjs'),
+    home,
+    runDir,
+    {
+      CORAL_RECOVERY_SOURCE_PID: String(process.pid),
+      CORAL_RECOVERY_SOURCE_INCARNATION: sourceIncarnation,
+      CORAL_RECOVERY_CHALLENGE: 'one-time-challenge',
+    },
+  );
+  const pids = new Set<number>();
+  try {
+    await waitForCondition(() => supervisor.exitCode !== null, 10_000);
+    expect(supervisor.exitCode).toBe(0);
+    expect(readFileSync(launchPath, 'utf8')).toBe('not a SQLite database');
+    admission();
+    await waitForCondition(() => {
+      try {
+        const record = new CoordinatorLaunchRecord(runDir);
+        try {
+          const state = record.read();
+          if (state.owner !== null) pids.add(state.owner.process.pid);
+          if (state.launch?.child !== undefined) pids.add(state.launch.child.pid);
+          return state.launch?.phase === 'serving' && state.owner?.process.pid !== supervisor.pid;
+        } finally {
+          record.close();
+        }
+      } catch {
+        return false;
+      }
+    }, 20_000);
+  } finally {
+    admission();
+    await terminateChildProcess(supervisor, 'SIGKILL').catch(() => {});
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // The process may already have exited.
+      }
+    }
+    for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+  }
+}, 35_000);

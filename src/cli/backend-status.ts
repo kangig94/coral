@@ -1,9 +1,10 @@
 import { observeCoordinator, type CoordinatorObservation } from '../transport/http/backend/coordinator-observation.js';
 import { dirname, join } from 'node:path';
-import { statSync } from 'node:fs';
-import { isNoEntryError } from '../infra/fs-errors.js';
-import { readCoordinatorLaunchState, type CoordinatorLaunchState } from '../infra/coordinator-launch.js';
-import { coordinatorLaunchPath } from '../infra/path/index.js';
+import {
+  quarantinedCoordinatorLaunchRecords,
+  readCoordinatorLaunchDisposition,
+  type CoordinatorLaunchState,
+} from '../infra/coordinator-launch.js';
 import {
   hasQuarantinedUpgradeIntent,
   readUpgradeIntent,
@@ -456,7 +457,8 @@ export type SupersededEpochClosures =
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
 export type BackendStatusFull = BackendStatusFullBase & {
-  launchRecordProblem?: 'unreadable';
+  launchRecordProblem?: 'unreadable' | 'newer';
+  launchRecordQuarantines?: readonly string[];
   launchHold?: NonNullable<CoordinatorLaunchState['hold']>;
   launchInheritedHolds?: NonNullable<CoordinatorLaunchState['inheritedHolds']>;
   launchSignalHolds?: NonNullable<CoordinatorLaunchState['signalHolds']>;
@@ -1167,22 +1169,26 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   const status = await getBackendStatusBase(pluginRoot);
   const runDir = createRealRuntime(readBuildFlavor(pluginRoot)).paths.coral.coordinator.runDir;
   const quarantined = hasQuarantinedUpgradeIntent(runDir);
-  try {
-    const state = readCoordinatorLaunchState(runDir);
+  const launchQuarantines = quarantinedCoordinatorLaunchRecords(runDir);
+  const launchQuarantineStatus = launchQuarantines.length ? { launchRecordQuarantines: launchQuarantines } : {};
+  const upgradeQuarantineStatus = quarantined ? { upgradeQuarantined: true } : {};
+  const disposition = readCoordinatorLaunchDisposition(runDir);
+  if (disposition.kind === 'readable') {
+    const state = disposition.state;
     const hold = state.hold;
     return {
       ...status,
       ...(hold === undefined ? {} : { launchHold: hold }),
       ...(state.inheritedHolds?.length ? { launchInheritedHolds: state.inheritedHolds } : {}),
       ...(state.signalHolds?.length ? { launchSignalHolds: state.signalHolds } : {}),
-      ...(quarantined ? { upgradeQuarantined: true } : {}),
+      ...launchQuarantineStatus,
+      ...upgradeQuarantineStatus,
     };
-  } catch {
-    try {
-      statSync(coordinatorLaunchPath(runDir));
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) return quarantined ? { ...status, upgradeQuarantined: true } : status;
-    }
-    return { ...status, launchRecordProblem: 'unreadable', ...(quarantined ? { upgradeQuarantined: true } : {}) };
   }
+  return {
+    ...status,
+    ...(disposition.kind === 'absent' ? {} : { launchRecordProblem: disposition.kind }),
+    ...launchQuarantineStatus,
+    ...upgradeQuarantineStatus,
+  };
 }

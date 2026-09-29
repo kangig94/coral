@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { CoordinatorLaunchRecord } from '../infra/coordinator-launch.js';
+import { CoordinatorLaunchRecord, readCoordinatorLaunchDisposition } from '../infra/coordinator-launch.js';
 import { observeProcessLiveness, probeProcessIncarnation } from '../infra/node-process.js';
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { createForeignTargetValidator } from '../infra/handoff-target.js';
@@ -39,7 +39,23 @@ export async function requestLegacyUpgrade(
   )
     return { kind: 'refused', reason: 'target bundle is unavailable', disposition: 'error' };
 
-  const record = new CoordinatorLaunchRecord(options.runDir);
+  if (readCoordinatorLaunchDisposition(options.runDir).kind === 'unreadable')
+    return {
+      kind: 'refused',
+      reason: 'coordinator launch record is unreadable; supervisor recovery is pending',
+      disposition: 'deferred',
+    };
+
+  let record: CoordinatorLaunchRecord;
+  try {
+    record = new CoordinatorLaunchRecord(options.runDir);
+  } catch {
+    return {
+      kind: 'refused',
+      reason: 'coordinator launch record is unreadable; supervisor recovery is pending',
+      disposition: 'deferred',
+    };
+  }
   try {
     const request = record.request(executable, options.target.build.buildSetId, options.incumbent);
     const state = record.read();
@@ -79,6 +95,12 @@ export async function requestLegacyUpgrade(
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     return { kind: 'refused', reason: 'supervisor did not accept the upgrade request', disposition: 'deferred' };
+  } catch {
+    return {
+      kind: 'refused',
+      reason: 'coordinator launch record became unreadable; supervisor recovery is pending',
+      disposition: 'deferred',
+    };
   } finally {
     record.close();
   }

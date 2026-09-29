@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, fsyncSync, mkdirSync, openSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { coordinatorLaunchPath } from './path/index.js';
+import { isNoEntryError } from './fs-errors.js';
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
 
 export type LaunchProcess = Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
@@ -86,6 +87,149 @@ export type CoordinatorLaunchState = Readonly<{
 
 export const LAUNCH_OWNER_LEASE_MS = 10 * 60_000;
 
+export type CoordinatorLaunchDisposition =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'readable'; state: CoordinatorLaunchState }>
+  | Readonly<{ kind: 'newer'; schemaGeneration: number }>
+  | Readonly<{ kind: 'unreadable'; path: string }>;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isLaunchProcess(value: unknown): boolean {
+  return isObject(value) && Number.isSafeInteger(value.pid) && typeof value.incarnation === 'string';
+}
+
+function isLaunchOwner(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value.id === 'string' &&
+    isLaunchProcess(value.process) &&
+    typeof value.buildSetId === 'string' &&
+    Number.isSafeInteger(value.epoch) &&
+    Number.isSafeInteger(value.renewal) &&
+    typeof value.leaseUntil === 'number' &&
+    (value.mode === 'supervised' || value.mode === 'recovering')
+  );
+}
+
+function isLaunchReservation(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value.id === 'string' &&
+    Number.isSafeInteger(value.ownerEpoch) &&
+    typeof value.buildSetId === 'string' &&
+    ['startup', 'contender', 'succession', 'recovery', 'legacy-retirement'].includes(String(value.purpose)) &&
+    ['reserved', 'admitted', 'serving', 'exited'].includes(String(value.phase)) &&
+    (value.parent === undefined || isLaunchProcess(value.parent)) &&
+    (value.child === undefined || isLaunchProcess(value.child))
+  );
+}
+
+function isLaunchRequest(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value.id === 'string' &&
+    typeof value.executable === 'string' &&
+    typeof value.buildSetId === 'string' &&
+    ['recorded', 'accepted', 'completed', 'unavailable'].includes(String(value.status))
+  );
+}
+
+function decodeLaunchState(value: unknown): CoordinatorLaunchDisposition {
+  if (!isObject(value) || !('schemaGeneration' in value)) return { kind: 'unreadable', path: '' };
+  if (
+    typeof value.schemaGeneration === 'number' &&
+    Number.isSafeInteger(value.schemaGeneration) &&
+    value.schemaGeneration > 1
+  )
+    return { kind: 'newer', schemaGeneration: value.schemaGeneration };
+  if (
+    value.schemaGeneration !== 1 ||
+    !('namespaceId' in value) ||
+    typeof value.namespaceId !== 'string' ||
+    !('revision' in value) ||
+    !Number.isSafeInteger(value.revision) ||
+    !('ownerEpoch' in value) ||
+    !Number.isSafeInteger(value.ownerEpoch) ||
+    !('owner' in value) ||
+    (value.owner !== null && !isLaunchOwner(value.owner)) ||
+    !('launch' in value) ||
+    (value.launch !== null && !isLaunchReservation(value.launch)) ||
+    !('attempt' in value) ||
+    (value.attempt !== null && !isLaunchReservation(value.attempt)) ||
+    !('requests' in value) ||
+    !Array.isArray(value.requests) ||
+    !value.requests.every(isLaunchRequest)
+  )
+    return { kind: 'unreadable', path: '' };
+  return { kind: 'readable', state: value as CoordinatorLaunchState };
+}
+
+export function readCoordinatorLaunchDisposition(runDir: string): CoordinatorLaunchDisposition {
+  const path = coordinatorLaunchPath(runDir);
+  try {
+    statSync(path);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return { kind: 'absent' };
+    return { kind: 'unreadable', path };
+  }
+  let database: DatabaseSync | null = null;
+  try {
+    database = new DatabaseSync(path, { readOnly: true });
+    const row = database.prepare('SELECT state FROM control WHERE id = 1').get() as { state?: unknown } | undefined;
+    if (typeof row?.state !== 'string') return { kind: 'unreadable', path };
+    const decoded = decodeLaunchState(JSON.parse(row.state) as unknown);
+    return decoded.kind === 'unreadable' ? { kind: 'unreadable', path } : decoded;
+  } catch {
+    return { kind: 'unreadable', path };
+  } finally {
+    try {
+      database?.close();
+    } catch {
+      // The disposition remains unreadable if SQLite cannot close a failed read.
+    }
+  }
+}
+
+export function quarantineCoordinatorLaunchRecord(runDir: string): string {
+  const path = coordinatorLaunchPath(runDir);
+  const address = `${path}.quarantine-${randomUUID()}`;
+  renameSync(path, address);
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      renameSync(`${path}${suffix}`, `${address}${suffix}`);
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) throw error;
+    }
+  }
+  const parent = openSync(dirname(path), 'r');
+  try {
+    fsyncSync(parent);
+  } finally {
+    closeSync(parent);
+  }
+  return address;
+}
+
+export function quarantinedCoordinatorLaunchRecords(runDir: string): readonly string[] {
+  const path = coordinatorLaunchPath(runDir);
+  try {
+    return readdirSync(dirname(path))
+      .filter(
+        (name) =>
+          name.startsWith('coordinator-launch.v1.sqlite.quarantine-') &&
+          !name.endsWith('-wal') &&
+          !name.endsWith('-shm'),
+      )
+      .map((name) => `${dirname(path)}/${name}`);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return [];
+    throw error;
+  }
+}
+
 export function readCoordinatorLaunchState(runDir: string): CoordinatorLaunchState {
   const database = new DatabaseSync(coordinatorLaunchPath(runDir), { readOnly: true });
   try {
@@ -106,30 +250,35 @@ export class CoordinatorLaunchRecord {
     const path = coordinatorLaunchPath(runDir);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.#database = new DatabaseSync(path);
-    this.#database.exec('PRAGMA busy_timeout = 5000');
-    this.#database.exec('PRAGMA journal_mode = DELETE');
-    this.#database.exec('PRAGMA synchronous = FULL');
-    this.#database.exec(
-      'CREATE TABLE IF NOT EXISTS control (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)',
-    );
-    this.#database.prepare('INSERT OR IGNORE INTO control (id, state) VALUES (1, ?)').run(
-      JSON.stringify({
-        schemaGeneration: 1,
-        namespaceId: randomUUID(),
-        revision: 0,
-        ownerEpoch: 0,
-        owner: null,
-        launch: null,
-        attempt: null,
-        requests: [],
-        hold: undefined,
-      } satisfies CoordinatorLaunchState),
-    );
-    const parent = openSync(dirname(path), 'r');
     try {
-      fsyncSync(parent);
-    } finally {
-      closeSync(parent);
+      this.#database.exec('PRAGMA busy_timeout = 5000');
+      this.#database.exec('PRAGMA journal_mode = DELETE');
+      this.#database.exec('PRAGMA synchronous = FULL');
+      this.#database.exec(
+        'CREATE TABLE IF NOT EXISTS control (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)',
+      );
+      this.#database.prepare('INSERT OR IGNORE INTO control (id, state) VALUES (1, ?)').run(
+        JSON.stringify({
+          schemaGeneration: 1,
+          namespaceId: randomUUID(),
+          revision: 0,
+          ownerEpoch: 0,
+          owner: null,
+          launch: null,
+          attempt: null,
+          requests: [],
+          hold: undefined,
+        } satisfies CoordinatorLaunchState),
+      );
+      const parent = openSync(dirname(path), 'r');
+      try {
+        fsyncSync(parent);
+      } finally {
+        closeSync(parent);
+      }
+    } catch (error: unknown) {
+      this.#database.close();
+      throw error;
     }
   }
 
