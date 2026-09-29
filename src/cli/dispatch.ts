@@ -82,7 +82,7 @@ import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../in
 import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
 import { collectForwardedNetworkEnv } from '../infra/network-env.js';
 import type { Principal } from '../security/principal.js';
-import { classifyCommand, commandPath } from './classify.js';
+import { classifyCommand, commandPath, type CommandClass } from './classify.js';
 import { ProviderSelectionError } from './errors.js';
 import { parseExpression } from '../workflow/parser.js';
 import { normalizeAst, workflowProviderNames } from '../workflow/normalize.js';
@@ -192,6 +192,16 @@ type CliCommandClient = AbortCapableClient & {
     options?: IpcSubscriptionOptions,
   ): Promise<IpcSubscription<TResult>>;
   subscribeJobsWait(fields: JobsWaitFields, options?: IpcSubscriptionOptions): Promise<IpcSubscription<unknown>>;
+};
+
+type CliClientBindings = {
+  path: string;
+  commandClass: CommandClass;
+  canonicalProjectRoot: CanonicalWorkDir;
+  defaultContext: InvocationContext;
+  providerRegistry: ProviderRegistry;
+  request: <TResult>(method: string, params?: unknown) => Promise<TResult>;
+  readStore: () => ReturnType<typeof getSharedReadCoralStore>;
 };
 
 export type ProviderRunOptions = {
@@ -460,113 +470,23 @@ function resolveMemoOwner(owner: string | undefined, context: InvocationContext)
   return typeof fallback === 'string' && fallback.length > 0 ? fallback : undefined;
 }
 
-export function makeClient(projectRoot: string, command: Command): CliCommandClient {
-  const path = commandPath(command);
-  const resolution = classifyCommand(command);
-
-  if (resolution.kind === 'container') {
-    throw new Error(`makeClient() cannot dispatch a container command: ${path}`);
-  }
-
-  if (resolution.kind === 'exempt') {
-    throw new Error(`makeClient() cannot dispatch exempt command "${path}": ${resolution.rationale}`);
-  }
-
-  if (resolution.kind === 'unclassified') {
-    throw new Error(`makeClient() cannot dispatch unclassified command "${path}"`);
-  }
-
-  const commandClass = resolution.commandClass;
-  const canonicalProjectRoot = canonicalizeWorkDir(projectRoot, process.cwd());
-  const defaultContext = createDefaultInvocationContext(canonicalProjectRoot);
-  const providerRegistry = createBuiltInProviderRegistry();
-  const ipcAuth = childPrincipalAuthFromEnv();
-  const ipcAuthOptions = () => childPrincipalAuthOptions(ipcAuth);
-
-  // A KB command probes once so a KB-disabled incumbent follows the same live
-  // authority rule as every other invocation. A later idle restart may inherit
-  // this process's KB setting without interrupting current coordinator work.
-  let kbReconcileDone = false;
-  const reconcileKbBoot = async (): Promise<void> => {
-    if (kbReconcileDone || !path.startsWith('kb ')) return;
-    kbReconcileDone = true;
-    if (ipcAuth !== undefined) return;
-    if (!resolveKbEnabled(process.env[CORAL_KB_ENABLE_ENV])) return;
-    try {
-      // The admission passed here must stay the strictest this client will issue, so a draining incumbent
-      // never serves the reconciliation: the health read below decides whether the coordinator this process
-      // is about to use has KB disabled, and a coordinator on its way out is not that coordinator.
-      const client = await ensure('transport.kb.restart', getPluginRoot());
-      const health = await client.health<RawCoordinatorHealth>({ timeoutMs: HEALTH_TIMEOUT_MS });
-      const kbDisabled = (health.components ?? []).some(
-        (s) => s.id === 'kb' && s.phase === 'offline' && s.reason === KB_DISABLED_REASON,
-      );
-      if (kbDisabled) {
-        // Condition only, no remediation: the command's own `kb_disabled` error carries the one
-        // authoritative recovery instruction (see createDisabledKbDaemonSupervisor). Repeating it here
-        // would print the same advice twice, back to back, for a single failure.
-        process.stderr.write(
-          'KB is disabled on the running Coral coordinator; this command will fail. Continuing without a ' +
-            'restart so in-flight work is not interrupted.\n',
-        );
-        return;
-      }
-    } catch {
-      // Best-effort: fall through and let the command run against the daemon.
-    }
-  };
-
-  const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {
-    const authOptions = ipcAuthOptions();
-    await reconcileKbBoot();
-    // A response envelope with no `result` key decodes rather than failing, so an absent result reaches this
-    // as `undefined` as well as `null`, and both must refuse — neither is a value a caller may dereference.
-    // see jsonRpcResponseEnvelopeSchema in src/transport/ipc/json-rpc.ts
-    const issue = (timeoutMs: number) =>
-      issueWithSuccessorAfterLifecycleRefusal<TResult | null | undefined>(method, resolvePluginRoot(), (client) =>
-        client.request<TResult | null | undefined>(method, params, { timeoutMs, ...authOptions }),
-      );
-    const result =
-      method === 'sessions.create' ||
-      method === 'workflow.run' ||
-      method === 'discuss.session.create' ||
-      method === 'jobs.abort'
-        ? await retrySuccessionPausedRequest(issue, TOOL_TIMEOUT_MS)
-        : await issue(TOOL_TIMEOUT_MS);
-    if (result === null || result === undefined) {
-      throw new BackendUnreachableError(
-        `Coral coordinator did not answer ${method}. Run \`coral-cli backend status\` and retry.`,
-      );
-    }
-    return result;
-  };
-
-  const subscribeTo = async <TResult>(
-    method: string,
-    paramsFor: (coordinator: EnsuredIpcClient) => unknown,
-    options?: IpcSubscriptionOptions,
-  ): Promise<IpcSubscription<TResult>> => {
-    if (commandClass !== 'subscribe') {
-      throw new Error(`Command "${path}" is classified as ${commandClass} and cannot open subscriptions.`);
-    }
-
-    const authOptions = ipcAuthOptions();
-    await reconcileKbBoot();
-    const client = await ensure(method, resolvePluginRoot());
-    return client.subscribe<TResult>(method, paramsFor(client), {
-      timeoutMs: HEALTH_TIMEOUT_MS,
-      ...options,
-      ...authOptions,
-    });
-  };
-  const subscribe = <TResult>(
-    method: string,
-    params?: unknown,
-    options?: IpcSubscriptionOptions,
-  ): Promise<IpcSubscription<TResult>> => subscribeTo<TResult>(method, () => params, options);
-
-  const readStore = () => getSharedReadCoralStore(canonicalProjectRoot);
-
+function createSessionDiscussionClient(
+  bindings: CliClientBindings,
+): Pick<
+  CliCommandClient,
+  | 'createSession'
+  | 'workflow'
+  | 'listJobs'
+  | 'detailJob'
+  | 'abortJobs'
+  | 'discussSeed'
+  | 'discussStart'
+  | 'discussWatch'
+  | 'discussBid'
+  | 'discussSpeech'
+  | 'discussAbort'
+> {
+  const { request, defaultContext, providerRegistry, canonicalProjectRoot, commandClass, readStore } = bindings;
   return {
     createSession: async (provider, prompt, options = {}) => {
       return request<AcceptedLaunchResponse>(
@@ -654,6 +574,17 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         'discuss.session.delete',
         buildProjectScopedQuery({ sessionId: session }, defaultContext),
       ),
+  };
+}
+
+function createKbEntryClient(
+  bindings: CliClientBindings,
+): Pick<
+  CliCommandClient,
+  'kbSearch' | 'kbDiagnose' | 'kbPrinciples' | 'kbRead' | 'kbPromote' | 'kbUpdate' | 'kbDelete'
+> {
+  const { path, commandClass, request, readStore, defaultContext } = bindings;
+  return {
     kbSearch: async (args) => {
       if (commandClass === 'directRead') {
         throw new Error(`Command "${path}" is classified as directRead and cannot issue served KB searches.`);
@@ -703,6 +634,26 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         'kb.note.delete',
         buildKbMutationTransportContextBody({ slug: args.note }, defaultContext),
       ),
+  };
+}
+
+function createKbWikiClient(
+  bindings: CliClientBindings,
+): Pick<
+  CliCommandClient,
+  | 'kbWikiCreate'
+  | 'kbWikiRewrite'
+  | 'kbWikiLink'
+  | 'kbWikiUnlink'
+  | 'kbWikiCite'
+  | 'kbWikiAdopt'
+  | 'kbWikiDelete'
+  | 'kbWikiList'
+  | 'kbWikiRead'
+  | 'kbWakeUp'
+> {
+  const { commandClass, request, readStore, defaultContext } = bindings;
+  return {
     kbWikiCreate: async (args) =>
       request<KbWikiCreateResponse>('kb.wiki.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbWikiRewrite: async (args) =>
@@ -735,6 +686,22 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
 
       return request<KbWakeUpResponse>('kb.wake_up', args);
     },
+  };
+}
+
+function createKbSourceCommunityClient(
+  bindings: CliClientBindings,
+): Pick<
+  CliCommandClient,
+  | 'kbSourceImport'
+  | 'kbSourceList'
+  | 'kbSourceDelete'
+  | 'kbCommunityListStale'
+  | 'kbCommunitySummaryInput'
+  | 'kbCommunitySetSummary'
+> {
+  const { commandClass, request, readStore, defaultContext } = bindings;
+  return {
     kbSourceImport: async (args) =>
       request<KbSourceImportResponse>('kb.source.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbSourceList: async () => {
@@ -773,6 +740,14 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         'kb.community.set-summary',
         buildKbMutationTransportContextBody({ slug: args.slug, summary: args.summary }, defaultContext),
       ),
+  };
+}
+
+function createKbMemoClient(
+  bindings: CliClientBindings,
+): Pick<CliCommandClient, 'kbMemo' | 'kbMemoList' | 'kbMemoDelete' | 'kbMemoPurge' | 'kbReindex'> {
+  const { commandClass, request, readStore, defaultContext } = bindings;
+  return {
     kbMemo: async (args) =>
       request<KbMemoResponse>('kb.memo.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbMemoList: async (args) => {
@@ -815,6 +790,140 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     },
     kbReindex: async (args = {}) =>
       request<KbReindexResponse>('kb.reindex', buildKbMutationTransportContextBody(args, defaultContext)),
+  };
+}
+
+function createKbBootReconciler(
+  path: string,
+  ipcAuth: ReturnType<typeof childPrincipalAuthFromEnv>,
+): () => Promise<void> {
+  // A KB command probes once so a KB-disabled incumbent follows the same live
+  // authority rule as every other invocation. A later idle restart may inherit
+  // this process's KB setting without interrupting current coordinator work.
+  let kbReconcileDone = false;
+  const reconcileKbBoot = async (): Promise<void> => {
+    if (kbReconcileDone || !path.startsWith('kb ')) return;
+    kbReconcileDone = true;
+    if (ipcAuth !== undefined) return;
+    if (!resolveKbEnabled(process.env[CORAL_KB_ENABLE_ENV])) return;
+    try {
+      // The admission passed here must stay the strictest this client will issue, so a draining incumbent
+      // never serves the reconciliation: the health read below decides whether the coordinator this process
+      // is about to use has KB disabled, and a coordinator on its way out is not that coordinator.
+      const client = await ensure('transport.kb.restart', getPluginRoot());
+      const health = await client.health<RawCoordinatorHealth>({ timeoutMs: HEALTH_TIMEOUT_MS });
+      const kbDisabled = (health.components ?? []).some(
+        (s) => s.id === 'kb' && s.phase === 'offline' && s.reason === KB_DISABLED_REASON,
+      );
+      if (kbDisabled) {
+        // Condition only, no remediation: the command's own `kb_disabled` error carries the one
+        // authoritative recovery instruction (see createDisabledKbDaemonSupervisor). Repeating it here
+        // would print the same advice twice, back to back, for a single failure.
+        process.stderr.write(
+          'KB is disabled on the running Coral coordinator; this command will fail. Continuing without a ' +
+            'restart so in-flight work is not interrupted.\n',
+        );
+        return;
+      }
+    } catch {
+      // Best-effort: fall through and let the command run against the daemon.
+    }
+  };
+
+  return reconcileKbBoot;
+}
+
+export function makeClient(projectRoot: string, command: Command): CliCommandClient {
+  const path = commandPath(command);
+  const resolution = classifyCommand(command);
+
+  if (resolution.kind === 'container') {
+    throw new Error(`makeClient() cannot dispatch a container command: ${path}`);
+  }
+
+  if (resolution.kind === 'exempt') {
+    throw new Error(`makeClient() cannot dispatch exempt command "${path}": ${resolution.rationale}`);
+  }
+
+  if (resolution.kind === 'unclassified') {
+    throw new Error(`makeClient() cannot dispatch unclassified command "${path}"`);
+  }
+
+  const commandClass = resolution.commandClass;
+  const canonicalProjectRoot = canonicalizeWorkDir(projectRoot, process.cwd());
+  const defaultContext = createDefaultInvocationContext(canonicalProjectRoot);
+  const providerRegistry = createBuiltInProviderRegistry();
+  const ipcAuth = childPrincipalAuthFromEnv();
+  const ipcAuthOptions = () => childPrincipalAuthOptions(ipcAuth);
+
+  const reconcileKbBoot = createKbBootReconciler(path, ipcAuth);
+
+  const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {
+    const authOptions = ipcAuthOptions();
+    await reconcileKbBoot();
+    // A response envelope with no `result` key decodes rather than failing, so an absent result reaches this
+    // as `undefined` as well as `null`, and both must refuse — neither is a value a caller may dereference.
+    // see jsonRpcResponseEnvelopeSchema in src/transport/ipc/json-rpc.ts
+    const issue = (timeoutMs: number) =>
+      issueWithSuccessorAfterLifecycleRefusal<TResult | null | undefined>(method, resolvePluginRoot(), (client) =>
+        client.request<TResult | null | undefined>(method, params, { timeoutMs, ...authOptions }),
+      );
+    const result =
+      method === 'sessions.create' ||
+      method === 'workflow.run' ||
+      method === 'discuss.session.create' ||
+      method === 'jobs.abort'
+        ? await retrySuccessionPausedRequest(issue, TOOL_TIMEOUT_MS)
+        : await issue(TOOL_TIMEOUT_MS);
+    if (result === null || result === undefined) {
+      throw new BackendUnreachableError(
+        `Coral coordinator did not answer ${method}. Run \`coral-cli backend status\` and retry.`,
+      );
+    }
+    return result;
+  };
+
+  const subscribeTo = async <TResult>(
+    method: string,
+    paramsFor: (coordinator: EnsuredIpcClient) => unknown,
+    options?: IpcSubscriptionOptions,
+  ): Promise<IpcSubscription<TResult>> => {
+    if (commandClass !== 'subscribe') {
+      throw new Error(`Command "${path}" is classified as ${commandClass} and cannot open subscriptions.`);
+    }
+
+    const authOptions = ipcAuthOptions();
+    await reconcileKbBoot();
+    const client = await ensure(method, resolvePluginRoot());
+    return client.subscribe<TResult>(method, paramsFor(client), {
+      timeoutMs: HEALTH_TIMEOUT_MS,
+      ...options,
+      ...authOptions,
+    });
+  };
+  const subscribe = <TResult>(
+    method: string,
+    params?: unknown,
+    options?: IpcSubscriptionOptions,
+  ): Promise<IpcSubscription<TResult>> => subscribeTo<TResult>(method, () => params, options);
+
+  const readStore = () => getSharedReadCoralStore(canonicalProjectRoot);
+
+  const bindings: CliClientBindings = {
+    path,
+    commandClass,
+    canonicalProjectRoot,
+    defaultContext,
+    providerRegistry,
+    request,
+    readStore,
+  };
+  return {
+    ...createSessionDiscussionClient(bindings),
+    ...createKbEntryClient(bindings),
+    ...createKbWikiClient(bindings),
+    ...createKbSourceCommunityClient(bindings),
+    ...createKbMemoClient(bindings),
     subscribe,
     subscribeJobsWait: (fields, options) =>
       subscribeTo('jobs.wait', (coordinator) => jobsWaitRequest(fields, coordinator.jobsWaitExtensions), options),

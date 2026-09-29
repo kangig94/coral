@@ -704,6 +704,61 @@ export interface GrantRegistry {
   verifyInstalledGrant(input: { grantId: string; secret: string; binding: GrantBinding }): boolean;
 }
 
+/** Every field a grant is bound to, including the timeout only an installer names. */
+const sameBinding = (left: InstalledGrant, right: InstalledGrant): boolean =>
+  left.grantId === right.grantId &&
+  left.generation === right.generation &&
+  left.flavor === right.flavor &&
+  left.buildSetId === right.buildSetId &&
+  left.hostFingerprint === right.hostFingerprint &&
+  left.guardianInstanceId === right.guardianInstanceId &&
+  left.reaperInstanceId === right.reaperInstanceId &&
+  left.proxyInstanceId === right.proxyInstanceId &&
+  left.orphanTimeoutMs === right.orphanTimeoutMs &&
+  sameControllerBuild(left.controllerBuild, right.controllerBuild);
+
+const sameRedeemedSet = (left: InstalledGrant, right: GrantBinding): boolean =>
+  left.generation === right.generation &&
+  left.flavor === right.flavor &&
+  left.buildSetId === right.buildSetId &&
+  left.hostFingerprint === right.hostFingerprint &&
+  left.guardianInstanceId === right.guardianInstanceId &&
+  left.reaperInstanceId === right.reaperInstanceId &&
+  left.proxyInstanceId === right.proxyInstanceId;
+
+function registerGrantOperation(
+  installed: InstalledGrant,
+  operation: OperationIdentity,
+): {
+  grant: InstalledGrant;
+  operation: OperationIdentity;
+  added: boolean;
+} {
+  if (operation.proxyInstanceId !== installed.proxyInstanceId || operation.buildSetId !== installed.buildSetId) {
+    throw new ProxyControlProtocolError('identity_mismatch', 'The operation belongs to a different proxy set.');
+  }
+  const existing = installed.operations.find((candidate) => candidate.operationId === operation.operationId);
+  if (existing !== undefined) {
+    if (
+      existing.jobId !== operation.jobId ||
+      existing.proxyInstanceId !== operation.proxyInstanceId ||
+      existing.buildSetId !== operation.buildSetId
+    ) {
+      throw new ProxyControlProtocolError(
+        'identity_mismatch',
+        'The operation id is already registered to a different full identity.',
+      );
+    }
+    return { grant: installed, operation: existing, added: false };
+  }
+  const operations = handoffOperationSetSchema.parse(
+    [...installed.operations, operation].sort((left, right) =>
+      left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
+    ),
+  );
+  return { grant: Object.freeze({ ...installed, operations }), operation, added: true };
+}
+
 export function createGrantRegistry(
   mintReceipt: () => string,
   policy: Readonly<{ mayReplaceRedemption?: () => boolean }> = {},
@@ -711,28 +766,6 @@ export function createGrantRegistry(
   let installed: InstalledGrant | null = null;
   let redemption: GrantRedemption | null = null;
   let transfer: AuthorizedControllerTransfer | null = null;
-
-  /** Every field a grant is bound to, including the timeout only an installer names. */
-  const sameBinding = (left: InstalledGrant, right: InstalledGrant): boolean =>
-    left.grantId === right.grantId &&
-    left.generation === right.generation &&
-    left.flavor === right.flavor &&
-    left.buildSetId === right.buildSetId &&
-    left.hostFingerprint === right.hostFingerprint &&
-    left.guardianInstanceId === right.guardianInstanceId &&
-    left.reaperInstanceId === right.reaperInstanceId &&
-    left.proxyInstanceId === right.proxyInstanceId &&
-    left.orphanTimeoutMs === right.orphanTimeoutMs &&
-    sameControllerBuild(left.controllerBuild, right.controllerBuild);
-
-  const sameRedeemedSet = (left: InstalledGrant, right: GrantBinding): boolean =>
-    left.generation === right.generation &&
-    left.flavor === right.flavor &&
-    left.buildSetId === right.buildSetId &&
-    left.hostFingerprint === right.hostFingerprint &&
-    left.guardianInstanceId === right.guardianInstanceId &&
-    left.reaperInstanceId === right.reaperInstanceId &&
-    left.proxyInstanceId === right.proxyInstanceId;
 
   return {
     install(grant): { state: 'installed-dormant'; grantId: string } {
@@ -779,29 +812,9 @@ export function createGrantRegistry(
       if (installed === null) {
         throw new ProxyControlProtocolError('grant_invalid', 'No recovery credential is installed for this set.');
       }
-      if (operation.proxyInstanceId !== installed.proxyInstanceId || operation.buildSetId !== installed.buildSetId) {
-        throw new ProxyControlProtocolError('identity_mismatch', 'The operation belongs to a different proxy set.');
-      }
-      const existing = installed.operations.find((candidate) => candidate.operationId === operation.operationId);
-      if (existing !== undefined) {
-        if (
-          existing.jobId !== operation.jobId ||
-          existing.proxyInstanceId !== operation.proxyInstanceId ||
-          existing.buildSetId !== operation.buildSetId
-        ) {
-          throw new ProxyControlProtocolError(
-            'identity_mismatch',
-            'The operation id is already registered to a different full identity.',
-          );
-        }
-        return { state: 'succession-registered', operation: existing };
-      }
-      const operations = handoffOperationSetSchema.parse(
-        [...installed.operations, operation].sort((left, right) =>
-          left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
-        ),
-      );
-      installed = Object.freeze({ ...installed, operations });
+      const registration = registerGrantOperation(installed, operation);
+      if (!registration.added) return { state: 'succession-registered', operation: registration.operation };
+      installed = registration.grant;
       if (redemption !== null) {
         redemption = Object.freeze({ ...redemption, grant: installed });
       }

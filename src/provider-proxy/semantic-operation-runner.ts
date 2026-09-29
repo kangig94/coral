@@ -382,91 +382,199 @@ export interface SemanticOperationRuntime {
   shutdown(cause: ProviderStopCause): Promise<void>;
 }
 
-export function createSemanticOperationRuntime(options: SemanticOperationRuntimeOptions): SemanticOperationRuntime {
-  const { runtime, hostAuthority, getProxy } = options;
-  const staged = new Map<string, StagedOperation>();
-  let closing = false;
-  let shutdownPromise: Promise<void> | null = null;
+type SemanticOperationRuntimeState = {
+  staged: Map<string, StagedOperation>;
+  closing: boolean;
+  shutdownPromise: Promise<void> | null;
+  relinquishmentFailure: SemanticOperationCancellationUnconfirmedError | null;
+};
 
-  const assertAdmissionOpen = (): void => {
-    if (closing) throw new SemanticOperationAdmissionClosedError();
-  };
-  let relinquishmentFailure: SemanticOperationCancellationUnconfirmedError | null = null;
-
-  const admissionCheckedHostScope = (scope: ProxyOperationHostScope): ProxyOperationHostScope => ({
-    selectCancellationMode: (mode) => scope.selectCancellationMode(mode),
-    openSession: (spec, hostOptions) => {
-      assertAdmissionOpen();
-      return scope.openSession(spec, hostOptions);
-    },
-    attachSession: (hostRef, expectation) => {
-      assertAdmissionOpen();
-      return scope.attachSession(hostRef, expectation);
-    },
-  });
-
-  const requireSetRelinquishment = (
-    entry: StagedOperation,
-    reason: string,
-  ): SemanticOperationCancellationUnconfirmedError => {
-    closing = true;
-    if (relinquishmentFailure !== null) return relinquishmentFailure;
-    const failure = new SemanticOperationCancellationUnconfirmedError(entry.key, reason);
-    relinquishmentFailure = failure;
-    options.onRelinquish?.(failure);
-    return failure;
-  };
-
-  const requireStaged = (key: ProviderOperationKey): StagedOperation => {
-    const entry = staged.get(operationKeyString(key));
-    if (entry === undefined) {
-      throw new Error(`No staged provider root for ${key.jobId}/${key.operationId}.`);
-    }
-    return entry;
-  };
-
-  const closeStaged = (entry: StagedOperation): void => {
-    if (entry.closed) return;
-    entry.closed = true;
-    entry.staged?.close();
-  };
-
-  const closeAndForget = (entry: StagedOperation): void => {
-    closeStaged(entry);
-    const key = operationKeyString(entry.key);
-    if (staged.get(key) === entry) staged.delete(key);
-  };
-
-  const trackHostRef = (entry: StagedOperation, hostRef: HostRef): void => {
-    if (entry.hostRef !== null) {
-      if (isSameHostRef(entry.hostRef, hostRef)) return;
-      throw new Error(`Provider operation ${operationKeyString(entry.key)} reported more than one host reference.`);
-    }
-    entry.hostRef = hostRef;
-    const closed = hostAuthority.closed(hostRef);
-    if (closed === null) {
-      entry.resolveTransportClosed(new Error('Provider transport closed before a completion event.'));
-      return;
-    }
-    void closed.then(entry.resolveTransportClosed, (error: unknown) => {
-      entry.resolveTransportClosed(error instanceof Error ? error : new Error(errorMessage(error)));
-    });
-  };
-
-  const withinCancellationDeadline = async (operation: Promise<void>): Promise<void> => {
-    const deadlineController = new AbortController();
-    const deadline = runtime.time
-      .sleep(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS, { signal: deadlineController.signal })
-      .then(() => {
-        if (!deadlineController.signal.aborted) throw new SemanticOperationCancellationTimeoutError();
-      });
+function createSemanticTerminalEvents(getProxy: SemanticOperationRuntimeOptions['getProxy']) {
+  const synthesizeAndEmitFailure = (key: ProviderOperationKey, provider: string, error: unknown): void => {
+    const proxy = getProxy();
+    const event: ProviderEventBody = {
+      kind: 'terminal',
+      terminal: {
+        content: '',
+        durationMs: 0,
+        outcome: { kind: 'failed' },
+      },
+      diagnostics: {},
+      failureCause: providerRequestFailed({ provider, message: errorMessage(error) }),
+    };
     try {
-      await Promise.race([operation, deadline]);
-    } finally {
-      deadlineController.abort();
+      proxy.emitProviderEvent(key, event);
+    } catch {
+      /* the ledger entry is gone (already released); nothing left to notify */
     }
   };
 
+  const emitAbortedTerminal = (key: ProviderOperationKey, cause: ProviderStopCause): void => {
+    if (!isAbortStopCause(cause)) return;
+    const proxy = getProxy();
+    const event: ProviderEventBody = {
+      kind: 'terminal',
+      terminal: { content: '', durationMs: 0, outcome: { kind: 'aborted', reason: cause } },
+      diagnostics: {},
+    };
+    try {
+      proxy.emitProviderEvent(key, event);
+    } catch {
+      /* ledger entry already gone */
+    }
+  };
+
+  const emitRekeyRefusalTerminal = (entry: StagedOperation, provider: string, detail?: string): void => {
+    getProxy().emitProviderEvent(entry.key, providerProxyRekeyRefusalEvent(provider, detail));
+    entry.completionEmitted = true;
+  };
+
+  return { synthesizeAndEmitFailure, emitAbortedTerminal, emitRekeyRefusalTerminal };
+}
+
+async function closeSemanticEventIterator(
+  iterator: AsyncIterator<ProviderEventBody>,
+  key: ProviderOperationKey,
+  phase: 'replay-refusal' | 'terminal' | 'suspended',
+): Promise<void> {
+  try {
+    await iterator.return?.();
+  } catch (error: unknown) {
+    backendLog.error(
+      `semantic operation runtime: ${phase} iterator cleanup failed for ${operationKeyString(key)}`,
+      error,
+    );
+  }
+}
+
+function createSemanticOperationEventPump(
+  getProxy: SemanticOperationRuntimeOptions['getProxy'],
+  closeStaged: (entry: StagedOperation) => void,
+) {
+  const { synthesizeAndEmitFailure, emitAbortedTerminal, emitRekeyRefusalTerminal } =
+    createSemanticTerminalEvents(getProxy);
+
+  const runPump = async (
+    key: ProviderOperationKey,
+    entry: StagedOperation,
+    provider: string,
+    iterable: AsyncIterable<ProviderEventBody>,
+    settleStart: (result: SemanticOperationStartResult) => void,
+  ): Promise<void> => {
+    const proxy = getProxy();
+    const iterator = iterable[Symbol.asyncIterator]();
+    try {
+      // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
+      // single call ever resolves `entry.done` concurrently with it.
+      while (true) {
+        // A stop against a shared host is answered by the provider itself: the kernel observes the same signal,
+        // runs the interrupt handshake, and still yields events until the terminal that settles it.
+        if (entry.pendingStopCause === null || entry.cancellationMode !== 'shared-acknowledged-interrupt') {
+          entry.abortController.signal.throwIfAborted();
+        }
+        const step = await Promise.race([
+          iterator.next(),
+          entry.transportClosed.then((error) => {
+            throw error ?? new Error('Provider transport closed before a completion event.');
+          }),
+        ]);
+        if (step.done) throw new Error('Provider event stream ended without terminal or suspension.');
+        if (step.value.kind === 'suspended') {
+          entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: step.value.reason };
+        }
+        const emission = proxy.emitProviderEvent(key, step.value);
+        if (step.value.kind === 'terminal' || step.value.kind === 'suspended') {
+          entry.completionEmitted = true;
+        }
+
+        if (emission.kind === 'proxy-emergency-terminal') {
+          entry.completionEmitted = true;
+          await closeSemanticEventIterator(iterator, key, 'replay-refusal');
+          break;
+        }
+
+        if (emission.kind === 'continuity-recorded') {
+          const settlement = emission.settlement;
+          entry.activeContinuitySettlement = settlement;
+          try {
+            await settlement.committed;
+          } finally {
+            if (entry.activeContinuitySettlement === settlement) entry.activeContinuitySettlement = null;
+          }
+        }
+
+        if (step.value.kind === 'terminal') {
+          // The terminal already names the outcome; iterator cleanup cannot replace it with another one.
+          await closeSemanticEventIterator(iterator, key, 'terminal');
+          break;
+        }
+        if (step.value.kind === 'suspended') {
+          // Suspension is already durable work; iterator cleanup cannot turn it into a terminal.
+          await closeSemanticEventIterator(iterator, key, 'suspended');
+          break;
+        }
+      }
+    } catch (error: unknown) {
+      if (!entry.startCommitted) {
+        settleStart({ kind: 'never-started', reason: errorMessage(error) });
+        return;
+      }
+      if (entry.releaseRequested) return;
+      const cause = entry.pendingStopCause;
+      if (cause !== null) {
+        if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
+          entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: errorMessage(error) };
+        }
+        // A `stop()` was already in flight when the kernel unwound — trust why we asked it to stop rather
+        // than the shape of what it threw. Interruption causes (restart/handoff) emit nothing: the coordinator
+        // synthesizes `session.interrupted` itself from `operation.stop.v1`'s own `suspended-awaiting-durable-
+        // decision` reply, not from a provider event this proxy would have to invent.
+        if (cause === 'coordinator_rekey_refused') {
+          emitRekeyRefusalTerminal(entry, provider, errorMessage(error));
+        } else if (isAbortStopCause(cause)) {
+          emitAbortedTerminal(key, cause);
+        }
+        return;
+      }
+      // Nobody asked this operation to stop; the kernel unwound on its own. A terminal must still reach the
+      // coordinator — synthesize one rather than leaving the ledger entry executing forever with nothing to
+      // end it.
+      synthesizeAndEmitFailure(key, provider, error);
+    } finally {
+      if (!entry.startCommitted) {
+        settleStart({ kind: 'never-started', reason: 'The provider ended before its start boundary.' });
+      }
+      if (!entry.releaseRequested && entry.pendingStopCause === null) closeStaged(entry);
+    }
+  };
+
+  return { synthesizeAndEmitFailure, emitRekeyRefusalTerminal, runPump };
+}
+
+async function withinSemanticCancellationDeadline(
+  runtime: SemanticOperationRuntimeOptions['runtime'],
+  operation: Promise<void>,
+): Promise<void> {
+  const deadlineController = new AbortController();
+  const deadline = runtime.time
+    .sleep(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS, { signal: deadlineController.signal })
+    .then(() => {
+      if (!deadlineController.signal.aborted) throw new SemanticOperationCancellationTimeoutError();
+    });
+  try {
+    await Promise.race([operation, deadline]);
+  } finally {
+    deadlineController.abort();
+  }
+}
+
+function createSemanticOperationCancellation(
+  options: SemanticOperationRuntimeOptions,
+  closeAndForget: (entry: StagedOperation) => void,
+  requireSetRelinquishment: (entry: StagedOperation, reason: string) => SemanticOperationCancellationUnconfirmedError,
+  emitRekeyRefusalTerminal: (entry: StagedOperation, provider: string, detail?: string) => void,
+) {
+  const { runtime, hostAuthority } = options;
   const driveCancellation = async (
     entry: StagedOperation,
     reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
@@ -509,7 +617,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           await forceClose(entry.hostRef);
         }
       });
-      await withinCancellationDeadline(release).catch((error: unknown) => {
+      await withinSemanticCancellationDeadline(runtime, release).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
       entry.cancellationEvidence = { kind: 'not-started' };
@@ -518,7 +626,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     }
 
     if (reason.kind === 'stop' && reason.cause === 'coordinator_rekey_refused') {
-      await withinCancellationDeadline(completion).catch((error: unknown) => {
+      await withinSemanticCancellationDeadline(runtime, completion).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
       if (entry.bound === null) {
@@ -536,7 +644,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     }
 
     if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
-      await withinCancellationDeadline(completion).catch((error: unknown) => {
+      await withinSemanticCancellationDeadline(runtime, completion).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
       const evidence = entry.cancellationEvidence;
@@ -559,7 +667,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     const isolatedCancellation = Promise.all([completion, initialForceClose]).then(async () => {
       if (initialHostRef === null && entry.hostRef !== null) await forceClose(entry.hostRef);
     });
-    await withinCancellationDeadline(isolatedCancellation).catch((error: unknown) => {
+    await withinSemanticCancellationDeadline(runtime, isolatedCancellation).catch((error: unknown) => {
       throw requireSetRelinquishment(entry, errorMessage(error));
     });
     entry.cancellationEvidence = { kind: 'isolated-root-closed' };
@@ -575,160 +683,28 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     return entry.cancellationPromise;
   };
 
-  const synthesizeAndEmitFailure = (key: ProviderOperationKey, provider: string, error: unknown): void => {
-    const proxy = getProxy();
-    const event: ProviderEventBody = {
-      kind: 'terminal',
-      terminal: {
-        content: '',
-        durationMs: 0,
-        outcome: { kind: 'failed' },
-      },
-      diagnostics: {},
-      failureCause: providerRequestFailed({ provider, message: errorMessage(error) }),
-    };
-    try {
-      proxy.emitProviderEvent(key, event);
-    } catch {
-      /* the ledger entry is gone (already released); nothing left to notify */
-    }
-  };
+  return { cancelAndAwait };
+}
 
-  const emitAbortedTerminal = (key: ProviderOperationKey, cause: ProviderStopCause): void => {
-    if (!isAbortStopCause(cause)) return;
-    const proxy = getProxy();
-    const event: ProviderEventBody = {
-      kind: 'terminal',
-      terminal: { content: '', durationMs: 0, outcome: { kind: 'aborted', reason: cause } },
-      diagnostics: {},
-    };
-    try {
-      proxy.emitProviderEvent(key, event);
-    } catch {
-      /* ledger entry already gone */
-    }
-  };
-
-  const emitRekeyRefusalTerminal = (entry: StagedOperation, provider: string, detail?: string): void => {
-    getProxy().emitProviderEvent(entry.key, providerProxyRekeyRefusalEvent(provider, detail));
-    entry.completionEmitted = true;
-  };
-
-  const runPump = async (
+function createSemanticOperationHost(
+  options: SemanticOperationRuntimeOptions,
+  assertAdmissionOpen: () => void,
+  requireStaged: (key: ProviderOperationKey) => StagedOperation,
+  trackHostRef: (entry: StagedOperation, hostRef: HostRef) => void,
+  cancelAndAwait: (
+    entry: StagedOperation,
+    reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
+  ) => Promise<void>,
+  runPump: (
     key: ProviderOperationKey,
     entry: StagedOperation,
     provider: string,
     iterable: AsyncIterable<ProviderEventBody>,
     settleStart: (result: SemanticOperationStartResult) => void,
-  ): Promise<void> => {
-    const proxy = getProxy();
-    const iterator = iterable[Symbol.asyncIterator]();
-    try {
-      // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
-      // single call ever resolves `entry.done` concurrently with it.
-      while (true) {
-        // A stop against a shared host is answered by the provider itself: the kernel observes the same signal,
-        // runs the interrupt handshake, and still yields events until the terminal that settles it.
-        if (entry.pendingStopCause === null || entry.cancellationMode !== 'shared-acknowledged-interrupt') {
-          entry.abortController.signal.throwIfAborted();
-        }
-        const step = await Promise.race([
-          iterator.next(),
-          entry.transportClosed.then((error) => {
-            throw error ?? new Error('Provider transport closed before a completion event.');
-          }),
-        ]);
-        if (step.done) throw new Error('Provider event stream ended without terminal or suspension.');
-        if (step.value.kind === 'suspended') {
-          entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: step.value.reason };
-        }
-        const emission = proxy.emitProviderEvent(key, step.value);
-        if (step.value.kind === 'terminal' || step.value.kind === 'suspended') {
-          entry.completionEmitted = true;
-        }
-
-        if (emission.kind === 'proxy-emergency-terminal') {
-          entry.completionEmitted = true;
-          try {
-            await iterator.return?.();
-          } catch (error: unknown) {
-            backendLog.error(
-              `semantic operation runtime: replay-refusal iterator cleanup failed for ${operationKeyString(key)}`,
-              error,
-            );
-          }
-          break;
-        }
-
-        if (emission.kind === 'continuity-recorded') {
-          const settlement = emission.settlement;
-          entry.activeContinuitySettlement = settlement;
-          try {
-            await settlement.committed;
-          } finally {
-            if (entry.activeContinuitySettlement === settlement) entry.activeContinuitySettlement = null;
-          }
-        }
-
-        if (step.value.kind === 'terminal') {
-          try {
-            await iterator.return?.();
-          } catch (error: unknown) {
-            // The terminal already names the outcome; iterator cleanup cannot replace it with another one.
-            backendLog.error(
-              `semantic operation runtime: terminal iterator cleanup failed for ${operationKeyString(key)}`,
-              error,
-            );
-          }
-          break;
-        }
-        if (step.value.kind === 'suspended') {
-          try {
-            await iterator.return?.();
-          } catch (error: unknown) {
-            // Suspension is already durable work; iterator cleanup cannot turn it into a terminal.
-            backendLog.error(
-              `semantic operation runtime: suspended iterator cleanup failed for ${operationKeyString(key)}`,
-              error,
-            );
-          }
-          break;
-        }
-      }
-    } catch (error: unknown) {
-      if (!entry.startCommitted) {
-        settleStart({ kind: 'never-started', reason: errorMessage(error) });
-        return;
-      }
-      if (entry.releaseRequested) return;
-      const cause = entry.pendingStopCause;
-      if (cause !== null) {
-        if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
-          entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: errorMessage(error) };
-        }
-        // A `stop()` was already in flight when the kernel unwound — trust why we asked it to stop rather
-        // than the shape of what it threw. Interruption causes (restart/handoff) emit nothing: the coordinator
-        // synthesizes `session.interrupted` itself from `operation.stop.v1`'s own `suspended-awaiting-durable-
-        // decision` reply, not from a provider event this proxy would have to invent.
-        if (cause === 'coordinator_rekey_refused') {
-          emitRekeyRefusalTerminal(entry, provider, errorMessage(error));
-        } else if (isAbortStopCause(cause)) {
-          emitAbortedTerminal(key, cause);
-        }
-        return;
-      }
-      // Nobody asked this operation to stop; the kernel unwound on its own. A terminal must still reach the
-      // coordinator — synthesize one rather than leaving the ledger entry executing forever with nothing to
-      // end it.
-      synthesizeAndEmitFailure(key, provider, error);
-    } finally {
-      if (!entry.startCommitted) {
-        settleStart({ kind: 'never-started', reason: 'The provider ended before its start boundary.' });
-      }
-      if (!entry.releaseRequested && entry.pendingStopCause === null) closeStaged(entry);
-    }
-  };
-
+  ) => Promise<void>,
+  synthesizeAndEmitFailure: (key: ProviderOperationKey, provider: string, error: unknown) => void,
+): SemanticOperationHost {
+  const { runtime } = options;
   const host: SemanticOperationHost = {
     start: ({ key, prepared }) => {
       assertAdmissionOpen();
@@ -800,45 +776,70 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     },
   };
 
+  return host;
+}
+
+function createStagedOperationEntry(
+  key: ProviderOperationKey,
+  abortController: AbortController,
+  hostScope: ProxyOperationHostScope,
+): StagedOperation {
+  let resolveTransportClosed!: (error?: Error | void) => void;
+  const transportClosed = new Promise<Error | void>((resolve) => {
+    resolveTransportClosed = resolve;
+  });
+  const entry: StagedOperation = {
+    key,
+    abortController,
+    hostScope,
+    bound: null,
+    cancellationMode: null,
+    cancellationEvidence: null,
+    cancellationPromise: null,
+    completionEmitted: false,
+    staged: null,
+    root: null,
+    stageHandle: null,
+    startHandle: null,
+    startCommitted: false,
+    releaseRequested: false,
+    activeContinuitySettlement: null,
+    closed: false,
+    hostRef: null,
+    transportClosed,
+    resolveTransportClosed,
+    pendingStopCause: null,
+    done: null,
+  };
+  return entry;
+}
+
+function createSemanticOperationStager(
+  options: SemanticOperationRuntimeOptions,
+  state: SemanticOperationRuntimeState,
+  assertAdmissionOpen: () => void,
+  admissionCheckedHostScope: (scope: ProxyOperationHostScope) => ProxyOperationHostScope,
+  trackHostRef: (entry: StagedOperation, hostRef: HostRef) => void,
+  closeStaged: (entry: StagedOperation) => void,
+  cancelAndAwait: (
+    entry: StagedOperation,
+    reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
+  ) => Promise<void>,
+) {
+  const { runtime, hostAuthority } = options;
   const stage = (
     key: ProviderOperationKey,
     prepared: ProxyPreparedAppServerOperation,
   ): SemanticOperationStageHandle => {
     assertAdmissionOpen();
     const keyStr = operationKeyString(key);
-    const existing = staged.get(keyStr);
+    const existing = state.staged.get(keyStr);
     if (existing?.stageHandle !== null && existing?.stageHandle !== undefined) return existing.stageHandle;
 
     const abortController = new AbortController();
     const hostScope = admissionCheckedHostScope(hostAuthority.beginOperation(key));
-    let resolveTransportClosed!: (error?: Error | void) => void;
-    const transportClosed = new Promise<Error | void>((resolve) => {
-      resolveTransportClosed = resolve;
-    });
-    const entry: StagedOperation = {
-      key,
-      abortController,
-      hostScope,
-      bound: null,
-      cancellationMode: null,
-      cancellationEvidence: null,
-      cancellationPromise: null,
-      completionEmitted: false,
-      staged: null,
-      root: null,
-      stageHandle: null,
-      startHandle: null,
-      startCommitted: false,
-      releaseRequested: false,
-      activeContinuitySettlement: null,
-      closed: false,
-      hostRef: null,
-      transportClosed,
-      resolveTransportClosed,
-      pendingStopCause: null,
-      done: null,
-    };
-    staged.set(keyStr, entry);
+    const entry = createStagedOperationEntry(key, abortController, hostScope);
+    state.staged.set(keyStr, entry);
     const result = Promise.resolve().then(async () => {
       assertAdmissionOpen();
       const rebuilt = rebuildBoundProvider(prepared, hostScope);
@@ -924,6 +925,168 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     return handle;
   };
 
+  return stage;
+}
+
+function createSemanticOperationShutdown(
+  state: SemanticOperationRuntimeState,
+  cancelAndAwait: (
+    entry: StagedOperation,
+    reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
+  ) => Promise<void>,
+): SemanticOperationRuntime['shutdown'] {
+  return (cause) => {
+    if (state.shutdownPromise !== null) return state.shutdownPromise;
+    state.closing = true;
+    const entries = [...state.staged.values()];
+    for (const entry of entries) {
+      entry.activeContinuitySettlement?.reject(
+        new ContinuityCommitDeliveryError(
+          'continuity_commit_proxy_shutdown',
+          'The provider proxy shut down before the continuity checkpoint was committed.',
+        ),
+      );
+    }
+    state.shutdownPromise = (async () => {
+      const results = await Promise.allSettled(
+        entries.map((entry) =>
+          cancelAndAwait(
+            entry,
+            entry.done === null
+              ? { kind: 'release', cause: new Error('Provider operation shutdown released its stage.') }
+              : { kind: 'stop', cause },
+          ),
+        ),
+      );
+      const failures: SemanticOperationShutdownFailure[] = [];
+      const rejectedKeys = new Set<string>();
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') return;
+        const entry = entries[index];
+        if (entry === undefined) return;
+        const key = operationKeyString(entry.key);
+        rejectedKeys.add(key);
+        failures.push({ key: entry.key, kind: 'cancellation-failed', reason: errorMessage(result.reason) });
+      });
+      for (const [key, entry] of state.staged) {
+        if (rejectedKeys.has(key)) continue;
+        failures.push({
+          key: entry.key,
+          kind: 'operation-survived',
+          reason: 'Operation remained staged after its shutdown cancellation fulfilled.',
+        });
+      }
+      if (failures.length > 0) throw new SemanticOperationShutdownError(failures);
+    })();
+    return state.shutdownPromise;
+  };
+}
+
+export function createSemanticOperationRuntime(options: SemanticOperationRuntimeOptions): SemanticOperationRuntime {
+  const { hostAuthority, getProxy } = options;
+  const state: SemanticOperationRuntimeState = {
+    staged: new Map(),
+    closing: false,
+    shutdownPromise: null,
+    relinquishmentFailure: null,
+  };
+
+  const assertAdmissionOpen = (): void => {
+    if (state.closing) throw new SemanticOperationAdmissionClosedError();
+  };
+
+  const admissionCheckedHostScope = (scope: ProxyOperationHostScope): ProxyOperationHostScope => ({
+    selectCancellationMode: (mode) => scope.selectCancellationMode(mode),
+    openSession: (spec, hostOptions) => {
+      assertAdmissionOpen();
+      return scope.openSession(spec, hostOptions);
+    },
+    attachSession: (hostRef, expectation) => {
+      assertAdmissionOpen();
+      return scope.attachSession(hostRef, expectation);
+    },
+  });
+
+  const requireSetRelinquishment = (
+    entry: StagedOperation,
+    reason: string,
+  ): SemanticOperationCancellationUnconfirmedError => {
+    state.closing = true;
+    if (state.relinquishmentFailure !== null) return state.relinquishmentFailure;
+    const failure = new SemanticOperationCancellationUnconfirmedError(entry.key, reason);
+    state.relinquishmentFailure = failure;
+    options.onRelinquish?.(failure);
+    return failure;
+  };
+
+  const requireStaged = (key: ProviderOperationKey): StagedOperation => {
+    const entry = state.staged.get(operationKeyString(key));
+    if (entry === undefined) {
+      throw new Error(`No staged provider root for ${key.jobId}/${key.operationId}.`);
+    }
+    return entry;
+  };
+
+  const closeStaged = (entry: StagedOperation): void => {
+    if (entry.closed) return;
+    entry.closed = true;
+    entry.staged?.close();
+  };
+
+  const closeAndForget = (entry: StagedOperation): void => {
+    closeStaged(entry);
+    const key = operationKeyString(entry.key);
+    if (state.staged.get(key) === entry) state.staged.delete(key);
+  };
+
+  const trackHostRef = (entry: StagedOperation, hostRef: HostRef): void => {
+    if (entry.hostRef !== null) {
+      if (isSameHostRef(entry.hostRef, hostRef)) return;
+      throw new Error(`Provider operation ${operationKeyString(entry.key)} reported more than one host reference.`);
+    }
+    entry.hostRef = hostRef;
+    const closed = hostAuthority.closed(hostRef);
+    if (closed === null) {
+      entry.resolveTransportClosed(new Error('Provider transport closed before a completion event.'));
+      return;
+    }
+    void closed.then(entry.resolveTransportClosed, (error: unknown) => {
+      entry.resolveTransportClosed(error instanceof Error ? error : new Error(errorMessage(error)));
+    });
+  };
+
+  const { cancelAndAwait } = createSemanticOperationCancellation(
+    options,
+    closeAndForget,
+    requireSetRelinquishment,
+    (entry, provider, detail) => emitRekeyRefusalTerminal(entry, provider, detail),
+  );
+
+  const { synthesizeAndEmitFailure, emitRekeyRefusalTerminal, runPump } = createSemanticOperationEventPump(
+    getProxy,
+    closeStaged,
+  );
+
+  const host = createSemanticOperationHost(
+    options,
+    assertAdmissionOpen,
+    requireStaged,
+    trackHostRef,
+    cancelAndAwait,
+    runPump,
+    synthesizeAndEmitFailure,
+  );
+
+  const stage = createSemanticOperationStager(
+    options,
+    state,
+    assertAdmissionOpen,
+    admissionCheckedHostScope,
+    trackHostRef,
+    closeStaged,
+    cancelAndAwait,
+  );
+
   return {
     stage,
 
@@ -931,50 +1094,6 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
 
     host,
 
-    shutdown: (cause) => {
-      if (shutdownPromise !== null) return shutdownPromise;
-      closing = true;
-      const entries = [...staged.values()];
-      for (const entry of entries) {
-        entry.activeContinuitySettlement?.reject(
-          new ContinuityCommitDeliveryError(
-            'continuity_commit_proxy_shutdown',
-            'The provider proxy shut down before the continuity checkpoint was committed.',
-          ),
-        );
-      }
-      shutdownPromise = (async () => {
-        const results = await Promise.allSettled(
-          entries.map((entry) =>
-            cancelAndAwait(
-              entry,
-              entry.done === null
-                ? { kind: 'release', cause: new Error('Provider operation shutdown released its stage.') }
-                : { kind: 'stop', cause },
-            ),
-          ),
-        );
-        const failures: SemanticOperationShutdownFailure[] = [];
-        const rejectedKeys = new Set<string>();
-        results.forEach((result, index) => {
-          if (result.status === 'fulfilled') return;
-          const entry = entries[index];
-          if (entry === undefined) return;
-          const key = operationKeyString(entry.key);
-          rejectedKeys.add(key);
-          failures.push({ key: entry.key, kind: 'cancellation-failed', reason: errorMessage(result.reason) });
-        });
-        for (const [key, entry] of staged) {
-          if (rejectedKeys.has(key)) continue;
-          failures.push({
-            key: entry.key,
-            kind: 'operation-survived',
-            reason: 'Operation remained staged after its shutdown cancellation fulfilled.',
-          });
-        }
-        if (failures.length > 0) throw new SemanticOperationShutdownError(failures);
-      })();
-      return shutdownPromise;
-    },
+    shutdown: createSemanticOperationShutdown(state, cancelAndAwait),
   };
 }

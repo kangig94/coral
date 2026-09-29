@@ -304,15 +304,17 @@ export function createKbDaemonTerminalWindowAuthority(
   });
 }
 
-export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promise<number> {
-  const startedAt = Date.now();
-  const pluginRoot = options.pluginRoot ?? process.cwd();
-  let nextParentRequestSeq = 1;
-  const pendingParentRequests = new Map<string, PendingParentRequest>();
+function createKbDaemonParentBridge(): {
+  parentCurateAssistant: CurateAssistantPort;
+  parentCurateUsageBudget: CurateUsageBudgetPort;
+  settleParentResponse(response: KbDaemonParentResponseMessage): void;
+  cancelPendingParentRequests(message: string): void;
+} {
+  const bridge = { nextSeq: 1, pending: new Map<string, PendingParentRequest>() };
   const writeParentCancel = (requestId: string, reason: string): void => {
     writeControlMessage({
       type: KB_DAEMON_PARENT_REQUEST_MESSAGE,
-      id: `parent:${nextParentRequestSeq++}`,
+      id: `parent:${bridge.nextSeq++}`,
       method: 'curate.request.cancel',
       params: { requestId, reason },
     });
@@ -322,7 +324,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     params: KbDaemonCurateAssistantCompleteRequest | undefined,
     signal: AbortSignal | undefined,
   ): Promise<KbDaemonParentResponseMessage> => {
-    const id = `parent:${nextParentRequestSeq++}`;
+    const id = `parent:${bridge.nextSeq++}`;
     if (signal?.aborted) {
       throw new AbortError({ stage: 'kb_daemon_parent_request', reason: signal.reason });
     }
@@ -334,7 +336,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
         }
         settled = true;
         signal?.removeEventListener('abort', onAbort);
-        pendingParentRequests.delete(id);
+        bridge.pending.delete(id);
       };
       const rejectWith = (error: Error): void => {
         cleanup();
@@ -345,7 +347,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
         rejectWith(new AbortError({ stage: 'kb_daemon_parent_request', reason: signal?.reason }));
       };
       signal?.addEventListener('abort', onAbort, { once: true });
-      pendingParentRequests.set(id, {
+      bridge.pending.set(id, {
         resolve: (message) => {
           cleanup();
           resolve(message);
@@ -392,18 +394,182 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     },
   };
   const settleParentResponse = (response: KbDaemonParentResponseMessage): void => {
-    const pending = pendingParentRequests.get(response.id);
+    const pending = bridge.pending.get(response.id);
     if (pending === undefined) {
       return;
     }
     pending.resolve(response);
   };
   const cancelPendingParentRequests = (message: string): void => {
-    for (const [id, pending] of [...pendingParentRequests]) {
+    for (const [id, pending] of [...bridge.pending]) {
       writeParentCancel(id, message);
       pending.reject(new Error(message));
     }
   };
+  return { parentCurateAssistant, parentCurateUsageBudget, settleParentResponse, cancelPendingParentRequests };
+}
+
+type KbDaemonMainRequestContext = {
+  kbService: ReturnType<typeof createKbDaemonRequestService>;
+  kbWriteHost: ReturnType<typeof createKbDaemonWriteRuntimeHost>;
+  health: () => KbDaemonHealthResult;
+  stop: (code: number) => void;
+  runWriterTurn: (operation: () => Promise<void> | void) => Promise<void>;
+};
+
+async function handleKbDaemonMainRequest(
+  context: KbDaemonMainRequestContext,
+  request: KbDaemonRequestMessage,
+): Promise<void> {
+  const { kbService, kbWriteHost, health, stop, runWriterTurn } = context;
+
+  switch (request.method) {
+    case 'health':
+      writeControlMessage({ type: KB_DAEMON_RESPONSE_MESSAGE, id: request.id, ok: true, result: health() });
+      return;
+    case 'shutdown':
+      writeControlMessage({
+        type: KB_DAEMON_RESPONSE_MESSAGE,
+        id: request.id,
+        ok: true,
+        result: { status: 'shutting_down' },
+      });
+      stop(0);
+      return;
+    case 'kb.read':
+      writeControlMessage({
+        type: KB_DAEMON_RESPONSE_MESSAGE,
+        id: request.id,
+        ok: true,
+        result: isKbDaemonKbReadRequest(request.params)
+          ? await kbService.read(request.params)
+          : {
+              ok: false,
+              code: 'invalid_request',
+              message: 'Malformed KB daemon read request.',
+            },
+      });
+      return;
+    case 'kb.mutate':
+      writeControlMessage({
+        type: KB_DAEMON_RESPONSE_MESSAGE,
+        id: request.id,
+        ok: true,
+        result: isKbDaemonKbMutationRequest(request.params)
+          ? await kbService.mutate(request.params)
+          : {
+              ok: false,
+              code: 'invalid_request',
+              message: 'Malformed KB daemon mutation request.',
+            },
+      });
+      return;
+    case 'kb.abort': {
+      const params = request.params as { jobIds?: unknown };
+      const result = Array.isArray(params?.jobIds)
+        ? kbWriteHost.abortJobs(params.jobIds.filter((jobId): jobId is string => typeof jobId === 'string'))
+        : { aborted: [], notFound: [] };
+      writeControlMessage({
+        type: KB_DAEMON_RESPONSE_MESSAGE,
+        id: request.id,
+        ok: true,
+        result: isKbDaemonAbortResult(result) ? result : { aborted: [], notFound: [] },
+      });
+      return;
+    }
+    case 'kb.jobs': {
+      const result = { active: kbWriteHost.listActiveJobs() };
+      writeControlMessage({
+        type: KB_DAEMON_RESPONSE_MESSAGE,
+        id: request.id,
+        ok: true,
+        result: isKbDaemonJobsResult(result) ? result : { active: [] },
+      });
+      return;
+    }
+    case 'kb.warmup':
+      writeControlMessage({
+        type: KB_DAEMON_RESPONSE_MESSAGE,
+        id: request.id,
+        ok: true,
+        result: await kbService.warmup(),
+      });
+      return;
+    case 'writer.park':
+      await runWriterTurn(() => kbWriteHost.parkWriterTurn());
+      writeControlMessage({ type: KB_DAEMON_RESPONSE_MESSAGE, id: request.id, ok: true, result: { kind: 'parked' } });
+      return;
+    case 'writer.reclaim': {
+      const generation = kbDaemonWriterReclaimParamsSchema.safeParse(request.params);
+      if (!generation.success) throw new Error('Invalid KB daemon writer generation.');
+      await runWriterTurn(() => kbWriteHost.reclaimWriterTurn(generation.data));
+      writeControlMessage({
+        type: KB_DAEMON_RESPONSE_MESSAGE,
+        id: request.id,
+        ok: true,
+        result: { kind: 'reclaimed' },
+      });
+      return;
+    }
+    case 'expansion.rpc':
+      writeControlMessage({
+        type: KB_DAEMON_RESPONSE_MESSAGE,
+        id: request.id,
+        ok: true,
+        result: await handleKbDaemonExpansionRpcRequest(request.params, kbWriteHost),
+      });
+      return;
+  }
+}
+
+function attachKbDaemonInput(
+  settleParentResponse: (response: KbDaemonParentResponseMessage) => void,
+  handleRequest: (request: KbDaemonRequestMessage) => Promise<void>,
+  stop: (code: number) => void,
+): void {
+  let lineBuffer = '';
+  process.stdin.setEncoding('utf-8');
+  process.stdin.on('data', (chunk) => {
+    lineBuffer += String(chunk);
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (isKbDaemonParentResponseMessage(parsed)) {
+          settleParentResponse(parsed);
+          continue;
+        }
+        if (isKbDaemonRequestMessage(parsed)) {
+          void handleRequest(parsed).catch((error: unknown) => {
+            writeControlMessage({
+              type: KB_DAEMON_RESPONSE_MESSAGE,
+              id: parsed.id,
+              ok: false,
+              error: kbDaemonErrorEnvelope(error),
+            });
+          });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+    }
+  });
+  process.stdin.on('end', () => stop(0));
+  process.on('SIGTERM', () => stop(0));
+  process.on('SIGINT', () => stop(0));
+}
+
+export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promise<number> {
+  const startedAt = Date.now();
+  const pluginRoot = options.pluginRoot ?? process.cwd();
+  const { parentCurateAssistant, parentCurateUsageBudget, settleParentResponse, cancelPendingParentRequests } =
+    createKbDaemonParentBridge();
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
   const kbWriteHost = createKbDaemonWriteRuntimeHost({
     pluginRoot,
@@ -485,141 +651,9 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     writerTurnOperation = next.catch(() => {});
     await next;
   };
-  const handleRequest = async (request: KbDaemonRequestMessage): Promise<void> => {
-    switch (request.method) {
-      case 'health':
-        writeControlMessage({ type: KB_DAEMON_RESPONSE_MESSAGE, id: request.id, ok: true, result: health() });
-        return;
-      case 'shutdown':
-        writeControlMessage({
-          type: KB_DAEMON_RESPONSE_MESSAGE,
-          id: request.id,
-          ok: true,
-          result: { status: 'shutting_down' },
-        });
-        stop(0);
-        return;
-      case 'kb.read':
-        writeControlMessage({
-          type: KB_DAEMON_RESPONSE_MESSAGE,
-          id: request.id,
-          ok: true,
-          result: isKbDaemonKbReadRequest(request.params)
-            ? await kbService.read(request.params)
-            : {
-                ok: false,
-                code: 'invalid_request',
-                message: 'Malformed KB daemon read request.',
-              },
-        });
-        return;
-      case 'kb.mutate':
-        writeControlMessage({
-          type: KB_DAEMON_RESPONSE_MESSAGE,
-          id: request.id,
-          ok: true,
-          result: isKbDaemonKbMutationRequest(request.params)
-            ? await kbService.mutate(request.params)
-            : {
-                ok: false,
-                code: 'invalid_request',
-                message: 'Malformed KB daemon mutation request.',
-              },
-        });
-        return;
-      case 'kb.abort': {
-        const params = request.params as { jobIds?: unknown };
-        const result = Array.isArray(params?.jobIds)
-          ? kbWriteHost.abortJobs(params.jobIds.filter((jobId): jobId is string => typeof jobId === 'string'))
-          : { aborted: [], notFound: [] };
-        writeControlMessage({
-          type: KB_DAEMON_RESPONSE_MESSAGE,
-          id: request.id,
-          ok: true,
-          result: isKbDaemonAbortResult(result) ? result : { aborted: [], notFound: [] },
-        });
-        return;
-      }
-      case 'kb.jobs': {
-        const result = { active: kbWriteHost.listActiveJobs() };
-        writeControlMessage({
-          type: KB_DAEMON_RESPONSE_MESSAGE,
-          id: request.id,
-          ok: true,
-          result: isKbDaemonJobsResult(result) ? result : { active: [] },
-        });
-        return;
-      }
-      case 'kb.warmup':
-        writeControlMessage({
-          type: KB_DAEMON_RESPONSE_MESSAGE,
-          id: request.id,
-          ok: true,
-          result: await kbService.warmup(),
-        });
-        return;
-      case 'writer.park':
-        await runWriterTurn(() => kbWriteHost.parkWriterTurn());
-        writeControlMessage({ type: KB_DAEMON_RESPONSE_MESSAGE, id: request.id, ok: true, result: { kind: 'parked' } });
-        return;
-      case 'writer.reclaim': {
-        const generation = kbDaemonWriterReclaimParamsSchema.safeParse(request.params);
-        if (!generation.success) throw new Error('Invalid KB daemon writer generation.');
-        await runWriterTurn(() => kbWriteHost.reclaimWriterTurn(generation.data));
-        writeControlMessage({
-          type: KB_DAEMON_RESPONSE_MESSAGE,
-          id: request.id,
-          ok: true,
-          result: { kind: 'reclaimed' },
-        });
-        return;
-      }
-      case 'expansion.rpc':
-        writeControlMessage({
-          type: KB_DAEMON_RESPONSE_MESSAGE,
-          id: request.id,
-          ok: true,
-          result: await handleKbDaemonExpansionRpcRequest(request.params, kbWriteHost),
-        });
-        return;
-    }
-  };
-  let lineBuffer = '';
-  process.stdin.setEncoding('utf-8');
-  process.stdin.on('data', (chunk) => {
-    lineBuffer += String(chunk);
-    const lines = lineBuffer.split('\n');
-    lineBuffer = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(trimmed) as unknown;
-        if (isKbDaemonParentResponseMessage(parsed)) {
-          settleParentResponse(parsed);
-          continue;
-        }
-        if (isKbDaemonRequestMessage(parsed)) {
-          void handleRequest(parsed).catch((error: unknown) => {
-            writeControlMessage({
-              type: KB_DAEMON_RESPONSE_MESSAGE,
-              id: parsed.id,
-              ok: false,
-              error: kbDaemonErrorEnvelope(error),
-            });
-          });
-          continue;
-        }
-      } catch {
-        continue;
-      }
-    }
-  });
-  process.stdin.on('end', () => stop(0));
-  process.on('SIGTERM', () => stop(0));
-  process.on('SIGINT', () => stop(0));
+  const requestContext: KbDaemonMainRequestContext = { kbService, kbWriteHost, health, stop, runWriterTurn };
+  const handleRequest = (request: KbDaemonRequestMessage) => handleKbDaemonMainRequest(requestContext, request);
+  attachKbDaemonInput(settleParentResponse, handleRequest, stop);
 
   writeControlMessage({
     type: KB_DAEMON_READY_MESSAGE,

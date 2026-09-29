@@ -886,6 +886,59 @@ async function waitForBackendReady(
   }
 }
 
+async function authenticateServingIncumbent({
+  info,
+  observedHealth,
+  admission,
+  expectedSocketPath,
+  timePort,
+  recoveryBudgetMs,
+  waitStartedAt,
+  waitContext,
+  desired,
+  paths,
+}: {
+  info: NonNullable<ReturnType<typeof readDiscoverySnapshot>>;
+  observedHealth: NonNullable<ReturnType<typeof answeredHealth>>;
+  admission: RouteLifecycleAdmission;
+  expectedSocketPath: string;
+  timePort: TimePort;
+  recoveryBudgetMs: number;
+  waitStartedAt: number;
+  waitContext: BackendReadyWaitContext;
+  desired: DesiredCoordinator;
+  paths: CoordinatorPaths;
+}): Promise<{ incumbent: ReadyCoordinatorEvidence | null; accepted: boolean }> {
+  const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
+    info,
+    expectedSocketPath,
+    existingIncumbentIdentity(observedHealth),
+    timePort,
+    (value) => {
+      const health = parseRawCoordinatorHealth(value);
+      return health === null ? null : { health, identity: existingIncumbentIdentity(health) };
+    },
+    Math.max(1, Math.min(HEALTH_TIMEOUT_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt))),
+  );
+  if (
+    authenticatedHealth.kind !== 'health' ||
+    !mayInvocationBeServedByIncumbent(authenticatedHealth.health, admission) ||
+    !isServingStatus(authenticatedHealth.health.status, admission)
+  )
+    return { incumbent: null, accepted: false };
+  const health = authenticatedHealth.health;
+  const incumbent = { info: mergeDiscoveryWithHealth(info, health), health };
+  if (waitContext.kind !== 'current-attempt') return { incumbent, accepted: true };
+  const lineage = resolveStartupAttemptLineage({
+    observedAttemptId: health.env?.CORAL_STARTUP_ATTEMPT_ID,
+    expectedAttemptId: waitContext.attemptId,
+    observedIdentity: health,
+    desiredIdentity: desired,
+  });
+  if (lineage.kind === 'proven-current-attempt') return { incumbent, accepted: true };
+  return { incumbent, accepted: supervisorAcceptedUpgrade(paths, desired, timePort.now()) === 'accepted' };
+}
+
 async function observeBackendReady(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
@@ -927,40 +980,20 @@ async function observeBackendReady(
       mayInvocationBeServedByIncumbent(observedHealth, admission) &&
       isServingStatus(observedHealth.status, admission)
     ) {
-      const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
+      const authenticated = await authenticateServingIncumbent({
         info,
+        observedHealth,
+        admission,
         expectedSocketPath,
-        existingIncumbentIdentity(observedHealth),
         timePort,
-        (value) => {
-          const health = parseRawCoordinatorHealth(value);
-          return health === null ? null : { health, identity: existingIncumbentIdentity(health) };
-        },
-        Math.max(1, Math.min(HEALTH_TIMEOUT_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt))),
-      );
-      if (
-        authenticatedHealth.kind === 'health' &&
-        mayInvocationBeServedByIncumbent(authenticatedHealth.health, admission) &&
-        isServingStatus(authenticatedHealth.health.status, admission)
-      ) {
-        const health = authenticatedHealth.health;
-        servingIncumbent = { info: mergeDiscoveryWithHealth(info, health), health };
-        if (waitContext.kind !== 'current-attempt') {
-          return servingIncumbent;
-        }
-        const lineage = resolveStartupAttemptLineage({
-          observedAttemptId: health.env?.CORAL_STARTUP_ATTEMPT_ID,
-          expectedAttemptId: waitContext.attemptId,
-          observedIdentity: health,
-          desiredIdentity: desired,
-        });
-        if (lineage.kind === 'proven-current-attempt') {
-          return servingIncumbent;
-        }
-        if (supervisorAcceptedUpgrade(paths, desired, timePort.now()) === 'accepted') {
-          return servingIncumbent;
-        }
-      }
+        recoveryBudgetMs,
+        waitStartedAt,
+        waitContext,
+        desired,
+        paths,
+      });
+      servingIncumbent = authenticated.incumbent;
+      if (authenticated.accepted && servingIncumbent !== null) return servingIncumbent;
     }
 
     const startupError = matchingStartupError(paths, desired, waitContext, observedPid);

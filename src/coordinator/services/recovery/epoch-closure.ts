@@ -367,65 +367,33 @@ async function decideRecordedAbsence(
   return observed.kind === 'absent' ? ABSENT : NOT_PROVEN_ABSENT;
 }
 
-async function certifyCustody(
-  runtime: Runtime,
+function providerOperationCustodyReason(
   index: JobLocationIndex,
-  candidate: ClosureCandidate,
-  entries: readonly CustodyEntry[],
-  ambiguousOriginalPath: boolean,
-  signal: AbortSignal,
-  closeProxySet: CloseProxySet | undefined,
+  entry: Extract<CustodyEntry, { kind: 'bound' }>,
   jobEpochKey: string,
-  absence: AbsenceProof = { kind: 'reap', confirmed: new Set() },
-): Promise<Pick<EpochClosureEvidence, 'executionDischarge' | 'obligations' | 'reason'>> {
-  if (!hasEpochCustodyCoverage(runtime, dirname(candidate.epoch.path), runtime.paths.coral.coordinator.runDir)) {
-    return {
-      executionDischarge: 'undecidable',
-      obligations: [],
-      reason: 'this epoch predates complete pre-effect custody coverage',
-    };
+): string | null {
+  let location: ReturnType<JobLocationIndex['read']> = null;
+  try {
+    if (entry.intent.jobId !== undefined) location = index.read(entry.intent.jobId);
+  } catch {
+    return `provider operation ${entry.intent.operationId} result is unreadable`;
   }
-  if (!runtime.storage.existsSync(custodyLedgerDir(runtime.paths.coral.coordinator.runDir))) {
-    return { executionDischarge: 'undecidable', obligations: [], reason: 'custody ledger root is missing' };
-  }
-  if (
-    ambiguousOriginalPath &&
-    entries.some(
-      (entry) =>
-        entry.kind !== 'unreadable' &&
-        entry.intent.epochKey === undefined &&
-        entry.intent.epoch === candidate.originalPath,
-    )
-  ) {
-    return {
-      executionDischarge: 'undecidable',
-      obligations: [],
-      reason: 'path-only custody cannot distinguish reused epoch numbers',
-    };
-  }
-  const matching = entries.filter(
-    (entry) =>
-      entry.kind !== 'unreadable' &&
-      (entry.intent.epochKey === undefined
-        ? entry.intent.epoch === candidate.originalPath ||
-          entry.intent.epoch === dirname(candidate.epoch.path) ||
-          entry.intent.epoch === candidate.epochKey
-        : entry.intent.epochKey === candidate.epochKey),
-  );
-  if (entries.some((entry) => entry.kind === 'unreadable')) {
-    return {
-      executionDischarge: 'undecidable',
-      obligations: [],
-      reason: 'custody ledger is unreadable; retry after evidence is readable',
-    };
-  }
-  if (matching.length === 0) {
-    return {
-      executionDischarge: 'certified',
-      obligations: [],
-      reason: 'covered epoch has no recorded external effects',
-    };
-  }
+  return location?.epochKey === jobEpochKey && location.disposition === 'terminal'
+    ? null
+    : `provider operation ${entry.intent.operationId} awaits owner terminal result`;
+}
+
+async function certifyMatchedCustody(options: {
+  runtime: Runtime;
+  index: JobLocationIndex;
+  candidate: ClosureCandidate;
+  matching: readonly CustodyEntry[];
+  signal: AbortSignal;
+  closeProxySet: CloseProxySet | undefined;
+  jobEpochKey: string;
+  absence: AbsenceProof;
+}): Promise<Pick<EpochClosureEvidence, 'executionDischarge' | 'obligations' | 'reason'>> {
+  const { runtime, index, candidate, matching, signal, closeProxySet, jobEpochKey, absence } = options;
   const receipts = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
   const obligations: EpochClosureEvidence['obligations'][number][] = [];
   for (const entry of matching) {
@@ -449,23 +417,8 @@ async function certifyCustody(
       continue;
     }
     if (entry.intent.effect === 'provider-operation-publication') {
-      let location: ReturnType<JobLocationIndex['read']> = null;
-      try {
-        if (entry.intent.jobId !== undefined) location = index.read(entry.intent.jobId);
-      } catch {
-        return {
-          executionDischarge: 'undecidable',
-          obligations,
-          reason: `provider operation ${entry.intent.operationId} result is unreadable`,
-        };
-      }
-      if (location?.epochKey !== jobEpochKey || location.disposition !== 'terminal') {
-        return {
-          executionDischarge: 'undecidable',
-          obligations,
-          reason: `provider operation ${entry.intent.operationId} awaits owner terminal result`,
-        };
-      }
+      const reason = providerOperationCustodyReason(index, entry, jobEpochKey);
+      if (reason !== null) return { executionDischarge: 'undecidable', obligations, reason };
       obligations.push({
         owner: entry.intent.owner,
         intentId: entry.intent.id,
@@ -546,6 +499,68 @@ async function certifyCustody(
   return { executionDischarge: 'certified', obligations, reason: 'owners certified every recorded custody obligation' };
 }
 
+async function certifyCustody(
+  runtime: Runtime,
+  index: JobLocationIndex,
+  candidate: ClosureCandidate,
+  entries: readonly CustodyEntry[],
+  ambiguousOriginalPath: boolean,
+  signal: AbortSignal,
+  closeProxySet: CloseProxySet | undefined,
+  jobEpochKey: string,
+  absence: AbsenceProof = { kind: 'reap', confirmed: new Set() },
+): Promise<Pick<EpochClosureEvidence, 'executionDischarge' | 'obligations' | 'reason'>> {
+  if (!hasEpochCustodyCoverage(runtime, dirname(candidate.epoch.path), runtime.paths.coral.coordinator.runDir)) {
+    return {
+      executionDischarge: 'undecidable',
+      obligations: [],
+      reason: 'this epoch predates complete pre-effect custody coverage',
+    };
+  }
+  if (!runtime.storage.existsSync(custodyLedgerDir(runtime.paths.coral.coordinator.runDir))) {
+    return { executionDischarge: 'undecidable', obligations: [], reason: 'custody ledger root is missing' };
+  }
+  if (
+    ambiguousOriginalPath &&
+    entries.some(
+      (entry) =>
+        entry.kind !== 'unreadable' &&
+        entry.intent.epochKey === undefined &&
+        entry.intent.epoch === candidate.originalPath,
+    )
+  ) {
+    return {
+      executionDischarge: 'undecidable',
+      obligations: [],
+      reason: 'path-only custody cannot distinguish reused epoch numbers',
+    };
+  }
+  const matching = entries.filter(
+    (entry) =>
+      entry.kind !== 'unreadable' &&
+      (entry.intent.epochKey === undefined
+        ? entry.intent.epoch === candidate.originalPath ||
+          entry.intent.epoch === dirname(candidate.epoch.path) ||
+          entry.intent.epoch === candidate.epochKey
+        : entry.intent.epochKey === candidate.epochKey),
+  );
+  if (entries.some((entry) => entry.kind === 'unreadable')) {
+    return {
+      executionDischarge: 'undecidable',
+      obligations: [],
+      reason: 'custody ledger is unreadable; retry after evidence is readable',
+    };
+  }
+  if (matching.length === 0) {
+    return {
+      executionDischarge: 'certified',
+      obligations: [],
+      reason: 'covered epoch has no recorded external effects',
+    };
+  }
+  return certifyMatchedCustody({ runtime, index, candidate, matching, signal, closeProxySet, jobEpochKey, absence });
+}
+
 async function certifyRetiringEpochCustody(
   runtime: Runtime,
   index: JobLocationIndex,
@@ -598,6 +613,34 @@ export class RetiringCustodyCertificate {
       confirmed: this.#confirmedAbsent,
     });
   }
+}
+
+function settlePreCoverageCustody(
+  runtime: Runtime,
+  candidate: ClosureCandidate,
+  custody: readonly CustodyEntry[],
+  ambiguousOriginalPath: boolean,
+): Pick<EpochClosureEvidence, 'executionDischarge' | 'obligations' | 'reason'> {
+  const liveCustody = observePreCoverageCustody(runtime, candidate, custody, ambiguousOriginalPath);
+  if (liveCustody.kind === 'alive') {
+    return {
+      executionDischarge: 'undecidable',
+      obligations: [],
+      reason: 'pre-coverage process is alive; retry after its recorded incarnation exits',
+    };
+  }
+  if (liveCustody.kind === 'undecidable') {
+    return {
+      executionDischarge: 'undecidable',
+      obligations: [],
+      reason: 'pre-coverage custody is undecidable; retry after custody evidence settles',
+    };
+  }
+  return {
+    executionDischarge: 'certified',
+    obligations: [],
+    reason: 'pre-coverage epoch follows shipped keep-two retention',
+  };
 }
 
 export async function settleSupersededEpochClosures(
@@ -688,28 +731,8 @@ export async function settleSupersededEpochClosures(
       historicalAddresses.some(
         (address) => address.epochKey !== candidate.epochKey && address.originalPath === candidate.originalPath,
       );
-    const preCoverage = predatesCustodyCoverage(runtime, candidate);
-    const liveCustody = preCoverage
-      ? observePreCoverageCustody(runtime, candidate, custody, ambiguousOriginalPath)
-      : null;
-    const settlement = preCoverage
-      ? liveCustody?.kind === 'alive'
-        ? {
-            executionDischarge: 'undecidable' as const,
-            obligations: [],
-            reason: 'pre-coverage process is alive; retry after its recorded incarnation exits',
-          }
-        : liveCustody?.kind === 'undecidable'
-          ? {
-              executionDischarge: 'undecidable' as const,
-              obligations: [],
-              reason: 'pre-coverage custody is undecidable; retry after custody evidence settles',
-            }
-          : {
-              executionDischarge: 'certified' as const,
-              obligations: [],
-              reason: 'pre-coverage epoch follows shipped keep-two retention',
-            }
+    const settlement = predatesCustodyCoverage(runtime, candidate)
+      ? settlePreCoverageCustody(runtime, candidate, custody, ambiguousOriginalPath)
       : await certifyCustody(
           runtime,
           index,

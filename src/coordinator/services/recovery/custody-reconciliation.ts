@@ -18,74 +18,21 @@ import { closureCandidates } from './epoch-closure.js';
 
 const CUSTODY_ABSENCE_GRACE_MS = 2_000;
 
-export function reconcileStartupCustody(
+type CustodyRecoveryEvidence = Readonly<{
+  readProcessIncarnation(pid: number): string | null;
+  capsuleExists(path: string): boolean;
+}>;
+
+function recoverHoldingCustodyEntries(
   runtime: Runtime,
   runDir: string,
   nowMs: number,
   db: Database,
   currentEpoch: string,
-  evidence?: Readonly<{
-    readProcessIncarnation(pid: number): string | null;
-    capsuleExists(path: string): boolean;
-  }>,
-): CustodyEntry[] {
-  type OperationScan = ReturnType<typeof readProviderOperations>;
-  let operations: OperationScan | null;
-  try {
-    operations = readProviderOperations(db);
-  } catch {
-    operations = null;
-  }
-  const entries = readCustodyLedger(runtime, runDir);
-  let candidates: ReturnType<typeof closureCandidates> = [];
-  if (entries.some((entry) => entry.kind === 'holding' && entry.intent.effect === 'provider-operation-publication')) {
-    try {
-      candidates = closureCandidates(runtime);
-    } catch {
-      // An unreadable epoch address cannot prove publication absence.
-    }
-  }
-  const historicalScans = new Map<string, OperationScan | null>();
-  const publicationScan = (intent: CustodyIntent): OperationScan | null => {
-    const matching = candidates.filter((candidate) =>
-      intent.epochKey === undefined
-        ? intent.epoch === candidate.originalPath || intent.epoch === dirname(candidate.epoch.path)
-        : intent.epochKey === candidate.epochKey,
-    );
-    if (matching.length !== 1) {
-      return matching.length === 0 && intent.epochKey === undefined && intent.epoch === currentEpoch
-        ? operations
-        : null;
-    }
-    const candidate = matching[0];
-    if (dirname(candidate.epoch.path) === currentEpoch) return operations;
-    if (historicalScans.has(candidate.epochKey)) return historicalScans.get(candidate.epochKey) ?? null;
-    let scan: OperationScan | null = null;
-    let release: (() => void) | null = null;
-    let historicalDb: ReturnType<typeof runtime.storage.openSqliteDatabaseSync> | null = null;
-    try {
-      release = acquireStoreEpochReadLock(runtime, candidate.epoch, 0);
-      if (release !== null) {
-        historicalDb = runtime.storage.openSqliteDatabaseSync(candidate.epoch.path, { readOnly: true });
-        scan = readProviderOperations(historicalDb as unknown as Database);
-      }
-    } catch {
-      scan = null;
-    } finally {
-      try {
-        historicalDb?.close();
-      } catch {
-        scan = null;
-      }
-      try {
-        release?.();
-      } catch {
-        scan = null;
-      }
-    }
-    historicalScans.set(candidate.epochKey, scan);
-    return scan;
-  };
+  evidence: CustodyRecoveryEvidence | undefined,
+  entries: readonly CustodyEntry[],
+  publicationScan: (intent: CustodyIntent) => ReturnType<typeof readProviderOperations> | null,
+): void {
   for (const entry of entries) {
     if (entry.kind !== 'holding') continue;
     if (entry.intent.effect === 'provider-operation-publication') {
@@ -146,6 +93,74 @@ export function reconcileStartupCustody(
       );
     }
   }
+}
+
+export function reconcileStartupCustody(
+  runtime: Runtime,
+  runDir: string,
+  nowMs: number,
+  db: Database,
+  currentEpoch: string,
+  evidence?: CustodyRecoveryEvidence,
+): CustodyEntry[] {
+  type OperationScan = ReturnType<typeof readProviderOperations>;
+  let operations: OperationScan | null;
+  try {
+    operations = readProviderOperations(db);
+  } catch {
+    operations = null;
+  }
+  const entries = readCustodyLedger(runtime, runDir);
+  let candidates: ReturnType<typeof closureCandidates> = [];
+  if (entries.some((entry) => entry.kind === 'holding' && entry.intent.effect === 'provider-operation-publication')) {
+    try {
+      candidates = closureCandidates(runtime);
+    } catch {
+      // An unreadable epoch address cannot prove publication absence.
+    }
+  }
+  const historicalScans = new Map<string, OperationScan | null>();
+  const publicationScan = (intent: CustodyIntent): OperationScan | null => {
+    const matching = candidates.filter((candidate) =>
+      intent.epochKey === undefined
+        ? intent.epoch === candidate.originalPath || intent.epoch === dirname(candidate.epoch.path)
+        : intent.epochKey === candidate.epochKey,
+    );
+    if (matching.length !== 1) {
+      return matching.length === 0 && intent.epochKey === undefined && intent.epoch === currentEpoch
+        ? operations
+        : null;
+    }
+    const candidate = matching[0];
+    if (dirname(candidate.epoch.path) === currentEpoch) return operations;
+    if (historicalScans.has(candidate.epochKey)) return historicalScans.get(candidate.epochKey) ?? null;
+    let scan: OperationScan | null = null;
+    let release: (() => void) | null = null;
+    let historicalDb: ReturnType<typeof runtime.storage.openSqliteDatabaseSync> | null = null;
+    try {
+      release = acquireStoreEpochReadLock(runtime, candidate.epoch, 0);
+      if (release !== null) {
+        historicalDb = runtime.storage.openSqliteDatabaseSync(candidate.epoch.path, { readOnly: true });
+        scan = readProviderOperations(historicalDb as unknown as Database);
+      }
+    } catch {
+      scan = null;
+    } finally {
+      try {
+        historicalDb?.close();
+      } catch {
+        scan = null;
+      }
+      try {
+        release?.();
+      } catch {
+        scan = null;
+      }
+    }
+    historicalScans.set(candidate.epochKey, scan);
+    return scan;
+  };
+  recoverHoldingCustodyEntries(runtime, runDir, nowMs, db, currentEpoch, evidence, entries, publicationScan);
   const observe = (intent: CustodyIntent): CustodyObservation => {
     if (intent.effect === 'provider-operation-publication') {
       const scan = publicationScan(intent);

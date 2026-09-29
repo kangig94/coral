@@ -735,151 +735,122 @@ async function streamSubscription(
   socket.end();
 }
 
-async function dispatchFrame(
-  frame: string,
+async function handleIpcOperationalRequest(
+  request: JsonRpcRequestEnvelope,
+  operationalSpec: IpcOperationalSpec,
+  rpcPorts: HttpHandlerPorts,
   socket: Socket,
+  backendUnavailable: boolean,
+  startRequest: () => void,
+  finishRequest: () => void,
+  finishUnaryResponse: (response: JsonRpcEnvelope, onUnwritten?: () => void) => Promise<void>,
+): Promise<boolean> {
+  if (operationalSpec.requiresRunningLifecycle && backendUnavailable) {
+    await finishUnaryResponse({ kind: 'response', id: request.id, result: lifecycleRefusalResult });
+    return true;
+  }
+
+  if (operationalSpec.dispatch.kind === 'health') {
+    await finishUnaryResponse({
+      kind: 'response',
+      id: request.id,
+      result: { ...rpcPorts.health.read(), jobsWaitExtensions: JOBS_WAIT_EXTENSIONS },
+    });
+    return true;
+  }
+
+  if (operationalSpec.dispatch.kind === 'shutdown') {
+    const refusal = rpcPorts.admin.decideLegacyShutdown?.() ?? SHUTDOWN_UNAUTHORIZED_RESPONSE;
+    await finishUnaryResponse(requestErrorResponse(request.id, refusal.message, refusal));
+    return true;
+  }
+
+  if (operationalSpec.dispatch.kind === 'succession') {
+    const lease = rpcPorts.admin.beginRequestLease?.(request.method, String(request.id));
+    if (lease === undefined) startRequest();
+    try {
+      const execute = async (): Promise<unknown> =>
+        rpcPorts.admin.succession
+          ? rpcPorts.admin.succession(request.method, request.params ?? {})
+          : { kind: 'refused', reason: 'succession protocol unavailable' };
+      const result = lease === undefined ? await execute() : await lease.run(execute);
+      await finishUnaryResponse({ kind: 'response', id: request.id, result });
+    } catch (error: unknown) {
+      const response = buildTransportErrorResponse(error);
+      await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
+    } finally {
+      if (lease === undefined) finishRequest();
+    }
+    return true;
+  }
+
+  if (operationalSpec.dispatch.kind === 'kb-restart') {
+    const restartKbDaemon = rpcPorts.admin.restartKbDaemon;
+    if (!restartKbDaemon) {
+      await finishUnaryResponse(
+        requestErrorResponse(request.id, KB_RESTART_UNAVAILABLE_RESPONSE.message, KB_RESTART_UNAVAILABLE_RESPONSE),
+      );
+      return true;
+    }
+    writeAuditEvent(
+      'admin_kb_daemon_restart_requested',
+      {
+        transport: 'ipc',
+        reason: 'admin',
+        instanceId: rpcPorts.identity.instanceId,
+      },
+      'warn',
+    );
+    const lease = rpcPorts.admin.beginRequestLease?.(request.method, String(request.id));
+    if (lease === undefined) startRequest();
+    try {
+      const kbDaemon =
+        lease === undefined
+          ? await restartKbDaemon('ipc-admin')
+          : await lease.run((signal) => restartKbDaemon('ipc-admin', signal));
+      await finishUnaryResponse({
+        kind: 'response',
+        id: request.id,
+        result: { status: 'ok', instanceId: rpcPorts.identity.instanceId, kbDaemon },
+      });
+    } catch (error: unknown) {
+      rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
+      if (!socket.destroyed && !socket.writableEnded) {
+        const response = buildTransportErrorResponse(error);
+        await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
+      }
+    } finally {
+      if (lease === undefined) finishRequest();
+    }
+    return true;
+  }
+  return false;
+}
+
+async function refuseUnavailableIpcRequest(
+  request: JsonRpcRequestEnvelope,
+  backendUnavailable: boolean,
+  drainingRecoveryIngress: boolean,
+  finishUnaryResponse: (response: JsonRpcEnvelope, onUnwritten?: () => void) => Promise<void>,
+): Promise<boolean> {
+  if (!backendUnavailable || drainingRecoveryIngress) return false;
+  await finishUnaryResponse({ kind: 'response', id: request.id, result: lifecycleRefusalResult });
+  return true;
+}
+
+async function dispatchIpcCatalogRequest(
+  request: JsonRpcRequestEnvelope,
+  principal: Principal | null,
   dispatchMap: ReadonlyMap<string, IpcDispatchEntry>,
   rpcPorts: HttpHandlerPorts,
+  socket: Socket,
   onShutdownRecoveryAccepted: (() => void) | null,
   startRequest: () => void,
   finishRequest: () => void,
   options: { writeDrainTimeoutMs: number },
+  drainingRecoveryIngress: boolean,
+  finishUnaryResponse: (response: JsonRpcEnvelope, onUnwritten?: () => void) => Promise<void>,
 ): Promise<void> {
-  const finishUnaryResponse = async (response: JsonRpcEnvelope, onUnwritten?: () => void): Promise<void> => {
-    const wroteResponse = await writeEnvelope(socket, response, {
-      drainTimeoutMs: options.writeDrainTimeoutMs,
-    });
-    if (!wroteResponse) onUnwritten?.();
-    socket.end();
-  };
-
-  let envelope: JsonRpcEnvelope;
-  try {
-    envelope = decode(frame);
-  } catch (error: unknown) {
-    await finishUnaryResponse(transportErrorResponse(INVALID_JSON_RESPONSE.message, { cause: String(error) }));
-    return;
-  }
-
-  if (envelope.kind !== 'request') {
-    await finishUnaryResponse(invalidRequestResponse('id' in envelope ? envelope.id : null));
-    return;
-  }
-
-  const request = envelope;
-  const operationalSpec = readIpcOperationalSpec(request.method);
-  if (operationalSpec?.dispatch.kind === 'ping') {
-    const authError = authorizeIpcOperation(request, operationalSpec, IPC_BOOTSTRAP_LIVENESS_PRINCIPAL);
-    if (authError) {
-      await finishUnaryResponse(authError);
-      return;
-    }
-    await finishUnaryResponse({ kind: 'response', id: request.id, result: readPingSnapshot(rpcPorts) });
-    return;
-  }
-
-  const principal = authenticateIpcRequest(request.auth, rpcPorts);
-  if (operationalSpec?.authentication === 'principal') {
-    const authError = authorizeIpcOperation(request, operationalSpec, principal);
-    if (authError) {
-      await finishUnaryResponse(authError);
-      return;
-    }
-  }
-
-  const lifecycleState =
-    rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
-  const draining = lifecycleState === 'draining' || rpcPorts.admin.isDrainRequested();
-  const backendUnavailable = draining || lifecycleState === 'stopped';
-  const drainingRecoveryIngress = draining && operationalSpec?.dispatch.kind === 'catalog';
-
-  if (operationalSpec) {
-    if (operationalSpec.requiresRunningLifecycle && backendUnavailable) {
-      await finishUnaryResponse({ kind: 'response', id: request.id, result: lifecycleRefusalResult });
-      return;
-    }
-
-    if (operationalSpec.dispatch.kind === 'health') {
-      await finishUnaryResponse({
-        kind: 'response',
-        id: request.id,
-        result: { ...rpcPorts.health.read(), jobsWaitExtensions: JOBS_WAIT_EXTENSIONS },
-      });
-      return;
-    }
-
-    if (operationalSpec.dispatch.kind === 'shutdown') {
-      const refusal = rpcPorts.admin.decideLegacyShutdown?.() ?? SHUTDOWN_UNAUTHORIZED_RESPONSE;
-      await finishUnaryResponse(requestErrorResponse(request.id, refusal.message, refusal));
-      return;
-    }
-
-    if (operationalSpec.dispatch.kind === 'succession') {
-      const lease = rpcPorts.admin.beginRequestLease?.(request.method, String(request.id));
-      if (lease === undefined) startRequest();
-      try {
-        const execute = async (): Promise<unknown> =>
-          rpcPorts.admin.succession
-            ? rpcPorts.admin.succession(request.method, request.params ?? {})
-            : { kind: 'refused', reason: 'succession protocol unavailable' };
-        const result = lease === undefined ? await execute() : await lease.run(execute);
-        await finishUnaryResponse({ kind: 'response', id: request.id, result });
-      } catch (error: unknown) {
-        const response = buildTransportErrorResponse(error);
-        await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
-      } finally {
-        if (lease === undefined) finishRequest();
-      }
-      return;
-    }
-
-    if (operationalSpec.dispatch.kind === 'kb-restart') {
-      const restartKbDaemon = rpcPorts.admin.restartKbDaemon;
-      if (!restartKbDaemon) {
-        await finishUnaryResponse(
-          requestErrorResponse(request.id, KB_RESTART_UNAVAILABLE_RESPONSE.message, KB_RESTART_UNAVAILABLE_RESPONSE),
-        );
-        return;
-      }
-      writeAuditEvent(
-        'admin_kb_daemon_restart_requested',
-        {
-          transport: 'ipc',
-          reason: 'admin',
-          instanceId: rpcPorts.identity.instanceId,
-        },
-        'warn',
-      );
-      const lease = rpcPorts.admin.beginRequestLease?.(request.method, String(request.id));
-      if (lease === undefined) startRequest();
-      try {
-        const kbDaemon =
-          lease === undefined
-            ? await restartKbDaemon('ipc-admin')
-            : await lease.run((signal) => restartKbDaemon('ipc-admin', signal));
-        await finishUnaryResponse({
-          kind: 'response',
-          id: request.id,
-          result: { status: 'ok', instanceId: rpcPorts.identity.instanceId, kbDaemon },
-        });
-      } catch (error: unknown) {
-        rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
-        if (!socket.destroyed && !socket.writableEnded) {
-          const response = buildTransportErrorResponse(error);
-          await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
-        }
-      } finally {
-        if (lease === undefined) finishRequest();
-      }
-      return;
-    }
-  }
-
-  if (backendUnavailable && !drainingRecoveryIngress) {
-    await finishUnaryResponse({ kind: 'response', id: request.id, result: lifecycleRefusalResult });
-    return;
-  }
-
   const entry = dispatchMap.get(request.method);
   if (!entry) {
     await finishUnaryResponse(methodNotFoundResponse(request.id));
@@ -977,6 +948,97 @@ async function dispatchFrame(
   }
 }
 
+async function dispatchFrame(
+  frame: string,
+  socket: Socket,
+  dispatchMap: ReadonlyMap<string, IpcDispatchEntry>,
+  rpcPorts: HttpHandlerPorts,
+  onShutdownRecoveryAccepted: (() => void) | null,
+  startRequest: () => void,
+  finishRequest: () => void,
+  options: { writeDrainTimeoutMs: number },
+): Promise<void> {
+  const finishUnaryResponse = async (response: JsonRpcEnvelope, onUnwritten?: () => void): Promise<void> => {
+    const wroteResponse = await writeEnvelope(socket, response, {
+      drainTimeoutMs: options.writeDrainTimeoutMs,
+    });
+    if (!wroteResponse) onUnwritten?.();
+    socket.end();
+  };
+
+  let envelope: JsonRpcEnvelope;
+  try {
+    envelope = decode(frame);
+  } catch (error: unknown) {
+    await finishUnaryResponse(transportErrorResponse(INVALID_JSON_RESPONSE.message, { cause: String(error) }));
+    return;
+  }
+
+  if (envelope.kind !== 'request') {
+    await finishUnaryResponse(invalidRequestResponse('id' in envelope ? envelope.id : null));
+    return;
+  }
+
+  const request = envelope;
+  const operationalSpec = readIpcOperationalSpec(request.method);
+  if (operationalSpec?.dispatch.kind === 'ping') {
+    const authError = authorizeIpcOperation(request, operationalSpec, IPC_BOOTSTRAP_LIVENESS_PRINCIPAL);
+    if (authError) {
+      await finishUnaryResponse(authError);
+      return;
+    }
+    await finishUnaryResponse({ kind: 'response', id: request.id, result: readPingSnapshot(rpcPorts) });
+    return;
+  }
+
+  const principal = authenticateIpcRequest(request.auth, rpcPorts);
+  if (operationalSpec?.authentication === 'principal') {
+    const authError = authorizeIpcOperation(request, operationalSpec, principal);
+    if (authError) {
+      await finishUnaryResponse(authError);
+      return;
+    }
+  }
+
+  const lifecycleState =
+    rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
+  const draining = lifecycleState === 'draining' || rpcPorts.admin.isDrainRequested();
+  const backendUnavailable = draining || lifecycleState === 'stopped';
+  const drainingRecoveryIngress = draining && operationalSpec?.dispatch.kind === 'catalog';
+
+  if (
+    operationalSpec &&
+    (await handleIpcOperationalRequest(
+      request,
+      operationalSpec,
+      rpcPorts,
+      socket,
+      backendUnavailable,
+      startRequest,
+      finishRequest,
+      finishUnaryResponse,
+    ))
+  )
+    return;
+
+  if (await refuseUnavailableIpcRequest(request, backendUnavailable, drainingRecoveryIngress, finishUnaryResponse))
+    return;
+
+  await dispatchIpcCatalogRequest(
+    request,
+    principal,
+    dispatchMap,
+    rpcPorts,
+    socket,
+    onShutdownRecoveryAccepted,
+    startRequest,
+    finishRequest,
+    options,
+    drainingRecoveryIngress,
+    finishUnaryResponse,
+  );
+}
+
 /**
  * Measured on Node 26.3.1: `pause()` leaves a reading handle reading, and the bytes it reads before a handle transfer
  * queued behind another converts are dropped with the parent's socket (19 of 20 burst-forwarded frames lost).
@@ -1017,6 +1079,229 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
   });
 }
 
+function parseTrackedSocketChunk(
+  chunk: Buffer | string,
+  socket: Socket,
+  framer: ReturnType<typeof createLineFramer>,
+  pending: { frame: Buffer },
+  resources: IpcResourceTracker,
+  rpcPorts: HttpHandlerPorts,
+  writeDrainTimeoutMs: number,
+  updatePendingFrameBytes: (bytes: number) => void,
+): string[] | null {
+  let frames: string[];
+  try {
+    pending.frame = Buffer.concat([pending.frame, typeof chunk === 'string' ? Buffer.from(chunk) : chunk]);
+    const lastNewline = pending.frame.lastIndexOf(0x0a);
+    if (lastNewline !== -1) pending.frame = pending.frame.subarray(lastNewline + 1);
+    frames = framer.push(chunk);
+    updatePendingFrameBytes(framer.pendingBytes());
+  } catch (error: unknown) {
+    if (error instanceof FrameTooLargeError) {
+      updatePendingFrameBytes(error.observedBytes);
+      rpcPorts.identity.log(
+        `IPC frame too large (${error.observedBytes} > ${error.maxFrameBytes}); destroying socket\n`,
+      );
+      if (!socket.destroyed) {
+        void writeEnvelope(
+          socket,
+          transportErrorResponse('Request frame too large', {
+            code: error.code,
+            maxFrameBytes: error.maxFrameBytes,
+            observedBytes: error.observedBytes,
+          }),
+          { drainTimeoutMs: writeDrainTimeoutMs },
+        ).finally(() => socket.destroy());
+      }
+      return null;
+    }
+    throw error;
+  }
+  if (resources.aggregatePendingFrameBytes > resources.maxAggregatePendingFrameBytes) {
+    rpcPorts.identity.log(
+      `IPC pending frame budget exceeded (${resources.aggregatePendingFrameBytes} > ${resources.maxAggregatePendingFrameBytes}); destroying socket\n`,
+    );
+    void writeEnvelope(
+      socket,
+      transportErrorResponse('Too many pending IPC frame bytes', {
+        code: 'ipc_pending_frame_budget_exceeded',
+        maxAggregatePendingFrameBytes: resources.maxAggregatePendingFrameBytes,
+        observedBytes: resources.aggregatePendingFrameBytes,
+      }),
+      { drainTimeoutMs: writeDrainTimeoutMs },
+    ).finally(() => socket.destroy());
+    return null;
+  }
+  return frames;
+}
+
+type TrackedIpcListenerState = {
+  rpcPorts: HttpHandlerPorts;
+  resources: IpcResourceTracker;
+  dispatchMap: ReadonlyMap<string, IpcDispatchEntry>;
+  firstFrameTimeoutMs: number;
+  writeDrainTimeoutMs: number;
+  listenerRef: { current: IpcListener | null };
+  pendingSockets: Map<Socket, () => void>;
+  openSockets: Set<Socket>;
+  drained: Set<() => void>;
+  forwardAccepted: ((socket: Socket, pendingFrameBase64: string) => void) | null;
+};
+
+function releaseTrackedSocket(state: TrackedIpcListenerState, socket: Socket): void {
+  state.openSockets.delete(socket);
+  if (state.openSockets.size === 0) {
+    for (const resolve of state.drained) resolve();
+    state.drained.clear();
+  }
+}
+
+function admitTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pendingFrameBase64: string): boolean {
+  const { rpcPorts, resources, writeDrainTimeoutMs } = state;
+  if (state.forwardAccepted !== null) {
+    if (stopHandleReads(socket)) {
+      socket.pause();
+      const pending = Buffer.concat([Buffer.from(pendingFrameBase64, 'base64'), takeBufferedBytes(socket)]);
+      state.forwardAccepted(socket, pending.toString('base64'));
+      return false;
+    }
+    rpcPorts.identity.log(UNSTOPPABLE_HANDLE_LOG);
+  }
+  if (resources.sockets.size >= resources.maxOpenSockets) {
+    rpcPorts.identity.log(
+      `IPC connection cap exceeded (${resources.sockets.size} >= ${resources.maxOpenSockets}); destroying socket\n`,
+    );
+    void writeEnvelope(
+      socket,
+      transportErrorResponse('Too many IPC connections', {
+        code: 'too_many_ipc_connections',
+        maxOpenSockets: resources.maxOpenSockets,
+      }),
+      { drainTimeoutMs: writeDrainTimeoutMs },
+    ).finally(() => socket.destroy());
+    return false;
+  }
+  resources.sockets.add(socket);
+  state.openSockets.add(socket);
+  return true;
+}
+
+function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pendingFrameBase64 = ''): void {
+  if (!admitTrackedSocket(state, socket, pendingFrameBase64)) return;
+  const { rpcPorts, resources, dispatchMap, firstFrameTimeoutMs, writeDrainTimeoutMs, listenerRef, pendingSockets } =
+    state;
+  const framer = createLineFramer();
+  const carriedFrame = Buffer.from(pendingFrameBase64, 'base64');
+  const pending = { frame: Buffer.alloc(0) };
+  let inflightRequest = false;
+  let pendingFrameBytes = framer.pendingBytes();
+  resources.aggregatePendingFrameBytes += pendingFrameBytes;
+  const firstFrameTimer = timers.setTimeout(() => {
+    rpcPorts.identity.log(`IPC socket did not send a complete frame within ${firstFrameTimeoutMs}ms; destroying\n`);
+    socket.destroy();
+  }, firstFrameTimeoutMs);
+  firstFrameTimer.unref?.();
+
+  const updatePendingFrameBytes = (nextBytes: number) => {
+    resources.aggregatePendingFrameBytes += nextBytes - pendingFrameBytes;
+    pendingFrameBytes = nextBytes;
+  };
+
+  const releasePendingFrameBytes = () => {
+    updatePendingFrameBytes(0);
+  };
+
+  const finishRequest = () => {
+    if (!inflightRequest) {
+      return;
+    }
+    inflightRequest = false;
+    rpcPorts.admin.endRequest();
+  };
+
+  const onClose = () => {
+    timers.clearTimeout(firstFrameTimer);
+    releasePendingFrameBytes();
+    finishRequest();
+    resources.sockets.delete(socket);
+    pendingSockets.delete(socket);
+    releaseTrackedSocket(state, socket);
+  };
+  socket.once('close', onClose);
+
+  const onError = (error: Error) => {
+    rpcPorts.identity.log(`IPC socket error: ${formatError(error)}\n`);
+    finishRequest();
+  };
+  socket.on('error', onError);
+
+  const transferPending = (): void => {
+    if (state.forwardAccepted === null || socket.destroyed) return;
+    if (!stopHandleReads(socket)) {
+      rpcPorts.identity.log(UNSTOPPABLE_HANDLE_LOG);
+      return;
+    }
+    socket.pause();
+    socket.off('data', onData);
+    socket.off('close', onClose);
+    socket.off('error', onError);
+    timers.clearTimeout(firstFrameTimer);
+    releasePendingFrameBytes();
+    resources.sockets.delete(socket);
+    pendingSockets.delete(socket);
+    releaseTrackedSocket(state, socket);
+    state.forwardAccepted(socket, Buffer.concat([pending.frame, takeBufferedBytes(socket)]).toString('base64'));
+  };
+  pendingSockets.set(socket, transferPending);
+
+  const onData = (chunk: Buffer | string) => {
+    const frames = parseTrackedSocketChunk(
+      chunk,
+      socket,
+      framer,
+      pending,
+      resources,
+      rpcPorts,
+      writeDrainTimeoutMs,
+      updatePendingFrameBytes,
+    );
+    if (frames === null) return;
+    for (const frame of frames) {
+      if (frame.trim().length === 0) {
+        continue;
+      }
+      timers.clearTimeout(firstFrameTimer);
+      releasePendingFrameBytes();
+      socket.off('data', onData);
+      pendingSockets.delete(socket);
+      void dispatchFrame(
+        frame,
+        socket,
+        dispatchMap,
+        rpcPorts,
+        listenerRef.current?.onShutdownRecoveryAccepted ?? null,
+        () => {
+          rpcPorts.admin.beginRequest();
+          inflightRequest = true;
+        },
+        finishRequest,
+        { writeDrainTimeoutMs },
+      );
+      return;
+    }
+  };
+
+  socket.on('data', onData);
+  if (carriedFrame.length > 0) onData(carriedFrame);
+  socket.resume();
+  // Succession's readStop() can leave libuv stopped after the stream resumes.
+  const handle = (socket as unknown as { _handle?: { reading?: boolean; readStart?: () => void } })._handle;
+  if (handle?.reading === false && typeof handle.readStart === 'function') {
+    handle.readStart();
+    handle.reading = true;
+  }
+}
+
 function createTrackedIpcListener(
   rpcPorts: HttpHandlerPorts,
   options: IpcServerOptions,
@@ -1026,189 +1311,20 @@ function createTrackedIpcListener(
   const dispatchMap = new Map(dispatchTable.map((entry) => [entry.method, entry]));
   const firstFrameTimeoutMs = options.firstFrameTimeoutMs ?? IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS;
   const writeDrainTimeoutMs = options.writeDrainTimeoutMs ?? IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS;
-  const listenerRef: { current: IpcListener | null } = { current: null };
-  const pendingSockets = new Map<Socket, () => void>();
-  const openSockets = new Set<Socket>();
-  const drained = new Set<() => void>();
-  let forwardAccepted: ((socket: Socket, pendingFrameBase64: string) => void) | null = null;
-  const releaseSocket = (socket: Socket): void => {
-    openSockets.delete(socket);
-    if (openSockets.size === 0) {
-      for (const resolve of drained) resolve();
-      drained.clear();
-    }
+  const state: TrackedIpcListenerState = {
+    rpcPorts,
+    resources,
+    dispatchMap,
+    firstFrameTimeoutMs,
+    writeDrainTimeoutMs,
+    listenerRef: { current: null },
+    pendingSockets: new Map(),
+    openSockets: new Set(),
+    drained: new Set(),
+    forwardAccepted: null,
   };
-
-  const acceptSocket = (socket: Socket, pendingFrameBase64 = ''): void => {
-    if (forwardAccepted !== null) {
-      if (stopHandleReads(socket)) {
-        socket.pause();
-        const pending = Buffer.concat([Buffer.from(pendingFrameBase64, 'base64'), takeBufferedBytes(socket)]);
-        forwardAccepted(socket, pending.toString('base64'));
-        return;
-      }
-      rpcPorts.identity.log(UNSTOPPABLE_HANDLE_LOG);
-    }
-    if (resources.sockets.size >= resources.maxOpenSockets) {
-      rpcPorts.identity.log(
-        `IPC connection cap exceeded (${resources.sockets.size} >= ${resources.maxOpenSockets}); destroying socket\n`,
-      );
-      void writeEnvelope(
-        socket,
-        transportErrorResponse('Too many IPC connections', {
-          code: 'too_many_ipc_connections',
-          maxOpenSockets: resources.maxOpenSockets,
-        }),
-        { drainTimeoutMs: writeDrainTimeoutMs },
-      ).finally(() => socket.destroy());
-      return;
-    }
-
-    resources.sockets.add(socket);
-    openSockets.add(socket);
-    const framer = createLineFramer();
-    const carriedFrame = Buffer.from(pendingFrameBase64, 'base64');
-    let pendingFrame = Buffer.alloc(0);
-    let inflightRequest = false;
-    let pendingFrameBytes = framer.pendingBytes();
-    resources.aggregatePendingFrameBytes += pendingFrameBytes;
-    const firstFrameTimer = timers.setTimeout(() => {
-      rpcPorts.identity.log(`IPC socket did not send a complete frame within ${firstFrameTimeoutMs}ms; destroying\n`);
-      socket.destroy();
-    }, firstFrameTimeoutMs);
-    firstFrameTimer.unref?.();
-
-    const updatePendingFrameBytes = (nextBytes: number) => {
-      resources.aggregatePendingFrameBytes += nextBytes - pendingFrameBytes;
-      pendingFrameBytes = nextBytes;
-    };
-
-    const releasePendingFrameBytes = () => {
-      updatePendingFrameBytes(0);
-    };
-
-    const finishRequest = () => {
-      if (!inflightRequest) {
-        return;
-      }
-      inflightRequest = false;
-      rpcPorts.admin.endRequest();
-    };
-
-    const onClose = () => {
-      timers.clearTimeout(firstFrameTimer);
-      releasePendingFrameBytes();
-      finishRequest();
-      resources.sockets.delete(socket);
-      pendingSockets.delete(socket);
-      releaseSocket(socket);
-    };
-    socket.once('close', onClose);
-
-    const onError = (error: Error) => {
-      rpcPorts.identity.log(`IPC socket error: ${formatError(error)}\n`);
-      finishRequest();
-    };
-    socket.on('error', onError);
-
-    const transferPending = (): void => {
-      if (forwardAccepted === null || socket.destroyed) return;
-      if (!stopHandleReads(socket)) {
-        rpcPorts.identity.log(UNSTOPPABLE_HANDLE_LOG);
-        return;
-      }
-      socket.pause();
-      socket.off('data', onData);
-      socket.off('close', onClose);
-      socket.off('error', onError);
-      timers.clearTimeout(firstFrameTimer);
-      releasePendingFrameBytes();
-      resources.sockets.delete(socket);
-      pendingSockets.delete(socket);
-      releaseSocket(socket);
-      forwardAccepted(socket, Buffer.concat([pendingFrame, takeBufferedBytes(socket)]).toString('base64'));
-    };
-    pendingSockets.set(socket, transferPending);
-
-    const onData = (chunk: Buffer | string) => {
-      let frames: string[];
-      try {
-        pendingFrame = Buffer.concat([pendingFrame, typeof chunk === 'string' ? Buffer.from(chunk) : chunk]);
-        const lastNewline = pendingFrame.lastIndexOf(0x0a);
-        if (lastNewline !== -1) pendingFrame = pendingFrame.subarray(lastNewline + 1);
-        frames = framer.push(chunk);
-        updatePendingFrameBytes(framer.pendingBytes());
-      } catch (error: unknown) {
-        if (error instanceof FrameTooLargeError) {
-          updatePendingFrameBytes(error.observedBytes);
-          rpcPorts.identity.log(
-            `IPC frame too large (${error.observedBytes} > ${error.maxFrameBytes}); destroying socket\n`,
-          );
-          if (!socket.destroyed) {
-            void writeEnvelope(
-              socket,
-              transportErrorResponse('Request frame too large', {
-                code: error.code,
-                maxFrameBytes: error.maxFrameBytes,
-                observedBytes: error.observedBytes,
-              }),
-              { drainTimeoutMs: writeDrainTimeoutMs },
-            ).finally(() => socket.destroy());
-          }
-          return;
-        }
-        throw error;
-      }
-      if (resources.aggregatePendingFrameBytes > resources.maxAggregatePendingFrameBytes) {
-        rpcPorts.identity.log(
-          `IPC pending frame budget exceeded (${resources.aggregatePendingFrameBytes} > ${resources.maxAggregatePendingFrameBytes}); destroying socket\n`,
-        );
-        void writeEnvelope(
-          socket,
-          transportErrorResponse('Too many pending IPC frame bytes', {
-            code: 'ipc_pending_frame_budget_exceeded',
-            maxAggregatePendingFrameBytes: resources.maxAggregatePendingFrameBytes,
-            observedBytes: resources.aggregatePendingFrameBytes,
-          }),
-          { drainTimeoutMs: writeDrainTimeoutMs },
-        ).finally(() => socket.destroy());
-        return;
-      }
-      for (const frame of frames) {
-        if (frame.trim().length === 0) {
-          continue;
-        }
-        timers.clearTimeout(firstFrameTimer);
-        releasePendingFrameBytes();
-        socket.off('data', onData);
-        pendingSockets.delete(socket);
-        void dispatchFrame(
-          frame,
-          socket,
-          dispatchMap,
-          rpcPorts,
-          listenerRef.current?.onShutdownRecoveryAccepted ?? null,
-          () => {
-            rpcPorts.admin.beginRequest();
-            inflightRequest = true;
-          },
-          finishRequest,
-          { writeDrainTimeoutMs },
-        );
-        return;
-      }
-    };
-
-    socket.on('data', onData);
-    if (carriedFrame.length > 0) onData(carriedFrame);
-    socket.resume();
-    // Succession's readStop() can leave libuv stopped after the stream resumes.
-    const handle = (socket as unknown as { _handle?: { reading?: boolean; readStart?: () => void } })._handle;
-    if (handle?.reading === false && typeof handle.readStart === 'function') {
-      handle.readStart();
-      handle.reading = true;
-    }
-  };
+  const acceptSocket = (socket: Socket, pendingFrameBase64 = ''): void =>
+    acceptTrackedSocket(state, socket, pendingFrameBase64);
   const server = createServer({ pauseOnConnect: true }, acceptSocket);
 
   const listener: IpcListener = {
@@ -1218,21 +1334,21 @@ function createTrackedIpcListener(
     createCompatibilityListener: () => createTrackedIpcListener(rpcPorts, options, resources),
     acceptSocket,
     forwardConnections: (forward) => {
-      forwardAccepted = forward;
-      for (const transfer of pendingSockets.values()) transfer();
+      state.forwardAccepted = forward;
+      for (const transfer of state.pendingSockets.values()) transfer();
       return () => {
-        if (forwardAccepted === forward) forwardAccepted = null;
+        if (state.forwardAccepted === forward) state.forwardAccepted = null;
       };
     },
     drainConnections: () =>
-      openSockets.size === 0
+      state.openSockets.size === 0
         ? Promise.resolve()
         : new Promise<void>((resolve) => {
-            drained.add(resolve);
+            state.drained.add(resolve);
           }),
     socketPath: null,
     onShutdownRecoveryAccepted: null,
   };
-  listenerRef.current = listener;
+  state.listenerRef.current = listener;
   return listener;
 }

@@ -167,144 +167,162 @@ export function outranks(target: Target, incumbent: IncumbentIdentity): boolean 
   );
 }
 
+async function requestSuccessionIntent(
+  input: { requestId: string; target: Target },
+  options: SuccessionReconcilerOptions,
+  notifyObligationChange: () => void,
+  currentLaunchedAttempt: () => string | null,
+): Promise<SuccessionDecision> {
+  const self = options.incumbent();
+  try {
+    if (
+      input.target.build.flavor !== self.flavor ||
+      compareProductVersions(input.target.build.version, self.version) <= 0
+    ) {
+      return { kind: 'refused', reason: 'target does not strictly outrank the incumbent' };
+    }
+  } catch {
+    return { kind: 'refused', reason: 'target or incumbent version is invalid' };
+  }
+  const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) => {
+    if (observed.kind !== 'absent' && observed.kind !== 'readable') {
+      return settle({ kind: 'refused', reason: `upgrade intent is ${observed.kind}` });
+    }
+    const current = observed.kind === 'readable' ? observed.intent : null;
+    if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
+      if (
+        current.attemptId !== null &&
+        ((options.observeServing?.(current.attemptId) ?? null) !== null ||
+          (current.attemptChild?.attemptId === current.attemptId &&
+            observeRecordedDeath(current.attemptChild) !== 'absent') ||
+          (recordsSelf(current.incumbent, self) &&
+            (heldByCommit(current) || current.attemptId === currentLaunchedAttempt())))
+      ) {
+        return queueBehindSuccessionAttempt(current, input, options, notifyObligationChange);
+      }
+      let comparison: number;
+      try {
+        comparison = compareProductVersions(input.target.build.version, current.target.build.version);
+      } catch {
+        return settle({ kind: 'refused', reason: 'pending target version is invalid' });
+      }
+      if (
+        sameTarget(current.target, input.target) ||
+        (current.target.build.flavor === input.target.build.flavor &&
+          comparison <= 0 &&
+          revalidateUpgradeIntentTarget(current).kind === 'validated')
+      ) {
+        notifyObligationChange();
+        return settle({ kind: 'registered', intent: current });
+      }
+      if (current.target.build.flavor !== input.target.build.flavor) {
+        return settle({ kind: 'refused', reason: 'pending target has another build flavor' });
+      }
+    }
+    return {
+      kind: 'write',
+      expectedRevision: current?.revision ?? null,
+      change: requestedIntent(input, self, current?.nextTarget),
+      settle: (written) => {
+        options.onIntentChanged?.();
+        notifyObligationChange();
+        return { kind: 'registered', intent: written };
+      },
+    };
+  });
+  return decisionOf(outcome, 'refused');
+}
+
+async function requestSuccessionSupervisionRepair(
+  input: { requestId: string; target: Target },
+  options: SuccessionReconcilerOptions,
+  notifyObligationChange: () => void,
+): Promise<SuccessionDecision> {
+  const self = options.incumbent();
+  if (
+    input.target.build.flavor !== self.flavor ||
+    input.target.build.version !== self.version ||
+    input.target.build.bundleHash !== self.bundleHash ||
+    (options.runningBuildSetId !== undefined && input.target.build.buildSetId !== options.runningBuildSetId)
+  )
+    return { kind: 'refused', reason: 'supervision repair must use the serving build' };
+  const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) => {
+    if (observed.kind !== 'absent' && observed.kind !== 'readable')
+      return settle({ kind: 'deferred', reason: `upgrade intent is ${observed.kind}` });
+    const current = observed.kind === 'readable' ? observed.intent : null;
+    const active = current !== null && current.disposition !== 'closed' && current.disposition !== 'completed';
+    if (active) {
+      let newerTargetCanTakeCustody = false;
+      if (current.reason !== 'supervision-repair' && supersedes(current.target, input.target)) {
+        const custody = classifyTargetCustody(current, options);
+        newerTargetCanTakeCustody = custody.kind === 'validated-target' && custody.disposition().kind === 'eligible';
+      }
+      if (current.reason === 'supervision-repair' || newerTargetCanTakeCustody) {
+        notifyObligationChange();
+        return settle({ kind: 'registered', intent: current });
+      }
+      if (current.attemptId !== null) {
+        notifyObligationChange();
+        return settle({ kind: 'deferred', reason: 'existing succession attempt must settle before repair' });
+      }
+    }
+    return {
+      kind: 'write',
+      expectedRevision: current?.revision ?? null,
+      change: requestedIntent(
+        input,
+        self,
+        !active
+          ? null
+          : current.nextTarget !== null &&
+              current.nextTarget !== undefined &&
+              supersedes(current.nextTarget.target, current.target)
+            ? current.nextTarget
+            : { requestId: current.requestId, target: current.target },
+        'supervision-repair',
+      ),
+      settle: (written) => {
+        options.onIntentChanged?.();
+        notifyObligationChange();
+        return { kind: 'registered', intent: written };
+      },
+    };
+  });
+  return decisionOf(outcome, 'deferred');
+}
+
+function queueBehindSuccessionAttempt(
+  current: UpgradeIntent,
+  input: TargetRequest,
+  options: SuccessionReconcilerOptions,
+  notifyObligationChange: () => void,
+): UpgradeIntentCasStep<SuccessionDecision> {
+  notifyObligationChange();
+  const queued = current.nextTarget ?? null;
+  if (
+    !supersedes(input.target, current.target) ||
+    (queued !== null && (sameTarget(queued.target, input.target) || !supersedes(input.target, queued.target)))
+  ) {
+    return settle({ kind: 'registered', intent: current });
+  }
+  return {
+    kind: 'write',
+    expectedRevision: current.revision,
+    change: { ...current, nextTarget: { requestId: input.requestId, target: input.target } },
+    settle: (written) => {
+      options.onIntentChanged?.();
+      return { kind: 'registered', intent: written };
+    },
+  };
+}
+
 export function createIntentTransitionRequests(
   options: SuccessionReconcilerOptions,
   notifyObligationChange: () => void,
   currentLaunchedAttempt: () => string | null,
 ): Pick<SuccessionReconciler, 'request' | 'repairSupervision'> {
-  async function request(input: { requestId: string; target: Target }): Promise<SuccessionDecision> {
-    const self = options.incumbent();
-    try {
-      if (
-        input.target.build.flavor !== self.flavor ||
-        compareProductVersions(input.target.build.version, self.version) <= 0
-      ) {
-        return { kind: 'refused', reason: 'target does not strictly outrank the incumbent' };
-      }
-    } catch {
-      return { kind: 'refused', reason: 'target or incumbent version is invalid' };
-    }
-    const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) => {
-      if (observed.kind !== 'absent' && observed.kind !== 'readable') {
-        return settle({ kind: 'refused', reason: `upgrade intent is ${observed.kind}` });
-      }
-      const current = observed.kind === 'readable' ? observed.intent : null;
-      if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
-        if (
-          current.attemptId !== null &&
-          ((options.observeServing?.(current.attemptId) ?? null) !== null ||
-            (current.attemptChild?.attemptId === current.attemptId &&
-              observeRecordedDeath(current.attemptChild) !== 'absent') ||
-            (recordsSelf(current.incumbent, self) &&
-              (heldByCommit(current) || current.attemptId === currentLaunchedAttempt())))
-        ) {
-          return queueBehindAttempt(current, input);
-        }
-        let comparison: number;
-        try {
-          comparison = compareProductVersions(input.target.build.version, current.target.build.version);
-        } catch {
-          return settle({ kind: 'refused', reason: 'pending target version is invalid' });
-        }
-        if (
-          sameTarget(current.target, input.target) ||
-          (current.target.build.flavor === input.target.build.flavor &&
-            comparison <= 0 &&
-            revalidateUpgradeIntentTarget(current).kind === 'validated')
-        ) {
-          notifyObligationChange();
-          return settle({ kind: 'registered', intent: current });
-        }
-        if (current.target.build.flavor !== input.target.build.flavor) {
-          return settle({ kind: 'refused', reason: 'pending target has another build flavor' });
-        }
-      }
-      return {
-        kind: 'write',
-        expectedRevision: current?.revision ?? null,
-        change: requestedIntent(input, self, current?.nextTarget),
-        settle: (written) => {
-          options.onIntentChanged?.();
-          notifyObligationChange();
-          return { kind: 'registered', intent: written };
-        },
-      };
-    });
-    return decisionOf(outcome, 'refused');
-  }
-
-  async function repairSupervision(input: { requestId: string; target: Target }): Promise<SuccessionDecision> {
-    const self = options.incumbent();
-    if (
-      input.target.build.flavor !== self.flavor ||
-      input.target.build.version !== self.version ||
-      input.target.build.bundleHash !== self.bundleHash ||
-      (options.runningBuildSetId !== undefined && input.target.build.buildSetId !== options.runningBuildSetId)
-    )
-      return { kind: 'refused', reason: 'supervision repair must use the serving build' };
-    const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) => {
-      if (observed.kind !== 'absent' && observed.kind !== 'readable')
-        return settle({ kind: 'deferred', reason: `upgrade intent is ${observed.kind}` });
-      const current = observed.kind === 'readable' ? observed.intent : null;
-      const active = current !== null && current.disposition !== 'closed' && current.disposition !== 'completed';
-      if (active) {
-        let newerTargetCanTakeCustody = false;
-        if (current.reason !== 'supervision-repair' && supersedes(current.target, input.target)) {
-          const custody = classifyTargetCustody(current, options);
-          newerTargetCanTakeCustody = custody.kind === 'validated-target' && custody.disposition().kind === 'eligible';
-        }
-        if (current.reason === 'supervision-repair' || newerTargetCanTakeCustody) {
-          notifyObligationChange();
-          return settle({ kind: 'registered', intent: current });
-        }
-        if (current.attemptId !== null) {
-          notifyObligationChange();
-          return settle({ kind: 'deferred', reason: 'existing succession attempt must settle before repair' });
-        }
-      }
-      return {
-        kind: 'write',
-        expectedRevision: current?.revision ?? null,
-        change: requestedIntent(
-          input,
-          self,
-          !active
-            ? null
-            : current.nextTarget !== null &&
-                current.nextTarget !== undefined &&
-                supersedes(current.nextTarget.target, current.target)
-              ? current.nextTarget
-              : { requestId: current.requestId, target: current.target },
-          'supervision-repair',
-        ),
-        settle: (written) => {
-          options.onIntentChanged?.();
-          notifyObligationChange();
-          return { kind: 'registered', intent: written };
-        },
-      };
-    });
-    return decisionOf(outcome, 'deferred');
-  }
-
-  function queueBehindAttempt(current: UpgradeIntent, input: TargetRequest): UpgradeIntentCasStep<SuccessionDecision> {
-    notifyObligationChange();
-    const queued = current.nextTarget ?? null;
-    if (
-      !supersedes(input.target, current.target) ||
-      (queued !== null && (sameTarget(queued.target, input.target) || !supersedes(input.target, queued.target)))
-    ) {
-      return settle({ kind: 'registered', intent: current });
-    }
-    return {
-      kind: 'write',
-      expectedRevision: current.revision,
-      change: { ...current, nextTarget: { requestId: input.requestId, target: input.target } },
-      settle: (written) => {
-        options.onIntentChanged?.();
-        return { kind: 'registered', intent: written };
-      },
-    };
-  }
-  return { request, repairSupervision };
+  return {
+    request: (input) => requestSuccessionIntent(input, options, notifyObligationChange, currentLaunchedAttempt),
+    repairSupervision: (input) => requestSuccessionSupervisionRepair(input, options, notifyObligationChange),
+  };
 }

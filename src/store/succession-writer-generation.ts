@@ -239,6 +239,97 @@ function ensureGuard(runtime: Runtime): ReturnType<typeof paths> {
   return location;
 }
 
+function parkSuccessionWriterGeneration(
+  runtime: Runtime,
+  location: ReturnType<typeof paths>,
+  state: LocalParkState,
+): void {
+  state.parked = true;
+  let closeError: unknown;
+  for (const close of [...state.closeWritableHandles]) {
+    try {
+      close();
+    } catch (error: unknown) {
+      closeError ??= error;
+    }
+  }
+  const release = exclusiveGuard(runtime, location.guard);
+  release();
+  if (closeError !== undefined) {
+    throw closeError instanceof Error ? closeError : new Error('Writable handle close failed.', { cause: closeError });
+  }
+}
+
+function rebindSuccessionWriterGeneration(
+  runtime: Runtime,
+  location: ReturnType<typeof paths>,
+  state: LocalParkState,
+  next: SuccessionWriterGeneration,
+): void {
+  if (!state.parked) throw new Error('A live succession writer cannot rebind its generation.');
+  const release = createSharedFileLockSync(location.guard);
+  try {
+    const observed = readGeneration(runtime, location.record);
+    if (
+      observed?.generation !== next.generation ||
+      observed.storeRoot !== next.storeRoot ||
+      observed.epoch !== next.epoch ||
+      observed.serving !== undefined ||
+      next.generation <= state.generation.generation ||
+      next.storeRoot !== state.generation.storeRoot ||
+      next.epoch !== state.generation.epoch
+    ) {
+      throw new Error(`Succession writer generation ${state.generation.generation} cannot rebind.`);
+    }
+    const nextKey = localParkKey(location.record, next);
+    const localSuccessor = localParkStates.get(nextKey);
+    if (localSuccessor !== undefined && localSuccessor !== state) {
+      throw new Error(`Succession writer generation ${next.generation} already has a local holder.`);
+    }
+    localParkStates.delete(localParkKey(location.record, state.generation));
+    state.generation = next;
+    localParkStates.set(nextKey, state);
+  } finally {
+    release();
+  }
+}
+
+function unparkSuccessionWriterGeneration(
+  runtime: Runtime,
+  location: ReturnType<typeof paths>,
+  state: LocalParkState,
+): void {
+  const release = createSharedFileLockSync(location.guard);
+  try {
+    const generation = state.generation;
+    const observed = readGeneration(runtime, location.record);
+    if (
+      observed?.generation !== generation.generation ||
+      observed.storeRoot !== generation.storeRoot ||
+      observed.epoch !== generation.epoch
+    ) {
+      throw new Error(`Succession writer generation ${generation.generation} cannot unpark after advance.`);
+    }
+    if (observed.serving !== undefined) throw new SuccessionServingCommittedError();
+  } finally {
+    release();
+  }
+  state.parked = false;
+  try {
+    for (const reopen of [...state.reopenWritableHandles]) reopen();
+  } catch (error: unknown) {
+    state.parked = true;
+    for (const close of [...state.closeWritableHandles]) {
+      try {
+        close();
+      } catch {
+        // A failed close does not make the parked entitlement writable.
+      }
+    }
+    throw error;
+  }
+}
+
 export function joinSuccessionWriterGeneration(
   runtime: Runtime,
   store: Readonly<{ storeRoot: string; epoch: string }>,
@@ -313,83 +404,9 @@ export function joinSuccessionWriterGeneration(
         release();
       }
     },
-    park() {
-      state.parked = true;
-      let closeError: unknown;
-      for (const close of [...state.closeWritableHandles]) {
-        try {
-          close();
-        } catch (error: unknown) {
-          closeError ??= error;
-        }
-      }
-      const release = exclusiveGuard(runtime, location.guard);
-      release();
-      if (closeError !== undefined) {
-        throw closeError instanceof Error
-          ? closeError
-          : new Error('Writable handle close failed.', { cause: closeError });
-      }
-    },
-    rebind(next) {
-      if (!state.parked) throw new Error('A live succession writer cannot rebind its generation.');
-      const release = createSharedFileLockSync(location.guard);
-      try {
-        const observed = readGeneration(runtime, location.record);
-        if (
-          observed?.generation !== next.generation ||
-          observed.storeRoot !== next.storeRoot ||
-          observed.epoch !== next.epoch ||
-          observed.serving !== undefined ||
-          next.generation <= state.generation.generation ||
-          next.storeRoot !== state.generation.storeRoot ||
-          next.epoch !== state.generation.epoch
-        ) {
-          throw new Error(`Succession writer generation ${state.generation.generation} cannot rebind.`);
-        }
-        const nextKey = localParkKey(location.record, next);
-        const localSuccessor = localParkStates.get(nextKey);
-        if (localSuccessor !== undefined && localSuccessor !== state) {
-          throw new Error(`Succession writer generation ${next.generation} already has a local holder.`);
-        }
-        localParkStates.delete(localParkKey(location.record, state.generation));
-        state.generation = next;
-        localParkStates.set(nextKey, state);
-      } finally {
-        release();
-      }
-    },
-    unpark() {
-      const release = createSharedFileLockSync(location.guard);
-      try {
-        const generation = state.generation;
-        const observed = readGeneration(runtime, location.record);
-        if (
-          observed?.generation !== generation.generation ||
-          observed.storeRoot !== generation.storeRoot ||
-          observed.epoch !== generation.epoch
-        ) {
-          throw new Error(`Succession writer generation ${generation.generation} cannot unpark after advance.`);
-        }
-        if (observed.serving !== undefined) throw new SuccessionServingCommittedError();
-      } finally {
-        release();
-      }
-      state.parked = false;
-      try {
-        for (const reopen of [...state.reopenWritableHandles]) reopen();
-      } catch (error: unknown) {
-        state.parked = true;
-        for (const close of [...state.closeWritableHandles]) {
-          try {
-            close();
-          } catch {
-            // A failed close does not make the parked entitlement writable.
-          }
-        }
-        throw error;
-      }
-    },
+    park: () => parkSuccessionWriterGeneration(runtime, location, state),
+    rebind: (next) => rebindSuccessionWriterGeneration(runtime, location, state, next),
+    unpark: () => unparkSuccessionWriterGeneration(runtime, location, state),
   };
 }
 

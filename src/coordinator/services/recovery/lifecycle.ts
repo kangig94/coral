@@ -41,21 +41,171 @@ export type RecoveryCoordinatorState = {
     | Readonly<{ kind: 'settled' }>;
 };
 
-export function createRecoveryLifecycle(
-  deps: Readonly<{
-    progressStore: JobStore;
-    runtime: Runtime;
-    runtimeState: { setLaunchFenceActive(active: boolean): void };
-    eventBus: JobEventBus;
-    onPhaseChanged(input: Readonly<{ jobId: string; phase: JobPhase; previousPhase: JobPhase }>): void;
-    releaseStartupOwnership(): void;
-    onRecoverySettlement?: (jobId: string) => void;
-  }>,
-) {
-  const { progressStore, runtime, runtimeState, eventBus, onPhaseChanged, releaseStartupOwnership } = deps;
-  const state: RecoveryCoordinatorState = {
+function trackRecoveryFinalization(
+  state: RecoveryCoordinatorState,
+  jobId: string,
+  parentSignal: AbortSignal,
+  run: (fence: { signal: AbortSignal; onCommitStart(): void }) => Promise<void>,
+): Promise<void> {
+  const controller = new AbortController();
+  let commitStarted = false;
+  const forwardAbort = (): void => controller.abort();
+  if (parentSignal.aborted) {
+    controller.abort();
+  } else {
+    parentSignal.addEventListener('abort', forwardAbort, { once: true });
+  }
+  const promise = run({
+    signal: controller.signal,
+    onCommitStart: () => {
+      commitStarted = true;
+    },
+  }).finally(() => {
+    parentSignal.removeEventListener('abort', forwardAbort);
+    if (state.inflightFinalizations.get(jobId)?.promise === promise) {
+      state.inflightFinalizations.delete(jobId);
+    }
+  });
+  const tracked = Object.freeze({
+    promise,
+    abort: () => controller.abort(),
+    commitStarted: () => commitStarted,
+  });
+  state.inflightFinalizations.set(jobId, tracked);
+  return promise;
+}
+
+function observeDurableRecoveryContainmentFor(
+  progressStore: JobStore,
+  runtime: Runtime,
+  jobId: string,
+  runtimeRecord: Extract<RunningRecoverableJob['runtimeRecord'], { transport: 'durable-cli' }>,
+): Readonly<{
+  evidence: DurableCliPreReadyOwnershipEvidence;
+  observation: RecordedContainmentObservation;
+}> {
+  const evidence = readDurableCliPreReadyOwnershipEvidence(progressStore.getDb(), jobId, runtimeRecord.pid);
+  const observation =
+    evidence.kind === 'current' || evidence.kind === 'provisional'
+      ? observeRecordedContainment(
+          {
+            ...evidence.record,
+            childRoot: evidence.kind === 'current' ? evidence.record.childRoot : null,
+          },
+          {
+            process: runtime.process,
+            platform: runtime.env.platform() as NodeJS.Platform,
+            readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+          },
+        )
+      : { kind: 'unobservable' as const, reason: durableOwnershipEvidenceHoldReason(evidence) };
+  return { evidence, observation };
+}
+
+async function runHeldRecoveryReapAttempt(
+  state: RecoveryCoordinatorState,
+  runtime: Runtime,
+  cancelHeldRecoveryReap: (jobId: string) => Promise<void> | null,
+  jobId: string,
+  record: Parameters<typeof reapDurableCliProcess>[1],
+  parentSignal: AbortSignal,
+): Promise<Awaited<ReturnType<typeof reapDurableCliProcess>> | Readonly<{ kind: 'superseded' }>> {
+  const priorSettlement = cancelHeldRecoveryReap(jobId);
+  if (priorSettlement !== null) await priorSettlement;
+  const generation = (state.heldRecoveryReapGenerations.get(jobId) ?? 0) + 1;
+  state.heldRecoveryReapGenerations.set(jobId, generation);
+  const controller = new AbortController();
+  const forwardAbort = (): void => controller.abort();
+  if (parentSignal.aborted) controller.abort();
+  else parentSignal.addEventListener('abort', forwardAbort, { once: true });
+  let markSettled!: () => void;
+  const attempt: HeldRecoveryReapAttempt = {
+    abort: controller,
+    settlement: new Promise<void>((resolve) => {
+      markSettled = resolve;
+    }),
+  };
+  state.heldRecoveryReapAttempts.set(jobId, attempt);
+  try {
+    const result = await reapDurableCliProcess(runtime, record, controller.signal);
+    return state.heldRecoveryReapGenerations.get(jobId) === generation && !controller.signal.aborted
+      ? result
+      : { kind: 'superseded' };
+  } finally {
+    parentSignal.removeEventListener('abort', forwardAbort);
+    if (state.heldRecoveryReapAttempts.get(jobId) === attempt) {
+      state.heldRecoveryReapAttempts.delete(jobId);
+    }
+    markSettled();
+  }
+}
+
+async function performRecoveryLifecycleTeardown({
+  state,
+  runtime,
+  eventBus,
+  onPhaseChanged,
+  cancelHeldRecoveryReap,
+  releaseAdoptedJob,
+  releaseStartupOwnership,
+  resetRecoveryState,
+}: {
+  state: RecoveryCoordinatorState;
+  runtime: Runtime;
+  eventBus: JobEventBus;
+  onPhaseChanged: (input: Readonly<{ jobId: string; phase: JobPhase; previousPhase: JobPhase }>) => void;
+  cancelHeldRecoveryReap: (jobId: string) => Promise<void> | null;
+  releaseAdoptedJob: (jobId: string) => void;
+  releaseStartupOwnership: () => void;
+  resetRecoveryState: (options?: { forceRegistryRelease?: boolean }) => void;
+}): Promise<void> {
+  eventBus.off('job:phase_changed', onPhaseChanged);
+  state.teardownRequested = true;
+
+  for (const pollInterval of state.recoveryPollIntervals.values()) {
+    runtime.time.clearInterval(pollInterval);
+  }
+  state.recoveryPollIntervals.clear();
+  const heldRecoveryReapSettlements = [...state.heldRecoveryReapAttempts].flatMap(([jobId]) => {
+    const settlement = cancelHeldRecoveryReap(jobId);
+    return settlement === null ? [] : [settlement];
+  });
+  await Promise.allSettled(heldRecoveryReapSettlements);
+  state.heldRecoveryReapGenerations.clear();
+
+  for (const jobId of [...state.adoptedRunningPids.keys()]) {
+    releaseAdoptedJob(jobId);
+  }
+  for (const finalization of state.inflightFinalizations.values()) {
+    finalization.abort();
+  }
+  await Promise.allSettled(
+    [...state.inflightFinalizations.values()]
+      .filter((finalization) => finalization.commitStarted())
+      .map((finalization) => finalization.promise),
+  );
+  for (const cleanup of state.adoptedRunningJobCleanups.values()) {
+    cleanup();
+  }
+  state.adoptedRunningJobCleanups.clear();
+  state.adoptedRunningPids.clear();
+  if (state.recoveryRegistry !== null) {
+    for (const [jobId] of [...state.recoveryRegistry]) {
+      state.recoveryRegistry.remove(jobId);
+    }
+  }
+  state.cancelledRecoveryJobIds.clear();
+  state.providerOperationRecoveries.clear();
+  releaseStartupOwnership();
+  resetRecoveryState({ forceRegistryRelease: true });
+}
+
+function createRecoveryCoordinatorState(
+  onRecoverySettlement: ((jobId: string) => void) | undefined,
+): RecoveryCoordinatorState {
+  return {
     recoveryRegistry: null,
-    onRecoverySettlement: deps.onRecoverySettlement,
+    onRecoverySettlement,
     cancelledRecoveryJobIds: new Set<string>(),
     adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
     unansweredAdoptionProbes: new Map<string, number>(),
@@ -68,6 +218,21 @@ export function createRecoveryLifecycle(
     teardownRequested: false,
     teardownState: { kind: 'pending' },
   };
+}
+
+export function createRecoveryLifecycle(
+  deps: Readonly<{
+    progressStore: JobStore;
+    runtime: Runtime;
+    runtimeState: { setLaunchFenceActive(active: boolean): void };
+    eventBus: JobEventBus;
+    onPhaseChanged(input: Readonly<{ jobId: string; phase: JobPhase; previousPhase: JobPhase }>): void;
+    releaseStartupOwnership(): void;
+    onRecoverySettlement?: (jobId: string) => void;
+  }>,
+) {
+  const { progressStore, runtime, runtimeState, eventBus, onPhaseChanged, releaseStartupOwnership } = deps;
+  const state = createRecoveryCoordinatorState(deps.onRecoverySettlement);
 
   eventBus.on('job:phase_changed', onPhaseChanged);
 
@@ -84,34 +249,7 @@ export function createRecoveryLifecycle(
     jobId: string,
     parentSignal: AbortSignal,
     run: (fence: { signal: AbortSignal; onCommitStart(): void }) => Promise<void>,
-  ): Promise<void> => {
-    const controller = new AbortController();
-    let commitStarted = false;
-    const forwardAbort = (): void => controller.abort();
-    if (parentSignal.aborted) {
-      controller.abort();
-    } else {
-      parentSignal.addEventListener('abort', forwardAbort, { once: true });
-    }
-    const promise = run({
-      signal: controller.signal,
-      onCommitStart: () => {
-        commitStarted = true;
-      },
-    }).finally(() => {
-      parentSignal.removeEventListener('abort', forwardAbort);
-      if (state.inflightFinalizations.get(jobId)?.promise === promise) {
-        state.inflightFinalizations.delete(jobId);
-      }
-    });
-    const tracked = Object.freeze({
-      promise,
-      abort: () => controller.abort(),
-      commitStarted: () => commitStarted,
-    });
-    state.inflightFinalizations.set(jobId, tracked);
-    return promise;
-  };
+  ): Promise<void> => trackRecoveryFinalization(state, jobId, parentSignal, run);
 
   const takeAdoptedJobCleanup = (jobId: string): (() => void) | null => {
     const cleanup = state.adoptedRunningJobCleanups.get(jobId) ?? null;
@@ -137,27 +275,7 @@ export function createRecoveryLifecycle(
   const observeDurableRecoveryContainment = (
     jobId: string,
     runtimeRecord: Extract<RunningRecoverableJob['runtimeRecord'], { transport: 'durable-cli' }>,
-  ): Readonly<{
-    evidence: DurableCliPreReadyOwnershipEvidence;
-    observation: RecordedContainmentObservation;
-  }> => {
-    const evidence = readDurableCliPreReadyOwnershipEvidence(progressStore.getDb(), jobId, runtimeRecord.pid);
-    const observation =
-      evidence.kind === 'current' || evidence.kind === 'provisional'
-        ? observeRecordedContainment(
-            {
-              ...evidence.record,
-              childRoot: evidence.kind === 'current' ? evidence.record.childRoot : null,
-            },
-            {
-              process: runtime.process,
-              platform: runtime.env.platform() as NodeJS.Platform,
-              readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
-            },
-          )
-        : { kind: 'unobservable' as const, reason: durableOwnershipEvidenceHoldReason(evidence) };
-    return { evidence, observation };
-  };
+  ) => observeDurableRecoveryContainmentFor(progressStore, runtime, jobId, runtimeRecord);
 
   const cancelHeldRecoveryReap = (jobId: string): Promise<void> | null => {
     state.heldRecoveryReapGenerations.set(jobId, (state.heldRecoveryReapGenerations.get(jobId) ?? 0) + 1);
@@ -166,40 +284,11 @@ export function createRecoveryLifecycle(
     return attempt?.settlement ?? null;
   };
 
-  const runHeldRecoveryReap = async (
+  const runHeldRecoveryReap = (
     jobId: string,
     record: Parameters<typeof reapDurableCliProcess>[1],
     parentSignal: AbortSignal,
-  ): Promise<Awaited<ReturnType<typeof reapDurableCliProcess>> | Readonly<{ kind: 'superseded' }>> => {
-    const priorSettlement = cancelHeldRecoveryReap(jobId);
-    if (priorSettlement !== null) await priorSettlement;
-    const generation = (state.heldRecoveryReapGenerations.get(jobId) ?? 0) + 1;
-    state.heldRecoveryReapGenerations.set(jobId, generation);
-    const controller = new AbortController();
-    const forwardAbort = (): void => controller.abort();
-    if (parentSignal.aborted) controller.abort();
-    else parentSignal.addEventListener('abort', forwardAbort, { once: true });
-    let markSettled!: () => void;
-    const attempt: HeldRecoveryReapAttempt = {
-      abort: controller,
-      settlement: new Promise<void>((resolve) => {
-        markSettled = resolve;
-      }),
-    };
-    state.heldRecoveryReapAttempts.set(jobId, attempt);
-    try {
-      const result = await reapDurableCliProcess(runtime, record, controller.signal);
-      return state.heldRecoveryReapGenerations.get(jobId) === generation && !controller.signal.aborted
-        ? result
-        : { kind: 'superseded' };
-    } finally {
-      parentSignal.removeEventListener('abort', forwardAbort);
-      if (state.heldRecoveryReapAttempts.get(jobId) === attempt) {
-        state.heldRecoveryReapAttempts.delete(jobId);
-      }
-      markSettled();
-    }
-  };
+  ) => runHeldRecoveryReapAttempt(state, runtime, cancelHeldRecoveryReap, jobId, record, parentSignal);
 
   const resetRecoveryState = (options: { forceRegistryRelease?: boolean } = {}): void => {
     if (options.forceRegistryRelease) {
@@ -210,47 +299,17 @@ export function createRecoveryLifecycle(
     runtimeState.setLaunchFenceActive(false);
   };
 
-  const performTeardown = async (): Promise<void> => {
-    eventBus.off('job:phase_changed', onPhaseChanged);
-    state.teardownRequested = true;
-
-    for (const pollInterval of state.recoveryPollIntervals.values()) {
-      runtime.time.clearInterval(pollInterval);
-    }
-    state.recoveryPollIntervals.clear();
-    const heldRecoveryReapSettlements = [...state.heldRecoveryReapAttempts].flatMap(([jobId]) => {
-      const settlement = cancelHeldRecoveryReap(jobId);
-      return settlement === null ? [] : [settlement];
+  const performTeardown = (): Promise<void> =>
+    performRecoveryLifecycleTeardown({
+      state,
+      runtime,
+      eventBus,
+      onPhaseChanged,
+      cancelHeldRecoveryReap,
+      releaseAdoptedJob,
+      releaseStartupOwnership,
+      resetRecoveryState,
     });
-    await Promise.allSettled(heldRecoveryReapSettlements);
-    state.heldRecoveryReapGenerations.clear();
-
-    for (const jobId of [...state.adoptedRunningPids.keys()]) {
-      releaseAdoptedJob(jobId);
-    }
-    for (const finalization of state.inflightFinalizations.values()) {
-      finalization.abort();
-    }
-    await Promise.allSettled(
-      [...state.inflightFinalizations.values()]
-        .filter((finalization) => finalization.commitStarted())
-        .map((finalization) => finalization.promise),
-    );
-    for (const cleanup of state.adoptedRunningJobCleanups.values()) {
-      cleanup();
-    }
-    state.adoptedRunningJobCleanups.clear();
-    state.adoptedRunningPids.clear();
-    if (state.recoveryRegistry !== null) {
-      for (const [jobId] of [...state.recoveryRegistry]) {
-        state.recoveryRegistry.remove(jobId);
-      }
-    }
-    state.cancelledRecoveryJobIds.clear();
-    state.providerOperationRecoveries.clear();
-    releaseStartupOwnership();
-    resetRecoveryState({ forceRegistryRelease: true });
-  };
 
   const teardown = (): Promise<void> => {
     if (state.teardownState.kind === 'settled') return Promise.resolve();

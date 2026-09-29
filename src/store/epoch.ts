@@ -1843,6 +1843,53 @@ async function finishPostReadyStoreEpochSweep(
   return (await syncPostReadySweepMutations(runtime, dbDir, mutations)) ? result : 'durability-sync-failed';
 }
 
+function postReadyProtectedRetentionBoundary(
+  runtime: Runtime,
+  dbDir: string,
+  proven: readonly string[],
+  protectedAddresses: ReturnType<typeof reconcileProtectedEpochs>,
+): number | null {
+  const allPublishedAt = [
+    ...proven.map((epoch) => readEpochMetadata(runtime.storage, epochDirectory(dbDir, epoch))),
+    ...protectedAddresses.map((address) => readEpochMetadata(runtime.storage, address.protectedPath)),
+  ].map((metadata) => (metadata.kind === 'valid' ? Date.parse(metadata.value.publishedAt) : NaN));
+  if (allPublishedAt.length < 3 || !allPublishedAt.every(Number.isFinite)) return null;
+  const latestTwo = [...allPublishedAt].sort((left, right) => right - left).slice(0, 2);
+  return Math.min(...latestTwo);
+}
+
+async function preparePostReadyStoreEpochSweep(
+  context: PostReadyStoreEpochSweepContext,
+  mutations: PostReadySweepMutationState,
+): Promise<{ kind: 'ready'; entries: readonly string[] } | { kind: 'interrupted'; result: StoreEpochSweepResult }> {
+  const { runtime, dbDir, openEpoch, signal } = context;
+  if (signal?.aborted) return { kind: 'interrupted', result: 'cancelled' };
+  retryPendingProtections(runtime, dbDir, openEpoch);
+  let entries: readonly string[];
+  try {
+    entries = await runtime.storage.readdir(dbDir);
+  } catch (error: unknown) {
+    auditSweepFailure(dbDir, error);
+    return { kind: 'interrupted', result: 'unobservable-metadata' };
+  }
+  if (signal?.aborted) return { kind: 'interrupted', result: 'cancelled' };
+
+  const holderCleanup = await cleanPostReadyStoreEpochHolders(context, entries, mutations);
+  if (holderCleanup.kind === 'cancelled') {
+    return {
+      kind: 'interrupted',
+      result: await finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled'),
+    };
+  }
+  if (!(await syncPostReadySweepMutations(runtime, dbDir, mutations))) {
+    return { kind: 'interrupted', result: 'durability-sync-failed' };
+  }
+  if (holderCleanup.lockReleaseFailed) return { kind: 'interrupted', result: 'lock-release-failed' };
+  if (holderCleanup.deletionFailed) return { kind: 'interrupted', result: 'deletion-failed' };
+  if (holderCleanup.unobservableHolder) return { kind: 'interrupted', result: 'unobservable-holder' };
+  return { kind: 'ready', entries };
+}
+
 export async function sweepStoreEpochsPostReady(
   runtime: Runtime,
   openStore: ResolvedStoreEpoch,
@@ -1857,25 +1904,9 @@ export async function sweepStoreEpochsPostReady(
   const { dbDir, openEpoch, signal } = context;
   const mutations: PostReadySweepMutationState = { pending: false };
 
-  if (signal?.aborted) return 'cancelled';
-  retryPendingProtections(runtime, dbDir, openEpoch);
-  let entries: readonly string[];
-  try {
-    entries = await runtime.storage.readdir(dbDir);
-  } catch (error: unknown) {
-    auditSweepFailure(dbDir, error);
-    return 'unobservable-metadata';
-  }
-  if (signal?.aborted) return 'cancelled';
-
-  const holderCleanup = await cleanPostReadyStoreEpochHolders(context, entries, mutations);
-  if (holderCleanup.kind === 'cancelled') {
-    return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
-  }
-  if (!(await syncPostReadySweepMutations(runtime, dbDir, mutations))) return 'durability-sync-failed';
-  if (holderCleanup.lockReleaseFailed) return 'lock-release-failed';
-  if (holderCleanup.deletionFailed) return 'deletion-failed';
-  if (holderCleanup.unobservableHolder) return 'unobservable-holder';
+  const preparation = await preparePostReadyStoreEpochSweep(context, mutations);
+  if (preparation.kind === 'interrupted') return preparation.result;
+  const { entries } = preparation;
 
   const residueEntries = new Set(entries.filter((entry) => isStoreEpochResidue(entry)));
   const reaping = await reapPostReadyStoreEpochEntries(
@@ -1924,14 +1955,8 @@ export async function sweepStoreEpochsPostReady(
       await yieldSweepTurn();
     }
     const protectedAddresses = reconcileProtectedEpochs(runtime, dbDir);
-    const allPublishedAt = [
-      ...proven.map((epoch) => readEpochMetadata(runtime.storage, epochDirectory(dbDir, epoch))),
-      ...protectedAddresses.map((address) => readEpochMetadata(runtime.storage, address.protectedPath)),
-    ].map((metadata) => (metadata.kind === 'valid' ? Date.parse(metadata.value.publishedAt) : NaN));
-    const protectedRetentionReady = allPublishedAt.length >= 3 && allPublishedAt.every(Number.isFinite);
-    if (protectedRetentionReady) {
-      const latestTwo = [...allPublishedAt].sort((left, right) => right - left).slice(0, 2);
-      const retentionBoundary = Math.min(...latestTwo);
+    const retentionBoundary = postReadyProtectedRetentionBoundary(runtime, dbDir, proven, protectedAddresses);
+    if (retentionBoundary !== null) {
       for (const address of protectedAddresses) {
         if (signal?.aborted) return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
         const metadata = readEpochMetadata(runtime.storage, address.protectedPath);
@@ -2652,6 +2677,224 @@ function recordUncoveredEpochUse(runtime: Runtime, epoch: ResolvedStoreEpoch): v
     throw new Error(`Failed to record use of uncovered store epoch ${epoch.epoch}.`);
 }
 
+function openProtectedStoreEpoch(
+  runtime: Runtime,
+  options: StoreEpochOptions,
+  dbDir: string,
+  protectedIncumbent: ResolvedStoreEpoch,
+):
+  | { kind: 'opened'; settlement: StoreEpochSettlement }
+  | { kind: 'classified'; classification: StoreEpochClassification } {
+  const classification = classifyStoreFile(protectedIncumbent.path, runtime.storage, options.storeFormat);
+  if (classification.kind !== 'compatible') return { kind: 'classified', classification };
+  const generation = observeSuccessionWriterGeneration(runtime);
+  if (generation !== null && generation.storeRoot === dbDir && generation.epoch !== protectedIncumbent.epoch) {
+    handbackSuccessionWriterGeneration(runtime, generation, {
+      storeRoot: dbDir,
+      epoch: protectedIncumbent.epoch,
+    });
+  }
+  const opened = openExactStoreEpoch(
+    runtime,
+    {
+      storeFormat: options.storeFormat,
+      build: options.build,
+      startupBusyTimeoutMs: options.startupBusyTimeoutMs,
+      steadyStateBusyTimeoutMs: options.steadyStateBusyTimeoutMs,
+      authorizeMint: options.authorizeMint,
+    },
+    protectedIncumbent,
+  );
+  if (opened.kind === 'holding') {
+    throw new Error(
+      `Protected epoch exact open held: ${opened.reason}${opened.classification === undefined ? '' : ` (${opened.classification.kind})`}.`,
+    );
+  }
+  return { kind: 'opened', settlement: { db: opened.db, store: opened.store } };
+}
+
+function mintSelectedStoreEpoch(
+  runtime: Runtime,
+  options: StoreEpochOptions,
+  dbDir: string,
+  observations: ReturnType<typeof observeStoreEpochs>,
+  current: ProvenStoreEpochObservation | null,
+  protectedIncumbent: ResolvedStoreEpoch | null,
+  protectedAddresses: ReturnType<typeof knownProtectedEpochAddresses>,
+  classification: StoreEpochClassification,
+): StoreEpochSettlement | null {
+  const unprovenCurrent =
+    current === null
+      ? observations
+          .filter((observation) => {
+            if (observation.proof.kind === 'proven') return false;
+            const directory = epochDirectory(dbDir, observation.epoch);
+            const contained = observeContainedDirectory(runtime.storage, dbDir, directory);
+            return (
+              contained.kind === 'proven' &&
+              observeContainedRegularFile(runtime.storage, directory, epochPath(dbDir, observation.epoch), contained)
+                .kind === 'proven' &&
+              observeStoreEpochLock(runtime.storage, dbDir, observation.epoch, contained).kind === 'proven'
+            );
+          })
+          .reduce<StoreEpochObservation | null>(
+            (latest, observation) =>
+              latest === null || compareEpoch(observation.epoch, latest.epoch) > 0 ? observation : latest,
+            null,
+          )
+      : null;
+  const predecessor = current === null ? protectedIncumbent : resolvedStoreEpoch(dbDir, current.epoch);
+  const incumbent = predecessor ?? (unprovenCurrent === null ? null : resolvedStoreEpoch(dbDir, unprovenCurrent.epoch));
+  let incumbentEpochKey: string | null = null;
+  if (incumbent !== null) {
+    if (classification.kind === 'unavailable') {
+      incumbentEpochKey = inspectResolvedStoreEpochKey(runtime, incumbent);
+      if (incumbentEpochKey === null) {
+        try {
+          incumbentEpochKey = encodeResolvedStoreEpoch(runtime, incumbent);
+        } catch {
+          // A missing lineage marker cannot be created while its opener remains unavailable.
+        }
+      }
+    } else {
+      incumbentEpochKey = encodeResolvedStoreEpoch(runtime, incumbent);
+    }
+  }
+  if (incumbent !== null && incumbentEpochKey === null) {
+    throw new Error('Store epoch mint cannot identify its unavailable predecessor.');
+  }
+  const disposition =
+    options.authorizeMint?.({
+      incumbent,
+      incumbentEpochKey,
+      classification,
+      observedEpochCount: observations.length + protectedAddresses.length,
+    }) ?? null;
+  if (options.path === undefined && disposition === null) {
+    throw new Error('Store epoch mint has no coordinator retirement disposition.');
+  }
+  if (disposition !== null) {
+    if (
+      disposition.incumbentEpochKey !== incumbentEpochKey ||
+      (incumbent === null && observations.length + protectedAddresses.length === 0 && disposition.kind !== 'initial') ||
+      (incumbent === null &&
+        observations.length + protectedAddresses.length > 0 &&
+        disposition.kind !== 'unopenable') ||
+      (incumbent !== null && disposition.kind === 'initial')
+    ) {
+      throw new Error('Store epoch mint disposition does not match the observed predecessor.');
+    }
+  }
+  const highestProtectedEpoch = protectedAddresses.reduce<StoreEpoch | null>((highest, address) => {
+    const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
+    return highest === null || compareEpoch(epoch, highest) > 0 ? epoch : highest;
+  }, null);
+  const successor = selectSuccessor(runtime, dbDir, predecessor?.epoch ?? highestProtectedEpoch);
+  const published = mintNextEpoch(runtime, options, dbDir, predecessor?.epoch ?? null, successor.epoch, classification);
+  if (published.kind === 'published') {
+    if (predecessor !== null || observations.length > 0) {
+      logStoreEpochReplacement(predecessor?.epoch ?? null, classification);
+    }
+    return openPublishedEpoch(runtime, options, dbDir, predecessor?.epoch ?? null, successor.epoch, published.lease);
+  }
+  return null;
+}
+
+type StoreEpochRetryState = {
+  deadline: bigint | null;
+  attempts: number;
+  lastFailure: Readonly<{ epoch: StoreEpoch; classification: StoreEpochClassification }> | null;
+};
+
+function storeEpochRetryDeadlineForEvidence(runtime: Runtime, retry: StoreEpochRetryState): bigint {
+  retry.deadline ??= storeEpochRetryDeadline(runtime);
+  return retry.deadline;
+}
+
+function rememberStoreEpochRetryFailure(
+  retry: StoreEpochRetryState,
+  epoch: StoreEpoch,
+  classification: StoreEpochClassification,
+): StoreEpochClassification {
+  if (retry.lastFailure?.epoch === epoch) return retry.lastFailure.classification;
+  retry.lastFailure = { epoch, classification };
+  return classification;
+}
+
+function adoptProvenStoreEpoch(
+  runtime: Runtime,
+  options: StoreEpochOptions,
+  dbDir: string,
+  current: ProvenStoreEpochObservation,
+  resolved: ResolvedStoreEpoch,
+  db: Database,
+): StoreEpochSettlement {
+  if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
+    db.close();
+    throw new Error(`Failed to durably adopt store epoch ${current.epoch} in '${dbDir}'.`);
+  }
+  try {
+    recordUncoveredEpochUse(runtime, resolved);
+  } catch (error: unknown) {
+    db.close();
+    throw error;
+  }
+  db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
+  return { db, store: resolved };
+}
+
+function openProvenStoreEpoch(
+  runtime: Runtime,
+  options: StoreEpochOptions,
+  dbDir: string,
+  current: ProvenStoreEpochObservation,
+  shouldReobserve: boolean,
+  minimumAttemptMs: number,
+  retry: StoreEpochRetryState,
+  absent: StoreEpochClassification,
+):
+  | { kind: 'settled'; settlement: StoreEpochSettlement }
+  | { kind: 'retry' }
+  | { kind: 'classified'; classification: StoreEpochClassification } {
+  const deadline = storeEpochRetryDeadlineForEvidence(runtime, retry);
+  const resolved = resolvedStoreEpoch(dbDir, current.epoch);
+  advanceWriterGenerationToProvenEpoch(runtime, dbDir, current.epoch);
+  retry.attempts += 1;
+  const opened = tryOpenCurrentEpoch(runtime, options, resolved, deadline);
+  let classification = absent;
+  if (opened.kind === 'opened') {
+    if (!shouldReobserve) {
+      return {
+        kind: 'settled',
+        settlement: adoptProvenStoreEpoch(runtime, options, dbDir, current, resolved, opened.db),
+      };
+    }
+    opened.db.close();
+    if (waitForStoreEpochRetry(runtime, deadline, minimumAttemptMs)) return { kind: 'retry' };
+  } else if (isDecisiveStoreEpochFailure(opened.classification)) {
+    classification = classificationWithAttempts(opened.classification, retry.attempts);
+  } else {
+    rememberStoreEpochRetryFailure(retry, current.epoch, opened.classification);
+    if (waitForStoreEpochRetry(runtime, deadline, minimumAttemptMs)) return { kind: 'retry' };
+  }
+
+  if (!isDecisiveStoreEpochFailure(classification)) {
+    retry.attempts += 1;
+    const finalAttempt = tryOpenCurrentEpoch(runtime, options, resolved, null);
+    if (finalAttempt.kind === 'opened') {
+      return {
+        kind: 'settled',
+        settlement: adoptProvenStoreEpoch(runtime, options, dbDir, current, resolved, finalAttempt.db),
+      };
+    }
+    classification = isDecisiveStoreEpochFailure(finalAttempt.classification)
+      ? finalAttempt.classification
+      : rememberStoreEpochRetryFailure(retry, current.epoch, finalAttempt.classification);
+    classification = classificationWithAttempts(classification, retry.attempts);
+  }
+  return { kind: 'classified', classification };
+}
+
 export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): StoreEpochSettlement {
   const configuredDbDir = resolveStoreDbDir(runtime, options.path);
   if (configuredDbDir === ':memory:') {
@@ -2669,43 +2912,8 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
   runtime.storage.mkdirSync(configuredDbDir, { recursive: true, mode: 0o700 });
   const dbDir = runtime.storage.realpathSync(configuredDbDir);
   reconcileProtectedEpochs(runtime, dbDir);
-  let retryDeadline: bigint | null = null;
-  let retryAttempts = 0;
-  let lastRetryableFailure: Readonly<{
-    epoch: StoreEpoch;
-    classification: StoreEpochClassification;
-  }> | null = null;
-  const retryDeadlineForEvidence = (): bigint => {
-    retryDeadline ??= storeEpochRetryDeadline(runtime);
-    return retryDeadline;
-  };
+  const retry: StoreEpochRetryState = { deadline: null, attempts: 0, lastFailure: null };
   const minimumAttemptMs = Math.max(1, options.startupBusyTimeoutMs ?? STORE_EPOCH_OPEN_RETRY_INTERVAL_MS);
-  const adoptCurrentEpoch = (
-    current: ProvenStoreEpochObservation,
-    resolved: ResolvedStoreEpoch,
-    db: Database,
-  ): StoreEpochSettlement => {
-    if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
-      db.close();
-      throw new Error(`Failed to durably adopt store epoch ${current.epoch} in '${dbDir}'.`);
-    }
-    try {
-      recordUncoveredEpochUse(runtime, resolved);
-    } catch (error: unknown) {
-      db.close();
-      throw error;
-    }
-    db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
-    return { db, store: resolved };
-  };
-  const rememberRetryableFailure = (
-    epoch: StoreEpoch,
-    classification: StoreEpochClassification,
-  ): StoreEpochClassification => {
-    if (lastRetryableFailure?.epoch === epoch) return lastRetryableFailure.classification;
-    lastRetryableFailure = { epoch, classification };
-    return classification;
-  };
   for (;;) {
     const observations = observeStoreEpochs(runtime.storage, dbDir);
     const current = currentProvenEpoch(observations);
@@ -2722,156 +2930,46 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
     const shouldReobserve = hasHigherUnobservableCandidate(observations, current);
     let classification = absentClassification(observations);
     if (current !== null) {
-      const deadline = retryDeadlineForEvidence();
-      const resolved = resolvedStoreEpoch(dbDir, current.epoch);
-      advanceWriterGenerationToProvenEpoch(runtime, dbDir, current.epoch);
-      retryAttempts += 1;
-      const opened = tryOpenCurrentEpoch(runtime, options, resolved, deadline);
-      if (opened.kind === 'opened') {
-        if (!shouldReobserve) return adoptCurrentEpoch(current, resolved, opened.db);
-        opened.db.close();
-        if (waitForStoreEpochRetry(runtime, deadline, minimumAttemptMs)) continue;
-      } else if (isDecisiveStoreEpochFailure(opened.classification)) {
-        classification = classificationWithAttempts(opened.classification, retryAttempts);
-      } else {
-        rememberRetryableFailure(current.epoch, opened.classification);
-        if (waitForStoreEpochRetry(runtime, deadline, minimumAttemptMs)) continue;
-      }
-
-      if (!isDecisiveStoreEpochFailure(classification)) {
-        retryAttempts += 1;
-        const finalAttempt = tryOpenCurrentEpoch(runtime, options, resolved, null);
-        if (finalAttempt.kind === 'opened') return adoptCurrentEpoch(current, resolved, finalAttempt.db);
-        if (isDecisiveStoreEpochFailure(finalAttempt.classification)) {
-          classification = finalAttempt.classification;
-        } else {
-          classification = rememberRetryableFailure(current.epoch, finalAttempt.classification);
-        }
-        classification = classificationWithAttempts(classification, retryAttempts);
-      }
+      const proven = openProvenStoreEpoch(
+        runtime,
+        options,
+        dbDir,
+        current,
+        shouldReobserve,
+        minimumAttemptMs,
+        retry,
+        classification,
+      );
+      if (proven.kind === 'settled') return proven.settlement;
+      if (proven.kind === 'retry') continue;
+      classification = proven.classification;
     } else if (shouldReobserve) {
-      retryAttempts += 1;
-      if (waitForStoreEpochRetry(runtime, retryDeadlineForEvidence(), minimumAttemptMs)) continue;
+      retry.attempts += 1;
+      if (waitForStoreEpochRetry(runtime, storeEpochRetryDeadlineForEvidence(runtime, retry), minimumAttemptMs))
+        continue;
     }
-    if (current === null && retryAttempts > 0) {
-      classification = classificationWithAttempts(classification, retryAttempts);
+    if (current === null && retry.attempts > 0) {
+      classification = classificationWithAttempts(classification, retry.attempts);
     }
     if (protectedIncumbent !== null) {
-      classification = classifyStoreFile(protectedIncumbent.path, runtime.storage, options.storeFormat);
-      if (classification.kind === 'compatible') {
-        const generation = observeSuccessionWriterGeneration(runtime);
-        if (generation !== null && generation.storeRoot === dbDir && generation.epoch !== protectedIncumbent.epoch) {
-          handbackSuccessionWriterGeneration(runtime, generation, {
-            storeRoot: dbDir,
-            epoch: protectedIncumbent.epoch,
-          });
-        }
-        const opened = openExactStoreEpoch(
-          runtime,
-          {
-            storeFormat: options.storeFormat,
-            build: options.build,
-            startupBusyTimeoutMs: options.startupBusyTimeoutMs,
-            steadyStateBusyTimeoutMs: options.steadyStateBusyTimeoutMs,
-            authorizeMint: options.authorizeMint,
-          },
-          protectedIncumbent,
-        );
-        if (opened.kind === 'holding') {
-          throw new Error(
-            `Protected epoch exact open held: ${opened.reason}${opened.classification === undefined ? '' : ` (${opened.classification.kind})`}.`,
-          );
-        }
-        return { db: opened.db, store: opened.store };
-      }
+      const protectedOpen = openProtectedStoreEpoch(runtime, options, dbDir, protectedIncumbent);
+      if (protectedOpen.kind === 'opened') return protectedOpen.settlement;
+      classification = protectedOpen.classification;
     }
-    const unprovenCurrent =
-      current === null
-        ? observations
-            .filter((observation) => {
-              if (observation.proof.kind === 'proven') return false;
-              const directory = epochDirectory(dbDir, observation.epoch);
-              const contained = observeContainedDirectory(runtime.storage, dbDir, directory);
-              return (
-                contained.kind === 'proven' &&
-                observeContainedRegularFile(runtime.storage, directory, epochPath(dbDir, observation.epoch), contained)
-                  .kind === 'proven' &&
-                observeStoreEpochLock(runtime.storage, dbDir, observation.epoch, contained).kind === 'proven'
-              );
-            })
-            .reduce<StoreEpochObservation | null>(
-              (latest, observation) =>
-                latest === null || compareEpoch(observation.epoch, latest.epoch) > 0 ? observation : latest,
-              null,
-            )
-        : null;
-    const predecessor = current === null ? protectedIncumbent : resolvedStoreEpoch(dbDir, current.epoch);
-    const incumbent =
-      predecessor ?? (unprovenCurrent === null ? null : resolvedStoreEpoch(dbDir, unprovenCurrent.epoch));
-    let incumbentEpochKey: string | null = null;
-    if (incumbent !== null) {
-      if (classification.kind === 'unavailable') {
-        incumbentEpochKey = inspectResolvedStoreEpochKey(runtime, incumbent);
-        if (incumbentEpochKey === null) {
-          try {
-            incumbentEpochKey = encodeResolvedStoreEpoch(runtime, incumbent);
-          } catch {
-            // A missing lineage marker cannot be created while its opener remains unavailable.
-          }
-        }
-      } else {
-        incumbentEpochKey = encodeResolvedStoreEpoch(runtime, incumbent);
-      }
-    }
-    if (incumbent !== null && incumbentEpochKey === null) {
-      throw new Error('Store epoch mint cannot identify its unavailable predecessor.');
-    }
-    const disposition =
-      options.authorizeMint?.({
-        incumbent,
-        incumbentEpochKey,
-        classification,
-        observedEpochCount: observations.length + protectedAddresses.length,
-      }) ?? null;
-    if (options.path === undefined && disposition === null) {
-      throw new Error('Store epoch mint has no coordinator retirement disposition.');
-    }
-    if (disposition !== null) {
-      if (
-        disposition.incumbentEpochKey !== incumbentEpochKey ||
-        (incumbent === null &&
-          observations.length + protectedAddresses.length === 0 &&
-          disposition.kind !== 'initial') ||
-        (incumbent === null &&
-          observations.length + protectedAddresses.length > 0 &&
-          disposition.kind !== 'unopenable') ||
-        (incumbent !== null && disposition.kind === 'initial')
-      ) {
-        throw new Error('Store epoch mint disposition does not match the observed predecessor.');
-      }
-    }
-    const highestProtectedEpoch = protectedAddresses.reduce<StoreEpoch | null>((highest, address) => {
-      const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
-      return highest === null || compareEpoch(epoch, highest) > 0 ? epoch : highest;
-    }, null);
-    const successor = selectSuccessor(runtime, dbDir, predecessor?.epoch ?? highestProtectedEpoch);
-    const published = mintNextEpoch(
+    const minted = mintSelectedStoreEpoch(
       runtime,
       options,
       dbDir,
-      predecessor?.epoch ?? null,
-      successor.epoch,
+      observations,
+      current,
+      protectedIncumbent,
+      protectedAddresses,
       classification,
     );
-    if (published.kind === 'published') {
-      if (predecessor !== null || observations.length > 0) {
-        logStoreEpochReplacement(predecessor?.epoch ?? null, classification);
-      }
-      return openPublishedEpoch(runtime, options, dbDir, predecessor?.epoch ?? null, successor.epoch, published.lease);
-    }
-    retryDeadline = null;
-    retryAttempts = 0;
-    lastRetryableFailure = null;
+    if (minted !== null) return minted;
+    retry.deadline = null;
+    retry.attempts = 0;
+    retry.lastFailure = null;
   }
 }
 
@@ -3019,6 +3117,79 @@ export function listStoreEpochResidues(
     });
 }
 
+function listProtectedStoreEpochs(
+  runtime: Pick<Runtime, 'paths' | 'storage' | 'ids' | 'env'>,
+  dbDir: string,
+  custodyState: (epochKey: string | null, closure: EpochClosureEvidence | null) => StoreEpochListEntry['custodyState'],
+): StoreEpochListEntry[] {
+  const protectedAddresses = observeProtectedEpochAddresses(runtime, dbDir);
+  const protectedEpochs: StoreEpochListEntry[] = protectedAddresses.map((address) => {
+    const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
+    const protectedStoreRoot = dirname(address.protectedPath);
+    let addressPresent = false;
+    try {
+      const observed = runtime.storage.lstatSync(address.protectedPath);
+      addressPresent = observed.isDirectory() && !observed.isSymbolicLink();
+    } catch {
+      // An unobservable protected address stays listed as absent.
+    }
+    const metadata = readEpochMetadata(runtime.storage, address.protectedPath);
+    const publicationReason = metadata.kind === 'valid' ? metadata.value.classification : unavailableClassification();
+    const read = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey);
+    const closure = read.kind === 'recorded' ? read.evidence : null;
+    const closureUnreadable = read.kind === 'unreadable' || read.kind === 'unsupported';
+    const role: StoreEpochListEntry['role'] = addressPresent
+      ? 'protected'
+      : closure?.disposition === 'closed' && protectedEpochRemoved(runtime, address)
+        ? 'removed'
+        : 'unobservable';
+    return {
+      epoch,
+      address: address.protectedPath,
+      epochKey: address.epochKey,
+      role,
+      closureDisposition:
+        closure?.disposition ?? (closureUnreadable || role === 'unobservable' ? 'unrecoverable-retained' : 'pending'),
+      dataOutcome: closure?.dataOutcome ?? (closureUnreadable || role === 'unobservable' ? 'unreadable' : 'unknown'),
+      custodyState:
+        closureUnreadable || role === 'unobservable' ? 'undecidable' : custodyState(address.epochKey, closure),
+      closureReason:
+        closure?.reason ?? (read.kind === 'unsupported' ? `unsupported closure generation ${read.version}` : null),
+      bytes: addressPresent ? epochBytes(runtime.storage, protectedStoreRoot, epoch) : null,
+      publicationReason,
+      supersededStoreVersion:
+        'storedProductVersion' in publicationReason ? publicationReason.storedProductVersion : null,
+      epochJson: metadata,
+      resolved: addressPresent
+        ? {
+            storeRoot: protectedStoreRoot,
+            epoch,
+            path: join(address.protectedPath, STORE_DATABASE_FILE_NAME),
+            lineageKey: address.epochKey,
+            canonicalStoreRoot: dbDir,
+          }
+        : null,
+    };
+  });
+  const unrecognized: StoreEpochListEntry[] = unrecognizedProtectedEpochs(runtime, dbDir, protectedAddresses).map(
+    (entry) => ({
+      epoch: entry.epoch,
+      address: entry.path,
+      epochKey: null,
+      role: 'unobservable',
+      closureDisposition: 'unrecoverable-retained',
+      dataOutcome: 'unreadable',
+      custodyState: 'unobserved',
+      bytes: null,
+      publicationReason: unavailableClassification(),
+      supersededStoreVersion: null,
+      epochJson: { kind: 'unreadable' },
+      resolved: null,
+    }),
+  );
+  return [...protectedEpochs, ...unrecognized];
+}
+
 export function listStoreEpochs(
   runtime: Pick<Runtime, 'paths' | 'storage' | 'ids' | 'env'>,
 ): readonly StoreEpochListEntry[] {
@@ -3128,72 +3299,7 @@ export function listStoreEpochs(
       epochJson: { kind: 'unreadable' },
       resolved: null,
     });
-  const protectedAddresses = observeProtectedEpochAddresses(runtime, dbDir);
-  const protectedEpochs: StoreEpochListEntry[] = protectedAddresses.map((address) => {
-    const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
-    const protectedStoreRoot = dirname(address.protectedPath);
-    let addressPresent = false;
-    try {
-      const observed = runtime.storage.lstatSync(address.protectedPath);
-      addressPresent = observed.isDirectory() && !observed.isSymbolicLink();
-    } catch {
-      // An unobservable protected address stays listed as absent.
-    }
-    const metadata = readEpochMetadata(runtime.storage, address.protectedPath);
-    const publicationReason = metadata.kind === 'valid' ? metadata.value.classification : unavailableClassification();
-    const read = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey);
-    const closure = read.kind === 'recorded' ? read.evidence : null;
-    const closureUnreadable = read.kind === 'unreadable' || read.kind === 'unsupported';
-    const role: StoreEpochListEntry['role'] = addressPresent
-      ? 'protected'
-      : closure?.disposition === 'closed' && protectedEpochRemoved(runtime, address)
-        ? 'removed'
-        : 'unobservable';
-    return {
-      epoch,
-      address: address.protectedPath,
-      epochKey: address.epochKey,
-      role,
-      closureDisposition:
-        closure?.disposition ?? (closureUnreadable || role === 'unobservable' ? 'unrecoverable-retained' : 'pending'),
-      dataOutcome: closure?.dataOutcome ?? (closureUnreadable || role === 'unobservable' ? 'unreadable' : 'unknown'),
-      custodyState:
-        closureUnreadable || role === 'unobservable' ? 'undecidable' : custodyState(address.epochKey, closure),
-      closureReason:
-        closure?.reason ?? (read.kind === 'unsupported' ? `unsupported closure generation ${read.version}` : null),
-      bytes: addressPresent ? epochBytes(runtime.storage, protectedStoreRoot, epoch) : null,
-      publicationReason,
-      supersededStoreVersion:
-        'storedProductVersion' in publicationReason ? publicationReason.storedProductVersion : null,
-      epochJson: metadata,
-      resolved: addressPresent
-        ? {
-            storeRoot: protectedStoreRoot,
-            epoch,
-            path: join(address.protectedPath, STORE_DATABASE_FILE_NAME),
-            lineageKey: address.epochKey,
-            canonicalStoreRoot: dbDir,
-          }
-        : null,
-    };
-  });
-  const unrecognized: StoreEpochListEntry[] = unrecognizedProtectedEpochs(runtime, dbDir, protectedAddresses).map(
-    (entry) => ({
-      epoch: entry.epoch,
-      address: entry.path,
-      epochKey: null,
-      role: 'unobservable',
-      closureDisposition: 'unrecoverable-retained',
-      dataOutcome: 'unreadable',
-      custodyState: 'unobserved',
-      bytes: null,
-      publicationReason: unavailableClassification(),
-      supersededStoreVersion: null,
-      epochJson: { kind: 'unreadable' },
-      resolved: null,
-    }),
-  );
-  return [...canonical, ...protectedEpochs, ...unrecognized];
+  return [...canonical, ...listProtectedStoreEpochs(runtime, dbDir, custodyState)];
 }
 
 export function storeEpochHookSource(): string {

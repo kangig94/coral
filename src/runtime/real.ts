@@ -292,12 +292,89 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const envPassthrough = parsePassthrough(capturedEnv.coralEnv.CORAL_ENV_PASSTHROUGH);
   const time: TimePort = createRealTimePort();
 
-  const storage: StoragePort = {
+  const storage = createRealStoragePort(capturedEnv.platform);
+
+  const customKbRoot = capturedEnv.coralEnv.CORAL_KB_PATH;
+  const coral = composeCoralPaths(flavor, {
+    ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
+    ...(customKbRoot ? { customKbRoot } : {}),
+  });
+  const paths: RuntimePaths = {
+    projectSource: resolveProjectSource,
+    projectData: (projectRoot) => coral.projects.dataDir(resolveProjectSource(projectRoot)),
+    coral,
+  };
+
+  const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {
+    return composeChildEnv(capturedEnv.fullEnv, envAdditions ?? {}, envBudgetBytes, envPassthrough);
+  };
+
+  const resolveExecEnv = (options: RuntimeExecOptions = {}): Record<string, string> => {
+    if (options.inheritEnv) {
+      return {
+        ...capturedEnv.fullEnv,
+        ...(options.env ?? {}),
+      };
+    }
+    return options.env ?? buildSpawnEnv();
+  };
+
+  const durable = createRealDurableExecutionTransport({ capturedEnv, storage, time, buildSpawnEnv });
+
+  const terminateProcessIncarnationProbe: ProcessIncarnationProbeTerminator = (child) => {
+    gracefulKill(child as ChildProcessLike, { time }, observeProcessLiveness);
+  };
+
+  const observeRecordedProcessAsync = createAsyncRecordedProcessObserver({
+    readIncarnation: (pid) => probeProcessIncarnationAsync(pid, terminateProcessIncarnationProbe, capturedEnv.platform),
+    observeLiveness: observeProcessLiveness,
+  });
+
+  const runtimeProcess = createRealProcessPort({
+    capturedEnv,
+    time,
+    durable,
+    buildSpawnEnv,
+    resolveExecEnv,
+    observeRecordedProcessAsync,
+  });
+
+  const ids: IdPort = {
+    uuid: () => randomUUID(),
+    randomBytes: (size) => randomBytesNode(size),
+    sha256: (input) => createHash('sha256').update(input).digest('hex'),
+  };
+
+  const env: EnvPort = {
+    get: (key) => capturedEnv.fullEnv[key],
+    homedir: () => osHomedir(),
+    tmpdir: () => osTmpdir(),
+    pid: () => capturedEnv.pid,
+    platform: () => capturedEnv.platform,
+    arch: () => capturedEnv.arch,
+    cwd: () => capturedEnv.cwd,
+    fullSnapshot: () => capturedEnv.fullEnv,
+    coralSnapshot: () => capturedEnv.coralEnv,
+  };
+
+  return {
+    flavor,
+    time,
+    storage,
+    process: runtimeProcess,
+    ids,
+    env,
+    paths,
+  };
+}
+
+function createRealStoragePort(platform: NodeJS.Platform): StoragePort {
+  return {
     assertReadableSync: (path) => accessSync(path, fsConstants.R_OK),
     observeDirectoryTraversabilitySync: (path) => {
       // Node documents `fs.constants.X_OK` as having no effect on Windows, so it cannot establish
       // traversability there.
-      if (capturedEnv.platform === 'win32') return 'unobserved';
+      if (platform === 'win32') return 'unobserved';
       try {
         accessSync(path, fsConstants.X_OK);
         return 'traversable';
@@ -323,28 +400,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       }
       return readdirSync(path);
     }) as StoragePort['readdirSync'],
-    readDirectoryBoundedSync: ((path: string, limit: number, options?: { encoding: 'buffer' }) => {
-      if (!Number.isSafeInteger(limit) || limit < 0) {
-        throw new TypeError('Directory entry limit must be a non-negative safe integer.');
-      }
-      const directory = opendirSync(path, options as never);
-      const entries: Array<string | Buffer> = [];
-      let overflow = false;
-      try {
-        while (true) {
-          const entry = directory.readSync();
-          if (entry === null) break;
-          if (entries.length === limit) {
-            overflow = true;
-            break;
-          }
-          entries.push(entry.name);
-        }
-      } finally {
-        directory.closeSync();
-      }
-      return { entries, overflow };
-    }) as StoragePort['readDirectoryBoundedSync'],
+    readDirectoryBoundedSync: readDirectoryBoundedSyncNode,
     lstatSync: ((path: string | Buffer, options?: { bigint: true }) => {
       if (options?.bigint === true) {
         const stats = lstatSync(path, { bigint: true });
@@ -428,8 +484,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       appendFileWithCanonicalCheckSyncNode(path, data, options),
     rmdirSync: (path) => rmdirSync(path),
     unlinkSync: (path) => unlinkSync(path),
-    tryExclusiveWriteSync: (path, data, options) =>
-      tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),
+    tryExclusiveWriteSync: (path, data, options) => tryExclusiveWriteSyncNode(path, data, platform, options),
     writeAtomicSync: (path, data, options) => writeAtomicSyncNode(path, data, options),
     writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
     syncDirectoryDurableSync: (path) => syncDirectoryDurable(path),
@@ -437,280 +492,52 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     chmodSync: (path, mode) => chmodSync(path, mode),
     openSqliteDatabaseSync,
   };
+}
 
-  const customKbRoot = capturedEnv.coralEnv.CORAL_KB_PATH;
-  const coral = composeCoralPaths(flavor, {
-    ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
-    ...(customKbRoot ? { customKbRoot } : {}),
-  });
-  const paths: RuntimePaths = {
-    projectSource: resolveProjectSource,
-    projectData: (projectRoot) => coral.projects.dataDir(resolveProjectSource(projectRoot)),
-    coral,
-  };
-
-  const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {
-    return composeChildEnv(capturedEnv.fullEnv, envAdditions ?? {}, envBudgetBytes, envPassthrough);
-  };
-
-  const resolveExecEnv = (options: RuntimeExecOptions = {}): Record<string, string> => {
-    if (options.inheritEnv) {
-      return {
-        ...capturedEnv.fullEnv,
-        ...(options.env ?? {}),
-      };
+const readDirectoryBoundedSyncNode = ((path: string, limit: number, options?: { encoding: 'buffer' }) => {
+  if (!Number.isSafeInteger(limit) || limit < 0) {
+    throw new TypeError('Directory entry limit must be a non-negative safe integer.');
+  }
+  const directory = opendirSync(path, options as never);
+  const entries: Array<string | Buffer> = [];
+  let overflow = false;
+  try {
+    while (true) {
+      const entry = directory.readSync();
+      if (entry === null) break;
+      if (entries.length === limit) {
+        overflow = true;
+        break;
+      }
+      entries.push(entry.name);
     }
-    return options.env ?? buildSpawnEnv();
-  };
+  } finally {
+    directory.closeSync();
+  }
+  return { entries, overflow };
+}) as StoragePort['readDirectoryBoundedSync'];
 
-  const durableExitRegistrations = new Map<
-    DurableLaunchHandle,
-    Readonly<{
-      pid: number;
-      processSubject: DurableCliProcessSubject;
-      exitPromise: Promise<DurableProcessExit>;
-    }>
-  >();
+type DurableExitRegistration = Readonly<{
+  pid: number;
+  processSubject: DurableCliProcessSubject;
+  exitPromise: Promise<DurableProcessExit>;
+}>;
+
+function createRealDurableExecutionTransport({
+  capturedEnv,
+  storage,
+  time,
+  buildSpawnEnv,
+}: {
+  capturedEnv: CapturedEnvState;
+  storage: StoragePort;
+  time: TimePort;
+  buildSpawnEnv: (envAdditions?: Record<string, string>) => Record<string, string>;
+}): DurableExecutionTransport {
+  const durableExitRegistrations = new Map<DurableLaunchHandle, DurableExitRegistration>();
   const durable: DurableExecutionTransport = {
-    launch: async (options) => {
-      if (capturedEnv.platform === 'win32') {
-        throw new Error(
-          'Durable CLI launch is unsupported on Windows because Coral cannot observe or terminate a POSIX process group there.',
-        );
-      }
-      const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
-      const launchPayloadPath = `${options.jobDir}/${LAUNCH_PAYLOAD_FILE}`;
-      const startTime = new Date(time.now()).toISOString();
-      storage.writeAtomicSync(envPath, JSON.stringify(options.env ?? buildSpawnEnv(options.envAdditions)), {
-        mode: 0o600,
-      });
-      storage.writeAtomicSync(
-        launchPayloadPath,
-        JSON.stringify({
-          version: 1,
-          command: options.command,
-          args: options.args,
-          cwd: options.cwd ?? null,
-          prompt: options.prompt ?? '',
-          startTime,
-        }),
-        { mode: 0o600 },
-      );
-
-      const wrapper = spawnChild(
-        process.execPath,
-        [
-          durableWrapperEntrypoint(),
-          launchPayloadPath,
-          ...(options.custodyTicket === undefined
-            ? []
-            : [custodyProcessArgument(parseCustodyProcessTicket(options.custodyTicket).processToken)]),
-        ],
-        {
-          detached: true,
-          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-          env: buildSpawnEnv(
-            options.custodyTicket === undefined
-              ? undefined
-              : {
-                  [CUSTODY_PROCESS_TICKET_ENV]: options.custodyTicket,
-                },
-          ),
-        },
-      );
-      let wrapperUnreferenced = false;
-      const unrefWrapper = (): void => {
-        if (wrapperUnreferenced) return;
-        wrapperUnreferenced = true;
-        wrapper.unref();
-        wrapper.channel?.unref();
-      };
-
-      let wrapperClosed = false;
-      const wrapperSettlement = new Promise<void>((resolve) => {
-        wrapper.on('close', () => {
-          wrapperClosed = true;
-          resolve();
-        });
-      });
-      let wrapperTermination: GracefulKillPendingDisposition | null = null;
-      const requestWrapperTermination = (): GracefulKillDisposition => {
-        if (wrapperTermination !== null) return wrapperTermination;
-        const disposition = gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
-        if ('settlement' in disposition) {
-          wrapperTermination = disposition;
-          void disposition.settlement.then(() => {
-            if (wrapperTermination === disposition) wrapperTermination = null;
-          });
-        }
-        return disposition;
-      };
-
-      const holdLaunchFailure = (
-        reason: string,
-        retryAfter = time.sleep(DURABLE_POLL_INTERVAL_MS),
-      ): DurableLaunchHeld => {
-        const retry = async (): Promise<DurableLaunchRetryDisposition> => {
-          const termination = requestWrapperTermination();
-          if (wrapperClosed) return { disposition: 'settled' };
-          if (wrapper.pid !== undefined) {
-            try {
-              if (observeProcessLiveness(wrapper.pid) === 'absent') return { disposition: 'settled' };
-            } catch {
-              // Unknown liveness retains the close-backed launch obligation.
-            }
-          }
-          return holdLaunchFailure(
-            reason,
-            'settlement' in termination
-              ? termination.settlement.then(() => undefined)
-              : time.sleep(DURABLE_POLL_INTERVAL_MS),
-          );
-        };
-        return {
-          disposition: 'held',
-          owner: 'launch-caller',
-          pid: wrapper.pid ?? null,
-          reason,
-          retryAfter: Promise.race([wrapperSettlement, retryAfter]),
-          retry,
-        };
-      };
-
-      let ownershipAccepted = false;
-      const resolveLaunchFailure = async (reason: string): Promise<DurableLaunchHeld> => {
-        let disposition = holdLaunchFailure(reason);
-        if (ownershipAccepted) return disposition;
-        while (true) {
-          await disposition.retryAfter;
-          const retry = await disposition.retry();
-          if (retry.disposition === 'settled') throw new Error(reason);
-          disposition = retry;
-        }
-      };
-
-      try {
-        const ownershipAcceptance = options.onWrapperSpawned?.({
-          pid: wrapper.pid ?? null,
-          settled: wrapperSettlement,
-          requestTermination: requestWrapperTermination,
-        });
-        if (options.onWrapperSpawned !== undefined && ownershipAcceptance?.kind !== 'accepted') {
-          return resolveLaunchFailure('Durable wrapper ownership was not accepted.');
-        }
-        if (ownershipAcceptance?.kind === 'accepted') {
-          ownershipAccepted = true;
-          unrefWrapper();
-        }
-      } catch (error: unknown) {
-        return resolveLaunchFailure(`Durable wrapper ownership was refused: ${errorMessage(error)}`);
-      }
-
-      const wrapperAuthority = liveChildAuthority(wrapper as unknown as ChildProcessLike);
-      const signalAuthority: DurableLaunchSignalAuthority | undefined =
-        wrapperAuthority === undefined
-          ? undefined
-          : Object.freeze({
-              ...wrapperAuthority,
-              requestTermination: requestWrapperTermination,
-            });
-
-      let initiallyObservedLeaderIncarnation: ProcessIncarnation | null = null;
-      if (wrapper.pid !== undefined) {
-        try {
-          initiallyObservedLeaderIncarnation = probeProcessIncarnation(wrapper.pid, capturedEnv.platform);
-        } catch {
-          initiallyObservedLeaderIncarnation = null;
-        }
-      }
-      if (wrapper.pid === undefined || initiallyObservedLeaderIncarnation === null) {
-        return resolveLaunchFailure(
-          'Durable launch could not establish the wrapper process identity before provider spawn. Retry the job; if this persists, verify process inspection permissions.',
-        );
-      }
-      const provisionalRuntimeRecord: DurableCliRuntimeRecord = {
-        transport: 'durable-cli',
-        pid: wrapper.pid,
-        stdoutPath: `${options.jobDir}/stdout`,
-        stderrPath: `${options.jobDir}/stderr`,
-        startTime,
-      };
-      const readiness = waitForDurableRuntime({
-        time,
-        wrapper,
-      });
-      try {
-        options.onWrapperIdentified?.({
-          runtimeRecord: provisionalRuntimeRecord,
-          pid: wrapper.pid,
-          leaderIncarnation: initiallyObservedLeaderIncarnation,
-          ...(signalAuthority === undefined ? {} : { signalAuthority }),
-        });
-        await new Promise<void>((resolve, reject) => {
-          wrapper.send('runtime-start-published', (error) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
-      } catch (error: unknown) {
-        void readiness.catch(() => {});
-        return resolveLaunchFailure(errorMessage(error));
-      }
-
-      let ready;
-      try {
-        ready = await readiness;
-      } catch (error: unknown) {
-        return resolveLaunchFailure(errorMessage(error));
-      }
-      const { runtimeRecord, reportedLeaderIncarnation, childRoot, exitPromise } = ready;
-      if (
-        initiallyObservedLeaderIncarnation !== null &&
-        reportedLeaderIncarnation !== null &&
-        initiallyObservedLeaderIncarnation !== reportedLeaderIncarnation
-      ) {
-        void exitPromise.catch(() => {});
-        return resolveLaunchFailure('Durable wrapper identity changed before launch readiness. Retry the job.');
-      }
-      const leaderIncarnation = initiallyObservedLeaderIncarnation ?? reportedLeaderIncarnation;
-      if (leaderIncarnation === null || childRoot === null) {
-        void exitPromise.catch(() => {});
-        return resolveLaunchFailure(
-          'Durable launch could not establish a recoverable process identity. Retry the job; if this persists, verify process inspection permissions.',
-        );
-      }
-      const processSubject: DurableCliProcessSubject = {
-        pid: runtimeRecord.pid,
-        incarnation: leaderIncarnation,
-        processGroupId: runtimeRecord.pid,
-        childRoot,
-      };
-      try {
-        options.onSpawned?.({
-          runtimeRecord,
-          leaderIncarnation,
-          childRoot,
-          ...(signalAuthority === undefined ? {} : { signalAuthority }),
-        });
-      } catch (error: unknown) {
-        void exitPromise.catch(() => {});
-        return resolveLaunchFailure(errorMessage(error));
-      }
-      const launchHandle = randomUUID() as DurableLaunchHandle;
-      durableExitRegistrations.set(launchHandle, { pid: runtimeRecord.pid, processSubject, exitPromise });
-      unrefWrapper();
-
-      return {
-        disposition: 'launched',
-        launchHandle,
-        pid: runtimeRecord.pid,
-        stdoutPath: runtimeRecord.stdoutPath,
-        stderrPath: runtimeRecord.stderrPath,
-        runtimeRecord,
-        processSubject,
-        ...(signalAuthority === undefined ? {} : { signalAuthority }),
-      };
-    },
+    launch: (options) =>
+      launchDurableProcess(options, { capturedEnv, storage, time, buildSpawnEnv, durableExitRegistrations }),
     waitForExit: async (handle) => {
       const registration = durableExitRegistrations.get(handle.launchHandle);
       if (
@@ -738,15 +565,319 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     },
   };
 
-  const terminateProcessIncarnationProbe: ProcessIncarnationProbeTerminator = (child) => {
-    gracefulKill(child as ChildProcessLike, { time }, observeProcessLiveness);
+  return durable;
+}
+
+async function launchDurableProcess(
+  options: Parameters<DurableExecutionTransport['launch']>[0],
+  {
+    capturedEnv,
+    storage,
+    time,
+    buildSpawnEnv,
+    durableExitRegistrations,
+  }: {
+    capturedEnv: CapturedEnvState;
+    storage: StoragePort;
+    time: TimePort;
+    buildSpawnEnv: (envAdditions?: Record<string, string>) => Record<string, string>;
+    durableExitRegistrations: Map<DurableLaunchHandle, DurableExitRegistration>;
+  },
+): ReturnType<DurableExecutionTransport['launch']> {
+  const { wrapper, startTime } = spawnDurableWrapper(options, { capturedEnv, storage, time, buildSpawnEnv });
+  const { state, unrefWrapper, wrapperSettlement, requestWrapperTermination, resolveLaunchFailure } =
+    createDurableWrapperObligation(wrapper, time);
+  const obligation = { state, unrefWrapper, wrapperSettlement, requestWrapperTermination, resolveLaunchFailure };
+  const ownershipFailure = acceptDurableWrapperOwnership(options.onWrapperSpawned, wrapper, obligation);
+  if (ownershipFailure !== null) return ownershipFailure;
+
+  const wrapperAuthority = liveChildAuthority(wrapper as unknown as ChildProcessLike);
+  const signalAuthority: DurableLaunchSignalAuthority | undefined =
+    wrapperAuthority === undefined
+      ? undefined
+      : Object.freeze({
+          ...wrapperAuthority,
+          requestTermination: requestWrapperTermination,
+        });
+
+  let initiallyObservedLeaderIncarnation: ProcessIncarnation | null = null;
+  if (wrapper.pid !== undefined) {
+    try {
+      initiallyObservedLeaderIncarnation = probeProcessIncarnation(wrapper.pid, capturedEnv.platform);
+    } catch {
+      initiallyObservedLeaderIncarnation = null;
+    }
+  }
+  if (wrapper.pid === undefined || initiallyObservedLeaderIncarnation === null) {
+    return resolveLaunchFailure(
+      'Durable launch could not establish the wrapper process identity before provider spawn. Retry the job; if this persists, verify process inspection permissions.',
+    );
+  }
+  const provisionalRuntimeRecord: DurableCliRuntimeRecord = {
+    transport: 'durable-cli',
+    pid: wrapper.pid,
+    stdoutPath: `${options.jobDir}/stdout`,
+    stderrPath: `${options.jobDir}/stderr`,
+    startTime,
+  };
+  const readiness = waitForDurableRuntime({
+    time,
+    wrapper,
+  });
+  try {
+    options.onWrapperIdentified?.({
+      runtimeRecord: provisionalRuntimeRecord,
+      pid: wrapper.pid,
+      leaderIncarnation: initiallyObservedLeaderIncarnation,
+      ...(signalAuthority === undefined ? {} : { signalAuthority }),
+    });
+    await new Promise<void>((resolve, reject) => {
+      wrapper.send('runtime-start-published', (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  } catch (error: unknown) {
+    void readiness.catch(() => {});
+    return resolveLaunchFailure(errorMessage(error));
+  }
+
+  let ready;
+  try {
+    ready = await readiness;
+  } catch (error: unknown) {
+    return resolveLaunchFailure(errorMessage(error));
+  }
+  const { runtimeRecord, reportedLeaderIncarnation, childRoot, exitPromise } = ready;
+  if (
+    initiallyObservedLeaderIncarnation !== null &&
+    reportedLeaderIncarnation !== null &&
+    initiallyObservedLeaderIncarnation !== reportedLeaderIncarnation
+  ) {
+    void exitPromise.catch(() => {});
+    return resolveLaunchFailure('Durable wrapper identity changed before launch readiness. Retry the job.');
+  }
+  const leaderIncarnation = initiallyObservedLeaderIncarnation ?? reportedLeaderIncarnation;
+  if (leaderIncarnation === null || childRoot === null) {
+    void exitPromise.catch(() => {});
+    return resolveLaunchFailure(
+      'Durable launch could not establish a recoverable process identity. Retry the job; if this persists, verify process inspection permissions.',
+    );
+  }
+  const processSubject: DurableCliProcessSubject = {
+    pid: runtimeRecord.pid,
+    incarnation: leaderIncarnation,
+    processGroupId: runtimeRecord.pid,
+    childRoot,
+  };
+  try {
+    options.onSpawned?.({
+      runtimeRecord,
+      leaderIncarnation,
+      childRoot,
+      ...(signalAuthority === undefined ? {} : { signalAuthority }),
+    });
+  } catch (error: unknown) {
+    void exitPromise.catch(() => {});
+    return resolveLaunchFailure(errorMessage(error));
+  }
+  const launchHandle = randomUUID() as DurableLaunchHandle;
+  durableExitRegistrations.set(launchHandle, { pid: runtimeRecord.pid, processSubject, exitPromise });
+  unrefWrapper();
+
+  return {
+    disposition: 'launched',
+    launchHandle,
+    pid: runtimeRecord.pid,
+    stdoutPath: runtimeRecord.stdoutPath,
+    stderrPath: runtimeRecord.stderrPath,
+    runtimeRecord,
+    processSubject,
+    ...(signalAuthority === undefined ? {} : { signalAuthority }),
+  };
+}
+
+function acceptDurableWrapperOwnership(
+  onWrapperSpawned: Parameters<DurableExecutionTransport['launch']>[0]['onWrapperSpawned'],
+  wrapper: ReturnType<typeof spawnChild>,
+  {
+    state,
+    unrefWrapper,
+    wrapperSettlement,
+    requestWrapperTermination,
+    resolveLaunchFailure,
+  }: ReturnType<typeof createDurableWrapperObligation>,
+): Promise<DurableLaunchHeld> | null {
+  try {
+    const ownershipAcceptance = onWrapperSpawned?.({
+      pid: wrapper.pid ?? null,
+      settled: wrapperSettlement,
+      requestTermination: requestWrapperTermination,
+    });
+    if (onWrapperSpawned !== undefined && ownershipAcceptance?.kind !== 'accepted') {
+      return resolveLaunchFailure('Durable wrapper ownership was not accepted.');
+    }
+    if (ownershipAcceptance?.kind === 'accepted') {
+      state.ownershipAccepted = true;
+      unrefWrapper();
+    }
+  } catch (error: unknown) {
+    return resolveLaunchFailure(`Durable wrapper ownership was refused: ${errorMessage(error)}`);
+  }
+  return null;
+}
+
+function createDurableWrapperObligation(wrapper: ReturnType<typeof spawnChild>, time: TimePort) {
+  const state = {
+    unreferenced: false,
+    closed: false,
+    termination: null as GracefulKillPendingDisposition | null,
+    ownershipAccepted: false,
+  };
+  const unrefWrapper = (): void => {
+    if (state.unreferenced) return;
+    state.unreferenced = true;
+    wrapper.unref();
+    wrapper.channel?.unref();
   };
 
-  const observeRecordedProcessAsync = createAsyncRecordedProcessObserver({
-    readIncarnation: (pid) => probeProcessIncarnationAsync(pid, terminateProcessIncarnationProbe, capturedEnv.platform),
-    observeLiveness: observeProcessLiveness,
+  const wrapperSettlement = new Promise<void>((resolve) => {
+    wrapper.on('close', () => {
+      state.closed = true;
+      resolve();
+    });
   });
+  const requestWrapperTermination = (): GracefulKillDisposition => {
+    if (state.termination !== null) return state.termination;
+    const disposition = gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+    if ('settlement' in disposition) {
+      state.termination = disposition;
+      void disposition.settlement.then(() => {
+        if (state.termination === disposition) state.termination = null;
+      });
+    }
+    return disposition;
+  };
 
+  const holdLaunchFailure = (reason: string, retryAfter = time.sleep(DURABLE_POLL_INTERVAL_MS)): DurableLaunchHeld => {
+    const retry = async (): Promise<DurableLaunchRetryDisposition> => {
+      const termination = requestWrapperTermination();
+      if (state.closed) return { disposition: 'settled' };
+      if (wrapper.pid !== undefined) {
+        try {
+          if (observeProcessLiveness(wrapper.pid) === 'absent') return { disposition: 'settled' };
+        } catch {
+          // Unknown liveness retains the close-backed launch obligation.
+        }
+      }
+      return holdLaunchFailure(
+        reason,
+        'settlement' in termination
+          ? termination.settlement.then(() => undefined)
+          : time.sleep(DURABLE_POLL_INTERVAL_MS),
+      );
+    };
+    return {
+      disposition: 'held',
+      owner: 'launch-caller',
+      pid: wrapper.pid ?? null,
+      reason,
+      retryAfter: Promise.race([wrapperSettlement, retryAfter]),
+      retry,
+    };
+  };
+
+  const resolveLaunchFailure = async (reason: string): Promise<DurableLaunchHeld> => {
+    let disposition = holdLaunchFailure(reason);
+    if (state.ownershipAccepted) return disposition;
+    while (true) {
+      await disposition.retryAfter;
+      const retry = await disposition.retry();
+      if (retry.disposition === 'settled') throw new Error(reason);
+      disposition = retry;
+    }
+  };
+
+  return { state, unrefWrapper, wrapperSettlement, requestWrapperTermination, resolveLaunchFailure };
+}
+
+function spawnDurableWrapper(
+  options: Parameters<DurableExecutionTransport['launch']>[0],
+  {
+    capturedEnv,
+    storage,
+    time,
+    buildSpawnEnv,
+  }: {
+    capturedEnv: CapturedEnvState;
+    storage: StoragePort;
+    time: TimePort;
+    buildSpawnEnv: (envAdditions?: Record<string, string>) => Record<string, string>;
+  },
+): { wrapper: ReturnType<typeof spawnChild>; startTime: string } {
+  if (capturedEnv.platform === 'win32') {
+    throw new Error(
+      'Durable CLI launch is unsupported on Windows because Coral cannot observe or terminate a POSIX process group there.',
+    );
+  }
+  const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
+  const launchPayloadPath = `${options.jobDir}/${LAUNCH_PAYLOAD_FILE}`;
+  const startTime = new Date(time.now()).toISOString();
+  storage.writeAtomicSync(envPath, JSON.stringify(options.env ?? buildSpawnEnv(options.envAdditions)), {
+    mode: 0o600,
+  });
+  storage.writeAtomicSync(
+    launchPayloadPath,
+    JSON.stringify({
+      version: 1,
+      command: options.command,
+      args: options.args,
+      cwd: options.cwd ?? null,
+      prompt: options.prompt ?? '',
+      startTime,
+    }),
+    { mode: 0o600 },
+  );
+
+  const wrapper = spawnChild(
+    process.execPath,
+    [
+      durableWrapperEntrypoint(),
+      launchPayloadPath,
+      ...(options.custodyTicket === undefined
+        ? []
+        : [custodyProcessArgument(parseCustodyProcessTicket(options.custodyTicket).processToken)]),
+    ],
+    {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      env: buildSpawnEnv(
+        options.custodyTicket === undefined
+          ? undefined
+          : {
+              [CUSTODY_PROCESS_TICKET_ENV]: options.custodyTicket,
+            },
+      ),
+    },
+  );
+  return { wrapper, startTime };
+}
+
+function createRealProcessPort({
+  capturedEnv,
+  time,
+  durable,
+  buildSpawnEnv,
+  resolveExecEnv,
+  observeRecordedProcessAsync,
+}: {
+  capturedEnv: CapturedEnvState;
+  time: TimePort;
+  durable: DurableExecutionTransport;
+  buildSpawnEnv: (envAdditions?: Record<string, string>) => Record<string, string>;
+  resolveExecEnv: (options?: RuntimeExecOptions) => Record<string, string>;
+  observeRecordedProcessAsync: ReturnType<typeof createAsyncRecordedProcessObserver>;
+}): ProcessPort {
   const runtimeProcess = {
     spawn: (options) => {
       const spawnEnv = options.env
@@ -805,7 +936,15 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     });
   };
 
-  runtimeProcess.execSync = (command, args, options = {}) => {
+  runtimeProcess.execSync = createRealExecSync(resolveExecEnv);
+
+  return runtimeProcess;
+}
+
+function createRealExecSync(
+  resolveExecEnv: (options?: RuntimeExecOptions) => Record<string, string>,
+): ProcessPort['execSync'] {
+  return (command, args, options = {}) => {
     const execOptions: RuntimeExecOptions = { ...options };
     execOptions.maxBuffer ??= MAX_BUFFER;
     // Bounded for the same reason `maxBuffer` is, and only on the synchronous variant. Abandoning `exec`'s
@@ -894,34 +1033,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       stderr,
       status: result.status,
     };
-  };
-
-  const ids: IdPort = {
-    uuid: () => randomUUID(),
-    randomBytes: (size) => randomBytesNode(size),
-    sha256: (input) => createHash('sha256').update(input).digest('hex'),
-  };
-
-  const env: EnvPort = {
-    get: (key) => capturedEnv.fullEnv[key],
-    homedir: () => osHomedir(),
-    tmpdir: () => osTmpdir(),
-    pid: () => capturedEnv.pid,
-    platform: () => capturedEnv.platform,
-    arch: () => capturedEnv.arch,
-    cwd: () => capturedEnv.cwd,
-    fullSnapshot: () => capturedEnv.fullEnv,
-    coralSnapshot: () => capturedEnv.coralEnv,
-  };
-
-  return {
-    flavor,
-    time,
-    storage,
-    process: runtimeProcess,
-    ids,
-    env,
-    paths,
   };
 }
 

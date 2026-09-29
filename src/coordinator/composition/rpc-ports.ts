@@ -84,6 +84,30 @@ function providerProxySetContainBooleanResponse(
   return providerProxySetContainBooleanResponseSchema.parse(response);
 }
 
+function createCoordinatorJobLister(getProgressStore: () => JobStore): RpcPorts['jobs']['list'] {
+  return (filters) => {
+    const progressStore = getProgressStore();
+    const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
+    for (const entry of progressStore.listJobProjections()) {
+      if (filters.all !== true && !isLivePhase(entry.status.phase)) {
+        continue;
+      }
+      if (filters.projectRoot !== undefined && !jobInCallerScope(entry.status, filters.projectRoot, 'exact')) {
+        continue;
+      }
+      if (filters.phase !== undefined && entry.status.phase !== filters.phase) {
+        continue;
+      }
+      if (filters.provider !== undefined && entry.status.provider !== filters.provider) {
+        continue;
+      }
+      jobs.push(entry);
+    }
+
+    return jobs;
+  };
+}
+
 export function createCoordinatorRpcPorts({
   services,
   jobAddressing,
@@ -125,27 +149,7 @@ export function createCoordinatorRpcPorts({
       validateWait: (request) => jobAddressing.validateWait(request),
       waitStream: (request) => jobAddressing.waitStream(request),
       waitHandoverSignal,
-      list: (filters) => {
-        const progressStore = getProgressStore();
-        const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
-        for (const entry of progressStore.listJobProjections()) {
-          if (filters.all !== true && !isLivePhase(entry.status.phase)) {
-            continue;
-          }
-          if (filters.projectRoot !== undefined && !jobInCallerScope(entry.status, filters.projectRoot, 'exact')) {
-            continue;
-          }
-          if (filters.phase !== undefined && entry.status.phase !== filters.phase) {
-            continue;
-          }
-          if (filters.provider !== undefined && entry.status.provider !== filters.provider) {
-            continue;
-          }
-          jobs.push(entry);
-        }
-
-        return jobs;
-      },
+      list: createCoordinatorJobLister(getProgressStore),
       detail: (jobId) => jobAddressing.detail(jobId),
       unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
       outcomeUnrecoverable: (jobIds) => jobAddressing.outcomeUnrecoverable(jobIds),

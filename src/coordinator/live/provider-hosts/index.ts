@@ -606,6 +606,124 @@ export class DefaultProviderHostManager
   }
 
   /** An acquisition must remain owned until publication or its assigned stop disposition completes. */
+  private async retryStoppedProxySetAcquisitionCleanup(
+    pending: PendingProviderProxySetAcquisition,
+    lifecycle: NonNullable<ReturnType<ProviderProxySetLifecycleRef['get']>>,
+    entry: ProxySetAcquisitionTarget,
+    cleanupHold: NonNullable<PendingProviderProxySetAcquisition['cleanupHold']>,
+    signal: AbortSignal,
+  ): Promise<ProviderProxySetAcquisitionCleanupOutcome> {
+    const identityKey = pending.identityKey;
+    let acquired: ProviderProxySetAcquisitionOutcome;
+    try {
+      acquired = await waitForAcquisitionOutcome(pending.outcome, signal);
+      const stop = pending.stop;
+      if (stop === null) {
+        throw new Error('provider_proxy_set_acquisition_cleanup_disposition_missing');
+      }
+      if (acquired.kind === 'handed-over' && stop.disposition === 'contain') {
+        const acceptance = lifecycle.acquisitionPublicationUnknown(pending.slotId, acquired, (set) =>
+          this.observeGenerationCapacity(identityKey, entry, set),
+        );
+        if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+          throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+        }
+        const held = { kind: 'held' as const, reason: 'containment ownership transferred for recovery' };
+        pending.resolveCleanupCompletion(held);
+        return held;
+      }
+      const disposition = await disposeStoppedProviderProxySetAcquisition(acquired, stop.disposition, signal);
+      if (disposition.kind === 'held') {
+        pending.resolveCleanupCompletion(disposition);
+        return disposition;
+      }
+      if (disposition.kind === 'transfer-required') {
+        const acceptance =
+          disposition.acquisition.kind === 'acquired'
+            ? lifecycle.acquisitionSucceeded(
+                pending.slotId,
+                this.observeGenerationCapacity(identityKey, entry, disposition.acquisition.set),
+                disposition.acquisition.publicationReceipt,
+              )
+            : lifecycle.acquisitionPublicationUnknown(pending.slotId, disposition.acquisition, (set) =>
+                this.observeGenerationCapacity(identityKey, entry, set),
+              );
+        if (acceptance.owner !== disposition.successor) {
+          throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+        }
+        const delegated = { kind: 'delegated' as const, owner: acceptance.owner };
+        pending.resolveCleanupCompletion(delegated);
+        return delegated;
+      }
+      lifecycle.acquisitionCleanupConfirmed(pending.slotId, cleanupHold, disposition);
+      pending.resolveCleanupCompletion(disposition);
+      return disposition;
+    } catch (error: unknown) {
+      const held = {
+        kind: 'held' as const,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+      pending.resolveCleanupCompletion(held);
+      return held;
+    }
+  }
+
+  private async acceptProviderProxySetAcquisitionOutcome(
+    pending: PendingProviderProxySetAcquisition,
+    lifecycle: NonNullable<ReturnType<ProviderProxySetLifecycleRef['get']>>,
+    entry: ProxySetAcquisitionTarget,
+    cleanupHold: NonNullable<PendingProviderProxySetAcquisition['cleanupHold']>,
+    outcome: ProviderProxySetAcquisitionOutcome,
+  ): Promise<void> {
+    const identityKey = pending.identityKey;
+
+    pending.resolveOutcome(outcome);
+    if (pending.stop !== null) {
+      const cleanup = await pending.cleanupCompletion;
+      if (cleanup.kind === 'held') throw new Error(cleanup.reason);
+      return;
+    }
+    if (outcome.kind === 'acquired') {
+      const set = this.observeGenerationCapacity(identityKey, entry, outcome.set);
+      const acceptance = lifecycle.acquisitionSucceeded(pending.slotId, set, outcome.publicationReceipt);
+      if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+        throw new Error('provider_proxy_set_acquisition_owner_not_accepted');
+      }
+      return;
+    }
+    if (outcome.kind === 'handed-over') {
+      const acceptance = lifecycle.acquisitionPublicationUnknown(pending.slotId, outcome, (set) =>
+        this.observeGenerationCapacity(identityKey, entry, set),
+      );
+      if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+        throw new Error('provider_proxy_set_acquisition_owner_not_accepted');
+      }
+      return;
+    }
+    if (outcome.kind === 'provider_proxy_acquisition_held') {
+      const acceptance = lifecycle.acquisitionCleanupHeld(pending.slotId, outcome);
+      if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+        throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+      }
+      return;
+    }
+    if (outcome.kind === 'outcome-unknown') {
+      const acceptance = lifecycle.acquisitionCleanupPending(pending.slotId, cleanupHold);
+      if (acceptance.kind !== 'accepted' || acceptance.owner !== 'provider-proxy-set-lifecycle') {
+        throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+      }
+      pending.stop = { disposition: 'contain' };
+      pending.cleanupOwnerAccepted = true;
+      return;
+    }
+    lifecycle.acquisitionFailed(pending.slotId);
+    const strandedArtifacts =
+      outcome.strandedArtifacts.length === 0 ? '' : `; stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`;
+    backendLog.warn(
+      `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}${strandedArtifacts}`,
+    );
+  }
+
   private ensureProxySetFor(entry: ProxySetAcquisitionTarget): void {
     const config = this.proxySetAcquisitionConfig;
     const lifecycle = this.providerProxyLifecycleRef?.get();
@@ -657,60 +775,13 @@ export class DefaultProviderHostManager
       recoveryCapability: {
         retry: (signal) => {
           if (retrying !== null) return retrying;
-          retrying = (async () => {
-            let acquired: ProviderProxySetAcquisitionOutcome;
-            try {
-              acquired = await waitForAcquisitionOutcome(pending.outcome, signal);
-              const stop = pending.stop;
-              if (stop === null) {
-                throw new Error('provider_proxy_set_acquisition_cleanup_disposition_missing');
-              }
-              if (acquired.kind === 'handed-over' && stop.disposition === 'contain') {
-                const acceptance = lifecycle.acquisitionPublicationUnknown(admission.slotId, acquired, (set) =>
-                  this.observeGenerationCapacity(identityKey, entry, set),
-                );
-                if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
-                  throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
-                }
-                const held = { kind: 'held' as const, reason: 'containment ownership transferred for recovery' };
-                pending.resolveCleanupCompletion(held);
-                return held;
-              }
-              const disposition = await disposeStoppedProviderProxySetAcquisition(acquired, stop.disposition, signal);
-              if (disposition.kind === 'held') {
-                pending.resolveCleanupCompletion(disposition);
-                return disposition;
-              }
-              if (disposition.kind === 'transfer-required') {
-                const acceptance =
-                  disposition.acquisition.kind === 'acquired'
-                    ? lifecycle.acquisitionSucceeded(
-                        admission.slotId,
-                        this.observeGenerationCapacity(identityKey, entry, disposition.acquisition.set),
-                        disposition.acquisition.publicationReceipt,
-                      )
-                    : lifecycle.acquisitionPublicationUnknown(admission.slotId, disposition.acquisition, (set) =>
-                        this.observeGenerationCapacity(identityKey, entry, set),
-                      );
-                if (acceptance.owner !== disposition.successor) {
-                  throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
-                }
-                const delegated = { kind: 'delegated' as const, owner: acceptance.owner };
-                pending.resolveCleanupCompletion(delegated);
-                return delegated;
-              }
-              lifecycle.acquisitionCleanupConfirmed(admission.slotId, cleanupHold, disposition);
-              pending.resolveCleanupCompletion(disposition);
-              return disposition;
-            } catch (error: unknown) {
-              const held = {
-                kind: 'held' as const,
-                reason: error instanceof Error ? error.message : String(error),
-              };
-              pending.resolveCleanupCompletion(held);
-              return held;
-            }
-          })().finally(() => {
+          retrying = this.retryStoppedProxySetAcquisitionCleanup(
+            pending,
+            lifecycle,
+            entry,
+            cleanupHold,
+            signal,
+          ).finally(() => {
             retrying = null;
           });
           return retrying;
@@ -728,55 +799,7 @@ export class DefaultProviderHostManager
           ...config,
           acceptHold: (hold) => lifecycle.persistAcquisitionCleanupHold(admission.slotId, hold),
         },
-        async (outcome) => {
-          pending.resolveOutcome(outcome);
-          if (pending.stop !== null) {
-            const cleanup = await pending.cleanupCompletion;
-            if (cleanup.kind === 'held') throw new Error(cleanup.reason);
-            return;
-          }
-          if (outcome.kind === 'acquired') {
-            const set = this.observeGenerationCapacity(identityKey, entry, outcome.set);
-            const acceptance = lifecycle.acquisitionSucceeded(admission.slotId, set, outcome.publicationReceipt);
-            if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
-              throw new Error('provider_proxy_set_acquisition_owner_not_accepted');
-            }
-            return;
-          }
-          if (outcome.kind === 'handed-over') {
-            const acceptance = lifecycle.acquisitionPublicationUnknown(admission.slotId, outcome, (set) =>
-              this.observeGenerationCapacity(identityKey, entry, set),
-            );
-            if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
-              throw new Error('provider_proxy_set_acquisition_owner_not_accepted');
-            }
-            return;
-          }
-          if (outcome.kind === 'provider_proxy_acquisition_held') {
-            const acceptance = lifecycle.acquisitionCleanupHeld(admission.slotId, outcome);
-            if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
-              throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
-            }
-            return;
-          }
-          if (outcome.kind === 'outcome-unknown') {
-            const acceptance = lifecycle.acquisitionCleanupPending(admission.slotId, cleanupHold);
-            if (acceptance.kind !== 'accepted' || acceptance.owner !== 'provider-proxy-set-lifecycle') {
-              throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
-            }
-            pending.stop = { disposition: 'contain' };
-            pending.cleanupOwnerAccepted = true;
-            return;
-          }
-          lifecycle.acquisitionFailed(admission.slotId);
-          const strandedArtifacts =
-            outcome.strandedArtifacts.length === 0
-              ? ''
-              : `; stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`;
-          backendLog.warn(
-            `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}${strandedArtifacts}`,
-          );
-        },
+        (outcome) => this.acceptProviderProxySetAcquisitionOutcome(pending, lifecycle, entry, cleanupHold, outcome),
       ),
     );
     pending.settlement = settlement;

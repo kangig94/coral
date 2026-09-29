@@ -1420,122 +1420,11 @@ export function createProviderProxySetCommandOperations(
   };
 }
 
-export function registerBackendCommands(program: Command, operations: BackendCommandOperations = {}): void {
-  const {
-    storeReset = {
-      list: listStoreResetIncidentsLocal,
-      report: reportStoreResetLocal,
-      discard: discardStoreResetLocal,
-      release: releaseStoreResetLocal,
-    },
-    kbCommit = {
-      quarantine: quarantineKbCommitLocal,
-    },
-    backendLifecycle = createBackendLifecycleCommandOperations(),
-    backendStatus = createBackendStatusCommandOperations(),
-    routingStatus = createHandoffRoutingStatusCommandOperations(),
-    routingStatusQuarantine = createRoutingStatusQuarantineCommandOperations(),
-    recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
-    providerHosts = createProviderHostCommandOperations(),
-    providerProxySets = createProviderProxySetCommandOperations(),
-    providerProxyRoleTermination = createDirectProviderProxyRoleTerminationCommandOperations(),
-  } = operations;
-  const backend = program.command('backend').description('Backend administration and local incident inspection');
-
-  // Written as each part is known, so a read that fails midway still leaves what was already established.
-  const reportBackendStatus = async (
-    write: Readonly<{ stderr(text: string): void; stdout(text: string): void }>,
-  ): Promise<BackendStatusLocalExitContribution> => {
-    const readiness = backendStatus.inspectReadiness();
-    switch (readiness.kind) {
-      case 'generated-ready':
-      case 'no-legacy':
-        break;
-      case 'legacy-ignored':
-        write.stderr(`${formatLegacyGenerationIgnoredNotice(readiness)}\n`);
-        break;
-      default:
-        assertNever(readiness);
-    }
-    const [status, routingStatusRead] = await Promise.all([
-      backendStatus.getStatus(),
-      backendStatus.getRoutingStatus(),
-    ]);
-    const liveHandoffResult = backendStatus.getLiveHandoffResult();
-    write.stdout(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
-    let directHolderStatusExitContribution: BackendStatusLocalExitContribution = 0;
-    if (!hasUsableCoordinatorDiagnostics(status)) {
-      const direct = await (backendStatus.readProviderProxySetHolderStatusDirect?.() ??
-        readProviderProxySetHolderStatusDirect(createRealRuntime(resolveBuildFlavor(process.env))));
-      if (direct.length > 0) {
-        write.stdout(`\n${formatProviderProxySetHolderStatusDirect(direct)}\n`);
-      }
-      directHolderStatusExitContribution = directProviderProxySetHolderStatusExitContribution(direct);
-    }
-    const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
-    const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
-      BACKEND_STATUS_EXIT_CODES[status.status],
-      liveHandoffObligation.exitContribution,
-      handoffRoutingStatusExitContribution(routingStatusRead),
-      handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
-      providerProxySetNoVerdictExitContribution(status),
-      directHolderStatusExitContribution,
-    ];
-    return combineBackendStatusLocalExitContributions(localExitContributions);
-  };
-
-  const startCommand = backend.command('start');
-  startCommand.description('Start the backend daemon when none is running').action(async () => {
-    try {
-      await backendLifecycle.start();
-    } catch (error) {
-      emitError(error);
-      return;
-    }
-    // A confirmed start exits 0 whatever else the backend reports. Its remedies stay behind `backend status`:
-    // printed here, they would read as the next step of a start that already succeeded.
-    let statusNeedsAttention: boolean;
-    try {
-      statusNeedsAttention = (await reportBackendStatus({ stderr: () => {}, stdout: () => {} })) !== 0;
-    } catch {
-      statusNeedsAttention = true;
-    }
-    process.stdout.write(`${formatBackendStartResult(statusNeedsAttention)}\n`);
-    process.exitCode = 0;
-  });
-
-  const statusCommand = backend.command('status');
-  statusCommand
-    .description('Show backend daemon status')
-    .option('--request <record-id>', 'Show one abandoned request by record ID')
-    .option('--json', 'Show request status as JSON')
-    .action(async (options: { request?: string; json?: boolean }) => {
-      if (options.json && options.request === undefined)
-        statusCommand.error('Option --json requires --request <record-id>.', { exitCode: 2 });
-      try {
-        if (options.request !== undefined) {
-          const status = (
-            backendStatus.getAbandonedRequestStatus ??
-            ((recordId: string) => {
-              const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-              return readAbandonedRequestStatus(runtime.storage, runtime.paths.coral.coordinator.runDir, recordId);
-            })
-          )(options.request);
-          process.stdout.write(
-            `${options.json ? JSON.stringify(status) : formatAbandonedRequestStatus(options.request, status)}\n`,
-          );
-          process.exitCode = status.kind === 'found' ? 0 : 75;
-          return;
-        }
-        process.exitCode = await reportBackendStatus({
-          stderr: (text) => process.stderr.write(text),
-          stdout: (text) => process.stdout.write(text),
-        });
-      } catch (error) {
-        emitError(error);
-      }
-    });
-
+function registerRoutingStatusCommands(
+  backend: Command,
+  routingStatus: HandoffRoutingStatusCommandOperations,
+  routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations,
+): void {
   const routingStatusCommand = backend.command('routing-status').description('Inspect and repair routing status');
   const resolveRoutingStatusCommand = routingStatusCommand
     .command('resolve')
@@ -1651,7 +1540,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         emitError(error);
       }
     });
+}
 
+function registerBackendShutdownCommand(backend: Command, backendStatus: BackendStatusCommandOperations): void {
   const shutdownCommand = backend.command('shutdown');
   shutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
     try {
@@ -1717,21 +1608,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       emitError(error);
     }
   });
+}
 
-  const recoveryQuarantineCommand = backend
-    .command('recovery-quarantine')
-    .description('Inspect or retry retained recovery failures');
-  recoveryQuarantineCommand
-    .command('list')
-    .description('List retained recovery failures from the local store')
-    .action(() => {
-      try {
-        process.stdout.write(`${formatRecoveryQuarantineList(recoveryQuarantine.list())}\n`);
-      } catch (error: unknown) {
-        emitError(error);
-      }
-    });
-
+function registerProviderHostCommands(backend: Command, providerHosts: ProviderHostCommandOperations): void {
   const providerHostCommand = backend.command('provider-host').description('Inspect and evict provider hosts');
   providerHostCommand
     .command('list')
@@ -1770,6 +1649,13 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         emitError(error);
       }
     });
+}
+
+function registerProviderProxySetCommands(
+  backend: Command,
+  providerProxySets: ProviderProxySetCommandOperations,
+  providerProxyRoleTermination: ProviderProxyRoleTerminationCommandOperations,
+): void {
   const providerProxySetCommand = backend
     .command('provider-proxy-set')
     .description('Contain or abandon one exact held provider-proxy set, or act on one exact enforcer role');
@@ -1827,6 +1713,12 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         emitError(error);
       }
     });
+}
+
+function registerRecoveryQuarantineMaintenanceCommands(
+  recoveryQuarantineCommand: Command,
+  recoveryQuarantine: RecoveryQuarantineCommandOperations,
+): void {
   recoveryQuarantineCommand
     .command('clear')
     .description('Retry one exact retained recovery failure through the canonical coordinator')
@@ -1900,7 +1792,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         emitRecoveryQuarantineError(error);
       }
     });
+}
 
+function registerStoreResetCommands(backend: Command, storeReset: StoreResetCommandOperations): void {
   const storeResetCommand = backend.command('store-reset').description('Inspect and operate on store epochs');
   storeResetCommand
     .command('list')
@@ -1994,7 +1888,154 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         }
       },
     );
+}
 
+function registerBackendLifecycleCommands(
+  backend: Command,
+  backendLifecycle: BackendLifecycleCommandOperations,
+  backendStatus: BackendStatusCommandOperations,
+): void {
+  // Written as each part is known, so a read that fails midway still leaves what was already established.
+  const reportBackendStatus = async (
+    write: Readonly<{ stderr(text: string): void; stdout(text: string): void }>,
+  ): Promise<BackendStatusLocalExitContribution> => {
+    const readiness = backendStatus.inspectReadiness();
+    switch (readiness.kind) {
+      case 'generated-ready':
+      case 'no-legacy':
+        break;
+      case 'legacy-ignored':
+        write.stderr(`${formatLegacyGenerationIgnoredNotice(readiness)}\n`);
+        break;
+      default:
+        assertNever(readiness);
+    }
+    const [status, routingStatusRead] = await Promise.all([
+      backendStatus.getStatus(),
+      backendStatus.getRoutingStatus(),
+    ]);
+    const liveHandoffResult = backendStatus.getLiveHandoffResult();
+    write.stdout(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
+    let directHolderStatusExitContribution: BackendStatusLocalExitContribution = 0;
+    if (!hasUsableCoordinatorDiagnostics(status)) {
+      const direct = await (backendStatus.readProviderProxySetHolderStatusDirect?.() ??
+        readProviderProxySetHolderStatusDirect(createRealRuntime(resolveBuildFlavor(process.env))));
+      if (direct.length > 0) {
+        write.stdout(`\n${formatProviderProxySetHolderStatusDirect(direct)}\n`);
+      }
+      directHolderStatusExitContribution = directProviderProxySetHolderStatusExitContribution(direct);
+    }
+    const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
+    const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
+      BACKEND_STATUS_EXIT_CODES[status.status],
+      liveHandoffObligation.exitContribution,
+      handoffRoutingStatusExitContribution(routingStatusRead),
+      handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
+      providerProxySetNoVerdictExitContribution(status),
+      directHolderStatusExitContribution,
+    ];
+    return combineBackendStatusLocalExitContributions(localExitContributions);
+  };
+
+  const startCommand = backend.command('start');
+  startCommand.description('Start the backend daemon when none is running').action(async () => {
+    try {
+      await backendLifecycle.start();
+    } catch (error) {
+      emitError(error);
+      return;
+    }
+    // A confirmed start exits 0 whatever else the backend reports. Its remedies stay behind `backend status`:
+    // printed here, they would read as the next step of a start that already succeeded.
+    let statusNeedsAttention: boolean;
+    try {
+      statusNeedsAttention = (await reportBackendStatus({ stderr: () => {}, stdout: () => {} })) !== 0;
+    } catch {
+      statusNeedsAttention = true;
+    }
+    process.stdout.write(`${formatBackendStartResult(statusNeedsAttention)}\n`);
+    process.exitCode = 0;
+  });
+
+  const statusCommand = backend.command('status');
+  statusCommand
+    .description('Show backend daemon status')
+    .option('--request <record-id>', 'Show one abandoned request by record ID')
+    .option('--json', 'Show request status as JSON')
+    .action(async (options: { request?: string; json?: boolean }) => {
+      if (options.json && options.request === undefined)
+        statusCommand.error('Option --json requires --request <record-id>.', { exitCode: 2 });
+      try {
+        if (options.request !== undefined) {
+          const status = (
+            backendStatus.getAbandonedRequestStatus ??
+            ((recordId: string) => {
+              const runtime = createRealRuntime(resolveBuildFlavor(process.env));
+              return readAbandonedRequestStatus(runtime.storage, runtime.paths.coral.coordinator.runDir, recordId);
+            })
+          )(options.request);
+          process.stdout.write(
+            `${options.json ? JSON.stringify(status) : formatAbandonedRequestStatus(options.request, status)}\n`,
+          );
+          process.exitCode = status.kind === 'found' ? 0 : 75;
+          return;
+        }
+        process.exitCode = await reportBackendStatus({
+          stderr: (text) => process.stderr.write(text),
+          stdout: (text) => process.stdout.write(text),
+        });
+      } catch (error) {
+        emitError(error);
+      }
+    });
+}
+
+export function registerBackendCommands(program: Command, operations: BackendCommandOperations = {}): void {
+  const {
+    storeReset = {
+      list: listStoreResetIncidentsLocal,
+      report: reportStoreResetLocal,
+      discard: discardStoreResetLocal,
+      release: releaseStoreResetLocal,
+    },
+    kbCommit = {
+      quarantine: quarantineKbCommitLocal,
+    },
+    backendLifecycle = createBackendLifecycleCommandOperations(),
+    backendStatus = createBackendStatusCommandOperations(),
+    routingStatus = createHandoffRoutingStatusCommandOperations(),
+    routingStatusQuarantine = createRoutingStatusQuarantineCommandOperations(),
+    recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
+    providerHosts = createProviderHostCommandOperations(),
+    providerProxySets = createProviderProxySetCommandOperations(),
+    providerProxyRoleTermination = createDirectProviderProxyRoleTerminationCommandOperations(),
+  } = operations;
+  const backend = program.command('backend').description('Backend administration and local incident inspection');
+
+  registerBackendLifecycleCommands(backend, backendLifecycle, backendStatus);
+  registerRoutingStatusCommands(backend, routingStatus, routingStatusQuarantine);
+
+  registerBackendShutdownCommand(backend, backendStatus);
+
+  const recoveryQuarantineCommand = backend
+    .command('recovery-quarantine')
+    .description('Inspect or retry retained recovery failures');
+  recoveryQuarantineCommand
+    .command('list')
+    .description('List retained recovery failures from the local store')
+    .action(() => {
+      try {
+        process.stdout.write(`${formatRecoveryQuarantineList(recoveryQuarantine.list())}\n`);
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+
+  registerProviderHostCommands(backend, providerHosts);
+  registerProviderProxySetCommands(backend, providerProxySets, providerProxyRoleTermination);
+  registerRecoveryQuarantineMaintenanceCommands(recoveryQuarantineCommand, recoveryQuarantine);
+
+  registerStoreResetCommands(backend, storeReset);
   const kbCommitCommand = backend.command('kb-commit').description('Operate on retained blocking KB commit evidence');
   kbCommitCommand.configureOutput({ writeErr: () => undefined });
   kbCommitCommand

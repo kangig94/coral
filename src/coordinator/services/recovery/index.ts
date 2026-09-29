@@ -168,8 +168,38 @@ type RecoveryCoordinatorContext = {
     SettledUnboundStatusHydrationPort;
 };
 
+function createRecoveryAdoptionFor(
+  context: RecoveryCoordinatorContext,
+  lifecycle: ReturnType<typeof createRecoveryLifecycle>,
+  recoveryWalk: ReturnType<typeof createRecoveryWalk>,
+): ReturnType<typeof createRecoveryAdoption> {
+  return createRecoveryAdoption({
+    state: lifecycle.state,
+    progressStore: context.progressStore,
+    runtime: context.runtime,
+    eventBus: context.eventBus,
+    getRecoveryService: context.getRecoveryService,
+    createInvocationContext: context.createInvocationContext,
+    log: context.log,
+    clearRecoveryPoller: lifecycle.clearRecoveryPoller,
+    startTrackedFinalization: lifecycle.startTrackedFinalization,
+    observeDurableRecoveryContainment: lifecycle.observeDurableRecoveryContainment,
+    runHeldRecoveryReap: lifecycle.runHeldRecoveryReap,
+    deleteCoordinatorRecoveryQuarantine: recoveryWalk.deleteCoordinatorRecoveryQuarantine,
+    runCoordinatorWalk: recoveryWalk.runCoordinatorWalk,
+    settleUnexpectedRecoveryFailure: recoveryWalk.settleUnexpectedRecoveryFailure,
+    settleFault: recoveryWalk.settleFault,
+    takeAdoptedJobCleanup: lifecycle.takeAdoptedJobCleanup,
+    maybeReleaseRecoveryRegistry: lifecycle.maybeReleaseRecoveryRegistry,
+    settleCoordinatorRecoveryItem: recoveryWalk.settleCoordinatorRecoveryItem,
+  });
+}
+
 export function createRecoveryCoordinator(
-  {
+  context: RecoveryCoordinatorContext,
+  bound: BoundCoordinator | null,
+): RecoveryCoordinator {
+  const {
     progressStore,
     runtime,
     runtimeState,
@@ -179,9 +209,7 @@ export function createRecoveryCoordinator(
     createInvocationContext,
     log,
     startupOwnership,
-  }: RecoveryCoordinatorContext,
-  bound: BoundCoordinator | null,
-): RecoveryCoordinator {
+  } = context;
   const providerOperationStartupOwnership = createProviderOperationStartupOwnership({
     progressStore,
     runtime,
@@ -197,17 +225,7 @@ export function createRecoveryCoordinator(
     onPhaseChanged: providerOperationStartupOwnership.reclaimTerminalUndecided,
     releaseStartupOwnership: providerOperationStartupOwnership.releaseAll,
   });
-  const {
-    state,
-    clearRecoveryPoller,
-    maybeReleaseRecoveryRegistry,
-    observeDurableRecoveryContainment,
-    releaseAdoptedJob,
-    runHeldRecoveryReap,
-    startTrackedFinalization,
-    takeAdoptedJobCleanup,
-    teardown,
-  } = lifecycle;
+  const { state, maybeReleaseRecoveryRegistry, releaseAdoptedJob, teardown } = lifecycle;
 
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
   let abandonHeldRecoveryJob = (_jobId: string): RecoveryAbortDisposition => ({
@@ -224,35 +242,9 @@ export function createRecoveryCoordinator(
     source: (options) => coordinatorJobRecoverySource(progressStore.getDb(), options),
     settleCoordinatorRecoveryItem,
   });
-  const {
-    deleteCoordinatorRecoveryQuarantine,
-    runCoordinatorWalk,
-    settleClaim,
-    settleCoordinatorRecoveryItem: settleRecoveryItem,
-    settleFault,
-    settleUnexpectedRecoveryFailure,
-  } = recoveryWalk;
+  const { runCoordinatorWalk, settleClaim, settleFault, settleUnexpectedRecoveryFailure } = recoveryWalk;
 
-  const recoveryAdoption = createRecoveryAdoption({
-    state,
-    progressStore,
-    runtime,
-    eventBus,
-    getRecoveryService,
-    createInvocationContext,
-    log,
-    clearRecoveryPoller,
-    startTrackedFinalization,
-    observeDurableRecoveryContainment,
-    runHeldRecoveryReap,
-    deleteCoordinatorRecoveryQuarantine,
-    runCoordinatorWalk,
-    settleUnexpectedRecoveryFailure,
-    settleFault,
-    takeAdoptedJobCleanup,
-    maybeReleaseRecoveryRegistry,
-    settleCoordinatorRecoveryItem: settleRecoveryItem,
-  });
+  const recoveryAdoption = createRecoveryAdoptionFor(context, lifecycle, recoveryWalk);
 
   const operationRecovery = createProviderOperationJobRecovery({
     state,

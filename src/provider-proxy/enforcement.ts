@@ -149,32 +149,23 @@ function rootKey(root: RecordedProcessIdentity): string {
   return `${root.pid}@${root.incarnation}`;
 }
 
-export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcerOptions<Scope>): ArmedEnforcer {
-  const {
-    clock,
-    deadlines,
-    containment,
-    containmentEnvironment,
-    scheduler,
-    holderAuthority,
-    observeHolder,
-    acceleratedCheckMayAuthorizeAbsence,
-    onOutcome,
-  } = options;
-  const roots = new Map<string, RecordedProcessIdentity>();
-  let handle: { unref?: () => void } | null = null;
-  let armedGeneration: symbol | null = null;
-  let teardownInFlight: Promise<EnforcementOutcome> | null = null;
-  let settledOutcome: SettledEnforcementOutcome | null = null;
-  let holdingUnconfirmed = false;
-  // Observation probes must never acquire process-control authority.
-  let holderProbe: { forCheckAt: MonotonicInstant<Scope>; promise: Promise<HolderObservation<Scope>> } | null = null;
-  let consuming = false;
+type ArmedEnforcerState<Scope extends symbol> = {
+  roots: Map<string, RecordedProcessIdentity>;
+  handle: { unref?: () => void } | null;
+  armedGeneration: symbol | null;
+  teardownInFlight: Promise<EnforcementOutcome> | null;
+  settledOutcome: SettledEnforcementOutcome | null;
+  holdingUnconfirmed: boolean;
+  holderProbe: { forCheckAt: MonotonicInstant<Scope>; promise: Promise<HolderObservation<Scope>> } | null;
+  consuming: boolean;
+};
 
-  const orderedRecordedRoots = (): readonly RecordedProcessIdentity[] => [...roots.values()];
-  const wouldExceedRootCap = (root: RecordedProcessIdentity): boolean =>
-    !roots.has(rootKey(root)) && roots.size >= MAX_PROXY_RECORDED_PROVIDER_ROOTS;
-
+function createEnforcementReap<Scope extends symbol>(
+  options: ArmedEnforcerOptions<Scope>,
+  state: ArmedEnforcerState<Scope>,
+  orderedRecordedRoots: () => readonly RecordedProcessIdentity[],
+) {
+  const { clock, deadlines, containment, containmentEnvironment, onOutcome } = options;
   const confirmedContainmentAbsentOutcome = (): Extract<EnforcementOutcome, { kind: 'containment-absent' }> => {
     deadlines.markContainmentAbsent();
     return {
@@ -184,11 +175,11 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   };
 
   const settle = (outcome: SettledEnforcementOutcome): SettledEnforcementOutcome => {
-    if (settledOutcome === null) {
-      settledOutcome = outcome;
+    if (state.settledOutcome === null) {
+      state.settledOutcome = outcome;
       onOutcome(outcome);
     }
-    return settledOutcome;
+    return state.settledOutcome;
   };
 
   const runTeardown = async (exitDeadline: MonotonicInstant<Scope>): Promise<EnforcementOutcome> => {
@@ -255,26 +246,36 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     }
   };
 
+  return { confirmedContainmentAbsentOutcome, settle, runTeardown, probeContainmentAfterPairingLoss };
+}
+
+function createEnforcementTeardown<Scope extends symbol>(
+  options: ArmedEnforcerOptions<Scope>,
+  state: ArmedEnforcerState<Scope>,
+  runTeardown: (exitDeadline: MonotonicInstant<Scope>) => Promise<EnforcementOutcome>,
+  settle: (outcome: SettledEnforcementOutcome) => SettledEnforcementOutcome,
+) {
+  const { clock, scheduler, holderAuthority, onOutcome } = options;
   /** Concurrent teardown callers must join one reap; only confirmed absence may prevent a later reap. */
   const teardown = (exitDeadline: MonotonicInstant<Scope>): Promise<EnforcementOutcome> => {
-    if (handle !== null) {
-      scheduler.cancel(handle);
-      handle = null;
+    if (state.handle !== null) {
+      scheduler.cancel(state.handle);
+      state.handle = null;
     }
-    if (settledOutcome !== null) return Promise.resolve(settledOutcome);
-    if (teardownInFlight === null) {
-      holdingUnconfirmed = false;
-      teardownInFlight = runTeardown(exitDeadline).then((outcome) => {
+    if (state.settledOutcome !== null) return Promise.resolve(state.settledOutcome);
+    if (state.teardownInFlight === null) {
+      state.holdingUnconfirmed = false;
+      state.teardownInFlight = runTeardown(exitDeadline).then((outcome) => {
         if (outcome.kind !== 'containment-absent') {
-          holdingUnconfirmed = true;
-          teardownInFlight = null;
+          state.holdingUnconfirmed = true;
+          state.teardownInFlight = null;
           onOutcome(outcome);
           return outcome;
         }
         return settle(outcome);
       });
     }
-    return teardownInFlight;
+    return state.teardownInFlight;
   };
 
   const consumeAbsence = async (
@@ -305,24 +306,30 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     return outcome.kind === 'containment-absent' ? { kind: 'settled', outcome } : { kind: 'holding', outcome };
   };
 
-  const observationStartAt = (holderCheckAtInstant: MonotonicInstant<Scope>): MonotonicInstant<Scope> =>
-    clock.shiftMilliseconds(
-      holderCheckAtInstant,
-      -(PROCESS_INCARNATION_PROBE_TIMEOUT_MS + PROXY_ENFORCER_MAX_WAKE_LATENCY_MS),
-    );
+  return { teardown, consumeAbsence, consumeExplicit, consumeLocalSignal };
+}
 
+function createHolderObservationConsumer<Scope extends symbol>(
+  options: ArmedEnforcerOptions<Scope>,
+  state: ArmedEnforcerState<Scope>,
+  consumeAbsence: (
+    authorization: ObservedHolderAbsenceAuthorization,
+  ) => Promise<EnforcementConsumptionDisposition<ObservedHolderAbsenceAuthorization>>,
+  schedule: (generation: symbol) => void,
+) {
+  const { clock, deadlines, holderAuthority, acceleratedCheckMayAuthorizeAbsence } = options;
   const consumeHolderObservation = (
     generation: symbol,
     observation: HolderObservation<Scope>,
     checkedAt: MonotonicInstant<Scope>,
   ): void => {
-    if (armedGeneration !== generation) return;
-    consuming = false;
+    if (state.armedGeneration !== generation) return;
+    state.consuming = false;
     const lateness = clock.millisecondsBetween(checkedAt, clock.now());
     if (lateness > PROXY_ENFORCER_MAX_WAKE_LATENCY_MS) {
       options.onProgressViolation(lateness);
     }
-    if (teardownInFlight !== null || settledOutcome !== null) return;
+    if (state.teardownInFlight !== null || state.settledOutcome !== null) return;
     if (!controlHolderIdentityIsCurrent(holderAuthority, observation.subject)) {
       deadlines.renewHolderCheck(checkedAt);
       schedule(generation);
@@ -339,7 +346,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
         return;
       }
       void consumeAbsence(observation.authorization).then((disposition) => {
-        if (armedGeneration !== generation) return;
+        if (state.armedGeneration !== generation) return;
         switch (disposition.kind) {
           case 'settled':
           case 'holding':
@@ -360,10 +367,35 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     schedule(generation);
   };
 
+  return consumeHolderObservation;
+}
+
+function createEnforcementScheduler<Scope extends symbol>(
+  options: ArmedEnforcerOptions<Scope>,
+  state: ArmedEnforcerState<Scope>,
+  teardown: (exitDeadline: MonotonicInstant<Scope>) => Promise<EnforcementOutcome>,
+  consumeAbsence: (
+    authorization: ObservedHolderAbsenceAuthorization,
+  ) => Promise<EnforcementConsumptionDisposition<ObservedHolderAbsenceAuthorization>>,
+  probeContainmentAfterPairingLoss: () => Promise<PairingLossContainmentObservation>,
+  settle: (outcome: SettledEnforcementOutcome) => SettledEnforcementOutcome,
+  confirmedContainmentAbsentOutcome: () => Extract<EnforcementOutcome, { kind: 'containment-absent' }>,
+) {
+  const { clock, deadlines, holderAuthority, observeHolder, scheduler } = options;
+  const observationStartAt = (holderCheckAtInstant: MonotonicInstant<Scope>): MonotonicInstant<Scope> =>
+    clock.shiftMilliseconds(
+      holderCheckAtInstant,
+      -(PROCESS_INCARNATION_PROBE_TIMEOUT_MS + PROXY_ENFORCER_MAX_WAKE_LATENCY_MS),
+    );
+
+  const consumeHolderObservation = createHolderObservationConsumer(options, state, consumeAbsence, (generation) =>
+    schedule(generation),
+  );
+
   const tick = (generation: symbol): void => {
-    if (armedGeneration !== generation) return;
-    handle = null;
-    if (teardownInFlight !== null || settledOutcome !== null || consuming) return;
+    if (state.armedGeneration !== generation) return;
+    state.handle = null;
+    if (state.teardownInFlight !== null || state.settledOutcome !== null || state.consuming) return;
 
     if (holderAuthority.phase() === 'acquisition-provisional') {
       // Provisional acquisition must not derive teardown authority from an unpublished holder.
@@ -385,18 +417,18 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     const holderCheckAtInstant = bounds.holderCheckAt;
     const now = clock.now();
 
-    if (holderProbe !== null && clock.compare(holderProbe.forCheckAt, holderCheckAtInstant) !== 0) {
+    if (state.holderProbe !== null && clock.compare(state.holderProbe.forCheckAt, holderCheckAtInstant) !== 0) {
       // A probe for a superseded check must not authorize teardown.
-      holderProbe = null;
+      state.holderProbe = null;
     }
 
-    if (holderProbe === null) {
+    if (state.holderProbe === null) {
       const startAt = observationStartAt(holderCheckAtInstant);
       if (clock.compare(now, startAt) < 0) {
         schedule(generation);
         return;
       }
-      holderProbe = {
+      state.holderProbe = {
         forCheckAt: holderCheckAtInstant,
         promise: observeControlHolder(holderAuthority, observeHolder, clock),
       };
@@ -410,23 +442,23 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       return;
     }
 
-    consuming = true;
-    const probe = holderProbe;
-    holderProbe = null;
+    state.consuming = true;
+    const probe = state.holderProbe;
+    state.holderProbe = null;
     void probe.promise.then((observation) => {
-      if (armedGeneration !== generation) return;
+      if (state.armedGeneration !== generation) return;
       if (options.pairingLossObserved?.() !== true) {
         consumeHolderObservation(generation, observation, holderCheckAtInstant);
         return;
       }
       void probeContainmentAfterPairingLoss().then((containmentObservation) => {
-        if (armedGeneration !== generation) return;
+        if (state.armedGeneration !== generation) return;
         if (containmentObservation !== 'absent') {
           consumeHolderObservation(generation, observation, holderCheckAtInstant);
           return;
         }
-        consuming = false;
-        if (teardownInFlight !== null || settledOutcome !== null) return;
+        state.consuming = false;
+        if (state.teardownInFlight !== null || state.settledOutcome !== null) return;
         deadlines.latchTeardown();
         settle(confirmedContainmentAbsentOutcome());
       });
@@ -436,11 +468,16 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   const nextWakeTarget = (): MonotonicInstant<Scope> => {
     if (holderAuthority.phase() === 'acquisition-provisional') return deadlines.bounds().adoptionDeadline;
     const holderCheckAtInstant = deadlines.bounds().holderCheckAt;
-    return holderProbe === null ? observationStartAt(holderCheckAtInstant) : holderCheckAtInstant;
+    return state.holderProbe === null ? observationStartAt(holderCheckAtInstant) : holderCheckAtInstant;
   };
 
   const schedule = (generation: symbol): void => {
-    if (armedGeneration !== generation || handle !== null || teardownInFlight !== null || settledOutcome !== null) {
+    if (
+      state.armedGeneration !== generation ||
+      state.handle !== null ||
+      state.teardownInFlight !== null ||
+      state.settledOutcome !== null
+    ) {
       return;
     }
     const target = nextWakeTarget();
@@ -448,23 +485,63 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     // Never sleep past the wake bound: a long remaining window still gets checked often enough that a
     // deadline moved earlier by control loss cannot be missed.
     const delay = Math.max(0, Math.min(remaining, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS));
-    handle = scheduler.schedule(() => tick(generation), delay);
-    handle.unref?.();
+    state.handle = scheduler.schedule(() => tick(generation), delay);
+    state.handle.unref?.();
   };
+
+  return { schedule };
+}
+
+export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcerOptions<Scope>): ArmedEnforcer {
+  const { clock, scheduler } = options;
+  const state: ArmedEnforcerState<Scope> = {
+    roots: new Map(),
+    handle: null,
+    armedGeneration: null,
+    teardownInFlight: null,
+    settledOutcome: null,
+    holdingUnconfirmed: false,
+    holderProbe: null,
+    consuming: false,
+  };
+
+  const orderedRecordedRoots = (): readonly RecordedProcessIdentity[] => [...state.roots.values()];
+  const wouldExceedRootCap = (root: RecordedProcessIdentity): boolean =>
+    !state.roots.has(rootKey(root)) && state.roots.size >= MAX_PROXY_RECORDED_PROVIDER_ROOTS;
+
+  const { confirmedContainmentAbsentOutcome, settle, runTeardown, probeContainmentAfterPairingLoss } =
+    createEnforcementReap(options, state, orderedRecordedRoots);
+
+  const { teardown, consumeAbsence, consumeExplicit, consumeLocalSignal } = createEnforcementTeardown(
+    options,
+    state,
+    runTeardown,
+    settle,
+  );
+
+  const { schedule } = createEnforcementScheduler(
+    options,
+    state,
+    teardown,
+    consumeAbsence,
+    probeContainmentAfterPairingLoss,
+    settle,
+    confirmedContainmentAbsentOutcome,
+  );
 
   return {
     registerProviderRoot(root: RecordedProcessIdentity): void {
       const key = rootKey(root);
       // Nothing is ever removed: entries are indexed by the process that must die, so dropping one would
       // assert it is gone — and only teardown may conclude that.
-      if (roots.has(key)) return;
+      if (state.roots.has(key)) return;
       if (wouldExceedRootCap(root)) {
         throw new EnforcementError(
           'provider_root_cap_exceeded',
-          `Recorded provider roots would exceed the ${MAX_PROXY_RECORDED_PROVIDER_ROOTS} cap.`,
+          `Recorded provider state.roots would exceed the ${MAX_PROXY_RECORDED_PROVIDER_ROOTS} cap.`,
         );
       }
-      roots.set(key, root);
+      state.roots.set(key, root);
     },
     wouldExceedProviderRootCap: wouldExceedRootCap,
     recordedRoots(): readonly RecordedProcessIdentity[] {
@@ -474,23 +551,23 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     stopAndReap: consumeExplicit,
     giveUp: consumeLocalSignal,
     retryUnattributable(): Promise<EnforcementOutcome> | null {
-      if (!holdingUnconfirmed) return null;
+      if (!state.holdingUnconfirmed) return null;
       return teardown(containmentExecutionDeadline(clock, clock.now()));
     },
     arm(): void {
-      if (armedGeneration !== null) return;
+      if (state.armedGeneration !== null) return;
       const generation = Symbol('armed-enforcer-generation');
-      armedGeneration = generation;
+      state.armedGeneration = generation;
       schedule(generation);
     },
     disarm(): void {
-      if (armedGeneration === null) return;
-      armedGeneration = null;
-      consuming = false;
-      holderProbe = null;
-      if (handle !== null) {
-        scheduler.cancel(handle);
-        handle = null;
+      if (state.armedGeneration === null) return;
+      state.armedGeneration = null;
+      state.consuming = false;
+      state.holderProbe = null;
+      if (state.handle !== null) {
+        scheduler.cancel(state.handle);
+        state.handle = null;
       }
     },
   };

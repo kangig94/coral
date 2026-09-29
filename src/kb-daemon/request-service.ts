@@ -89,6 +89,16 @@ type KbDaemonRequestServiceState = {
   markFailure(error: unknown): void;
 };
 
+type KbDaemonRequestControl = KbDaemonRequestServiceState & {
+  runtime: KbQueryRuntime | undefined;
+  writeRuntime: KbDaemonWriteRuntimeHost | undefined;
+  now: () => number;
+  phase: KbDaemonKbReadHealth['phase'];
+  initializedAt: number | undefined;
+  lastError: string | undefined;
+  lastSetupError: SerializedCoralSetupError | undefined;
+};
+
 type KbDaemonWriteRuntimeHost = {
   withKb<T>(
     fn: (state: { kbRuntime: Parameters<typeof handleKbUpdate>[1]; runtime: KbQueryRuntime }) => Promise<T> | T,
@@ -511,382 +521,479 @@ function readTyped(
   }
 }
 
-export function createKbDaemonRequestService(options: KbDaemonRequestServiceOptions): KbDaemonRequestService {
-  let runtime = options.runtime;
-  const now = options.now ?? Date.now;
-  let phase: KbDaemonKbReadHealth['phase'] = 'not_initialized';
-  let initializedAt: number | undefined;
-  let lastError: string | undefined;
-  let lastSetupError: SerializedCoralSetupError | undefined;
-  const markReady = (): void => {
-    phase = 'ready';
-    initializedAt ??= now();
-    lastError = undefined;
-    lastSetupError = undefined;
-  };
-  const markFailure = (error: unknown): void => {
-    phase = 'failed';
-    lastError = errorMessage(error);
-    lastSetupError = serializeCoralSetupError(error) ?? undefined;
-  };
-  const state: KbDaemonRequestServiceState = {
-    pluginRoot: options.pluginRoot,
-    markFailure,
-    getRuntime() {
-      if (runtime !== undefined) {
-        markReady();
-        return runtime;
-      }
-      try {
-        runtime = createRealRuntime(readBuildFlavor(options.pluginRoot));
-        markReady();
-      } catch (error: unknown) {
-        markFailure(error);
-        throw error;
-      }
-      return runtime;
-    },
-  };
-  const writeRuntime = options.writeRuntime;
+function markKbDaemonReadReady(control: KbDaemonRequestControl): void {
+  control.phase = 'ready';
+  control.initializedAt ??= control.now();
+  control.lastError = undefined;
+  control.lastSetupError = undefined;
+}
 
-  const read = async (request: KbDaemonKbReadRequest): Promise<KbToolResult> => {
-    try {
-      const args = parseRecord(request.args);
-      const rawCtx = parseContext(request.ctx);
-      if (rawCtx === undefined) {
-        return invalidRequest('KB daemon read request requires principal context.');
-      }
-      const authorization = authorizeDaemonRequest(
-        rawCtx,
-        request.method,
-        KB_DAEMON_READ_CAPABILITIES[request.method],
-        KB_DAEMON_READ_RESOURCES[request.method],
-      );
-      if ('ok' in authorization) {
-        return authorization;
-      }
-      const ctx = authorization;
+function markKbDaemonReadFailure(control: KbDaemonRequestControl, error: unknown): void {
+  control.phase = 'failed';
+  control.lastError = errorMessage(error);
+  control.lastSetupError = serializeCoralSetupError(error) ?? undefined;
+}
 
-      switch (request.method) {
-        case 'readSearch': {
-          const parsed = parseSearchArgs(args);
-          if ('ok' in parsed) {
-            return parsed;
-          }
-          return runToolResult(async () => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            activeWriteRuntime.warmSearchRuntime?.();
-            const readiness = activeWriteRuntime.searchReadiness?.();
-            if (readiness?.ready !== true) {
-              return searchRuntimeNotReady(readiness);
-            }
-            return kbSuccess(
-              await activeWriteRuntime.withKb(({ kbRuntime }) =>
-                searchKb(
-                  kbRuntime.kb,
-                  parsed.query,
-                  parsed.top_k ?? 20,
-                  parsed.scope ?? 'all',
-                  parsed.mode ?? 'auto',
-                  parsed.signal,
-                ),
-              ),
-            );
-          }, markFailure);
+function readKbDaemonSearch(
+  args: Record<string, unknown>,
+  writeRuntime: KbDaemonWriteRuntimeHost | undefined,
+  markFailure: (error: unknown) => void,
+): Promise<KbToolResult> | KbToolResult {
+  const parsed = parseSearchArgs(args);
+  if ('ok' in parsed) return parsed;
+  return runToolResult(async () => {
+    const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+    if ('ok' in activeWriteRuntime) return activeWriteRuntime;
+    activeWriteRuntime.warmSearchRuntime?.();
+    const readiness = activeWriteRuntime.searchReadiness?.();
+    if (readiness?.ready !== true) return searchRuntimeNotReady(readiness);
+    return kbSuccess(
+      await activeWriteRuntime.withKb(({ kbRuntime }) =>
+        searchKb(
+          kbRuntime.kb,
+          parsed.query,
+          parsed.top_k ?? 20,
+          parsed.scope ?? 'all',
+          parsed.mode ?? 'auto',
+          parsed.signal,
+        ),
+      ),
+    );
+  }, markFailure);
+}
+
+async function readKbDaemonRequest(
+  control: KbDaemonRequestControl,
+  request: KbDaemonKbReadRequest,
+): Promise<KbToolResult> {
+  const state = control;
+  const writeRuntime = control.writeRuntime;
+  const markFailure = control.markFailure;
+
+  try {
+    const args = parseRecord(request.args);
+    const rawCtx = parseContext(request.ctx);
+    if (rawCtx === undefined) {
+      return invalidRequest('KB daemon read request requires principal context.');
+    }
+    const authorization = authorizeDaemonRequest(
+      rawCtx,
+      request.method,
+      KB_DAEMON_READ_CAPABILITIES[request.method],
+      KB_DAEMON_READ_RESOURCES[request.method],
+    );
+    if ('ok' in authorization) {
+      return authorization;
+    }
+    const ctx = authorization;
+
+    switch (request.method) {
+      case 'readSearch':
+        return readKbDaemonSearch(args, writeRuntime, markFailure);
+      case 'diagnose':
+        return run(() => {
+          const { queryContext } = createContext(state, ctx);
+          return readWithKbQueryHost(queryContext, diagnoseKnowledgeBase);
+        }, markFailure);
+      case 'readNote':
+        return readTyped(state, 'note', request, ctx);
+      case 'readSource':
+        return readTyped(state, 'source', request, ctx);
+      case 'readCommunity':
+        return readTyped(state, 'community', request, ctx);
+      case 'readWiki':
+        return readTyped(state, 'wiki', request, ctx);
+      case 'readMemo':
+        return readTyped(state, 'memo', request, ctx);
+      case 'readPrinciple':
+        return readTyped(state, 'principle', request, ctx);
+      case 'listSources':
+        return run(() => {
+          const { queryContext } = createContext(state, ctx);
+          const host = createKbQueryHost(queryContext);
+          return listKnowledgeBaseSources(host);
+        }, markFailure);
+      case 'listWikis':
+        return run(() => {
+          const { queryContext } = createContext(state, ctx);
+          const host = createKbQueryHost(queryContext);
+          return listKnowledgeBaseWikis(host);
+        }, markFailure);
+      case 'listMemos': {
+        const projectRoot = ctx.projectRoot;
+        if (projectRoot === undefined) {
+          return invalidRequest('KB daemon read request requires project context.');
         }
-        case 'diagnose':
-          return run(() => {
-            const { queryContext } = createContext(state, ctx);
-            return readWithKbQueryHost(queryContext, diagnoseKnowledgeBase);
-          }, markFailure);
-        case 'readNote':
-          return readTyped(state, 'note', request, ctx);
-        case 'readSource':
-          return readTyped(state, 'source', request, ctx);
-        case 'readCommunity':
-          return readTyped(state, 'community', request, ctx);
-        case 'readWiki':
-          return readTyped(state, 'wiki', request, ctx);
-        case 'readMemo':
-          return readTyped(state, 'memo', request, ctx);
-        case 'readPrinciple':
-          return readTyped(state, 'principle', request, ctx);
-        case 'listSources':
-          return run(() => {
-            const { queryContext } = createContext(state, ctx);
-            const host = createKbQueryHost(queryContext);
-            return listKnowledgeBaseSources(host);
-          }, markFailure);
-        case 'listWikis':
-          return run(() => {
-            const { queryContext } = createContext(state, ctx);
-            const host = createKbQueryHost(queryContext);
-            return listKnowledgeBaseWikis(host);
-          }, markFailure);
-        case 'listMemos': {
-          const projectRoot = ctx.projectRoot;
-          if (projectRoot === undefined) {
-            return invalidRequest('KB daemon read request requires project context.');
-          }
-          return run(() => {
-            const { runtime } = createContext(state, ctx);
-            return listKnowledgeBaseMemos(
-              runtime.storage,
-              runtime.paths.projectData(projectRoot),
-              parseMemoListArgs(args),
-            );
-          }, markFailure);
+        return run(() => {
+          const { runtime } = createContext(state, ctx);
+          return listKnowledgeBaseMemos(
+            runtime.storage,
+            runtime.paths.projectData(projectRoot),
+            parseMemoListArgs(args),
+          );
+        }, markFailure);
+      }
+      case 'listPrinciples':
+        return run(() => {
+          const { queryContext } = createContext(state, ctx);
+          const host = createKbQueryHost(queryContext);
+          return listKnowledgeBasePrinciples(parsePrinciplesArgs(args), host);
+        }, markFailure);
+      case 'wakeUp': {
+        const parsed = kbWakeUpSchema.safeParse(args);
+        if (!parsed.success) {
+          return kbValidationError(parsed.error);
         }
-        case 'listPrinciples':
-          return run(() => {
-            const { queryContext } = createContext(state, ctx);
-            const host = createKbQueryHost(queryContext);
-            return listKnowledgeBasePrinciples(parsePrinciplesArgs(args), host);
-          }, markFailure);
-        case 'wakeUp': {
-          const parsed = kbWakeUpSchema.safeParse(args);
-          if (!parsed.success) {
-            return kbValidationError(parsed.error);
-          }
-          return run(async () => {
-            const { runtime, queryContext } = createContext(state, ctx);
-            const paths = createDefaultKbReadPaths(queryContext);
-            return {
-              content: await generateWakeUpPacket(
-                {
-                  storagePort: runtime.storage,
-                  wikiPath: paths.wikiPath,
-                },
-                parsed.data.project,
-              ),
-            };
-          }, markFailure);
-        }
-        case 'listStaleCommunities': {
+        return run(async () => {
           const { runtime, queryContext } = createContext(state, ctx);
-          return kbSuccess(listStaleCommunities(createCommunitySummaryRuntime(runtime, queryContext)));
+          const paths = createDefaultKbReadPaths(queryContext);
+          return {
+            content: await generateWakeUpPacket(
+              {
+                storagePort: runtime.storage,
+                wikiPath: paths.wikiPath,
+              },
+              parsed.data.project,
+            ),
+          };
+        }, markFailure);
+      }
+      case 'listStaleCommunities': {
+        const { runtime, queryContext } = createContext(state, ctx);
+        return kbSuccess(listStaleCommunities(createCommunitySummaryRuntime(runtime, queryContext)));
+      }
+      case 'readCommunitySummaryInput': {
+        const slug = getSlug(request);
+        if (typeof slug !== 'string') {
+          return slug;
         }
-        case 'readCommunitySummaryInput': {
-          const slug = getSlug(request);
+        const normalizedSlug = normalizeSlug('community', slug);
+        if (typeof normalizedSlug !== 'string') {
+          return normalizedSlug;
+        }
+        const { runtime, queryContext } = createContext(state, ctx);
+        const input = readCommunitySummaryInput(createCommunitySummaryRuntime(runtime, queryContext), normalizedSlug);
+        return input === null ? notFound('community', normalizedSlug) : kbSuccess(input);
+      }
+    }
+  } catch (error: unknown) {
+    markFailure(error);
+    return failed(error);
+  }
+}
+
+type KbDaemonWikiMutationMethod = Extract<
+  KbDaemonKbMutationMethod,
+  'createWiki' | 'rewriteWiki' | 'linkWiki' | 'unlinkWiki' | 'citeWiki' | 'adoptWiki' | 'deleteWiki'
+>;
+
+function mutateKbDaemonWiki(
+  method: KbDaemonWikiMutationMethod,
+  request: KbDaemonKbMutationRequest,
+  args: Record<string, unknown>,
+  ctx: KbDaemonRequestContext,
+  control: KbDaemonRequestControl,
+): Promise<KbToolResult> | KbToolResult {
+  const state = control;
+  const writeRuntime = control.writeRuntime;
+  const markFailure = control.markFailure;
+  switch (method) {
+    case 'createWiki':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiCreate(args, kbRuntime));
+      }, markFailure);
+    case 'rewriteWiki':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiRewrite(args, kbRuntime));
+      }, markFailure);
+    case 'linkWiki':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiLink(args, kbRuntime));
+      }, markFailure);
+    case 'unlinkWiki':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiUnlink(args, kbRuntime));
+      }, markFailure);
+    case 'citeWiki':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiCite(args, kbRuntime));
+      }, markFailure);
+    case 'adoptWiki':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        const invocation = invocationContext(state, ctx);
+        if ('ok' in invocation) {
+          return invocation;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime, runtime }) =>
+          handleKbWikiAdopt(args, kbRuntime, invocation, runtime),
+        );
+      }, markFailure);
+    case 'deleteWiki':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        const slug = getMutationSlug(request);
+        if (typeof slug !== 'string') {
+          return slug;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiDelete({ slug }, kbRuntime));
+      }, markFailure);
+  }
+}
+
+type KbDaemonNoteMutationMethod = Extract<
+  KbDaemonKbMutationMethod,
+  'createNote' | 'createSource' | 'updateNote' | 'deleteNote'
+>;
+
+function mutateKbDaemonNote(
+  method: KbDaemonNoteMutationMethod,
+  request: KbDaemonKbMutationRequest,
+  args: Record<string, unknown>,
+  ctx: KbDaemonRequestContext,
+  control: KbDaemonRequestControl,
+): Promise<KbToolResult> | KbToolResult {
+  const state = control;
+  const writeRuntime = control.writeRuntime;
+  const markFailure = control.markFailure;
+  switch (method) {
+    case 'createNote':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        const invocation = invocationContext(state, ctx);
+        if ('ok' in invocation) {
+          return invocation;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime, runtime }) =>
+          handleKbPromote(args, kbRuntime, invocation, runtime),
+        );
+      }, markFailure);
+    case 'createSource':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        const invocation = invocationContext(state, ctx);
+        if ('ok' in invocation) {
+          return invocation;
+        }
+        return activeWriteRuntime.createSource(args, invocation);
+      }, markFailure);
+    case 'updateNote':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbUpdate(args, kbRuntime));
+      }, markFailure);
+    case 'deleteNote':
+      return runToolResult(() => {
+        const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+        if ('ok' in activeWriteRuntime) {
+          return activeWriteRuntime;
+        }
+        const slug = getMutationSlug(request);
+        if (typeof slug !== 'string') {
+          return slug;
+        }
+        return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbDelete({ note: slug }, kbRuntime));
+      }, markFailure);
+  }
+}
+
+type KbDaemonMemoMutationMethod = Extract<KbDaemonKbMutationMethod, 'createMemo' | 'deleteMemos'>;
+
+function mutateKbDaemonMemo(
+  method: KbDaemonMemoMutationMethod,
+  args: Record<string, unknown>,
+  ctx: KbDaemonRequestContext,
+  control: KbDaemonRequestControl,
+): Promise<KbToolResult> | KbToolResult {
+  const state = control;
+  const markFailure = control.markFailure;
+  switch (method) {
+    case 'createMemo':
+      return runToolResult(() => {
+        const invocation = invocationContext(state, ctx);
+        if ('ok' in invocation) {
+          return invocation;
+        }
+        const { runtime } = createContext(state, ctx);
+        return handleKbMemo(args, invocation, runtime);
+      }, markFailure);
+    case 'deleteMemos':
+      return runToolResult(() => {
+        const invocation = invocationContext(state, ctx);
+        if ('ok' in invocation) {
+          return invocation;
+        }
+        const { runtime } = createContext(state, ctx);
+        return handleKbMemoDeleteConsolidated(args, invocation, runtime);
+      }, markFailure);
+  }
+}
+
+function setKbDaemonCommunitySummary(
+  args: Record<string, unknown>,
+  control: KbDaemonRequestControl,
+): Promise<KbToolResult> | KbToolResult {
+  return runToolResult(() => {
+    const activeWriteRuntime = getWriteRuntimeOrError(control.writeRuntime);
+    if ('ok' in activeWriteRuntime) return activeWriteRuntime;
+    return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbCommunitySetSummary(args, kbRuntime));
+  }, control.markFailure);
+}
+
+async function mutateKbDaemonRequest(
+  control: KbDaemonRequestControl,
+  request: KbDaemonKbMutationRequest,
+): Promise<KbToolResult> {
+  const state = control;
+  const writeRuntime = control.writeRuntime;
+  const markFailure = control.markFailure;
+
+  try {
+    const args = parseRecord(request.args);
+    const rawCtx = parseContext(request.ctx);
+    if (rawCtx === undefined) {
+      return invalidRequest('KB daemon mutation request requires principal context.');
+    }
+    const authorization = authorizeDaemonRequest(
+      rawCtx,
+      request.method,
+      KB_DAEMON_MUTATION_CAPABILITIES[request.method],
+      'request',
+    );
+    if ('ok' in authorization) {
+      return authorization;
+    }
+    const ctx = authorization;
+
+    switch (request.method) {
+      case 'createMemo':
+      case 'deleteMemos':
+        return mutateKbDaemonMemo(request.method, args, ctx, control);
+      case 'setCommunitySummary':
+        return setKbDaemonCommunitySummary(args, control);
+      case 'createNote':
+      case 'createSource':
+      case 'updateNote':
+      case 'deleteNote':
+        return mutateKbDaemonNote(request.method, request, args, ctx, control);
+      case 'createWiki':
+      case 'rewriteWiki':
+      case 'linkWiki':
+      case 'unlinkWiki':
+      case 'citeWiki':
+      case 'adoptWiki':
+      case 'deleteWiki':
+        return mutateKbDaemonWiki(request.method, request, args, ctx, control);
+      case 'deleteSource':
+        return runToolResult(() => {
+          const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+          if ('ok' in activeWriteRuntime) {
+            return activeWriteRuntime;
+          }
+          const slug = getMutationSlug(request);
           if (typeof slug !== 'string') {
             return slug;
           }
-          const normalizedSlug = normalizeSlug('community', slug);
-          if (typeof normalizedSlug !== 'string') {
-            return normalizedSlug;
+          return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbSourceDelete({ slug }, kbRuntime));
+        }, markFailure);
+      case 'reindex':
+        return runToolResult(() => {
+          const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+          if ('ok' in activeWriteRuntime) {
+            return activeWriteRuntime;
           }
-          const { runtime, queryContext } = createContext(state, ctx);
-          const input = readCommunitySummaryInput(createCommunitySummaryRuntime(runtime, queryContext), normalizedSlug);
-          return input === null ? notFound('community', normalizedSlug) : kbSuccess(input);
-        }
-      }
-    } catch (error: unknown) {
-      markFailure(error);
-      return failed(error);
+          const invocation = invocationContext(state, ctx);
+          if ('ok' in invocation) {
+            return invocation;
+          }
+          return activeWriteRuntime.reindex(args, invocation);
+        }, markFailure);
     }
-  };
-  const mutate = async (request: KbDaemonKbMutationRequest): Promise<KbToolResult> => {
-    try {
-      const args = parseRecord(request.args);
-      const rawCtx = parseContext(request.ctx);
-      if (rawCtx === undefined) {
-        return invalidRequest('KB daemon mutation request requires principal context.');
-      }
-      const authorization = authorizeDaemonRequest(
-        rawCtx,
-        request.method,
-        KB_DAEMON_MUTATION_CAPABILITIES[request.method],
-        'request',
-      );
-      if ('ok' in authorization) {
-        return authorization;
-      }
-      const ctx = authorization;
+  } catch (error: unknown) {
+    markFailure(error);
+    return failed(error);
+  }
+}
 
-      switch (request.method) {
-        case 'createMemo':
-          return runToolResult(() => {
-            const invocation = invocationContext(state, ctx);
-            if ('ok' in invocation) {
-              return invocation;
-            }
-            const { runtime } = createContext(state, ctx);
-            return handleKbMemo(args, invocation, runtime);
-          }, markFailure);
-        case 'deleteMemos':
-          return runToolResult(() => {
-            const invocation = invocationContext(state, ctx);
-            if ('ok' in invocation) {
-              return invocation;
-            }
-            const { runtime } = createContext(state, ctx);
-            return handleKbMemoDeleteConsolidated(args, invocation, runtime);
-          }, markFailure);
-        case 'setCommunitySummary':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbCommunitySetSummary(args, kbRuntime));
-          }, markFailure);
-        case 'createNote':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            const invocation = invocationContext(state, ctx);
-            if ('ok' in invocation) {
-              return invocation;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime, runtime }) =>
-              handleKbPromote(args, kbRuntime, invocation, runtime),
-            );
-          }, markFailure);
-        case 'createSource':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            const invocation = invocationContext(state, ctx);
-            if ('ok' in invocation) {
-              return invocation;
-            }
-            return activeWriteRuntime.createSource(args, invocation);
-          }, markFailure);
-        case 'updateNote':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbUpdate(args, kbRuntime));
-          }, markFailure);
-        case 'deleteNote':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            const slug = getMutationSlug(request);
-            if (typeof slug !== 'string') {
-              return slug;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbDelete({ note: slug }, kbRuntime));
-          }, markFailure);
-        case 'createWiki':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiCreate(args, kbRuntime));
-          }, markFailure);
-        case 'rewriteWiki':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiRewrite(args, kbRuntime));
-          }, markFailure);
-        case 'linkWiki':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiLink(args, kbRuntime));
-          }, markFailure);
-        case 'unlinkWiki':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiUnlink(args, kbRuntime));
-          }, markFailure);
-        case 'citeWiki':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiCite(args, kbRuntime));
-          }, markFailure);
-        case 'adoptWiki':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            const invocation = invocationContext(state, ctx);
-            if ('ok' in invocation) {
-              return invocation;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime, runtime }) =>
-              handleKbWikiAdopt(args, kbRuntime, invocation, runtime),
-            );
-          }, markFailure);
-        case 'deleteWiki':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            const slug = getMutationSlug(request);
-            if (typeof slug !== 'string') {
-              return slug;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbWikiDelete({ slug }, kbRuntime));
-          }, markFailure);
-        case 'deleteSource':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            const slug = getMutationSlug(request);
-            if (typeof slug !== 'string') {
-              return slug;
-            }
-            return activeWriteRuntime.withKb(({ kbRuntime }) => handleKbSourceDelete({ slug }, kbRuntime));
-          }, markFailure);
-        case 'reindex':
-          return runToolResult(() => {
-            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
-            if ('ok' in activeWriteRuntime) {
-              return activeWriteRuntime;
-            }
-            const invocation = invocationContext(state, ctx);
-            if ('ok' in invocation) {
-              return invocation;
-            }
-            return activeWriteRuntime.reindex(args, invocation);
-          }, markFailure);
+export function createKbDaemonRequestService(options: KbDaemonRequestServiceOptions): KbDaemonRequestService {
+  const control: KbDaemonRequestControl = {
+    pluginRoot: options.pluginRoot,
+    runtime: options.runtime,
+    writeRuntime: options.writeRuntime,
+    now: options.now ?? Date.now,
+    phase: 'not_initialized',
+    initializedAt: undefined,
+    lastError: undefined,
+    lastSetupError: undefined,
+    markFailure(error) {
+      markKbDaemonReadFailure(control, error);
+    },
+    getRuntime() {
+      if (control.runtime !== undefined) {
+        markKbDaemonReadReady(control);
+        return control.runtime;
       }
-    } catch (error: unknown) {
-      markFailure(error);
-      return failed(error);
-    }
+      try {
+        control.runtime = createRealRuntime(readBuildFlavor(options.pluginRoot));
+        markKbDaemonReadReady(control);
+      } catch (error: unknown) {
+        control.markFailure(error);
+        throw error;
+      }
+      return control.runtime;
+    },
   };
+  const state = control;
+  const writeRuntime = control.writeRuntime;
+  const markFailure = control.markFailure;
+
   const health = (): KbDaemonKbReadHealth => ({
-    phase,
-    ...(initializedAt === undefined ? {} : { initializedAt }),
-    ...(lastError === undefined ? {} : { lastError }),
-    ...(lastSetupError === undefined ? {} : { setupError: lastSetupError }),
+    phase: control.phase,
+    ...(control.initializedAt === undefined ? {} : { initializedAt: control.initializedAt }),
+    ...(control.lastError === undefined ? {} : { lastError: control.lastError }),
+    ...(control.lastSetupError === undefined ? {} : { setupError: control.lastSetupError }),
   });
   const warmup = async (): Promise<KbDaemonKbReadHealth> => {
     try {
       const { queryContext } = createContext(state);
       createDefaultKbReadPaths(queryContext);
       writeRuntime?.warmSearchRuntime?.();
-      markReady();
+      markKbDaemonReadReady(control);
     } catch (error: unknown) {
       markFailure(error);
     }
@@ -894,8 +1001,8 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
   };
 
   return {
-    read,
-    mutate,
+    read: (request) => readKbDaemonRequest(control, request),
+    mutate: (request) => mutateKbDaemonRequest(control, request),
     warmup,
     health,
   };

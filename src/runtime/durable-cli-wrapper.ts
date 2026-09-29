@@ -582,13 +582,7 @@ function createContainedGroupSettlement(
   return { begin, requestTermination };
 }
 
-async function runWrapper(payloadPath: string | undefined): Promise<void> {
-  if (process.platform === 'win32') {
-    throw new Error(
-      'Durable CLI launch is unsupported on Windows because Coral cannot observe or terminate a POSIX process group there.',
-    );
-  }
-  if (payloadPath === undefined) throw new Error('Durable wrapper requires a launch payload path.');
+function bindDurableWrapperCustodyTicket(): void {
   const custodyTicket = process.env[CUSTODY_PROCESS_TICKET_ENV];
   if (custodyTicket !== undefined) {
     const ticket = parseCustodyProcessTicket(custodyTicket);
@@ -600,6 +594,29 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     bindCustodyProcessTicket(ticket, { pid: process.pid, incarnation }, Date.now());
     delete process.env[CUSTODY_PROCESS_TICKET_ENV];
   }
+}
+
+function closeDurableWrapperOutputFiles(stdoutFd: number, stderrFd: number): void {
+  try {
+    closeSync(stdoutFd);
+  } catch {
+    // Output-close failure must not prevent process-group settlement.
+  }
+  try {
+    closeSync(stderrFd);
+  } catch {
+    // Output-close failure must not prevent process-group settlement.
+  }
+}
+
+async function runWrapper(payloadPath: string | undefined): Promise<void> {
+  if (process.platform === 'win32') {
+    throw new Error(
+      'Durable CLI launch is unsupported on Windows because Coral cannot observe or terminate a POSIX process group there.',
+    );
+  }
+  if (payloadPath === undefined) throw new Error('Durable wrapper requires a launch payload path.');
+  bindDurableWrapperCustodyTicket();
   const launch = parseLaunchPayload(payloadPath);
   const jobDir = dirname(payloadPath);
   const env = JSON.parse(readFileSync(join(jobDir, 'env.json'), 'utf8')) as NodeJS.ProcessEnv;
@@ -614,18 +631,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   const publicationGateTermination = new AbortController();
   let terminationStarted = false;
 
-  const closeOutputFiles = (): void => {
-    try {
-      closeSync(stdoutFd);
-    } catch {
-      // Output-close failure must not prevent process-group settlement.
-    }
-    try {
-      closeSync(stderrFd);
-    } catch {
-      // Output-close failure must not prevent process-group settlement.
-    }
-  };
+  const closeOutputFiles = (): void => closeDurableWrapperOutputFiles(stdoutFd, stderrFd);
 
   const groupSettlement = createContainedGroupSettlement(time, closeOutputFiles, () => terminationRequested);
 

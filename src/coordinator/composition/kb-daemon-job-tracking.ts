@@ -9,40 +9,32 @@ import { type createCoordinatorWorld } from './world.js';
 
 const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
 
-export function createKbDaemonJobTracking({
+function createDaemonJobAbortProxyRegistry({
   runtime,
   world,
   kbDaemonSupervisor,
-  getProgressStore,
   internalJobAbortRegistry,
-}: {
-  runtime: Runtime;
-  world: ReturnType<typeof createCoordinatorWorld>;
-  kbDaemonSupervisor: KbDaemonSupervisor;
-  getProgressStore: () => JobStore;
-  internalJobAbortRegistry: ReturnType<
-    ReturnType<typeof createCoordinatorWorld>['launchCoordinator']['getInternalAbortRegistry']
-  >;
-}): {
-  kbDaemonSupervisorWithTrackedShutdown: KbDaemonSupervisor;
-  disposeKbDaemonExitListener: () => void;
-  disposeDaemonJobTerminalListeners: () => void;
-  registerDaemonJobAbortProxy: (jobId: string) => void;
-} {
-  const daemonOwnedKbJobs = new Map<string, { cleanupTimer: ReturnType<typeof runtime.time.setTimeout> }>();
+}: Pick<
+  Parameters<typeof createKbDaemonJobTracking>[0],
+  'runtime' | 'world' | 'kbDaemonSupervisor' | 'internalJobAbortRegistry'
+>) {
+  const state = {
+    daemonOwnedKbJobs: new Map<string, { cleanupTimer: ReturnType<typeof runtime.time.setTimeout> }>(),
+    daemonJobTerminalListenersRegistered: false,
+  };
   const cleanupDaemonJobAbortProxy = (jobId: string): void => {
-    const tracked = daemonOwnedKbJobs.get(jobId);
+    const tracked = state.daemonOwnedKbJobs.get(jobId);
     if (tracked !== undefined) {
       runtime.time.clearTimeout(tracked.cleanupTimer);
-      daemonOwnedKbJobs.delete(jobId);
+      state.daemonOwnedKbJobs.delete(jobId);
     }
     internalJobAbortRegistry.remove(jobId);
-    if (daemonOwnedKbJobs.size === 0) {
+    if (state.daemonOwnedKbJobs.size === 0) {
       disposeDaemonJobTerminalListeners();
     }
   };
   const cleanupTerminalDaemonJobAbortProxy = (jobId: string, phase: string): void => {
-    if (!isTerminalPhase(phase) || !daemonOwnedKbJobs.has(jobId)) {
+    if (!isTerminalPhase(phase) || !state.daemonOwnedKbJobs.has(jobId)) {
       return;
     }
     cleanupDaemonJobAbortProxy(jobId);
@@ -51,28 +43,64 @@ export function createKbDaemonJobTracking({
     cleanupTerminalDaemonJobAbortProxy(event.jobId, event.phase);
   };
   const onDaemonJobCompleted = (event: { jobId: string }): void => {
-    if (!daemonOwnedKbJobs.has(event.jobId)) {
+    if (!state.daemonOwnedKbJobs.has(event.jobId)) {
       return;
     }
     cleanupDaemonJobAbortProxy(event.jobId);
   };
-  let daemonJobTerminalListenersRegistered = false;
   const ensureDaemonJobTerminalListeners = (): void => {
-    if (daemonJobTerminalListenersRegistered) {
+    if (state.daemonJobTerminalListenersRegistered) {
       return;
     }
-    daemonJobTerminalListenersRegistered = true;
+    state.daemonJobTerminalListenersRegistered = true;
     world.eventBus.on('job:phase_changed', onDaemonJobPhaseChanged);
     world.eventBus.on('job:completed', onDaemonJobCompleted);
   };
   const disposeDaemonJobTerminalListeners = (): void => {
-    if (!daemonJobTerminalListenersRegistered) {
+    if (!state.daemonJobTerminalListenersRegistered) {
       return;
     }
-    daemonJobTerminalListenersRegistered = false;
+    state.daemonJobTerminalListenersRegistered = false;
     world.eventBus.off('job:phase_changed', onDaemonJobPhaseChanged);
     world.eventBus.off('job:completed', onDaemonJobCompleted);
   };
+  const registerDaemonJobAbortProxy = (jobId: string): void => {
+    cleanupDaemonJobAbortProxy(jobId);
+    ensureDaemonJobTerminalListeners();
+    const cleanupTimer = runtime.time.setTimeout(() => {
+      cleanupDaemonJobAbortProxy(jobId);
+    }, KB_DAEMON_JOB_ABORT_PROXY_TTL_MS);
+    cleanupTimer.unref?.();
+    state.daemonOwnedKbJobs.set(jobId, { cleanupTimer });
+    internalJobAbortRegistry.register(jobId, () => {
+      const tracked = state.daemonOwnedKbJobs.get(jobId);
+      if (tracked !== undefined) {
+        runtime.time.clearTimeout(tracked.cleanupTimer);
+      }
+      const abortResult =
+        kbDaemonSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
+      void abortResult.finally(() => {
+        cleanupDaemonJobAbortProxy(jobId);
+      });
+    });
+  };
+  return { state, cleanupDaemonJobAbortProxy, disposeDaemonJobTerminalListeners, registerDaemonJobAbortProxy };
+}
+
+function attachDaemonJobExitSettlement(
+  {
+    runtime,
+    world,
+    kbDaemonSupervisor,
+    getProgressStore,
+  }: Pick<
+    Parameters<typeof createKbDaemonJobTracking>[0],
+    'runtime' | 'world' | 'kbDaemonSupervisor' | 'getProgressStore'
+  >,
+  proxies: ReturnType<typeof createDaemonJobAbortProxyRegistry>,
+): () => void {
+  const { cleanupDaemonJobAbortProxy } = proxies;
+  const daemonOwnedKbJobs = proxies.state.daemonOwnedKbJobs;
   const describeKbDaemonExit = (snapshot: KbDaemonHealthSnapshot): string => {
     const exit = snapshot.lastExit;
     const suffix =
@@ -127,26 +155,31 @@ export function createKbDaemonJobTracking({
       world.log(`[kb-daemon] failed to reconcile daemon-owned KB jobs after daemon exit: ${formatError(error)}\n`);
     }
   };
-  const registerDaemonJobAbortProxy = (jobId: string): void => {
-    cleanupDaemonJobAbortProxy(jobId);
-    ensureDaemonJobTerminalListeners();
-    const cleanupTimer = runtime.time.setTimeout(() => {
-      cleanupDaemonJobAbortProxy(jobId);
-    }, KB_DAEMON_JOB_ABORT_PROXY_TTL_MS);
-    cleanupTimer.unref?.();
-    daemonOwnedKbJobs.set(jobId, { cleanupTimer });
-    internalJobAbortRegistry.register(jobId, () => {
-      const tracked = daemonOwnedKbJobs.get(jobId);
-      if (tracked !== undefined) {
-        runtime.time.clearTimeout(tracked.cleanupTimer);
-      }
-      const abortResult =
-        kbDaemonSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
-      void abortResult.finally(() => {
-        cleanupDaemonJobAbortProxy(jobId);
-      });
-    });
-  };
+  return kbDaemonSupervisor.onExit?.(failTrackedDaemonJobs) ?? (() => {});
+}
+
+export function createKbDaemonJobTracking({
+  runtime,
+  world,
+  kbDaemonSupervisor,
+  getProgressStore,
+  internalJobAbortRegistry,
+}: {
+  runtime: Runtime;
+  world: ReturnType<typeof createCoordinatorWorld>;
+  kbDaemonSupervisor: KbDaemonSupervisor;
+  getProgressStore: () => JobStore;
+  internalJobAbortRegistry: ReturnType<
+    ReturnType<typeof createCoordinatorWorld>['launchCoordinator']['getInternalAbortRegistry']
+  >;
+}): {
+  kbDaemonSupervisorWithTrackedShutdown: KbDaemonSupervisor;
+  disposeKbDaemonExitListener: () => void;
+  disposeDaemonJobTerminalListeners: () => void;
+  registerDaemonJobAbortProxy: (jobId: string) => void;
+} {
+  const proxies = createDaemonJobAbortProxyRegistry({ runtime, world, kbDaemonSupervisor, internalJobAbortRegistry });
+  const { registerDaemonJobAbortProxy, disposeDaemonJobTerminalListeners } = proxies;
   const trackActiveDaemonKbJobs = async (reason: string, signal?: AbortSignal): Promise<void> => {
     try {
       const activeJobs = (await kbDaemonSupervisor.listActiveKbJobs?.({ signal }))?.active ?? [];
@@ -172,7 +205,10 @@ export function createKbDaemonJobTracking({
       return kbDaemonSupervisor.dispose(reason, disposeOptions);
     },
   };
-  const disposeKbDaemonExitListener = kbDaemonSupervisor.onExit?.(failTrackedDaemonJobs) ?? (() => {});
+  const disposeKbDaemonExitListener = attachDaemonJobExitSettlement(
+    { runtime, world, kbDaemonSupervisor, getProgressStore },
+    proxies,
+  );
   return {
     kbDaemonSupervisorWithTrackedShutdown,
     disposeKbDaemonExitListener,

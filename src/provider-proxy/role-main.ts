@@ -784,10 +784,86 @@ function raceReadinessAgainstSpawnFailure<T>(readiness: Promise<T>, spawnFailed:
  * existed. `reaperSpawn`, `reaperChannel`, `close`, and `proxySpawn` are tracked outside the `try` so the
  * `catch` can unwind exactly what this attempt actually created, however far it got.
  */
-export async function startProviderGuardianRole(
-  capsulePath: string,
+
+function recordGuardianChildCustodyIntent(
   ports: ProviderRoleMainPorts,
-): Promise<GuardianRoleHandle> {
+  proxyInstanceId: string,
+  role: 'reaper' | 'proxy',
+  capsulePath: string,
+  processGroupId: number | null,
+): CustodyProcessTicket | null {
+  return ports.custody === undefined
+    ? null
+    : recordChildRoleCustodyIntent({
+        ...ports.custody,
+        owner: 'provider-proxy-set',
+        operationId: `${proxyInstanceId}:${role}`,
+        capsule: capsulePath,
+        nowMs: ports.runtime.time.now(),
+        bindWithinMs: 10_000,
+        processGroupId,
+      });
+}
+
+async function spawnGuardianChildRole(
+  role: 'reaper' | 'proxy',
+  capsulePath: string,
+  processGroupId: number | null,
+  proxyInstanceId: string,
+  ports: ProviderRoleMainPorts,
+  spawnPorts: ReturnType<typeof buildSpawnPorts>,
+  roleEnv: Record<string, string>,
+): Promise<SpawnedRoleProcess | HeldRoleSpawn> {
+  const ticket = recordGuardianChildCustodyIntent(ports, proxyInstanceId, role, capsulePath, processGroupId);
+  const disposition = await requireSpawnedRole(
+    spawnRoleProcess(role, capsulePath, spawnPorts, {
+      pluginRoot: ports.pluginRoot,
+      detached: role === 'proxy',
+      envAdditions: roleEnv,
+      ...(ticket === null ? {} : { custodyTicket: JSON.stringify(ticket) }),
+    }),
+  );
+  if (disposition.kind === 'held') return disposition;
+  if (ticket !== null) {
+    bindCustodyProcessTicket(
+      ticket,
+      { pid: disposition.pid, incarnation: disposition.incarnation },
+      ports.runtime.time.now(),
+      true,
+    );
+  }
+  return disposition;
+}
+
+async function connectGuardianReaper(
+  endpoint: string,
+  pairingSecret: string,
+  reaperSpawn: SpawnedRoleProcess,
+  ports: ProviderRoleMainPorts,
+  timer: ReturnType<typeof runtimeControlTimer>,
+): Promise<ControlClient> {
+  const reaperConnected = connectRoleControlWithRetry(endpoint, timer, {
+    connectTimeoutMs: ROLE_CONNECT_TIMEOUT_MS,
+    retryIntervalMs: ROLE_SPAWN_READY_RETRY_INTERVAL_MS,
+    overallDeadlineMs: ROLE_SPAWN_READY_DEADLINE_MS,
+    monotonicNow: () => ports.runtime.time.monotonicNow(),
+    sleep: (ms) => ports.runtime.time.sleep(ms),
+  });
+  const reaperChannel = await raceReadinessAgainstSpawnFailure(reaperConnected, reaperSpawn.spawnFailed);
+  const pairingResult = requireRolePeerResult(
+    'reaper.pair.v1',
+    await reaperChannel.exchange(
+      'reaper.pair.v1',
+      controlPairParamsSchema.parse({ pairingSecret: pairingSecret }),
+      PROXY_CONTROL_RPC_TIMEOUT_MS,
+    ),
+  );
+  controlPairResultSchema.parse(pairingResult);
+
+  return reaperChannel;
+}
+
+function prepareGuardianRoleConstruction(capsulePath: string, ports: ProviderRoleMainPorts) {
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'guardian', buildCapsuleEnv(ports));
   const clock = createMonotonicClock(guardianRoleClockScope);
   const deadlineConfiguration = resolveProviderProxyDeadlineConfiguration(ports.runtime.env);
@@ -801,25 +877,79 @@ export async function startProviderGuardianRole(
     [BUILD_FLAVOR_ENV_KEY]: capsule.flavor,
     [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
   };
-  const recordRole = (
-    role: 'reaper' | 'proxy',
-    capsulePath: string,
-    processGroupId: number | null,
-  ): CustodyProcessTicket | null =>
-    ports.custody === undefined
-      ? null
-      : recordChildRoleCustodyIntent({
-          ...ports.custody,
-          owner: 'provider-proxy-set',
-          operationId: `${capsule.proxyInstanceId}:${role}`,
-          capsule: capsulePath,
-          nowMs: ports.runtime.time.now(),
-          bindWithinMs: 10_000,
-          processGroupId,
-        });
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   const schedule = realRoleOutcomeScheduler(ports);
   const self = readSelfIdentity(ports);
+  return {
+    capsule,
+    clock,
+    holderAuthority,
+    deadlines,
+    containmentEnvironment,
+    timer,
+    spawnPorts,
+    roleEnv,
+    exitProcess,
+    schedule,
+    self,
+  };
+}
+
+async function armGuardianProxyContainment(
+  guardian: Guardian,
+  proxySpawn: SpawnedRoleProcess,
+): Promise<NonNullable<ReturnType<Guardian['enforcer']>>> {
+  const containmentRecorded = guardian.recordContainment({
+    pid: proxySpawn.pid,
+    incarnation: proxySpawn.incarnation,
+    processGroupId: proxySpawn.pid,
+    containmentKind: DETACHED_CONTAINMENT_KIND,
+  });
+  await raceReadinessAgainstSpawnFailure(containmentRecorded, proxySpawn.spawnFailed);
+  const enforcer = guardian.enforcer();
+  if (enforcer === null) {
+    throw new Error('Guardian containment recording completed without an armed enforcer.');
+  }
+  return enforcer;
+}
+
+function createGuardianRoleHandle(
+  guardian: Guardian,
+  reaperSpawn: SpawnedRoleProcess,
+  proxySpawn: SpawnedRoleProcess,
+  close: () => Promise<void>,
+  enforcer: NonNullable<ReturnType<Guardian['enforcer']>>,
+): GuardianRoleHandle {
+  return {
+    role: 'guardian',
+    guardian,
+    reaperSpawn,
+    proxySpawn,
+    close,
+    giveUp: async (): Promise<LocalSignalTeardownDisposition> => {
+      // Local signal authority must be minted only while handling that signal.
+      return enforcer.giveUp(mintLocalSignalTeardownAuthorization());
+    },
+  };
+}
+
+export async function startProviderGuardianRole(
+  capsulePath: string,
+  ports: ProviderRoleMainPorts,
+): Promise<GuardianRoleHandle> {
+  const {
+    capsule,
+    clock,
+    holderAuthority,
+    deadlines,
+    containmentEnvironment,
+    timer,
+    spawnPorts,
+    roleEnv,
+    exitProcess,
+    schedule,
+    self,
+  } = prepareGuardianRoleConstruction(capsulePath, ports);
   let reaperSpawn: SpawnedRoleProcess | null = null;
   let reaperChannel: ControlClient | null = null;
   let close: (() => Promise<void>) | null = null;
@@ -827,47 +957,28 @@ export async function startProviderGuardianRole(
   let failedRoleSpawn: HeldRoleSpawn | null = null;
 
   try {
-    const reaperCapsule = reaperCapsulePathFrom(capsule, ports.baseDir);
-    const reaperTicket = recordRole('reaper', reaperCapsule, self.pid);
-    const reaperDisposition = await requireSpawnedRole(
-      spawnRoleProcess('reaper', reaperCapsule, spawnPorts, {
-        pluginRoot: ports.pluginRoot,
-        detached: false,
-        envAdditions: roleEnv,
-        ...(reaperTicket === null ? {} : { custodyTicket: JSON.stringify(reaperTicket) }),
-      }),
+    const reaperDisposition = await spawnGuardianChildRole(
+      'reaper',
+      reaperCapsulePathFrom(capsule, ports.baseDir),
+      self.pid,
+      capsule.proxyInstanceId,
+      ports,
+      spawnPorts,
+      roleEnv,
     );
     if (reaperDisposition.kind === 'held') {
       failedRoleSpawn = reaperDisposition;
       throw reaperDisposition.error;
     }
     reaperSpawn = reaperDisposition;
-    if (reaperTicket !== null)
-      bindCustodyProcessTicket(
-        reaperTicket,
-        { pid: reaperSpawn.pid, incarnation: reaperSpawn.incarnation },
-        ports.runtime.time.now(),
-        true,
-      );
 
-    const reaperConnected = connectRoleControlWithRetry(capsule.reaperControlEndpoint, timer, {
-      connectTimeoutMs: ROLE_CONNECT_TIMEOUT_MS,
-      retryIntervalMs: ROLE_SPAWN_READY_RETRY_INTERVAL_MS,
-      overallDeadlineMs: ROLE_SPAWN_READY_DEADLINE_MS,
-      monotonicNow: () => ports.runtime.time.monotonicNow(),
-      sleep: (ms) => ports.runtime.time.sleep(ms),
-    });
-    reaperChannel = await raceReadinessAgainstSpawnFailure(reaperConnected, reaperSpawn.spawnFailed);
-    const pairingResult = requireRolePeerResult(
-      'reaper.pair.v1',
-      await reaperChannel.exchange(
-        'reaper.pair.v1',
-        controlPairParamsSchema.parse({ pairingSecret: capsule.guardianReaperAuthSecret }),
-        PROXY_CONTROL_RPC_TIMEOUT_MS,
-      ),
+    reaperChannel = await connectGuardianReaper(
+      capsule.reaperControlEndpoint,
+      capsule.guardianReaperAuthSecret,
+      reaperSpawn,
+      ports,
+      timer,
     );
-    controlPairResultSchema.parse(pairingResult);
-
     const pairedReaperChannel = reaperChannel;
     // Forward-referenced by `close` below (assigned into `createGuardian`'s own `onOutcome` before the
     // guardian it closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
@@ -912,52 +1023,24 @@ export async function startProviderGuardianRole(
     await guardian.listen();
     ports.onGuardianListening?.();
 
-    const proxyCapsule = proxyCapsulePathFrom(capsule, ports.baseDir);
-    const proxyTicket = recordRole('proxy', proxyCapsule, null);
-    const proxyDisposition = await requireSpawnedRole(
-      spawnRoleProcess('proxy', proxyCapsule, spawnPorts, {
-        pluginRoot: ports.pluginRoot,
-        detached: true,
-        envAdditions: roleEnv,
-        ...(proxyTicket === null ? {} : { custodyTicket: JSON.stringify(proxyTicket) }),
-      }),
+    const proxyDisposition = await spawnGuardianChildRole(
+      'proxy',
+      proxyCapsulePathFrom(capsule, ports.baseDir),
+      null,
+      capsule.proxyInstanceId,
+      ports,
+      spawnPorts,
+      roleEnv,
     );
     if (proxyDisposition.kind === 'held') {
       failedRoleSpawn = proxyDisposition;
       throw proxyDisposition.error;
     }
     proxySpawn = proxyDisposition;
-    if (proxyTicket !== null)
-      bindCustodyProcessTicket(
-        proxyTicket,
-        { pid: proxySpawn.pid, incarnation: proxySpawn.incarnation },
-        ports.runtime.time.now(),
-        true,
-      );
 
-    const containmentRecorded = guardian.recordContainment({
-      pid: proxySpawn.pid,
-      incarnation: proxySpawn.incarnation,
-      processGroupId: proxySpawn.pid,
-      containmentKind: DETACHED_CONTAINMENT_KIND,
-    });
-    await raceReadinessAgainstSpawnFailure(containmentRecorded, proxySpawn.spawnFailed);
-    const enforcer = guardian.enforcer();
-    if (enforcer === null) {
-      throw new Error('Guardian containment recording completed without an armed enforcer.');
-    }
+    const enforcer = await armGuardianProxyContainment(guardian, proxySpawn);
 
-    return {
-      role: 'guardian',
-      guardian,
-      reaperSpawn,
-      proxySpawn,
-      close,
-      giveUp: async (): Promise<LocalSignalTeardownDisposition> => {
-        // Local signal authority must be minted only while handling that signal.
-        return enforcer.giveUp(mintLocalSignalTeardownAuthorization());
-      },
-    };
+    return createGuardianRoleHandle(guardian, reaperSpawn, proxySpawn, close, enforcer);
   } catch (error: unknown) {
     const cleanup = await unwindGuardianConstruction(ports, {
       close,
@@ -1382,6 +1465,52 @@ let activeRoleShutdownDispose: (() => void) | null = null;
  * coordinator's own `main()` uses. A `'none'` mode is a defensive no-op; `bootstrap.ts` never reaches this
  * function without a role already confirmed.
  */
+
+async function settleGuardianConstructionFailure(
+  error: unknown,
+  runtime: Runtime,
+  disposeRoleLifecycle: () => void,
+): Promise<number> {
+  let constructionExitCode = GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE;
+  if (error instanceof GuardianConstructionCleanupHeldError) {
+    backendLog.error('guardian: construction failed and spawned process cleanup remains held', error);
+    let disposition: GuardianConstructionCleanupDisposition = error.hold;
+    let attempts = 1;
+    while (disposition.kind === 'holding' && attempts < ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS) {
+      await runtime.time.sleep(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS);
+      const heldBeforeRetry: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }> = disposition;
+      attempts += 1;
+      try {
+        disposition = await heldBeforeRetry.retry();
+        if (disposition.kind === 'holding') {
+          backendLog.error(
+            `guardian: construction cleanup retry remains held: ${guardianConstructionCleanupHoldDetail(disposition)}`,
+          );
+        }
+      } catch (retryError: unknown) {
+        backendLog.error(
+          `guardian: construction cleanup retry failed: ${guardianConstructionCleanupHoldDetail(heldBeforeRetry)}`,
+          retryError,
+        );
+      }
+    }
+    if (disposition.kind === 'holding') {
+      constructionExitCode = ROLE_ENFORCEMENT_FAILURE_EXIT_CODE;
+      backendLog.error(
+        `guardian: construction cleanup remained held after ${attempts} attempts; exiting: ${guardianConstructionCleanupHoldDetail(disposition)}`,
+      );
+    }
+  } else {
+    if (!isGuardianConstructionCleanupSettled(error)) {
+      disposeRoleLifecycle();
+      throw error;
+    }
+    backendLog.error('guardian: construction failed after spawned process cleanup settled', error);
+  }
+  if (constructionExitCode !== 0) disposeRoleLifecycle();
+  return constructionExitCode;
+}
+
 export async function runProviderRoleMain(mode: ProviderRoleArgv, options: ProviderRoleMainOptions): Promise<number> {
   if (mode.role === 'none') return 0;
 
@@ -1436,44 +1565,7 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
     try {
       handle = await startProviderGuardianRole(mode.capsulePath, ports);
     } catch (error: unknown) {
-      let constructionExitCode = GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE;
-      if (error instanceof GuardianConstructionCleanupHeldError) {
-        backendLog.error('guardian: construction failed and spawned process cleanup remains held', error);
-        let disposition: GuardianConstructionCleanupDisposition = error.hold;
-        let attempts = 1;
-        while (disposition.kind === 'holding' && attempts < ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS) {
-          await runtime.time.sleep(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS);
-          const heldBeforeRetry: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }> = disposition;
-          attempts += 1;
-          try {
-            disposition = await heldBeforeRetry.retry();
-            if (disposition.kind === 'holding') {
-              backendLog.error(
-                `guardian: construction cleanup retry remains held: ${guardianConstructionCleanupHoldDetail(disposition)}`,
-              );
-            }
-          } catch (retryError: unknown) {
-            backendLog.error(
-              `guardian: construction cleanup retry failed: ${guardianConstructionCleanupHoldDetail(heldBeforeRetry)}`,
-              retryError,
-            );
-          }
-        }
-        if (disposition.kind === 'holding') {
-          constructionExitCode = ROLE_ENFORCEMENT_FAILURE_EXIT_CODE;
-          backendLog.error(
-            `guardian: construction cleanup remained held after ${attempts} attempts; exiting: ${guardianConstructionCleanupHoldDetail(disposition)}`,
-          );
-        }
-      } else {
-        if (!isGuardianConstructionCleanupSettled(error)) {
-          disposeRoleLifecycle();
-          throw error;
-        }
-        backendLog.error('guardian: construction failed after spawned process cleanup settled', error);
-      }
-      if (constructionExitCode !== 0) disposeRoleLifecycle();
-      return constructionExitCode;
+      return settleGuardianConstructionFailure(error, runtime, disposeRoleLifecycle);
     }
   } else if (mode.role === 'reaper') {
     try {

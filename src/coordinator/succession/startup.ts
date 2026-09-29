@@ -484,6 +484,98 @@ function recoveryGrantsVerify(
  * here is bounded: a startup that cannot resolve the attempt holds, and once patience is exhausted the attempt
  * is abandoned so ordinary startup reaches service.
  */
+function unprovenSuccessionDeaths(
+  attemptId: string,
+  processes: readonly Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>[],
+): SuccessionStartupHold | null {
+  const deaths = observeRecordedDeaths(processes);
+  return deaths === 'absent' ? null : { kind: 'deaths-unproven', attemptId, alive: deaths === 'alive' };
+}
+
+async function resolveUnservedSuccessionAttempt(
+  options: IncompleteSuccessionOptions,
+  intent: UpgradeIntent,
+  prior: UpgradeIntent | null,
+  holdOrAbandon: (hold: SuccessionStartupHold) => Promise<IncompleteSuccessionResolution>,
+  retireArchived: (attemptId: string | null) => Promise<IncompleteSuccessionResolution>,
+): Promise<IncompleteSuccessionResolution> {
+  const { runtime } = options;
+  const attemptId = intent.attemptId;
+  if (
+    intent.attemptOwner?.kind !== 'incumbent' ||
+    attemptId === null ||
+    observeSuccessionServing(runtime, attemptId) !== null
+  ) {
+    return { kind: 'none' };
+  }
+  const owner = intent.attemptOwner;
+  const child = intent.attemptChild;
+  const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
+  const retirement = observeRetirementDisposition(runtime, attemptId);
+  const transferEvidence =
+    retirement.kind === 'recorded' ||
+    (child !== null &&
+      child !== undefined &&
+      ((preparation.success && preparation.data.receipts.length > 0) || retirement.kind === 'unreadable'));
+  if ((intent.disposition === 'pending' || intent.disposition === 'deferred') && !transferEvidence) {
+    // With no durable transfer evidence, retiring the dead attempt releases its prepared grants.
+    const unproven = unprovenSuccessionDeaths(
+      attemptId,
+      child !== undefined && child !== null && child.attemptId === attemptId ? [owner, child] : [owner],
+    );
+    return unproven === null
+      ? prior === null
+        ? { kind: 'retire', attemptId }
+        : retireArchived(attemptId)
+      : holdOrAbandon(unproven);
+  }
+  if (intent.disposition !== 'attempting' && !transferEvidence) return { kind: 'none' };
+  if (!preparation.success || child === undefined || child === null) {
+    return holdOrAbandon({ kind: 'attempt-record-unreadable', attemptId });
+  }
+  const unproven = unprovenSuccessionDeaths(attemptId, [owner, child]);
+  if (unproven !== null) return holdOrAbandon(unproven);
+  let recovery: DeadAttemptRecovery | null = null;
+  let preferredEpochKey: string | null = null;
+  if (preparation.data.receipts.length > 0) {
+    if (!recoveryGrantsVerify(runtime, options.currentBuild.flavor, attemptId, preparation.data)) {
+      return holdOrAbandon({ kind: 'recovery-grants-unverified', attemptId });
+    }
+    const recoveryTarget = options.prepareRecoveryGrantHandoff?.(
+      preparation.data.epochKey,
+      preparation.data.incumbentInstanceId,
+    );
+    if (recoveryTarget === undefined || recoveryTarget === null) {
+      return holdOrAbandon({ kind: 'grant-controller-unavailable', attemptId });
+    }
+    if (!runsCurrentBuild(recoveryTarget, options.currentBuild)) return { kind: 'handoff', target: recoveryTarget };
+    recovery = { attemptId, epochKey: preparation.data.epochKey, force: true };
+    preferredEpochKey = preparation.data.epochKey;
+  }
+  // An unreadable disposition may name a mint this attempt made, so only a proven absence skips the discard.
+  if (observeRetirementDisposition(runtime, attemptId).kind !== 'absent') {
+    const recoveryTarget = options.prepareRecoveryGrantHandoff?.(
+      preparation.data.epochKey,
+      preparation.data.incumbentInstanceId,
+    );
+    if (recoveryTarget !== undefined && recoveryTarget !== null) {
+      if (!runsCurrentBuild(recoveryTarget, options.currentBuild)) return { kind: 'handoff', target: recoveryTarget };
+      preferredEpochKey = preparation.data.epochKey;
+    }
+    recovery = {
+      attemptId,
+      epochKey: preparation.data.epochKey,
+      force: recovery?.force ?? false,
+      discardAttemptId: attemptId,
+    };
+  }
+  return recovery === null
+    ? prior === null
+      ? { kind: 'retire', attemptId }
+      : retireArchived(attemptId)
+    : { kind: 'recover', attempt: recovery, preferredEpochKey };
+}
+
 export async function resolveIncompleteSuccessionAtStartup(
   options: IncompleteSuccessionOptions,
 ): Promise<IncompleteSuccessionResolution> {
@@ -548,14 +640,6 @@ export async function resolveIncompleteSuccessionAtStartup(
   if (prior !== null && (prior.disposition === 'completed' || prior.disposition === 'closed')) {
     return retireArchived(prior.attemptId);
   }
-  const deathsUnproven = (
-    attemptId: string,
-    processes: readonly Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>[],
-  ): SuccessionStartupHold | null => {
-    const deaths = observeRecordedDeaths(processes);
-    return deaths === 'absent' ? null : { kind: 'deaths-unproven', attemptId, alive: deaths === 'alive' };
-  };
-
   const recoveryAttemptId = intent.recoveryAttemptId;
   if (
     typeof recoveryAttemptId === 'string' &&
@@ -574,7 +658,7 @@ export async function resolveIncompleteSuccessionAtStartup(
       return holdOrAbandon({ kind: 'attempt-record-unreadable', attemptId: recoveryAttemptId });
     }
     const child = intent.attemptChild;
-    const unproven = deathsUnproven(
+    const unproven = unprovenSuccessionDeaths(
       recoveryAttemptId,
       child === undefined || child === null ? [owner] : [owner, child],
     );
@@ -598,80 +682,7 @@ export async function resolveIncompleteSuccessionAtStartup(
     };
   }
 
-  const attemptId = intent.attemptId;
-  if (
-    intent.attemptOwner?.kind !== 'incumbent' ||
-    attemptId === null ||
-    observeSuccessionServing(runtime, attemptId) !== null
-  ) {
-    return { kind: 'none' };
-  }
-  const owner = intent.attemptOwner;
-  const child = intent.attemptChild;
-  const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
-  const retirement = observeRetirementDisposition(runtime, attemptId);
-  const transferEvidence =
-    retirement.kind === 'recorded' ||
-    (child !== null &&
-      child !== undefined &&
-      ((preparation.success && preparation.data.receipts.length > 0) || retirement.kind === 'unreadable'));
-  if ((intent.disposition === 'pending' || intent.disposition === 'deferred') && !transferEvidence) {
-    // With no durable transfer evidence, retiring the dead attempt releases its prepared grants.
-    const unproven = deathsUnproven(
-      attemptId,
-      child !== undefined && child !== null && child.attemptId === attemptId ? [owner, child] : [owner],
-    );
-    return unproven === null
-      ? prior === null
-        ? { kind: 'retire', attemptId }
-        : retireArchived(attemptId)
-      : holdOrAbandon(unproven);
-  }
-  if (intent.disposition !== 'attempting' && !transferEvidence) return { kind: 'none' };
-  if (!preparation.success || child === undefined || child === null) {
-    return holdOrAbandon({ kind: 'attempt-record-unreadable', attemptId });
-  }
-  const unproven = deathsUnproven(attemptId, [owner, child]);
-  if (unproven !== null) return holdOrAbandon(unproven);
-  let recovery: DeadAttemptRecovery | null = null;
-  let preferredEpochKey: string | null = null;
-  if (preparation.data.receipts.length > 0) {
-    if (!recoveryGrantsVerify(runtime, options.currentBuild.flavor, attemptId, preparation.data)) {
-      return holdOrAbandon({ kind: 'recovery-grants-unverified', attemptId });
-    }
-    const recoveryTarget = options.prepareRecoveryGrantHandoff?.(
-      preparation.data.epochKey,
-      preparation.data.incumbentInstanceId,
-    );
-    if (recoveryTarget === undefined || recoveryTarget === null) {
-      return holdOrAbandon({ kind: 'grant-controller-unavailable', attemptId });
-    }
-    if (!runsCurrentBuild(recoveryTarget, options.currentBuild)) return { kind: 'handoff', target: recoveryTarget };
-    recovery = { attemptId, epochKey: preparation.data.epochKey, force: true };
-    preferredEpochKey = preparation.data.epochKey;
-  }
-  // An unreadable disposition may name a mint this attempt made, so only a proven absence skips the discard.
-  if (observeRetirementDisposition(runtime, attemptId).kind !== 'absent') {
-    const recoveryTarget = options.prepareRecoveryGrantHandoff?.(
-      preparation.data.epochKey,
-      preparation.data.incumbentInstanceId,
-    );
-    if (recoveryTarget !== undefined && recoveryTarget !== null) {
-      if (!runsCurrentBuild(recoveryTarget, options.currentBuild)) return { kind: 'handoff', target: recoveryTarget };
-      preferredEpochKey = preparation.data.epochKey;
-    }
-    recovery = {
-      attemptId,
-      epochKey: preparation.data.epochKey,
-      force: recovery?.force ?? false,
-      discardAttemptId: attemptId,
-    };
-  }
-  return recovery === null
-    ? prior === null
-      ? { kind: 'retire', attemptId }
-      : retireArchived(attemptId)
-    : { kind: 'recover', attempt: recovery, preferredEpochKey };
+  return resolveUnservedSuccessionAttempt(options, intent, prior, holdOrAbandon, retireArchived);
 }
 
 /**

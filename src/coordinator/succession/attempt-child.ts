@@ -135,6 +135,142 @@ export async function startSuccessionAttempt(options: {
   }
 }
 
+type AttemptChannelControlsState = {
+  ports: SuccessionAttemptPorts;
+  child: SuccessionAttemptProcess;
+  attemptId: string;
+  pid: number;
+  incarnation: ProcessIncarnation;
+  claim: ReturnType<typeof listeningClaim>;
+  received: Set<string>;
+  acknowledgments: Set<(acknowledgment: AttemptAcknowledgment) => void>;
+  observedAcknowledgments: Map<AttemptAcknowledgment['kind'], AttemptAcknowledgment>;
+  forwardedSends: Set<Promise<void>>;
+  forwardedSockets: Set<Socket>;
+  channelState: {
+    transferred: boolean;
+    releaseRequested: boolean;
+    stopForwarding: (() => void) | null;
+  };
+  waitFor: (key: string) => Promise<void>;
+  send: (message: AttemptMessage, handle?: NetServer | Socket) => Promise<void>;
+};
+
+function createSuccessionAttemptControls(state: AttemptChannelControlsState): SuccessionAttempt {
+  const {
+    ports,
+    child,
+    attemptId,
+    pid,
+    incarnation,
+    claim,
+    received,
+    acknowledgments,
+    observedAcknowledgments,
+    forwardedSends,
+    forwardedSockets,
+    channelState,
+    waitFor,
+    send,
+  } = state;
+  return {
+    attemptId,
+    child,
+    childIdentity: { pid, incarnation },
+    transferListeners: async (current) => {
+      const currentClaim = listeningClaim(current);
+      if (
+        currentClaim.length !== claim.length ||
+        currentClaim.some((entry, index) => entry.socketPath !== claim[index]?.socketPath)
+      ) {
+        throw new Error('IPC address claim changed after succession attempt launch');
+      }
+      await waitFor('listener-ready');
+      for (const entry of currentClaim) {
+        const accepted = waitFor(`listener-accepted:${entry.socketPath}`);
+        await send({ kind: 'listener', attemptId, socketPath: entry.socketPath }, entry.server);
+        await accepted;
+      }
+      const accepted = waitFor('listeners-accepted');
+      await send({ kind: 'listeners-complete', attemptId });
+      await accepted;
+      if (received.size !== currentClaim.length) throw new Error('Incomplete IPC listener transfer');
+      channelState.transferred = true;
+    },
+    forwardConnections: (current) => {
+      if (channelState.releaseRequested) throw new Error('Succession attempt ended before overlap forwarding');
+      if (!channelState.transferred) throw new Error('IPC listeners must transfer before overlap forwarding');
+      const entries = listeningClaim(current);
+      if (entries.some((entry) => entry.listener.forwardConnections === undefined)) {
+        throw new Error('IPC listener cannot forward overlap connections');
+      }
+      const stops = entries.map((entry) => {
+        const forward = entry.listener.forwardConnections;
+        if (forward === undefined) throw new Error('IPC listener cannot forward overlap connections');
+        return forward((socket, pendingFrameBase64) => {
+          forwardedSockets.add(socket);
+          const transfer = send(
+            { kind: 'connection', attemptId, socketPath: entry.socketPath, pendingFrameBase64 },
+            socket,
+          )
+            .catch(() => {
+              socket.destroy();
+            })
+            .finally(() => {
+              forwardedSockets.delete(socket);
+              forwardedSends.delete(transfer);
+            });
+          forwardedSends.add(transfer);
+        });
+      });
+      channelState.stopForwarding = () => {
+        for (const stop of stops) stop();
+        channelState.stopForwarding = null;
+      };
+      return channelState.stopForwarding;
+    },
+    drainIncumbentConnections: async (current, timeoutMs) => {
+      const drain = async (): Promise<void> => {
+        await Promise.all(
+          listeningClaim(current).map((entry) => {
+            const drainConnections = entry.listener.drainConnections;
+            if (drainConnections === undefined) throw new Error('IPC listener cannot drain open connections');
+            return drainConnections();
+          }),
+        );
+        while (forwardedSends.size > 0) await Promise.all(forwardedSends);
+      };
+      if (timeoutMs === undefined) return drain();
+      const completed = await Promise.race([drain().then(() => true), ports.time.sleep(timeoutMs).then(() => false)]);
+      if (!completed) for (const socket of forwardedSockets) socket.destroy();
+    },
+    setDeadline: (at) => send({ kind: 'deadline', attemptId, at }),
+    allowCommittedOpen: () => send({ kind: 'writers-parked', attemptId }),
+    abort: async () => {
+      const released = waitFor('connections-released').catch(() => {});
+      await send({ kind: 'abort', attemptId });
+      let bound: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
+      try {
+        await Promise.race([
+          released,
+          new Promise<void>((resolve) => {
+            bound = ports.time.setTimeout(resolve, CONNECTION_RELEASE_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        ports.time.clearTimeout(bound);
+      }
+    },
+    onAcknowledgment: (callback) => {
+      acknowledgments.add(callback);
+      for (const acknowledgment of observedAcknowledgments.values()) callback(acknowledgment);
+      return () => {
+        acknowledgments.delete(callback);
+      };
+    },
+  };
+}
+
 export async function createSuccessionAttemptChannel(
   ports: SuccessionAttemptPorts,
   child: SuccessionAttemptProcess,
@@ -163,9 +299,11 @@ export async function createSuccessionAttemptChannel(
   const observedAcknowledgments = new Map<AttemptAcknowledgment['kind'], AttemptAcknowledgment>();
   const waiters = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
   let ended = false;
-  let transferred = false;
-  let releaseRequested = false;
-  let stopForwarding: (() => void) | null = null;
+  const channelState = {
+    transferred: false,
+    releaseRequested: false,
+    stopForwarding: null as (() => void) | null,
+  };
   const forwardedSends = new Set<Promise<void>>();
   const forwardedSockets = new Set<Socket>();
   const fail = (reason: string): void => {
@@ -178,8 +316,8 @@ export async function createSuccessionAttemptChannel(
   child.on('message', (message: unknown, handle: unknown) => {
     if (!isAttemptMessage(message) || message.attemptId !== attemptId) return;
     if (message.kind === 'release-request') {
-      releaseRequested = true;
-      stopForwarding?.();
+      channelState.releaseRequested = true;
+      channelState.stopForwarding?.();
       void send({ kind: 'release-ready', attemptId }).catch(() => {});
       return;
     }
@@ -241,102 +379,22 @@ export async function createSuccessionAttemptChannel(
     recovery,
   });
 
-  return {
-    attemptId,
+  return createSuccessionAttemptControls({
+    ports,
     child,
-    childIdentity: { pid, incarnation },
-    transferListeners: async (current) => {
-      const currentClaim = listeningClaim(current);
-      if (
-        currentClaim.length !== claim.length ||
-        currentClaim.some((entry, index) => entry.socketPath !== claim[index]?.socketPath)
-      ) {
-        throw new Error('IPC address claim changed after succession attempt launch');
-      }
-      await waitFor('listener-ready');
-      for (const entry of currentClaim) {
-        const accepted = waitFor(`listener-accepted:${entry.socketPath}`);
-        await send({ kind: 'listener', attemptId, socketPath: entry.socketPath }, entry.server);
-        await accepted;
-      }
-      const accepted = waitFor('listeners-accepted');
-      await send({ kind: 'listeners-complete', attemptId });
-      await accepted;
-      if (received.size !== currentClaim.length) throw new Error('Incomplete IPC listener transfer');
-      transferred = true;
-    },
-    forwardConnections: (current) => {
-      if (releaseRequested) throw new Error('Succession attempt ended before overlap forwarding');
-      if (!transferred) throw new Error('IPC listeners must transfer before overlap forwarding');
-      const entries = listeningClaim(current);
-      if (entries.some((entry) => entry.listener.forwardConnections === undefined)) {
-        throw new Error('IPC listener cannot forward overlap connections');
-      }
-      const stops = entries.map((entry) => {
-        const forward = entry.listener.forwardConnections;
-        if (forward === undefined) throw new Error('IPC listener cannot forward overlap connections');
-        return forward((socket, pendingFrameBase64) => {
-          forwardedSockets.add(socket);
-          const transfer = send(
-            { kind: 'connection', attemptId, socketPath: entry.socketPath, pendingFrameBase64 },
-            socket,
-          )
-            .catch(() => {
-              socket.destroy();
-            })
-            .finally(() => {
-              forwardedSockets.delete(socket);
-              forwardedSends.delete(transfer);
-            });
-          forwardedSends.add(transfer);
-        });
-      });
-      stopForwarding = () => {
-        for (const stop of stops) stop();
-        stopForwarding = null;
-      };
-      return stopForwarding;
-    },
-    drainIncumbentConnections: async (current, timeoutMs) => {
-      const drain = async (): Promise<void> => {
-        await Promise.all(
-          listeningClaim(current).map((entry) => {
-            const drainConnections = entry.listener.drainConnections;
-            if (drainConnections === undefined) throw new Error('IPC listener cannot drain open connections');
-            return drainConnections();
-          }),
-        );
-        while (forwardedSends.size > 0) await Promise.all(forwardedSends);
-      };
-      if (timeoutMs === undefined) return drain();
-      const completed = await Promise.race([drain().then(() => true), ports.time.sleep(timeoutMs).then(() => false)]);
-      if (!completed) for (const socket of forwardedSockets) socket.destroy();
-    },
-    setDeadline: (at) => send({ kind: 'deadline', attemptId, at }),
-    allowCommittedOpen: () => send({ kind: 'writers-parked', attemptId }),
-    abort: async () => {
-      const released = waitFor('connections-released').catch(() => {});
-      await send({ kind: 'abort', attemptId });
-      let bound: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
-      try {
-        await Promise.race([
-          released,
-          new Promise<void>((resolve) => {
-            bound = ports.time.setTimeout(resolve, CONNECTION_RELEASE_TIMEOUT_MS);
-          }),
-        ]);
-      } finally {
-        ports.time.clearTimeout(bound);
-      }
-    },
-    onAcknowledgment: (callback) => {
-      acknowledgments.add(callback);
-      for (const acknowledgment of observedAcknowledgments.values()) callback(acknowledgment);
-      return () => {
-        acknowledgments.delete(callback);
-      };
-    },
-  };
+    attemptId,
+    pid,
+    incarnation,
+    claim,
+    received,
+    acknowledgments,
+    observedAcknowledgments,
+    forwardedSends,
+    forwardedSockets,
+    channelState,
+    waitFor,
+    send,
+  });
 }
 
 export type SuccessionAttemptChild = Readonly<{
@@ -363,40 +421,45 @@ export function currentSuccessionAttemptChild(): SuccessionAttemptChild | null {
   return activeAttemptChild;
 }
 
-export async function receiveSuccessionAttemptChild(
+type ParkedConnection = { socket: Socket; socketPath: string; pendingFrameBase64: string };
+
+type AttemptChildState = {
+  startResolve: ((message: Extract<AttemptMessage, { kind: 'start' }>) => void) | null;
+  adoptResolve: (() => void) | null;
+  adoptReject: ((error: Error) => void) | null;
+  listener: IpcListener | null;
+  socketPaths: string[];
+  adopted: Map<string, IpcListener>;
+  serving: boolean;
+  parkedResolve: (() => void) | null;
+  parkedPromise: Promise<void>;
+  servingListener: IpcListener | null;
+  servingResolve: (() => void) | null;
+  servingPromise: Promise<void>;
+  deadlineTimer: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null;
+  pendingConnections: ParkedConnection[];
+  stopParking: Array<() => void>;
+  releasing: boolean;
+  releaseReady: boolean;
+  releaseTimedOut: boolean;
+  returningSockets: Set<Socket>;
+  returnSends: Set<Promise<void>>;
+  windowOpen: boolean;
+  failing: boolean;
+  abortRequested: boolean;
+  releaseReadyCallback: (() => void) | null;
+};
+
+function createAttemptChildReleaseControl(
   ports: SuccessionAttemptPorts,
-): Promise<SuccessionAttemptChild | null> {
-  const attemptId = ports.env('CORAL_SUCCESSION_ATTEMPT_ID');
-  if (attemptId === undefined) return null;
-  if (!ports.channel.available) {
-    throw new Error('Succession attempt requires its private spawn channel');
-  }
-  let startResolve: ((message: Extract<AttemptMessage, { kind: 'start' }>) => void) | null = null;
-  let adoptResolve: (() => void) | null = null;
-  let adoptReject: ((error: Error) => void) | null = null;
-  let listener: IpcListener | null = null;
-  let socketPaths: string[] = [];
-  const adopted = new Map<string, IpcListener>();
-  let serving = false;
-  let parkedResolve: (() => void) | null = null;
-  const parkedPromise = new Promise<void>((resolve) => {
-    parkedResolve = resolve;
-  });
-  let servingListener: IpcListener | null = null;
-  let servingResolve: (() => void) | null = null;
-  const servingPromise = new Promise<void>((resolve) => {
-    servingResolve = resolve;
-  });
-  let deadlineTimer: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
-  type ParkedConnection = { socket: Socket; socketPath: string; pendingFrameBase64: string };
-  const pendingConnections: ParkedConnection[] = [];
-  const stopParking: (() => void)[] = [];
-  let releasing = false;
-  let releaseReady = false;
-  let releaseTimedOut = false;
-  const returningSockets = new Set<Socket>();
-  const returnSends = new Set<Promise<void>>();
-  let windowOpen = false;
+  attemptId: string,
+  state: AttemptChildState,
+  send: (message: AttemptMessage) => void,
+): {
+  park: (connection: ParkedConnection) => void;
+  finishFailure: () => Promise<void>;
+  fail: (reason: string) => void;
+} {
   const returnConnection = (connection: ParkedConnection): Promise<void> => {
     const returned = new Promise<void>((resolve) => {
       const { socket, ...addressed } = connection;
@@ -410,30 +473,23 @@ export async function receiveSuccessionAttemptChild(
         finish(error instanceof Error ? error : new Error(String(error)));
       }
     });
-    returningSockets.add(connection.socket);
-    returnSends.add(returned);
+    state.returningSockets.add(connection.socket);
+    state.returnSends.add(returned);
     void returned.then(() => {
-      returningSockets.delete(connection.socket);
-      returnSends.delete(returned);
+      state.returningSockets.delete(connection.socket);
+      state.returnSends.delete(returned);
     });
     return returned;
   };
   const park = (connection: ParkedConnection): void => {
-    if (releaseTimedOut) connection.socket.destroy();
-    else if (!windowOpen || (releasing && releaseReady)) void returnConnection(connection);
-    else pendingConnections.push(connection);
+    if (state.releaseTimedOut) connection.socket.destroy();
+    else if (!state.windowOpen || (state.releasing && state.releaseReady)) void returnConnection(connection);
+    else state.pendingConnections.push(connection);
   };
-  const send = (message: AttemptMessage): void => {
-    ports.channel.send(message);
-  };
-  const online = ports.time.setInterval(() => send({ kind: 'child-online', attemptId }), 100);
-  online.unref?.();
-  let failing = false;
-  let abortRequested = false;
   const finishFailure = async (): Promise<void> => {
-    for (const connection of pendingConnections.splice(0)) void returnConnection(connection);
+    for (const connection of state.pendingConnections.splice(0)) void returnConnection(connection);
     const drained = async (): Promise<boolean> => {
-      while (returnSends.size > 0) await Promise.all(returnSends);
+      while (state.returnSends.size > 0) await Promise.all(state.returnSends);
       return true;
     };
     const completed = await Promise.race([
@@ -441,10 +497,10 @@ export async function receiveSuccessionAttemptChild(
       ports.time.sleep(CONNECTION_RELEASE_TIMEOUT_MS).then(() => false),
     ]);
     if (!completed) {
-      releaseTimedOut = true;
-      for (const socket of returningSockets) socket.destroy();
+      state.releaseTimedOut = true;
+      for (const socket of state.returningSockets) socket.destroy();
     }
-    if (abortRequested) {
+    if (state.abortRequested) {
       if (!ports.channel.connected) ports.channel.fail(false);
       else {
         try {
@@ -458,123 +514,186 @@ export async function receiveSuccessionAttemptChild(
     }
   };
   const fail = (reason: string): void => {
-    adoptReject?.(new Error(reason));
-    if (failing) return;
-    failing = true;
-    releasing = true;
-    ports.time.clearTimeout(deadlineTimer);
-    if (serving || !ports.channel.connected) {
-      ports.channel.fail(serving);
+    state.adoptReject?.(new Error(reason));
+    if (state.failing) return;
+    state.failing = true;
+    state.releasing = true;
+    ports.time.clearTimeout(state.deadlineTimer);
+    if (state.serving || !ports.channel.connected) {
+      ports.channel.fail(state.serving);
       return;
     }
-    if (releaseReady || !windowOpen) {
+    if (state.releaseReady || !state.windowOpen) {
       void finishFailure();
       return;
     }
     send({ kind: 'release-request', attemptId });
     const releaseTimeout = ports.time.setTimeout(() => {
-      releaseReadyCallback = null;
-      releaseTimedOut = true;
-      for (const connection of pendingConnections.splice(0)) connection.socket.destroy();
-      for (const socket of returningSockets) socket.destroy();
+      state.releaseReadyCallback = null;
+      state.releaseTimedOut = true;
+      for (const connection of state.pendingConnections.splice(0)) connection.socket.destroy();
+      for (const socket of state.returningSockets) socket.destroy();
       ports.channel.fail(false);
     }, CONNECTION_RELEASE_TIMEOUT_MS);
     const onReleaseReady = (): void => {
       ports.time.clearTimeout(releaseTimeout);
-      releaseReady = true;
+      state.releaseReady = true;
       void finishFailure();
     };
-    releaseReadyCallback = onReleaseReady;
+    state.releaseReadyCallback = onReleaseReady;
   };
-  let releaseReadyCallback: (() => void) | null = null;
+  return { park, finishFailure, fail };
+}
+
+function handleAttemptChildMessage(
+  ports: SuccessionAttemptPorts,
+  attemptId: string,
+  state: AttemptChildState,
+  online: ReturnType<SuccessionAttemptPorts['time']['setInterval']>,
+  park: (connection: ParkedConnection) => void,
+  send: (message: AttemptMessage) => void,
+  fail: (reason: string) => void,
+  finishFailure: () => Promise<void>,
+  message: unknown,
+  handle: unknown,
+): void {
+  if (!isAttemptMessage(message) || message.attemptId !== attemptId) return;
+  if (message.kind === 'release-ready' && state.releasing && !state.releaseTimedOut) {
+    state.releaseReadyCallback?.();
+    state.releaseReadyCallback = null;
+    return;
+  }
+  if (
+    message.kind === 'start' &&
+    Array.isArray(message.socketPaths) &&
+    typeof message.bootToken === 'string' &&
+    typeof message.epochKey === 'string' &&
+    Array.isArray(message.receiptIds) &&
+    typeof message.recovery === 'boolean'
+  ) {
+    ports.time.clearInterval(online);
+    state.startResolve?.(message);
+    return;
+  }
+  if (message.kind === 'abort' && !state.serving) {
+    state.abortRequested = true;
+    if (state.failing) return;
+    state.failing = true;
+    state.releasing = true;
+    state.releaseReady = true;
+    ports.time.clearTimeout(state.deadlineTimer);
+    state.adoptReject?.(new Error('Succession attempt aborted'));
+    void finishFailure();
+    return;
+  }
+  if (message.kind === 'deadline' && !state.serving && Number.isFinite(message.at)) {
+    state.windowOpen = true;
+    ports.time.clearTimeout(state.deadlineTimer);
+    state.deadlineTimer = ports.time.setTimeout(
+      () => fail('Succession attempt exceeded its commit deadline'),
+      Math.max(0, message.at - ports.time.now()),
+    );
+    return;
+  }
+  if (message.kind === 'writers-parked' && !state.serving) {
+    state.parkedResolve?.();
+    return;
+  }
+  if (message.kind === 'listener' && state.listener !== null && handle !== undefined) {
+    if (!state.socketPaths.includes(message.socketPath) || state.adopted.has(message.socketPath)) {
+      fail('Succession attempt received an unclaimed IPC listener');
+      return;
+    }
+    const next = state.adopted.size === 0 ? state.listener : state.listener.createCompatibilityListener?.();
+    if (next === undefined) {
+      fail('Succession attempt cannot adopt compatibility listener');
+      return;
+    }
+    if (next.forwardConnections === undefined) {
+      fail('Succession attempt cannot park connections on an adopted listener');
+      return;
+    }
+    if (next !== state.listener) state.listener.compatibilityListeners?.push(next);
+    state.stopParking.push(
+      next.forwardConnections((socket, pendingFrameBase64) => {
+        park({ socket, socketPath: message.socketPath, pendingFrameBase64 });
+      }),
+    );
+    attachInheritedIpcServer(next, handle as NetServer, message.socketPath);
+    state.adopted.set(message.socketPath, next);
+    send({ kind: 'listener-accepted', attemptId, socketPath: message.socketPath });
+    return;
+  }
+  if (message.kind === 'listeners-complete' && state.adopted.size === state.socketPaths.length) {
+    send({ kind: 'listeners-accepted', attemptId });
+    state.adoptResolve?.();
+    return;
+  }
+  // A received connection reaches `park` only through its listener: a handle returned while still reading leaves
+  // the bytes it read in this process, and its request is lost.
+  if (message.kind === 'connection' && handle !== undefined && state.adopted.has(message.socketPath)) {
+    state.adopted.get(message.socketPath)?.acceptSocket?.(handle as Socket, message.pendingFrameBase64);
+  }
+}
+
+export async function receiveSuccessionAttemptChild(
+  ports: SuccessionAttemptPorts,
+): Promise<SuccessionAttemptChild | null> {
+  const attemptId = ports.env('CORAL_SUCCESSION_ATTEMPT_ID');
+  if (attemptId === undefined) return null;
+  if (!ports.channel.available) {
+    throw new Error('Succession attempt requires its private spawn channel');
+  }
+  const state: AttemptChildState = {
+    startResolve: null,
+    adoptResolve: null,
+    adoptReject: null,
+    listener: null,
+    socketPaths: [],
+    adopted: new Map(),
+    serving: false,
+    parkedResolve: null,
+    parkedPromise: Promise.resolve(),
+    servingListener: null,
+    servingResolve: null,
+    servingPromise: Promise.resolve(),
+    deadlineTimer: null,
+    pendingConnections: [],
+    stopParking: [],
+    releasing: false,
+    releaseReady: false,
+    releaseTimedOut: false,
+    returningSockets: new Set(),
+    returnSends: new Set(),
+    windowOpen: false,
+    failing: false,
+    abortRequested: false,
+    releaseReadyCallback: null,
+  };
+  state.parkedPromise = new Promise<void>((resolve) => {
+    state.parkedResolve = resolve;
+  });
+  state.servingPromise = new Promise<void>((resolve) => {
+    state.servingResolve = resolve;
+  });
+  const send = (message: AttemptMessage): void => {
+    ports.channel.send(message);
+  };
+  const { park, finishFailure, fail } = createAttemptChildReleaseControl(ports, attemptId, state, send);
+  const online = ports.time.setInterval(() => send({ kind: 'child-online', attemptId }), 100);
+  online.unref?.();
   ports.channel.on('disconnect', () => {
-    if (!serving) fail('Succession attempt lost its incumbent channel before serving');
-    else if (servingListener !== null) enableInheritedIpcCleanup(servingListener);
+    if (!state.serving) fail('Succession attempt lost its incumbent channel before serving');
+    else if (state.servingListener !== null) enableInheritedIpcCleanup(state.servingListener);
   });
   ports.channel.on('message', (message: unknown, handle: unknown) => {
-    if (!isAttemptMessage(message) || message.attemptId !== attemptId) return;
-    if (message.kind === 'release-ready' && releasing && !releaseTimedOut) {
-      releaseReadyCallback?.();
-      releaseReadyCallback = null;
-      return;
-    }
-    if (
-      message.kind === 'start' &&
-      Array.isArray(message.socketPaths) &&
-      typeof message.bootToken === 'string' &&
-      typeof message.epochKey === 'string' &&
-      Array.isArray(message.receiptIds) &&
-      typeof message.recovery === 'boolean'
-    ) {
-      ports.time.clearInterval(online);
-      startResolve?.(message);
-      return;
-    }
-    if (message.kind === 'abort' && !serving) {
-      abortRequested = true;
-      if (failing) return;
-      failing = true;
-      releasing = true;
-      releaseReady = true;
-      ports.time.clearTimeout(deadlineTimer);
-      adoptReject?.(new Error('Succession attempt aborted'));
-      void finishFailure();
-      return;
-    }
-    if (message.kind === 'deadline' && !serving && Number.isFinite(message.at)) {
-      windowOpen = true;
-      ports.time.clearTimeout(deadlineTimer);
-      deadlineTimer = ports.time.setTimeout(
-        () => fail('Succession attempt exceeded its commit deadline'),
-        Math.max(0, message.at - ports.time.now()),
-      );
-      return;
-    }
-    if (message.kind === 'writers-parked' && !serving) {
-      parkedResolve?.();
-      return;
-    }
-    if (message.kind === 'listener' && listener !== null && handle !== undefined) {
-      if (!socketPaths.includes(message.socketPath) || adopted.has(message.socketPath)) {
-        fail('Succession attempt received an unclaimed IPC listener');
-        return;
-      }
-      const next = adopted.size === 0 ? listener : listener.createCompatibilityListener?.();
-      if (next === undefined) {
-        fail('Succession attempt cannot adopt compatibility listener');
-        return;
-      }
-      if (next.forwardConnections === undefined) {
-        fail('Succession attempt cannot park connections on an adopted listener');
-        return;
-      }
-      if (next !== listener) listener.compatibilityListeners?.push(next);
-      stopParking.push(
-        next.forwardConnections((socket, pendingFrameBase64) => {
-          park({ socket, socketPath: message.socketPath, pendingFrameBase64 });
-        }),
-      );
-      attachInheritedIpcServer(next, handle as NetServer, message.socketPath);
-      adopted.set(message.socketPath, next);
-      send({ kind: 'listener-accepted', attemptId, socketPath: message.socketPath });
-      return;
-    }
-    if (message.kind === 'listeners-complete' && adopted.size === socketPaths.length) {
-      send({ kind: 'listeners-accepted', attemptId });
-      adoptResolve?.();
-      return;
-    }
-    // A received connection reaches `park` only through its listener: a handle returned while still reading leaves
-    // the bytes it read in this process, and its request is lost.
-    if (message.kind === 'connection' && handle !== undefined && adopted.has(message.socketPath)) {
-      adopted.get(message.socketPath)?.acceptSocket?.(handle as Socket, message.pendingFrameBase64);
-    }
+    handleAttemptChildMessage(ports, attemptId, state, online, park, send, fail, finishFailure, message, handle);
   });
   send({ kind: 'child-online', attemptId });
   const start = await new Promise<Extract<AttemptMessage, { kind: 'start' }>>((resolve) => {
-    startResolve = resolve;
+    state.startResolve = resolve;
   });
-  socketPaths = start.socketPaths;
+  state.socketPaths = start.socketPaths;
   return {
     attemptId,
     bootToken: start.bootToken,
@@ -582,10 +701,10 @@ export async function receiveSuccessionAttemptChild(
     receiptIds: start.receiptIds,
     recovery: start.recovery === true,
     adoptListeners: async (current) => {
-      listener = current;
+      state.listener = current;
       const completion = new Promise<void>((resolve, reject) => {
-        adoptResolve = resolve;
-        adoptReject = reject;
+        state.adoptResolve = resolve;
+        state.adoptReject = reject;
       });
       send({ kind: 'listener-ready', attemptId });
       await completion;
@@ -601,19 +720,20 @@ export async function receiveSuccessionAttemptChild(
           else resolve();
         });
       }),
-    waitForWritersParked: () => parkedPromise,
-    waitForServing: () => servingPromise,
-    isServing: () => serving,
+    waitForWritersParked: () => state.parkedPromise,
+    waitForServing: () => state.servingPromise,
+    isServing: () => state.serving,
     markServing: (current, commit) => {
       if (commit.attemptId !== attemptId) throw new Error('Succession serving record names another attempt');
-      if (adopted.size !== socketPaths.length) throw new Error('Succession cannot serve an incomplete IPC claim');
-      ports.time.clearTimeout(deadlineTimer);
-      serving = true;
-      servingListener = current;
-      servingResolve?.();
-      for (const stop of stopParking.splice(0)) stop();
-      for (const connection of pendingConnections.splice(0)) {
-        adopted.get(connection.socketPath)?.acceptSocket?.(connection.socket, connection.pendingFrameBase64);
+      if (state.adopted.size !== state.socketPaths.length)
+        throw new Error('Succession cannot serve an incomplete IPC claim');
+      ports.time.clearTimeout(state.deadlineTimer);
+      state.serving = true;
+      state.servingListener = current;
+      state.servingResolve?.();
+      for (const stop of state.stopParking.splice(0)) stop();
+      for (const connection of state.pendingConnections.splice(0)) {
+        state.adopted.get(connection.socketPath)?.acceptSocket?.(connection.socket, connection.pendingFrameBase64);
       }
     },
   };

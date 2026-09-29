@@ -782,6 +782,34 @@ async function handleCatalogUnaryRoute(
   sendCatalogResponse(res, result);
 }
 
+function writeWaitSseEvent(
+  res: ServerResponse,
+  event: WaitStreamEvent,
+  cursor: WaitCursor,
+): {
+  cursor: WaitCursor;
+  written: boolean;
+} {
+  const nextCursor = advanceWaitRenderCursor(cursor, event).cursor;
+  switch (event.type) {
+    case 'progress':
+    case 'terminal':
+      return { cursor: nextCursor, written: writeSseEvent(res, event.type, event, serializeWaitCursor(nextCursor)) };
+    case 'queued':
+    case 'interrupted':
+      // A derived interruption carries no Journal seq, so the cursor only follows recorded events.
+      return {
+        cursor: nextCursor,
+        written: writeSseEvent(res, event.type, event, event.cursor && serializeWaitCursor(nextCursor)),
+      };
+    default:
+      return {
+        cursor: nextCursor,
+        written: writeSseEvent(res, 'waiting', event, event.cursor && serializeWaitCursor(nextCursor)),
+      };
+  }
+}
+
 async function handleJobsWaitSubscription(
   spec: RpcMethodSpec<unknown, unknown>,
   req: IncomingMessage,
@@ -888,46 +916,9 @@ async function handleJobsWaitSubscription(
         break;
       }
 
-      const event = next.value as WaitStreamEvent;
-      if (event.type === 'progress') {
-        currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
-        if (!writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor))) {
-          break;
-        }
-        continue;
-      }
-
-      if (event.type === 'terminal') {
-        currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
-        if (!writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor))) {
-          break;
-        }
-        continue;
-      }
-
-      if (event.type === 'queued') {
-        currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
-        if (!writeSseEvent(res, 'queued', event, event.cursor && serializeWaitCursor(currentCursor))) {
-          break;
-        }
-        continue;
-      }
-
-      if (event.type === 'interrupted') {
-        // Named on the wire, never folded into `waiting`: a client that cannot tell the two apart cannot
-        // report what was observed. No cursor update either — a derived observation is not a Journal event
-        // and carries no `seq`, so advancing here would let a reconnect resume past events never delivered.
-        currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
-        if (!writeSseEvent(res, 'interrupted', event, event.cursor && serializeWaitCursor(currentCursor))) {
-          break;
-        }
-        continue;
-      }
-
-      currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
-      if (!writeSseEvent(res, 'waiting', event, event.cursor && serializeWaitCursor(currentCursor))) {
-        break;
-      }
+      const emitted = writeWaitSseEvent(res, next.value as WaitStreamEvent, currentCursor);
+      currentCursor = emitted.cursor;
+      if (!emitted.written) break;
     }
   } catch (error) {
     if (!closed && !controller.signal.aborted) {

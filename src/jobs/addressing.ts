@@ -312,6 +312,62 @@ export class JobAddressing {
     return progress?.type === 'progress' ? progress : null;
   }
 
+  private firstHistoricalTerminal(
+    request: WaitStreamRequest,
+    locations: readonly JobLocation[],
+    activeEpochKey: string | null,
+    cursor: Extract<WaitCursor, { version: 'jobs.wait.v2' }>,
+  ): WaitStreamEvent | null {
+    for (const jobId of request.jobIds) {
+      const location = locations.find((candidate) => candidate.jobId === jobId);
+      if (location === undefined || location.epochKey === activeEpochKey) continue;
+      const latest = this.locations.read(jobId);
+      if (latest === null) continue;
+      const terminal = this.terminalFromLocation(latest, request.jobIds, cursor);
+      if (terminal !== null) {
+        if (request.supportsWaitV2 === true) return terminal;
+        else {
+          const { version, epochKey, cursor: eventCursor, ...legacy } = terminal;
+          return legacy;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private *historicalProgressEvents(
+    request: WaitStreamRequest,
+    locations: readonly JobLocation[],
+    activeEpochKey: string | null,
+    cursor: Extract<WaitCursor, { version: 'jobs.wait.v2' }>,
+  ): Generator<WaitStreamEvent> {
+    const pendingProgress = new Map<string, JobProgressEvent>();
+    for (const jobId of request.jobIds) {
+      const location = locations.find((candidate) => candidate.jobId === jobId);
+      if (location === undefined || location.epochKey === activeEpochKey) continue;
+      const latest = this.locations.read(jobId);
+      if (latest === null) continue;
+      const progress = this.progressFromLocation(latest, cursor);
+      if (progress === null) continue;
+      const previous = pendingProgress.get(location.epochKey);
+      if (previous === undefined || progress.seq < previous.seq) pendingProgress.set(location.epochKey, progress);
+    }
+    for (const [epochKey, progress] of pendingProgress) {
+      cursor.positions[epochKey] = progress.seq;
+      yield {
+        type: 'progress',
+        version: 'jobs.wait.v2',
+        jobId: progress.jobId,
+        seq: progress.seq,
+        epochKey,
+        message: progress.message,
+        timing: progress.timing,
+        cursor: this.snapshotCursor(cursor),
+      };
+    }
+  }
+
   async *waitStream(request: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     const error = this.validateWait(request);
     if (error !== null) throw new Error(`${error.code}: ${error.message}`);
@@ -363,46 +419,12 @@ export class JobAddressing {
         for (const [epochKey, jobIds] of historicalGroups) {
           void refreshHistoricalEpoch(this.locations, epochKey, jobIds);
         }
-        for (const jobId of request.jobIds) {
-          const location = locations.find((candidate) => candidate.jobId === jobId);
-          if (location === undefined || location.epochKey === activeEpochKey) continue;
-          const latest = this.locations.read(jobId);
-          if (latest === null) continue;
-          const terminal = this.terminalFromLocation(latest, request.jobIds, cursor);
-          if (terminal !== null) {
-            if (request.supportsWaitV2 === true) yield terminal;
-            else {
-              const { version, epochKey, cursor: eventCursor, ...legacy } = terminal;
-              yield legacy;
-            }
-            return;
-          }
+        const historicalTerminal = this.firstHistoricalTerminal(request, locations, activeEpochKey, cursor);
+        if (historicalTerminal !== null) {
+          yield historicalTerminal;
+          return;
         }
-
-        const pendingProgress = new Map<string, JobProgressEvent>();
-        for (const jobId of request.jobIds) {
-          const location = locations.find((candidate) => candidate.jobId === jobId);
-          if (location === undefined || location.epochKey === activeEpochKey) continue;
-          const latest = this.locations.read(jobId);
-          if (latest === null) continue;
-          const progress = this.progressFromLocation(latest, cursor);
-          if (progress === null) continue;
-          const previous = pendingProgress.get(location.epochKey);
-          if (previous === undefined || progress.seq < previous.seq) pendingProgress.set(location.epochKey, progress);
-        }
-        for (const [epochKey, progress] of pendingProgress) {
-          cursor.positions[epochKey] = progress.seq;
-          yield {
-            type: 'progress',
-            version: 'jobs.wait.v2',
-            jobId: progress.jobId,
-            seq: progress.seq,
-            epochKey,
-            message: progress.message,
-            timing: progress.timing,
-            cursor: this.snapshotCursor(cursor),
-          };
-        }
+        yield* this.historicalProgressEvents(request, locations, activeEpochKey, cursor);
 
         if (pendingActive === null) {
           await time

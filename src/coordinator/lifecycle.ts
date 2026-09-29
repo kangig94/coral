@@ -1059,6 +1059,8 @@ type UnservedSuccession = Readonly<{
   retiredDeadAttemptId: string | null;
 }>;
 
+const ABANDONED_COMMITTED_RECOVERY = Symbol('abandoned committed recovery');
+
 const NO_UNSERVED_SUCCESSION: UnservedSuccession = {
   hold: null,
   committedRecovery: null,
@@ -1086,6 +1088,1344 @@ function selectedNewerBuild(runtime: Runtime, currentSelection: ActiveStoreSelec
   return validation.kind === 'validated' ? validation.target : null;
 }
 
+/** Only a startup that goes on to bind may act on a hold. */
+async function resolveUnservedSuccession(
+  deps: LifecycleDeps,
+  currentBuild: Parameters<typeof prepareCommittedSuccessorRecovery>[3],
+  currentSelection: ActiveStoreSelection | null,
+): Promise<UnservedSuccession> {
+  const { runtime, identity } = deps;
+  const committed = await prepareCommittedSuccessorRecovery(
+    runtime,
+    identity,
+    deps.storeFormat,
+    currentBuild,
+    (epochKey) =>
+      new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot)
+        .locationsFor(epochKey)
+        .some((location) => location.disposition !== 'terminal'),
+  );
+  if (committed.kind === 'handoff') throw new StartupStoreHandoffError(committed.target);
+  if (committed.kind === 'hold') return { ...NO_UNSERVED_SUCCESSION, hold: committed.hold };
+  if (committed.kind === 'recover') return { ...NO_UNSERVED_SUCCESSION, committedRecovery: committed };
+  const incomplete = await resolveIncompleteSuccessionAtStartup({
+    runtime,
+    currentBuild,
+    startupId: identity.instanceId,
+    ...(deps.prepareRecoveryGrantHandoff === undefined
+      ? {}
+      : { prepareRecoveryGrantHandoff: deps.prepareRecoveryGrantHandoff }),
+  });
+  if (incomplete.kind === 'handoff') throw new StartupStoreHandoffError(incomplete.target);
+  if (incomplete.kind === 'hold') return { ...NO_UNSERVED_SUCCESSION, hold: incomplete.hold };
+  if (incomplete.kind === 'recover') {
+    return {
+      ...NO_UNSERVED_SUCCESSION,
+      pendingDeadAttempt: incomplete.attempt,
+      preferredStoreEpochKey: incomplete.preferredEpochKey,
+    };
+  }
+  const retiredDeadAttemptId = incomplete.kind === 'retire' ? incomplete.attemptId : null;
+  let preferredStoreEpochKey: string | null = null;
+  const target = deps.prepareNoIncumbentHandoff?.();
+  if (target !== undefined && target !== null) {
+    const targetBuild = inspectValidatedHandoffTarget(target.target).build;
+    const sameBuild =
+      targetBuild.buildSetId === currentBuild.buildSetId && targetBuild.bundleHash === currentBuild.bundleHash;
+    if (!sameBuild) throw new StartupStoreHandoffError(target.target);
+    preferredStoreEpochKey = target.epochKey;
+  }
+  if (preferredStoreEpochKey === null && currentSelection !== null) {
+    const selected = selectedNewerBuild(runtime, currentSelection);
+    if (selected !== null) throw new StartupStoreHandoffError(selected);
+  }
+  return { ...NO_UNSERVED_SUCCESSION, preferredStoreEpochKey, retiredDeadAttemptId };
+}
+
+async function openOrdinaryStore(
+  deps: LifecycleDeps,
+  currentSelection: ActiveStoreSelection | null,
+  signal: AbortSignal,
+): Promise<Readonly<{ db: Database; store: ResolvedStoreEpoch }>> {
+  const { runtime, identity } = deps;
+  if (currentSelection === null) {
+    throw documentedCoralSetupError({
+      code: 'startup_bundle_unresolvable',
+      pluginRoot: identity.pluginRoot,
+    });
+  }
+  const authorizeStartupMint = deps.authorizeStartupMint;
+  let mintWithheld = false;
+  const routeStore = () =>
+    routeOrOpenBackendStoreAtStartup({
+      runtime,
+      validateForeignTarget: validateForeignHandoffTarget,
+      options: {
+        storeFormat: deps.storeFormat,
+        startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+        selectProtectedPredecessor: (addresses) =>
+          selectProtectedPredecessorFromControllers(
+            runtime,
+            runtime.storage.realpathSync(runtime.paths.coral.store.dbDir),
+            addresses,
+          ),
+        ...(authorizeStartupMint === undefined
+          ? {}
+          : {
+              authorizeMint: (observation: Parameters<typeof authorizeStartupMint>[0]) => {
+                const disposition = authorizeStartupMint(observation);
+                mintWithheld = disposition === null;
+                return disposition;
+              },
+            }),
+        currentSelection,
+      },
+    });
+  let routing: Awaited<ReturnType<typeof routeStore>>;
+  try {
+    routing = await routeStore();
+  } catch (error: unknown) {
+    // A withheld mint is decided by this boot: no later spawn is guaranteed on a machine nobody is watching.
+    if (!mintWithheld) throw error;
+    backendLog.warn(`Store epoch mint withheld under retirement patience; observing again: ${formatError(error)}`);
+    await runtime.time.sleep(RETIREMENT_PATIENCE_INTERVAL_MS, { signal });
+    mintWithheld = false;
+    try {
+      routing = await routeStore();
+    } catch (repeated: unknown) {
+      if (!mintWithheld) throw repeated;
+      throw startupHoldError({
+        kind: 'retirement-mint-withheld',
+        attemptId: null,
+        reason: errorMessage(repeated),
+      });
+    }
+  }
+  if (routing.kind === 'handoff') throw new StartupStoreHandoffError(routing.target);
+  if (routing.kind === 'reset-newer-invalid') {
+    backendLog.warn(
+      `Recovered the newer-incompatible active store after selected bundle ${routing.evidence.bundleDir} failed validation (${routing.evidence.failure}).`,
+    );
+  }
+  return { db: routing.db, store: routing.store };
+}
+
+async function settleFailedLifecycleStartup(
+  context: LifecycleStartupContext,
+  error: unknown,
+  publication: Readonly<{
+    signal: AbortSignal;
+    legacyServingCompleted: boolean;
+    legacyDiscoveryPublished: boolean;
+    publishLegacyDiscovery: (() => void) | null;
+    serverInfo: () => CoordinatorServerInfo;
+  }>,
+): Promise<CoordinatorServerInfo> {
+  const { deps, state } = context;
+  const {
+    runtimeState,
+    idleTimer,
+    kbDaemonSupervisor,
+    closeServerFn,
+    server,
+    ipcServer,
+    closeIpcServerFn,
+    removeBackendInfoIfOwnerFn,
+  } = deps;
+  const { instanceId } = deps.identity;
+  const { signal, legacyServingCompleted, legacyDiscoveryPublished, publishLegacyDiscovery, serverInfo } = publication;
+  if (legacyServingCompleted && !signal.aborted) {
+    backendLog.error(
+      'Supervisor legacy-retirement startup failed after serving was recorded; retaining listeners',
+      error,
+    );
+    if (runtimeState.getLifecycle() === 'starting') runtimeState.setLifecycle('kernel-ready');
+    if (runtimeState.getLifecycle() === 'kernel-ready') runtimeState.setLifecycle('running');
+    state.started = true;
+    runtimeState.setLaunchFenceActive(false);
+    if (!legacyDiscoveryPublished) publishLegacyDiscovery?.();
+    return serverInfo();
+  }
+  const successionAttemptChild = currentSuccessionAttemptChild();
+  if (successionAttemptChild !== null && !successionAttemptChild.isServing()) {
+    await successionAttemptChild
+      .acknowledge({
+        kind: 'hold',
+        reason: error instanceof Error ? error.message : String(error),
+      })
+      .catch(() => {});
+  }
+  const mutationAdmissionDisposition = state.providerOperationMutationAdmission?.close();
+  if (
+    (error as { name?: string } | null)?.name === 'AbortError' &&
+    (state.shutdownPromise !== null || state.shutdownRetry !== null)
+  ) {
+    // Startup failure must not release authority owned by a shutdown attempt or its retained continuation.
+    throw error;
+  }
+  if (mutationAdmissionDisposition?.kind === 'holding') {
+    // `retryAfter` settles only when every pending mutation returns and every closed-set fence lease is
+    // released by its holder — neither is bounded by anything this cleanup owns, so awaiting it here would
+    // sit ahead of the socket close and discovery withdrawal this cleanup still owes. What this cleanup did
+    // not observe settle stays visible instead of being swallowed.
+    backendLog.error(
+      `Provider operation mutation admission did not confirm drained during startup-failure cleanup (pending: ${mutationAdmissionDisposition.pendingMutations.join(', ')})`,
+    );
+  }
+  if (error instanceof IncumbentMatchesError) {
+    // Translate to the existing bootstrap-recognized "redundant contender"
+    // signal (info log + exit 0). The socket has not been bound by us, so
+    // there is nothing to clean up.
+    runtimeState.setLifecycle('stopped');
+    throw new BackendAlreadyRunningError();
+  }
+  runtimeState.setLifecycle('stopped');
+  idleTimer.stopWatching();
+  state.ownershipCheckerTeardown?.();
+  state.ownershipCheckerTeardown = null;
+  try {
+    // No retry: a `holding` result's `retryAfter` waits on the child's `close` event, which a grandchild
+    // holding its stdio pipes open can keep from ever firing — that wait must not sit ahead of the socket
+    // close and discovery withdrawal this cleanup still owes.
+    const disposal = await kbDaemonSupervisor?.dispose('coordinator startup failed');
+    if (disposal?.kind === 'holding') {
+      backendLog.error(
+        `KB daemon disposal did not confirm absence during startup-failure cleanup (${disposal.reason})`,
+      );
+    }
+  } catch (error: unknown) {
+    backendLog.error(`KB daemon disposal during startup-failure cleanup failed (${formatError(error)})`);
+  }
+  try {
+    await closeServerFn(server);
+  } catch {
+    // best effort
+  }
+  if (ipcServer && closeIpcServerFn) {
+    try {
+      await closeIpcServerFn(ipcServer);
+    } catch {
+      // best effort
+    }
+  }
+  const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
+  if (withdrawal !== undefined && withdrawal.kind === 'refused') {
+    backendLog.error(
+      `backend discovery withdrawal refused during startup-failure cleanup operation=${withdrawal.operation} code=${withdrawal.code} ${lifecycleDiagnosticFields(withdrawal.error)} correlation=${withdrawal.correlation}`,
+    );
+  }
+
+  if (error instanceof HandoffEscalationError) {
+    backendLog.error('Handoff escalation failed', error);
+  }
+  throw error;
+}
+
+async function bindStartupCoordinator(
+  deps: LifecycleDeps,
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn,
+  signal: AbortSignal,
+  successionAttemptChild: ReturnType<typeof currentSuccessionAttemptChild>,
+): Promise<BoundCoordinator | null> {
+  const { runtime, identity, ipcServer, listenIpcFn, closeIpcServerFn } = deps;
+  const { version, bundleHash, flavor, namespace } = identity;
+  let bound: BoundCoordinator | null = null;
+  if (ipcServer && listenIpcFn) {
+    if (closeIpcServerFn === undefined) {
+      throw new Error('IPC startup requires a close operation before binding');
+    }
+    if (successionAttemptChild !== null) {
+      await successionAttemptChild.adoptListeners(ipcServer);
+    } else {
+      const addressClaim = createCoordinatorSocketAddressClaim(runtime, 'coordinator startup');
+      bound = await bindWithHandoff({
+        socketPath: addressClaim.initialIncumbentSocketPath,
+        desired: { version, bundleHash, flavor, namespace },
+        bindAttempt: async () => {
+          signal.throwIfAborted();
+          const binding = await addressClaim.acquire(async (additionalSocketPaths, publishedSocketAddresses) => {
+            const listenResult = await listenIpcFn(ipcServer, additionalSocketPaths, publishedSocketAddresses);
+            return listenResult.kind === 'incumbent'
+              ? listenResult
+              : { kind: 'held' as const, release: () => closeIpcServerFn(ipcServer) };
+          });
+          return binding.kind === 'incumbent'
+            ? { kind: 'addressed-incumbent' as const, socketPath: binding.socketPath }
+            : { kind: 'bound' as const };
+        },
+        runStartupRecovery,
+        runtime,
+        readVerifiedIncumbentFromDiscovery: (evidence) =>
+          verifiedIncumbentFromRuntimeProbe(
+            { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
+            evidence,
+          ),
+        requestSuccession: async (incumbentSocketPath, incumbent, health) => {
+          const target = resolveStrictBundleIdentity();
+          if (!target.ok) return;
+          const waiting = await requestUpgradeFromContender({
+            runDir: runtime.paths.coral.coordinator.runDir,
+            socketPath: incumbentSocketPath,
+            incumbent,
+            health,
+            target: { build: target.manifest, pluginRootLabel: identity.pluginRoot },
+            requestId: runtime.ids.uuid(),
+            time: runtime.time,
+            startLegacy: requestLegacyUpgrade,
+          });
+          await settleContenderUpgrade(runtime.paths.coral.coordinator.runDir, waiting, recordContenderDeferral);
+        },
+        signal,
+        totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
+      });
+    }
+  }
+  return bound;
+}
+
+async function prepareStartupBuild(deps: LifecycleDeps) {
+  const { identity, runtime, backendPid, runtimeState, ipcServer, listenIpcFn, storeServicesRef } = deps;
+  const {
+    version,
+    buildSetId,
+    bundleHash,
+    cliBundleHash,
+    claudeAppserverBundleHash,
+    durableWrapperBundleHash,
+    flavor,
+  } = identity;
+  const successionAttemptChild = currentSuccessionAttemptChild();
+  const currentBuild = {
+    version,
+    buildSetId,
+    bundleHash,
+    cliBundleHash,
+    claudeAppserverBundleHash,
+    durableWrapperBundleHash,
+    flavor,
+    storeFormatFingerprint: deps.storeFormat.fingerprint,
+  };
+  const legacySupervisedChild =
+    successionAttemptChild === null &&
+    (await recordSupervisorLegacyChild(runtime, currentBuild, backendPid, deps.readSelfIncarnationFn()));
+  if (legacySupervisedChild) runtimeState.setLaunchFenceActive(true);
+  const successionStoreContext = {
+    runtime,
+    storeFormat: deps.storeFormat,
+    currentBuild,
+    busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+  };
+  const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
+  const currentSelection =
+    currentBundleDir === null
+      ? null
+      : {
+          version: ACTIVE_STORE_SELECTION_VERSION,
+          manifest: currentBuild,
+          bundleDir: currentBundleDir,
+          activeStoreFingerprint: currentBuild.storeFormatFingerprint,
+        };
+  if (successionAttemptChild !== null && (ipcServer === undefined || listenIpcFn === undefined)) {
+    throw new Error('Succession attempt requires an IPC listener');
+  }
+  let preparedCommittedStore: Awaited<ReturnType<typeof prepareSuccessionAttemptStore>> | null = null;
+  if (successionAttemptChild !== null) {
+    preparedCommittedStore = await prepareSuccessionAttemptStore(
+      runtime,
+      identity,
+      deps.storeFormat,
+      currentBuild,
+      successionAttemptChild,
+    );
+  }
+  const preinjectedStoreServices = storeServicesRef.tryGet();
+  return {
+    successionAttemptChild,
+    currentBuild,
+    legacySupervisedChild,
+    successionStoreContext,
+    currentSelection,
+    preparedCommittedStore,
+    preinjectedStoreServices,
+  };
+}
+
+async function selectStartupStore(
+  deps: LifecycleDeps,
+  unserved: UnservedSuccession,
+  noCoordinatorAnswers: boolean,
+  successionStoreContext: Awaited<ReturnType<typeof prepareStartupBuild>>['successionStoreContext'],
+) {
+  const { runtime, providerRegistry, registerBuiltInProvidersFn } = deps;
+  const { instanceId } = deps.identity;
+  const committedRecovery = unserved.committedRecovery;
+  let preferredStoreEpochKey = unserved.preferredStoreEpochKey;
+  let pendingDeadAttempt = unserved.pendingDeadAttempt;
+
+  // Provider configuration is side-effect-free validation and must complete
+  // before this process receives authority to quarantine/reset persisted
+  // state. A bad system scope must never destroy a usable older store.
+  registerBuiltInProvidersFn(providerRegistry);
+  if (deps.systemProviderScope !== undefined) {
+    const decodedScope = providerRegistry.decodeScope(deps.systemProviderScope);
+    if (!decodedScope.ok) {
+      throw documentedCoralSetupError('system_provider_scope_invalid', {
+        scopeName: deps.systemProviderScope.name,
+        reason: decodedScope.failure.reason,
+      });
+    }
+  }
+  if (noCoordinatorAnswers) {
+    const discard = await retryRecordedMintDiscard(runtime);
+    const held = discard?.kind === 'held' ? heldUnservedMint(runtime) : null;
+    if (held !== null && committedRecovery === null && preferredStoreEpochKey === null) throw startupHoldError(held);
+  }
+  if (pendingDeadAttempt !== null) {
+    if (pendingDeadAttempt.discardAttemptId !== undefined) {
+      const discarded = discardUnservedRetirementMint(
+        runtime,
+        pendingDeadAttempt.epochKey,
+        pendingDeadAttempt.discardAttemptId,
+      );
+      if (discarded.kind === 'held') {
+        throw startupHoldError({
+          kind: 'unserved-mint-held',
+          attemptId: pendingDeadAttempt.attemptId,
+          reason: discarded.reason,
+        });
+      }
+    }
+    if ((await handBackDeadAttemptGeneration(runtime, instanceId, pendingDeadAttempt)) === 'abandoned') {
+      pendingDeadAttempt = null;
+      preferredStoreEpochKey = null;
+    }
+  }
+  const preferredStore =
+    preferredStoreEpochKey === null
+      ? null
+      : await openPreferredStoreEpoch(
+          successionStoreContext,
+          instanceId,
+          preferredStoreEpochKey,
+          pendingDeadAttempt?.attemptId ?? null,
+        );
+
+  return { preferredStore, pendingDeadAttempt };
+}
+
+async function openSelectedStartupStore({
+  deps,
+  prepared,
+  selected,
+  interposition,
+  signal,
+  committedRecoveryStep,
+  committedRecovery,
+}: Readonly<{
+  deps: LifecycleDeps;
+  prepared: Awaited<ReturnType<typeof prepareStartupBuild>>;
+  selected: Awaited<ReturnType<typeof selectStartupStore>>;
+  interposition: SuccessionInterposition;
+  signal: AbortSignal;
+  committedRecoveryStep: <T>(step: () => T | Promise<T>) => Promise<T | typeof ABANDONED_COMMITTED_RECOVERY>;
+  committedRecovery: UnservedSuccession['committedRecovery'];
+}>) {
+  const { runtime, backendPid } = deps;
+  const {
+    successionAttemptChild,
+    preinjectedStoreServices,
+    successionStoreContext,
+    preparedCommittedStore,
+    currentSelection,
+  } = prepared;
+  const { preferredStore } = selected;
+  let storeDb: Database;
+  let openedStore: ResolvedStoreEpoch | null = null;
+  let successionGeneration: SuccessionWriterGeneration | null = null;
+  let acceptedSuccessionPreparation: SuccessionPreparation | null = null;
+  let recoveryGeneration: SuccessionWriterGeneration | null = null;
+  let recoveryIncarnation: ProcessIncarnation | null = null;
+  if (preinjectedStoreServices !== null) {
+    // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
+    // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
+    if (preinjectedStoreServices.storeDb.location() !== null) {
+      throw new Error('Pre-injected lifecycle store must be non-filesystem-backed.');
+    }
+    storeDb = preinjectedStoreServices.storeDb;
+  } else {
+    if (committedRecovery !== null) {
+      const recovery = committedRecovery;
+      const opened = await committedRecoveryStep(() =>
+        openCommittedRecoveryStore(successionStoreContext, recovery, {
+          pid: backendPid,
+          incarnation: deps.readSelfIncarnationFn,
+        }),
+      );
+      if (opened === ABANDONED_COMMITTED_RECOVERY) {
+        committedRecovery = null;
+        const ordinary = await openOrdinaryStore(deps, currentSelection, signal);
+        storeDb = ordinary.db;
+        openedStore = ordinary.store;
+      } else {
+        storeDb = opened.db;
+        openedStore = opened.store;
+        recoveryGeneration = opened.generation;
+        recoveryIncarnation = opened.incarnation;
+        acceptedSuccessionPreparation = opened.preparation;
+      }
+    } else if (successionAttemptChild !== null) {
+      if (preparedCommittedStore === null) {
+        throw new SuccessionAttemptStartupHoldError('committed epoch was not prepared');
+      }
+      const historical = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+      const opened = await openSuccessionAttemptStore(
+        successionStoreContext,
+        successionAttemptChild,
+        preparedCommittedStore,
+        {
+          interposition,
+          retirementCertificate: {
+            certificate: (epochKey) => historical.certificate(epochKey),
+            resultsReleased: (epochKey) => historical.resultsReleased(epochKey),
+          },
+          ...(deps.onRetiredEpochOpened === undefined ? {} : { onRetiredEpochOpened: deps.onRetiredEpochOpened }),
+        },
+      );
+      storeDb = opened.db;
+      openedStore = opened.store;
+      successionGeneration = opened.generation;
+      acceptedSuccessionPreparation = opened.preparation;
+    } else if (preferredStore !== null) {
+      storeDb = preferredStore.db;
+      openedStore = preferredStore.store;
+    } else {
+      const ordinary = await openOrdinaryStore(deps, currentSelection, signal);
+      storeDb = ordinary.db;
+      openedStore = ordinary.store;
+    }
+  }
+  return {
+    storeDb,
+    openedStore,
+    successionGeneration,
+    acceptedSuccessionPreparation,
+    recoveryGeneration,
+    recoveryIncarnation,
+    committedRecovery,
+  };
+}
+
+async function activateRunningLifecycle({
+  deps,
+  state,
+  ownershipChecker,
+  shutdown,
+  signal,
+  openedStore,
+  recoveryCoordinator,
+  progressStore,
+  storeServices,
+  recoveredDiscussResumes,
+  legacyServingCompleted,
+  legacyDiscoveryPublished,
+  publishLegacyDiscovery,
+}: Readonly<{
+  deps: LifecycleDeps;
+  state: LifecycleControlState;
+  ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
+  shutdown: LifecycleController['shutdown'];
+  signal: AbortSignal;
+  openedStore: ResolvedStoreEpoch | null;
+  recoveryCoordinator: RecoveryCoordinator;
+  progressStore: CoordinatorStoreServices['progressStore'];
+  storeServices: CoordinatorStoreServices;
+  recoveredDiscussResumes: Parameters<LifecycleDeps['hooks']['onRecoveryComplete']>[0];
+  legacyServingCompleted: boolean;
+  legacyDiscoveryPublished: boolean;
+  publishLegacyDiscovery: (() => void) | null;
+}>): Promise<void> {
+  const { runtimeState, createKbHealthComponentFn, kbDaemonSupervisor, idleTimer, launchCoordinator, hooks } = deps;
+  runtimeState.components.register(createRecoveryComponent(storeServices.storeDb));
+  try {
+    const kbHealthComponent = createKbHealthComponentFn();
+    runtimeState.components.register(kbHealthComponent);
+  } catch (error: unknown) {
+    backendLog.error('Runtime component registration failed — KB will be offline until restart', error);
+  }
+
+  runtimeState.setLifecycle('running');
+  state.started = true;
+  if (legacyServingCompleted && !legacyDiscoveryPublished) publishLegacyDiscovery?.();
+  deps.wakeSuccessionReconciler?.();
+  void kbDaemonSupervisor
+    ?.start(openedStore ?? undefined)
+    .then((health) => {
+      if (health.phase !== 'online') {
+        return;
+      }
+      void kbDaemonSupervisor.warmup().catch((error: unknown) => {
+        backendLog.warn(`KB daemon supervisor warmup failed: ${formatError(error)}`);
+      });
+    })
+    .catch((error: unknown) => {
+      backendLog.warn(`KB daemon supervisor start failed: ${formatError(error)}`);
+    });
+
+  idleTimer.startWatching(
+    () => {
+      const daemonCurateRunning = kbDaemonSupervisor?.read().kbWrite?.curateRunning === true;
+      return (
+        runtimeState.getLifecycle() === 'running' &&
+        launchCoordinator.active === 0 &&
+        !recoveryCoordinator.isIdleBlocked() &&
+        progressStore.liveJobCount() === 0 &&
+        idleTimer.inflightRequests === 0 &&
+        !hooks.onIdleCheck() &&
+        !daemonCurateRunning
+      );
+    },
+    (reason) => {
+      void shutdown(reason).catch(() => {});
+    },
+  );
+
+  state.ownershipCheckerTeardown = ownershipChecker.install();
+  await hooks.onRecoveryComplete(recoveredDiscussResumes);
+
+  // ===== Era III (components — fire-and-forget) =====
+  // The KB daemon health component is a daemon-health mirror; init is intentionally a no-op
+  // and the daemon supervisor owns actual KB process startup. The registry
+  // surfaces child phase via `runtimeState.components.status('kb')`.
+  try {
+    runtimeState.components.initAll(signal);
+  } catch (error: unknown) {
+    backendLog.error('Runtime component initialization dispatch failed — KB will be offline until restart', error);
+  }
+}
+
+type StartupAddressState = {
+  port: number;
+  host: string;
+  bindHost: string | undefined;
+  startedAt: number;
+};
+
+function publishStartupDiscovery(
+  deps: LifecycleDeps,
+  address: StartupAddressState,
+  openedStore: ResolvedStoreEpoch | null,
+): void {
+  const { runtime, backendPid, writeBackendInfoFn, identity } = deps;
+  const { version, bundleHash, flavor, namespace, instanceId } = identity;
+  const socketPath = runtime.paths.coral.coordinator.socketPath;
+  const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
+  const discoveryPublished = writeBackendInfoFn({
+    pid: backendPid,
+    port: address.port,
+    host: address.host,
+    ...(address.bindHost === undefined ? {} : { bindHost: address.bindHost }),
+    socketPath,
+    token: identity.token,
+    bootToken: identity.bootToken,
+    shutdownToken: identity.shutdownToken,
+    version,
+    bundleHash,
+    flavor,
+    namespace,
+    instanceId,
+    startedAt: address.startedAt,
+    ...(sentinelId === undefined ? {} : { sentinel: { version: 1 as const, id: sentinelId } }),
+    ...(openedStore === null ? {} : { storeEpoch: openedStore.epoch }),
+  });
+  if (discoveryPublished === false) throw new Error('Coordinator discovery publication failed.');
+}
+
+type LegacyDiscoveryState = {
+  servingCompleted: boolean;
+  published: boolean;
+  retryScheduled: boolean;
+};
+
+function publishLegacyStartupDiscovery(
+  deps: LifecycleDeps,
+  state: LifecycleControlState,
+  legacyDiscovery: LegacyDiscoveryState,
+  publishDiscovery: () => void,
+): void {
+  const { runtime, runtimeState } = deps;
+  try {
+    publishDiscovery();
+    legacyDiscovery.published = true;
+  } catch (error: unknown) {
+    backendLog.warn(`Supervisor legacy-retirement discovery publication failed: ${formatError(error)}`);
+    if (state.started && !legacyDiscovery.retryScheduled) {
+      legacyDiscovery.retryScheduled = true;
+      void runtime.time.sleep(2_000).then(
+        () => {
+          legacyDiscovery.retryScheduled = false;
+          if (state.started && runtimeState.getLifecycle() === 'running') {
+            publishLegacyStartupDiscovery(deps, state, legacyDiscovery, publishDiscovery);
+          }
+        },
+        (retryError: unknown) => {
+          legacyDiscovery.retryScheduled = false;
+          backendLog.warn(`Supervisor legacy-retirement discovery retry wait failed: ${formatError(retryError)}`);
+        },
+      );
+    }
+  }
+}
+
+async function recoverStartupJobs({
+  deps,
+  runStartupRecovery,
+  createInvocationContext,
+  bound,
+  recoveryCoordinator,
+  progressStore,
+  acceptedSuccessionPreparation,
+  signal,
+}: Readonly<{
+  deps: LifecycleDeps;
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn;
+  createInvocationContext: LifecycleStartupContext['createInvocationContext'];
+  bound: BoundCoordinator | null;
+  recoveryCoordinator: RecoveryCoordinator;
+  progressStore: CoordinatorStoreServices['progressStore'];
+  acceptedSuccessionPreparation: SuccessionPreparation | null;
+  signal: AbortSignal;
+}>) {
+  const {
+    identity,
+    runtime,
+    providerRegistry,
+    reconcileCustodyAtStartup,
+    reconcileProviderOperationsAtStartup,
+    getRecoveryService,
+    knownDiscussSources,
+    getDiscussStoreForSource,
+    getDiscussContext,
+    recoverPersistedDiscussFn,
+  } = deps;
+  // ===== Era II (recovery) =====
+  await yieldPastKernelReadyResponse();
+  reconcileCustodyAtStartup?.();
+  // This order is load-bearing: a pending publication contains remote facts that the generic job walk
+  // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
+  const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+  const providerOperationStartupOwnership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+    providerOperationStartupSnapshot,
+  );
+  signal.throwIfAborted();
+  const providerOperationStartupReport = await reconcileProviderOperationsAtStartup?.(
+    providerOperationStartupOwnership,
+    signal,
+  );
+  for (const incident of providerOperationStartupReport?.incidents ?? []) {
+    backendLog.warn(
+      `Provider operation startup reconciliation left an obligation open: ${describeStartupReconciliationIncident(incident)}`,
+    );
+  }
+  signal.throwIfAborted();
+  // Per-job isolation: corrupt sessions should not abort recovery.
+  // `bound.runStartupRecovery` registers journal cursors then awaits
+  // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
+  // because its budget is bounded by the daemon-side
+  // `bootFreshnessTimeoutMs` (default 90s), not by either CLI-facing
+  // deadline — the CLI has already returned by now.
+  const recoveryInputs: StartupRecoveryInputs = {
+    identity,
+    runtime,
+    progressStore,
+    providerRegistry,
+    getExecutionService: deps.getExecutionService,
+    getRecoveryService,
+    knownDiscussSources,
+    getDiscussStoreForSource,
+    getDiscussContext,
+    createInvocationContext,
+    recoveryCoordinator,
+    signal,
+    recoverPersistedDiscussFn,
+    interruptedAppServerReason: bound?.acquiredViaHandoff ? 'handoff' : 'restart',
+    transferredJobIds: new Set(
+      acceptedSuccessionPreparation === null ? [] : (deps.transferredHostJobIds?.(acceptedSuccessionPreparation) ?? []),
+    ),
+  };
+  // A startup that bound no socket owes recovery only for work it was handed: a succession child that
+  // inherited its listeners owns exactly the obligations its accepted receipts transferred, and nothing else.
+  const recoveredDiscussResumes =
+    bound !== null
+      ? await bound.runStartupRecovery(recoveryInputs)
+      : (acceptedSuccessionPreparation?.receipts.length ?? 0) > 0
+        ? await runStartupRecovery(
+            { ...recoveryInputs, interruptedAppServerReason: 'restart' },
+            recoveryCoordinator.runStartupRecovery,
+          )
+        : [];
+  return { recoveredDiscussResumes, recoveryInputs };
+}
+
+async function adoptStartupReceipts({
+  deps,
+  bound,
+  runStartupRecovery,
+  recoveryCoordinator,
+  recoveryInputs,
+  successionAttemptChild,
+  successionGeneration,
+  recoveryGeneration,
+  committedRecoveryStep,
+  publishDiscovery,
+  shouldScheduleStoreEpochSweep,
+  openedStore,
+  legacySupervisedChild,
+  committedRecovery,
+  acceptedSuccessionPreparation,
+  acceptedSuccessionJobs,
+  recoveredDiscussResumes,
+}: Readonly<{
+  deps: LifecycleDeps;
+  bound: BoundCoordinator | null;
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn;
+  recoveryCoordinator: RecoveryCoordinator;
+  recoveryInputs: StartupRecoveryInputs;
+  successionAttemptChild: ReturnType<typeof currentSuccessionAttemptChild>;
+  successionGeneration: SuccessionWriterGeneration | null;
+  recoveryGeneration: SuccessionWriterGeneration | null;
+  committedRecoveryStep: <T>(step: () => T | Promise<T>) => Promise<T | typeof ABANDONED_COMMITTED_RECOVERY>;
+  publishDiscovery: () => void;
+  shouldScheduleStoreEpochSweep: boolean;
+  openedStore: ResolvedStoreEpoch | null;
+  legacySupervisedChild: boolean;
+  committedRecovery: UnservedSuccession['committedRecovery'];
+  acceptedSuccessionPreparation: SuccessionPreparation | null;
+  acceptedSuccessionJobs: readonly string[];
+  recoveredDiscussResumes: RecoveredDiscussResume[];
+}>) {
+  const { runtimeState } = deps;
+  const adoptedGeneration = successionGeneration ?? recoveryGeneration;
+  if (acceptedSuccessionPreparation !== null && adoptedGeneration !== null) {
+    if (deps.adoptSuccessionReceipts === undefined) {
+      throw new SuccessionAttemptStartupHoldError('accepted receipt adoption is unavailable');
+    }
+    const adoptSuccessionReceipts = deps.adoptSuccessionReceipts;
+    const preparation = acceptedSuccessionPreparation;
+    const adopted = await committedRecoveryStep(() =>
+      adoptSuccessionReceipts(
+        preparation,
+        acceptedSuccessionJobs,
+        adoptedGeneration,
+        successionAttemptChild?.recovery === true || committedRecovery !== null,
+      ),
+    );
+    if (adopted === ABANDONED_COMMITTED_RECOVERY) {
+      committedRecovery = null;
+      acceptedSuccessionPreparation = null;
+      acceptedSuccessionJobs = [];
+      runtimeState.setLifecycle('kernel-ready');
+      if (!legacySupervisedChild) {
+        publishDiscovery();
+        if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
+      }
+      const ordinaryResumes = await (bound !== null
+        ? bound.runStartupRecovery({ ...recoveryInputs, transferredJobIds: new Set() })
+        : runStartupRecovery(
+            { ...recoveryInputs, transferredJobIds: new Set(), interruptedAppServerReason: 'restart' },
+            recoveryCoordinator.runStartupRecovery,
+          ));
+      recoveredDiscussResumes = [
+        ...new Map(
+          [...recoveredDiscussResumes, ...ordinaryResumes].map((resume) => [resume.sessionId, resume]),
+        ).values(),
+      ];
+    }
+  }
+  return { committedRecovery, acceptedSuccessionPreparation, acceptedSuccessionJobs, recoveredDiscussResumes };
+}
+
+async function publishStartupServing({
+  deps,
+  address,
+  legacyDiscovery,
+  signal,
+  interposition,
+  successionAttemptChild,
+  currentBuild,
+  storeDb,
+  openedStore,
+  successionGeneration,
+  recoveryGeneration,
+  recoveryIncarnation,
+  committedRecovery,
+  acceptedSuccessionPreparation,
+  shouldScheduleStoreEpochSweep,
+  publishDiscovery,
+  publishLegacyDiscovery,
+  legacySupervisedChild,
+}: Readonly<{
+  deps: LifecycleDeps;
+  address: StartupAddressState;
+  legacyDiscovery: LegacyDiscoveryState;
+  signal: AbortSignal;
+  interposition: SuccessionInterposition;
+  successionAttemptChild: ReturnType<typeof currentSuccessionAttemptChild>;
+  currentBuild: Awaited<ReturnType<typeof prepareStartupBuild>>['currentBuild'];
+  storeDb: Database;
+  openedStore: ResolvedStoreEpoch | null;
+  successionGeneration: SuccessionWriterGeneration | null;
+  recoveryGeneration: SuccessionWriterGeneration | null;
+  recoveryIncarnation: ProcessIncarnation | null;
+  committedRecovery: UnservedSuccession['committedRecovery'];
+  acceptedSuccessionPreparation: SuccessionPreparation | null;
+  shouldScheduleStoreEpochSweep: boolean;
+  publishDiscovery: () => void;
+  publishLegacyDiscovery: () => void;
+  legacySupervisedChild: boolean;
+}>): Promise<void> {
+  const { runtime, runtimeState, ipcServer, listenFn, server, backendPid } = deps;
+  const { instanceId } = deps.identity;
+  if (successionAttemptChild !== null) {
+    if (successionGeneration === null || ipcServer === undefined || openedStore === null) {
+      throw new SuccessionAttemptStartupHoldError('succession writer or listener is unavailable');
+    }
+    await publishAttemptServing(
+      runtime,
+      successionAttemptChild,
+      { db: storeDb, store: openedStore, generation: successionGeneration },
+      acceptedSuccessionPreparation,
+      {
+        instanceId,
+        listener: ipcServer,
+        productVersion: deps.storeFormat.productVersion,
+        signal,
+        interposition,
+        publishDiscovery,
+        ...(deps.recordSuccessionControllerReceipts === undefined
+          ? {}
+          : { recordControllerReceipts: deps.recordSuccessionControllerReceipts }),
+        ...(deps.onStoreServing === undefined ? {} : { onStoreServing: deps.onStoreServing }),
+        ...(deps.onSuccessionServing === undefined ? {} : { onServing: deps.onSuccessionServing }),
+      },
+    );
+    if (shouldScheduleStoreEpochSweep) deps.scheduleStoreEpochSweepFn?.(openedStore);
+  } else if (committedRecovery !== null) {
+    if (recoveryGeneration === null || recoveryIncarnation === null) {
+      throw new Error('Committed successor recovery has no writer identity.');
+    }
+    await publishCommittedRecoveryServing(
+      runtime,
+      committedRecovery,
+      { generation: recoveryGeneration, incarnation: recoveryIncarnation },
+      acceptedSuccessionPreparation,
+      {
+        instanceId,
+        pid: backendPid,
+        ...(deps.recordSuccessionControllerReceipts === undefined
+          ? {}
+          : { recordControllerReceipts: deps.recordSuccessionControllerReceipts }),
+      },
+    );
+    runtimeState.setLifecycle('kernel-ready');
+    publishDiscovery();
+    if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
+  }
+  if (legacySupervisedChild) {
+    if (committedRecovery !== null || openedStore === null) {
+      throw new SuccessionAttemptStartupHoldError('legacy serving record has no completion receipt');
+    }
+    ({ port: address.port, host: address.host, bindHost: address.bindHost } = await listenFn(server));
+    signal.throwIfAborted();
+    const legacyCompletion = await completeSupervisorLegacyUpgrade(
+      runtime,
+      currentBuild,
+      openedStore,
+      instanceId,
+      backendPid,
+      deps.readSelfIncarnationFn(),
+    );
+    if (legacyCompletion.kind !== 'completed')
+      throw new SuccessionAttemptStartupHoldError('legacy launch did not record completion');
+    legacyDiscovery.servingCompleted = true;
+    runtimeState.setLifecycle('kernel-ready');
+    publishLegacyDiscovery();
+    if (shouldScheduleStoreEpochSweep) deps.scheduleStoreEpochSweepFn?.(openedStore);
+  }
+}
+
+async function registerStartupStoreServices({
+  deps,
+  state,
+  opened,
+  currentSelection,
+  signal,
+  committedRecoveryStep,
+  replaceStoreServices,
+}: Readonly<{
+  deps: LifecycleDeps;
+  state: LifecycleControlState;
+  opened: Awaited<ReturnType<typeof openSelectedStartupStore>>;
+  currentSelection: ActiveStoreSelection | null;
+  signal: AbortSignal;
+  committedRecoveryStep: <T>(step: () => T | Promise<T>) => Promise<T | typeof ABANDONED_COMMITTED_RECOVERY>;
+  replaceStoreServices: (services: CoordinatorStoreServices) => void;
+}>) {
+  const { createStoreServicesFromDbFn } = deps;
+  let committedRecovery = opened.committedRecovery;
+  let { storeDb, openedStore, acceptedSuccessionPreparation, recoveryGeneration, recoveryIncarnation } = opened;
+  committedRecovery = opened.committedRecovery;
+  let acceptedSuccessionJobs: readonly string[] = [];
+  let storeServices: CoordinatorStoreServices;
+  if (openedStore !== null) deps.onStoreOpened?.(openedStore);
+  if (openedStore !== null) {
+    state.rebindableStoreDb = createRebindableStoreDatabase(storeDb);
+    storeDb = state.rebindableStoreDb.db;
+  }
+  try {
+    storeServices = createStoreServicesFromDbFn(storeDb);
+  } catch (error) {
+    storeDb.close();
+    throw error;
+  }
+  // clear() then set() so a second startup (test re-init or simulation
+  // pre-injection) cleanly replaces the bundle. The set() guard rejects
+  // double-set without clear, which catches accidental silent replacement
+  // bugs while permitting the legitimate explicit reset pattern.
+  replaceStoreServices(storeServices);
+  if (acceptedSuccessionPreparation !== null && openedStore !== null) {
+    if (acceptedSuccessionPreparation.receipts.length > 0 && deps.verifySuccessionReceipts === undefined) {
+      throw new SuccessionAttemptStartupHoldError('accepted receipt verifier is unavailable');
+    }
+    const preparation = acceptedSuccessionPreparation;
+    const epoch = openedStore;
+    const verified = await committedRecoveryStep(
+      () =>
+        deps.verifySuccessionReceipts?.(
+          preparation,
+          epoch,
+          committedRecovery?.intent.completionReceipt?.successor.instanceId ?? null,
+        ) ?? [],
+    );
+    if (verified === ABANDONED_COMMITTED_RECOVERY) {
+      committedRecovery = null;
+      acceptedSuccessionPreparation = null;
+      recoveryGeneration = null;
+      recoveryIncarnation = null;
+      if (state.rebindableStoreDb === null) throw new Error('Committed recovery store has no rebindable database.');
+      state.rebindableStoreDb.closeCurrent();
+      const ordinary = await openOrdinaryStore(deps, currentSelection, signal);
+      state.rebindableStoreDb.replace(ordinary.db);
+      openedStore = ordinary.store;
+      deps.onStoreOpened?.(ordinary.store);
+      storeServices = createStoreServicesFromDbFn(storeDb);
+      replaceStoreServices(storeServices);
+    } else {
+      acceptedSuccessionJobs = verified;
+    }
+  }
+  return {
+    storeDb,
+    openedStore,
+    acceptedSuccessionPreparation,
+    recoveryGeneration,
+    recoveryIncarnation,
+    committedRecovery,
+    acceptedSuccessionJobs,
+    storeServices,
+  };
+}
+
+function connectStartupRecoveryCoordinator({
+  deps,
+  state,
+  storeDb,
+  storeServices,
+  bound,
+  createInvocationContext,
+  signal,
+}: Readonly<{
+  deps: LifecycleDeps;
+  state: LifecycleControlState;
+  storeDb: Database;
+  storeServices: CoordinatorStoreServices;
+  bound: BoundCoordinator | null;
+  createInvocationContext: LifecycleStartupContext['createInvocationContext'];
+  signal: AbortSignal;
+}>): RecoveryCoordinator {
+  const { runtime, runtimeState, getRecoveryService, launchCoordinator, connectProviderOperationRecovery } = deps;
+  const { identity } = deps;
+  const { instanceId } = identity;
+  const progressStore = storeServices.progressStore;
+  const mutationAdmission = acquireProviderOperationMutationAdmission(storeDb, instanceId);
+  if (mutationAdmission.kind === 'holding') {
+    throw new Error(
+      `Provider operation mutation admission remains owned by '${mutationAdmission.predecessorOwner}'; ` +
+        `successor '${mutationAdmission.successorOwner}' refused; exit=${mutationAdmission.exit}`,
+      { cause: mutationAdmission },
+    );
+  }
+  state.providerOperationMutationAdmission = mutationAdmission.admission;
+  const recoveryCoordinator = createRecoveryCoordinator(
+    {
+      progressStore,
+      runtime,
+      runtimeState,
+      eventBus: deps.eventBus,
+      onRecoverySettlement: deps.onRecoverySettlement,
+      getRecoveryService,
+      createInvocationContext,
+      log: identity.log,
+      startupOwnership: launchCoordinator,
+    },
+    bound,
+  );
+  state.recoveryCoordinator = recoveryCoordinator;
+  connectProviderOperationRecovery?.(recoveryCoordinator);
+  recoveryCoordinator.retireAbsentSupersededProviderOperations();
+  signal.throwIfAborted();
+
+  return recoveryCoordinator;
+}
+
+async function prepareStartupAuthority(
+  deps: LifecycleDeps,
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn,
+  signal: AbortSignal,
+) {
+  const { runtime } = deps;
+  const prepared = await prepareStartupBuild(deps);
+  const { successionAttemptChild, currentBuild, successionStoreContext, currentSelection, preinjectedStoreServices } =
+    prepared;
+  // A dead attempt or committed successor is acted on only while no coordinator may answer: with one answering, the
+  // bind decides this process, and acting first would hold every contender or fence the coordinator that serves.
+  const coordinatorAtStartup =
+    successionAttemptChild === null && preinjectedStoreServices === null ? probeCoordinator(runtime) : null;
+  const noCoordinatorServes =
+    coordinatorAtStartup !== null &&
+    (coordinatorAtStartup.kind === 'absent' ||
+      (coordinatorAtStartup.kind === 'unobservable' && coordinatorAtStartup.reason === 'recorded-process-absent'));
+  const unservedBeforeBind = noCoordinatorServes
+    ? await resolveUnservedSuccession(deps, currentBuild, currentSelection)
+    : NO_UNSERVED_SUCCESSION;
+  const bound = await bindStartupCoordinator(deps, runStartupRecovery, signal, successionAttemptChild);
+  signal.throwIfAborted();
+  // A pid probe cannot prove no coordinator answers; only a startup that binds may act on that decision.
+  const boundUnanswered =
+    !noCoordinatorServes && coordinatorAtStartup !== null && bound !== null && !bound.acquiredViaHandoff;
+  const unserved = boundUnanswered
+    ? await resolveUnservedSuccession(deps, currentBuild, currentSelection)
+    : unservedBeforeBind;
+  if (unserved.hold !== null) throw startupHoldError(unserved.hold);
+  const noCoordinatorAnswers = noCoordinatorServes || boundUnanswered;
+  const selected = await selectStartupStore(deps, unserved, noCoordinatorAnswers, successionStoreContext);
+
+  if (successionAttemptChild !== null && preinjectedStoreServices !== null) {
+    throw new SuccessionAttemptStartupHoldError('committed open requires a filesystem store');
+  }
+  const shouldScheduleStoreEpochSweep = preinjectedStoreServices === null;
+  return { prepared, bound, unserved, selected, shouldScheduleStoreEpochSweep };
+}
+
+type StartupCommittedRecoveryState = {
+  recovery: UnservedSuccession['committedRecovery'];
+};
+
+async function runStartupKernel(
+  context: LifecycleStartupContext,
+  signal: AbortSignal,
+  address: StartupAddressState,
+  legacyDiscovery: LegacyDiscoveryState,
+  interposition: SuccessionInterposition,
+  replaceStoreServices: (services: CoordinatorStoreServices) => void,
+) {
+  const { deps, state, runStartupRecovery, createInvocationContext } = context;
+  const { runtime, runtimeState, listenFn, server } = deps;
+  const { instanceId, now } = deps.identity;
+  const authority = await prepareStartupAuthority(deps, runStartupRecovery, signal);
+  const { prepared, bound, unserved, selected, shouldScheduleStoreEpochSweep } = authority;
+  const { successionAttemptChild, legacySupervisedChild, currentSelection } = prepared;
+  const committedState: StartupCommittedRecoveryState = { recovery: unserved.committedRecovery };
+  const committedRecoveryStep = async <T>(
+    step: () => T | Promise<T>,
+  ): Promise<T | typeof ABANDONED_COMMITTED_RECOVERY> => {
+    try {
+      return await step();
+    } catch (error: unknown) {
+      if (committedState.recovery === null || signal.aborted) throw error;
+      await holdFailedCommittedRecovery(runtime, instanceId, committedState.recovery, error);
+      return ABANDONED_COMMITTED_RECOVERY;
+    }
+  };
+  const opened = await openSelectedStartupStore({
+    deps,
+    prepared,
+    selected,
+    interposition,
+    signal,
+    committedRecoveryStep,
+    committedRecovery: committedState.recovery,
+  });
+  const registered = await registerStartupStoreServices({
+    deps,
+    state,
+    opened,
+    currentSelection,
+    signal,
+    committedRecoveryStep,
+    replaceStoreServices,
+  });
+  const { storeDb, openedStore, storeServices } = registered;
+  committedState.recovery = registered.committedRecovery;
+  const progressStore = storeServices.progressStore;
+  const recoveryCoordinator = connectStartupRecoveryCoordinator({
+    deps,
+    state,
+    storeDb,
+    storeServices,
+    bound,
+    createInvocationContext,
+    signal,
+  });
+
+  // A supervised legacy successor must keep admission fenced until its serving receipt.
+  if (!legacySupervisedChild)
+    ({ port: address.port, host: address.host, bindHost: address.bindHost } = await listenFn(server));
+  signal.throwIfAborted();
+  runtimeState.setStartedAt(now());
+  address.startedAt = runtimeState.getStartedAt();
+  const publishDiscovery = (): void => publishStartupDiscovery(deps, address, openedStore);
+  const publishLegacyDiscovery = () => publishLegacyStartupDiscovery(deps, state, legacyDiscovery, publishDiscovery);
+  if (successionAttemptChild === null && committedState.recovery === null && !legacySupervisedChild) publishDiscovery();
+  if (committedState.recovery === null && !legacySupervisedChild) runtimeState.setLifecycle('kernel-ready');
+  runtimeState.setLaunchFenceActive(true);
+  // An attempt child that has not served may still be abandoned, and its sweep would certify the epoch it retires.
+  if (
+    successionAttemptChild === null &&
+    committedState.recovery === null &&
+    !legacySupervisedChild &&
+    shouldScheduleStoreEpochSweep &&
+    openedStore !== null
+  ) {
+    deps.scheduleStoreEpochSweepFn?.(openedStore);
+  }
+  return {
+    authority,
+    opened,
+    registered,
+    recoveryCoordinator,
+    progressStore,
+    publishDiscovery,
+    publishLegacyDiscovery,
+    committedState,
+    committedRecoveryStep,
+  };
+}
+
+async function runStartupRecoveryAndServe(
+  context: LifecycleStartupContext,
+  kernel: Awaited<ReturnType<typeof runStartupKernel>>,
+  signal: AbortSignal,
+  address: StartupAddressState,
+  legacyDiscovery: LegacyDiscoveryState,
+  interposition: SuccessionInterposition,
+): Promise<RecoveredDiscussResume[]> {
+  const { deps, runStartupRecovery, createInvocationContext } = context;
+  const {
+    runtime,
+    runtimeState,
+    startupRecoveryBarrierPublisher,
+    startProviderOperationReconciler,
+    cleanupStaleJobsFn,
+  } = deps;
+  const { bundleHash } = deps.identity;
+  const {
+    authority,
+    opened,
+    registered,
+    recoveryCoordinator,
+    progressStore,
+    publishDiscovery,
+    publishLegacyDiscovery,
+    committedState,
+    committedRecoveryStep,
+  } = kernel;
+  const { prepared, bound, unserved, selected, shouldScheduleStoreEpochSweep } = authority;
+  const { successionAttemptChild, currentBuild, legacySupervisedChild } = prepared;
+  const { pendingDeadAttempt } = selected;
+  const retiredDeadAttemptId = unserved.retiredDeadAttemptId;
+  const { storeDb, openedStore } = registered;
+  let { acceptedSuccessionPreparation } = registered;
+  const { recoveryGeneration, recoveryIncarnation, acceptedSuccessionJobs } = registered;
+  const { successionGeneration } = opened;
+  const recovered = await recoverStartupJobs({
+    deps,
+    runStartupRecovery,
+    createInvocationContext,
+    bound,
+    recoveryCoordinator,
+    progressStore,
+    acceptedSuccessionPreparation,
+    signal,
+  });
+  let { recoveredDiscussResumes } = recovered;
+  const { recoveryInputs } = recovered;
+  const adoption = await adoptStartupReceipts({
+    deps,
+    bound,
+    runStartupRecovery,
+    recoveryCoordinator,
+    recoveryInputs,
+    successionAttemptChild,
+    successionGeneration,
+    recoveryGeneration,
+    committedRecoveryStep,
+    publishDiscovery,
+    shouldScheduleStoreEpochSweep,
+    openedStore,
+    legacySupervisedChild,
+    committedRecovery: committedState.recovery,
+    acceptedSuccessionPreparation,
+    acceptedSuccessionJobs,
+    recoveredDiscussResumes,
+  });
+  committedState.recovery = adoption.committedRecovery;
+  acceptedSuccessionPreparation = adoption.acceptedSuccessionPreparation;
+  recoveredDiscussResumes = adoption.recoveredDiscussResumes;
+  startupRecoveryBarrierPublisher?.publish();
+  startProviderOperationReconciler?.();
+  await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
+  signal.throwIfAborted();
+  await publishStartupServing({
+    deps,
+    address,
+    legacyDiscovery,
+    signal,
+    interposition,
+    successionAttemptChild,
+    currentBuild,
+    storeDb,
+    openedStore,
+    successionGeneration,
+    recoveryGeneration,
+    recoveryIncarnation,
+    committedRecovery: committedState.recovery,
+    acceptedSuccessionPreparation,
+    shouldScheduleStoreEpochSweep,
+    publishDiscovery,
+    publishLegacyDiscovery,
+    legacySupervisedChild,
+  });
+  if (runtimeState.getLaunchFenceActive()) {
+    runtimeState.setLaunchFenceActive(false);
+  }
+  const deadAttemptId = pendingDeadAttempt?.attemptId ?? retiredDeadAttemptId;
+  if (deadAttemptId !== null) {
+    await dischargeDeadSuccessionAttempt(runtime, deadAttemptId, deps.successionIncumbent());
+  }
+
+  return recoveredDiscussResumes;
+}
+
 async function runLifecycleStartup({
   deps,
   runStartupRecovery,
@@ -1094,52 +2434,8 @@ async function runLifecycleStartup({
   ownershipChecker,
   shutdown,
 }: LifecycleStartupContext): Promise<CoordinatorServerInfo> {
-  const {
-    identity,
-    runtime,
-    backendPid,
-    runtimeState,
-    idleTimer,
-    storeServicesRef,
-    createStoreServicesFromDbFn,
-    launchCoordinator,
-    kbDaemonSupervisor,
-    providerRegistry,
-    server,
-    getRecoveryService,
-    connectProviderOperationRecovery,
-    reconcileProviderOperationsAtStartup,
-    reconcileCustodyAtStartup,
-    startProviderOperationReconciler,
-    startupRecoveryBarrierPublisher,
-    getDiscussStoreForSource,
-    knownDiscussSources,
-    getDiscussContext,
-    writeBackendInfoFn,
-    removeBackendInfoIfOwnerFn,
-    cleanupStaleJobsFn,
-    createKbHealthComponentFn,
-    registerBuiltInProvidersFn,
-    recoverPersistedDiscussFn,
-    hooks,
-    closeServerFn,
-    listenFn,
-    ipcServer,
-    closeIpcServerFn,
-    listenIpcFn,
-  } = deps;
-  const {
-    namespace,
-    version,
-    buildSetId,
-    bundleHash,
-    cliBundleHash,
-    claudeAppserverBundleHash,
-    durableWrapperBundleHash,
-    flavor,
-    instanceId,
-    now,
-  } = identity;
+  const { identity, runtime, runtimeState } = deps;
+  const { namespace, version, bundleHash, flavor, instanceId } = identity;
 
   if (state.started || runtimeState.getLifecycle() !== 'starting') {
     throw new Error('Backend server already started');
@@ -1149,17 +2445,20 @@ async function runLifecycleStartup({
   const startupAbort = new AbortController();
   state.startupAbort = startupAbort;
   const signal = startupAbort.signal;
-  let port = 0;
-  let host = '';
-  let localBindHost: string | undefined;
-  let startedAt = 0;
-  let legacyServingCompleted = false;
-  let legacyDiscoveryPublished = false;
-  let legacyDiscoveryRetryScheduled = false;
+  const address: StartupAddressState = { port: 0, host: '', bindHost: undefined, startedAt: 0 };
+  const legacyDiscovery: LegacyDiscoveryState = {
+    servingCompleted: false,
+    published: false,
+    retryScheduled: false,
+  };
   let publishLegacyDiscovery: (() => void) | null = null;
+  const replaceStoreServices = (services: CoordinatorStoreServices): void => {
+    deps.storeServicesRef.clear();
+    deps.storeServicesRef.set(services);
+  };
   const serverInfo = (): CoordinatorServerInfo => ({
-    port,
-    host,
+    port: address.port,
+    host: address.host,
     socketPath: runtime.paths.coral.coordinator.socketPath,
     token: identity.token,
     bootToken: identity.bootToken,
@@ -1169,869 +2468,610 @@ async function runLifecycleStartup({
     flavor,
     namespace,
     instanceId,
-    startedAt,
+    startedAt: address.startedAt,
   });
 
   try {
     // ===== Era I (kernel) =====
-    // The address this coordinator publishes is its own canonical one; the claim additionally holds the
-    // legacy and published addresses, which are exclusion inputs rather than what this build serves.
-    const socketPath = runtime.paths.coral.coordinator.socketPath;
-    const successionAttemptChild = currentSuccessionAttemptChild();
-    const currentBuild = {
-      version,
-      buildSetId,
-      bundleHash,
-      cliBundleHash,
-      claudeAppserverBundleHash,
-      durableWrapperBundleHash,
-      flavor,
-      storeFormatFingerprint: deps.storeFormat.fingerprint,
-    };
-    const legacySupervisedChild =
-      successionAttemptChild === null &&
-      (await recordSupervisorLegacyChild(runtime, currentBuild, backendPid, deps.readSelfIncarnationFn()));
-    if (legacySupervisedChild) runtimeState.setLaunchFenceActive(true);
-    const successionStoreContext = {
-      runtime,
-      storeFormat: deps.storeFormat,
-      currentBuild,
-      busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-    };
-    const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
-    const currentSelection =
-      currentBundleDir === null
-        ? null
-        : {
-            version: ACTIVE_STORE_SELECTION_VERSION,
-            manifest: currentBuild,
-            bundleDir: currentBundleDir,
-            activeStoreFingerprint: currentBuild.storeFormatFingerprint,
-          };
-    if (successionAttemptChild !== null && (ipcServer === undefined || listenIpcFn === undefined)) {
-      throw new Error('Succession attempt requires an IPC listener');
-    }
-    let preparedCommittedStore: Awaited<ReturnType<typeof prepareSuccessionAttemptStore>> | null = null;
-    if (successionAttemptChild !== null) {
-      preparedCommittedStore = await prepareSuccessionAttemptStore(
-        runtime,
-        identity,
-        deps.storeFormat,
-        currentBuild,
-        successionAttemptChild,
-      );
-    }
-    const preinjectedStoreServices = storeServicesRef.tryGet();
-    // A dead attempt or committed successor is acted on only while no coordinator may answer: with one answering, the
-    // bind decides this process, and acting first would hold every contender or fence the coordinator that serves.
-    const coordinatorAtStartup =
-      successionAttemptChild === null && preinjectedStoreServices === null ? probeCoordinator(runtime) : null;
-    const noCoordinatorServes =
-      coordinatorAtStartup !== null &&
-      (coordinatorAtStartup.kind === 'absent' ||
-        (coordinatorAtStartup.kind === 'unobservable' && coordinatorAtStartup.reason === 'recorded-process-absent'));
-    /** Only a startup that goes on to bind may act on a hold. */
-    const resolveUnservedSuccession = async (): Promise<UnservedSuccession> => {
-      const committed = await prepareCommittedSuccessorRecovery(
-        runtime,
-        identity,
-        deps.storeFormat,
-        currentBuild,
-        (epochKey) =>
-          new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot)
-            .locationsFor(epochKey)
-            .some((location) => location.disposition !== 'terminal'),
-      );
-      if (committed.kind === 'handoff') throw new StartupStoreHandoffError(committed.target);
-      if (committed.kind === 'hold') return { ...NO_UNSERVED_SUCCESSION, hold: committed.hold };
-      if (committed.kind === 'recover') return { ...NO_UNSERVED_SUCCESSION, committedRecovery: committed };
-      const incomplete = await resolveIncompleteSuccessionAtStartup({
-        runtime,
-        currentBuild,
-        startupId: instanceId,
-        ...(deps.prepareRecoveryGrantHandoff === undefined
-          ? {}
-          : { prepareRecoveryGrantHandoff: deps.prepareRecoveryGrantHandoff }),
-      });
-      if (incomplete.kind === 'handoff') throw new StartupStoreHandoffError(incomplete.target);
-      if (incomplete.kind === 'hold') return { ...NO_UNSERVED_SUCCESSION, hold: incomplete.hold };
-      if (incomplete.kind === 'recover') {
-        return {
-          ...NO_UNSERVED_SUCCESSION,
-          pendingDeadAttempt: incomplete.attempt,
-          preferredStoreEpochKey: incomplete.preferredEpochKey,
-        };
-      }
-      const retiredDeadAttemptId = incomplete.kind === 'retire' ? incomplete.attemptId : null;
-      let preferredStoreEpochKey: string | null = null;
-      const target = deps.prepareNoIncumbentHandoff?.();
-      if (target !== undefined && target !== null) {
-        const targetBuild = inspectValidatedHandoffTarget(target.target).build;
-        const sameBuild =
-          targetBuild.buildSetId === currentBuild.buildSetId && targetBuild.bundleHash === currentBuild.bundleHash;
-        if (!sameBuild) {
-          throw new StartupStoreHandoffError(target.target);
-        }
-        preferredStoreEpochKey = target.epochKey;
-      }
-      if (preferredStoreEpochKey === null && currentSelection !== null) {
-        const selected = selectedNewerBuild(runtime, currentSelection);
-        if (selected !== null) throw new StartupStoreHandoffError(selected);
-      }
-      return { ...NO_UNSERVED_SUCCESSION, preferredStoreEpochKey, retiredDeadAttemptId };
-    };
-    const unservedBeforeBind = noCoordinatorServes ? await resolveUnservedSuccession() : NO_UNSERVED_SUCCESSION;
-    let bound: BoundCoordinator | null = null;
-    if (ipcServer && listenIpcFn) {
-      if (closeIpcServerFn === undefined) {
-        throw new Error('IPC startup requires a close operation before binding');
-      }
-      if (successionAttemptChild !== null) {
-        await successionAttemptChild.adoptListeners(ipcServer);
-      } else {
-        const addressClaim = createCoordinatorSocketAddressClaim(runtime, 'coordinator startup');
-        bound = await bindWithHandoff({
-          socketPath: addressClaim.initialIncumbentSocketPath,
-          desired: { version, bundleHash, flavor, namespace },
-          bindAttempt: async () => {
-            signal.throwIfAborted();
-            const binding = await addressClaim.acquire(async (additionalSocketPaths, publishedSocketAddresses) => {
-              const listenResult = await listenIpcFn(ipcServer, additionalSocketPaths, publishedSocketAddresses);
-              return listenResult.kind === 'incumbent'
-                ? listenResult
-                : { kind: 'held' as const, release: () => closeIpcServerFn(ipcServer) };
-            });
-            return binding.kind === 'incumbent'
-              ? { kind: 'addressed-incumbent' as const, socketPath: binding.socketPath }
-              : { kind: 'bound' as const };
-          },
-          runStartupRecovery,
-          runtime,
-          readVerifiedIncumbentFromDiscovery: (evidence) =>
-            verifiedIncumbentFromRuntimeProbe(
-              { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
-              evidence,
-            ),
-          requestSuccession: async (incumbentSocketPath, incumbent, health) => {
-            const target = resolveStrictBundleIdentity();
-            if (!target.ok) return;
-            const waiting = await requestUpgradeFromContender({
-              runDir: runtime.paths.coral.coordinator.runDir,
-              socketPath: incumbentSocketPath,
-              incumbent,
-              health,
-              target: { build: target.manifest, pluginRootLabel: identity.pluginRoot },
-              requestId: runtime.ids.uuid(),
-              time: runtime.time,
-              startLegacy: requestLegacyUpgrade,
-            });
-            await settleContenderUpgrade(runtime.paths.coral.coordinator.runDir, waiting, recordContenderDeferral);
-          },
-          signal,
-          totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
-        });
-      }
-    }
-    signal.throwIfAborted();
-    // A pid probe cannot prove no coordinator answers; only a startup that binds may act on that decision.
-    const boundUnanswered =
-      !noCoordinatorServes && coordinatorAtStartup !== null && bound !== null && !bound.acquiredViaHandoff;
-    const unserved = boundUnanswered ? await resolveUnservedSuccession() : unservedBeforeBind;
-    if (unserved.hold !== null) throw startupHoldError(unserved.hold);
-    const noCoordinatorAnswers = noCoordinatorServes || boundUnanswered;
-    let committedRecovery = unserved.committedRecovery;
-    const abandonedCommittedRecovery = Symbol('abandoned committed recovery');
-    const committedRecoveryStep = async <T>(
-      step: () => T | Promise<T>,
-    ): Promise<T | typeof abandonedCommittedRecovery> => {
-      try {
-        return await step();
-      } catch (error: unknown) {
-        if (committedRecovery === null || signal.aborted) throw error;
-        await holdFailedCommittedRecovery(runtime, instanceId, committedRecovery, error);
-        return abandonedCommittedRecovery;
-      }
-    };
-    let preferredStoreEpochKey = unserved.preferredStoreEpochKey;
-    let pendingDeadAttempt = unserved.pendingDeadAttempt;
-    const retiredDeadAttemptId = unserved.retiredDeadAttemptId;
-
-    // Provider configuration is side-effect-free validation and must complete
-    // before this process receives authority to quarantine/reset persisted
-    // state. A bad system scope must never destroy a usable older store.
-    registerBuiltInProvidersFn(providerRegistry);
-    if (deps.systemProviderScope !== undefined) {
-      const decodedScope = providerRegistry.decodeScope(deps.systemProviderScope);
-      if (!decodedScope.ok) {
-        throw documentedCoralSetupError('system_provider_scope_invalid', {
-          scopeName: deps.systemProviderScope.name,
-          reason: decodedScope.failure.reason,
-        });
-      }
-    }
-    if (noCoordinatorAnswers) {
-      const discard = await retryRecordedMintDiscard(runtime);
-      const held = discard?.kind === 'held' ? heldUnservedMint(runtime) : null;
-      if (held !== null && committedRecovery === null && preferredStoreEpochKey === null) throw startupHoldError(held);
-    }
-    if (pendingDeadAttempt !== null) {
-      if (pendingDeadAttempt.discardAttemptId !== undefined) {
-        const discarded = discardUnservedRetirementMint(
-          runtime,
-          pendingDeadAttempt.epochKey,
-          pendingDeadAttempt.discardAttemptId,
-        );
-        if (discarded.kind === 'held') {
-          throw startupHoldError({
-            kind: 'unserved-mint-held',
-            attemptId: pendingDeadAttempt.attemptId,
-            reason: discarded.reason,
-          });
-        }
-      }
-      if ((await handBackDeadAttemptGeneration(runtime, instanceId, pendingDeadAttempt)) === 'abandoned') {
-        pendingDeadAttempt = null;
-        preferredStoreEpochKey = null;
-      }
-    }
-    const preferredStore =
-      preferredStoreEpochKey === null
-        ? null
-        : await openPreferredStoreEpoch(
-            successionStoreContext,
-            instanceId,
-            preferredStoreEpochKey,
-            pendingDeadAttempt?.attemptId ?? null,
-          );
-
-    if (successionAttemptChild !== null && preinjectedStoreServices !== null) {
-      throw new SuccessionAttemptStartupHoldError('committed open requires a filesystem store');
-    }
-    const shouldScheduleStoreEpochSweep = preinjectedStoreServices === null;
-    let storeDb: Database;
-    let openedStore: ResolvedStoreEpoch | null = null;
-    let successionGeneration: SuccessionWriterGeneration | null = null;
-    let acceptedSuccessionPreparation: SuccessionPreparation | null = null;
-    let acceptedSuccessionJobs: readonly string[] = [];
-    let recoveryGeneration: SuccessionWriterGeneration | null = null;
-    let recoveryIncarnation: ProcessIncarnation | null = null;
-    const openOrdinaryStore = async (): Promise<Readonly<{ db: Database; store: ResolvedStoreEpoch }>> => {
-      if (currentSelection === null) {
-        throw documentedCoralSetupError({
-          code: 'startup_bundle_unresolvable',
-          pluginRoot: identity.pluginRoot,
-        });
-      }
-      const authorizeStartupMint = deps.authorizeStartupMint;
-      let mintWithheld = false;
-      const routeStore = () =>
-        routeOrOpenBackendStoreAtStartup({
-          runtime,
-          validateForeignTarget: validateForeignHandoffTarget,
-          options: {
-            storeFormat: deps.storeFormat,
-            startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-            selectProtectedPredecessor: (addresses) =>
-              selectProtectedPredecessorFromControllers(
-                runtime,
-                runtime.storage.realpathSync(runtime.paths.coral.store.dbDir),
-                addresses,
-              ),
-            ...(authorizeStartupMint === undefined
-              ? {}
-              : {
-                  authorizeMint: (observation: Parameters<typeof authorizeStartupMint>[0]) => {
-                    const disposition = authorizeStartupMint(observation);
-                    mintWithheld = disposition === null;
-                    return disposition;
-                  },
-                }),
-            currentSelection,
-          },
-        });
-      let routing: Awaited<ReturnType<typeof routeStore>>;
-      try {
-        routing = await routeStore();
-      } catch (error: unknown) {
-        // A withheld mint is decided by this boot: no later spawn is guaranteed on a machine nobody is watching.
-        if (!mintWithheld) throw error;
-        backendLog.warn(`Store epoch mint withheld under retirement patience; observing again: ${formatError(error)}`);
-        await runtime.time.sleep(RETIREMENT_PATIENCE_INTERVAL_MS, { signal });
-        mintWithheld = false;
-        try {
-          routing = await routeStore();
-        } catch (repeated: unknown) {
-          if (!mintWithheld) throw repeated;
-          throw startupHoldError({
-            kind: 'retirement-mint-withheld',
-            attemptId: null,
-            reason: errorMessage(repeated),
-          });
-        }
-      }
-      if (routing.kind === 'handoff') throw new StartupStoreHandoffError(routing.target);
-      if (routing.kind === 'reset-newer-invalid') {
-        backendLog.warn(
-          `Recovered the newer-incompatible active store after selected bundle ${routing.evidence.bundleDir} failed validation (${routing.evidence.failure}).`,
-        );
-      }
-      return { db: routing.db, store: routing.store };
-    };
-    if (preinjectedStoreServices !== null) {
-      // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
-      // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
-      if (preinjectedStoreServices.storeDb.location() !== null) {
-        throw new Error('Pre-injected lifecycle store must be non-filesystem-backed.');
-      }
-      storeDb = preinjectedStoreServices.storeDb;
-    } else {
-      if (committedRecovery !== null) {
-        const recovery = committedRecovery;
-        const opened = await committedRecoveryStep(() =>
-          openCommittedRecoveryStore(successionStoreContext, recovery, {
-            pid: backendPid,
-            incarnation: deps.readSelfIncarnationFn,
-          }),
-        );
-        if (opened === abandonedCommittedRecovery) {
-          committedRecovery = null;
-          const ordinary = await openOrdinaryStore();
-          storeDb = ordinary.db;
-          openedStore = ordinary.store;
-        } else {
-          storeDb = opened.db;
-          openedStore = opened.store;
-          recoveryGeneration = opened.generation;
-          recoveryIncarnation = opened.incarnation;
-          acceptedSuccessionPreparation = opened.preparation;
-        }
-      } else if (successionAttemptChild !== null) {
-        if (preparedCommittedStore === null) {
-          throw new SuccessionAttemptStartupHoldError('committed epoch was not prepared');
-        }
-        const historical = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
-        const opened = await openSuccessionAttemptStore(
-          successionStoreContext,
-          successionAttemptChild,
-          preparedCommittedStore,
-          {
-            interposition,
-            retirementCertificate: {
-              certificate: (epochKey) => historical.certificate(epochKey),
-              resultsReleased: (epochKey) => historical.resultsReleased(epochKey),
-            },
-            ...(deps.onRetiredEpochOpened === undefined ? {} : { onRetiredEpochOpened: deps.onRetiredEpochOpened }),
-          },
-        );
-        storeDb = opened.db;
-        openedStore = opened.store;
-        successionGeneration = opened.generation;
-        acceptedSuccessionPreparation = opened.preparation;
-      } else if (preferredStore !== null) {
-        storeDb = preferredStore.db;
-        openedStore = preferredStore.store;
-      } else {
-        const ordinary = await openOrdinaryStore();
-        storeDb = ordinary.db;
-        openedStore = ordinary.store;
-      }
-    }
-    let storeServices: CoordinatorStoreServices;
-    if (openedStore !== null) deps.onStoreOpened?.(openedStore);
-    if (openedStore !== null) {
-      state.rebindableStoreDb = createRebindableStoreDatabase(storeDb);
-      storeDb = state.rebindableStoreDb.db;
-    }
-    try {
-      storeServices = createStoreServicesFromDbFn(storeDb);
-    } catch (error) {
-      storeDb.close();
-      throw error;
-    }
-    // clear() then set() so a second startup (test re-init or simulation
-    // pre-injection) cleanly replaces the bundle. The set() guard rejects
-    // double-set without clear, which catches accidental silent replacement
-    // bugs while permitting the legitimate explicit reset pattern.
-    storeServicesRef.clear();
-    storeServicesRef.set(storeServices);
-    if (acceptedSuccessionPreparation !== null && openedStore !== null) {
-      if (acceptedSuccessionPreparation.receipts.length > 0 && deps.verifySuccessionReceipts === undefined) {
-        throw new SuccessionAttemptStartupHoldError('accepted receipt verifier is unavailable');
-      }
-      const preparation = acceptedSuccessionPreparation;
-      const epoch = openedStore;
-      const verified = await committedRecoveryStep(
-        () =>
-          deps.verifySuccessionReceipts?.(
-            preparation,
-            epoch,
-            committedRecovery?.intent.completionReceipt?.successor.instanceId ?? null,
-          ) ?? [],
-      );
-      if (verified === abandonedCommittedRecovery) {
-        committedRecovery = null;
-        acceptedSuccessionPreparation = null;
-        recoveryGeneration = null;
-        recoveryIncarnation = null;
-        if (state.rebindableStoreDb === null) throw new Error('Committed recovery store has no rebindable database.');
-        state.rebindableStoreDb.closeCurrent();
-        const ordinary = await openOrdinaryStore();
-        state.rebindableStoreDb.replace(ordinary.db);
-        openedStore = ordinary.store;
-        deps.onStoreOpened?.(ordinary.store);
-        storeServices = createStoreServicesFromDbFn(storeDb);
-        storeServicesRef.clear();
-        storeServicesRef.set(storeServices);
-      } else {
-        acceptedSuccessionJobs = verified;
-      }
-    }
-    const mutationAdmission = acquireProviderOperationMutationAdmission(storeDb, instanceId);
-    if (mutationAdmission.kind === 'holding') {
-      throw new Error(
-        `Provider operation mutation admission remains owned by '${mutationAdmission.predecessorOwner}'; ` +
-          `successor '${mutationAdmission.successorOwner}' refused; exit=${mutationAdmission.exit}`,
-        { cause: mutationAdmission },
-      );
-    }
-    state.providerOperationMutationAdmission = mutationAdmission.admission;
-    const progressStore = storeServices.progressStore;
-    const recoveryCoordinator = createRecoveryCoordinator(
-      {
-        progressStore,
-        runtime,
-        runtimeState,
-        eventBus: deps.eventBus,
-        onRecoverySettlement: deps.onRecoverySettlement,
-        getRecoveryService,
-        createInvocationContext,
-        log: identity.log,
-        startupOwnership: launchCoordinator,
-      },
-      bound,
-    );
-    state.recoveryCoordinator = recoveryCoordinator;
-    connectProviderOperationRecovery?.(recoveryCoordinator);
-    recoveryCoordinator.retireAbsentSupersededProviderOperations();
-    signal.throwIfAborted();
-
-    // A supervised legacy successor must keep admission fenced until its serving receipt.
-    if (!legacySupervisedChild) ({ port, host, bindHost: localBindHost } = await listenFn(server));
-    signal.throwIfAborted();
-    runtimeState.setStartedAt(now());
-    startedAt = runtimeState.getStartedAt();
-    const publishDiscovery = (): void => {
-      const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
-      const discoveryPublished = writeBackendInfoFn({
-        pid: backendPid,
-        port,
-        host,
-        ...(localBindHost === undefined ? {} : { bindHost: localBindHost }),
-        socketPath,
-        token: identity.token,
-        bootToken: identity.bootToken,
-        shutdownToken: identity.shutdownToken,
-        version,
-        bundleHash,
-        flavor,
-        namespace,
-        instanceId,
-        startedAt,
-        ...(sentinelId === undefined ? {} : { sentinel: { version: 1 as const, id: sentinelId } }),
-        ...(openedStore === null ? {} : { storeEpoch: openedStore.epoch }),
-      });
-      if (discoveryPublished === false) throw new Error('Coordinator discovery publication failed.');
-    };
-    publishLegacyDiscovery = () => {
-      try {
-        publishDiscovery();
-        legacyDiscoveryPublished = true;
-      } catch (error: unknown) {
-        backendLog.warn(`Supervisor legacy-retirement discovery publication failed: ${formatError(error)}`);
-        if (state.started && !legacyDiscoveryRetryScheduled) {
-          legacyDiscoveryRetryScheduled = true;
-          void runtime.time.sleep(2_000).then(
-            () => {
-              legacyDiscoveryRetryScheduled = false;
-              if (state.started && runtimeState.getLifecycle() === 'running') publishLegacyDiscovery?.();
-            },
-            (retryError: unknown) => {
-              legacyDiscoveryRetryScheduled = false;
-              backendLog.warn(`Supervisor legacy-retirement discovery retry wait failed: ${formatError(retryError)}`);
-            },
-          );
-        }
-      }
-    };
-    if (successionAttemptChild === null && committedRecovery === null && !legacySupervisedChild) publishDiscovery();
-    if (committedRecovery === null && !legacySupervisedChild) runtimeState.setLifecycle('kernel-ready');
-    runtimeState.setLaunchFenceActive(true);
-    // An attempt child that has not served may still be abandoned, and its sweep would certify the epoch it retires.
-    if (
-      successionAttemptChild === null &&
-      committedRecovery === null &&
-      !legacySupervisedChild &&
-      shouldScheduleStoreEpochSweep &&
-      openedStore !== null
-    ) {
-      deps.scheduleStoreEpochSweepFn?.(openedStore);
-    }
-    // ===== Era II (recovery) =====
-    await yieldPastKernelReadyResponse();
-    reconcileCustodyAtStartup?.();
-    // This order is load-bearing: a pending publication contains remote facts that the generic job walk
-    // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
-    const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
-    const providerOperationStartupOwnership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
-      providerOperationStartupSnapshot,
-    );
-    signal.throwIfAborted();
-    const providerOperationStartupReport = await reconcileProviderOperationsAtStartup?.(
-      providerOperationStartupOwnership,
+    const kernel = await runStartupKernel(
+      { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
       signal,
+      address,
+      legacyDiscovery,
+      interposition,
+      replaceStoreServices,
     );
-    for (const incident of providerOperationStartupReport?.incidents ?? []) {
-      backendLog.warn(
-        `Provider operation startup reconciliation left an obligation open: ${describeStartupReconciliationIncident(incident)}`,
-      );
-    }
-    signal.throwIfAborted();
-    // Per-job isolation: corrupt sessions should not abort recovery.
-    // `bound.runStartupRecovery` registers journal cursors then awaits
-    // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
-    // because its budget is bounded by the daemon-side
-    // `bootFreshnessTimeoutMs` (default 90s), not by either CLI-facing
-    // deadline — the CLI has already returned by now.
-    const recoveryInputs: StartupRecoveryInputs = {
-      identity,
-      runtime,
-      progressStore,
-      providerRegistry,
-      getExecutionService: deps.getExecutionService,
-      getRecoveryService,
-      knownDiscussSources,
-      getDiscussStoreForSource,
-      getDiscussContext,
-      createInvocationContext,
+    publishLegacyDiscovery = kernel.publishLegacyDiscovery;
+    const recoveredDiscussResumes = await runStartupRecoveryAndServe(
+      { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
+      kernel,
+      signal,
+      address,
+      legacyDiscovery,
+      interposition,
+    );
+    const { registered, recoveryCoordinator, progressStore } = kernel;
+    const { openedStore, storeServices } = registered;
+    await activateRunningLifecycle({
+      deps,
+      state,
+      ownershipChecker,
+      shutdown,
+      signal,
+      openedStore,
       recoveryCoordinator,
-      signal,
-      recoverPersistedDiscussFn,
-      interruptedAppServerReason: bound?.acquiredViaHandoff ? 'handoff' : 'restart',
-      transferredJobIds: new Set(
-        acceptedSuccessionPreparation === null
-          ? []
-          : (deps.transferredHostJobIds?.(acceptedSuccessionPreparation) ?? []),
-      ),
-    };
-    // A startup that bound no socket owes recovery only for work it was handed: a succession child that
-    // inherited its listeners owns exactly the obligations its accepted receipts transferred, and nothing else.
-    let recoveredDiscussResumes =
-      bound !== null
-        ? await bound.runStartupRecovery(recoveryInputs)
-        : (acceptedSuccessionPreparation?.receipts.length ?? 0) > 0
-          ? await runStartupRecovery(
-              { ...recoveryInputs, interruptedAppServerReason: 'restart' },
-              recoveryCoordinator.runStartupRecovery,
-            )
-          : [];
-    const adoptedGeneration = successionGeneration ?? recoveryGeneration;
-    if (acceptedSuccessionPreparation !== null && adoptedGeneration !== null) {
-      if (deps.adoptSuccessionReceipts === undefined) {
-        throw new SuccessionAttemptStartupHoldError('accepted receipt adoption is unavailable');
-      }
-      const adoptSuccessionReceipts = deps.adoptSuccessionReceipts;
-      const preparation = acceptedSuccessionPreparation;
-      const adopted = await committedRecoveryStep(() =>
-        adoptSuccessionReceipts(
-          preparation,
-          acceptedSuccessionJobs,
-          adoptedGeneration,
-          successionAttemptChild?.recovery === true || committedRecovery !== null,
-        ),
-      );
-      if (adopted === abandonedCommittedRecovery) {
-        committedRecovery = null;
-        acceptedSuccessionPreparation = null;
-        acceptedSuccessionJobs = [];
-        runtimeState.setLifecycle('kernel-ready');
-        if (!legacySupervisedChild) {
-          publishDiscovery();
-          if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
-        }
-        const ordinaryResumes = await (bound !== null
-          ? bound.runStartupRecovery({ ...recoveryInputs, transferredJobIds: new Set() })
-          : runStartupRecovery(
-              { ...recoveryInputs, transferredJobIds: new Set(), interruptedAppServerReason: 'restart' },
-              recoveryCoordinator.runStartupRecovery,
-            ));
-        recoveredDiscussResumes = [
-          ...new Map(
-            [...recoveredDiscussResumes, ...ordinaryResumes].map((resume) => [resume.sessionId, resume]),
-          ).values(),
-        ];
-      }
-    }
-    startupRecoveryBarrierPublisher?.publish();
-    startProviderOperationReconciler?.();
-    await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
-    signal.throwIfAborted();
-    if (successionAttemptChild !== null) {
-      if (successionGeneration === null || ipcServer === undefined || openedStore === null) {
-        throw new SuccessionAttemptStartupHoldError('succession writer or listener is unavailable');
-      }
-      await publishAttemptServing(
-        runtime,
-        successionAttemptChild,
-        { db: storeDb, store: openedStore, generation: successionGeneration },
-        acceptedSuccessionPreparation,
-        {
-          instanceId,
-          listener: ipcServer,
-          productVersion: deps.storeFormat.productVersion,
-          signal,
-          interposition,
-          publishDiscovery,
-          ...(deps.recordSuccessionControllerReceipts === undefined
-            ? {}
-            : { recordControllerReceipts: deps.recordSuccessionControllerReceipts }),
-          ...(deps.onStoreServing === undefined ? {} : { onStoreServing: deps.onStoreServing }),
-          ...(deps.onSuccessionServing === undefined ? {} : { onServing: deps.onSuccessionServing }),
-        },
-      );
-      if (shouldScheduleStoreEpochSweep) deps.scheduleStoreEpochSweepFn?.(openedStore);
-    } else if (committedRecovery !== null) {
-      if (recoveryGeneration === null || recoveryIncarnation === null) {
-        throw new Error('Committed successor recovery has no writer identity.');
-      }
-      await publishCommittedRecoveryServing(
-        runtime,
-        committedRecovery,
-        { generation: recoveryGeneration, incarnation: recoveryIncarnation },
-        acceptedSuccessionPreparation,
-        {
-          instanceId,
-          pid: backendPid,
-          ...(deps.recordSuccessionControllerReceipts === undefined
-            ? {}
-            : { recordControllerReceipts: deps.recordSuccessionControllerReceipts }),
-        },
-      );
-      runtimeState.setLifecycle('kernel-ready');
-      publishDiscovery();
-      if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
-    }
-    if (legacySupervisedChild) {
-      if (committedRecovery !== null || openedStore === null) {
-        throw new SuccessionAttemptStartupHoldError('legacy serving record has no completion receipt');
-      }
-      ({ port, host, bindHost: localBindHost } = await listenFn(server));
-      signal.throwIfAborted();
-      const legacyCompletion = await completeSupervisorLegacyUpgrade(
-        runtime,
-        currentBuild,
-        openedStore,
-        instanceId,
-        backendPid,
-        deps.readSelfIncarnationFn(),
-      );
-      if (legacyCompletion.kind !== 'completed')
-        throw new SuccessionAttemptStartupHoldError('legacy launch did not record completion');
-      legacyServingCompleted = true;
-      runtimeState.setLifecycle('kernel-ready');
-      publishLegacyDiscovery();
-      if (shouldScheduleStoreEpochSweep) deps.scheduleStoreEpochSweepFn?.(openedStore);
-    }
-    if (runtimeState.getLaunchFenceActive()) {
-      runtimeState.setLaunchFenceActive(false);
-    }
-    const deadAttemptId = pendingDeadAttempt?.attemptId ?? retiredDeadAttemptId;
-    if (deadAttemptId !== null) {
-      await dischargeDeadSuccessionAttempt(runtime, deadAttemptId, deps.successionIncumbent());
-    }
-
-    runtimeState.components.register(createRecoveryComponent(storeServices.storeDb));
-    try {
-      const kbHealthComponent = createKbHealthComponentFn();
-      runtimeState.components.register(kbHealthComponent);
-    } catch (error: unknown) {
-      backendLog.error('Runtime component registration failed — KB will be offline until restart', error);
-    }
-
-    runtimeState.setLifecycle('running');
-    state.started = true;
-    if (legacyServingCompleted && !legacyDiscoveryPublished) publishLegacyDiscovery();
-    deps.wakeSuccessionReconciler?.();
-    void kbDaemonSupervisor
-      ?.start(openedStore ?? undefined)
-      .then((health) => {
-        if (health.phase !== 'online') {
-          return;
-        }
-        void kbDaemonSupervisor.warmup().catch((error: unknown) => {
-          backendLog.warn(`KB daemon supervisor warmup failed: ${formatError(error)}`);
-        });
-      })
-      .catch((error: unknown) => {
-        backendLog.warn(`KB daemon supervisor start failed: ${formatError(error)}`);
-      });
-
-    idleTimer.startWatching(
-      () => {
-        const daemonCurateRunning = kbDaemonSupervisor?.read().kbWrite?.curateRunning === true;
-        return (
-          runtimeState.getLifecycle() === 'running' &&
-          launchCoordinator.active === 0 &&
-          !recoveryCoordinator.isIdleBlocked() &&
-          progressStore.liveJobCount() === 0 &&
-          idleTimer.inflightRequests === 0 &&
-          !hooks.onIdleCheck() &&
-          !daemonCurateRunning
-        );
-      },
-      (reason) => {
-        void shutdown(reason).catch(() => {});
-      },
-    );
-
-    state.ownershipCheckerTeardown = ownershipChecker.install();
-    await hooks.onRecoveryComplete(recoveredDiscussResumes);
-
-    // ===== Era III (components — fire-and-forget) =====
-    // The KB daemon health component is a daemon-health mirror; init is intentionally a no-op
-    // and the daemon supervisor owns actual KB process startup. The registry
-    // surfaces child phase via `runtimeState.components.status('kb')`.
-    try {
-      runtimeState.components.initAll(signal);
-    } catch (error: unknown) {
-      backendLog.error('Runtime component initialization dispatch failed — KB will be offline until restart', error);
-    }
+      progressStore,
+      storeServices,
+      recoveredDiscussResumes,
+      legacyServingCompleted: legacyDiscovery.servingCompleted,
+      legacyDiscoveryPublished: legacyDiscovery.published,
+      publishLegacyDiscovery,
+    });
 
     return serverInfo();
   } catch (error: unknown) {
-    if (legacyServingCompleted && !signal.aborted) {
-      backendLog.error(
-        'Supervisor legacy-retirement startup failed after serving was recorded; retaining listeners',
-        error,
-      );
-      if (runtimeState.getLifecycle() === 'starting') runtimeState.setLifecycle('kernel-ready');
-      if (runtimeState.getLifecycle() === 'kernel-ready') runtimeState.setLifecycle('running');
-      state.started = true;
-      runtimeState.setLaunchFenceActive(false);
-      if (!legacyDiscoveryPublished) publishLegacyDiscovery?.();
-      return serverInfo();
-    }
-    const successionAttemptChild = currentSuccessionAttemptChild();
-    if (successionAttemptChild !== null && !successionAttemptChild.isServing()) {
-      await successionAttemptChild
-        .acknowledge({
-          kind: 'hold',
-          reason: error instanceof Error ? error.message : String(error),
-        })
-        .catch(() => {});
-    }
-    const mutationAdmissionDisposition = state.providerOperationMutationAdmission?.close();
-    if (
-      (error as { name?: string } | null)?.name === 'AbortError' &&
-      (state.shutdownPromise !== null || state.shutdownRetry !== null)
-    ) {
-      // Startup failure must not release authority owned by a shutdown attempt or its retained continuation.
-      throw error;
-    }
-    if (mutationAdmissionDisposition?.kind === 'holding') {
-      // `retryAfter` settles only when every pending mutation returns and every closed-set fence lease is
-      // released by its holder — neither is bounded by anything this cleanup owns, so awaiting it here would
-      // sit ahead of the socket close and discovery withdrawal this cleanup still owes. What this cleanup did
-      // not observe settle stays visible instead of being swallowed.
-      backendLog.error(
-        `Provider operation mutation admission did not confirm drained during startup-failure cleanup (pending: ${mutationAdmissionDisposition.pendingMutations.join(', ')})`,
-      );
-    }
-    if (error instanceof IncumbentMatchesError) {
-      // Translate to the existing bootstrap-recognized "redundant contender"
-      // signal (info log + exit 0). The socket has not been bound by us, so
-      // there is nothing to clean up.
-      runtimeState.setLifecycle('stopped');
-      throw new BackendAlreadyRunningError();
-    }
-    runtimeState.setLifecycle('stopped');
-    idleTimer.stopWatching();
-    state.ownershipCheckerTeardown?.();
-    state.ownershipCheckerTeardown = null;
-    try {
-      // No retry: a `holding` result's `retryAfter` waits on the child's `close` event, which a grandchild
-      // holding its stdio pipes open can keep from ever firing — that wait must not sit ahead of the socket
-      // close and discovery withdrawal this cleanup still owes.
-      const disposal = await kbDaemonSupervisor?.dispose('coordinator startup failed');
-      if (disposal?.kind === 'holding') {
-        backendLog.error(
-          `KB daemon disposal did not confirm absence during startup-failure cleanup (${disposal.reason})`,
-        );
-      }
-    } catch (error: unknown) {
-      backendLog.error(`KB daemon disposal during startup-failure cleanup failed (${formatError(error)})`);
-    }
-    try {
-      await closeServerFn(server);
-    } catch {
-      // best effort
-    }
-    if (ipcServer && closeIpcServerFn) {
-      try {
-        await closeIpcServerFn(ipcServer);
-      } catch {
-        // best effort
-      }
-    }
-    const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
-    if (withdrawal !== undefined && withdrawal.kind === 'refused') {
-      backendLog.error(
-        `backend discovery withdrawal refused during startup-failure cleanup operation=${withdrawal.operation} code=${withdrawal.code} ${lifecycleDiagnosticFields(withdrawal.error)} correlation=${withdrawal.correlation}`,
-      );
-    }
-
-    if (error instanceof HandoffEscalationError) {
-      backendLog.error('Handoff escalation failed', error);
-    }
-    throw error;
+    return await settleFailedLifecycleStartup(
+      { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
+      error,
+      {
+        signal,
+        legacyServingCompleted: legacyDiscovery.servingCompleted,
+        legacyDiscoveryPublished: legacyDiscovery.published,
+        publishLegacyDiscovery,
+        serverInfo,
+      },
+    );
   } finally {
     state.startupAbort = null;
   }
+}
+
+function completeStoppedLifecycle(
+  deps: LifecycleDeps,
+  state: LifecycleControlState,
+  reason: ShutdownReason,
+  terminal: LifecycleShutdownTerminalDisposition,
+  onFinalized: ((exitCode: number) => void) | undefined = deps.onStopped,
+): LifecycleShutdownTerminalDisposition {
+  const { runtime, runtimeState, backendPid, readSelfIncarnationFn, removeBackendInfoIfOwnerFn } = deps;
+  const { instanceId, log } = deps.identity;
+
+  runtimeState.setLifecycle('stopped');
+  const terminalReason = state.shutdownReason ?? reason;
+  const losses: ShutdownUndischarged[] = [
+    ...(terminal.disposition === 'finalized' ? [] : terminal.undischarged),
+    ...state.shutdownIncidents.splice(0).map(shutdownIncidentUndischarged),
+  ];
+  const publish = (): void => {
+    try {
+      const publication = recordShutdownRemainder(
+        {
+          storage: runtime.storage,
+          time: runtime.time,
+          runDir: runtime.paths.coral.coordinator.runDir,
+          writer: {
+            pid: backendPid,
+            incarnation: readSelfIncarnationFn(),
+          },
+        },
+        {
+          instanceId,
+          reason: terminalReason,
+          undischarged: losses,
+        },
+      );
+      switch (publication.kind) {
+        case 'published':
+          return;
+        case 'refused':
+          bestEffortLifecycleLog(
+            log,
+            `shutdown remainder write refused operation=${publication.operation} code=${publication.code} ${lifecycleDiagnosticFields(publication.diagnostic)} correlation=${publication.correlation}\n`,
+          );
+          return;
+        case 'verification-unavailable':
+          bestEffortLifecycleLog(
+            log,
+            `shutdown remainder publication verification unavailable operation=${publication.operation} code=${publication.code} ${lifecycleDiagnosticFields(publication.diagnostic)} correlation=${publication.correlation}\n`,
+          );
+          return;
+      }
+    } catch (error: unknown) {
+      const diagnostic = serializeThrown(error);
+      const correlation = sha256Hex(`publish\0unexpected-exception\0${JSON.stringify(diagnostic)}`);
+      bestEffortLifecycleLog(
+        log,
+        `shutdown remainder write refused operation=publish code=unexpected-exception ${lifecycleDiagnosticFields(diagnostic)} correlation=${correlation}\n`,
+      );
+    }
+  };
+  const withdraw = (): Readonly<{
+    operation: 'read' | 'decode' | 'unlink' | 'callback';
+    code: 'filesystem-operation-failed' | 'corrupt-json' | 'shape-rejected' | 'unexpected-exception';
+    correlation: string;
+    error: SerializedThrown;
+  }> | null => {
+    try {
+      const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
+      return withdrawal !== undefined && withdrawal.kind === 'refused' ? withdrawal : null;
+    } catch (error: unknown) {
+      const serialized = serializeThrown(error);
+      return {
+        operation: 'callback',
+        code: 'unexpected-exception',
+        correlation: sha256Hex(`callback\0unexpected-exception\0${JSON.stringify(serialized)}`),
+        error: serialized,
+      };
+    }
+  };
+
+  try {
+    // Constraint: the store holds the latest remainder, not the latest loss. Publishing only when this
+    // shutdown lost something leaves a record this build cannot read with no writer that will replace it,
+    // and a clean shutdown is itself the answer that supersedes it.
+    publish();
+    const refusal = withdraw();
+    if (refusal !== null) {
+      bestEffortLifecycleLog(
+        log,
+        `backend discovery withdrawal refused operation=${refusal.operation} code=${refusal.code} ${lifecycleDiagnosticFields(refusal.error)} correlation=${refusal.correlation}\n`,
+      );
+      losses.push({
+        label: 'backend discovery withdrawal',
+        remainder: { owner: 'process-exit' },
+        settlement: { cause: 'rejected', error: refusal.error },
+      });
+      publish();
+    }
+    return losses.length === 0
+      ? { disposition: 'finalized' }
+      : { disposition: 'finalized-with-losses', undischarged: losses };
+  } finally {
+    onFinalized?.(losses.length === 0 ? 0 : 1);
+  }
+}
+
+type ShutdownDispositionContext = Readonly<{
+  deps: LifecycleDeps;
+  state: LifecycleControlState;
+  reason: ShutdownReason;
+  shutdown: LifecycleController['shutdown'];
+}>;
+
+function acceptShutdownDisposition(
+  context: ShutdownDispositionContext,
+  disposition: ShutdownSequenceDisposition,
+): LifecycleShutdownDisposition {
+  const { deps, state, reason, shutdown } = context;
+  const { instanceId } = deps.identity;
+  const currentShutdownReason = (): ShutdownReason => state.shutdownReason ?? reason;
+  if (disposition.disposition === 'held') {
+    state.shutdownRetryAfter = disposition.retryAfter;
+    state.shutdownRetry = { retry: disposition.retry };
+    const recovery: LifecycleShutdownRecovery = {
+      kind: 'retry-shutdown',
+      exit: disposition.exit,
+      owner: {
+        kind: 'lifecycle-finalization-continuation',
+        instanceId,
+      },
+      automaticRetry: {
+        status: 'scheduled',
+        attemptsStarted: disposition.attemptsStarted,
+        attemptLimit: disposition.attemptLimit,
+      },
+      retainedOwnership: {
+        kind: 'coordinator-exclusive-authority',
+        backendInfo: { kind: 'backend-info', instanceId },
+        ipcSocket: disposition.retainedAuthority.ipcSocket,
+        providerControlProxyInstanceIds: disposition.retainedAuthority.providerControlProxyInstanceIds,
+        cleanupObligations: disposition.retainedAuthority.cleanupObligations,
+      },
+      retry: () => shutdown(currentShutdownReason()),
+    };
+    return { disposition: 'held', reason: disposition.reason, recovery };
+  }
+  state.shutdownRetryAfter = null;
+  state.shutdownRetry = null;
+  state.shutdownObservationReader = null;
+  state.shutdownContinuationAbort?.abort();
+  state.shutdownContinuationAbort = null;
+  const finalizeStoppedLifecycle = (
+    terminal: LifecycleShutdownTerminalDisposition,
+    onFinalized: ((exitCode: number) => void) | undefined = deps.onStopped,
+  ): LifecycleShutdownTerminalDisposition => completeStoppedLifecycle(deps, state, reason, terminal, onFinalized);
+  switch (disposition.disposition) {
+    case 'settled':
+      return finalizeStoppedLifecycle({ disposition: 'finalized' });
+    case 'delegated':
+      return finalizeStoppedLifecycle(
+        { disposition: 'finalized-with-losses', undischarged: disposition.undischarged },
+        disposition.acceptance.requestExit,
+      );
+    case 'unaccepted':
+      return finalizeStoppedLifecycle({
+        disposition: 'finalized-with-losses',
+        undischarged: disposition.undischarged,
+      });
+  }
+}
+async function settleShutdownDisposition(
+  context: ShutdownDispositionContext,
+  disposition: ShutdownSequenceDisposition,
+): Promise<LifecycleShutdownDisposition> {
+  const { deps } = context;
+  const { runtime } = deps;
+  const { instanceId, log } = deps.identity;
+  if (disposition.disposition === 'settled') {
+    try {
+      await closeServedIntentAtCleanExit(runtime, instanceId, deps.successionIncumbent());
+    } catch (error: unknown) {
+      log(`served upgrade intent could not be closed at exit (${formatError(error)})\n`);
+    }
+  }
+  return acceptShutdownDisposition(context, disposition);
+}
+
+function trackShutdownAttempt(
+  deps: LifecycleDeps,
+  state: LifecycleControlState,
+  reason: ShutdownReason,
+  shutdown: LifecycleController['shutdown'],
+  attempt: Promise<LifecycleShutdownDisposition>,
+): Promise<LifecycleShutdownDisposition> {
+  const { runtimeState } = deps;
+  const { log } = deps.identity;
+  const currentShutdownReason = (): ShutdownReason => state.shutdownReason ?? reason;
+  const trackedAttempt = attempt.then(
+    (disposition) => {
+      state.lastShutdownDisposition = disposition;
+      if (!isLifecycleShutdownTerminal(disposition)) {
+        state.shutdownPromise = null;
+        const automaticRetry = disposition.recovery.automaticRetry;
+        if (
+          automaticRetry.status === 'scheduled' &&
+          state.shutdownContinuations.size === 0 &&
+          automaticRetry.attemptsStarted < automaticRetry.attemptLimit
+        ) {
+          const continuationAbort = new AbortController();
+          state.shutdownContinuationAbort = continuationAbort;
+          const cancelled = new Promise<void>((resolve) => {
+            continuationAbort.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          let pending: LifecycleShutdownDisposition = disposition;
+          const continuation = (async () => {
+            // The loop's own attempt count must come from the disposition the ledger just returned, not a
+            // continuation-local counter — a count kept here can diverge from the ledger's forced-terminal
+            // attempt and strand the loop on a hold with nothing left to schedule a retry.
+            while (
+              !isLifecycleShutdownTerminal(pending) &&
+              pending.recovery.automaticRetry.status === 'scheduled' &&
+              pending.recovery.automaticRetry.attemptsStarted < pending.recovery.automaticRetry.attemptLimit
+            ) {
+              await Promise.race([state.shutdownRetryAfter ?? Promise.resolve(), cancelled]);
+              if (continuationAbort.signal.aborted) return;
+              pending = await shutdown(currentShutdownReason());
+              if (isLifecycleShutdownTerminal(pending)) return;
+            }
+          })()
+            .catch((error: unknown) => {
+              if (!isLifecycleShutdownTerminal(pending)) {
+                state.lastShutdownDisposition = {
+                  ...pending,
+                  recovery: {
+                    ...pending.recovery,
+                    automaticRetry: { status: 'failed' },
+                  },
+                };
+              }
+              log(`lifecycle finalization continuation failed (${formatError(error)})\n`);
+            })
+            .finally(() => {
+              state.shutdownContinuations.delete(continuation);
+              if (state.shutdownContinuationAbort === continuationAbort) state.shutdownContinuationAbort = null;
+            });
+          state.shutdownContinuations.add(continuation);
+        }
+      }
+      return disposition;
+    },
+    (error: unknown) => {
+      if (runtimeState.getLifecycle() !== 'stopped') state.shutdownPromise = null;
+      throw error;
+    },
+  );
+  state.shutdownPromise = trackedAttempt;
+  return trackedAttempt;
+}
+
+function runLifecycleShutdownAttempt(
+  deps: LifecycleDeps,
+  state: LifecycleControlState,
+  currentShutdownReason: () => ShutdownReason,
+  takeShutdownIncidents: () => readonly ShutdownIncidentOccurrence[],
+  dispositionContext: ShutdownDispositionContext,
+): Promise<LifecycleShutdownDisposition> {
+  const {
+    runtime,
+    runtimeState,
+    idleTimer,
+    closeServerFn,
+    server,
+    closeIpcServerFn,
+    ipcServer,
+    streamResponses,
+    markJobsAsErrorFn,
+    providerHostManager,
+    providerProxyAuthority,
+    stopProviderOperationReconciler,
+    kbDaemonSupervisor,
+    storeServicesRef,
+    settlePendingLaunchesFn,
+    terminateRegisteredChildrenFn,
+    disposeLifecycleReactor = () => {},
+    hooks,
+    discussStores,
+    acceptProcessExitRemainder,
+    onFatalShutdownError,
+  } = deps;
+  const { log } = deps.identity;
+  return (async (): Promise<LifecycleShutdownDisposition> => {
+    if (runtimeState.getLifecycle() === 'stopped') {
+      return { disposition: 'finalized' };
+    }
+    if (state.shutdownRetry !== null)
+      return state.shutdownRetry
+        .retry()
+        .then((disposition) => settleShutdownDisposition(dispositionContext, disposition));
+    const hardConsequencesAbort = new AbortController();
+    state.shutdownHardConsequencesAbort = hardConsequencesAbort;
+    const stopProviderOperationMutations = (): ProviderOperationReconcilerStopDisposition => {
+      const lifecycleDisposition = state.providerOperationMutationAdmission?.close() ?? {
+        kind: 'drained' as const,
+      };
+      const reconcilerDisposition = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
+      return lifecycleDisposition.kind === 'holding' ? lifecycleDisposition : reconcilerDisposition;
+    };
+    try {
+      return await settleShutdownDisposition(
+        dispositionContext,
+        await runShutdownSequence({
+          reason: currentShutdownReason(),
+          currentReason: currentShutdownReason,
+          registerShutdownObservationReader: (reader) => {
+            state.shutdownObservationReader = reader;
+          },
+          takeIncidents: takeShutdownIncidents,
+          hardConsequencesAbort: hardConsequencesAbort.signal,
+          state,
+          teardownRecoveryCoordinator: async () => {
+            await state.recoveryCoordinator?.teardown();
+          },
+          runtimeState,
+          idleTimer,
+          closeServerFn,
+          waitForInflightDrain,
+          server,
+          closeIpcServerFn,
+          ipcServer,
+          streamResponses,
+          runtime,
+          markJobsAsErrorFn,
+          providerHostManager,
+          providerProxyAuthority,
+          stopProviderOperationReconciler: stopProviderOperationMutations,
+          kbDaemonSupervisor,
+          storeServicesRef,
+          settlePendingLaunchesFn,
+          terminateRegisteredChildrenFn,
+          handoffQuiescePorts: deps.handoffQuiescePorts,
+          handoffDrainBudgetMs: deps.handoffDrainBudgetMs,
+          disposeLifecycleReactor,
+          hooks,
+          discussStores,
+          stopStoreEpochSweepFn: deps.stopStoreEpochSweepFn,
+          ...(deps.succession === undefined
+            ? {}
+            : { settleSuccessionAttempt: deps.succession.settleUncommittedAttempt }),
+          log,
+          ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
+        }),
+      );
+    } finally {
+      if (state.shutdownHardConsequencesAbort === hardConsequencesAbort) {
+        state.shutdownHardConsequencesAbort = null;
+      }
+    }
+  })().catch((error) => {
+    onFatalShutdownError(error);
+    throw error;
+  });
+}
+
+function createLifecycleShutdown(
+  deps: LifecycleDeps,
+  state: LifecycleControlState,
+  releaseAuthority: LifecycleController['releaseAuthority'],
+): LifecycleController['shutdown'] {
+  async function shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition> {
+    const succession = deps.succession;
+    if (succession?.committed() === true) {
+      return releaseAuthority({ kind: 'successor', handOver: () => succession.handOverOpenConnections() });
+    }
+    state.shutdownReason ??= reason;
+    if (reason === 'provider-proxy-lifecycle-fatal' || incident !== undefined) {
+      state.shutdownReason = 'provider-proxy-lifecycle-fatal';
+      state.shutdownHardConsequencesAbort?.abort();
+    }
+    if (incident !== undefined) {
+      state.shutdownIncidentCount += 1;
+      state.shutdownIncidents.push({ incident, occurrence: state.shutdownIncidentCount });
+    }
+    if (state.shutdownPromise) return state.shutdownPromise;
+    const currentShutdownReason = (): ShutdownReason => state.shutdownReason ?? reason;
+    const takeShutdownIncidents = (): readonly ShutdownIncidentOccurrence[] => state.shutdownIncidents.splice(0);
+    state.lastShutdownDisposition = null;
+
+    // Calling `abort()` with no reason sets `signal.reason` to the platform
+    // default (a DOMException whose `.name === 'AbortError'`). Downstream
+    // `signal.throwIfAborted()` checks throw that reason value, which
+    // downstream catches detect via `error?.name === 'AbortError'`. A string
+    // reason would propagate as a bare string and lose the `name`
+    // discriminator.
+    state.startupAbort?.abort();
+
+    const dispositionContext: ShutdownDispositionContext = { deps, state, reason, shutdown };
+    const attempt = runLifecycleShutdownAttempt(
+      deps,
+      state,
+      currentShutdownReason,
+      takeShutdownIncidents,
+      dispositionContext,
+    );
+    return trackShutdownAttempt(deps, state, reason, shutdown, attempt);
+  }
+
+  return shutdown;
+}
+
+function protectRetiringStoreEpoch(
+  deps: LifecycleDeps,
+  state: LifecycleControlState,
+  epochKey: string,
+  openerDrainMs: number,
+): RetiringStoreProtection {
+  const { runtime } = deps;
+  const expected = decodeResolvedStoreEpoch(runtime, epochKey);
+  const handle = state.rebindableStoreDb;
+  if (expected === undefined || expected.lineageKey === undefined || handle === null) {
+    throw new Error('Retiring store is unavailable.');
+  }
+  const current = inspectCurrentStore(runtime);
+  if (current.kind !== 'current' || encodeResolvedStoreEpoch(runtime, current.epoch) !== epochKey) {
+    throw new Error('Retiring store changed before protection.');
+  }
+  handle.closeCurrent();
+  try {
+    protectStoreEpoch(runtime, expected, openerDrainMs);
+  } catch (error: unknown) {
+    if (error instanceof StoreEpochOpenerHeldError) return { kind: 'opener-held', reason: error.message };
+    throw error;
+  }
+  const protectedEpoch = resolveProtectedEpoch(runtime, expected.storeRoot, expected.lineageKey);
+  if (protectedEpoch === null || protectedEpoch.path === expected.path) {
+    throw new Error('Retiring store has no protected address.');
+  }
+  const readOnly = openReadOnlyStoreDatabase(runtime, {
+    storeFormat: deps.storeFormat,
+    resolved: { path: protectedEpoch.path, epoch: protectedEpoch, epochCandidate: true },
+  });
+  handle.replace(asDatabase(readOnly));
+  return { kind: 'protected' };
+}
+
+function reopenRetiringStoreEpoch(deps: LifecycleDeps, state: LifecycleControlState, epochKey: string): void {
+  const { runtime } = deps;
+  const { identity } = deps;
+  const handle = state.rebindableStoreDb;
+  if (handle === null) throw new Error('Retiring store cannot be reopened.');
+  handle.closeCurrent();
+  const expected = decodeResolvedStoreEpoch(runtime, epochKey);
+  if (expected === undefined || expected.lineageKey === undefined) {
+    throw new Error('Retiring store cannot be reopened.');
+  }
+  const storeRoot = runtime.storage.realpathSync(runtime.paths.coral.store.dbDir);
+  if (resolveProtectedEpoch(runtime, storeRoot, expected.lineageKey) !== null) {
+    restoreProtectedEpoch(runtime, storeRoot, expected.lineageKey);
+  }
+  const restored = decodeResolvedStoreEpoch(runtime, epochKey);
+  if (restored === undefined || restored.path !== join(storeRoot, `epoch-${expected.epoch}`, 'store.db')) {
+    throw new Error('Retiring store canonical address was not restored.');
+  }
+  const opened = openCommittedBackendStoreAtStartup(
+    runtime,
+    {
+      storeFormat: deps.storeFormat,
+      build: {
+        version: identity.version,
+        buildSetId: identity.buildSetId,
+        flavor: identity.flavor,
+        storeFormatFingerprint: deps.storeFormat.fingerprint,
+        bundleHash: identity.bundleHash,
+        cliBundleHash: identity.cliBundleHash,
+        claudeAppserverBundleHash: identity.claudeAppserverBundleHash,
+        durableWrapperBundleHash: identity.durableWrapperBundleHash,
+      },
+      startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+    },
+    restored,
+  );
+  if (opened.kind === 'holding') throw new Error(`Retiring store reopen held: ${opened.reason}`);
+  handle.replace(opened.db);
+}
+
+function requestLifecycleShutdownRetry(
+  deps: LifecycleDeps,
+  state: LifecycleControlState,
+  shutdown: LifecycleController['shutdown'],
+): void {
+  const { log } = deps.identity;
+  const currentAttempt = state.shutdownPromise;
+  if (currentAttempt === null) {
+    const retryReason = state.shutdownReason;
+    if (state.shutdownRetry === null || retryReason === null) return;
+    void shutdown(retryReason).catch((error: unknown) => {
+      log(`operator recovery shutdown retry failed (${formatError(error)})\n`);
+    });
+    return;
+  }
+  void currentAttempt
+    .then((disposition) => {
+      const retryReason = state.shutdownReason;
+      if (!isLifecycleShutdownTerminal(disposition) && state.shutdownRetry !== null && retryReason !== null) {
+        return shutdown(retryReason);
+      }
+    })
+    .catch((error: unknown) => {
+      log(`operator recovery shutdown retry failed (${formatError(error)})\n`);
+    });
+}
+
+function createSuccessionReleaseAuthority(deps: LifecycleDeps): LifecycleController['releaseAuthority'] {
+  const { runtime, runtimeState, idleTimer, providerHostManager } = deps;
+  const { log } = deps.identity;
+  let successionRelease: Promise<never> | null = null;
+  function releaseAuthority(release: SuccessionRelease): Promise<never> {
+    successionRelease ??= (async () => {
+      runtimeState.setLifecycle('draining');
+      idleTimer.stopWatching();
+      const disposition = await runSuccessionReleaseSequence({ release, runtime, providerHostManager, log });
+      if (disposition.disposition !== 'settled') {
+        bestEffortLifecycleLog(log, `succession release ended ${disposition.disposition}\n`);
+      }
+      if (release.kind === 'successor') {
+        try {
+          await release.handOver();
+        } catch (error: unknown) {
+          bestEffortLifecycleLog(log, `final succession connection handover failed: ${formatError(error)}\n`);
+        }
+      }
+      runtimeState.setLifecycle('stopped');
+      // A handed-over listener must stay open until exit: closing it would unlink the successor's address.
+      return process.exit(release.kind === 'successor' ? 0 : SUCCESSION_RESTART_EXIT_CODE);
+    })();
+    return successionRelease;
+  }
+
+  return releaseAuthority;
 }
 
 export function createLifecycle(
   deps: LifecycleDeps,
   runStartupRecovery: RunStartupRecoveryOrchestratorFn,
 ): LifecycleController {
-  const {
-    identity,
-    runtime,
-    backendPid,
-    runtimeState,
-    idleTimer,
-    storeServicesRef,
-    streamResponses,
-    discussStores,
-    server,
-    removeBackendInfoIfOwnerFn,
-    markJobsAsErrorFn,
-    settlePendingLaunchesFn,
-    terminateRegisteredChildrenFn,
-    providerHostManager,
-    providerProxyAuthority,
-    stopProviderOperationReconciler,
-    readSelfIncarnationFn,
-    kbDaemonSupervisor,
-    disposeLifecycleReactor = () => {},
-    hooks,
-    closeServerFn,
-    closeIpcServerFn,
-    ipcServer,
-    onStopped,
-    acceptProcessExitRemainder,
-    onFatalShutdownError,
-  } = deps;
+  const { identity, runtime, runtimeState, idleTimer } = deps;
 
-  const { pluginRoot, instanceId, log } = identity;
+  const { pluginRoot, instanceId } = identity;
 
   const state: LifecycleControlState = {
     shutdownPromise: null,
@@ -2071,341 +3111,8 @@ export function createLifecycle(
     return { projectRoot, pluginRoot, coralEnv: {}, principal };
   }
 
-  let successionRelease: Promise<never> | null = null;
-  function releaseAuthority(release: SuccessionRelease): Promise<never> {
-    successionRelease ??= (async () => {
-      runtimeState.setLifecycle('draining');
-      idleTimer.stopWatching();
-      const disposition = await runSuccessionReleaseSequence({ release, runtime, providerHostManager, log });
-      if (disposition.disposition !== 'settled') {
-        bestEffortLifecycleLog(log, `succession release ended ${disposition.disposition}\n`);
-      }
-      if (release.kind === 'successor') {
-        try {
-          await release.handOver();
-        } catch (error: unknown) {
-          bestEffortLifecycleLog(log, `final succession connection handover failed: ${formatError(error)}\n`);
-        }
-      }
-      runtimeState.setLifecycle('stopped');
-      // A handed-over listener must stay open until exit: closing it would unlink the successor's address.
-      return process.exit(release.kind === 'successor' ? 0 : SUCCESSION_RESTART_EXIT_CODE);
-    })();
-    return successionRelease;
-  }
-
-  async function shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition> {
-    const succession = deps.succession;
-    if (succession?.committed() === true) {
-      return releaseAuthority({ kind: 'successor', handOver: () => succession.handOverOpenConnections() });
-    }
-    state.shutdownReason ??= reason;
-    if (reason === 'provider-proxy-lifecycle-fatal' || incident !== undefined) {
-      state.shutdownReason = 'provider-proxy-lifecycle-fatal';
-      state.shutdownHardConsequencesAbort?.abort();
-    }
-    if (incident !== undefined) {
-      state.shutdownIncidentCount += 1;
-      state.shutdownIncidents.push({ incident, occurrence: state.shutdownIncidentCount });
-    }
-    if (state.shutdownPromise) return state.shutdownPromise;
-    const currentShutdownReason = (): ShutdownReason => state.shutdownReason ?? reason;
-    const takeShutdownIncidents = (): readonly ShutdownIncidentOccurrence[] => state.shutdownIncidents.splice(0);
-    state.lastShutdownDisposition = null;
-
-    // Calling `abort()` with no reason sets `signal.reason` to the platform
-    // default (a DOMException whose `.name === 'AbortError'`). Downstream
-    // `signal.throwIfAborted()` checks throw that reason value, which
-    // downstream catches detect via `error?.name === 'AbortError'`. A string
-    // reason would propagate as a bare string and lose the `name`
-    // discriminator.
-    state.startupAbort?.abort();
-
-    const finalizeStoppedLifecycle = (
-      terminal: LifecycleShutdownTerminalDisposition,
-      onFinalized: ((exitCode: number) => void) | undefined = onStopped,
-    ): LifecycleShutdownTerminalDisposition => {
-      runtimeState.setLifecycle('stopped');
-      const terminalReason = currentShutdownReason();
-      const losses: ShutdownUndischarged[] = [
-        ...(terminal.disposition === 'finalized' ? [] : terminal.undischarged),
-        ...takeShutdownIncidents().map(shutdownIncidentUndischarged),
-      ];
-      const publish = (): void => {
-        try {
-          const publication = recordShutdownRemainder(
-            {
-              storage: runtime.storage,
-              time: runtime.time,
-              runDir: runtime.paths.coral.coordinator.runDir,
-              writer: {
-                pid: backendPid,
-                incarnation: readSelfIncarnationFn(),
-              },
-            },
-            {
-              instanceId,
-              reason: terminalReason,
-              undischarged: losses,
-            },
-          );
-          switch (publication.kind) {
-            case 'published':
-              return;
-            case 'refused':
-              bestEffortLifecycleLog(
-                log,
-                `shutdown remainder write refused operation=${publication.operation} code=${publication.code} ${lifecycleDiagnosticFields(publication.diagnostic)} correlation=${publication.correlation}\n`,
-              );
-              return;
-            case 'verification-unavailable':
-              bestEffortLifecycleLog(
-                log,
-                `shutdown remainder publication verification unavailable operation=${publication.operation} code=${publication.code} ${lifecycleDiagnosticFields(publication.diagnostic)} correlation=${publication.correlation}\n`,
-              );
-              return;
-          }
-        } catch (error: unknown) {
-          const diagnostic = serializeThrown(error);
-          const correlation = sha256Hex(`publish\0unexpected-exception\0${JSON.stringify(diagnostic)}`);
-          bestEffortLifecycleLog(
-            log,
-            `shutdown remainder write refused operation=publish code=unexpected-exception ${lifecycleDiagnosticFields(diagnostic)} correlation=${correlation}\n`,
-          );
-        }
-      };
-      const withdraw = (): Readonly<{
-        operation: 'read' | 'decode' | 'unlink' | 'callback';
-        code: 'filesystem-operation-failed' | 'corrupt-json' | 'shape-rejected' | 'unexpected-exception';
-        correlation: string;
-        error: SerializedThrown;
-      }> | null => {
-        try {
-          const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
-          return withdrawal !== undefined && withdrawal.kind === 'refused' ? withdrawal : null;
-        } catch (error: unknown) {
-          const serialized = serializeThrown(error);
-          return {
-            operation: 'callback',
-            code: 'unexpected-exception',
-            correlation: sha256Hex(`callback\0unexpected-exception\0${JSON.stringify(serialized)}`),
-            error: serialized,
-          };
-        }
-      };
-
-      try {
-        // Constraint: the store holds the latest remainder, not the latest loss. Publishing only when this
-        // shutdown lost something leaves a record this build cannot read with no writer that will replace it,
-        // and a clean shutdown is itself the answer that supersedes it.
-        publish();
-        const refusal = withdraw();
-        if (refusal !== null) {
-          bestEffortLifecycleLog(
-            log,
-            `backend discovery withdrawal refused operation=${refusal.operation} code=${refusal.code} ${lifecycleDiagnosticFields(refusal.error)} correlation=${refusal.correlation}\n`,
-          );
-          losses.push({
-            label: 'backend discovery withdrawal',
-            remainder: { owner: 'process-exit' },
-            settlement: { cause: 'rejected', error: refusal.error },
-          });
-          publish();
-        }
-        return losses.length === 0
-          ? { disposition: 'finalized' }
-          : { disposition: 'finalized-with-losses', undischarged: losses };
-      } finally {
-        onFinalized?.(losses.length === 0 ? 0 : 1);
-      }
-    };
-    const acceptShutdownDisposition = (disposition: ShutdownSequenceDisposition): LifecycleShutdownDisposition => {
-      if (disposition.disposition === 'held') {
-        state.shutdownRetryAfter = disposition.retryAfter;
-        state.shutdownRetry = { retry: disposition.retry };
-        const recovery: LifecycleShutdownRecovery = {
-          kind: 'retry-shutdown',
-          exit: disposition.exit,
-          owner: {
-            kind: 'lifecycle-finalization-continuation',
-            instanceId,
-          },
-          automaticRetry: {
-            status: 'scheduled',
-            attemptsStarted: disposition.attemptsStarted,
-            attemptLimit: disposition.attemptLimit,
-          },
-          retainedOwnership: {
-            kind: 'coordinator-exclusive-authority',
-            backendInfo: { kind: 'backend-info', instanceId },
-            ipcSocket: disposition.retainedAuthority.ipcSocket,
-            providerControlProxyInstanceIds: disposition.retainedAuthority.providerControlProxyInstanceIds,
-            cleanupObligations: disposition.retainedAuthority.cleanupObligations,
-          },
-          retry: () => shutdown(currentShutdownReason()),
-        };
-        return { disposition: 'held', reason: disposition.reason, recovery };
-      }
-      state.shutdownRetryAfter = null;
-      state.shutdownRetry = null;
-      state.shutdownObservationReader = null;
-      state.shutdownContinuationAbort?.abort();
-      state.shutdownContinuationAbort = null;
-      switch (disposition.disposition) {
-        case 'settled':
-          return finalizeStoppedLifecycle({ disposition: 'finalized' });
-        case 'delegated':
-          return finalizeStoppedLifecycle(
-            { disposition: 'finalized-with-losses', undischarged: disposition.undischarged },
-            disposition.acceptance.requestExit,
-          );
-        case 'unaccepted':
-          return finalizeStoppedLifecycle({
-            disposition: 'finalized-with-losses',
-            undischarged: disposition.undischarged,
-          });
-      }
-    };
-    const settleShutdownDisposition = async (
-      disposition: ShutdownSequenceDisposition,
-    ): Promise<LifecycleShutdownDisposition> => {
-      if (disposition.disposition === 'settled') {
-        try {
-          await closeServedIntentAtCleanExit(runtime, instanceId, deps.successionIncumbent());
-        } catch (error: unknown) {
-          log(`served upgrade intent could not be closed at exit (${formatError(error)})\n`);
-        }
-      }
-      return acceptShutdownDisposition(disposition);
-    };
-    const attempt = (async (): Promise<LifecycleShutdownDisposition> => {
-      if (runtimeState.getLifecycle() === 'stopped') {
-        return { disposition: 'finalized' };
-      }
-      if (state.shutdownRetry !== null) return state.shutdownRetry.retry().then(settleShutdownDisposition);
-      const hardConsequencesAbort = new AbortController();
-      state.shutdownHardConsequencesAbort = hardConsequencesAbort;
-      const stopProviderOperationMutations = (): ProviderOperationReconcilerStopDisposition => {
-        const lifecycleDisposition = state.providerOperationMutationAdmission?.close() ?? {
-          kind: 'drained' as const,
-        };
-        const reconcilerDisposition = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
-        return lifecycleDisposition.kind === 'holding' ? lifecycleDisposition : reconcilerDisposition;
-      };
-      try {
-        return await settleShutdownDisposition(
-          await runShutdownSequence({
-            reason: currentShutdownReason(),
-            currentReason: currentShutdownReason,
-            registerShutdownObservationReader: (reader) => {
-              state.shutdownObservationReader = reader;
-            },
-            takeIncidents: takeShutdownIncidents,
-            hardConsequencesAbort: hardConsequencesAbort.signal,
-            state,
-            teardownRecoveryCoordinator: async () => {
-              await state.recoveryCoordinator?.teardown();
-            },
-            runtimeState,
-            idleTimer,
-            closeServerFn,
-            waitForInflightDrain,
-            server,
-            closeIpcServerFn,
-            ipcServer,
-            streamResponses,
-            runtime,
-            markJobsAsErrorFn,
-            providerHostManager,
-            providerProxyAuthority,
-            stopProviderOperationReconciler: stopProviderOperationMutations,
-            kbDaemonSupervisor,
-            storeServicesRef,
-            settlePendingLaunchesFn,
-            terminateRegisteredChildrenFn,
-            handoffQuiescePorts: deps.handoffQuiescePorts,
-            handoffDrainBudgetMs: deps.handoffDrainBudgetMs,
-            disposeLifecycleReactor,
-            hooks,
-            discussStores,
-            stopStoreEpochSweepFn: deps.stopStoreEpochSweepFn,
-            ...(deps.succession === undefined
-              ? {}
-              : { settleSuccessionAttempt: deps.succession.settleUncommittedAttempt }),
-            log,
-            ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
-          }),
-        );
-      } finally {
-        if (state.shutdownHardConsequencesAbort === hardConsequencesAbort) {
-          state.shutdownHardConsequencesAbort = null;
-        }
-      }
-    })().catch((error) => {
-      onFatalShutdownError(error);
-      throw error;
-    });
-    const trackedAttempt = attempt.then(
-      (disposition) => {
-        state.lastShutdownDisposition = disposition;
-        if (!isLifecycleShutdownTerminal(disposition)) {
-          state.shutdownPromise = null;
-          const automaticRetry = disposition.recovery.automaticRetry;
-          if (
-            automaticRetry.status === 'scheduled' &&
-            state.shutdownContinuations.size === 0 &&
-            automaticRetry.attemptsStarted < automaticRetry.attemptLimit
-          ) {
-            const continuationAbort = new AbortController();
-            state.shutdownContinuationAbort = continuationAbort;
-            const cancelled = new Promise<void>((resolve) => {
-              continuationAbort.signal.addEventListener('abort', () => resolve(), { once: true });
-            });
-            let pending: LifecycleShutdownDisposition = disposition;
-            const continuation = (async () => {
-              // The loop's own attempt count must come from the disposition the ledger just returned, not a
-              // continuation-local counter — a count kept here can diverge from the ledger's forced-terminal
-              // attempt and strand the loop on a hold with nothing left to schedule a retry.
-              while (
-                !isLifecycleShutdownTerminal(pending) &&
-                pending.recovery.automaticRetry.status === 'scheduled' &&
-                pending.recovery.automaticRetry.attemptsStarted < pending.recovery.automaticRetry.attemptLimit
-              ) {
-                await Promise.race([state.shutdownRetryAfter ?? Promise.resolve(), cancelled]);
-                if (continuationAbort.signal.aborted) return;
-                pending = await shutdown(currentShutdownReason());
-                if (isLifecycleShutdownTerminal(pending)) return;
-              }
-            })()
-              .catch((error: unknown) => {
-                if (!isLifecycleShutdownTerminal(pending)) {
-                  state.lastShutdownDisposition = {
-                    ...pending,
-                    recovery: {
-                      ...pending.recovery,
-                      automaticRetry: { status: 'failed' },
-                    },
-                  };
-                }
-                log(`lifecycle finalization continuation failed (${formatError(error)})\n`);
-              })
-              .finally(() => {
-                state.shutdownContinuations.delete(continuation);
-                if (state.shutdownContinuationAbort === continuationAbort) state.shutdownContinuationAbort = null;
-              });
-            state.shutdownContinuations.add(continuation);
-          }
-        }
-        return disposition;
-      },
-      (error: unknown) => {
-        if (runtimeState.getLifecycle() !== 'stopped') state.shutdownPromise = null;
-        throw error;
-      },
-    );
-    state.shutdownPromise = trackedAttempt;
-    return trackedAttempt;
-  }
+  const releaseAuthority = createSuccessionReleaseAuthority(deps);
+  const shutdown = createLifecycleShutdown(deps, state, releaseAuthority);
 
   async function start(): Promise<CoordinatorServerInfo> {
     try {
@@ -2448,94 +3155,11 @@ export function createLifecycle(
     state.providerOperationMutationAdmission = admission;
   }
 
-  function protectRetiringStore(epochKey: string, openerDrainMs: number): RetiringStoreProtection {
-    const expected = decodeResolvedStoreEpoch(runtime, epochKey);
-    const handle = state.rebindableStoreDb;
-    if (expected === undefined || expected.lineageKey === undefined || handle === null) {
-      throw new Error('Retiring store is unavailable.');
-    }
-    const current = inspectCurrentStore(runtime);
-    if (current.kind !== 'current' || encodeResolvedStoreEpoch(runtime, current.epoch) !== epochKey) {
-      throw new Error('Retiring store changed before protection.');
-    }
-    handle.closeCurrent();
-    try {
-      protectStoreEpoch(runtime, expected, openerDrainMs);
-    } catch (error: unknown) {
-      if (error instanceof StoreEpochOpenerHeldError) return { kind: 'opener-held', reason: error.message };
-      throw error;
-    }
-    const protectedEpoch = resolveProtectedEpoch(runtime, expected.storeRoot, expected.lineageKey);
-    if (protectedEpoch === null || protectedEpoch.path === expected.path) {
-      throw new Error('Retiring store has no protected address.');
-    }
-    const readOnly = openReadOnlyStoreDatabase(runtime, {
-      storeFormat: deps.storeFormat,
-      resolved: { path: protectedEpoch.path, epoch: protectedEpoch, epochCandidate: true },
-    });
-    handle.replace(asDatabase(readOnly));
-    return { kind: 'protected' };
-  }
+  const protectRetiringStore = (epochKey: string, openerDrainMs: number): RetiringStoreProtection =>
+    protectRetiringStoreEpoch(deps, state, epochKey, openerDrainMs);
+  const reopenRetiringStore = (epochKey: string): void => reopenRetiringStoreEpoch(deps, state, epochKey);
 
-  function reopenRetiringStore(epochKey: string): void {
-    const handle = state.rebindableStoreDb;
-    if (handle === null) throw new Error('Retiring store cannot be reopened.');
-    handle.closeCurrent();
-    const expected = decodeResolvedStoreEpoch(runtime, epochKey);
-    if (expected === undefined || expected.lineageKey === undefined) {
-      throw new Error('Retiring store cannot be reopened.');
-    }
-    const storeRoot = runtime.storage.realpathSync(runtime.paths.coral.store.dbDir);
-    if (resolveProtectedEpoch(runtime, storeRoot, expected.lineageKey) !== null) {
-      restoreProtectedEpoch(runtime, storeRoot, expected.lineageKey);
-    }
-    const restored = decodeResolvedStoreEpoch(runtime, epochKey);
-    if (restored === undefined || restored.path !== join(storeRoot, `epoch-${expected.epoch}`, 'store.db')) {
-      throw new Error('Retiring store canonical address was not restored.');
-    }
-    const opened = openCommittedBackendStoreAtStartup(
-      runtime,
-      {
-        storeFormat: deps.storeFormat,
-        build: {
-          version: identity.version,
-          buildSetId: identity.buildSetId,
-          flavor: identity.flavor,
-          storeFormatFingerprint: deps.storeFormat.fingerprint,
-          bundleHash: identity.bundleHash,
-          cliBundleHash: identity.cliBundleHash,
-          claudeAppserverBundleHash: identity.claudeAppserverBundleHash,
-          durableWrapperBundleHash: identity.durableWrapperBundleHash,
-        },
-        startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-      },
-      restored,
-    );
-    if (opened.kind === 'holding') throw new Error(`Retiring store reopen held: ${opened.reason}`);
-    handle.replace(opened.db);
-  }
-
-  function requestShutdownRetry(): void {
-    const currentAttempt = state.shutdownPromise;
-    if (currentAttempt === null) {
-      const retryReason = state.shutdownReason;
-      if (state.shutdownRetry === null || retryReason === null) return;
-      void shutdown(retryReason).catch((error: unknown) => {
-        log(`operator recovery shutdown retry failed (${formatError(error)})\n`);
-      });
-      return;
-    }
-    void currentAttempt
-      .then((disposition) => {
-        const retryReason = state.shutdownReason;
-        if (!isLifecycleShutdownTerminal(disposition) && state.shutdownRetry !== null && retryReason !== null) {
-          return shutdown(retryReason);
-        }
-      })
-      .catch((error: unknown) => {
-        log(`operator recovery shutdown retry failed (${formatError(error)})\n`);
-      });
-  }
+  const requestShutdownRetry = (): void => requestLifecycleShutdownRetry(deps, state, shutdown);
 
   return {
     start,

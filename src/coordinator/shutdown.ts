@@ -1018,55 +1018,11 @@ function buildAuthorityReleaseBoundary({
 }
 
 /** Authority release must remain behind the settlement ledger's no-successor gate. */
-export async function runShutdownSequence({
-  reason,
-  incident,
-  currentReason,
-  registerShutdownObservationReader,
-  takeIncidents,
-  hardConsequencesAbort,
-  state,
-  teardownRecoveryCoordinator,
-  runtimeState,
-  idleTimer,
-  closeServerFn,
-  closeIpcServerFn,
-  waitForInflightDrain,
-  server,
-  ipcServer,
-  streamResponses,
-  runtime,
-  markJobsAsErrorFn,
-  providerHostManager,
-  providerProxyAuthority,
-  stopProviderOperationReconciler,
-  kbDaemonSupervisor,
-  storeServicesRef,
-  settlePendingLaunchesFn,
-  terminateRegisteredChildrenFn,
-  handoffQuiescePorts,
-  handoffDrainBudgetMs,
-  disposeLifecycleReactor,
-  hooks,
-  discussStores,
-  stopStoreEpochSweepFn,
-  settleSuccessionAttempt,
-  log,
-  acceptProcessExitRemainder,
-}: RunShutdownSequenceContext): Promise<ShutdownSequenceDisposition> {
-  const activeReason = (): ShutdownReason => currentReason?.() ?? reason;
-  const initialReason = activeReason();
-  const initialMode = shutdownModeFromReason(initialReason);
-  const budgetMs =
-    initialMode === 'handoff' ? (handoffDrainBudgetMs ?? HANDOFF_DRAIN_TIMEOUT_MS) : SHUTDOWN_DRAIN_TIMEOUT_MS;
-  const ledger = createShutdownSettlementLedger<ShutdownObligationLabel>({
-    budgetMs,
-    time: runtime.time,
-    log,
-    pollMs: SHUTDOWN_POLL_MS,
-    ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
-  });
-  registerShutdownObservationReader?.(() => ledger.snapshot());
+function createShutdownIncidentRecorder(
+  ledger: ShutdownSettlementLedger<ShutdownObligationLabel>,
+  incident: ShutdownIncident | undefined,
+  takeIncidents: RunShutdownSequenceContext['takeIncidents'],
+): () => void {
   let initialIncident = incident;
   const recordPendingIncidents = (): void => {
     // Do not consume incidents after exhaustion: `SettlementLedger.run` would replace their observed evidence
@@ -1090,6 +1046,126 @@ export async function runShutdownSequence({
       });
     }
   };
+  return recordPendingIncidents;
+}
+
+function openingShutdownObligationsFor(
+  context: RunShutdownSequenceContext,
+  ledger: ShutdownSettlementLedger<ShutdownObligationLabel>,
+  initialReason: ShutdownReason,
+) {
+  return buildOpeningShutdownObligations({
+    closeServerFn: context.closeServerFn,
+    idleTimer: context.idleTimer,
+    kbDaemonSupervisor: context.kbDaemonSupervisor,
+    ledger,
+    reason: initialReason,
+    runtime: context.runtime,
+    server: context.server,
+    state: context.state,
+    streamResponses: context.streamResponses,
+    teardownRecoveryCoordinator: context.teardownRecoveryCoordinator,
+    waitForInflightDrain: context.waitForInflightDrain,
+  });
+}
+
+function closingShutdownObligationsFor(
+  context: RunShutdownSequenceContext,
+  ledger: ShutdownSettlementLedger<ShutdownObligationLabel>,
+  mode: ShutdownMode,
+  providerOperationMutationDrain: ModeShutdownConsequences['providerOperationMutationDrain'],
+) {
+  return buildClosingShutdownObligations({
+    discussStores: context.discussStores,
+    disposeLifecycleReactor: context.disposeLifecycleReactor,
+    hooks: context.hooks,
+    ledger,
+    log: context.log,
+    mode,
+    providerOperationMutationDrain,
+    runtimeState: context.runtimeState,
+  });
+}
+
+function handoffShutdownConsequencesFor(
+  context: RunShutdownSequenceContext,
+  ledger: ShutdownSettlementLedger<ShutdownObligationLabel>,
+  providerCleanup: ReturnType<typeof createProviderCleanupController>,
+): ModeShutdownConsequences {
+  return buildHandoffShutdownConsequences({
+    handoffQuiescePorts: context.handoffQuiescePorts,
+    ledger,
+    providerCleanup,
+    providerHostManager: context.providerHostManager,
+    providerProxyAuthority: context.providerProxyAuthority,
+    stopProviderOperationReconciler: context.stopProviderOperationReconciler,
+  });
+}
+
+function hardShutdownConsequencesFor(
+  context: RunShutdownSequenceContext,
+  ledger: ShutdownSettlementLedger<ShutdownObligationLabel>,
+  providerCleanup: ReturnType<typeof createProviderCleanupController>,
+): ModeShutdownConsequences {
+  return buildHardShutdownConsequences({
+    ...(context.hardConsequencesAbort === undefined ? {} : { abortSignal: context.hardConsequencesAbort }),
+    ledger,
+    markJobsAsErrorFn: context.markJobsAsErrorFn,
+    providerCleanup,
+    providerHostManager: context.providerHostManager,
+    providerProxyAuthority: context.providerProxyAuthority,
+    settlePendingLaunchesFn: context.settlePendingLaunchesFn,
+    stopProviderOperationReconciler: context.stopProviderOperationReconciler,
+    storeServicesRef: context.storeServicesRef,
+    terminateRegisteredChildrenFn: context.terminateRegisteredChildrenFn,
+  });
+}
+
+function shutdownAuthorityReleaseFor(
+  context: RunShutdownSequenceContext,
+  providerCleanup: ReturnType<typeof createProviderCleanupController>,
+) {
+  return buildAuthorityReleaseBoundary({
+    closeIpcServerFn: context.closeIpcServerFn,
+    ipcServer: context.ipcServer,
+    providerCleanup,
+    providerProxyAuthority: context.providerProxyAuthority,
+    time: context.runtime.time,
+  });
+}
+
+export async function runShutdownSequence(context: RunShutdownSequenceContext): Promise<ShutdownSequenceDisposition> {
+  const {
+    reason,
+    incident,
+    currentReason,
+    registerShutdownObservationReader,
+    takeIncidents,
+    runtimeState,
+    idleTimer,
+    runtime,
+    providerHostManager,
+    providerProxyAuthority,
+    handoffDrainBudgetMs,
+    stopStoreEpochSweepFn,
+    settleSuccessionAttempt,
+    log,
+    acceptProcessExitRemainder,
+  } = context;
+  const activeReason = (): ShutdownReason => currentReason?.() ?? reason;
+  const initialReason = activeReason();
+  const initialMode = shutdownModeFromReason(initialReason);
+  const budgetMs =
+    initialMode === 'handoff' ? (handoffDrainBudgetMs ?? HANDOFF_DRAIN_TIMEOUT_MS) : SHUTDOWN_DRAIN_TIMEOUT_MS;
+  const ledger = createShutdownSettlementLedger<ShutdownObligationLabel>({
+    budgetMs,
+    time: runtime.time,
+    log,
+    pollMs: SHUTDOWN_POLL_MS,
+    ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
+  });
+  registerShutdownObservationReader?.(() => ledger.snapshot());
+  const recordPendingIncidents = createShutdownIncidentRecorder(ledger, incident, takeIncidents);
   recordPendingIncidents();
   log(`Coral backend shutting down (${initialReason}, mode=${initialMode})...\n`);
   runtimeState.setLifecycle('draining');
@@ -1112,19 +1188,7 @@ export async function runShutdownSequence({
     }));
   }
 
-  const openingObligations = buildOpeningShutdownObligations({
-    closeServerFn,
-    idleTimer,
-    kbDaemonSupervisor,
-    ledger,
-    reason: initialReason,
-    runtime,
-    server,
-    state,
-    streamResponses,
-    teardownRecoveryCoordinator,
-    waitForInflightDrain,
-  });
+  const openingObligations = openingShutdownObligationsFor(context, ledger, initialReason);
   for (const obligation of openingObligations.connectionDrain) {
     void (await ledger.run(obligation));
     recordPendingIncidents();
@@ -1136,14 +1200,7 @@ export async function runShutdownSequence({
 
   const providerCleanup = createProviderCleanupController({ providerHostManager, providerProxyAuthority });
   const buildHandoffConsequences = (): ModeShutdownConsequences =>
-    buildHandoffShutdownConsequences({
-      handoffQuiescePorts,
-      ledger,
-      providerCleanup,
-      providerHostManager,
-      providerProxyAuthority,
-      stopProviderOperationReconciler,
-    });
+    handoffShutdownConsequencesFor(context, ledger, providerCleanup);
   let mode = shutdownModeFromReason(activeReason());
   let modeConsequences: ModeShutdownConsequences;
   if (mode === 'handoff') {
@@ -1153,18 +1210,7 @@ export async function runShutdownSequence({
       recordPendingIncidents();
     }
   } else {
-    const hardConsequences = buildHardShutdownConsequences({
-      ...(hardConsequencesAbort === undefined ? {} : { abortSignal: hardConsequencesAbort }),
-      ledger,
-      markJobsAsErrorFn,
-      providerCleanup,
-      providerHostManager,
-      providerProxyAuthority,
-      settlePendingLaunchesFn,
-      stopProviderOperationReconciler,
-      storeServicesRef,
-      terminateRegisteredChildrenFn,
-    });
+    const hardConsequences = hardShutdownConsequencesFor(context, ledger, providerCleanup);
     let hardMutationDrainStarted = false;
     for (const obligation of hardConsequences.obligations) {
       if (shutdownModeFromReason(activeReason()) === 'handoff') break;
@@ -1191,16 +1237,12 @@ export async function runShutdownSequence({
     }
   }
 
-  const closingObligations = buildClosingShutdownObligations({
-    discussStores,
-    disposeLifecycleReactor,
-    hooks,
+  const closingObligations = closingShutdownObligationsFor(
+    context,
     ledger,
-    log,
     mode,
-    providerOperationMutationDrain: modeConsequences.providerOperationMutationDrain,
-    runtimeState,
-  });
+    modeConsequences.providerOperationMutationDrain,
+  );
   for (const obligation of closingObligations.lifecycle) {
     void (await ledger.run(obligation));
     recordPendingIncidents();
@@ -1210,13 +1252,7 @@ export async function runShutdownSequence({
     recordPendingIncidents();
   }
 
-  const authorityRelease = buildAuthorityReleaseBoundary({
-    closeIpcServerFn,
-    ipcServer,
-    providerCleanup,
-    providerProxyAuthority,
-    time: runtime.time,
-  });
+  const authorityRelease = shutdownAuthorityReleaseFor(context, providerCleanup);
 
   recordPendingIncidents();
   return ledger.gate(authorityRelease);

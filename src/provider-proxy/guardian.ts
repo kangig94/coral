@@ -287,110 +287,41 @@ export interface Guardian {
   recordContainment(containment: GuardianContainmentIdentity): Promise<void>;
 }
 
-export function createGuardian<Scope extends symbol>(options: GuardianOptions<Scope>): Guardian {
-  const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self, holderAuthority, observeHolder } = options;
+type GuardianState = {
+  recordedContainment: GuardianContainmentIdentity | null;
+  enforcer: ArmedEnforcer | null;
+  staged: Map<string, StagedMembership>;
+  activating: Map<string, Promise<z.infer<typeof guardianOperationActivateResultSchema>>>;
+  stagingGateOpen: boolean;
+  inFlightStagingRegistrations: number;
+  stagingDrainWaiters: Array<() => void>;
+  containmentCommit: Promise<z.infer<typeof guardianContainmentCommitResultSchema>> | null;
+  acquisitionCertificate: AcquisitionPublicationCertificate | null;
+};
 
-  // The guardian creates the containment by spawning the proxy — it cannot know what to enforce until
-  // `recordContainment` reports what it watched being created. Until then there is nothing to enforce, so
-  // there is no enforcer, exactly as the reaper holds none before `reaper.record-containment.v1`.
-  let recordedContainment: GuardianContainmentIdentity | null = null;
-  let enforcer: ArmedEnforcer | null = null;
+type GuardianMethodContext<Scope extends symbol> = {
+  options: GuardianOptions<Scope>;
+  state: GuardianState;
+  identity: z.infer<typeof guardianIdentitySchema>;
+  reaperSelfIdentity: ReaperIdentity;
+  setIdentity: GrantBinding;
+  bootstrapNonce: ReturnType<typeof createBootstrapNonceCredential>;
+  grants: ReturnType<typeof createGrantRegistry>;
+  controllers: ReturnType<typeof createControllerBuildLedger>;
+  requireEnforcer: () => ArmedEnforcer;
+  noteStagingRegistrationStart: () => void;
+  noteStagingRegistrationEnd: () => void;
+  drainStagingRegistrations: () => Promise<void>;
+  abortReaperContainmentPrepare: (token: ContainmentPrepareToken) => Promise<void>;
+  getEndpoint: () => ControlEndpoint;
+};
 
-  const requireEnforcer = (): ArmedEnforcer => {
-    if (enforcer === null) {
-      throw new ProxyControlProtocolError('invalid_state', 'This guardian has not recorded a containment to hold.');
-    }
-    return enforcer;
-  };
-
-  const identity = Object.freeze({
-    guardianInstanceId: capsule.guardianInstanceId,
-    pid: self.pid,
-    incarnation: self.incarnation,
-    generation: capsule.generation,
-    flavor: capsule.flavor,
-    buildSetId: capsule.buildSetId,
-    hostFingerprint: capsule.hostFingerprint,
-    canonicalControlEndpoint: capsule.canonicalControlEndpoint,
-  });
-
-  /** The reaper identity a teardown's `reaper` claim is checked against: the pid and incarnation this
-   *  guardian itself observed at spawn time, plus the same capsule-derived fields the reaper's own identity
-   *  uses. The guardian never learns this from the reaper directly — pairing carries no identity, only a
-   *  shared secret — so this is reconstructed from what the guardian itself watched come into being. */
-  const reaperSelfIdentity: ReaperIdentity = Object.freeze({
-    reaperInstanceId: capsule.reaperInstanceId,
-    pid: options.reaperSelf.pid,
-    incarnation: options.reaperSelf.incarnation,
-    guardianInstanceId: capsule.guardianInstanceId,
-    generation: capsule.generation,
-    flavor: capsule.flavor,
-    buildSetId: capsule.buildSetId,
-    hostFingerprint: capsule.hostFingerprint,
-    canonicalControlEndpoint: capsule.reaperControlEndpoint,
-    containmentKind: DETACHED_CONTAINMENT_KIND,
-  });
-
-  /**
-   * Every field a grant is bound to except the orphan timeout, which the installer names because it is the
-   * budget a successor plans its attach against; the guardian supplies the rest from its own capsule so a
-   * coordinator can never install a grant for a set it does not belong to.
-   */
-  const setIdentity: GrantBinding = grantBindingFromCapsule(capsule);
-
-  const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
-  const grants = createGrantRegistry(mintReceipt, {
-    mayReplaceRedemption: () => !deadlines.controlIsLive(),
-  });
-  const controllers = createControllerBuildLedger(controllerBuildOf(capsule));
-  const staged = new Map<string, StagedMembership>();
-  const activating = new Map<string, Promise<z.infer<typeof guardianOperationActivateResultSchema>>>();
-
-  // Root registration must be closed and drained before either enforcer snapshots containment.
-  let stagingGateOpen = true;
-  let inFlightStagingRegistrations = 0;
-  let stagingDrainWaiters: Array<() => void> = [];
-  let containmentCommit: Promise<z.infer<typeof guardianContainmentCommitResultSchema>> | null = null;
-
-  const noteStagingRegistrationStart = (): void => {
-    inFlightStagingRegistrations += 1;
-  };
-  const noteStagingRegistrationEnd = (): void => {
-    inFlightStagingRegistrations -= 1;
-    if (inFlightStagingRegistrations === 0) {
-      const waiters = stagingDrainWaiters;
-      stagingDrainWaiters = [];
-      for (const resolve of waiters) resolve();
-    }
-  };
-  const drainStagingRegistrations = (): Promise<void> =>
-    inFlightStagingRegistrations === 0
-      ? Promise.resolve()
-      : new Promise<void>((resolve) => {
-          stagingDrainWaiters.push(resolve);
-        });
-
-  /** Reopening a prepared gate must not mask the original pre-commit failure. */
-  const abortReaperContainmentPrepare = async (token: ContainmentPrepareToken): Promise<void> => {
-    try {
-      reaperContainmentAbortResultSchema.parse(
-        requireReaperResult(
-          'reaper.containment-abort.v1',
-          await options.reaperChannel.exchange(
-            'reaper.containment-abort.v1',
-            reaperContainmentAbortParamsSchema.parse({ token }),
-            PROXY_CONTROL_RPC_TIMEOUT_MS,
-          ),
-        ),
-      );
-    } catch {
-      // A failed abort must retain a retry exit that can supersede the prepared gate.
-    }
-  };
-
-  let acquisitionCertificate: AcquisitionPublicationCertificate | null = null;
-
-  const methods = new Map<string, ControlMethod>([
+function guardianOpeningMethods<Scope extends symbol>(
+  context: GuardianMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options, state, identity, setIdentity, bootstrapNonce, grants, controllers } = context;
+  const { capsule, deadlines } = options;
+  return [
     [
       'guardian.open.v1',
       {
@@ -401,7 +332,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // grant installed on a guardian holding no containment would have nothing behind it to enforce, and
           // spending the one-shot nonce first would burn an unreissuable credential on a retryable race
           // between this open and `recordContainment` rather than on a genuine protocol violation.
-          if (recordedContainment === null) {
+          if (state.recordedContainment === null) {
             throw new ProxyControlProtocolError('invalid_state', 'This guardian holds no containment yet.');
           }
           bootstrapNonce.spend(request.bootstrapNonce);
@@ -454,6 +385,14 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         },
       },
     ],
+  ];
+}
+
+function guardianRedemptionMethods<Scope extends symbol>(
+  context: GuardianMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options, state, identity, reaperSelfIdentity, setIdentity, grants, controllers } = context;
+  return [
     [
       'guardian.handoff-redeem.v1',
       {
@@ -506,7 +445,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               operations: redemption.grant.operations,
               guardian: identity,
               reaper: reaperSelfIdentity,
-              containment: recordedContainment,
+              containment: state.recordedContainment,
             }),
           };
         },
@@ -522,6 +461,15 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         },
       },
     ],
+  ];
+}
+
+function guardianRootRegistrationMethods<Scope extends symbol>(
+  context: GuardianMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options, state, requireEnforcer, noteStagingRegistrationStart, noteStagingRegistrationEnd } = context;
+  const { capsule, mintReceipt } = options;
+  return [
     [
       'guardian.register-provider-root.v1',
       {
@@ -529,7 +477,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         // its own capsule-authenticated channel — not the coordinator's control tenancy.
         authority: 'pairing',
         handle: async (params) => {
-          if (!stagingGateOpen) {
+          if (!state.stagingGateOpen) {
             throw new ProxyControlProtocolError(
               'invalid_state',
               'Provider-root staging is closed for a containment commit in progress.',
@@ -543,7 +491,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             const root = { pid: request.providerPid, incarnation: request.providerIncarnation };
             // Stable operation identity must make repeated root registration idempotent.
             const key = membershipKey(request.operation);
-            const already = staged.get(key);
+            const already = state.staged.get(key);
             if (already !== undefined) {
               if (
                 !sameOperationIdentity(already.operation, request.operation) ||
@@ -562,7 +510,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
                 jointContainmentReceipt: already.jointContainmentReceipt,
               };
             }
-            if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
+            if (state.staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
               throw new ProxyControlProtocolError(
                 'invalid_state',
                 'This guardian holds its maximum staged operations.',
@@ -591,7 +539,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             const record = recordGuardianRoot(armed, acknowledgement);
             // Only evidence that both authorities recorded the same root may mint the joint receipt.
             const jointContainmentReceipt = mintJointContainmentReceipt(acknowledgement, record, mintReceipt);
-            staged.set(key, {
+            state.staged.set(key, {
               operation: request.operation,
               jointContainmentReceipt,
               jointActivationReceipt: null,
@@ -605,6 +553,15 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         },
       },
     ],
+  ];
+}
+
+function guardianOperationActivationMethods<Scope extends symbol>(
+  context: GuardianMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options, state } = context;
+  const { holderAuthority, mintReceipt } = options;
+  return [
     [
       'guardian.operation-activate.v1',
       {
@@ -612,7 +569,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         handle: async (params, authorization) => {
           const request = operationActivateParamsSchema.parse(params);
           const key = membershipKey(request.operation);
-          const membership = staged.get(key);
+          const membership = state.staged.get(key);
           if (membership === undefined || membership.jointContainmentReceipt !== request.jointContainmentReceipt) {
             throw new ProxyControlProtocolError(
               'unauthorized_control',
@@ -642,7 +599,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               jointActivationReceipt: membership.jointActivationReceipt,
             });
           }
-          const inFlight = activating.get(key);
+          const inFlight = state.activating.get(key);
           if (inFlight !== undefined) return inFlight;
 
           const promise = (async () => {
@@ -658,7 +615,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               ),
             );
             reaperConfirmProviderRootResultSchema.parse(reaperResult);
-            if (!endpoint.activeControlAuthorizationIsCurrent(authorization, holderAuthority.current())) {
+            if (!context.getEndpoint().activeControlAuthorizationIsCurrent(authorization, holderAuthority.current())) {
               throw new ProxyControlProtocolError(
                 'unauthorized_control',
                 'Active control changed before this activation could latch.',
@@ -671,15 +628,24 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             membership.jointActivationReceipt = result.jointActivationReceipt;
             return result;
           })();
-          activating.set(key, promise);
+          state.activating.set(key, promise);
           try {
             return await promise;
           } finally {
-            if (activating.get(key) === promise) activating.delete(key);
+            if (state.activating.get(key) === promise) state.activating.delete(key);
           }
         },
       },
     ],
+  ];
+}
+
+function guardianOperationReleaseMethods<Scope extends symbol>(
+  context: GuardianMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options, state } = context;
+  const { capsule } = options;
+  return [
     [
       'guardian.operation-release.v1',
       {
@@ -688,7 +654,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           const request = proxyOperationReleaseParamsSchema.parse(params);
           assertNamedProxyIdentity('guardian', request.proxy, capsule);
           const key = membershipKey(request.operation);
-          const membership = staged.get(key);
+          const membership = state.staged.get(key);
           if (membership === undefined) {
             return guardianProxyOperationReleaseResultSchema.parse({ state: 'membership-absent' });
           }
@@ -701,12 +667,29 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               'Release named a different reservation than this operation staged.',
             );
           }
-          staged.delete(key);
-          activating.delete(key);
+          state.staged.delete(key);
+          state.activating.delete(key);
           return guardianProxyOperationReleaseResultSchema.parse({ state: 'membership-released' });
         },
       },
     ],
+  ];
+}
+
+function guardianContainmentCommitMethods<Scope extends symbol>(
+  context: GuardianMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const {
+    options,
+    state,
+    identity,
+    reaperSelfIdentity,
+    requireEnforcer,
+    drainStagingRegistrations,
+    abortReaperContainmentPrepare,
+  } = context;
+  const { capsule, holderAuthority } = options;
+  return [
     [
       'guardian.containment-commit.v1',
       {
@@ -720,12 +703,12 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
           assertNamedProxyIdentity('guardian', request.proxy, capsule);
 
-          if (containmentCommit !== null) return containmentCommit;
+          if (state.containmentCommit !== null) return state.containmentCommit;
           const attempt = (async (): Promise<z.infer<typeof guardianContainmentCommitResultSchema>> => {
-            if (!stagingGateOpen) {
+            if (!state.stagingGateOpen) {
               throw new ProxyControlProtocolError('invalid_state', 'A containment commit is already in progress.');
             }
-            stagingGateOpen = false;
+            state.stagingGateOpen = false;
             await drainStagingRegistrations();
 
             let prepared: z.infer<typeof reaperContainmentPrepareResultSchema> | null = null;
@@ -742,21 +725,23 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               );
               // Both registration gates must close and drain before containment snapshots are compared.
               assertExactRecordedSetAgreement('guardian', armed.recordedRoots(), prepared.providerRoots);
-              if (!endpoint.activeControlAuthorizationIsCurrent(authorization, holderAuthority.current())) {
+              if (
+                !context.getEndpoint().activeControlAuthorizationIsCurrent(authorization, holderAuthority.current())
+              ) {
                 throw new ProxyControlProtocolError(
                   'unauthorized_control',
                   'Active control changed before this commit could latch.',
                 );
               }
             } catch (error: unknown) {
-              stagingGateOpen = true;
+              state.stagingGateOpen = true;
               if (prepared !== null) await abortReaperContainmentPrepare(prepared.token);
               throw error;
             }
 
             // Commit authority must bind to the revalidated current holder.
             const teardown = mintExplicitTeardownAuthorization(holderAuthority, authorization, (candidate, subject) =>
-              endpoint.activeControlAuthorizationIsCurrent(candidate, subject),
+              context.getEndpoint().activeControlAuthorizationIsCurrent(candidate, subject),
             );
             if (teardown === null) {
               throw new ProxyControlProtocolError(
@@ -780,16 +765,25 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               disappearanceReceipt: outcome.disappearanceReceipt,
             });
           })();
-          containmentCommit = attempt;
+          state.containmentCommit = attempt;
           try {
             return await attempt;
           } catch (error: unknown) {
-            if (stagingGateOpen && containmentCommit === attempt) containmentCommit = null;
+            if (state.stagingGateOpen && state.containmentCommit === attempt) state.containmentCommit = null;
             throw error;
           }
         },
       },
     ],
+  ];
+}
+
+function guardianAcquisitionMethods<Scope extends symbol>(
+  context: GuardianMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options, state, identity, reaperSelfIdentity } = context;
+  const { capsule, holderAuthority, mintReceipt } = options;
+  return [
     [
       'guardian.acquisition-publish.v1',
       {
@@ -801,10 +795,10 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
           assertNamedProxyIdentity('guardian', request.proxy, capsule);
 
-          if (acquisitionCertificate !== null) {
+          if (state.acquisitionCertificate !== null) {
             return guardianAcquisitionPublishResultSchema.parse({
               state: 'acquisition-published',
-              certificate: acquisitionCertificate,
+              certificate: state.acquisitionCertificate,
               guardian: identity,
               reaper: reaperSelfIdentity,
             });
@@ -837,17 +831,17 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               reason: truncate(reason, 500),
             });
           }
-          if (!endpoint.activeControlAuthorizationIsCurrent(authorization, holderAuthority.current())) {
+          if (!context.getEndpoint().activeControlAuthorizationIsCurrent(authorization, holderAuthority.current())) {
             return guardianAcquisitionPublishResultSchema.parse({
               state: 'acquisition-publication-unknown',
               reason: 'Active control changed after reaper publication was confirmed.',
             });
           }
           holderAuthority.publish();
-          acquisitionCertificate = acquisitionPublicationCertificateSchema.parse(mintReceipt());
+          state.acquisitionCertificate = acquisitionPublicationCertificateSchema.parse(mintReceipt());
           return guardianAcquisitionPublishResultSchema.parse({
             state: 'acquisition-published',
-            certificate: acquisitionCertificate,
+            certificate: state.acquisitionCertificate,
             guardian: identity,
             reaper: reaperSelfIdentity,
           });
@@ -871,6 +865,15 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         },
       },
     ],
+  ];
+}
+
+function guardianObservationMethods<Scope extends symbol>(
+  context: GuardianMethodContext<Scope>,
+): [string, ControlMethod][] {
+  const { options, grants, identity } = context;
+  const { holderAuthority } = options;
+  return [
     [
       'guardian.holder-status.v1',
       {
@@ -955,6 +958,208 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         },
       },
     ],
+  ];
+}
+
+function armGuardianContainment<Scope extends symbol>(
+  options: GuardianOptions<Scope>,
+  state: GuardianState,
+  containment: GuardianContainmentIdentity,
+): boolean {
+  if (state.recordedContainment !== null) {
+    // Idempotent for the identical containment, a mismatch otherwise: revising it would silently move
+    // what this guardian is holding, and only one proxy group was ever created for this set.
+    if (!sameRecordedContainment(state.recordedContainment, containment)) {
+      throw new ProxyControlProtocolError('identity_mismatch', 'This guardian already holds a containment.');
+    }
+    return false;
+  }
+  // Recorded and armed locally FIRST, then forwarded — the reverse of `guardian.register-provider-root.v1`,
+  // and deliberately so: that method's guardian is a *relay* for a root only the proxy actually knows, so
+  // it must not commit ahead of the reaper it is relaying to. Here the guardian is the *origin* — it is
+  // the one party that watched this exact group come into being, so there is no peer for it to disagree
+  // with by recording first. Forwarding before the local commit would instead risk the one failure mode
+  // this ordering exists to close: the forward drops, the reaper is never told and arms nothing, and the
+  // proxy — a live, detached process-group leader — is held by no one and reapable by nothing.
+  //
+  // The window between the proxy spawn returning and this arm is real (a crash inside it is a genuine
+  // gap), but it is irreducible and synchronous: no `await` may land between them, and none does below.
+  state.recordedContainment = containment;
+  state.enforcer = createArmedEnforcer({
+    clock: options.clock,
+    deadlines: options.deadlines,
+    containment,
+    containmentEnvironment: options.containmentEnvironment,
+    scheduler: options.scheduler,
+    holderAuthority: options.holderAuthority,
+    observeHolder: options.observeHolder,
+    // Guardian pairing loss must not authorize absence while redemption can still install a successor.
+    acceleratedCheckMayAuthorizeAbsence: false,
+    onOutcome: options.onOutcome,
+    onProgressViolation: options.onProgressViolation,
+  });
+  // Armed the moment it knows what to enforce, so a coordinator — or this guardian's own peer, the
+  // reaper, if the forward below never lands — that dies immediately afterwards is already bounded by
+  // this guardian's own deadline.
+  state.enforcer.arm();
+
+  return true;
+}
+
+function createGuardianIdentities<Scope extends symbol>(
+  options: GuardianOptions<Scope>,
+): {
+  identity: z.infer<typeof guardianIdentitySchema>;
+  reaperSelfIdentity: ReaperIdentity;
+  setIdentity: GrantBinding;
+} {
+  const { capsule, self } = options;
+  const identity = Object.freeze({
+    guardianInstanceId: capsule.guardianInstanceId,
+    pid: self.pid,
+    incarnation: self.incarnation,
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    canonicalControlEndpoint: capsule.canonicalControlEndpoint,
+  });
+
+  /** The reaper identity a teardown's `reaper` claim is checked against: the pid and incarnation this
+   *  guardian itself observed at spawn time, plus the same capsule-derived fields the reaper's own identity
+   *  uses. The guardian never learns this from the reaper directly — pairing carries no identity, only a
+   *  shared secret — so this is reconstructed from what the guardian itself watched come into being. */
+  const reaperSelfIdentity: ReaperIdentity = Object.freeze({
+    reaperInstanceId: capsule.reaperInstanceId,
+    pid: options.reaperSelf.pid,
+    incarnation: options.reaperSelf.incarnation,
+    guardianInstanceId: capsule.guardianInstanceId,
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    canonicalControlEndpoint: capsule.reaperControlEndpoint,
+    containmentKind: DETACHED_CONTAINMENT_KIND,
+  });
+
+  /**
+   * Every field a grant is bound to except the orphan timeout, which the installer names because it is the
+   * budget a successor plans its attach against; the guardian supplies the rest from its own capsule so a
+   * coordinator can never install a grant for a set it does not belong to.
+   */
+  const setIdentity: GrantBinding = grantBindingFromCapsule(capsule);
+
+  return { identity, reaperSelfIdentity, setIdentity };
+}
+
+function createGuardianStagingGate(
+  state: GuardianState,
+): Pick<
+  GuardianMethodContext<symbol>,
+  'noteStagingRegistrationStart' | 'noteStagingRegistrationEnd' | 'drainStagingRegistrations'
+> {
+  // Root registration must be closed and drained before either enforcer snapshots containment.
+
+  const noteStagingRegistrationStart = (): void => {
+    state.inFlightStagingRegistrations += 1;
+  };
+  const noteStagingRegistrationEnd = (): void => {
+    state.inFlightStagingRegistrations -= 1;
+    if (state.inFlightStagingRegistrations === 0) {
+      const waiters = state.stagingDrainWaiters;
+      state.stagingDrainWaiters = [];
+      for (const resolve of waiters) resolve();
+    }
+  };
+  const drainStagingRegistrations = (): Promise<void> =>
+    state.inFlightStagingRegistrations === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          state.stagingDrainWaiters.push(resolve);
+        });
+
+  return { noteStagingRegistrationStart, noteStagingRegistrationEnd, drainStagingRegistrations };
+}
+
+export function createGuardian<Scope extends symbol>(options: GuardianOptions<Scope>): Guardian {
+  const { capsule, deadlines, timer, mintReceipt, holderAuthority } = options;
+
+  // The guardian creates the containment by spawning the proxy — it cannot know what to enforce until
+  // `recordContainment` reports what it watched being created. Until then there is nothing to enforce, so
+  // there is no enforcer, exactly as the reaper holds none before `reaper.record-containment.v1`.
+  const state: GuardianState = {
+    recordedContainment: null,
+    enforcer: null,
+    staged: new Map(),
+    activating: new Map(),
+    stagingGateOpen: true,
+    inFlightStagingRegistrations: 0,
+    stagingDrainWaiters: [],
+    containmentCommit: null,
+    acquisitionCertificate: null,
+  };
+
+  const requireEnforcer = (): ArmedEnforcer => {
+    if (state.enforcer === null) {
+      throw new ProxyControlProtocolError('invalid_state', 'This guardian has not recorded a containment to hold.');
+    }
+    return state.enforcer;
+  };
+
+  const { identity, reaperSelfIdentity, setIdentity } = createGuardianIdentities(options);
+
+  const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
+  const grants = createGrantRegistry(mintReceipt, {
+    mayReplaceRedemption: () => !deadlines.controlIsLive(),
+  });
+  const controllers = createControllerBuildLedger(controllerBuildOf(capsule));
+
+  const { noteStagingRegistrationStart, noteStagingRegistrationEnd, drainStagingRegistrations } =
+    createGuardianStagingGate(state);
+
+  /** Reopening a prepared gate must not mask the original pre-commit failure. */
+  const abortReaperContainmentPrepare = async (token: ContainmentPrepareToken): Promise<void> => {
+    try {
+      reaperContainmentAbortResultSchema.parse(
+        requireReaperResult(
+          'reaper.containment-abort.v1',
+          await options.reaperChannel.exchange(
+            'reaper.containment-abort.v1',
+            reaperContainmentAbortParamsSchema.parse({ token }),
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
+          ),
+        ),
+      );
+    } catch {
+      // A failed abort must retain a retry exit that can supersede the prepared gate.
+    }
+  };
+
+  const methodContext: GuardianMethodContext<Scope> = {
+    options,
+    state,
+    identity,
+    reaperSelfIdentity,
+    setIdentity,
+    bootstrapNonce,
+    grants,
+    controllers,
+    requireEnforcer,
+    noteStagingRegistrationStart,
+    noteStagingRegistrationEnd,
+    drainStagingRegistrations,
+    abortReaperContainmentPrepare,
+    getEndpoint: () => endpoint,
+  };
+  const methods = new Map<string, ControlMethod>([
+    ...guardianOpeningMethods(methodContext),
+    ...guardianRedemptionMethods(methodContext),
+    ...guardianRootRegistrationMethods(methodContext),
+    ...guardianOperationActivationMethods(methodContext),
+    ...guardianOperationReleaseMethods(methodContext),
+    ...guardianContainmentCommitMethods(methodContext),
+    ...guardianAcquisitionMethods(methodContext),
+    ...guardianObservationMethods(methodContext),
   ]);
 
   const endpoint: ControlEndpoint = createControlEndpoint({
@@ -984,51 +1189,15 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       await endpoint.listen();
     },
     async close(): Promise<void> {
-      enforcer?.disarm();
+      state.enforcer?.disarm();
       options.reaperChannel.close();
       await endpoint.close();
     },
     enforcer(): ArmedEnforcer | null {
-      return enforcer;
+      return state.enforcer;
     },
     async recordContainment(containment: GuardianContainmentIdentity): Promise<void> {
-      if (recordedContainment !== null) {
-        // Idempotent for the identical containment, a mismatch otherwise: revising it would silently move
-        // what this guardian is holding, and only one proxy group was ever created for this set.
-        if (!sameRecordedContainment(recordedContainment, containment)) {
-          throw new ProxyControlProtocolError('identity_mismatch', 'This guardian already holds a containment.');
-        }
-        return;
-      }
-      // Recorded and armed locally FIRST, then forwarded — the reverse of `guardian.register-provider-root.v1`,
-      // and deliberately so: that method's guardian is a *relay* for a root only the proxy actually knows, so
-      // it must not commit ahead of the reaper it is relaying to. Here the guardian is the *origin* — it is
-      // the one party that watched this exact group come into being, so there is no peer for it to disagree
-      // with by recording first. Forwarding before the local commit would instead risk the one failure mode
-      // this ordering exists to close: the forward drops, the reaper is never told and arms nothing, and the
-      // proxy — a live, detached process-group leader — is held by no one and reapable by nothing.
-      //
-      // The window between the proxy spawn returning and this arm is real (a crash inside it is a genuine
-      // gap), but it is irreducible and synchronous: no `await` may land between them, and none does below.
-      recordedContainment = containment;
-      enforcer = createArmedEnforcer({
-        clock,
-        deadlines,
-        containment,
-        containmentEnvironment: options.containmentEnvironment,
-        scheduler,
-        holderAuthority,
-        observeHolder,
-        // Guardian pairing loss must not authorize absence while redemption can still install a successor.
-        acceleratedCheckMayAuthorizeAbsence: false,
-        onOutcome: options.onOutcome,
-        onProgressViolation: options.onProgressViolation,
-      });
-      // Armed the moment it knows what to enforce, so a coordinator — or this guardian's own peer, the
-      // reaper, if the forward below never lands — that dies immediately afterwards is already bounded by
-      // this guardian's own deadline.
-      enforcer.arm();
-
+      if (!armGuardianContainment(options, state, containment)) return;
       const reaperParams = recordedContainmentSchema.parse(containment);
       const reaperResult = requireReaperResult(
         'reaper.record-containment.v1',

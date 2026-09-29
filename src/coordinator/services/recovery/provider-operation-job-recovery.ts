@@ -37,6 +37,127 @@ export type ProviderOperationRecoveryPlanActionOptions = Readonly<{
   coordinatorCommit: CommitEventsFn;
 }>;
 
+async function recoverProviderOperationJobOnceFor(
+  deps: Parameters<typeof createProviderOperationJobRecovery>[0],
+  applyPlanAction: (
+    action: Parameters<typeof applyRecoveryAction>[0],
+    options: ProviderOperationRecoveryPlanActionOptions,
+  ) => Promise<void>,
+  record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
+  signal: AbortSignal,
+): Promise<ProviderOperationRecoveryAcceptance> {
+  const {
+    state,
+    progressStore,
+    runtime,
+    runCoordinatorWalk,
+    recoveryAdoption,
+    abandonHeldJob,
+    maybeReleaseRecoveryRegistry,
+  } = deps;
+  const jobId = record.operation.jobId;
+  const coordinatorCommit: CommitEventsFn = (callback) => progressStore.commit(callback);
+  const freshItems: CoordinatorRecoveryItem[] = [];
+  await runCoordinatorWalk({
+    subjectKey: jobId,
+    signal,
+    coordinatorCommit,
+    summary: `Provider operation exact-job recovery hydration for ${jobId}`,
+    settle: (item) => {
+      freshItems.push(item);
+      return {
+        kind: 'advanced',
+        outcome: 'settled',
+        facts: COORDINATOR_NOT_APPLICABLE_FACTS,
+        detail: 'provider operation recovery job hydrated',
+      };
+    },
+  });
+  const item = freshItems[0];
+  if (item === undefined) {
+    throw new Error(`Provider operation recovery job '${jobId}' is absent from the coordinator journal.`);
+  }
+
+  const plan = planRecovery(buildRecoverySnapshot([item], runtime.process));
+  const recoveryRegistry =
+    state.recoveryRegistry ?? new RecoveryRegistry(state.cancelledRecoveryJobIds, state.onRecoverySettlement);
+  state.recoveryRegistry = recoveryRegistry;
+  const queuedRecoverable: QueuedRecoverableJob[] = [];
+  const runningRecoverable: RunningRecoverableJob[] = [];
+  const planActionOptions = {
+    itemsByJobId: new Map([[item.jobId, item]]),
+    itemsBySessionId: new Map(item.claimedSession === null ? [] : ([[item.claimedSession.sessionId, item]] as const)),
+    recoveryRegistry,
+    queuedRecoverable,
+    runningRecoverable,
+    signal,
+    coordinatorCommit,
+  } as const;
+
+  for (const action of plan.register) {
+    if (action.jobId === jobId) await applyPlanAction(action, planActionOptions);
+  }
+  for (const action of plan.cleanup) {
+    if (action.jobId === jobId) await applyPlanAction(action, planActionOptions);
+  }
+
+  if (runningRecoverable.length > 0) {
+    await recoveryAdoption.run({
+      queuedJobs: [],
+      runningJobs: runningRecoverable,
+      signal,
+      coordinatorCommit,
+      interruptedAppServerReason: 'restart',
+      abandonHeldJob: (heldJobId) => abandonHeldJob(heldJobId),
+    });
+  }
+  for (const queued of queuedRecoverable) {
+    progressStore.seedEnqueueSequence(queued.authority.launchRecord.enqueueSequence);
+    await recoveryAdoption.acceptQueued(queued, signal, coordinatorCommit, 'retry');
+  }
+  maybeReleaseRecoveryRegistry();
+  return { state: 'accepted', jobId, owner: 'recovery-coordinator' };
+}
+
+async function applyRecoveryPlanActionToItem(
+  deps: Parameters<typeof createProviderOperationJobRecovery>[0],
+  action: Parameters<typeof applyRecoveryAction>[0],
+  item: CoordinatorRecoveryItem,
+  controls: CoordinatorRecoveryControls,
+  options: ProviderOperationRecoveryPlanActionOptions,
+): Promise<RecoveryDisposition> {
+  const {
+    progressStore,
+    runtime,
+    getRecoveryService,
+    createInvocationContext,
+    settleClaim,
+    settleFault,
+    abandonHeldJob,
+  } = deps;
+  try {
+    return await applyRecoveryAction(action, {
+      progressStore,
+      recoveryRegistry: options.recoveryRegistry,
+      queuedRecoverable: options.queuedRecoverable,
+      runningRecoverable: options.runningRecoverable,
+      log: controls.report,
+      runtime,
+      createInvocationContext,
+      getRecoveryService,
+      signal: options.signal,
+      settleFault: (fault, content) => settleFault(item, action.jobId, fault, options.coordinatorCommit, content),
+      settleClaim: (jobId) => settleClaim(item, jobId, options.coordinatorCommit),
+      setProcessLocalCleanup: controls.setProcessLocalCleanup,
+      clearProcessLocalCleanup: controls.clearProcessLocalCleanup,
+      abandonHeldJob: (heldJobId) => abandonHeldJob(heldJobId),
+    });
+  } catch (error: unknown) {
+    logRecoveryActionFailure(action, error, controls.report);
+    throw error;
+  }
+}
+
 export function createProviderOperationJobRecovery(
   deps: Readonly<{
     state: RecoveryCoordinatorState;
@@ -54,50 +175,14 @@ export function createProviderOperationJobRecovery(
     abandonHeldJob(jobId: string): RecoveryAbortDisposition;
   }>,
 ) {
-  const {
-    state,
-    progressStore,
-    runtime,
-    getRecoveryService,
-    createInvocationContext,
-    recoveryAdoption,
-    providerOperationStartupOwnership,
-    runCoordinatorWalk,
-    settleClaim,
-    settleFault,
-    settleUnexpectedRecoveryFailure,
-    maybeReleaseRecoveryRegistry,
-    abandonHeldJob,
-  } = deps;
+  const { state, providerOperationStartupOwnership, runCoordinatorWalk, settleUnexpectedRecoveryFailure } = deps;
 
-  const applyActionToItem = async (
+  const applyActionToItem = (
     action: Parameters<typeof applyRecoveryAction>[0],
     item: CoordinatorRecoveryItem,
     controls: CoordinatorRecoveryControls,
     options: ProviderOperationRecoveryPlanActionOptions,
-  ): Promise<RecoveryDisposition> => {
-    try {
-      return await applyRecoveryAction(action, {
-        progressStore,
-        recoveryRegistry: options.recoveryRegistry,
-        queuedRecoverable: options.queuedRecoverable,
-        runningRecoverable: options.runningRecoverable,
-        log: controls.report,
-        runtime,
-        createInvocationContext,
-        getRecoveryService,
-        signal: options.signal,
-        settleFault: (fault, content) => settleFault(item, action.jobId, fault, options.coordinatorCommit, content),
-        settleClaim: (jobId) => settleClaim(item, jobId, options.coordinatorCommit),
-        setProcessLocalCleanup: controls.setProcessLocalCleanup,
-        clearProcessLocalCleanup: controls.clearProcessLocalCleanup,
-        abandonHeldJob: (heldJobId) => abandonHeldJob(heldJobId),
-      });
-    } catch (error: unknown) {
-      logRecoveryActionFailure(action, error, controls.report);
-      throw error;
-    }
-  };
+  ): Promise<RecoveryDisposition> => applyRecoveryPlanActionToItem(deps, action, item, controls, options);
 
   const applyPlanAction = async (
     action: Parameters<typeof applyRecoveryAction>[0],
@@ -137,73 +222,11 @@ export function createProviderOperationJobRecovery(
     });
   };
 
-  const recoverProviderOperationJobOnce = async (
+  const recoverProviderOperationJobOnce = (
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
     signal: AbortSignal,
-  ): Promise<ProviderOperationRecoveryAcceptance> => {
-    const jobId = record.operation.jobId;
-    const coordinatorCommit: CommitEventsFn = (callback) => progressStore.commit(callback);
-    const freshItems: CoordinatorRecoveryItem[] = [];
-    await runCoordinatorWalk({
-      subjectKey: jobId,
-      signal,
-      coordinatorCommit,
-      summary: `Provider operation exact-job recovery hydration for ${jobId}`,
-      settle: (item) => {
-        freshItems.push(item);
-        return {
-          kind: 'advanced',
-          outcome: 'settled',
-          facts: COORDINATOR_NOT_APPLICABLE_FACTS,
-          detail: 'provider operation recovery job hydrated',
-        };
-      },
-    });
-    const item = freshItems[0];
-    if (item === undefined) {
-      throw new Error(`Provider operation recovery job '${jobId}' is absent from the coordinator journal.`);
-    }
-
-    const plan = planRecovery(buildRecoverySnapshot([item], runtime.process));
-    const recoveryRegistry =
-      state.recoveryRegistry ?? new RecoveryRegistry(state.cancelledRecoveryJobIds, state.onRecoverySettlement);
-    state.recoveryRegistry = recoveryRegistry;
-    const queuedRecoverable: QueuedRecoverableJob[] = [];
-    const runningRecoverable: RunningRecoverableJob[] = [];
-    const planActionOptions = {
-      itemsByJobId: new Map([[item.jobId, item]]),
-      itemsBySessionId: new Map(item.claimedSession === null ? [] : ([[item.claimedSession.sessionId, item]] as const)),
-      recoveryRegistry,
-      queuedRecoverable,
-      runningRecoverable,
-      signal,
-      coordinatorCommit,
-    } as const;
-
-    for (const action of plan.register) {
-      if (action.jobId === jobId) await applyPlanAction(action, planActionOptions);
-    }
-    for (const action of plan.cleanup) {
-      if (action.jobId === jobId) await applyPlanAction(action, planActionOptions);
-    }
-
-    if (runningRecoverable.length > 0) {
-      await recoveryAdoption.run({
-        queuedJobs: [],
-        runningJobs: runningRecoverable,
-        signal,
-        coordinatorCommit,
-        interruptedAppServerReason: 'restart',
-        abandonHeldJob: (heldJobId) => abandonHeldJob(heldJobId),
-      });
-    }
-    for (const queued of queuedRecoverable) {
-      progressStore.seedEnqueueSequence(queued.authority.launchRecord.enqueueSequence);
-      await recoveryAdoption.acceptQueued(queued, signal, coordinatorCommit, 'retry');
-    }
-    maybeReleaseRecoveryRegistry();
-    return { state: 'accepted', jobId, owner: 'recovery-coordinator' };
-  };
+  ): Promise<ProviderOperationRecoveryAcceptance> =>
+    recoverProviderOperationJobOnceFor(deps, applyPlanAction, record, signal);
 
   const recoverProviderOperationJob = (
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,

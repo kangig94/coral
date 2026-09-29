@@ -570,6 +570,107 @@ function monitorChildHeartbeat(input: {
   }
 }
 
+function relayWatchedChildMessage(input: {
+  message: unknown;
+  handle: unknown;
+  child: ChildProcess;
+  sentinelId: string;
+  owner: OwnerHandle;
+  record: CoordinatorLaunchRecord;
+  state: ChildWatchState;
+  route: (message: unknown, handle: unknown) => boolean;
+}): void {
+  const { message, handle, child, sentinelId, owner, record, state, route } = input;
+  if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
+    closeHandle(handle);
+    return;
+  }
+  if (typeof message === 'object' && message !== null && 'kind' in message) {
+    if (message.kind === 'coral-launch-admitted' && 'pid' in message && message.pid === child.pid)
+      state.admitted = true;
+    if (message.kind === 'coral-sentinel-hello' && 'id' in message && message.id === sentinelId) {
+      state.pendingHello = true;
+      state.lastAnswer = Date.now();
+      if (state.armed) child.send({ kind: 'coral-sentinel-armed', id: sentinelId });
+    }
+    if (message.kind === 'coral-sentinel-answer' && 'id' in message && message.id === state.outstanding) {
+      state.outstanding = null;
+      state.lastAnswer = Date.now();
+    }
+    if (route(message, handle)) return;
+    if (String(message.kind).startsWith('coral-')) return;
+  } else if (route(message, handle)) return;
+  if (process.connected)
+    process.send?.(message as Parameters<NonNullable<typeof process.send>>[0], handle as SendHandle, () =>
+      closeHandle(handle),
+    );
+  else closeHandle(handle);
+}
+
+function escalateWatchedChild(input: {
+  child: ChildProcess;
+  record: CoordinatorLaunchRecord;
+  owner: OwnerHandle;
+  reservation: LaunchReservation;
+  identity: LaunchProcess;
+  timing: SentinelTiming;
+  now: number;
+}): 'sent' | 'absent' | 'held' | 'refused' {
+  const { child, record, owner, reservation, identity, timing, now } = input;
+  if (owner.lost || !record.commitTermination(owner.current, reservation, identity, now, timing.graceMs))
+    return 'refused';
+  if (
+    terminationCommitted(record, owner.current, reservation, identity) &&
+    probeProcessIncarnation(identity.pid) === identity.incarnation
+  ) {
+    let sent: boolean;
+    try {
+      sent = child.kill('SIGKILL');
+    } catch {
+      sent = false;
+    }
+    if (sent) {
+      record.clearSignalRefusal(reservation, identity);
+      return 'sent';
+    }
+  }
+  if (observeProcessLiveness(identity.pid) === 'absent') {
+    record.settleAbsentChild(owner.current, reservation, now);
+    return 'absent';
+  }
+  return record.holdSignalRefusal(owner.current, reservation, identity, now) ? 'held' : 'refused';
+}
+
+function pollWatchedChildServing(input: {
+  child: ChildProcess;
+  manifest: StrictBundleManifest;
+  reservation: LaunchReservation;
+  identity: LaunchProcess;
+  record: CoordinatorLaunchRecord;
+  runDir: string;
+  owner: OwnerHandle;
+  state: ChildWatchState;
+}): void {
+  const { child, manifest, reservation, identity, record, runDir, owner, state } = input;
+  if (!state.admitted || child.pid === undefined || state.served) return;
+  const launchState = record.read();
+  if (
+    ![launchState.launch, launchState.attempt].some(
+      (launch) => launch?.id === reservation.id && launch.phase === 'admitted',
+    )
+  )
+    return;
+  void replacementServing(runDir, manifest.flavor, child.pid).then((ready) => {
+    if (ready && record.serving(reservation, identity)) {
+      state.served = true;
+      for (const request of record.read().requests) {
+        if (request.buildSetId === reservation.buildSetId && request.status === 'accepted')
+          record.complete(owner.current, request.id, Date.now());
+      }
+    }
+  });
+}
+
 async function watchChild({
   running: { child, manifest, identity, sentinelId },
   reservation,
@@ -605,32 +706,9 @@ async function watchChild({
   const childExit = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
   });
-  child.on('message', (message: unknown, handle: unknown) => {
-    if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
-      closeHandle(handle);
-      return;
-    }
-    if (typeof message === 'object' && message !== null && 'kind' in message) {
-      if (message.kind === 'coral-launch-admitted' && 'pid' in message && message.pid === child.pid)
-        state.admitted = true;
-      if (message.kind === 'coral-sentinel-hello' && 'id' in message && message.id === sentinelId) {
-        state.pendingHello = true;
-        state.lastAnswer = Date.now();
-        if (state.armed) child.send({ kind: 'coral-sentinel-armed', id: sentinelId });
-      }
-      if (message.kind === 'coral-sentinel-answer' && 'id' in message && message.id === state.outstanding) {
-        state.outstanding = null;
-        state.lastAnswer = Date.now();
-      }
-      if (route(message, handle)) return;
-      if (String(message.kind).startsWith('coral-')) return;
-    } else if (route(message, handle)) return;
-    if (process.connected)
-      process.send?.(message as Parameters<NonNullable<typeof process.send>>[0], handle as SendHandle, () =>
-        closeHandle(handle),
-      );
-    else closeHandle(handle);
-  });
+  child.on('message', (message: unknown, handle: unknown) =>
+    relayWatchedChildMessage({ message, handle, child, sentinelId, owner, record, state, route }),
+  );
   const parentMessage = (message: unknown, handle: unknown): void => {
     if (owner.lost || record.read().owner?.epoch !== owner.current.epoch) {
       closeHandle(handle);
@@ -641,30 +719,8 @@ async function watchChild({
     else closeHandle(handle);
   };
   if (forwardParentMessages) process.on('message', parentMessage);
-  const escalateChild = (now: number): 'sent' | 'absent' | 'held' | 'refused' => {
-    if (owner.lost || !record.commitTermination(owner.current, reservation, identity, now, timing.graceMs))
-      return 'refused';
-    if (
-      terminationCommitted(record, owner.current, reservation, identity) &&
-      probeProcessIncarnation(identity.pid) === identity.incarnation
-    ) {
-      let sent: boolean;
-      try {
-        sent = child.kill('SIGKILL');
-      } catch {
-        sent = false;
-      }
-      if (sent) {
-        record.clearSignalRefusal(reservation, identity);
-        return 'sent';
-      }
-    }
-    if (observeProcessLiveness(identity.pid) === 'absent') {
-      record.settleAbsentChild(owner.current, reservation, now);
-      return 'absent';
-    }
-    return record.holdSignalRefusal(owner.current, reservation, identity, now) ? 'held' : 'refused';
-  };
+  const escalateChild = (now: number): 'sent' | 'absent' | 'held' | 'refused' =>
+    escalateWatchedChild({ child, record, owner, reservation, identity, timing, now });
   const interval = setInterval(
     () =>
       monitorChildHeartbeat({ child, record, owner, reservation, identity, timing, retirement, state, escalateChild }),
@@ -681,25 +737,10 @@ async function watchChild({
     state.armed = true;
     if (state.pendingHello) child.send({ kind: 'coral-sentinel-armed', id: sentinelId });
   });
-  const servingPoll = setInterval(() => {
-    if (!state.admitted || child.pid === undefined || state.served) return;
-    const launchState = record.read();
-    if (
-      ![launchState.launch, launchState.attempt].some(
-        (launch) => launch?.id === reservation.id && launch.phase === 'admitted',
-      )
-    )
-      return;
-    void replacementServing(runDir, manifest.flavor, child.pid).then((ready) => {
-      if (ready && record.serving(reservation, identity)) {
-        state.served = true;
-        for (const request of record.read().requests) {
-          if (request.buildSetId === reservation.buildSetId && request.status === 'accepted')
-            record.complete(owner.current, request.id, Date.now());
-        }
-      }
-    });
-  }, POLL_MS);
+  const servingPoll = setInterval(
+    () => pollWatchedChildServing({ child, manifest, reservation, identity, record, runDir, owner, state }),
+    POLL_MS,
+  );
   const { exitCode, signal } = await childExit;
   clearInterval(interval);
   clearInterval(servingPoll);
@@ -1532,6 +1573,113 @@ async function selectNextCandidate(input: {
   return { kind: 'candidate', candidate: available[0] };
 }
 
+function releaseSettledInheritedLaunch(
+  record: CoordinatorLaunchRecord,
+  owner: LaunchOwner,
+  incarnation: string,
+  runDir: string,
+): boolean {
+  const settled = record.read();
+  const slots = [settled.launch, settled.attempt];
+  return (
+    slots.some(
+      (slot) => slot !== null && (slot.parent?.pid !== process.pid || slot.parent.incarnation !== incarnation),
+    ) &&
+    slots.every((slot) => slot === null || slot.phase === 'exited') &&
+    settled.requests.every((entry) => entry.status === 'completed' || entry.status === 'unavailable') &&
+    controllerBuild(runDir).kind === 'none' &&
+    record.release(owner)
+  );
+}
+
+async function superviseSelectedCandidate(input: {
+  record: CoordinatorLaunchRecord;
+  owner: OwnerHandle;
+  candidate: Candidate;
+  triedCount: number;
+  args: readonly string[];
+  runDir: string;
+  timing: SentinelTiming;
+  startupBudgetMs: number;
+  onChild?: (child: ChildProcess) => void;
+}): Promise<boolean> {
+  const { record, owner, candidate, triedCount, args, runDir, timing, startupBudgetMs, onChild } = input;
+  const legacyRequest = record
+    .read()
+    .requests.find(
+      (request) =>
+        request.executable === candidate.executable &&
+        request.incumbent !== undefined &&
+        (request.status === 'accepted' || request.status === 'recorded'),
+    );
+  const purpose = legacyRequest !== undefined ? 'legacy-retirement' : triedCount === 1 ? 'startup' : 'recovery';
+  const reservation = record.reserve(owner.current, candidate.buildSetId, purpose, Date.now());
+  if (reservation === null) {
+    await sleep(POLL_MS);
+    return false;
+  }
+  const initial = spawnAdmittedChild(record, owner.current, reservation, candidate.executable, args, runDir);
+  if (initial === null) {
+    await sleep(POLL_MS);
+    return false;
+  }
+  return superviseActiveChild({ record, owner, initial, reservation, runDir, timing, startupBudgetMs, onChild });
+}
+
+async function selectAndSuperviseCandidate(input: {
+  record: CoordinatorLaunchRecord;
+  owner: OwnerHandle;
+  runDir: string;
+  original: Candidate;
+  originalManifest: StrictBundleManifest;
+  tried: Set<string>;
+  firstLaunch: boolean;
+  args: readonly string[];
+  timing: SentinelTiming;
+  startupBudgetMs: number;
+  onChild?: (child: ChildProcess) => void;
+}): Promise<{ released: boolean; firstLaunch: boolean }> {
+  const {
+    record,
+    owner,
+    runDir,
+    original,
+    originalManifest,
+    tried,
+    firstLaunch,
+    args,
+    timing,
+    startupBudgetMs,
+    onChild,
+  } = input;
+  const selection = await selectNextCandidate({
+    record,
+    owner,
+    runDir,
+    original,
+    originalManifest,
+    tried,
+    firstLaunch,
+  });
+  if (selection.kind === 'released') return { released: true, firstLaunch };
+  if (selection.kind === 'retry') return { released: false, firstLaunch };
+  const candidate = selection.candidate;
+  record.clearHold(owner.current, Date.now());
+  tried.add(candidate.executable);
+  const released = await superviseSelectedCandidate({
+    record,
+    owner,
+    candidate,
+    triedCount: tried.size,
+    args,
+    runDir,
+    timing,
+    startupBudgetMs,
+    onChild,
+  });
+  return { released, firstLaunch: false };
+}
+
 export async function runNamespaceSupervisor(
   executable: string,
   args: readonly string[],
@@ -1630,23 +1778,12 @@ export async function runNamespaceSupervisor(
         if (released) return 0;
         continue;
       }
-      const settled = record.read();
-      const slots = [settled.launch, settled.attempt];
-      if (
-        slots.some(
-          (slot) => slot !== null && (slot.parent?.pid !== process.pid || slot.parent.incarnation !== incarnation),
-        ) &&
-        slots.every((slot) => slot === null || slot.phase === 'exited') &&
-        settled.requests.every((entry) => entry.status === 'completed' || entry.status === 'unavailable') &&
-        controllerBuild(runDir).kind === 'none' &&
-        record.release(owner.current)
-      )
-        return 0;
+      if (releaseSettledInheritedLaunch(record, owner.current, incarnation, runDir)) return 0;
       if (inherited.length > 0) {
         await sleep(POLL_MS);
         continue;
       }
-      const selection = await selectNextCandidate({
+      const selection = await selectAndSuperviseCandidate({
         record,
         owner,
         runDir,
@@ -1654,45 +1791,13 @@ export async function runNamespaceSupervisor(
         originalManifest,
         tried,
         firstLaunch,
+        args,
+        timing,
+        startupBudgetMs,
+        onChild: options.onChild,
       });
-      if (selection.kind === 'released') return 0;
-      if (selection.kind === 'retry') continue;
-      const candidate = selection.candidate;
-      record.clearHold(owner.current, Date.now());
-      firstLaunch = false;
-      tried.add(candidate.executable);
-      const legacyRequest = record
-        .read()
-        .requests.find(
-          (request) =>
-            request.executable === candidate.executable &&
-            request.incumbent !== undefined &&
-            (request.status === 'accepted' || request.status === 'recorded'),
-        );
-      const purpose = legacyRequest !== undefined ? 'legacy-retirement' : tried.size === 1 ? 'startup' : 'recovery';
-      const reservation = record.reserve(owner.current, candidate.buildSetId, purpose, Date.now());
-      if (reservation === null) {
-        await sleep(POLL_MS);
-        continue;
-      }
-      const initial = spawnAdmittedChild(record, owner.current, reservation, candidate.executable, args, runDir);
-      if (initial === null) {
-        await sleep(POLL_MS);
-        continue;
-      }
-      if (
-        await superviseActiveChild({
-          record,
-          owner,
-          initial,
-          reservation,
-          runDir,
-          timing,
-          startupBudgetMs,
-          onChild: options.onChild,
-        })
-      )
-        return 0;
+      firstLaunch = selection.firstLaunch;
+      if (selection.released) return 0;
     }
   } finally {
     record.close();

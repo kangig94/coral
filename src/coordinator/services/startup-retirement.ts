@@ -307,6 +307,118 @@ function controllerReceiptsMayNameEpoch(runtime: Runtime, epochKey: string, line
   );
 }
 
+function observeStartupRetirementCustody(
+  runtime: Runtime,
+  index: JobLocationIndex,
+  incumbent: NonNullable<StoreMintObservation['incumbent']>,
+  lineageKey: string,
+): { settled: boolean; namesEpoch: boolean } {
+  let custodySettled: boolean;
+  let custodyNamesEpoch = true;
+  try {
+    const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+    const matching = custody.filter(
+      (entry) =>
+        entry.kind === 'unreadable' ||
+        entry.intent.epochKey === lineageKey ||
+        entry.intent.epoch === dirname(incumbent.path),
+    );
+    custodyNamesEpoch = matching.length > 0;
+    custodySettled = true;
+    for (const entry of matching) {
+      if (entry.kind === 'absent') continue;
+      if (entry.kind !== 'bound') {
+        custodySettled = false;
+        break;
+      }
+      const jobId = entry.intent.jobId ?? entry.intent.operationId;
+      if (entry.intent.effect === 'provider-operation-publication') {
+        if (index.read(jobId)?.disposition !== 'terminal') custodySettled = false;
+        if (!custodySettled) break;
+        continue;
+      }
+      const process = entry.binding.process;
+      if (process === null || (entry.intent.owner === 'durable-cli' && index.read(jobId)?.disposition !== 'terminal')) {
+        custodySettled = false;
+        break;
+      }
+      const observation = observeRecordedContainment(
+        {
+          pid: process.pid,
+          incarnation: process.incarnation,
+          processGroupId: process.processGroupId,
+          childRoot: null,
+        },
+        {
+          process: runtime.process,
+          platform: runtime.env.platform() as NodeJS.Platform,
+          readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+        },
+      );
+      if (observation.kind !== 'absent') {
+        custodySettled = false;
+        break;
+      }
+    }
+  } catch {
+    custodySettled = false;
+  }
+  return { settled: custodySettled, namesEpoch: custodyNamesEpoch };
+}
+
+function retirementPatienceAllowsMint(
+  runtime: Runtime,
+  index: JobLocationIndex,
+  startupId: string,
+  epochKey: string,
+  lineageKey: string,
+  custodyNamesEpoch: boolean,
+): boolean {
+  const attemptsPath = join(
+    runtime.paths.coral.coordinator.runDir,
+    'retirement-patience.v1',
+    `${runtime.ids.sha256(epochKey)}.json`,
+  );
+  let previous: RetirementPatience | null = null;
+  try {
+    const parsed = retirementPatienceSchema.safeParse(
+      JSON.parse(runtime.storage.readFileSync(attemptsPath, 'utf-8')) as unknown,
+    );
+    if (parsed.success) previous = parsed.data;
+  } catch {
+    // An unreadable patience record starts a fresh observation count.
+  }
+  const now = runtime.time.now();
+  // Startups racing each other observe the same evidence, so an observation counts once per interval, not per process.
+  const repeated =
+    previous !== null &&
+    (previous.countedAt === undefined
+      ? previous.startupId === startupId
+      : now - previous.countedAt < RETIREMENT_PATIENCE_INTERVAL_MS)
+      ? previous
+      : null;
+  const attempts = repeated?.attempts ?? (previous?.attempts ?? 0) + 1;
+  const countedAt = repeated === null ? now : (repeated.countedAt ?? now);
+  runtime.storage.mkdirSync(dirname(attemptsPath), { recursive: true, mode: 0o700 });
+  if (
+    !runtime.storage.writeAtomicDurableSync(
+      attemptsPath,
+      `${JSON.stringify({ ...previous, startupId, attempts, countedAt })}\n`,
+      {
+        encoding: 'utf8',
+        mode: 0o600,
+      },
+    )
+  )
+    throw new Error('Retirement patience could not be recorded durably.');
+  const holdsNoWork =
+    index.locationsFor(epochKey).length === 0 &&
+    index.unknownLocationHold(epochKey) === null &&
+    !custodyNamesEpoch &&
+    !controllerReceiptsMayNameEpoch(runtime, epochKey, lineageKey);
+  return holdsNoWork || attempts >= UNOPENABLE_STARTUP_ATTEMPTS;
+}
+
 export function createStartupMintAuthorizer(
   runtime: Runtime,
   index: JobLocationIndex,
@@ -382,105 +494,16 @@ export function createStartupMintAuthorizer(
       index.holdUnknownLocations(epochKey, 'retained-controller-recovery-unavailable');
       for (const location of index.locationsFor(epochKey)) index.markUncertified(location.jobId);
     }
-    let custodySettled: boolean;
-    let custodyNamesEpoch = true;
-    try {
-      const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
-      const matching = custody.filter(
-        (entry) =>
-          entry.kind === 'unreadable' ||
-          entry.intent.epochKey === lineageKey ||
-          entry.intent.epoch === dirname(incumbent.path),
-      );
-      custodyNamesEpoch = matching.length > 0;
-      custodySettled = true;
-      for (const entry of matching) {
-        if (entry.kind === 'absent') continue;
-        if (entry.kind !== 'bound') {
-          custodySettled = false;
-          break;
-        }
-        const jobId = entry.intent.jobId ?? entry.intent.operationId;
-        if (entry.intent.effect === 'provider-operation-publication') {
-          if (index.read(jobId)?.disposition !== 'terminal') custodySettled = false;
-          if (!custodySettled) break;
-          continue;
-        }
-        const process = entry.binding.process;
-        if (
-          process === null ||
-          (entry.intent.owner === 'durable-cli' && index.read(jobId)?.disposition !== 'terminal')
-        ) {
-          custodySettled = false;
-          break;
-        }
-        const observation = observeRecordedContainment(
-          {
-            pid: process.pid,
-            incarnation: process.incarnation,
-            processGroupId: process.processGroupId,
-            childRoot: null,
-          },
-          {
-            process: runtime.process,
-            platform: runtime.env.platform() as NodeJS.Platform,
-            readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
-          },
-        );
-        if (observation.kind !== 'absent') {
-          custodySettled = false;
-          break;
-        }
-      }
-    } catch {
-      custodySettled = false;
-    }
+    const { settled: custodySettled, namesEpoch: custodyNamesEpoch } = observeStartupRetirementCustody(
+      runtime,
+      index,
+      incumbent,
+      lineageKey,
+    );
     if (executorSettled && seeded.kind === 'complete' && custodySettled && index.resultsReleased(epochKey)) {
       return retirementMintDisposition('retired', epochKey);
     }
-    const attemptsPath = join(
-      runtime.paths.coral.coordinator.runDir,
-      'retirement-patience.v1',
-      `${runtime.ids.sha256(epochKey)}.json`,
-    );
-    let previous: RetirementPatience | null = null;
-    try {
-      const parsed = retirementPatienceSchema.safeParse(
-        JSON.parse(runtime.storage.readFileSync(attemptsPath, 'utf-8')) as unknown,
-      );
-      if (parsed.success) previous = parsed.data;
-    } catch {
-      // An unreadable patience record starts a fresh observation count.
-    }
-    const now = runtime.time.now();
-    // Startups racing each other observe the same evidence, so an observation counts once per interval, not per process.
-    const repeated =
-      previous !== null &&
-      (previous.countedAt === undefined
-        ? previous.startupId === startupId
-        : now - previous.countedAt < RETIREMENT_PATIENCE_INTERVAL_MS)
-        ? previous
-        : null;
-    const attempts = repeated?.attempts ?? (previous?.attempts ?? 0) + 1;
-    const countedAt = repeated === null ? now : (repeated.countedAt ?? now);
-    runtime.storage.mkdirSync(dirname(attemptsPath), { recursive: true, mode: 0o700 });
-    if (
-      !runtime.storage.writeAtomicDurableSync(
-        attemptsPath,
-        `${JSON.stringify({ ...previous, startupId, attempts, countedAt })}\n`,
-        {
-          encoding: 'utf8',
-          mode: 0o600,
-        },
-      )
-    )
-      throw new Error('Retirement patience could not be recorded durably.');
-    const holdsNoWork =
-      index.locationsFor(epochKey).length === 0 &&
-      index.unknownLocationHold(epochKey) === null &&
-      !custodyNamesEpoch &&
-      !controllerReceiptsMayNameEpoch(runtime, epochKey, lineageKey);
-    if (!holdsNoWork && attempts < UNOPENABLE_STARTUP_ATTEMPTS) return null;
+    if (!retirementPatienceAllowsMint(runtime, index, startupId, epochKey, lineageKey, custodyNamesEpoch)) return null;
     // An unreadable closure already retains the epoch visibly, so the mint proceeds without overwriting it.
     void recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
       version: 'v1',
