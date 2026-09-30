@@ -13,7 +13,251 @@ import * as backendDiscovery from '#src/infra/backend-discovery.js';
 import * as nodeProcess from '#src/infra/node-process.js';
 import * as upgradeIntent from '#src/infra/upgrade-intent.js';
 
+function intentFixture(incarnation: ProcessIncarnation): upgradeIntent.UpgradeIntent {
+  return {
+    version: 'v1',
+    requestId: 'overlap',
+    revision: 0,
+    incumbent: {
+      instanceId: 'A',
+      pid: process.pid,
+      incarnation,
+      version: '0.10.14',
+      bundleHash: 'hash-A',
+      flavor: 'prod',
+    },
+    target: {
+      build: {
+        version: '0.10.15',
+        buildSetId: 'build-B',
+        bundleHash: 'hash-B',
+        flavor: 'prod',
+        storeFormatFingerprint: 'format',
+        cliBundleHash: 'cli',
+        claudeAppserverBundleHash: 'claude',
+        durableWrapperBundleHash: 'wrapper',
+      },
+      pluginRootLabel: '/missing',
+    },
+    attemptId: 'attempt-B',
+    attemptChild: { attemptId: 'attempt-B', pid: 999_995, incarnation },
+    attemptOwner: null,
+    disposition: 'attempting',
+    blockers: [],
+    retryCondition: null,
+    attemptDeadline: new Date(Date.now() + 1_000).toISOString(),
+    completionReceipt: null,
+  };
+}
+
 describe('namespace supervisor ownership', () => {
+  it('retains every live launch id when reconstruction finds more children than the two active slots', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-extra-children-'));
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Missing incarnation');
+    try {
+      const ids = [1, 2, 3].map((id) => `00000000-0000-4000-8000-${String(id).padStart(12, '0')}`);
+      for (let index = 0; index < ids.length; index++)
+        publishLaunchAdmission(runDir, {
+          version: 1,
+          launchId: ids[index],
+          child: { pid: 999_991 + index, incarnation },
+          parent: { pid: 999_998, incarnation },
+          admittedAt: Date.now(),
+          purpose: 'startup',
+          build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
+        });
+      vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+      vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+      const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-B');
+      expect(
+        state
+          .children()
+          .map((slot) => slot.id)
+          .sort(),
+      ).toEqual(ids);
+      expect(state.reserve(state.read().owner, 'build-C', 'succession')).toBeNull();
+      expect(state.release()).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps both child tuples when readable JSON disagrees with its lifetime envelope', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-json-child-conflict-'));
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Missing incarnation');
+    try {
+      const admission = {
+        version: 1 as const,
+        launchId: '00000000-0000-4000-8000-000000000001',
+        child: { pid: process.pid, incarnation },
+        parent: { pid: 999_998, incarnation },
+        admittedAt: Date.now(),
+        purpose: 'startup' as const,
+        build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' as const },
+      };
+      publishLaunchAdmission(runDir, admission);
+      writeFileSync(
+        join(runDir, 'launch-admissions.v2', `${admission.launchId}.json`),
+        JSON.stringify({ ...admission, child: { pid: 999_995, incarnation } }),
+      );
+      vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+      const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-B');
+      expect(
+        state
+          .children()
+          .map((slot) => slot.child?.pid)
+          .sort(),
+      ).toEqual([process.pid, 999_995].sort());
+      expect(state.reserve(state.read().owner, 'build-C', 'succession')).toBeNull();
+      for (const slot of state.children()) expect(state.supervisionEligible(slot)).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+  it('keeps a passive intent incumbent beyond escalation without a termination commitment', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-passive-incumbent-'));
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Missing incarnation');
+    try {
+      const intent = intentFixture(incarnation);
+      intent.attemptChild = null;
+      vi.spyOn(upgradeIntent, 'readUpgradeIntent').mockReturnValue({ kind: 'readable', intent });
+      const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-B');
+      const incumbent = state.read().launch!;
+      expect(state.supervisionEligible(incumbent)).toBe(false);
+      expect(state.commitTermination(state.read().owner, incumbent, incumbent.child!, Date.now() + 100_000, 80)).toBe(
+        false,
+      );
+      expect(state.read().launch?.terminationAt).toBeUndefined();
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('retains each live identity when discovery reuses another admission launch id', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-conflicting-children-'));
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Missing incarnation');
+    try {
+      const admittedAt = Date.now();
+      const parent = { pid: 999_998, incarnation };
+      const launchId = '00000000-0000-4000-8000-000000000001';
+      publishLaunchAdmission(runDir, {
+        version: 1,
+        launchId,
+        child: { pid: process.pid, incarnation },
+        parent,
+        admittedAt,
+        build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
+        purpose: 'startup',
+      });
+      vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+      vi.spyOn(backendDiscovery, 'readDiscoveryRecordDisposition').mockReturnValue({
+        kind: 'record',
+        record: {
+          pid: 999_995,
+          incarnation,
+          port: 12345,
+          socketPath: '/tmp/conflict.sock',
+          bundleHash: 'hash-A',
+          flavor: 'prod',
+          namespace: 'test',
+          startedAt: Date.now(),
+          token: 'token',
+          bootToken: 'boot',
+          supervision: { version: 1, launchId, admittedAt, buildSetId: 'build-A', purpose: 'startup', parent },
+        },
+      });
+      const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-B');
+      expect(
+        state
+          .children()
+          .map((slot) => slot.child?.pid)
+          .sort(),
+      ).toEqual([process.pid, 999_995].sort());
+      expect(state.reserve(state.read().owner, 'build-B', 'succession')).toBeNull();
+      for (const slot of state.children()) expect(state.supervisionEligible(slot)).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+  it('reconstructs an intent-only attempt independently of its incumbent and retains its original deadline', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-intent-attempt-'));
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Missing incarnation');
+    try {
+      const intent = intentFixture(incarnation);
+      vi.spyOn(upgradeIntent, 'readUpgradeIntent').mockReturnValue({ kind: 'readable', intent });
+      const probe = vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+      const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-B');
+      expect(state.read().launch?.child?.pid).toBe(process.pid);
+      expect(state.read().attempt).toMatchObject({
+        child: { pid: 999_995, incarnation },
+        phase: 'reserved',
+        attemptDeadline: Date.parse(intent.attemptDeadline!),
+      });
+      expect(state.read().attempt?.admittedAt).toBeUndefined();
+      expect(state.reserve(state.read().owner, 'build-C', 'succession')).toBeNull();
+      const attempt = state.read().attempt!;
+      expect(state.commitTermination(state.read().owner, attempt, attempt.child!, Date.now(), 80)).toBe(false);
+      probe.mockImplementation((pid) => (pid === 999_995 ? ('different' as ProcessIncarnation) : incarnation));
+      state.reconcileAdmissions();
+      expect(state.read().attempt?.phase).toBe('exited');
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('retains intent identities with missing incarnation as unknown occupancy', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-intent-unknown-'));
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Missing incarnation');
+    try {
+      const intent = intentFixture(incarnation);
+      intent.incumbent.incarnation = null;
+      intent.attemptChild!.incarnation = null;
+      vi.spyOn(upgradeIntent, 'readUpgradeIntent').mockReturnValue({ kind: 'readable', intent });
+      vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+      const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-B');
+      expect(state.read().owner.mode).toBe('recovering');
+      expect(state.read().launch).not.toBeNull();
+      expect(state.read().attempt).not.toBeNull();
+      expect(state.release()).toBe(false);
+      expect(state.reserve(state.read().owner, 'build-C', 'succession')).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('changes actual ownership to recovering when a reservation probe becomes unknown', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-reservation-unknown-'));
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Missing incarnation');
+    try {
+      const child = { pid: process.pid, incarnation };
+      const state = new SupervisorLaunchMemory(runDir, child, 'build-A');
+      const launch = state.reserve(state.read().owner, 'build-A', 'startup')!;
+      state.spawned(launch, child, child);
+      state.admit(launch, child, child, Date.now());
+      state.serving(launch, child);
+      vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(null);
+      expect(state.reserve(state.read().owner, 'build-B', 'succession')).toBeNull();
+      expect(state.read().owner.mode).toBe('recovering');
+      expect(state.read().launch?.child).toEqual(child);
+      expect(state.commitTermination(state.read().owner, state.read().launch!, child, Date.now(), 80)).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
   it('ignores corrupt branch-only v1 records beside a live unrelated process', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-v1-ignored-'));
     const incarnation = probeProcessIncarnation(process.pid);

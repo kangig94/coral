@@ -18,14 +18,22 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { build, type PluginBuild } from 'esbuild';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { childHasExited } from '#src/coordinator-launch/child-state.js';
 import { replacementServing } from '#src/coordinator-launch/health.js';
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { readLaunchStatus } from '#src/infra/launch-status.js';
-import { listLaunchAdmissions, readLaunchAdmission } from '#src/infra/launch-admission-record.js';
+import {
+  launchAdmissionPath,
+  listLaunchAdmissions,
+  listLaunchSubjects,
+  readLaunchAdmission,
+} from '#src/infra/launch-admission-record.js';
+import { SupervisorLaunchMemory } from '#src/coordinator-launch/state.js';
+import * as admissionRecords from '#src/infra/launch-admission-record.js';
+import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import {
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   SUCCESSION_CAPABILITIES_FILE,
@@ -77,6 +85,201 @@ async function waitForReplacementLockHolder(
 }
 
 describe('namespace supervisor recovery', () => {
+  it('keeps an intent-only legacy incumbent passive beyond the escalation budget without committing or delivering signals', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-passive-intent-incumbent-'));
+    roots.push(home);
+    const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const incumbent = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    if (incumbent.pid === undefined) throw new Error('Missing incumbent PID');
+    const incarnation = probeProcessIncarnation(incumbent.pid);
+    if (incarnation === null) throw new Error('Missing incumbent incarnation');
+    const evidence = new SupervisorEvidence(runDir);
+    let supervisor: ReturnType<typeof spawn> | undefined;
+    const states: ReturnType<SupervisorLaunchMemory['read']>[] = [];
+    const signals: unknown[] = [];
+    try {
+      await evidence.request(join(plugin.root, 'bridge', 'coral-backend.cjs'), buildSetId(plugin.root), {
+        instanceId: 'passive',
+        pid: incumbent.pid,
+        incarnation,
+        version: '0.10.13',
+        bundleHash: 'legacy',
+        flavor: 'prod',
+      });
+      const harness = join(home, 'supervisor.mjs');
+      await build({
+        entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+        outfile: harness,
+        bundle: true,
+        platform: 'node',
+        format: 'esm',
+        external: ['node:*'],
+        plugins: [
+          {
+            name: 'observe-supervision-memory',
+            setup(builder) {
+              builder.onLoad({ filter: /\/coordinator-launch\/(state|supervisor)\.ts$/ }, ({ path }) => ({
+                contents: readFileSync(path, 'utf8')
+                  .replace(
+                    'return this.#state;',
+                    "process.send?.({ kind: 'fixture-memory', state: this.#state }); return this.#state;",
+                  )
+                  .replace(
+                    'process.kill(child.pid, signal);',
+                    "process.send?.({ kind: 'fixture-signal', pid: child.pid, signal }); process.kill(child.pid, signal);",
+                  ),
+                loader: 'ts',
+              }));
+            },
+          },
+        ],
+      });
+      supervisor = spawn(process.execPath, [harness, join(plugin.root, 'bridge', 'coral-backend.cjs')], {
+        env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      });
+      supervisor.on('message', (value: unknown) => {
+        if (typeof value !== 'object' || value === null || !('kind' in value)) return;
+        if (value.kind === 'fixture-memory' && 'state' in value)
+          states.push(value.state as ReturnType<SupervisorLaunchMemory['read']>);
+        if (value.kind === 'fixture-signal') signals.push(value);
+      });
+      await waitForCondition(() => states.length > 0, 3_000);
+      expect(evidence.lockHolder()?.pid).toBe(supervisor.pid);
+      const started = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(Date.now() - started).toBeGreaterThan(300 + 80);
+      expect(states.length).toBeGreaterThan(1);
+      expect(
+        states.every(
+          (state) =>
+            state.owner.mode === 'recovering' &&
+            state.launch !== null &&
+            state.launch?.child?.pid === incumbent.pid &&
+            state.launch.parent === undefined &&
+            state.launch.terminationAt === undefined,
+        ),
+      ).toBe(true);
+      expect(signals).toEqual([]);
+      expect(probeProcessIncarnation(incumbent.pid)).toBe(incarnation);
+    } finally {
+      evidence.close();
+      supervisor?.kill('SIGKILL');
+      incumbent.kill('SIGKILL');
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+  it('holds A and a corrupt pre-discovery B supplied only by intent after supervisor loss, then cleans B after exit', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-intent-only-attempt-'));
+    roots.push(home);
+    const plugin = createPluginFixture(roots, {
+      flavor: 'prod',
+      version: '0.10.14',
+      backend: 'succession-interposition',
+      accepts: 'bundled',
+    });
+    const target = createPluginFixture(roots, {
+      flavor: 'prod',
+      version: '0.10.16',
+      backend: 'admission-freeze',
+      accepts: 'bundled',
+    });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisor = spawn(process.execPath, [harness, join(plugin.root, 'bridge', 'coral-backend.cjs')], {
+      env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+      stdio: 'ignore',
+    });
+    const record = new SupervisorEvidence(runDir);
+    const pids = new Set<number>();
+    let release: (() => void) | undefined;
+    try {
+      await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
+      const incumbent = record.read().launch!;
+      pids.add(incumbent.child.pid);
+      await record.request(join(target.root, 'bridge', 'coral-backend.cjs'), buildSetId(target.root));
+      await waitForCondition(() => record.read().attempt?.phase === 'admitted', 10_000);
+      const attempt = record.read().attempt!;
+      pids.add(attempt.child.pid);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      process.kill(attempt.child.pid, 'SIGSTOP');
+      const subject = listLaunchSubjects(runDir).find((entry) => entry.admission?.launchId === attempt.id)!;
+      const intent = readUpgradeIntent(runDir);
+      if (intent.kind !== 'readable') throw new Error('Missing intent');
+      const deadline = new Date(attempt.admittedAt + 25_000).toISOString();
+      const persisted = await compareAndSwapUpgradeIntent(runDir, intent.intent.revision, {
+        ...intent.intent,
+        disposition: 'attempting',
+        attemptId: 'intent-only-B',
+        attemptChild: { attemptId: 'intent-only-B', pid: attempt.child.pid, incarnation: attempt.child.incarnation },
+        attemptDeadline: deadline,
+      });
+      expect(persisted.kind).toBe('written');
+      writeFileSync(launchAdmissionPath(runDir, attempt.id), '{');
+      expect((JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as { pid: number }).pid).toBe(
+        incumbent.child.pid,
+      );
+      const parentExit = new Promise<void>((resolve) => supervisor.once('exit', () => resolve()));
+      supervisor.kill('SIGKILL');
+      await parentExit;
+      expect(probeProcessIncarnation(attempt.child.pid)).toBe(attempt.child.incarnation);
+      const namespace = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+      if (namespace.kind !== 'acquired') throw new Error('Replacement did not acquire the namespace inode');
+      release = namespace.lease;
+      expect(record.lockHolder()?.pid).toBe(process.pid);
+      const incarnation = probeProcessIncarnation(process.pid);
+      if (incarnation === null) throw new Error('Missing replacement incarnation');
+      const readSubjects = admissionRecords.listLaunchSubjects;
+      const unavailable = vi
+        .spyOn(admissionRecords, 'listLaunchSubjects')
+        .mockImplementation((dir) => readSubjects(dir).filter((entry) => entry.admission?.launchId !== attempt.id));
+      const memory = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, buildSetId(target.root));
+      expect(memory.read().launch?.child?.pid).toBe(incumbent.child.pid);
+      expect(memory.read().attempt).toMatchObject({
+        phase: 'reserved',
+        child: attempt.child,
+        attemptDeadline: Date.parse(deadline),
+      });
+      expect(memory.read().attempt?.admittedAt).toBeUndefined();
+      expect(memory.reserve(memory.read().owner, 'another-build', 'succession')).toBeNull();
+      expect(memory.supervisionEligible(memory.read().attempt!)).toBe(false);
+      expect(await replacementServing(runDir, 'prod', incumbent.child.pid)).toBe(true);
+      process.kill(attempt.child.pid, 'SIGKILL');
+      await waitForCondition(() => observeProcessLiveness(attempt.child.pid) === 'absent', 5_000);
+      unavailable.mockRestore();
+      memory.reconcileAdmissions();
+      expect(memory.read().attempt?.phase).toBe('exited');
+      expect(memory.read().attempt?.attemptDeadline).toBe(Date.parse(deadline));
+      expect(existsSync(subject.path)).toBe(false);
+      expect(existsSync(subject.lifetimePath!)).toBe(false);
+      memory.reconcileAdmissions();
+      expect(existsSync(subject.path)).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+      release?.();
+      record.close();
+      supervisor.kill('SIGKILL');
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          /* Exit may already be established. */
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
   it('keeps a live coordinator recorded after a child IPC error', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-child-ipc-error-'));
@@ -407,8 +610,18 @@ describe('namespace supervisor recovery', () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-pending-attempt-repair-'));
     roots.push(home);
-    const plugin = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
-    const target = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16', backend: 'admission-freeze' });
+    const plugin = createPluginFixture(roots, {
+      flavor: 'prod',
+      version: '0.10.14',
+      backend: 'succession-interposition',
+      accepts: 'bundled',
+    });
+    const target = createPluginFixture(roots, {
+      flavor: 'prod',
+      version: '0.10.16',
+      backend: 'admission-freeze',
+      accepts: 'bundled',
+    });
     const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
     const harness = join(home, 'supervisor.mjs');
     await build({
@@ -439,6 +652,7 @@ describe('namespace supervisor recovery', () => {
       attemptPid = record.read().attempt?.child.pid;
       if (attemptPid === undefined) throw new Error('Attempt has no PID');
       pids.add(attemptPid);
+      expect(probeProcessIncarnation(servingPid)).toBe(original.launch?.child.incarnation);
       supervisor.kill('SIGKILL');
       let replacementPid: number | undefined;
       await waitForCondition(() => {
@@ -446,11 +660,21 @@ describe('namespace supervisor recovery', () => {
         if (observed === undefined || observed === supervisor.pid) return false;
         replacementPid = observed;
         return true;
-      }, 10_000);
+      }, 10_000).catch((error: unknown) => {
+        throw new Error(
+          `Replacement missing: ${JSON.stringify(record.read())}; status=${JSON.stringify(readLaunchStatus(runDir))}; original=${servingPid}; attempt=${attemptPid}`,
+          { cause: error },
+        );
+      });
       if (replacementPid !== undefined) pids.add(replacementPid);
       rmSync(target.root, { recursive: true, force: true });
       if (probeProcessIncarnation(attemptPid) !== null) process.kill(attemptPid, 'SIGKILL');
-      await waitForCondition(() => record.read().attempt?.phase === 'exited', 10_000);
+      await waitForCondition(() => record.read().attempt?.phase === 'exited', 10_000).catch((error: unknown) => {
+        throw new Error(
+          `Attempt exit did not settle: ${JSON.stringify(record.read())}; status=${JSON.stringify(readLaunchStatus(runDir))}`,
+          { cause: error },
+        );
+      });
       try {
         await waitForCondition(
           () =>
@@ -2179,14 +2403,17 @@ describe('namespace supervisor recovery', () => {
     }
   }, 30_000);
 
-  it.runIf(process.platform === 'linux')(
-    'enforces the original admission deadline after takeover',
-    async () => {
+  it.skipIf(process.platform !== 'linux').each(['readable', 'corrupt'] as const)(
+    'enforces the original %s admission deadline after takeover without resuming the stopped child',
+    async (admission) => {
       const roots: string[] = [];
       const home = mkdtempSync(join(tmpdir(), 'coral-red-inherited-admission-'));
       roots.push(home);
       const stalled = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14', backend: 'admission-freeze' });
       const recovery = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
+      const independentHome = mkdtempSync(join(tmpdir(), 'coral-independent-service-'));
+      roots.push(independentHome);
+      const independentRunDir = coordinatorPaths('prod', { baseDir: join(independentHome, '.coral') }).runDir;
       const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
       const harness = join(home, 'supervisor.mjs');
       await build({
@@ -2211,6 +2438,10 @@ describe('namespace supervisor recovery', () => {
       });
       const record = new SupervisorEvidence(runDir);
       let replacement: ReturnType<typeof spawn> | null = null;
+      let independent: ReturnType<typeof spawn> | null = null;
+      let independentPid: number | undefined;
+      let serviceProbe: ReturnType<typeof setInterval> | undefined;
+      const serviceAnswers: Promise<boolean>[] = [];
       let stalledPid: number | undefined;
       try {
         await waitForCondition(() => record.read().launch?.phase === 'admitted', 10_000);
@@ -2224,6 +2455,40 @@ describe('namespace supervisor recovery', () => {
           kind: 'readable',
           admission: { admittedAt, child: { pid: stalledPid } },
         });
+        const subject = listLaunchSubjects(runDir).find((entry) => entry.admission?.launchId === launchId);
+        if (subject?.lifetimePath === undefined || subject.inode === undefined)
+          throw new Error('Missing lifetime inode');
+        if (admission === 'corrupt') writeFileSync(launchAdmissionPath(runDir, launchId), '{');
+        const observerIncarnation = probeProcessIncarnation(process.pid);
+        if (observerIncarnation === null) throw new Error('Missing observer incarnation');
+        const reconstructed = new SupervisorLaunchMemory(
+          runDir,
+          { pid: process.pid, incarnation: observerIncarnation },
+          buildSetId(recovery.root),
+        );
+        expect(reconstructed.read().launch).toMatchObject({
+          phase: 'admitted',
+          admittedAt,
+          child: { pid: stalledPid },
+        });
+        expect(reconstructed.supervisionEligible(reconstructed.read().launch!)).toBe(true);
+        expect(readUpgradeIntent(runDir).kind).toBe('absent');
+        expect(existsSync(join(runDir, 'coordinator.json'))).toBe(false);
+        independent = spawn(process.execPath, [harness, join(recovery.root, 'bridge', 'coral-backend.cjs')], {
+          env: { ...env, HOME: independentHome, TMPDIR: independentHome, CORAL_SENTINEL_RUN_DIR: independentRunDir },
+          stdio: 'ignore',
+        });
+        const independentRecord = new SupervisorEvidence(independentRunDir);
+        try {
+          await waitForCondition(() => independentRecord.read().launch?.phase === 'serving', 10_000);
+          independentPid = independentRecord.read().launch?.child?.pid;
+        } finally {
+          independentRecord.close();
+        }
+        if (independentPid === undefined) throw new Error('Independent service missing');
+        serviceProbe = setInterval(() => {
+          serviceAnswers.push(replacementServing(independentRunDir, 'prod', independentPid!));
+        }, 100);
         await waitForCondition(() => Date.now() >= admittedAt + 2_800, 4_000);
         process.kill(stalledPid, 'SIGSTOP');
         parent.kill('SIGKILL');
@@ -2234,13 +2499,25 @@ describe('namespace supervisor recovery', () => {
         });
         await waitForCondition(() => record.read().owner?.process.pid === replacement?.pid, 10_000);
         expect(record.lockHolder()?.pid).toBe(replacement.pid);
-        expect(readLaunchAdmission(runDir, launchId)).toMatchObject({ kind: 'readable', admission: { admittedAt } });
+        expect(listLaunchSubjects(runDir).find((entry) => entry.admission?.launchId === launchId)).toMatchObject({
+          admission: { admittedAt },
+          inode: subject.inode,
+        });
+        if (admission === 'readable')
+          expect(readLaunchAdmission(runDir, launchId)).toMatchObject({ kind: 'readable', admission: { admittedAt } });
+        else expect(readLaunchAdmission(runDir, launchId).kind).toBe('unreadable');
         await waitForCondition(
           () =>
             stalledPid !== undefined && (observeProcessLiveness(stalledPid) === 'absent' || childHasExited(stalledPid)),
           Math.max(1, admittedAt + 4_000 + 1_000 - Date.now()),
         );
         expect(Date.now()).toBeLessThan(admittedAt + 5_000);
+        await waitForCondition(() => !existsSync(subject.path) && !existsSync(subject.lifetimePath!), 2_000);
+        expect(Date.now()).toBeLessThan(admittedAt + 5_000);
+        clearInterval(serviceProbe);
+        expect(serviceAnswers.length).toBeGreaterThan(0);
+        expect((await Promise.all(serviceAnswers)).every(Boolean)).toBe(true);
+        expect(await replacementServing(independentRunDir, 'prod', independentPid)).toBe(true);
         await waitForCondition(
           () =>
             record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === buildSetId(recovery.root),
@@ -2248,6 +2525,7 @@ describe('namespace supervisor recovery', () => {
         );
         expect(observeProcessLiveness(stalledPid) === 'absent' || childHasExited(stalledPid)).toBe(true);
       } finally {
+        clearInterval(serviceProbe);
         const currentPid = record.read().launch?.child?.pid;
         record.close();
         const replacementProcess = replacement;
@@ -2260,6 +2538,7 @@ describe('namespace supervisor recovery', () => {
             ? new Promise<void>((resolve) => replacementProcess.once('exit', () => resolve()))
             : Promise.resolve();
         if (parent.exitCode === null && parent.signalCode === null) parent.kill('SIGKILL');
+        independent?.kill('SIGKILL');
         if (
           replacementProcess !== null &&
           replacementProcess.exitCode === null &&
@@ -2267,7 +2546,7 @@ describe('namespace supervisor recovery', () => {
         )
           replacementProcess.kill('SIGKILL');
         await Promise.all([parentExit, replacementExit]);
-        for (const pid of [stalledPid, currentPid]) {
+        for (const pid of [stalledPid, currentPid, independentPid]) {
           if (pid === undefined) continue;
           try {
             process.kill(pid, 'SIGKILL');

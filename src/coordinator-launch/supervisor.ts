@@ -372,10 +372,10 @@ function terminationCommitted(
   reservation: LaunchReservation,
   identity: LaunchProcess,
 ): boolean {
-  const state = record.read();
-  const slot = [state.launch, state.attempt].find((entry) => entry?.id === reservation.id);
+  const slot = record.currentChild(reservation, identity);
   return (
     record.hasAuthority(owner) &&
+    !record.hasUnknownOccupancy() &&
     slot?.terminationAt !== undefined &&
     slot.child?.pid === identity.pid &&
     slot.child.incarnation === identity.incarnation
@@ -389,7 +389,8 @@ function signalInheritedChild(
   signal: NodeJS.Signals,
 ): boolean {
   const child = slot.child;
-  if (child === undefined || !incarnationMayAuthorizeSignal(process.platform)) return false;
+  if (child === undefined || !record.supervisionEligible(slot) || !incarnationMayAuthorizeSignal(process.platform))
+    return false;
   if (!terminationCommitted(record, owner, slot, child) || probeProcessIncarnation(child.pid) !== child.incarnation)
     return false;
   try {
@@ -1335,7 +1336,9 @@ async function reconcileInheritedChild(
   watch.terminationAt = slot.terminationAt ?? watch.terminationAt;
   now = Date.now();
   const overdue =
-    (slot.phase === 'admitted' && now >= (slot.admittedAt ?? watch.firstSeen) + startupBudgetMs) ||
+    (slot.phase === 'admitted' &&
+      slot.admittedAt !== undefined &&
+      now >= Math.min(slot.admittedAt + startupBudgetMs, slot.attemptDeadline ?? Infinity)) ||
     (slot.phase === 'serving' && now - watch.lastHealthy >= timing.lapseMs);
   if (!overdue && watch.terminationAt === null) return repairBridge;
   if (watch.terminationAt !== null) {
@@ -1369,19 +1372,22 @@ async function reconcileInheritedChildren(
   const { record, owner, incarnation } = input;
   const authority = owner.current;
   let repairBridge = input.repairBridge;
-  const inherited = [record.read().launch, record.read().attempt].filter(
-    (slot): slot is LaunchReservation =>
-      slot !== null &&
-      (slot.phase === 'admitted' || slot.phase === 'serving') &&
-      (slot.parent?.pid !== process.pid || slot.parent.incarnation !== incarnation),
-  );
+  const inherited = record
+    .children()
+    .filter(
+      (slot): slot is LaunchReservation =>
+        slot !== null &&
+        (slot.phase === 'admitted' || slot.phase === 'serving') &&
+        record.supervisionEligible(slot) &&
+        (slot.parent?.pid !== process.pid || slot.parent.incarnation !== incarnation),
+    );
   const currentInheritedChild = (snapshot: LaunchReservation, child: LaunchProcess): LaunchReservation | null => {
-    const state = record.read();
-    const current = [state.launch, state.attempt].find((entry) => entry?.id === snapshot.id);
+    const current = record.currentChild(snapshot, child);
     return !owner.lost &&
       record.hasAuthority(authority) &&
       current !== undefined &&
       current !== null &&
+      record.supervisionEligible(current) &&
       (current.phase === 'admitted' || current.phase === 'serving') &&
       current.child?.pid === child.pid &&
       current.child.incarnation === child.incarnation

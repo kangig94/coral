@@ -177,6 +177,7 @@ function acquireLaunchLifetime(runDir: string, admission: LaunchAdmission): void
 export type LaunchSubject = Readonly<{
   path: string;
   admission?: LaunchAdmission;
+  conflictingAdmission?: LaunchAdmission;
   lifetimePath?: string;
   inode?: { dev: number; ino: number };
   acquisitionComplete: boolean;
@@ -232,9 +233,10 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
         path: launchAdmissionPath(runDir, launchId),
         lifetimePath,
         inode,
-        ...(conflict
-          ? { problem: 'envelope-conflict' as const }
-          : { admission: json.kind === 'readable' ? json.admission : envelope }),
+        admission: json.kind === 'readable' && !conflict ? json.admission : envelope,
+        ...(conflict && json.kind === 'readable'
+          ? { problem: 'envelope-conflict' as const, conflictingAdmission: json.admission }
+          : {}),
         acquisitionComplete:
           json.kind === 'readable' &&
           !conflict &&
@@ -256,7 +258,12 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
     if (json.kind === 'absent') continue;
     const path = json.kind === 'readable' ? launchAdmissionPath(runDir, json.admission.launchId) : json.path;
     if (subjects.some((subject) => subject.path === path)) continue;
-    subjects.push({ path, acquisitionComplete: false, problem: 'envelope-unavailable' });
+    subjects.push({
+      path,
+      ...(json.kind === 'readable' ? { admission: json.admission } : {}),
+      acquisitionComplete: false,
+      problem: 'envelope-unavailable',
+    });
   }
   return subjects;
 }
@@ -265,11 +272,21 @@ type LaunchSubjectDisposition = 'occupied' | 'acquisition-window' | 'unknown' | 
 
 /** An exclusive probe before the first shared acquisition is not evidence of lease release. */
 export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDisposition {
-  if (subject.admission === undefined || subject.problem !== undefined) return 'unknown';
+  if (subject.admission === undefined) return 'unknown';
   const { child } = subject.admission;
   const incarnation = probeProcessIncarnation(child.pid);
-  if ((incarnation !== null && incarnation !== child.incarnation) || observeProcessLiveness(child.pid) === 'absent')
+  const absent =
+    (incarnation !== null && incarnation !== child.incarnation) || observeProcessLiveness(child.pid) === 'absent';
+  const conflict = subject.conflictingAdmission?.child;
+  const conflictIncarnation = conflict === undefined ? null : probeProcessIncarnation(conflict.pid);
+  if (
+    absent &&
+    (conflict === undefined ||
+      observeProcessLiveness(conflict.pid) === 'absent' ||
+      (conflictIncarnation !== null && conflictIncarnation !== conflict.incarnation))
+  )
     return 'absent';
+  if (subject.problem !== undefined) return 'unknown';
   if (subject.lifetimePath === undefined) return 'unknown';
   const attempt = attemptExclusiveFileLockSync(subject.lifetimePath);
   if (attempt.kind !== 'acquired') return attempt.kind === 'contended' ? 'occupied' : 'unknown';
@@ -290,6 +307,7 @@ export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDispo
 /** Only the namespace lock holder calls this after independently settling the exact subject. */
 export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
   if (subject.admission === undefined || subject.lifetimePath === undefined) return false;
+  if (observeLaunchSubject(subject) !== 'absent') return false;
   try {
     let inode: ReturnType<typeof lstatSync> | undefined;
     try {
@@ -318,7 +336,12 @@ export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
       }
       if (jsonInode !== undefined) {
         const json = readLaunchAdmission(dirname(dirname(subject.path)), subject.admission.launchId);
-        if (json.kind === 'readable' && !sameEnvelope(json.admission, subject.admission)) return false;
+        if (
+          json.kind === 'readable' &&
+          !sameEnvelope(json.admission, subject.admission) &&
+          (subject.conflictingAdmission === undefined || !sameEnvelope(json.admission, subject.conflictingAdmission))
+        )
+          return false;
         const checked = lstatSync(subject.path);
         if (checked.dev !== jsonInode.dev || checked.ino !== jsonInode.ino) return false;
         unlinkSync(subject.path);

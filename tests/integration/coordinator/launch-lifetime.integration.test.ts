@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,8 +17,10 @@ import {
   listLaunchSubjects,
   observeLaunchSubject,
   readLaunchAdmission,
+  removeAbsentLaunchSubject,
 } from '#src/infra/launch-admission-record.js';
 import { currentLaunchStatus } from '#src/infra/launch-status.js';
+import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 
 function message(child: ChildProcess, kind: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -36,7 +38,7 @@ function message(child: ChildProcess, kind: string): Promise<Record<string, unkn
   });
 }
 
-async function launch(runDir: string, pause: boolean) {
+async function launch(runDir: string, pause: boolean, parented = false) {
   const executable = join(runDir, 'child.cjs');
   await build({
     entryPoints: [fileURLToPath(new URL('./fixtures/launch-lifetime-child.ts', import.meta.url))],
@@ -63,14 +65,14 @@ async function launch(runDir: string, pause: boolean) {
         ]
       : [],
   });
-  const child = spawn(process.execPath, [executable], {
+  const child = spawn(process.execPath, [executable, ...(parented ? ['parent'] : [])], {
     env: { ...process.env, CORAL_LAUNCH_ADMISSION: '1' },
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
   });
   const launchId = randomUUID();
   const parentIncarnation = probeProcessIncarnation(process.pid);
   if (parentIncarnation === null) throw new Error('No test parent incarnation');
-  const admitted = message(child, 'coral-launch-admitted');
+  const admitted = parented ? Promise.resolve({}) : message(child, 'coral-launch-admitted');
   child.on('message', (value: unknown) => {
     if (typeof value !== 'object' || value === null || !('kind' in value) || value.kind !== 'coral-launch-admitted')
       return;
@@ -94,13 +96,77 @@ async function stop(child: ChildProcess, signal?: NodeJS.Signals): Promise<void>
   const exit = new Promise<void>((resolve) => child.once('exit', () => resolve()));
   if (signal === undefined) child.send('exit');
   else {
-    child.kill('SIGCONT');
     child.kill(signal);
   }
   await exit;
 }
 
 describe('child lifetime admission', () => {
+  it.each(['matching', 'unknown'] as const)(
+    'retains a %s first-acquisition subject after its actual supervisor dies, then settles only on exit',
+    async (identity) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-parent-loss-'));
+      const running = await launch(runDir, true, true);
+      let childPid: number | undefined;
+      let release: (() => void) | undefined;
+      try {
+        const window = await running.window;
+        childPid = window?.childPid as number;
+        const [subject] = listLaunchSubjects(runDir);
+        if (subject?.lifetimePath === undefined || subject.admission === undefined) throw new Error('Missing subject');
+        const namespaceInode = statSync(supervisorLockPath(runDir));
+        expect(attemptExclusiveFileLockSync(supervisorLockPath(runDir)).kind).toBe('contended');
+        await stop(running.child, 'SIGKILL');
+        const namespace = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+        expect(namespace.kind).toBe('acquired');
+        if (namespace.kind !== 'acquired') throw new Error('Replacement did not acquire namespace');
+        release = namespace.lease;
+        expect(statSync(supervisorLockPath(runDir)).ino).toBe(namespaceInode.ino);
+        expect(nodeProcess.observeProcessLiveness(childPid)).toBe('alive');
+        const probe =
+          identity === 'unknown' ? vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(null) : null;
+        const exclusive = attemptExclusiveFileLockSync(subject.lifetimePath);
+        expect(exclusive.kind).toBe('acquired');
+        if (exclusive.kind === 'acquired') exclusive.lease();
+        const memory = new SupervisorLaunchMemory(
+          runDir,
+          { pid: process.pid, incarnation: running.parentIncarnation },
+          'build-A',
+        );
+        memory.reconcileAdmissions();
+        expect(memory.read().owner.mode).toBe('recovering');
+        expect(memory.read().launch).toMatchObject({
+          child: subject.admission.child,
+          admittedAt: subject.admission.admittedAt,
+        });
+        expect(memory.reserve(memory.read().owner, 'build-B', 'startup')).toBeNull();
+        expect(memory.release()).toBe(false);
+        expect(existsSync(subject.lifetimePath)).toBe(true);
+        expect(readLaunchAdmission(runDir, running.launchId).kind).toBe('absent');
+        expect(removeAbsentLaunchSubject(subject)).toBe(false);
+        if (identity === 'unknown')
+          expect(currentLaunchStatus(runDir)?.admissionHolds).toContainEqual({
+            path: subject.path,
+            disposition: 'acquisition-window',
+          });
+        probe?.mockRestore();
+        process.kill(childPid, 'SIGCONT');
+        await vi.waitFor(() => expect(nodeProcess.probeProcessIncarnation(childPid!)).toBeNull(), { timeout: 3_000 });
+        memory.reconcileAdmissions();
+        expect(memory.read().launch?.phase).toBe('exited');
+        expect(existsSync(subject.lifetimePath)).toBe(false);
+        memory.reconcileAdmissions();
+        expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
+      } finally {
+        release?.();
+        vi.restoreAllMocks();
+        if (childPid !== undefined && nodeProcess.probeProcessIncarnation(childPid) !== null)
+          process.kill(childPid, 'SIGKILL');
+        await stop(running.child, 'SIGKILL');
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
   it('retains a live first-acquisition window and an unknown identity despite exclusive probes', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-window-'));
     const running = await launch(runDir, true);

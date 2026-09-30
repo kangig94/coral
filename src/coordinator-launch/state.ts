@@ -28,6 +28,10 @@ export type LaunchReservation = Readonly<{
   purpose: 'startup' | 'contender' | 'succession' | 'recovery' | 'legacy-retirement';
   phase: 'reserved' | 'admitted' | 'serving' | 'exited';
   admittedAt?: number;
+  attemptDeadline?: number;
+  admissionProven?: boolean;
+  unidentifiedPid?: number;
+  recoveryHold?: 'envelope-conflict' | 'timing-unavailable' | 'identity-unavailable';
   observedHealthyAt?: number;
   parent?: LaunchProcess;
   child?: LaunchProcess;
@@ -74,6 +78,50 @@ function identityDisposition(identity: LaunchProcess): 'matching' | 'absent' | '
   return observeProcessLiveness(identity.pid) === 'absent' ? 'absent' : 'unknown';
 }
 
+function reservationKey(slot: LaunchReservation): string {
+  return JSON.stringify([slot.id, slot.child?.pid ?? slot.unidentifiedPid, slot.child?.incarnation]);
+}
+
+function sameReservation(left: LaunchReservation, right: LaunchReservation): boolean {
+  return reservationKey(left) === reservationKey(right);
+}
+
+function mergeReservationEvidence(known: LaunchReservation, entry: LaunchReservation): LaunchReservation {
+  const conflict =
+    known.buildSetId !== entry.buildSetId ||
+    known.admittedAt !== entry.admittedAt ||
+    known.parent?.pid !== entry.parent?.pid ||
+    known.parent?.incarnation !== entry.parent?.incarnation ||
+    known.purpose !== entry.purpose ||
+    (known.attemptDeadline !== undefined &&
+      entry.attemptDeadline !== undefined &&
+      known.attemptDeadline !== entry.attemptDeadline);
+  if (conflict) return { ...known, recoveryHold: 'envelope-conflict' };
+  return {
+    ...known,
+    ...entry,
+    admissionProven: known.admissionProven === true || entry.admissionProven === true,
+    phase: known.phase === 'serving' || entry.phase === 'serving' ? 'serving' : entry.phase,
+    attemptDeadline: known.attemptDeadline ?? entry.attemptDeadline,
+    recoveryHold: known.recoveryHold ?? entry.recoveryHold,
+  };
+}
+
+function matchesReservation(current: LaunchReservation, reference: LaunchReservation): boolean {
+  return (
+    current.id === reference.id &&
+    ((reference.child === undefined && reference.unidentifiedPid === undefined) || sameReservation(current, reference))
+  );
+}
+
+function reservationDisposition(slot: LaunchReservation): 'matching' | 'absent' | 'unknown' {
+  if (slot.child !== undefined) return identityDisposition(slot.child);
+  if (slot.unidentifiedPid === undefined) return 'unknown';
+  return childHasExited(slot.unidentifiedPid) || observeProcessLiveness(slot.unidentifiedPid) === 'absent'
+    ? 'absent'
+    : 'unknown';
+}
+
 function fromAdmission(admission: LaunchAdmission): LaunchReservation {
   return {
     id: admission.launchId,
@@ -81,6 +129,7 @@ function fromAdmission(admission: LaunchAdmission): LaunchReservation {
     purpose: admission.purpose,
     phase: admission.discoveredAt === undefined ? 'admitted' : 'serving',
     admittedAt: admission.admittedAt,
+    admissionProven: true,
     parent: admission.parent,
     child: admission.child,
   };
@@ -97,54 +146,118 @@ export class SupervisorLaunchMemory {
   #subjects: LaunchSubject[] = [];
   readonly #settledSubjects = new Map<string, LaunchSubject>();
   readonly #servedBuilds = new Set<string>();
+  #retained: LaunchReservation[] = [];
 
   constructor(runDir: string, process: LaunchProcess, buildSetId: string) {
     this.#runDir = runDir;
     this.#subjects = listLaunchSubjects(runDir);
     const unsettled = this.#subjects.filter((subject) => observeLaunchSubject(subject) !== 'absent');
     const admissions = unsettled.flatMap((subject) =>
-      subject.admission === undefined ? [] : [fromAdmission(subject.admission)],
+      [subject.admission, subject.conflictingAdmission].flatMap((admission) =>
+        admission === undefined
+          ? []
+          : [
+              {
+                ...fromAdmission(admission),
+                ...(subject.problem === 'envelope-conflict' ? { recoveryHold: 'envelope-conflict' as const } : {}),
+              },
+            ],
+      ),
     );
     const discovered = this.#discoveredChild();
     if (discovered !== null) admissions.push(discovered);
     const intent = readUpgradeIntent(runDir);
     const incumbent = intent.kind === 'readable' ? intent.intent.incumbent : null;
-    if (incumbent !== null && incumbent.incarnation !== null) {
-      const child = { pid: incumbent.pid, incarnation: incumbent.incarnation };
-      const existing = admissions.find(
-        (entry) => entry.child?.pid === child.pid && entry.child.incarnation === child.incarnation,
-      );
-      if (existing !== undefined && incumbent.instanceId !== 'startup')
-        admissions.push({ ...existing, phase: 'serving' });
-      else if (existing === undefined && identityDisposition(child) !== 'absent')
-        admissions.push({
+    let incumbentSlot: LaunchReservation | undefined;
+    if (incumbent !== null) {
+      incumbentSlot =
+        incumbent.incarnation === null
+          ? undefined
+          : admissions.find(
+              (entry) => entry.child?.pid === incumbent.pid && entry.child.incarnation === incumbent.incarnation,
+            );
+      if (incumbentSlot === undefined) {
+        incumbentSlot = {
           id: `incumbent:${incumbent.instanceId}:${incumbent.incarnation}`,
           buildSetId: 'unknown',
           purpose: 'legacy-retirement',
           phase: 'serving',
-          child,
-        });
+          ...(incumbent.incarnation === null
+            ? { unidentifiedPid: incumbent.pid, recoveryHold: 'identity-unavailable' as const }
+            : { child: { pid: incumbent.pid, incarnation: incumbent.incarnation } }),
+        };
+        if (reservationDisposition(incumbentSlot) !== 'absent') admissions.push(incumbentSlot);
+        else incumbentSlot = undefined;
+      }
     }
-    const unique = [...new Map(admissions.map((entry) => [entry.id, entry])).values()];
     const attemptIdentity = intent.kind === 'readable' ? intent.intent.attemptChild : null;
+    let attemptSlot: LaunchReservation | undefined;
+    if (attemptIdentity !== null && attemptIdentity !== undefined && intent.kind === 'readable') {
+      attemptSlot =
+        attemptIdentity.incarnation === null
+          ? undefined
+          : admissions.find(
+              (entry) =>
+                entry.child?.pid === attemptIdentity.pid && entry.child.incarnation === attemptIdentity.incarnation,
+            );
+      const deadline = intent.intent.attemptDeadline === null ? undefined : Date.parse(intent.intent.attemptDeadline);
+      if (attemptSlot === undefined) {
+        attemptSlot = {
+          id: `attempt:${attemptIdentity.attemptId}`,
+          buildSetId: intent.intent.target.build.buildSetId,
+          purpose: 'succession',
+          phase: 'reserved',
+          attemptDeadline: deadline,
+          recoveryHold: attemptIdentity.incarnation === null ? 'identity-unavailable' : 'timing-unavailable',
+          ...(attemptIdentity.incarnation === null
+            ? { unidentifiedPid: attemptIdentity.pid }
+            : { child: { pid: attemptIdentity.pid, incarnation: attemptIdentity.incarnation } }),
+        };
+        if (reservationDisposition(attemptSlot) !== 'absent') admissions.push(attemptSlot);
+        else attemptSlot = undefined;
+      } else {
+        const index = admissions.indexOf(attemptSlot);
+        const receipt = intent.intent.completionReceipt;
+        const servingCommitted =
+          receipt?.kind === 'serving' &&
+          receipt.attemptId === attemptIdentity.attemptId &&
+          receipt.successor.pid === attemptIdentity.pid &&
+          receipt.successor.incarnation === attemptIdentity.incarnation &&
+          receipt.successor.build.buildSetId === attemptSlot.buildSetId;
+        attemptSlot = {
+          ...attemptSlot,
+          ...(servingCommitted ? { phase: 'serving' as const } : {}),
+          attemptDeadline: deadline,
+          ...(attemptSlot.buildSetId !== intent.intent.target.build.buildSetId
+            ? { recoveryHold: 'envelope-conflict' as const }
+            : deadline === undefined
+              ? { recoveryHold: 'timing-unavailable' as const }
+              : {}),
+        };
+        admissions[index] = attemptSlot;
+      }
+    }
+    const unique: LaunchReservation[] = [];
+    for (const entry of admissions) {
+      const index = unique.findIndex((known) => sameReservation(known, entry));
+      if (index < 0) unique.push(entry);
+      else unique[index] = mergeReservationEvidence(unique[index], entry);
+    }
+    for (let index = 0; index < unique.length; index++) {
+      if (unique.some((other, otherIndex) => otherIndex !== index && other.id === unique[index].id))
+        unique[index] = { ...unique[index], recoveryHold: 'envelope-conflict' };
+    }
     const attempt =
-      (attemptIdentity === null || attemptIdentity === undefined
-        ? null
-        : unique.find(
-            (entry) =>
-              entry.child?.pid === attemptIdentity.pid && entry.child.incarnation === attemptIdentity.incarnation,
-          )) ??
+      (attemptSlot === undefined ? undefined : unique.find((entry) => sameReservation(entry, attemptSlot))) ??
       unique.find((entry) => entry.purpose === 'succession' || entry.purpose === 'contender') ??
       null;
     const launch =
-      unique.find(
-        (entry) =>
-          entry.id !== attempt?.id &&
-          entry.child?.pid === incumbent?.pid &&
-          entry.child?.incarnation === incumbent?.incarnation,
-      ) ??
-      unique.find((entry) => entry.id !== attempt?.id) ??
+      (incumbentSlot === undefined
+        ? undefined
+        : unique.find((entry) => entry !== attempt && sameReservation(entry, incumbentSlot))) ??
+      unique.find((entry) => entry !== attempt) ??
       attempt;
+    this.#retained = unique.filter((entry) => entry !== launch && entry !== attempt);
     this.#state = {
       owner: {
         id: randomUUID(),
@@ -163,6 +276,21 @@ export class SupervisorLaunchMemory {
       baseDir: dirname(dirname(runDir)),
     });
     const discovery = readDiscoveryRecordDisposition(runtime, join(runDir, 'coordinator.json'));
+    if (
+      discovery.kind === 'record' &&
+      (discovery.record.supervision === undefined || discovery.record.incarnation === undefined)
+    ) {
+      const discovered: LaunchReservation = {
+        id: discovery.record.supervision?.launchId ?? `discovery:${discovery.record.bootToken}`,
+        buildSetId: discovery.record.supervision?.buildSetId ?? 'unknown',
+        purpose: 'legacy-retirement',
+        phase: 'serving',
+        ...(discovery.record.incarnation === undefined
+          ? { unidentifiedPid: discovery.record.pid, recoveryHold: 'identity-unavailable' as const }
+          : { child: { pid: discovery.record.pid, incarnation: discovery.record.incarnation } }),
+      };
+      return reservationDisposition(discovered) === 'absent' ? null : discovered;
+    }
     if (
       discovery.kind === 'record' &&
       discovery.record.supervision !== undefined &&
@@ -196,7 +324,12 @@ export class SupervisorLaunchMemory {
         this.#subjects = this.#subjects.map((entry) =>
           entry === subject ? { ...entry, problem: 'envelope-conflict' } : entry,
         );
-        return null;
+        if (
+          admitted?.child.pid === discovered.child?.pid &&
+          admitted.child.incarnation === discovered.child.incarnation
+        )
+          return null;
+        return { ...discovered, recoveryHold: 'envelope-conflict' };
       }
       if (discovered.child !== undefined && identityDisposition(discovered.child) !== 'absent') return discovered;
     }
@@ -256,18 +389,20 @@ export class SupervisorLaunchMemory {
   resumeAuthority(): void {
     this.#reconcileAdmissions();
     const recovered = new SupervisorLaunchMemory(this.#runDir, this.#state.owner.process, this.#state.owner.buildSetId);
-    const slots = [
-      ...new Map(
-        [recovered.read().launch, recovered.read().attempt, this.#state.launch, this.#state.attempt]
-          .filter((slot): slot is LaunchReservation => slot !== null && slot.phase !== 'exited')
-          .map((slot) => [slot.id, slot]),
-      ).values(),
-    ];
+    const merged = new Map<string, LaunchReservation>();
+    for (const slot of [...recovered.children(), ...this.children()]) {
+      if (slot.phase === 'exited') continue;
+      const key = reservationKey(slot);
+      const known = merged.get(key);
+      merged.set(key, known === undefined ? slot : mergeReservationEvidence(known, slot));
+    }
+    const slots = [...merged.values()];
     this.#state = {
       owner: { ...this.#state.owner, id: randomUUID(), mode: recovered.read().owner.mode },
       launch: slots[0] ?? null,
       attempt: slots[1] ?? null,
     };
+    this.#retained = slots.slice(2);
     this.#reconcileAdmissions();
     this.#authority = true;
   }
@@ -304,13 +439,35 @@ export class SupervisorLaunchMemory {
     }
     this.#subjects = [...subjects.values()];
     this.#discoveredChild();
+    for (const slot of this.children()) {
+      if (slot.phase === 'exited' || (slot.child === undefined && slot.unidentifiedPid === undefined)) continue;
+      const disposition = reservationDisposition(slot);
+      if (disposition === 'absent') {
+        if (slot.child !== undefined) this.exited(slot, slot.child);
+        else this.#set(slot, { ...slot, phase: 'exited' });
+      } else if (disposition === 'unknown') this.#recovering();
+    }
     const holds: NonNullable<LaunchStatus['admissionHolds']> = [];
+    if (
+      this.children().some(
+        (slot) =>
+          slot.phase !== 'exited' &&
+          (slot.recoveryHold !== undefined ||
+            (slot.parent === undefined &&
+              slot.admittedAt === undefined &&
+              (slot.child !== undefined || slot.unidentifiedPid !== undefined))),
+      )
+    )
+      holds.push({ path: join(this.#runDir, 'upgrade.v1.json'), disposition: 'unknown' });
     for (const subject of this.#subjects) {
       const disposition = this.#settledSubjects.has(subject.path) ? 'absent' : observeLaunchSubject(subject);
       if (disposition === 'absent') {
         this.#settledSubjects.set(subject.path, subject);
-        const slot = [this.#state.launch, this.#state.attempt].find(
-          (entry) => entry?.id === subject.admission?.launchId,
+        const slot = this.children().find(
+          (entry) =>
+            entry.id === subject.admission?.launchId &&
+            entry.child?.pid === subject.admission.child.pid &&
+            entry.child.incarnation === subject.admission.child.incarnation,
         );
         if (slot?.child !== undefined && slot.phase !== 'exited') this.exited(slot, slot.child);
         if (!removeAbsentLaunchSubject(subject)) holds.push({ path: subject.path, disposition: 'cleanup-pending' });
@@ -319,6 +476,7 @@ export class SupervisorLaunchMemory {
           this.#settledSubjects.delete(subject.path);
         }
       } else if (disposition === 'unknown' || disposition === 'acquisition-window') {
+        this.#recovering();
         holds.push({ path: subject.path, disposition });
       }
     }
@@ -333,9 +491,48 @@ export class SupervisorLaunchMemory {
     return this.#state;
   }
 
-  #slot(reservation: LaunchReservation): 'launch' | 'attempt' | null {
-    if (this.#state.launch?.id === reservation.id) return 'launch';
-    if (this.#state.attempt?.id === reservation.id) return 'attempt';
+  children(): LaunchReservation[] {
+    return [this.#state.launch, this.#state.attempt, ...this.#retained].filter(
+      (slot): slot is LaunchReservation => slot !== null,
+    );
+  }
+
+  supervisionEligible(reservation: LaunchReservation): boolean {
+    return (
+      reservation.admissionProven === true &&
+      reservation.parent !== undefined &&
+      reservation.admittedAt !== undefined &&
+      reservation.buildSetId !== 'unknown' &&
+      reservation.recoveryHold === undefined &&
+      !this.#hasUnknownEnvelope(reservation.id)
+    );
+  }
+
+  hasUnknownOccupancy(): boolean {
+    const unknown =
+      this.children().some(
+        (slot) =>
+          slot.phase !== 'exited' &&
+          (slot.child !== undefined || slot.unidentifiedPid !== undefined) &&
+          reservationDisposition(slot) === 'unknown',
+      ) ||
+      this.#subjects.some(
+        (subject) =>
+          !this.#settledSubjects.has(subject.path) &&
+          ['unknown', 'acquisition-window'].includes(observeLaunchSubject(subject)),
+      );
+    if (unknown) this.#recovering();
+    return unknown;
+  }
+
+  #recovering(): void {
+    this.#state = { ...this.#state, owner: { ...this.#state.owner, mode: 'recovering' } };
+  }
+
+  #slot(reservation: LaunchReservation): 'launch' | 'attempt' | 'retained' | null {
+    if (this.#state.launch !== null && matchesReservation(this.#state.launch, reservation)) return 'launch';
+    if (this.#state.attempt !== null && matchesReservation(this.#state.attempt, reservation)) return 'attempt';
+    if (this.#retained.some((entry) => matchesReservation(entry, reservation))) return 'retained';
     return null;
   }
 
@@ -343,10 +540,15 @@ export class SupervisorLaunchMemory {
     const slot = this.#slot(reservation);
     if (slot === 'launch') this.#state = { ...this.#state, launch: change };
     else if (slot === 'attempt') this.#state = { ...this.#state, attempt: change };
+    else if (slot === 'retained')
+      this.#retained = this.#retained.flatMap((entry) =>
+        matchesReservation(entry, reservation) ? (change === null ? [] : [change]) : [entry],
+      );
   }
 
   reserve(owner: LaunchOwner, buildSetId: string, purpose: LaunchReservation['purpose']): LaunchReservation | null {
     if (!this.hasAuthority(owner)) return null;
+    this.#reconcileAdmissions();
     if (
       this.#subjects.some((subject) => {
         if (this.#settledSubjects.has(subject.path)) return false;
@@ -354,22 +556,27 @@ export class SupervisorLaunchMemory {
         return (
           disposition === 'unknown' ||
           disposition === 'acquisition-window' ||
-          (disposition === 'occupied' &&
-            ![this.#state.launch, this.#state.attempt].some((slot) => slot?.id === subject.admission?.launchId))
+          (disposition === 'occupied' && !this.children().some((slot) => slot.id === subject.admission?.launchId))
         );
       })
-    )
+    ) {
+      this.#recovering();
       return null;
+    }
     if (
-      [this.#state.launch, this.#state.attempt].some(
+      this.children().some(
         (slot) =>
-          slot !== null &&
           slot.phase !== 'exited' &&
-          slot.child !== undefined &&
-          identityDisposition(slot.child) === 'unknown',
+          ((slot.child !== undefined && identityDisposition(slot.child) === 'unknown') ||
+            slot.unidentifiedPid !== undefined ||
+            slot.recoveryHold !== undefined ||
+            (slot.phase !== 'reserved' && (slot.admittedAt === undefined || slot.buildSetId === 'unknown'))),
       )
-    )
+    ) {
+      this.#recovering();
       return null;
+    }
+    if (this.#retained.some((slot) => slot.phase !== 'exited')) return null;
     this.normalize();
     const succession = (purpose === 'succession' || purpose === 'contender') && this.#state.launch?.phase === 'serving';
     const slot = succession ? this.#state.attempt : this.#state.launch;
@@ -406,7 +613,7 @@ export class SupervisorLaunchMemory {
       current.child.incarnation !== child.incarnation
     )
       return false;
-    this.#set(reservation, { ...current, phase: 'admitted', admittedAt, parent, child });
+    this.#set(reservation, { ...current, phase: 'admitted', admittedAt, admissionProven: true, parent, child });
     return true;
   }
 
@@ -432,8 +639,7 @@ export class SupervisorLaunchMemory {
   }
 
   currentChild(reservation: LaunchReservation, child: LaunchProcess): LaunchReservation | null {
-    const slot = this.#slot(reservation);
-    const current = slot === 'launch' ? this.#state.launch : slot === 'attempt' ? this.#state.attempt : null;
+    const current = this.children().find((entry) => matchesReservation(entry, reservation));
     return current?.child?.pid === child.pid && current.child.incarnation === child.incarnation ? current : null;
   }
 
@@ -488,7 +694,13 @@ export class SupervisorLaunchMemory {
     if (!this.hasAuthority(owner)) return false;
     const current = this.currentChild(reservation, identity);
     if (current === null || current.phase === 'exited' || current.parent === undefined) return false;
-    if (this.#hasUnknownEnvelope(current.id)) return false;
+    if (this.#hasUnknownEnvelope(current.id) || current.recoveryHold !== undefined || this.hasUnknownOccupancy())
+      return false;
+    if (
+      (current.parent.pid !== owner.process.pid || current.parent.incarnation !== owner.process.incarnation) &&
+      !this.supervisionEligible(current)
+    )
+      return false;
     if (
       (current.parent?.pid !== owner.process.pid || current.parent.incarnation !== owner.process.incarnation) &&
       identityDisposition(identity) !== 'matching'
@@ -504,7 +716,7 @@ export class SupervisorLaunchMemory {
     const current = reservation.child === undefined ? null : this.currentChild(reservation, reservation.child);
     if (
       current !== null &&
-      !this.#hasUnknownEnvelope(current.id) &&
+      this.supervisionEligible(current) &&
       current.child !== undefined &&
       identityDisposition(current.child) === 'matching' &&
       current.terminationAt === undefined
@@ -524,7 +736,7 @@ export class SupervisorLaunchMemory {
 
   release(): boolean {
     return (
-      [this.#state.launch, this.#state.attempt].every((slot) => slot === null || slot.phase === 'exited') &&
+      this.children().every((slot) => slot.phase === 'exited') &&
       this.#subjects.every(
         (subject) => this.#settledSubjects.has(subject.path) || observeLaunchSubject(subject) === 'absent',
       )
