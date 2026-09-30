@@ -188,6 +188,13 @@ disallowedTools: Write, Edit
     |---|-------------|-------|----------|
     | 1 | console.log | YES/NO | {file:line} |
 
+    ### Findings
+    | # | Severity | Location | Finding | Suggestion |
+    |---|----------|----------|---------|------------|
+    | 1 | BLOCKING/STRONG/MINOR | file:line | {issue} | {fix} |
+
+    Every contract violation is BLOCKING here. A FAIL with no BLOCKING row contradicts itself.
+
     ### Verdict: PASS / FAIL
     {justification}
   </Output_Format>
