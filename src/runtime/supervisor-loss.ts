@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
-import { updateLaunchStatus } from '../infra/launch-status.js';
+import { receiveLaunchStatus, updateLaunchStatus } from '../infra/launch-status.js';
 import { readUpgradeIntent } from '../infra/upgrade-intent.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
@@ -135,6 +135,17 @@ function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void 
 }
 
 function receiveReplacementMessage(attempt: ReplacementSupervisorAttempt, message: unknown): void {
+  if (
+    attempt.accepted &&
+    typeof message === 'object' &&
+    message !== null &&
+    'kind' in message &&
+    message.kind === 'coral-launch-status' &&
+    'status' in message
+  ) {
+    receiveLaunchStatus(attempt.control.runDir, message.status);
+    return;
+  }
   if (
     typeof message !== 'object' ||
     message === null ||

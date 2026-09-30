@@ -94,7 +94,7 @@ it('reports unreadable diagnostics and admission identity without using either a
       'cannot authorize a signal or prevent startup',
     );
     const launchId = '00000000-0000-4000-8000-000000000001';
-    mkdirSync(join(runDir, 'launch-admissions.v1'));
+    mkdirSync(join(runDir, 'launch-admissions.v2'));
     writeFileSync(launchAdmissionPath(runDir, launchId), 'unreadable');
     const admission = await getBackendStatusFull('/plugin-root');
     expect(admission.launchHold).toEqual({ kind: 'admission-unreadable', path: launchAdmissionPath(runDir, launchId) });

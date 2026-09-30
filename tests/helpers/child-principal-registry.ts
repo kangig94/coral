@@ -26,7 +26,7 @@ export function testChildPrincipalRegistry(
     createStoreChildPrincipalCredentials(() => db),
     {
       namespace: options.namespace ?? 'ns-a',
-      ...(options.activeJobOrigin === undefined ? {} : { activeJobOrigin: options.activeJobOrigin }),
+      activeJobOrigin: options.activeJobOrigin ?? (() => 'ns-a'),
     },
   );
 }

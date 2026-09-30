@@ -44,7 +44,7 @@ import { linkRequestLeaseIdentity } from '../../runtime/request-lease-identity.j
 import { acquireDirectoryLock } from '../../infra/fs-lock.js';
 import type { Capability } from '../../security/capability.js';
 import type { Principal } from '../../security/principal.js';
-import type { ChildAuthChallenge } from '../../security/child-credential.js';
+import { CHILD_REAUTHENTICATION_REQUIRED, type ChildAuthChallenge } from '../../security/child-credential.js';
 import { authorize } from '../../security/policy/authorize.js';
 import { buildTransportErrorResponse } from '../error-response.js';
 import { lifecycleRefusalResult } from '../lifecycle-refusal.js';
@@ -84,6 +84,8 @@ type IpcConnectionChallenge = Readonly<{
   taken: ChildAuthChallenge | null;
   issued: boolean;
   awaitProof(challenge: ChildAuthChallenge): void;
+  canDispatch(): boolean;
+  claimDispatch(): boolean;
 }>;
 
 type IpcAuthentication =
@@ -887,6 +889,7 @@ async function dispatchIpcCatalogRequest(
   options: { writeDrainTimeoutMs: number },
   drainingRecoveryIngress: boolean,
   finishUnaryResponse: (response: JsonRpcEnvelope, onUnwritten?: () => void) => Promise<void>,
+  connection: IpcConnectionChallenge,
 ): Promise<void> {
   const entry = dispatchMap.get(request.method);
   if (!entry) {
@@ -903,6 +906,10 @@ async function dispatchIpcCatalogRequest(
   const parsed = entry.spec.requestSchema.safeParse(request.params ?? {});
   if (!parsed.success) {
     await finishUnaryResponse(validationErrorResponse(request.id, parsed.error));
+    return;
+  }
+  if (request.auth?.kind === 'child-proof' && !connection.claimDispatch()) {
+    await finishUnaryResponse(reauthenticationResponse(request.id));
     return;
   }
   const requestIdentity = parsed.data as { jobId?: unknown; operationId?: unknown };
@@ -985,6 +992,14 @@ async function dispatchIpcCatalogRequest(
   }
 }
 
+function reauthenticationResponse(id: string | number | null): JsonRpcErrorEnvelope {
+  return requestErrorResponse(id, 'Coordinator ownership changed before dispatch; authenticate again.', {
+    code: CHILD_REAUTHENTICATION_REQUIRED,
+    retryable: true,
+    dispatched: false,
+  });
+}
+
 async function dispatchFrame(
   frame: string,
   socket: Socket,
@@ -1030,6 +1045,10 @@ async function dispatchFrame(
   }
 
   if (operationalSpec?.dispatch.kind === 'challenge') {
+    if (!connection.canDispatch()) {
+      await finishUnaryResponse(reauthenticationResponse(request.id));
+      return;
+    }
     const issuer = rpcPorts.childPrincipals;
     if (issuer === undefined || connection.issued) {
       await finishUnaryResponse(
@@ -1065,6 +1084,10 @@ async function dispatchFrame(
     );
     return;
   }
+  if (request.auth?.kind === 'child-proof' && !connection.canDispatch()) {
+    await finishUnaryResponse(reauthenticationResponse(request.id));
+    return;
+  }
   const principal = authentication.principal;
   if (operationalSpec?.authentication === 'principal') {
     const authError = authorizeIpcOperation(request, operationalSpec, principal);
@@ -1074,6 +1097,15 @@ async function dispatchFrame(
     }
   }
 
+  if (
+    request.auth?.kind === 'child-proof' &&
+    operationalSpec !== null &&
+    operationalSpec?.dispatch.kind !== 'catalog' &&
+    !connection.claimDispatch()
+  ) {
+    await finishUnaryResponse(reauthenticationResponse(request.id));
+    return;
+  }
   const lifecycleState =
     rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
   const draining = lifecycleState === 'draining' || rpcPorts.admin.isDrainRequested();
@@ -1110,6 +1142,7 @@ async function dispatchFrame(
     options,
     drainingRecoveryIngress,
     finishUnaryResponse,
+    connection,
   );
 }
 
@@ -1220,6 +1253,7 @@ type TrackedIpcListenerState = {
   openSockets: Set<Socket>;
   drained: Set<() => void>;
   forwardAccepted: ((socket: Socket, pendingFrameBase64: string) => void) | null;
+  authorityEpoch: number;
 };
 
 function releaseTrackedSocket(state: TrackedIpcListenerState, socket: Socket): void {
@@ -1270,6 +1304,13 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
   let inflightRequest = false;
   let outstandingChallenge: ChildAuthChallenge | null = null;
   let challengeIssued = false;
+  let retired = false;
+  let challengeEpoch = state.authorityEpoch;
+  const canDispatch = () =>
+    !retired &&
+    challengeEpoch === state.authorityEpoch &&
+    state.forwardAccepted === null &&
+    !rpcPorts.admin.isLaunchFenceActive?.();
   let pendingFrameBytes = framer.pendingBytes();
   resources.aggregatePendingFrameBytes += pendingFrameBytes;
   const armFrameTimer = (): ReturnType<typeof timers.setTimeout> => {
@@ -1317,6 +1358,17 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
 
   const transferPending = (): void => {
     if (state.forwardAccepted === null || socket.destroyed) return;
+    if (challengeIssued) {
+      retired = true;
+      outstandingChallenge = null;
+      pendingSockets.delete(socket);
+      socket.off('data', onData);
+      timers.clearTimeout(firstFrameTimer);
+      void writeEnvelope(socket, reauthenticationResponse(null), { drainTimeoutMs: writeDrainTimeoutMs }).finally(() =>
+        socket.end(),
+      );
+      return;
+    }
     if (!stopHandleReads(socket)) {
       rpcPorts.identity.log(UNSTOPPABLE_HANDLE_LOG);
       return;
@@ -1353,7 +1405,7 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
       timers.clearTimeout(firstFrameTimer);
       releasePendingFrameBytes();
       socket.off('data', onData);
-      pendingSockets.delete(socket);
+      if (!challengeIssued) pendingSockets.delete(socket);
       const taken = outstandingChallenge;
       outstandingChallenge = null;
       void dispatchFrame(
@@ -1371,10 +1423,17 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
         {
           taken,
           issued: challengeIssued,
-          // Never re-offered for forwarding: the challenge exists only in this process.
+          canDispatch,
+          claimDispatch: () => {
+            if (!canDispatch()) return false;
+            pendingSockets.delete(socket);
+            return true;
+          },
           awaitProof: (challenge) => {
+            challengeEpoch = state.authorityEpoch;
             outstandingChallenge = challenge;
             challengeIssued = true;
+            pendingSockets.set(socket, transferPending);
             firstFrameTimer = armFrameTimer();
             socket.on('data', onData);
           },
@@ -1415,6 +1474,7 @@ function createTrackedIpcListener(
     openSockets: new Set(),
     drained: new Set(),
     forwardAccepted: null,
+    authorityEpoch: 0,
   };
   const acceptSocket = (socket: Socket, pendingFrameBase64 = ''): void =>
     acceptTrackedSocket(state, socket, pendingFrameBase64);
@@ -1427,10 +1487,14 @@ function createTrackedIpcListener(
     createCompatibilityListener: () => createTrackedIpcListener(rpcPorts, options, resources),
     acceptSocket,
     forwardConnections: (forward) => {
+      state.authorityEpoch += 1;
       state.forwardAccepted = forward;
       for (const transfer of state.pendingSockets.values()) transfer();
       return () => {
-        if (state.forwardAccepted === forward) state.forwardAccepted = null;
+        if (state.forwardAccepted === forward) {
+          state.authorityEpoch += 1;
+          state.forwardAccepted = null;
+        }
       };
     },
     drainConnections: () =>

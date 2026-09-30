@@ -1,3 +1,6 @@
+import { requestIpcMethod } from '#src/transport/ipc/client.js';
+import { childPrincipalAuthFromEnv } from '#src/transport/ipc/child-principal-auth.js';
+import { mintChildCredentialKeyPair } from '#src/security/child-credential.js';
 import { spawn } from 'node:child_process';
 import {
   chmodSync,
@@ -737,6 +740,31 @@ describe('AC18 first-release version pairing', () => {
     },
     240_000,
   );
+
+  it('visibly refuses challenged credentials against a shipped server while ordinary service stays available', async () => {
+    const home = newHome();
+    const shipped = createShippedPluginFixture(roots, 'v0.10.13');
+    const coordinator = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
+    coordinators.push(coordinator);
+    const serving = await waitForDiscoveryRecord(home, 'prod', 20_000);
+    const keys = mintChildCredentialKeyPair();
+    const auth = childPrincipalAuthFromEnv({
+      CORAL_CHILD_CREDENTIAL_ID: 'new-credential',
+      CORAL_CHILD_CREDENTIAL_KEY: keys.privateKey,
+      CORAL_CHILD_PRINCIPAL_HANDLE: 'legacy-handle',
+      CORAL_JOB_ID: 'job-a',
+      CORAL_SESSION_ID: 'session-a',
+    });
+    if (auth === null || auth === undefined) throw new Error('Expected challenged credential');
+    expect(auth).toMatchObject({ kind: 'challenged' });
+    await expect(
+      requestIpcMethod(serving.socketPath, 'jobs.list', {}, { auth, timeoutMs: 2_000 }),
+    ).rejects.toMatchObject({ message: expect.stringContaining('Method not found') });
+    await expect(
+      requestIpcMethod(serving.socketPath, 'transport.ping', undefined, { timeoutMs: 2_000 }),
+    ).resolves.toMatchObject({ status: 'ok', pid: serving.pid });
+    expect(coordinator.child.exitCode).toBeNull();
+  }, 30_000);
 
   it('keeps the newer selection when an older build is launched after its coordinator exits', async () => {
     assertBuildArtifactsAvailable();

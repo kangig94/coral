@@ -328,6 +328,7 @@ type BackendStatus = {
   shutdown?: OperatorFacingLiveShutdown;
   succession?: BackendHealth['succession'];
   successionProblem?: BackendHealth['successionProblem'];
+  launchStatus?: LaunchStatus;
   skippedProviderProxySetRows: number;
   skippedProviderProxySetTokens: readonly string[];
 };
@@ -454,7 +455,9 @@ export type SupersededEpochClosures =
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
 export type BackendStatusFull = BackendStatusFullBase & {
-  launchStatusProblem?: 'unreadable' | 'previous-status-unavailable';
+  launchStatusProblem?: 'unreadable' | 'previous-status-unavailable' | 'publication-unavailable';
+  launchStatusPublicationFailure?: LaunchStatus['publicationFailure'];
+  launchAdmissionHolds?: LaunchStatus['admissionHolds'];
   launchHold?: NonNullable<LaunchStatus['hold']>;
   launchInheritedHolds?: LaunchStatus['inheritedHolds'];
   launchSignalHolds?: LaunchStatus['signalHolds'];
@@ -1168,7 +1171,9 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   const upgradeQuarantineStatus = quarantined ? { upgradeQuarantined: true } : {};
   const disposition = readLaunchStatus(runDir);
   const unreadableAdmission = listLaunchAdmissions(runDir).find((entry) => entry.kind === 'unreadable');
-  const state = disposition.kind === 'readable' ? disposition.status : null;
+  const state =
+    (status.status === 'ok' ? status.health.launchStatus : undefined) ??
+    (disposition.kind === 'readable' ? disposition.status : null);
   return {
     ...status,
     ...(state?.hold !== undefined
@@ -1178,11 +1183,15 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         : {}),
     ...(state?.inheritedHolds.length ? { launchInheritedHolds: state.inheritedHolds } : {}),
     ...(state?.signalHolds.length ? { launchSignalHolds: state.signalHolds } : {}),
-    ...(disposition.kind === 'unreadable'
-      ? { launchStatusProblem: 'unreadable' as const }
-      : state?.previousStatus === 'unavailable'
-        ? { launchStatusProblem: 'previous-status-unavailable' as const }
-        : {}),
+    launchStatusPublicationFailure: state?.publicationFailure,
+    launchAdmissionHolds: state?.admissionHolds,
+    ...(state?.publicationFailure !== undefined
+      ? { launchStatusProblem: 'publication-unavailable' as const }
+      : disposition.kind === 'unreadable'
+        ? { launchStatusProblem: 'unreadable' as const }
+        : state?.previousStatus === 'unavailable'
+          ? { launchStatusProblem: 'previous-status-unavailable' as const }
+          : {}),
     ...upgradeQuarantineStatus,
   };
 }

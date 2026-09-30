@@ -13,6 +13,7 @@ export type ChildCredentialKeyPair = Readonly<{
 
 /** The IPC method that answers with a {@link ChildAuthChallenge}. */
 export const CHILD_AUTH_CHALLENGE_METHOD = 'transport.challenge';
+export const CHILD_REAUTHENTICATION_REQUIRED = 'child_reauthentication_required';
 
 /** Issued on one connection and valid only for the next request on that connection. */
 export type ChildAuthChallenge = Readonly<{

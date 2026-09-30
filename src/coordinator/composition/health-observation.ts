@@ -1,3 +1,4 @@
+import { currentLaunchStatus } from '../../infra/launch-status.js';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 import { type resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
@@ -300,6 +301,7 @@ export function createCoordinatorHealthReader({
     const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
     return {
       status: coarseStatus,
+      launchStatus: currentLaunchStatus(runtime.paths.coral.coordinator.runDir),
       ...(succession === null ? {} : { succession }),
       ...(successionProblem === null ? {} : { successionProblem }),
       kernel: {

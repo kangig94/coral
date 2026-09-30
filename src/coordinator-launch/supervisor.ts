@@ -14,7 +14,14 @@ import {
 import { createForeignTargetValidator, inspectValidatedHandoffTarget } from '../infra/handoff-target.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
-import { SupervisorLaunchMemory, type LaunchOwner, type LaunchProcess, type LaunchReservation } from './state.js';
+import {
+  SupervisorLaunchMemory,
+  type LaunchOwner,
+  type LaunchProcess,
+  type LaunchReservation,
+  type ChildWatchState,
+  type ChildRetirement,
+} from './state.js';
 import {
   attemptExclusiveFileLockSync,
   createSharedFileLockSync,
@@ -50,6 +57,7 @@ import { listLaunchAdmissions, readLaunchAdmission } from '../infra/launch-admis
 import { replacementServing, requestInheritedSuccession } from './health.js';
 import { recordLegacyUpgradeIntent } from './request.js';
 import { writeAuditEvent } from '../infra/audit-log.js';
+import { currentLaunchStatus } from '../infra/launch-status.js';
 import { relaunchRoots, validatedBuild } from './selection.js';
 
 const STARTUP_BUDGET_MS = 120_000;
@@ -336,7 +344,6 @@ type RunningChild = Readonly<{
   manifest: StrictBundleManifest;
 }>;
 type OwnerHandle = { current: LaunchOwner; lost: boolean; release: FileLockLease };
-type ChildRetirement = { at: number | null };
 function retireOwnedChild(
   record: SupervisorLaunchMemory,
   owner: OwnerHandle,
@@ -358,12 +365,6 @@ function retireOwnedChild(
     return;
   }
 }
-type InheritedWatch = {
-  firstSeen: number;
-  lastHealthy: number;
-  uninterruptibleSince: number | null;
-  terminationAt: number | null;
-};
 
 function terminationCommitted(
   record: SupervisorLaunchMemory,
@@ -374,7 +375,7 @@ function terminationCommitted(
   const state = record.read();
   const slot = [state.launch, state.attempt].find((entry) => entry?.id === reservation.id);
   return (
-    state.owner.id === owner.id &&
+    record.hasAuthority(owner) &&
     slot?.terminationAt !== undefined &&
     slot.child?.pid === identity.pid &&
     slot.child.incarnation === identity.incarnation
@@ -408,6 +409,7 @@ function spawnAdmittedChild(
   runDir: string,
   attemptId?: string,
 ): RunningChild | null {
+  if (!record.hasAuthority(owner)) return null;
   const manifest = validatedExecutable(executable);
   if (manifest === null) {
     record.cancelReservation(reservation);
@@ -444,7 +446,7 @@ function spawnAdmittedChild(
       record.cancelReservation(reservation);
     };
     const retry = setInterval(() => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
+      if (!record.hasAuthority(owner) || child.exitCode !== null || child.signalCode !== null) return;
       if (pid === undefined || probeProcessIncarnation(pid) === null) return;
       child.kill('SIGKILL');
     }, 1_000);
@@ -469,25 +471,6 @@ type WatchChildContext = Readonly<{
   route?: (message: unknown, handle: unknown) => boolean;
   forwardParentMessages?: boolean;
 }>;
-
-type ChildWatchState = {
-  armed: boolean;
-  pendingHello: boolean;
-  lastAnswer: number;
-  lastWake: number;
-  outstanding: number | null;
-  sequence: number;
-  escalationAt: number | null;
-  killed: boolean;
-  lastKillAttemptAt: number;
-  wedged: boolean;
-  dStateSince: number | null;
-  served: boolean;
-  discovered: boolean;
-  admitted: boolean;
-  startupDeadline: number;
-  disconnectedAt: number | null;
-};
 
 function monitorChildHeartbeat(input: {
   child: ChildProcess;
@@ -514,7 +497,7 @@ function monitorChildHeartbeat(input: {
     return;
   }
   if (child.exitCode !== null || child.signalCode !== null) return;
-  if (owner.lost || record.read().owner.id !== owner.current.id) return;
+  if (owner.lost || !record.hasAuthority(owner.current)) return;
   state.escalationAt ??= retirement.at;
   if (state.escalationAt !== null) {
     if (!state.killed && now - state.escalationAt >= timing.graceMs && now - state.lastKillAttemptAt >= 1_000) {
@@ -556,6 +539,8 @@ function monitorChildHeartbeat(input: {
     }
     return;
   }
+  const status = currentLaunchStatus(record.runDir);
+  if (status !== undefined && child.connected) child.send({ kind: 'coral-launch-status', status });
   if (state.admitted && state.armed && state.pendingHello && state.outstanding === null && child.connected) {
     state.outstanding = ++state.sequence;
     child.send({ kind: 'coral-sentinel-challenge', id: state.outstanding });
@@ -576,7 +561,7 @@ function relayWatchedChildMessage(input: {
   route: (message: unknown, handle: unknown) => boolean;
 }): void {
   const { message, handle, child, reservation, identity, runDir, sentinelId, owner, record, state, route } = input;
-  if (owner.lost || record.read().owner.id !== owner.current.id) {
+  if (owner.lost || !record.hasAuthority(owner.current)) {
     closeHandle(handle);
     return;
   }
@@ -586,11 +571,13 @@ function relayWatchedChildMessage(input: {
       'pid' in message &&
       message.pid === child.pid &&
       'launchId' in message &&
-      typeof message.launchId === 'string'
+      message.launchId === reservation.id
     ) {
       const admission = readLaunchAdmission(runDir, message.launchId);
       if (
         admission.kind === 'readable' &&
+        admission.admission.build.buildSetId === reservation.buildSetId &&
+        admission.admission.purpose === reservation.purpose &&
         admission.admission.child.pid === child.pid &&
         admission.admission.child.incarnation === identity.incarnation &&
         admission.admission.parent.pid === process.pid &&
@@ -675,6 +662,8 @@ function pollWatchedChildServing(input: {
   const { child, manifest, reservation, identity, record, runDir, state } = input;
   if (!state.admitted || child.pid === undefined || state.served) return;
   const launchState = record.read();
+  const authority = launchState.owner;
+  if (!record.hasAuthority(authority)) return;
   if (
     ![launchState.launch, launchState.attempt].some(
       (launch) => launch?.id === reservation.id && launch.phase === 'admitted',
@@ -682,7 +671,7 @@ function pollWatchedChildServing(input: {
   )
     return;
   void replacementServing(runDir, manifest.flavor, child.pid).then((ready) => {
-    if (ready && record.serving(reservation, identity)) state.served = true;
+    if (ready && record.hasAuthority(authority) && record.serving(reservation, identity)) state.served = true;
   });
 }
 
@@ -698,25 +687,7 @@ async function watchChild({
   route = () => false,
   forwardParentMessages = true,
 }: WatchChildContext): Promise<WatchResult> {
-  const lastAnswer = Date.now();
-  const state: ChildWatchState = {
-    armed: false,
-    pendingHello: false,
-    lastAnswer,
-    lastWake: lastAnswer,
-    outstanding: null,
-    sequence: 0,
-    escalationAt: null,
-    killed: false,
-    lastKillAttemptAt: 0,
-    wedged: false,
-    dStateSince: null,
-    served: false,
-    discovered: false,
-    admitted: false,
-    startupDeadline: Date.now() + startupBudgetMs,
-    disconnectedAt: null,
-  };
+  const state = record.childWatch(reservation, startupBudgetMs);
 
   const childExit = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
@@ -737,7 +708,7 @@ async function watchChild({
     }),
   );
   const parentMessage = (message: unknown, handle: unknown): void => {
-    if (owner.lost || record.read().owner.id !== owner.current.id) {
+    if (owner.lost || !record.hasAuthority(owner.current)) {
       closeHandle(handle);
       return;
     }
@@ -753,7 +724,9 @@ async function watchChild({
       monitorChildHeartbeat({ child, record, owner, reservation, identity, timing, retirement, state, escalateChild }),
     timing.challengeMs,
   );
+  const spawnAuthority = owner.current;
   child.once('spawn', () => {
+    if (!record.hasAuthority(spawnAuthority)) return;
     child.send({
       kind: 'coral-launch-admit',
       runDir,
@@ -781,18 +754,24 @@ async function watchChild({
     if (child.connected || owner.lost) return;
     if (handoffReleasedAt !== null) {
       const attempt = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
-      if (attempt.kind === 'contended') owner.lost = true;
-      else if (attempt.kind === 'acquired') {
+      if (attempt.kind === 'contended') {
+        record.suspendAuthority();
+        owner.lost = true;
+      } else if (attempt.kind === 'acquired') {
         if (Date.now() - handoffReleasedAt < timing.lapseMs / 2) attempt.lease();
         else {
-          owner.release = attempt.lease;
+          record.resumeAuthority();
+          owner.current = record.read().owner;
+          owner.release = record.authorityLease(attempt.lease);
           handoffReleasedAt = null;
         }
       }
       return;
     }
+    const authority = owner.current;
     void replacementServing(runDir, manifest.flavor, identity.pid).then((healthy) => {
-      if (!healthy || child.connected || owner.lost || handoffReleasedAt !== null) return;
+      if (!record.hasAuthority(authority) || !healthy || child.connected || owner.lost || handoffReleasedAt !== null)
+        return;
       if (!state.served && record.serving(reservation, identity)) state.served = true;
       owner.release();
       handoffReleasedAt = Date.now();
@@ -803,8 +782,11 @@ async function watchChild({
   clearInterval(servingPoll);
   clearInterval(detachedHealthPoll);
   if (forwardParentMessages) process.off('message', parentMessage);
-  removeExitedChildDiscovery(runDir, identity);
-  if (!record.exited(reservation, identity)) record.cancelReservation(reservation);
+  if (record.hasAuthority(owner.current)) {
+    removeExitedChildDiscovery(runDir, identity);
+    if (!record.exited(reservation, identity)) record.cancelReservation(reservation);
+    record.reconcileAdmissions();
+  }
   return { exitCode, signal, served: state.served || (state.discovered && exitCode === 0), wedged: state.wedged };
 }
 
@@ -836,19 +818,19 @@ async function launchSuccessionAttempt(input: {
   forwardParentMessages: boolean;
   onExit: (attempt: SuccessionAttemptLaunch, result: WatchResult) => void;
 }): Promise<SuccessionAttemptLaunch> {
-  if (input.owner.lost) throw new Error('Launch ownership was lost');
+  const authority = input.owner.current;
+  if (input.owner.lost || !input.record.hasAuthority(authority)) throw new Error('Launch ownership was lost');
   const executable = join(input.bundleDir, 'coral-backend.cjs');
   const manifest = validatedExecutable(executable);
   if (manifest === null) throw new Error('Succession target is unavailable');
   await input.beforeReserve?.();
-  if (input.owner.lost) throw new Error('Launch ownership was lost');
+  if (input.owner.lost || !input.record.hasAuthority(authority)) throw new Error('Launch ownership was lost');
   const launch = input.record.read().launch;
-  if (
-    launch?.phase === 'admitted' &&
-    launch.child !== undefined &&
-    (await replacementServing(input.runDir, manifest.flavor, launch.child.pid))
-  )
-    input.record.serving(launch, launch.child);
+  if (launch?.phase === 'admitted' && launch.child !== undefined) {
+    const healthy = await replacementServing(input.runDir, manifest.flavor, launch.child.pid);
+    if (!input.record.hasAuthority(authority)) throw new Error('Launch ownership was lost');
+    if (healthy) input.record.serving(launch, launch.child);
+  }
   const active = input.record.read().attempt;
   if (active !== null && active.phase !== 'exited') throw new Error('Succession attempt is already active');
   const reservation = input.record.reserve(input.owner.current, manifest.buildSetId, 'succession');
@@ -863,7 +845,7 @@ async function launchSuccessionAttempt(input: {
     input.attemptId,
   );
   if (running === null) throw new Error('Succession child did not spawn');
-  const retirement: ChildRetirement = { at: null };
+  const retirement = input.record.childRetirement(reservation);
   const watch = watchChild({
     running,
     reservation,
@@ -905,7 +887,8 @@ function createRepairBridge(
     else closeHandle(handle);
   };
   const onMessage = (message: unknown, handle: unknown): void => {
-    if (owner.lost || record.read().owner.id !== owner.current.id) {
+    const authority = owner.current;
+    if (owner.lost || !record.hasAuthority(owner.current)) {
       closeHandle(handle);
       return;
     }
@@ -929,12 +912,18 @@ function createRepairBridge(
         void (async () => {
           while (
             !owner.lost &&
+            record.hasAuthority(authority) &&
             (record.read().launch?.id !== successor.id || record.read().launch?.phase !== 'serving') &&
             process.connected &&
             process.ppid === child.pid
           )
             await sleep(POLL_MS);
-          if (!owner.lost && record.read().launch?.id === successor.id && record.read().launch?.phase === 'serving')
+          if (
+            !owner.lost &&
+            record.hasAuthority(authority) &&
+            record.read().launch?.id === successor.id &&
+            record.read().launch?.phase === 'serving'
+          )
             onMessage(message, handle);
           else closeHandle(handle);
         })();
@@ -971,6 +960,7 @@ function createRepairBridge(
               void (async () => {
                 while (
                   !owner.lost &&
+                  record.hasAuthority(authority) &&
                   (record.read().launch?.id !== successor.id || record.read().launch?.phase !== 'serving') &&
                   running.child.exitCode === null &&
                   running.child.signalCode === null
@@ -978,6 +968,7 @@ function createRepairBridge(
                   await sleep(POLL_MS);
                 if (
                   !owner.lost &&
+                  record.hasAuthority(authority) &&
                   record.read().launch?.id === successor.id &&
                   record.read().launch?.phase === 'serving'
                 )
@@ -1186,7 +1177,7 @@ async function acquireLaunchOwnership(
           return {
             kind: 'owned',
             record,
-            owner: { current: record.read().owner, lost: false, release: attempt.lease },
+            owner: { current: record.read().owner, lost: false, release: record.authorityLease(attempt.lease) },
             incarnation,
             replacement,
             recoveryChallenge,
@@ -1249,7 +1240,6 @@ type ReconcileInheritedInput = {
   originalManifest: StrictBundleManifest;
   timing: SentinelTiming;
   startupBudgetMs: number;
-  inheritedWatch: Map<string, InheritedWatch>;
   lastInheritedRequest: Map<string, number>;
   repairBridge: ReturnType<typeof createRepairBridge> | null;
   replacement: boolean;
@@ -1270,14 +1260,14 @@ async function reconcileInheritedChild(
     originalManifest,
     timing,
     startupBudgetMs,
-    inheritedWatch,
     lastInheritedRequest,
     replacement,
     recoveryChallenge,
   } = input;
+  const inheritedWatch = record.inheritedWatch;
   let slot = snapshot;
   const child = slot.child;
-  if (child === undefined) return repairBridge;
+  if (child === undefined || currentInheritedChild(snapshot, child) === null) return repairBridge;
   if (incumbentLiveness(child) === 'absent' || childHasExited(child.pid)) {
     record.settleAbsentChild(slot);
     inheritedWatch.delete(slot.id);
@@ -1296,7 +1286,6 @@ async function reconcileInheritedChild(
     (await replacementServing(runDir, originalManifest.flavor, child.pid));
   const current = currentInheritedChild(snapshot, child);
   if (current === null) {
-    inheritedWatch.delete(snapshot.id);
     return repairBridge;
   }
   slot = current;
@@ -1327,13 +1316,19 @@ async function reconcileInheritedChild(
       const target = validatedExecutable(pendingExecutable(intent));
       if (target !== null && compareProductVersions(target.version, incumbentManifest.version) > 0) {
         lastInheritedRequest.set(intent.requestId, now);
-        await requestInheritedSuccession(runDir, incumbentManifest.flavor, child.pid, intent.requestId, intent.target);
+        await requestInheritedSuccession(
+          runDir,
+          incumbentManifest.flavor,
+          child.pid,
+          intent.requestId,
+          intent.target,
+          () => currentInheritedChild(snapshot, child) !== null,
+        );
       }
     }
   }
   const live = currentInheritedChild(snapshot, child);
   if (live === null) {
-    inheritedWatch.delete(snapshot.id);
     return repairBridge;
   }
   slot = live;
@@ -1372,6 +1367,7 @@ async function reconcileInheritedChildren(
   input: ReconcileInheritedInput,
 ): Promise<Readonly<{ inherited: LaunchReservation[]; repairBridge: ReturnType<typeof createRepairBridge> | null }>> {
   const { record, owner, incarnation } = input;
+  const authority = owner.current;
   let repairBridge = input.repairBridge;
   const inherited = [record.read().launch, record.read().attempt].filter(
     (slot): slot is LaunchReservation =>
@@ -1383,7 +1379,7 @@ async function reconcileInheritedChildren(
     const state = record.read();
     const current = [state.launch, state.attempt].find((entry) => entry?.id === snapshot.id);
     return !owner.lost &&
-      state.owner.id === owner.current.id &&
+      record.hasAuthority(authority) &&
       current !== undefined &&
       current !== null &&
       (current.phase === 'admitted' || current.phase === 'serving') &&
@@ -1421,7 +1417,13 @@ function dispatchPendingRequest(input: {
 }): void {
   const { record, owner, current, pending, lastDispatch, runDir, timing, startupBudgetMs, route } = input;
   try {
-    if (owner.lost || pending.value !== null || current.child.exitCode !== null || current.child.signalCode !== null)
+    if (
+      owner.lost ||
+      !record.hasAuthority(owner.current) ||
+      pending.value !== null ||
+      current.child.exitCode !== null ||
+      current.child.signalCode !== null
+    )
       return;
     const state = record.read();
     if (state.launch?.phase !== 'serving' || state.launch.child?.pid !== current.identity.pid) return;
@@ -1445,7 +1447,7 @@ function dispatchPendingRequest(input: {
       lastDispatch.set(intent.requestId, Date.now());
       const running = spawnAdmittedChild(record, owner.current, contenderReservation, executable, [], runDir);
       if (running === null) return;
-      const retirement: ChildRetirement = { at: null };
+      const retirement = record.childRetirement(contenderReservation);
       const watch = watchChild({
         running,
         reservation: contenderReservation,
@@ -1483,7 +1485,8 @@ function createActiveChildRouter({
   startAttempt: (source: ChildProcess, attemptId: string, bundleDir: string) => void;
 }): (source: ChildProcess, message: unknown, handle: unknown) => boolean {
   return (source, message, handle) => {
-    if (owner.lost || record.read().owner.id !== owner.current.id) {
+    const authority = owner.current;
+    if (owner.lost || !record.hasAuthority(owner.current)) {
       closeHandle(handle);
       return true;
     }
@@ -1541,13 +1544,15 @@ function createActiveChildRouter({
         void (async () => {
           while (
             !owner.lost &&
+            record.hasAuthority(authority) &&
             current().child !== source &&
             source.connected &&
             source.exitCode === null &&
             source.signalCode === null
           )
             await sleep(POLL_MS);
-          if (!owner.lost && current().child === source) startAttempt(source, attemptId, bundleDir);
+          if (!owner.lost && record.hasAuthority(authority) && current().child === source)
+            startAttempt(source, attemptId, bundleDir);
           else closeHandle(handle);
         })();
         return true;
@@ -1653,7 +1658,7 @@ async function superviseActiveChild(input: {
     owner,
     timing,
     startupBudgetMs,
-    retirement: { at: null },
+    retirement: record.childRetirement(reservation),
     route: (message, handle) => route(initial.child, message, handle),
   });
   const requestPoll = setInterval(
@@ -1697,11 +1702,12 @@ async function superviseAdoptedChild(input: {
   adoptedChild: RepairChild;
   lastInheritedRequest: Map<string, number>;
 }): Promise<boolean> {
-  const { record, runDir, repairBridge, adoptedChild, lastInheritedRequest } = input;
+  const { record, owner, runDir, repairBridge, adoptedChild, lastInheritedRequest } = input;
   let current: RepairChild = adoptedChild;
   const requestPoll = setInterval(() => {
     try {
-      if (record.read().launch?.phase !== 'serving') return;
+      const authority = owner.current;
+      if (!record.hasAuthority(authority) || record.read().launch?.phase !== 'serving') return;
       const intent = pendingIntent(runDir);
       if (intent === null) return;
       const target = validatedExecutable(pendingExecutable(intent));
@@ -1718,6 +1724,7 @@ async function superviseAdoptedChild(input: {
         current.running.identity.pid,
         intent.requestId,
         intent.target,
+        () => record.hasAuthority(authority),
       );
     } catch (error: unknown) {
       process.stderr.write(`Inherited successor request observation failed: ${String(error)}\n`);
@@ -1906,6 +1913,7 @@ async function selectAndSuperviseCandidate(input: {
     startupBudgetMs,
     onChild,
   } = input;
+  const authority = owner.current;
   const selection = await selectNextCandidate({
     record,
     owner,
@@ -1916,6 +1924,7 @@ async function selectAndSuperviseCandidate(input: {
     firstLaunch,
     unidentifiedBinder,
   });
+  if (!record.hasAuthority(authority)) return { released: false, firstLaunch };
   if (selection.kind === 'released') return { released: true, firstLaunch };
   if (selection.kind === 'retry') return { released: false, firstLaunch };
   const candidate = selection.candidate;
@@ -1956,7 +1965,6 @@ export async function runNamespaceSupervisor(
   try {
     const original = { executable, buildSetId: originalManifest.buildSetId };
     const tried = new Set<string>();
-    const inheritedWatch = new Map<string, InheritedWatch>();
     const lastInheritedRequest = new Map<string, number>();
     let repairBridge: ReturnType<typeof createRepairBridge> | null = null;
     let firstLaunch = true;
@@ -1977,6 +1985,8 @@ export async function runNamespaceSupervisor(
         }
         return 1;
       }
+      record.reconcileAdmissions();
+      if (process.connected) process.send?.({ kind: 'coral-launch-status', status: currentLaunchStatus(runDir) });
       const reconciled = await reconcileInheritedChildren({
         record,
         owner,
@@ -1984,7 +1994,6 @@ export async function runNamespaceSupervisor(
         originalManifest,
         timing,
         startupBudgetMs,
-        inheritedWatch,
         lastInheritedRequest,
         repairBridge,
         replacement,
@@ -1993,7 +2002,7 @@ export async function runNamespaceSupervisor(
       });
       const { inherited } = reconciled;
       repairBridge = reconciled.repairBridge;
-      if (owner.lost || record.read().owner.id !== owner.current.id) {
+      if (owner.lost || !record.hasAuthority(owner.current)) {
         owner.lost = true;
         repairBridge?.close();
         repairBridge = null;

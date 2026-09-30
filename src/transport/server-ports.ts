@@ -1,3 +1,4 @@
+import type { LaunchStatus } from '../infra/launch-status.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { UpgradeIntentProblem, UpgradeIntentVisibility } from '../infra/upgrade-intent.js';
 import type { ServerResponse } from 'node:http';
@@ -328,6 +329,7 @@ export type HealthSnapshot = {
   status: 'starting' | 'ok' | 'draining';
   succession?: UpgradeIntentVisibility;
   successionProblem?: UpgradeIntentProblem;
+  launchStatus?: LaunchStatus;
   /**
    * Authoritative kernel lifecycle. `readyAt` is the wall-clock ms when the
    * kernel started (set on the first non-`'starting'` transition) or `null`

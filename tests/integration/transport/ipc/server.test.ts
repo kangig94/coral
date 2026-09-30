@@ -1080,6 +1080,7 @@ describe('ipc server', () => {
         createStoreChildPrincipalCredentials(() => db),
         {
           namespace: 'test-namespace',
+          activeJobOrigin: () => 'test-namespace',
         },
       );
     }
@@ -1163,6 +1164,127 @@ describe('ipc server', () => {
       await listenIpcServer(listener, socketPath);
       return { listener, socketPath };
     }
+
+    it.each(['commit', 'abort'] as const)(
+      'retires a paused challenge at the %s serving fence and retries fresh',
+      async (outcome) => {
+        const db = childCredentialDatabase();
+        const registry = registryOn(db);
+        const credential = issue(registry);
+        const oldPorts = createPorts();
+        const newPorts = createPorts();
+        const oldList = vi.spyOn(oldPorts.jobs, 'list');
+        const newList = vi.spyOn(newPorts.jobs, 'list');
+        const older = await serve(registry, { jobs: oldPorts.jobs });
+        const newer = await serve(registryOn(db), { jobs: newPorts.jobs });
+        const forwarded = vi.fn((socket: Socket, pending: string) => newer.listener.acceptSocket?.(socket, pending));
+        let release: (() => void) | undefined;
+        let proofs = 0;
+        const auth = childAuth(credential);
+        try {
+          const result = requestIpcMethod(
+            older.socketPath,
+            'jobs.list',
+            {},
+            {
+              timeoutMs: 1_000,
+              auth: {
+                kind: 'challenged',
+                prove: (challenge, request) => {
+                  proofs += 1;
+                  if (proofs === 1) {
+                    release = older.listener.forwardConnections?.(forwarded);
+                    if (outcome === 'abort') release?.();
+                  }
+                  return auth.prove(challenge, request);
+                },
+              },
+            },
+          );
+          await expect(result).resolves.toEqual({ jobs: [] });
+          expect(proofs).toBe(2);
+          expect(oldList).toHaveBeenCalledTimes(outcome === 'abort' ? 1 : 0);
+          expect(newList).toHaveBeenCalledTimes(outcome === 'commit' ? 1 : 0);
+        } finally {
+          release?.();
+          await closeIpcServer(older.listener);
+          await closeIpcServer(newer.listener);
+        }
+      },
+    );
+
+    it('fences a proof racing an aborted handover before acquiring its request entitlement', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const credential = issue(registry);
+      const base = createPorts();
+      const list = vi.spyOn(base.jobs, 'list');
+      const serving = await serve(registry, { jobs: base.jobs });
+      const authenticate = registry.authenticate.bind(registry);
+      let raced = false;
+      vi.spyOn(registry, 'authenticate').mockImplementation((...args) => {
+        const result = authenticate(...args);
+        if (!raced) {
+          raced = true;
+          serving.listener.forwardConnections?.((socket) => socket.destroy())?.();
+        }
+        return result;
+      });
+      const captured: CapturedProof[] = [];
+      try {
+        await expect(
+          requestIpcMethod(
+            serving.socketPath,
+            'jobs.list',
+            {},
+            {
+              auth: childAuth(credential, captured),
+              timeoutMs: 1_000,
+            },
+          ),
+        ).resolves.toEqual({ jobs: [] });
+        expect(captured).toHaveLength(2);
+        expect(list).toHaveBeenCalledOnce();
+      } finally {
+        await closeIpcServer(serving.listener);
+      }
+    });
+
+    it('exhausts the original request budget during paced pre-dispatch reauthentication', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const credential = issue(registry);
+      const base = createPorts();
+      const list = vi.spyOn(base.jobs, 'list');
+      const serving = await serve(registry, { jobs: base.jobs });
+      const auth = childAuth(credential);
+      let proofs = 0;
+      const started = Date.now();
+      try {
+        await expect(
+          requestIpcMethod(
+            serving.socketPath,
+            'jobs.list',
+            {},
+            {
+              timeoutMs: 180,
+              auth: {
+                kind: 'challenged',
+                prove: (challenge, request) => {
+                  proofs += 1;
+                  serving.listener.forwardConnections?.((socket) => socket.destroy())?.();
+                  return auth.prove(challenge, request);
+                },
+              },
+            },
+          ),
+        ).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+        expect(Date.now() - started).toBeLessThan(600);
+        expect(proofs).toBeGreaterThanOrEqual(2);
+        expect(proofs).toBeLessThanOrEqual(5);
+        expect(list).not.toHaveBeenCalled();
+      } finally {
+        await closeIpcServer(serving.listener);
+      }
+    });
 
     it('should authenticate catalog requests and keep capability refusals for an authenticated child', async () => {
       const registry = registryOn(childCredentialDatabase());

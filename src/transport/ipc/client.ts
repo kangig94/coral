@@ -14,6 +14,7 @@ import {
 import { createLineFramer } from '../line-framing.js';
 import {
   CHILD_AUTH_CHALLENGE_METHOD,
+  CHILD_REAUTHENTICATION_REQUIRED,
   type ChildAuthChallenge,
   type ChildProvenRequest,
 } from '../../security/child-credential.js';
@@ -287,7 +288,6 @@ function isSubscriptionAck(value: unknown, method: string): boolean {
   return record.status === 'subscribed' && record.method === method;
 }
 
-/** One exchange on `socket`, before the request is written; the server sends nothing else until that request. */
 async function receiveAuthChallenge(
   socket: Socket,
   deadlineMs: number | null,
@@ -310,7 +310,8 @@ async function receiveAuthChallenge(
         reject(new Error('IPC connection closed before the coordinator issued an authentication challenge')),
       );
     const onData = (chunk: Buffer | string): void => {
-      for (const frame of framer.push(chunk)) {
+      const frames = framer.push(chunk);
+      for (const [index, frame] of frames.entries()) {
         if (frame.trim().length === 0) continue;
         let envelope: JsonRpcEnvelope;
         try {
@@ -319,12 +320,23 @@ async function receiveAuthChallenge(
           finish(() => reject(normalizeIpcError(error)));
           return;
         }
-        if (envelope.kind === 'error' && envelope.id === challengeId) {
+        if (
+          envelope.kind === 'error' &&
+          (envelope.id === challengeId || isReauthenticationError(envelope.error.data))
+        ) {
           finish(() => reject(buildIpcRpcError(envelope.error)));
+          socket.destroy();
           return;
         }
         if (envelope.kind === 'response' && envelope.id === challengeId) {
           const parsed = ipcAuthChallengeSchema.safeParse(envelope.result);
+          socket.pause();
+          const remainder =
+            frames
+              .slice(index + 1)
+              .map((rest) => `${rest}\n`)
+              .join('') + framer.flush();
+          if (remainder.length > 0) socket.unshift(Buffer.from(remainder));
           finish(() =>
             parsed.success
               ? resolve(parsed.data)
@@ -364,6 +376,44 @@ async function resolveAuthMetadata(
   }
 }
 
+function isReauthenticationError(data: unknown): boolean {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'code' in data &&
+    data.code === CHILD_REAUTHENTICATION_REQUIRED &&
+    'dispatched' in data &&
+    data.dispatched === false
+  );
+}
+
+async function retryChildAuthentication<T>(
+  auth: IpcClientAuth | null | undefined,
+  deadlineMs: number | null,
+  timePort: TimePort,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  const retryDeadline = deadlineMs ?? timePort.now() + 5_000;
+  for (;;) {
+    try {
+      return await attempt();
+    } catch (error: unknown) {
+      if (
+        typeof auth !== 'object' ||
+        auth?.kind !== 'challenged' ||
+        !(error instanceof IpcRpcError) ||
+        !isReauthenticationError(error.data)
+      )
+        throw error;
+      const budget = retryDeadline - timePort.now();
+      if (budget <= 0) throw new IpcRequestTimeout('IPC reauthentication request deadline exceeded');
+      await timePort.sleep(Math.min(50, budget));
+      if (timePort.now() >= retryDeadline)
+        throw new IpcRequestTimeout('IPC reauthentication request deadline exceeded');
+    }
+  }
+}
+
 export async function requestIpcMethod<TResult>(
   socketPath: string,
   method: string,
@@ -371,9 +421,22 @@ export async function requestIpcMethod<TResult>(
   options?: IpcRequestOptions,
 ): Promise<TResult> {
   const timePort = options?.time ?? createRealTimePort();
-  const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
   const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
+  return retryChildAuthentication(options?.auth, deadlineMs, timePort, () =>
+    requestIpcMethodOnce<TResult>(socketPath, method, params, options, timePort, deadlineMs),
+  );
+}
+
+async function requestIpcMethodOnce<TResult>(
+  socketPath: string,
+  method: string,
+  params: unknown,
+  options: IpcRequestOptions | undefined,
+  timePort: TimePort,
+  deadlineMs: number | null,
+): Promise<TResult> {
+  const requestId = nextRequestId++;
   const socket = await connectSocket(socketPath, deadlineMs, timePort);
   const auth = await resolveAuthMetadata(
     options?.auth,
@@ -430,10 +493,11 @@ export async function requestIpcMethod<TResult>(
         }
 
         if (envelope.kind === 'error') {
-          if (envelope.id !== requestId) {
+          if (envelope.id !== requestId && !isReauthenticationError(envelope.error.data)) {
             continue;
           }
           finish(() => reject(buildIpcRpcError(envelope.error)));
+          socket.destroy();
           return;
         }
 
@@ -473,6 +537,7 @@ export async function requestIpcMethod<TResult>(
       ...(auth === undefined ? {} : { auth }),
     };
     socket.write(`${encode(envelope)}\n`);
+    if (typeof options?.auth === 'object' && options.auth?.kind === 'challenged') socket.resume();
   });
 }
 
@@ -483,9 +548,22 @@ export async function subscribeIpcMethod<TResult>(
   options?: IpcSubscriptionOptions,
 ): Promise<IpcSubscription<TResult>> {
   const timePort = options?.time ?? createRealTimePort();
-  const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
   const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
+  return retryChildAuthentication(options?.auth, deadlineMs, timePort, () =>
+    subscribeIpcMethodOnce<TResult>(socketPath, method, params, options, timePort, deadlineMs),
+  );
+}
+
+async function subscribeIpcMethodOnce<TResult>(
+  socketPath: string,
+  method: string,
+  params: unknown,
+  options: IpcSubscriptionOptions | undefined,
+  timePort: TimePort,
+  deadlineMs: number | null,
+): Promise<IpcSubscription<TResult>> {
+  const requestId = nextRequestId++;
   const socket = await connectSocket(socketPath, deadlineMs, timePort);
   const auth = await resolveAuthMetadata(
     options?.auth,
@@ -629,7 +707,7 @@ export async function subscribeIpcMethod<TResult>(
       }
 
       if (envelope.kind === 'error') {
-        if (envelope.id !== requestId) {
+        if (envelope.id !== requestId && !isReauthenticationError(envelope.error.data)) {
           continue;
         }
         fail(buildIpcRpcError(envelope.error));
@@ -685,6 +763,7 @@ export async function subscribeIpcMethod<TResult>(
     ...(auth === undefined ? {} : { auth }),
   };
   socket.write(`${encode(envelope)}\n`);
+  if (typeof options?.auth === 'object' && options.auth?.kind === 'challenged') socket.resume();
   await handshakePromise;
 
   const close = async (): Promise<void> => {

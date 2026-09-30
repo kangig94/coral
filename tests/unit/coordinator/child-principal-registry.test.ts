@@ -113,6 +113,34 @@ describe('ChildPrincipalRegistry', () => {
     expect(authenticated(foreignOrigin, credential)).toBeNull();
   });
 
+  it('persists only authorization and the public key before returning a child credential', () => {
+    const db = childCredentialDatabase();
+    const credential = register(testChildPrincipalRegistry(ids(), { db }), testPrincipal());
+    const row = db
+      .prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?')
+      .get(`child_principal_credential.v1:${credential.credentialId}`);
+    expect(row).toBeDefined();
+    expect(JSON.parse(row?.value ?? '{}')).toMatchObject({
+      credentialId: credential.credentialId,
+      namespace: 'ns-a',
+      publicKey: expect.any(String),
+      parentJobId: 'job-a',
+      parentSessionId: 'session-a',
+    });
+    expect(row?.value).not.toContain(credential.privateKey);
+    expect(row?.value).not.toContain('privateKey');
+  });
+
+  it('denies a child after its parent job becomes terminal', () => {
+    const db = childCredentialDatabase();
+    let origin: string | null = 'ns-a';
+    const registry = testChildPrincipalRegistry(ids(), { db, activeJobOrigin: () => origin });
+    const credential = register(registry, testPrincipal());
+    expect(authenticated(registry, credential)).not.toBeNull();
+    origin = null;
+    expect(authenticated(registry, credential)).toBeNull();
+  });
+
   it('should refuse a proof that claims another job or session', () => {
     const registry = testChildPrincipalRegistry(ids());
     const credential = register(registry, testPrincipal());
@@ -159,7 +187,7 @@ describe('ChildPrincipalRegistry', () => {
     const booted = new ChildPrincipalRegistry(
       { randomBytes: (length) => Buffer.alloc(length, 42) },
       createStoreChildPrincipalCredentials(() => db),
-      { namespace: 'ns-a', log: (message) => logged.push(message) },
+      { namespace: 'ns-a', activeJobOrigin: () => 'ns-a', log: (message) => logged.push(message) },
     );
     const challenge = booted.issueChallenge();
 

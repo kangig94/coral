@@ -85,7 +85,7 @@ export class ChildPrincipalRegistry {
   private readonly ids: Pick<IdPort, 'randomBytes'>;
   private readonly credentials: ChildPrincipalCredentialStore;
   private readonly namespace: string;
-  private readonly activeJobOrigin: ((jobId: string) => string | null) | null;
+  private readonly activeJobOrigin: (jobId: string) => string | null;
   private readonly incarnation: string;
   private readonly reportedUnreadable = new Set<string>();
   private readonly log: (message: string) => void;
@@ -99,14 +99,14 @@ export class ChildPrincipalRegistry {
        * The launch namespace of a job that has not reached a terminal phase, or null. A record names the namespace
        * its job was launched in, which a successor built from another plugin root does not share.
        */
-      activeJobOrigin?: (jobId: string) => string | null;
+      activeJobOrigin: (jobId: string) => string | null;
       log?: (message: string) => void;
     },
   ) {
     this.ids = ids;
     this.credentials = credentials;
     this.namespace = options.namespace;
-    this.activeJobOrigin = options.activeJobOrigin ?? null;
+    this.activeJobOrigin = options.activeJobOrigin;
     this.log = options.log ?? (() => undefined);
     this.incarnation = ids.randomBytes(16).toString('hex');
   }
@@ -201,7 +201,7 @@ export class ChildPrincipalRegistry {
       record.expiresAtMs <= nowMs ||
       record.parentJobId !== claim.jobId ||
       record.parentSessionId !== claim.sessionId ||
-      (this.activeJobOrigin !== null && this.readActiveJobOrigin(record.parentJobId) !== record.namespace) ||
+      this.readActiveJobOrigin(record.parentJobId) !== record.namespace ||
       !verifyChildProof(record.publicKey, childProofSubject(challenge, claim, request), claim.proof)
     ) {
       return { kind: 'refused' };
@@ -235,7 +235,7 @@ export class ChildPrincipalRegistry {
 
   private readActiveJobOrigin(jobId: string): string | null {
     try {
-      return this.activeJobOrigin?.(jobId) ?? null;
+      return this.activeJobOrigin(jobId);
     } catch {
       return null;
     }

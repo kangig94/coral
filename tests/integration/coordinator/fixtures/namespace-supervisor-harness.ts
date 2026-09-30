@@ -1,6 +1,7 @@
 import { runNamespaceSupervisor } from '#src/coordinator-launch/supervisor.js';
 import { launchLegacyBackend } from '#src/coordinator-launch/legacy-bootstrap.js';
 import type { ChildProcess } from 'node:child_process';
+import { updateLaunchStatus } from '#src/infra/launch-status.js';
 import { writeFileSync } from 'node:fs';
 
 const executable = process.argv[2];
@@ -15,6 +16,11 @@ if (executable === '--launch-legacy') {
   let coordinator: ChildProcess | null = null;
   let refusedKill = false;
   process.on('message', (message: unknown) => {
+    if (message === 'fixture-status-hold')
+      updateLaunchStatus(runDir, (status) => ({
+        ...status,
+        hold: { kind: 'custody-unreadable', path: '/fixture/custody', retry: 'restore-readable-custody-record' },
+      }));
     if (message === 'disconnect-coordinator') coordinator?.disconnect();
     if (message === 'error-coordinator-channel') coordinator?.emit('error', new Error('IPC send failed'));
     if (typeof message === 'object' && message !== null && 'fixtureChildMessage' in message)

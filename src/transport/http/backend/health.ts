@@ -1,3 +1,4 @@
+import { parseLaunchStatus, type LaunchStatus } from '../../../infra/launch-status.js';
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { assertNever, serializedThrownIdentifierSchema } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
@@ -151,6 +152,7 @@ export interface BackendHealth {
   shutdown?: BackendShutdownRemainderProjection;
   succession?: UpgradeIntentVisibility;
   successionProblem?: UpgradeIntentProblem;
+  launchStatus?: LaunchStatus;
   diagnostics?: LaunchPermitDiagnostics & {
     carriers?: {
       coverage: 'complete' | 'unknown';
@@ -883,7 +885,12 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
   }
   const shutdown = value.shutdown === undefined ? null : parseShutdownRemainderProjection(value.shutdown);
   // Succession fields are optional additions: one this build cannot decode is dropped, never a rejected health.
-  const { succession: rawSuccession, successionProblem: rawSuccessionProblem, ...reported } = value;
+  const {
+    succession: rawSuccession,
+    successionProblem: rawSuccessionProblem,
+    launchStatus: rawLaunchStatus,
+    ...reported
+  } = value;
   const succession = rawSuccession === undefined ? null : parseVisibleUpgradeIntent(rawSuccession);
   const successionProblem =
     rawSuccessionProblem === 'unreadable' ||
@@ -895,6 +902,7 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
   return {
     health: {
       ...reported,
+      launchStatus: parseLaunchStatus(rawLaunchStatus),
       ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
       ...(shutdown === null ? {} : { shutdown }),
       ...(succession === null ? {} : { succession }),

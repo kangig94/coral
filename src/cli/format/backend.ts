@@ -773,6 +773,14 @@ export function formatBackendStatus(
         `Coordinator launch ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because SIGKILL delivery could not be confirmed. The owning supervisor retries for this exact child until it exits or is decisively absent.`,
       );
   }
+  if (daemonStatus.launchStatusPublicationFailure !== undefined)
+    sections.push(
+      `Coordinator launch status publication is unavailable: ${daemonStatus.launchStatusPublicationFailure.detail}. Current holds remain in memory; publication retries automatically.`,
+    );
+  for (const hold of daemonStatus.launchAdmissionHolds ?? [])
+    sections.push(
+      `Coordinator admission ${hold.path}: ${hold.disposition}. The namespace supervisor retries evidence and cleanup.`,
+    );
   const launchHold = daemonStatus.launchHold;
   for (const hold of daemonStatus.launchInheritedHolds ?? [])
     sections.push(

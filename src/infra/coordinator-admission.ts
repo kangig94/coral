@@ -1,3 +1,4 @@
+import { receiveLaunchStatus } from './launch-status.js';
 import { publishLaunchAdmission, readLaunchAdmission, removeOwnLaunchAdmission } from './launch-admission-record.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
 
@@ -59,6 +60,16 @@ export async function claimCoordinatorLaunch(): Promise<boolean> {
       if (parentIncarnation !== message.parent.incarnation || childIncarnation === null || !process.connected)
         return finish(false);
       runDir = message.runDir;
+      process.on('message', (value: unknown) => {
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'kind' in value &&
+          value.kind === 'coral-launch-status' &&
+          'status' in value
+        )
+          receiveLaunchStatus(runDir, value.status);
+      });
       launchId = message.launchId;
       publishLaunchAdmission(message.runDir, {
         version: 1,

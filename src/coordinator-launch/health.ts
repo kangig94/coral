@@ -70,6 +70,7 @@ export async function requestInheritedSuccession(
   pid: number,
   requestId: string,
   target: Readonly<{ build: StrictBundleManifest; pluginRootLabel: string }>,
+  authorized: () => boolean,
 ): Promise<boolean> {
   try {
     const discovery = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as {
@@ -92,6 +93,7 @@ export async function requestInheritedSuccession(
       socket.once('error', () => finish(false));
       socket.once('close', () => finish(false));
       socket.once('connect', () => {
+        if (!authorized()) return finish(false);
         socket.write(
           `${JSON.stringify({
             kind: 'request',

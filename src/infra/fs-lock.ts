@@ -46,6 +46,7 @@ export type DirectoryLockDeps = {
   storage: StoragePort;
   time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep' | 'setInterval' | 'clearInterval'>;
   staleMs?: number;
+  reclaim?: 'absent-only';
   heartbeatMs?: number;
   signal?: AbortSignal;
   owner?: DirectoryLockOwnerProbe;
@@ -635,7 +636,7 @@ type OwnerMarkerDisposition = 'window-expired' | 'owner-absent' | 'owner-alive' 
 const RECLAIMABLE_OWNER_MARKERS: ReadonlySet<OwnerMarkerDisposition> = new Set(['window-expired', 'owner-absent']);
 
 function ownerMarkerDisposition(markerPath: string, deps: DirectoryLockDeps): OwnerMarkerDisposition {
-  if (markerIsStale(markerPath, deps)) return 'window-expired';
+  if (deps.reclaim !== 'absent-only' && markerIsStale(markerPath, deps)) return 'window-expired';
   const liveness = observeMarkerOwner(markerPath, deps);
   if (liveness === 'absent') return 'owner-absent';
   return liveness === 'alive' ? 'owner-alive' : 'owner-unobserved';
@@ -712,6 +713,11 @@ function tryClaimAndQuarantineStaleMarker(
  * claim the marker after it has moved.
  */
 function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
+  if (deps.reclaim === 'absent-only') {
+    const owners = ownerMarkerEntries(lockDir, deps);
+    const claims = claimMarkerEntries(lockDir, deps);
+    if (owners.length + claims.length !== 1) return false;
+  }
   const ownerEntries = ownerMarkerEntries(lockDir, deps);
   const [ownerEntry] = ownerEntries;
   if (ownerEntry === undefined) {
@@ -832,6 +838,15 @@ export function tryAcquireDirectoryLock(
   if (!tryQuarantineStaleLock(lockDir, deps)) return null;
   throwIfDirectoryLockAborted(deps);
   return tryCreateDirectoryLock(lockDir, deps, providedDeps?.storage);
+}
+
+/** Diagnostic publication cannot reclaim a directory on silence or age. */
+export function tryAcquireDiagnosticDirectoryLock(lockDir: string): DirectoryLockLease | null {
+  const deps = { ...resolveDirectoryLockDeps(), reclaim: 'absent-only' as const };
+  const lease = tryCreateDirectoryLock(lockDir, deps);
+  if (lease !== null) return lease;
+  if (!tryQuarantineStaleLock(lockDir, deps)) return null;
+  return tryCreateDirectoryLock(lockDir, deps);
 }
 
 async function waitForDirectoryLockRetry(deps: DirectoryLockDeps): Promise<void> {
