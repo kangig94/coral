@@ -180,7 +180,12 @@ export type MalformedFileLockRepair =
  * lock on those bytes either; an exclusive lock granted to this call is held until the entry is moved.
  */
 export function repairMalformedFileLockSync(path: string): MalformedFileLockRepair {
-  const repair = tryAcquireDirectoryLock(`${path}.repair`);
+  let repair: DirectoryLockLease | null;
+  try {
+    repair = tryAcquireDirectoryLock(`${path}.repair`);
+  } catch (cause: unknown) {
+    return { kind: 'unobservable', cause };
+  }
   if (repair === null) return { kind: 'repair-in-progress' };
   try {
     let entry: ReturnType<typeof lstatSync>;

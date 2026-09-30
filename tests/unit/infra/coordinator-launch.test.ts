@@ -52,6 +52,47 @@ function intentFixture(incarnation: ProcessIncarnation): upgradeIntent.UpgradeIn
 }
 
 describe('namespace supervisor ownership', () => {
+  it.each(['refused', 'SIGTERM', 'SIGKILL'] as const)(
+    'handles inherited cooperation after %s termination delivery',
+    (delivery) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-inherited-cooperation-'));
+      const incarnation = probeProcessIncarnation(process.pid);
+      if (incarnation === null) throw new Error('Missing test incarnation');
+      try {
+        const child = { pid: process.pid, incarnation };
+        publishLaunchAdmission(runDir, {
+          version: 1,
+          launchId: '00000000-0000-4000-8000-000000000001',
+          child,
+          parent: { pid: 999_998, incarnation },
+          admittedAt: Date.now() - 60_000,
+          purpose: 'startup',
+          build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
+        });
+        const memory = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-A');
+        const slot = memory.read().launch!;
+        const owner = memory.read().owner;
+        expect(memory.commitTermination(owner, slot, child, Date.now(), 100)).toBe(true);
+        if (delivery !== 'refused') memory.recordTerminationDelivery(owner, slot, delivery);
+        memory.holdInheritedChild(owner, slot);
+        memory.observeInheritedHealth(slot, Date.now());
+        if (delivery !== 'refused') {
+          expect(memory.read().launch?.terminationAt).toBeDefined();
+          expect(memory.read().launch?.killAt).toBeDefined();
+          expect(memory.read().launch?.observedHealthyAt).toBeUndefined();
+          expect(memory.reserveRepairSuccession(owner, 'build-A', child)).toBeNull();
+          return;
+        }
+        expect(memory.read().launch).toMatchObject({ phase: 'serving', observedHealthyAt: expect.any(Number) });
+        expect(memory.read().launch?.terminationAt).toBeUndefined();
+        expect(memory.read().launch?.killAt).toBeUndefined();
+        expect(memory.reserveRepairSuccession(owner, 'build-A', child)).not.toBeNull();
+      } finally {
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('normalizes empty recovery despite proven-dead cleanup residue and retains unreadable intent as unknown', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-recovery-residue-'));
     const incarnation = 'original' as ProcessIncarnation;

@@ -37,6 +37,8 @@ export type LaunchReservation = Readonly<{
   child?: LaunchProcess;
   terminationAt?: number;
   killAt?: number;
+  termDelivered?: boolean;
+  killDelivered?: boolean;
 }>;
 
 export type ChildWatchState = {
@@ -792,9 +794,17 @@ export class SupervisorLaunchMemory {
       this.supervisionEligible(current) &&
       current.child !== undefined &&
       identityDisposition(current.child) === 'matching' &&
-      current.terminationAt === undefined
+      current.termDelivered !== true &&
+      current.killDelivered !== true
     ) {
-      this.#set(reservation, { ...current, phase: 'serving', observedHealthyAt: now });
+      this.#set(reservation, {
+        ...current,
+        phase: 'serving',
+        observedHealthyAt: now,
+        terminationAt: undefined,
+        killAt: undefined,
+      });
+      this.inheritedWatch.delete(current.id);
       this.#servedBuilds.add(current.buildSetId);
       const child = current.child;
       this.#status((status) => ({
@@ -803,8 +813,20 @@ export class SupervisorLaunchMemory {
           ...(status.inheritedHealth ?? []).filter((observation) => observation.launchId !== current.id).slice(-1),
           { launchId: current.id, supervisor: this.#state.owner.process, child, observedHealthyAt: now },
         ],
+        inheritedHolds: status.inheritedHolds.filter((hold) => hold.launchId !== current.id),
+        signalHolds: status.signalHolds.filter((hold) => hold.launchId !== current.id),
       }));
     }
+  }
+
+  recordTerminationDelivery(owner: LaunchOwner, reservation: LaunchReservation, signal: 'SIGTERM' | 'SIGKILL'): void {
+    if (!this.hasAuthority(owner) || reservation.child === undefined) return;
+    const current = this.currentChild(reservation, reservation.child);
+    if (current === null || current.terminationAt === undefined) return;
+    this.#set(reservation, {
+      ...current,
+      ...(signal === 'SIGTERM' ? { termDelivered: true } : { killDelivered: true }),
+    });
   }
 
   release(): boolean {
@@ -831,7 +853,12 @@ export class SupervisorLaunchMemory {
       ...status,
       inheritedHolds: [
         ...status.inheritedHolds.filter((hold) => hold.launchId !== reservation.id),
-        { launchId: reservation.id, pid: child.pid },
+        {
+          launchId: reservation.id,
+          pid: child.pid,
+          incarnation: child.incarnation,
+          observation: probeProcessIncarnation(child.pid) ?? 'unknown',
+        },
       ],
     }));
     return true;
@@ -856,11 +883,15 @@ export class SupervisorLaunchMemory {
   }
 
   hold(_owner: LaunchOwner, controller: string): boolean {
+    const intent = readUpgradeIntent(this.#runDir);
     this.#status((status) => ({
       ...status,
       hold: {
         kind: 'no-eligible-build',
         controller,
+        requestId: intent.kind === 'readable' ? intent.intent.requestId : undefined,
+        observation:
+          controller === 'unknown' ? 'controller-evidence-indeterminate' : 'no-eligible-installed-or-retained-build',
         retry: controller === 'unknown' ? 'controller-evidence-change' : 'eligible-build-appears',
       },
     }));
@@ -873,6 +904,7 @@ export class SupervisorLaunchMemory {
       hold: {
         kind: 'custody-unreadable',
         path,
+        observation: 'custody-record-unreadable',
         retry: 'restore-readable-custody-record',
       },
     }));

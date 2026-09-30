@@ -461,6 +461,7 @@ export type BackendStatusFull = BackendStatusFullBase & {
   launchHold?: NonNullable<LaunchStatus['hold']>;
   launchInheritedHolds?: LaunchStatus['inheritedHolds'];
   launchSignalHolds?: LaunchStatus['signalHolds'];
+  launchLockHold?: LaunchStatus['lockHold'];
   upgrade?: UpgradeIntentVisibility;
   upgradeProblem?: UpgradeIntentProblem;
   upgradeQuarantined?: boolean;
@@ -1185,6 +1186,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     ...(state?.signalHolds.length ? { launchSignalHolds: state.signalHolds } : {}),
     launchStatusPublicationFailure: state?.publicationFailure,
     launchAdmissionHolds: state?.admissionHolds,
+    launchLockHold: state?.lockHold,
     ...(state?.publicationFailure !== undefined
       ? { launchStatusProblem: 'publication-unavailable' as const }
       : disposition.kind === 'unreadable'

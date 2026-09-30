@@ -33,6 +33,7 @@ import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { updateLaunchStatus } from '../infra/launch-status.js';
+import { authenticatedLaunchParent } from '../infra/coordinator-admission.js';
 import { parseProviderRoleArgv, type ProviderRole } from '../provider-proxy/role-argv.js';
 import { runProviderRoleMain } from '../provider-proxy/role-main.js';
 import { currentCoralStoreFormat } from '../store-format.js';
@@ -345,8 +346,10 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
   let sentinelArm: Promise<void> | null = null;
   if (process.env.CORAL_SENTINEL_ID !== undefined) {
     const sentinelId = process.env.CORAL_SENTINEL_ID;
-    const parentPid = process.ppid;
-    const parentIncarnation = probeProcessIncarnation(parentPid);
+    const parent = authenticatedLaunchParent();
+    const parentPid = parent?.pid ?? process.ppid;
+    const parentIncarnation = parent?.incarnation ?? null;
+    let parentObservation = probeProcessIncarnation(parentPid);
     const holdId = `parent:${parentPid}`;
     let parentSilent = false;
     let parentTerminationAt: number | null = null;
@@ -362,7 +365,18 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
           ...status,
           signalHolds: [
             ...status.signalHolds.filter((hold) => hold.launchId !== holdId),
-            ...(held ? [{ launchId: holdId, pid: parentPid, incarnation: parentIncarnation ?? 'unavailable' }] : []),
+            ...(held
+              ? [
+                  {
+                    launchId: holdId,
+                    pid: parentPid,
+                    incarnation: parentIncarnation ?? 'unavailable',
+                    disposition:
+                      parentObservation === null ? ('parent-identity-unknown' as const) : ('parent-silent' as const),
+                    observation: parentObservation ?? 'unknown',
+                  },
+                ]
+              : []),
           ],
         }));
       } catch (error: unknown) {
@@ -372,7 +386,8 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
     const signalSilentParent = (signal: 'SIGTERM' | 'SIGKILL'): boolean => {
       if (process.platform !== 'linux' || !incarnationMayAuthorizeSignal(process.platform)) return false;
       if (parentIncarnation === null || process.ppid !== parentPid) return false;
-      if (probeProcessIncarnation(parentPid) !== parentIncarnation) return false;
+      parentObservation = probeProcessIncarnation(parentPid);
+      if (parentObservation !== parentIncarnation) return false;
       try {
         return process.kill(parentPid, signal);
       } catch {
@@ -380,6 +395,7 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
       }
     };
     const parentAnswered = (): void => {
+      if (parentTermSent || parentKillSent) return;
       lastParentProgress = Date.now();
       if (!parentSilent) return;
       parentSilent = false;
@@ -403,6 +419,7 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
         replaceSupervisor();
       }
       if (process.ppid !== parentPid) return recordParentHold(false);
+      parentObservation = probeProcessIncarnation(parentPid);
       const killDue = parentTerminationAt !== null && now >= parentTerminationAt + SENTINEL_TIMING.graceMs;
       if (killDue && !parentKillSent) parentKillSent = signalSilentParent('SIGKILL');
       else if (!killDue && !parentTermSent) parentTermSent = signalSilentParent('SIGTERM');

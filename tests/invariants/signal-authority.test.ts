@@ -652,6 +652,7 @@ function parentSignalCalls(source: string, fileName: string): readonly string[] 
   const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   const isParentPid = (expression: ts.Expression): boolean => {
     const unwrapped = unwrappedExpression(expression);
+    if (ts.isBinaryExpression(unwrapped)) return isParentPid(unwrapped.left) || isParentPid(unwrapped.right);
     return (
       ts.isPropertyAccessExpression(unwrapped) &&
       unwrapped.name.text === 'ppid' &&
@@ -690,6 +691,12 @@ function parentSignalCalls(source: string, fileName: string): readonly string[] 
         return true;
       if (call.getText(sourceFile) !== 'process.kill(parentPid, signal)') return true;
       if (scope.parameters[0]?.type?.getText(sourceFile) !== "'SIGTERM' | 'SIGKILL'") return true;
+      if (
+        !dominatingStatements(call, scope).some(
+          (statement) => statement.getText(sourceFile) === 'parentObservation = probeProcessIncarnation(parentPid);',
+        )
+      )
+        return true;
       const guards = dominatingStatements(call, scope).flatMap((statement) =>
         ts.isIfStatement(statement) &&
         ts.isReturnStatement(statement.thenStatement) &&
@@ -700,13 +707,20 @@ function parentSignalCalls(source: string, fileName: string): readonly string[] 
       return ![
         "process.platform!=='linux'||!incarnationMayAuthorizeSignal(process.platform)",
         'parentIncarnation===null||process.ppid!==parentPid',
-        'probeProcessIncarnation(parentPid)!==parentIncarnation',
+        'parentObservation!==parentIncarnation',
       ].every((guard) => guards.includes(guard));
     })
     .map((call) => `${fileName}:${call.getText(parsed)}`);
 }
 
 describe('a child never signals its parent except guarded Linux supervisor retirement', () => {
+  it('retains admission authority independently of fresh parent observations', () => {
+    const source = codeTextOnly(readFileSync(join(REPO_ROOT, 'src/coordinator/bootstrap.ts'), 'utf8'));
+    expect(source).toContain('const parent = authenticatedLaunchParent()');
+    expect(source).toContain('parent?.incarnation ?? null');
+    expect(source).toContain('parentObservation = probeProcessIncarnation(parentPid)');
+    expect(source).not.toMatch(/parentIncarnation\s*=\s*probeProcessIncarnation/u);
+  });
   it('permits only the silent-parent path with a Linux guard, unchanged parenthood and a fresh matching incarnation', () => {
     const violations = listSourceFiles(SRC_ROOT).flatMap((filePath) =>
       parentSignalCalls(readFileSync(filePath, 'utf-8'), canonicalSrcPath(filePath)),
@@ -718,7 +732,7 @@ describe('a child never signals its parent except guarded Linux supervisor retir
   it.each([
     "process.platform !== 'linux' || !incarnationMayAuthorizeSignal(process.platform)",
     'parentIncarnation === null || process.ppid !== parentPid',
-    'probeProcessIncarnation(parentPid) !== parentIncarnation',
+    'parentObservation !== parentIncarnation',
   ])('rejects silent-parent signalling when the refusal guard is removed: %s', (guard) => {
     const source = readFileSync(join(REPO_ROOT, 'src/coordinator/bootstrap.ts'), 'utf8');
     expect(source).toContain(`if (${guard}) return false;`);
@@ -741,5 +755,83 @@ describe('a child never signals its parent except guarded Linux supervisor retir
     `;
 
     expect(parentSignalCalls(fixture, 'negative-control.ts')).toHaveLength(2);
+  });
+});
+
+describe('coordinator retirement of its own replacement supervisor', () => {
+  it('checks live child authority, retained incarnation, committed retirement and TERM/KILL grace for handle calls', () => {
+    const canonical = 'src/runtime/supervisor-loss.ts';
+    const source = readFileSync(join(REPO_ROOT, canonical), 'utf8');
+    const parsed = ts.createSourceFile(canonical, source, ts.ScriptTarget.Latest, true);
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'kill'
+      )
+        calls.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(parsed);
+    expect(calls.map((call) => call.getText(parsed))).toEqual([
+      "supervisor.kill('SIGKILL')",
+      "supervisor.kill('SIGTERM')",
+    ]);
+    for (const call of calls) {
+      expect(call.arguments).toHaveLength(1);
+      const scope = enclosingSignallingFunction(call)!;
+      expect(signallingFunctionName(scope, parsed)).toBe('pollReplacementRetirement');
+      const guards = codeTextOnly(scope.getText(parsed));
+      expect(guards).toContain('attempt.settled || supervisor.pid === undefined || attempt.killSent');
+      expect(guards).toContain('supervisor.exitCode !== null || supervisor.signalCode !== null');
+      expect(guards).toContain('probeProcessIncarnation(supervisor.pid)');
+      expect(guards).toContain('observed !== attempt.launchedIncarnation');
+      expect(guards).toContain('if (attempt.retirementAt === null) return');
+      expect(scope.getText(parsed)).toContain("attempt.accepted && process.platform !== 'linux'");
+      expect(guards).toContain('now - attempt.lastAnswer >= SENTINEL_TIMING.lapseMs');
+      expect(guards).toContain('now - attempt.retirementAt >= SENTINEL_TIMING.graceMs');
+    }
+  });
+});
+
+describe('namespace supervisor signal sender table', () => {
+  it('signals its own children only from the enumerated committed, freshly verified retirement paths', () => {
+    const canonical = 'src/coordinator-launch/supervisor.ts';
+    const raw = readFileSync(join(REPO_ROOT, canonical), 'utf8');
+    const parsed = ts.createSourceFile(canonical, raw, ts.ScriptTarget.Latest, true);
+    const senders: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'kill' &&
+        node.arguments.length === 1
+      ) {
+        const scope = enclosingSignallingFunction(node)!;
+        senders.push(signallingFunctionName(scope, parsed));
+        const code = codeTextOnly(scope.getText(parsed));
+        expect(code).toContain('record.commitTermination(');
+        expect(code).toContain('terminationCommitted(');
+        expect(code).toContain('probeProcessIncarnation(');
+        expect(code).toMatch(/(?:!==|===)\s*(?:identity|running.identity)\.incarnation/u);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(parsed);
+    expect(senders.sort()).toEqual([
+      'escalateWatchedChild',
+      'monitorChildHeartbeat',
+      'retireOwnedChild',
+      'retireUnidentifiedChild',
+    ]);
+    const inherited = parsed.statements.find(
+      (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === 'signalInheritedChild',
+    )!;
+    const code = codeTextOnly(inherited.getText(parsed));
+    expect(code).toContain('!record.supervisionEligible(slot)');
+    expect(code).toContain('!incarnationMayAuthorizeSignal(process.platform)');
+    expect(code).toContain('!terminationCommitted(record, owner, slot, child)');
+    expect(code).toContain('probeProcessIncarnation(child.pid) !== child.incarnation');
   });
 });

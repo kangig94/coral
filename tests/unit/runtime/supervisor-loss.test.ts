@@ -10,7 +10,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { readDiscoveryRecordDisposition } from '#src/infra/backend-discovery.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
-import { readLaunchStatus } from '#src/infra/launch-status.js';
+import { currentLaunchStatus, readLaunchStatus } from '#src/infra/launch-status.js';
 import { attemptExclusiveFileLockSync, createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
@@ -35,7 +35,94 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => ({
 }));
 vi.mock('#src/runtime/succession-attempt.js', () => ({ installReplacementSupervisorChannel: vi.fn() }));
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.clearAllMocks();
+});
+
+it('exposes authenticated acquisition and publication holds from its unaccepted nominee in serving memory', () => {
+  vi.useFakeTimers();
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-nominee-acquisition-status-'));
+  const replacement = Object.assign(new EventEmitter(), {
+    pid: 999_992,
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send: vi.fn(),
+    kill: vi.fn(),
+    unref: vi.fn(),
+  });
+  vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
+  vi.mocked(probeProcessIncarnation).mockReturnValue('launch' as ProcessIncarnation);
+  try {
+    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+    const challenge = vi.mocked(spawn).mock.calls[0]?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
+    const status = {
+      version: 1,
+      lockHold: {
+        path: supervisorLockPath(runDir),
+        disposition: 'supervisor-lock-unobservable',
+        observation: 'EACCES',
+      },
+      publicationFailure: { code: 'status-publication-unavailable', detail: 'serialization directory inaccessible' },
+    };
+    replacement.emit('message', { kind: 'coral-launch-status', challenge: 'foreign', status });
+    expect(currentLaunchStatus(runDir)).toBeUndefined();
+    replacement.emit('message', { kind: 'coral-launch-status', challenge, status });
+    expect(currentLaunchStatus(runDir)).toMatchObject(status);
+    expect(replacement.kill).not.toHaveBeenCalled();
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it.each(['unknown launch', 'unknown observation', 'different incarnation', 'collected child'] as const)(
+  'refuses nominee retirement with %s and retains a visible hold for a live child',
+  async (fault) => {
+    vi.useFakeTimers();
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-authority-'));
+    const replacement = Object.assign(new EventEmitter(), {
+      pid: 999_993,
+      connected: true,
+      exitCode: fault === 'collected child' ? 0 : null,
+      signalCode: null,
+      send: vi.fn(),
+      kill: vi.fn(() => true),
+      unref: vi.fn(),
+    });
+    vi.mocked(spawn)
+      .mockClear()
+      .mockReturnValue(replacement as unknown as ChildProcess);
+    vi.mocked(probeProcessIncarnation).mockImplementation(
+      (pid) =>
+        (pid === process.pid ? 'source' : fault === 'unknown launch' ? null : 'launch') as ProcessIncarnation | null,
+    );
+    try {
+      startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+      vi.mocked(probeProcessIncarnation).mockImplementation(
+        (pid) =>
+          (pid === process.pid
+            ? 'source'
+            : fault === 'unknown observation'
+              ? null
+              : fault === 'different incarnation'
+                ? 'reused'
+                : 'launch') as ProcessIncarnation | null,
+      );
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(replacement.kill).not.toHaveBeenCalled();
+      if (fault !== 'collected child')
+        expect(readLaunchStatus(runDir)).toMatchObject({
+          kind: 'readable',
+          status: { signalHolds: [expect.objectContaining({ pid: replacement.pid })] },
+        });
+      replacement.emit('exit', 0, null);
+      expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { signalHolds: [] } });
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  },
+);
 
 it('keeps an accepted replacement alive while its repair bridge waits for an unhealthy child', async () => {
   vi.useFakeTimers();

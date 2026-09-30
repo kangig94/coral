@@ -42,6 +42,7 @@ type ReplacementSupervisorAttempt = {
   sequence: number;
   outstanding: number | null;
   launchedIncarnation: ProcessIncarnation | null;
+  holdId: string;
   retirementAt: number | null;
   termSent: boolean;
   killSent: boolean;
@@ -106,14 +107,17 @@ function finishReplacementAttempt(attempt: ReplacementSupervisorAttempt, error: 
 
 function replacementHold(attempt: ReplacementSupervisorAttempt, held: boolean): void {
   const pid = attempt.supervisor.pid;
-  const incarnation = attempt.launchedIncarnation;
-  if (pid === undefined || incarnation === null) return;
-  const launchId = `replacement:${pid}:${incarnation}`;
+  const incarnation = attempt.launchedIncarnation ?? 'unavailable';
+  if (pid === undefined) return;
+  const launchId = attempt.holdId;
   try {
     updateLaunchStatus(attempt.control.runDir, (status) => ({
       ...status,
       signalHolds: held
-        ? [...status.signalHolds.filter((entry) => entry.launchId !== launchId), { launchId, pid, incarnation }]
+        ? [
+            ...status.signalHolds.filter((entry) => entry.launchId !== launchId),
+            { launchId, pid, incarnation, observation: probeProcessIncarnation(pid) ?? 'unknown' },
+          ]
         : status.signalHolds.filter((entry) => entry.launchId !== launchId),
     }));
   } catch (error: unknown) {
@@ -133,11 +137,6 @@ function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void 
     attempt.outstanding = null;
   }
   const observed = probeProcessIncarnation(supervisor.pid);
-  if (observed !== null && attempt.launchedIncarnation !== null && observed !== attempt.launchedIncarnation) {
-    replacementHold(attempt, true);
-    finishReplacementAttempt(attempt, null);
-    return;
-  }
   if (attempt.accepted && attempt.retirementAt === null) {
     if (now - attempt.lastAnswer >= SENTINEL_TIMING.lapseMs) attempt.retirementAt = now;
     else if (supervisor.connected && attempt.outstanding === null) {
@@ -149,7 +148,12 @@ function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void 
     }
   }
   if (attempt.retirementAt === null) return;
-  if ((attempt.accepted && process.platform !== 'linux') || observed === null || attempt.launchedIncarnation === null) {
+  if (
+    (attempt.accepted && process.platform !== 'linux') ||
+    observed === null ||
+    attempt.launchedIncarnation === null ||
+    observed !== attempt.launchedIncarnation
+  ) {
     replacementHold(attempt, true);
     return;
   }
@@ -176,9 +180,9 @@ function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void 
 
 function receiveReplacementMessage(attempt: ReplacementSupervisorAttempt, message: unknown): void {
   if (
-    attempt.accepted &&
     typeof message === 'object' &&
     message !== null &&
+    (attempt.accepted || ('challenge' in message && message.challenge === attempt.challenge)) &&
     'kind' in message &&
     message.kind === 'coral-launch-status' &&
     'status' in message
@@ -273,6 +277,7 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
       },
     },
   );
+  const launchedIncarnation = supervisor.pid === undefined ? null : probeProcessIncarnation(supervisor.pid);
   const attempt: ReplacementSupervisorAttempt = {
     control,
     root,
@@ -286,7 +291,8 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
     lastWake: Date.now(),
     sequence: 0,
     outstanding: null,
-    launchedIncarnation: supervisor.pid === undefined ? null : probeProcessIncarnation(supervisor.pid),
+    launchedIncarnation,
+    holdId: `replacement:${supervisor.pid ?? 'unavailable'}:${launchedIncarnation ?? challenge}`,
     retirementAt: null,
     termSent: false,
     killSent: false,

@@ -762,42 +762,46 @@ export function formatBackendStatus(
   for (const hold of daemonStatus.launchSignalHolds ?? []) {
     if (hold.launchId.startsWith('replacement:'))
       sections.push(
-        `Replacement supervisor ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because a retirement signal was refused. The coordinator retries this exact process; once it exits, recovery launches the next replacement.`,
+        `Replacement supervisor ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because a retirement signal was refused. Last observation: ${hold.observation ?? 'signal-delivery-refused'}. The coordinator retries this exact process; once it exits, recovery launches the next replacement. Fresh cooperation can clear a refused-only commitment before any signal is delivered.`,
       );
     else if (hold.launchId.startsWith('parent:'))
       sections.push(
-        `Parent supervisor ${hold.pid} (incarnation ${hold.incarnation}) is silent and retirement cannot be verified. Linux retries only with unchanged parenthood and a fresh matching incarnation. macOS refuses parent signalling and waits for cooperation or confirmed absence; automatic recovery is not guaranteed there.`,
+        `Parent supervisor ${hold.pid} (incarnation ${hold.incarnation}): ${hold.disposition ?? 'parent-silent'}, last observation ${hold.observation ?? 'unknown'}. The child sentinel retries heartbeat and identity against the admission tuple. Linux retries retirement only with unchanged parenthood and a fresh matching incarnation. macOS waits for cooperation or proven exit; coordinator service continues while upgrades and launches wait.`,
       );
     else
       sections.push(
-        `Coordinator launch ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because SIGKILL delivery could not be confirmed. The owning supervisor retries for this exact child until it exits or is decisively absent.`,
+        `Coordinator launch ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because TERM or SIGKILL delivery could not be confirmed. Last observation: ${hold.observation ?? 'signal-delivery-refused'}. The owning supervisor retries exact identity; refused-only retirement can clear on authenticated cooperation, or the subject settles on proven absence.`,
       );
   }
   if (daemonStatus.launchStatusPublicationFailure !== undefined)
     sections.push(
       `Coordinator launch status publication is unavailable: ${daemonStatus.launchStatusPublicationFailure.detail}. Current holds remain in memory; publication retries automatically.`,
     );
+  if (daemonStatus.launchLockHold !== undefined)
+    sections.push(
+      `Supervisor lock ${daemonStatus.launchLockHold.path}: ${daemonStatus.launchLockHold.disposition}, last observation ${daemonStatus.launchLockHold.observation}. The acquisition loop retries automatically; launches in this namespace wait while existing service and independent namespaces continue.`,
+    );
   for (const hold of daemonStatus.launchAdmissionHolds ?? [])
     sections.push(
-      `Coordinator admission ${hold.path}: ${hold.disposition}. The namespace supervisor retries evidence and cleanup.`,
+      `Coordinator admission ${hold.path}: ${hold.disposition}. The namespace supervisor retries authenticated identity and completed first-acquisition evidence, or independent exact absence. Cleanup-pending affects residue only; unknown occupancy holds conflicting launches in this namespace.`,
     );
   const launchHold = daemonStatus.launchHold;
   for (const hold of daemonStatus.launchInheritedHolds ?? [])
     sections.push(
-      `Coordinator launch ${hold.launchId} (PID ${hold.pid}) is held by an unresponsive inherited child. The supervisor retries on cooperation or confirmed absence.`,
+      `Coordinator launch ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation ?? 'unavailable'}, last observation ${hold.observation ?? 'unknown'}) is held by an unresponsive inherited child. The supervisor retries on exact-child cooperation before any delivered termination signal, or proven absence. macOS permanent wedging holds this child's repair.`,
     );
   if (launchHold !== undefined) {
     switch (launchHold.kind) {
       case 'custody-unreadable':
         sections.push(
-          `Coordinator launch is quarantined by unreadable custody at ${launchHold.path}. The supervisor retries automatically when that record becomes readable.`,
+          `Coordinator launch is held by unreadable custody at ${launchHold.path}. The supervisor retries selection; coordinator composition reconciles custody from existing authenticated owner evidence. Irreversible history loss remains unrecoverable-retained. Only affected custody-dependent selection waits.`,
         );
         break;
       case 'no-eligible-build':
         sections.push(
           launchHold.controller === 'unknown'
             ? 'Coordinator launch is quarantined by indeterminate controller evidence. The supervisor retries when custody, transfer, or process evidence changes.'
-            : `Coordinator launch requires build ${launchHold.controller}. The supervisor retries when an eligible executable is available.`,
+            : `Coordinator launch requires build ${launchHold.controller}${launchHold.requestId === undefined ? '' : ` for request ${launchHold.requestId}`}. Last observation: ${launchHold.observation ?? 'no eligible build'}. The supervisor revalidates installed and retained builds or a change in required controller evidence.`,
         );
         break;
       case 'target-indeterminate':

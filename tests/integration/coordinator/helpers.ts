@@ -141,14 +141,19 @@ function buildInterpositionBundle(
       'var SENTINEL_TIMING = Object.freeze({ challengeMs: 50, schedulingGapMs: 500, lapseMs: 1500, graceMs: 200, dStateDeferralMs: 800 });',
     );
     if (shortened === compiled) throw new Error('Fixture did not shorten the parent watchdog timing');
+    const observed = shortened.replace(
+      /((?:const|let) parent(?:Incarnation|Observation) = )probeProcessIncarnation\(parentPid\)/u,
+      '$1process.env.CORAL_FIXTURE_INITIAL_PARENT_UNKNOWN === "1" ? null : probeProcessIncarnation(parentPid)',
+    );
+    if (observed === shortened) throw new Error('Fixture did not interpose the initial parent observation');
     const faultInjected =
       kind === 'supervisor-signal-refusal'
-        ? shortened.replace(
+        ? observed.replace(
             'process.platform !== "linux" || !incarnationMayAuthorizeSignal(process.platform)',
             'true || !incarnationMayAuthorizeSignal(process.platform)',
           )
-        : shortened;
-    if (kind === 'supervisor-signal-refusal' && faultInjected === shortened)
+        : observed;
+    if (kind === 'supervisor-signal-refusal' && faultInjected === observed)
       throw new Error('Fixture did not refuse parent signals');
     writeFileSync(outfile, faultInjected);
   }

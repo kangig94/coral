@@ -653,6 +653,16 @@ describe('malformed file lock repair', () => {
     expect(recreatedAndAcquired(path)).toBe(true);
   });
 
+  it('returns an unobservable disposition when the repair guard cannot be accessed', () => {
+    const path = lockPath();
+    writeFileSync(path, 'inaccessible parent directory');
+    expect(repairMalformedFileLockSync(join(path, 'namespace-supervisor.v1.lock'))).toMatchObject({
+      kind: 'unobservable',
+      cause: expect.objectContaining({ code: 'ENOTDIR' }),
+    });
+    expect(readFileSync(path, 'utf8')).toBe('inaccessible parent directory');
+  });
+
   it('should move aside a directory standing at the lock address', () => {
     const path = lockPath();
     mkdirSync(path);

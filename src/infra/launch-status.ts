@@ -29,11 +29,14 @@ const statusSchema = z
         z.object({
           kind: z.literal('no-eligible-build'),
           controller: z.string(),
+          requestId: z.string().optional(),
+          observation: z.string().optional(),
           retry: z.enum(['controller-evidence-change', 'eligible-build-appears']).optional(),
         }),
         z.object({
           kind: z.literal('custody-unreadable'),
           path: z.string(),
+          observation: z.string().optional(),
           retry: z.literal('restore-readable-custody-record'),
         }),
         z.object({ kind: z.literal('target-indeterminate'), requestId: z.string() }),
@@ -45,8 +48,25 @@ const statusSchema = z
         z.object({ kind: z.literal('admission-unreadable'), path: z.string() }),
       ])
       .optional(),
-    inheritedHolds: z.array(childSchema).default([]),
-    signalHolds: z.array(childSchema.extend({ incarnation: z.string().min(1) })).default([]),
+    inheritedHolds: z
+      .array(childSchema.extend({ incarnation: z.string().optional(), observation: z.string().optional() }))
+      .default([]),
+    signalHolds: z
+      .array(
+        childSchema.extend({
+          incarnation: z.string().min(1),
+          disposition: z.enum(['parent-identity-unknown', 'parent-silent']).optional(),
+          observation: z.string().optional(),
+        }),
+      )
+      .default([]),
+    lockHold: z
+      .object({
+        path: z.string(),
+        disposition: z.literal('supervisor-lock-unobservable'),
+        observation: z.string(),
+      })
+      .optional(),
   })
   .passthrough();
 
@@ -91,20 +111,24 @@ export function currentLaunchStatus(runDir: string): LaunchStatus | undefined {
   const remote = receivedStatuses.get(runDir);
   if (remote === undefined) return local;
   if (local === undefined) return remote;
-  return {
+  const currentHolds = (key: 'inheritedHolds' | 'signalHolds'): unknown[] => {
+    const entries = indexedStatusList(remote[key]);
+    for (const [id, value] of pending?.lists.get(key) ?? []) {
+      if (value === undefined) entries.delete(id);
+      else entries.set(id, value);
+    }
+    return [...entries.values()];
+  };
+  return statusSchema.parse({
     ...remote,
     ...Object.fromEntries([...(pending?.ownedFields ?? [])].map((key) => [key, local[key]])),
     ...(local.previousStatus !== undefined || remote.previousStatus !== undefined
       ? { previousStatus: 'unavailable' as const }
       : {}),
     publicationFailure: local.publicationFailure ?? remote.publicationFailure,
-    inheritedHolds: [
-      ...new Map([...remote.inheritedHolds, ...local.inheritedHolds].map((hold) => [hold.launchId, hold])).values(),
-    ],
-    signalHolds: [
-      ...new Map([...remote.signalHolds, ...local.signalHolds].map((hold) => [hold.launchId, hold])).values(),
-    ],
-  };
+    inheritedHolds: currentHolds('inheritedHolds'),
+    signalHolds: currentHolds('signalHolds'),
+  });
 }
 
 /** Only authenticated launch and replacement channels may supply remote diagnostics. */
@@ -173,7 +197,7 @@ function publishPendingStatus(runDir: string, pending: PendingStatus): void {
     };
     for (const key of ['inheritedHolds', 'signalHolds', 'inheritedHealth', 'admissionHolds']) {
       const edits = pending.lists.get(key) ?? new Map<string, unknown>();
-      const entries = new Map([...indexedStatusList(base[key]), ...indexedStatusList(pending.status[key])]);
+      const entries = indexedStatusList(base[key]);
       for (const [id, value] of edits) {
         if (value === undefined) entries.delete(id);
         else entries.set(id, value);
@@ -213,7 +237,6 @@ function publishPendingStatus(runDir: string, pending: PendingStatus): void {
       }
     }
     pending.status = next;
-    pending.lists.clear();
     if (pending.retry !== null) clearTimeout(pending.retry);
     pending.retry = null;
   } catch (error: unknown) {

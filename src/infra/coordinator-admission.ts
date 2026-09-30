@@ -11,6 +11,13 @@ type AdmissionMessage = Readonly<{
   parent: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
 }>;
 
+let authenticatedParent: AdmissionMessage['parent'] | null = null;
+
+/** Later observations cannot replace the parent tuple authenticated during launch admission. */
+export function authenticatedLaunchParent(): AdmissionMessage['parent'] | null {
+  return authenticatedParent;
+}
+
 function admissionMessage(value: unknown): value is AdmissionMessage {
   return typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'coral-launch-admit';
 }
@@ -59,6 +66,7 @@ export async function claimCoordinatorLaunch(): Promise<boolean> {
       const childIncarnation = probeProcessIncarnation(process.pid);
       if (parentIncarnation !== message.parent.incarnation || childIncarnation === null || !process.connected)
         return finish(false);
+      authenticatedParent = Object.freeze({ ...message.parent });
       runDir = message.runDir;
       process.on('message', (value: unknown) => {
         if (

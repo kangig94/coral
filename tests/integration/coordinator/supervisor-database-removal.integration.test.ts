@@ -1,18 +1,27 @@
-import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import { describe, expect, it } from 'vitest';
+import { DatabaseSync } from 'node:sqlite';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
-import { readLaunchAdmission } from '#src/infra/launch-admission-record.js';
+import { launchAdmissionPath, listLaunchSubjects, readLaunchAdmission } from '#src/infra/launch-admission-record.js';
 import { readLaunchStatus, updateLaunchStatus } from '#src/infra/launch-status.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
-import { createPluginFixture } from '#tests/integration/coordinator/helpers.js';
+import { requestIpcMethod } from '#src/transport/ipc/client.js';
+import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
+import {
+  createPluginFixture,
+  storeDbPathForHome,
+  waitForDiscoveryRecord,
+} from '#tests/integration/coordinator/helpers.js';
+import { getBackendStatusFull } from '#src/cli/backend-status.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
@@ -26,6 +35,7 @@ function buildSetId(root: string): string {
 describe.runIf(process.platform === 'linux')('supervisor database removal recovery', () => {
   it.each([
     'permanent parent freeze',
+    'initially unknown parent then permanent freeze',
     'discovery overlap',
     'unverifiable parent',
     'serving successor upgrade',
@@ -42,7 +52,7 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
         accepts: 'bundled',
       });
       const target =
-        fault === 'discovery overlap' || fault === 'serving successor upgrade'
+        fault === 'discovery overlap' || fault === 'serving successor upgrade' || fault === 'unverifiable parent'
           ? createPluginFixture(roots, {
               flavor: 'prod',
               version: '0.10.15',
@@ -79,6 +89,7 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
           TMPDIR: home,
           CORAL_SENTINEL_RUN_DIR: runDir,
           CORAL_FIXTURE_REAL_BACKEND: '1',
+          CORAL_FIXTURE_INITIAL_PARENT_UNKNOWN: fault === 'initially unknown parent then permanent freeze' ? '1' : '0',
           CORAL_TEST_SUCCESSION_RELEASE_DELAY_MS: '10000',
         },
         stdio: 'ignore',
@@ -143,6 +154,18 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
           });
           await waitForCondition(held, 2_000);
           expect(evidence.lockHolder()?.pid).toBe(supervisor.pid);
+          const inode = statSync(join(runDir, 'namespace-supervisor.v1.lock')).ino;
+          await evidence.request(join(target.root, 'bridge', 'coral-backend.cjs'), targetBuild);
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          vi.stubEnv('HOME', home);
+          vi.stubEnv('TMPDIR', home);
+          const status = await getBackendStatusFull(original.root);
+          expect(status.status).toBe('ok');
+          expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain('parent-silent');
+          expect(statSync(join(runDir, 'namespace-supervisor.v1.lock')).ino).toBe(inode);
+          expect(evidence.lockHolder()?.pid).toBe(supervisor.pid);
+          expect(readUpgradeIntent(runDir)).toMatchObject({ kind: 'readable', intent: { disposition: 'pending' } });
+          expect(supervisor.signalCode).toBeNull();
           return;
         }
         await waitForCondition(
@@ -158,7 +181,7 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
               evidence.lockHolder()?.pid === owner.process.pid
             );
           },
-          fault === 'permanent parent freeze' ? 5_000 : 15_000,
+          fault.includes('freeze') ? 5_000 : 15_000,
         );
         await waitForCondition(() => {
           remember();
@@ -181,6 +204,7 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
           { cause: error },
         );
       } finally {
+        vi.unstubAllEnvs();
         remember();
         supervisor.kill('SIGKILL');
         for (const [pid, incarnation] of identities) {
@@ -202,3 +226,517 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
     70_000,
   );
 });
+
+it.each(['creation', 'acquisition', 'repair'] as const)(
+  'holds and retries %s observation failure while an independent namespace boots and serves',
+  async (fault) => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-lock-observation-'));
+    const otherHome = mkdtempSync(join(tmpdir(), 'coral-lock-independent-'));
+    roots.push(home, otherHome);
+    const fixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    mkdirSync(runDir, { recursive: true });
+    const lockPath = join(runDir, 'namespace-supervisor.v1.lock');
+    if (fault === 'repair') writeFileSync(lockPath, 'malformed SQLite bytes that no process can hold');
+    const inode = fault === 'repair' ? statSync(lockPath).ino : undefined;
+    const marker = join(home, 'storage-fault');
+    writeFileSync(marker, 'hold');
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      external: ['node:*'],
+      plugins: [
+        {
+          name: 'lock-storage-observation',
+          setup(builder) {
+            builder.onLoad({ filter: /\/infra\/fs-lock\.ts$/ }, ({ path }) => {
+              const signatures = {
+                creation: 'export function createSharedFileLockSync(path: string): FileLockLease {',
+                acquisition:
+                  'export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): ExclusiveFileLockAttempt {',
+                repair: 'export function repairMalformedFileLockSync(path: string): MalformedFileLockRepair {',
+              };
+              const refusal =
+                fault === 'creation'
+                  ? "throw new Error('fixture EACCES: lock creation');"
+                  : "return { kind: 'unobservable', cause: new Error('fixture EACCES: lock observation') };";
+              const original = readFileSync(path, 'utf8');
+              const contents = original.replace(
+                signatures[fault],
+                `${signatures[fault]}
+              if (path === process.env.CORAL_FIXTURE_LOCK_ADDRESS) {
+                let held = false;
+                try { held = readFileSync(process.env.CORAL_FIXTURE_STORAGE_FAULT!, 'utf8') === 'hold'; } catch {}
+                if (held) { ${refusal} }
+              }`,
+              );
+              if (contents === original) throw new Error('Missing lock fault target');
+              return { contents, loader: 'ts' };
+            });
+          },
+        },
+      ],
+    });
+    const supervisors: ReturnType<typeof spawn>[] = [];
+    const children: { pid: number; incarnation?: string }[] = [];
+    const start = (root: string) => {
+      const supervisor = spawn(process.execPath, [harness, join(fixture.root, 'bridge', 'coral-backend.cjs')], {
+        env: {
+          ...process.env,
+          HOME: root,
+          TMPDIR: root,
+          CORAL_SENTINEL_RUN_DIR: coordinatorPaths('prod', { baseDir: join(root, '.coral') }).runDir,
+          CORAL_FIXTURE_REAL_BACKEND: '1',
+          CORAL_FIXTURE_LOCK_ADDRESS: lockPath,
+          CORAL_FIXTURE_STORAGE_FAULT: marker,
+        },
+        stdio: 'ignore',
+      });
+      supervisors.push(supervisor);
+      return supervisor;
+    };
+    try {
+      const held = start(home);
+      await waitForCondition(() => {
+        const status = readLaunchStatus(runDir);
+        return status.kind === 'readable' && status.status.lockHold?.path === lockPath;
+      }, 3_000);
+      expect(held.exitCode).toBeNull();
+      start(otherHome);
+      const other = await waitForDiscoveryRecord(otherHome, 'prod', 15_000);
+      children.push(other);
+      await expect(
+        requestIpcMethod(other.socketPath, 'transport.health', undefined, {
+          auth: { kind: 'boot', token: other.bootToken },
+          timeoutMs: 1_000,
+        }),
+      ).resolves.toMatchObject({ status: 'ok' });
+      if (inode !== undefined) expect(statSync(lockPath).ino).toBe(inode);
+      expect(held.exitCode).toBeNull();
+      rmSync(marker);
+      const recovered = await waitForDiscoveryRecord(home, 'prod', 15_000);
+      children.push(recovered);
+      expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable' });
+      const status = readLaunchStatus(runDir);
+      expect(status.kind === 'readable' && status.status.lockHold).toBeUndefined();
+      await expect(
+        requestIpcMethod(recovered.socketPath, 'transport.health', undefined, {
+          auth: { kind: 'boot', token: recovered.bootToken },
+          timeoutMs: 1_000,
+        }),
+      ).resolves.toMatchObject({ status: 'ok' });
+    } finally {
+      for (const supervisor of supervisors) supervisor.kill('SIGKILL');
+      for (const child of children) {
+        if (probeProcessIncarnation(child.pid) === child.incarnation) process.kill(child.pid, 'SIGKILL');
+      }
+      await Promise.all(
+        supervisors.map((supervisor) =>
+          supervisor.exitCode !== null || supervisor.signalCode !== null
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => supervisor.once('exit', () => resolve())),
+        ),
+      );
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  },
+  40_000,
+);
+
+it.each([
+  'admission',
+  'lifetime missing',
+  'lifetime damaged',
+  'status',
+  'owner markers',
+  'claim markers',
+  'credential',
+] as const)(
+  'confines corrupt %s evidence during supervisor recovery while an independent namespace boots',
+  async (artifact) => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-artifact-recovery-'));
+    const otherHome = mkdtempSync(join(tmpdir(), 'coral-artifact-independent-'));
+    roots.push(home, otherHome);
+    const fixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisors: ReturnType<typeof spawn>[] = [];
+    const identities = new Map<number, string>();
+    const evidence = new SupervisorEvidence(runDir);
+    const remember = (): void => {
+      const state = evidence.read();
+      for (const identity of [state.owner?.process, state.launch?.child, state.attempt?.child])
+        if (identity?.incarnation !== undefined && identity.incarnation !== null)
+          identities.set(identity.pid, identity.incarnation);
+    };
+    const start = (root: string) => {
+      const supervisor = spawn(process.execPath, [harness, join(fixture.root, 'bridge', 'coral-backend.cjs')], {
+        env: {
+          ...process.env,
+          HOME: root,
+          TMPDIR: root,
+          CORAL_FIXTURE_REAL_BACKEND: '1',
+          CORAL_SENTINEL_RUN_DIR: coordinatorPaths('prod', { baseDir: join(root, '.coral') }).runDir,
+        },
+        stdio: 'ignore',
+      });
+      supervisors.push(supervisor);
+      return supervisor;
+    };
+    try {
+      const original = start(home);
+      const serving = await waitForDiscoveryRecord(home, 'prod', 15_000);
+      if (serving.incarnation !== undefined) identities.set(serving.pid, serving.incarnation);
+      await waitForCondition(() => {
+        remember();
+        return evidence.read().launch?.phase === 'serving';
+      }, 5_000);
+      const admission = evidence.read().launch!;
+      const [subject] = listLaunchSubjects(runDir);
+      if (artifact === 'admission') writeFileSync(launchAdmissionPath(runDir, admission.id), '{');
+      else if (artifact.startsWith('lifetime')) {
+        if (subject?.lifetimePath === undefined) throw new Error('Missing lifetime fixture');
+        if (artifact === 'lifetime missing') rmSync(subject.lifetimePath);
+        else writeFileSync(subject.lifetimePath, 'damaged independent lifetime bytes');
+      } else if (artifact === 'status') writeFileSync(join(runDir, 'launch-status.v1.json'), '{');
+      else if (artifact === 'credential') {
+        const db = new DatabaseSync(storeDbPathForHome(home, 'prod'));
+        try {
+          db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('child_principal_credential.v1:damaged', '{');
+        } finally {
+          db.close();
+        }
+      } else {
+        const lock = join(runDir, 'launch-status.v1.lock');
+        mkdirSync(lock, { recursive: true });
+        for (const id of ['one', 'two'])
+          writeFileSync(join(lock, `${artifact.startsWith('owner') ? 'owner' : 'claim'}-${id}.lock`), '{}');
+      }
+      original.kill('SIGKILL');
+      await waitForCondition(() => {
+        remember();
+        return evidence.lockHolder() !== null && evidence.lockHolder()?.pid !== original.pid;
+      }, 10_000);
+      start(otherHome);
+      const independent = await waitForDiscoveryRecord(otherHome, 'prod', 15_000);
+      if (independent.incarnation !== undefined) identities.set(independent.pid, independent.incarnation);
+      await expect(
+        requestIpcMethod(independent.socketPath, 'transport.health', undefined, {
+          auth: { kind: 'boot', token: independent.bootToken },
+          timeoutMs: 1_000,
+        }),
+      ).resolves.toMatchObject({ status: 'ok' });
+      const current = await waitForDiscoveryRecord(home, 'prod', 15_000);
+      if (current.incarnation !== undefined) identities.set(current.pid, current.incarnation);
+      await expect(
+        requestIpcMethod(current.socketPath, 'transport.health', undefined, {
+          auth: { kind: 'boot', token: current.bootToken },
+          timeoutMs: 1_000,
+        }),
+      ).resolves.toMatchObject({ status: 'ok' });
+      if (artifact.startsWith('lifetime')) {
+        expect(probeProcessIncarnation(serving.pid)).toBe(serving.incarnation);
+        expect(evidence.read().launch?.child.pid).toBe(serving.pid);
+      }
+    } finally {
+      remember();
+      for (const supervisor of supervisors) supervisor.kill('SIGKILL');
+      for (const [pid, incarnation] of identities)
+        if (probeProcessIncarnation(pid) === incarnation) process.kill(pid, 'SIGKILL');
+      await Promise.all(
+        supervisors.map((supervisor) =>
+          supervisor.exitCode !== null || supervisor.signalCode !== null
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => supervisor.once('exit', () => resolve())),
+        ),
+      );
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  },
+  45_000,
+);
+
+it.runIf(process.platform === 'darwin')(
+  'keeps serving with a parent-silent status and a waiting upgrade under permanent macOS parent SIGSTOP',
+  async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-macos-parent-silence-'));
+    roots.push(home);
+    const fixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14', backend: 'supervisor-silence' });
+    const target = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const parent = spawn(process.execPath, [harness, join(fixture.root, 'bridge', 'coral-backend.cjs')], {
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_FIXTURE_REAL_BACKEND: '1',
+      },
+      stdio: 'ignore',
+    });
+    const evidence = new SupervisorEvidence(runDir);
+    let serving: Awaited<ReturnType<typeof waitForDiscoveryRecord>> | undefined;
+    try {
+      serving = await waitForDiscoveryRecord(home, 'prod', 15_000);
+      const inode = statSync(join(runDir, 'namespace-supervisor.v1.lock')).ino;
+      parent.kill('SIGSTOP');
+      await waitForCondition(() => {
+        const status = readLaunchStatus(runDir);
+        return (
+          status.kind === 'readable' && status.status.signalHolds.some((hold) => hold.disposition === 'parent-silent')
+        );
+      }, 5_000);
+      await evidence.request(join(target.root, 'bridge', 'coral-backend.cjs'), buildSetId(target.root));
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('TMPDIR', home);
+      const status = await getBackendStatusFull(fixture.root);
+      expect(status.status).toBe('ok');
+      expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain('parent-silent');
+      expect(status.launchSignalHolds).toContainEqual(
+        expect.objectContaining({ pid: parent.pid, disposition: 'parent-silent' }),
+      );
+      expect(statSync(join(runDir, 'namespace-supervisor.v1.lock')).ino).toBe(inode);
+      expect(attemptExclusiveFileLockSync(join(runDir, 'namespace-supervisor.v1.lock')).kind).toBe('contended');
+      expect(parent.signalCode).toBeNull();
+      expect(readUpgradeIntent(runDir)).toMatchObject({ kind: 'readable', intent: { disposition: 'pending' } });
+      expect(evidence.read().launch?.child.pid).toBe(serving.pid);
+    } finally {
+      vi.unstubAllEnvs();
+      const nominees =
+        serving === undefined
+          ? []
+          : execFileSync('ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8' })
+              .trim()
+              .split('\n')
+              .flatMap((row) => {
+                const [pid, ppid] = row.trim().split(/\s+/u).map(Number);
+                if (ppid !== serving!.pid) return [];
+                const incarnation = probeProcessIncarnation(pid);
+                return incarnation === null ? [] : [{ pid, incarnation }];
+              });
+      parent.kill('SIGKILL');
+      if (serving !== undefined && probeProcessIncarnation(serving.pid) === serving.incarnation)
+        process.kill(serving.pid, 'SIGKILL');
+      for (const nominee of nominees)
+        if (probeProcessIncarnation(nominee.pid) === nominee.incarnation) process.kill(nominee.pid, 'SIGKILL');
+      await new Promise<void>((resolve) =>
+        parent.exitCode !== null || parent.signalCode !== null ? resolve() : parent.once('exit', () => resolve()),
+      );
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  },
+  35_000,
+);
+
+it('repairs after an inherited child stops, holds with refused-only termination, then resumes (native macOS refusal on macOS)', async () => {
+  const roots: string[] = [];
+  const home = mkdtempSync(join(tmpdir(), 'coral-inherited-resume-'));
+  roots.push(home);
+  const fixture = createPluginFixture(roots, {
+    flavor: 'prod',
+    version: '0.10.14',
+    backend: 'supervisor-silence',
+    accepts: 'bundled',
+  });
+  const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+  const sentinel = join(fixture.root, 'bridge', 'coral-sentinel.cjs');
+  const marker = join(home, 'stopped.json');
+  const log = join(home, 'memory.jsonl');
+  await build({
+    entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+    outfile: sentinel,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    external: ['node:*'],
+    banner: { js: 'var __importMetaUrl=require("url").pathToFileURL(__filename).href;' },
+    define: { 'import.meta.url': '__importMetaUrl' },
+    plugins: [
+      {
+        name: 'inherited-child-refusal-and-observation',
+        setup(builder) {
+          builder.onLoad({ filter: /\/coordinator-launch\/supervisor\.ts$/ }, ({ path }) => {
+            let contents = readFileSync(path, 'utf8');
+            contents = contents.replace(
+              "if (replacement) process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });",
+              `if (replacement) {
+              process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });
+              process.kill(sourcePid, 'SIGSTOP');
+              fixtureWrite(process.env.CORAL_FIXTURE_STOP_MARKER!, JSON.stringify({ pid: process.pid, child: sourcePid }));
+            }`,
+            );
+            contents = contents.replace(
+              'const { record, owner, incarnation, replacement, recoveryChallenge } = acquisition;',
+              `const { record, owner, incarnation, replacement, recoveryChallenge } = acquisition;
+            const fixtureObservation = setInterval(() => fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG!,
+              JSON.stringify({ pid: process.pid, state: record.read() }) + '\\n'), 50);
+            fixtureObservation.unref();`,
+            );
+            const start = contents.indexOf('function signalInheritedChild(');
+            const end = contents.indexOf('function spawnAdmittedChild(', start);
+            const signalling = contents.slice(start, end);
+            const refused =
+              process.platform === 'darwin'
+                ? signalling
+                : signalling.replace(
+                    '!incarnationMayAuthorizeSignal(process.platform)',
+                    'true || !incarnationMayAuthorizeSignal(process.platform)',
+                  );
+            if (start < 0 || end < 0 || (process.platform !== 'darwin' && refused === signalling))
+              throw new Error('Missing inherited signal fixture target');
+            contents = contents.slice(0, start) + refused + contents.slice(end);
+            return {
+              contents: `import { writeFileSync as fixtureWrite, appendFileSync as fixtureAppend } from 'node:fs';\n${contents}`,
+              loader: 'ts',
+            };
+          });
+        },
+      },
+    ],
+  });
+  const parent = spawn(process.execPath, [sentinel, join(fixture.root, 'bridge', 'coral-backend.cjs')], {
+    env: {
+      ...process.env,
+      HOME: home,
+      TMPDIR: home,
+      CORAL_SENTINEL_RUN_DIR: runDir,
+      CORAL_FIXTURE_REAL_BACKEND: '1',
+      CORAL_FIXTURE_STOP_MARKER: marker,
+      CORAL_FIXTURE_MEMORY_LOG: log,
+    },
+    stdio: 'ignore',
+  });
+  const evidence = new SupervisorEvidence(runDir);
+  const identities = new Map<number, string>();
+  const observations = () => {
+    try {
+      return readFileSync(log, 'utf8')
+        .trim()
+        .split('\n')
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              pid: number;
+              state: {
+                owner: { mode: string };
+                launch: {
+                  id: string;
+                  phase: string;
+                  terminationAt?: number;
+                  killAt?: number;
+                  termDelivered?: boolean;
+                  killDelivered?: boolean;
+                } | null;
+              };
+            },
+        );
+    } catch {
+      return [];
+    }
+  };
+  try {
+    const first = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    if (first.incarnation !== undefined) identities.set(first.pid, first.incarnation);
+    const launchId = first.supervision!.launchId;
+    await waitForCondition(() => evidence.read().launch?.phase === 'serving', 5_000);
+    parent.kill('SIGKILL');
+    await waitForCondition(() => {
+      try {
+        return JSON.parse(readFileSync(marker, 'utf8')).child === first.pid;
+      } catch {
+        return false;
+      }
+    }, 5_000);
+    const replacement = JSON.parse(readFileSync(marker, 'utf8')) as { pid: number };
+    const replacementIncarnation = probeProcessIncarnation(replacement.pid);
+    if (replacementIncarnation !== null) identities.set(replacement.pid, replacementIncarnation);
+    await waitForCondition(() => {
+      const status = readLaunchStatus(runDir);
+      return status.kind === 'readable' && status.status.inheritedHolds.some((hold) => hold.launchId === launchId);
+    }, 12_000);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const committed = observations().filter(
+      (event) =>
+        event.pid === replacement.pid &&
+        event.state.launch?.id === launchId &&
+        event.state.launch.terminationAt !== undefined,
+    );
+    expect(committed.length).toBeGreaterThan(0);
+    expect(
+      committed.every(
+        (event) => event.state.launch?.termDelivered !== true && event.state.launch?.killDelivered !== true,
+      ),
+    ).toBe(true);
+    const resumedAt = Date.now();
+    process.kill(first.pid, 'SIGCONT');
+    await waitForCondition(
+      () =>
+        observations().some(
+          (event) =>
+            event.pid === replacement.pid &&
+            event.state.launch?.id === launchId &&
+            event.state.launch.phase === 'serving' &&
+            event.state.launch.terminationAt === undefined &&
+            event.state.launch.killAt === undefined,
+        ),
+      5_000,
+    );
+    await waitForCondition(() => {
+      const state = evidence.read();
+      for (const identity of [state.launch?.child, state.attempt?.child])
+        if (identity?.incarnation !== undefined && identity.incarnation !== null)
+          identities.set(identity.pid, identity.incarnation);
+      return (
+        state.launch?.phase === 'serving' &&
+        state.launch.child.pid !== first.pid &&
+        state.launch.parent.pid === replacement.pid
+      );
+    }, 25_000);
+    await waitForCondition(
+      () => observations().some((event) => event.pid === replacement.pid && event.state.owner.mode === 'supervised'),
+      5_000,
+    );
+    expect(Date.now() - resumedAt).toBeLessThan(30_000);
+    const status = readLaunchStatus(runDir);
+    expect(status.kind === 'readable' && status.status.inheritedHolds.some((hold) => hold.launchId === launchId)).toBe(
+      false,
+    );
+  } finally {
+    parent.kill('SIGKILL');
+    const state = evidence.read();
+    for (const identity of [state.launch?.child, state.attempt?.child])
+      if (identity?.incarnation !== undefined && identity.incarnation !== null)
+        identities.set(identity.pid, identity.incarnation);
+    for (const [pid, incarnation] of identities)
+      if (probeProcessIncarnation(pid) === incarnation) process.kill(pid, 'SIGKILL');
+    await new Promise<void>((resolve) =>
+      parent.exitCode !== null || parent.signalCode !== null ? resolve() : parent.once('exit', () => resolve()),
+    );
+    for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+  }
+}, 50_000);

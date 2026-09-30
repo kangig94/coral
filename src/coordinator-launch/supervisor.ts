@@ -57,7 +57,7 @@ import { listLaunchAdmissions, readLaunchAdmission } from '../infra/launch-admis
 import { replacementServing, requestInheritedSuccession } from './health.js';
 import { recordLegacyUpgradeIntent } from './request.js';
 import { writeAuditEvent } from '../infra/audit-log.js';
-import { currentLaunchStatus } from '../infra/launch-status.js';
+import { currentLaunchStatus, updateLaunchStatus } from '../infra/launch-status.js';
 import { relaunchRoots, validatedBuild } from './selection.js';
 
 const STARTUP_BUDGET_MS = 120_000;
@@ -386,7 +386,7 @@ function signalInheritedChild(
   record: SupervisorLaunchMemory,
   owner: LaunchOwner,
   slot: LaunchReservation,
-  signal: NodeJS.Signals,
+  signal: 'SIGTERM' | 'SIGKILL',
 ): boolean {
   const child = slot.child;
   if (child === undefined || !record.supervisionEligible(slot) || !incarnationMayAuthorizeSignal(process.platform))
@@ -395,6 +395,7 @@ function signalInheritedChild(
     return false;
   try {
     process.kill(child.pid, signal);
+    record.recordTerminationDelivery(owner, slot, signal);
     return true;
   } catch {
     return false;
@@ -442,15 +443,48 @@ function spawnAdmittedChild(
   const pid = child.pid;
   const incarnation = pid === undefined ? null : probeProcessIncarnation(pid);
   if (pid === undefined || incarnation === null) {
+    let identity: LaunchProcess | null = null;
     const finish = (): void => {
       clearInterval(retry);
       record.cancelReservation(reservation);
+      if (record.hasAuthority(owner)) record.clearSignalRefusal(reservation);
     };
-    const retry = setInterval(() => {
+    const retireUnidentifiedChild = (): void => {
       if (!record.hasAuthority(owner) || child.exitCode !== null || child.signalCode !== null) return;
-      if (pid === undefined || probeProcessIncarnation(pid) === null) return;
-      child.kill('SIGKILL');
-    }, 1_000);
+      if (pid === undefined) return;
+      const observed = probeProcessIncarnation(pid);
+      if (observed === null) {
+        updateLaunchStatus(runDir, (status) => ({
+          ...status,
+          signalHolds: [
+            ...status.signalHolds.filter((hold) => hold.launchId !== reservation.id),
+            {
+              launchId: reservation.id,
+              pid,
+              incarnation: identity?.incarnation ?? 'unavailable',
+              observation: 'unknown',
+            },
+          ],
+        }));
+        return;
+      }
+      identity ??= { pid, incarnation: observed };
+      if (record.currentChild(reservation, identity) === null && !record.spawned(reservation, owner.process, identity))
+        return;
+      if (!record.commitTermination(owner, reservation, identity, Date.now(), SENTINEL_TIMING.graceMs)) return;
+      if (
+        !terminationCommitted(record, owner, reservation, identity) ||
+        probeProcessIncarnation(pid) !== identity.incarnation
+      )
+        return;
+      try {
+        if (child.kill('SIGKILL')) record.clearSignalRefusal(reservation);
+        else record.holdSignalRefusal(owner, reservation, identity);
+      } catch {
+        record.holdSignalRefusal(owner, reservation, identity);
+      }
+    };
+    const retry = setInterval(retireUnidentifiedChild, 1_000);
     child.once('exit', finish);
     if (pid === undefined) finish();
     return null;
@@ -1159,6 +1193,15 @@ async function acquireLaunchOwnership(
   }
   try {
     const path = supervisorLockPath(runDir);
+    const holdLock = (cause: unknown): void => {
+      updateLaunchStatus(runDir, (status) => ({
+        ...status,
+        lockHold: { path, disposition: 'supervisor-lock-unobservable', observation: String(cause) },
+      }));
+      const status = currentLaunchStatus(runDir);
+      if (replacement && status !== undefined)
+        process.send?.({ kind: 'coral-launch-status', challenge: recoveryChallenge, status });
+    };
     let requested = false;
     for (let retry = 0; !replacement || retry < 150; retry += 1) {
       if (replacement && (!process.connected || process.ppid !== sourcePid)) return { kind: 'finished', exitCode: 1 };
@@ -1170,7 +1213,8 @@ async function acquireLaunchOwnership(
       if (!existsSync(path)) {
         try {
           createSharedFileLockSync(path)();
-        } catch {
+        } catch (cause: unknown) {
+          holdLock(cause);
           await sleep(POLL_MS);
           continue;
         }
@@ -1178,6 +1222,7 @@ async function acquireLaunchOwnership(
       const attempt = attemptExclusiveFileLockSync(path);
       if (attempt.kind === 'acquired') {
         try {
+          updateLaunchStatus(runDir, (status) => ({ ...status, lockHold: undefined }));
           const record = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, manifest.buildSetId);
           if (replacement) process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });
           else if (process.env.CORAL_OBSERVATION_CHALLENGE !== undefined)
@@ -1197,7 +1242,8 @@ async function acquireLaunchOwnership(
       }
       if (attempt.kind === 'malformed') {
         const repair = repairMalformedFileLockSync(path);
-        if (repair.kind === 'unobservable') throw repair.cause;
+        if (repair.kind === 'unobservable') holdLock(repair.cause);
+        else if (repair.kind !== 'moved-aside') holdLock(repair.kind);
         if (repair.kind === 'moved-aside') {
           writeAuditEvent('supervisor_lock_moved_aside', { path, quarantinePath: repair.quarantinePath }, 'warn');
           continue;
@@ -1205,7 +1251,11 @@ async function acquireLaunchOwnership(
         await sleep(POLL_MS);
         continue;
       }
-      if (attempt.kind === 'unobservable') throw attempt.cause;
+      if (attempt.kind === 'unobservable') {
+        holdLock(attempt.cause);
+        await sleep(POLL_MS);
+        continue;
+      }
       if (!replacement) {
         if (process.env.CORAL_OBSERVATION_CHALLENGE !== undefined) {
           process.send?.({ kind: 'coral-observation-owned', challenge: process.env.CORAL_OBSERVATION_CHALLENGE });
@@ -1303,9 +1353,15 @@ async function reconcileInheritedChild(
   slot = current;
   watch.terminationAt = slot.terminationAt ?? watch.terminationAt;
   now = Date.now();
+  if (healthy) {
+    record.observeInheritedHealth(slot, now);
+    slot = currentInheritedChild(snapshot, child) ?? slot;
+    watch.terminationAt = slot.terminationAt ?? null;
+  }
   if (healthy && watch.terminationAt === null) {
     watch.lastHealthy = now;
-    record.observeInheritedHealth(slot, now);
+    watch.uninterruptibleSince = null;
+    inheritedWatch.set(slot.id, watch);
     if (process.connected && process.ppid === child.pid && probeProcessIncarnation(child.pid) === child.incarnation) {
       if (repairBridge === null) {
         repairBridge = createRepairBridge(record, owner, runDir, timing, startupBudgetMs);
