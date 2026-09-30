@@ -10,6 +10,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -42,7 +43,13 @@ import { coordinatorPaths, socketPathForRunDir, supervisorLockPath } from '#src/
 import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createPluginFixture } from '#tests/integration/coordinator/helpers.js';
+import {
+  createPluginFixture,
+  createShippedPluginFixture,
+  spawnCoordinator as spawnFixtureCoordinator,
+  waitForDiscoveryRecord,
+  waitForProcessExit,
+} from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
@@ -69,6 +76,111 @@ function admittedBuild(root: string): string {
   });
 }
 
+async function buildObservedSupervisor(outfile: string): Promise<void> {
+  await build({
+    entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+    outfile,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    external: ['node:*'],
+    banner: { js: 'var __fixtureImportMetaUrl=require("url").pathToFileURL(__filename).href;' },
+    define: { 'import.meta.url': '__fixtureImportMetaUrl' },
+    plugins: [
+      {
+        name: 'observe-recovery-transitions',
+        setup(builder) {
+          builder.onLoad({ filter: /\/coordinator-launch\/(state|supervisor)\.ts$/ }, ({ path }) => {
+            let source = readFileSync(path, 'utf8');
+            const log = `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'memory', pid: process.pid, authority: this.#authority, state: this.#state }) + '\\n');`;
+            if (path.endsWith('/state.ts')) {
+              source = source
+                .replace('return this.#state;', `${log} return this.#state;`)
+                .replace(
+                  'return this.#reserve(owner, buildSetId, purpose, false);',
+                  `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'reservation', pid: process.pid, authority: this.#authority, state: this.#state }) + '\\n'); return this.#reserve(owner, buildSetId, purpose, false);`,
+                );
+            } else {
+              source = source
+                .replace(
+                  "process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });",
+                  "process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge }, () => fixtureFreeze('owned'));",
+                )
+                .replace(
+                  "process.send?.({ kind: 'coral-repair-bridge-ready', challenge: recoveryChallenge });",
+                  "process.send?.({ kind: 'coral-repair-bridge-ready', challenge: recoveryChallenge }, () => fixtureFreeze('bridge', record));",
+                )
+                .replace(
+                  'process.kill(child.pid, signal);',
+                  `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'signal', pid: child.pid, signal }) + '\\n'); process.kill(child.pid, signal);`,
+                );
+              source += `\nfunction fixtureFreeze(phase: string, record?: SupervisorLaunchMemory): void {
+              const marker = process.env.CORAL_FIXTURE_FREEZE_MARKER;
+              if (marker && phase === process.env.CORAL_FIXTURE_RECOVERY_FREEZE && !existsSync(marker)) {
+                if (phase === 'bridge' && record?.read().attempt?.admissionProven !== true) {
+                  setTimeout(() => fixtureFreeze(phase, record), 20);
+                  return;
+                }
+                fixtureWrite(marker, JSON.stringify({ pid: process.pid, phase }));
+                process.kill(process.pid, 'SIGSTOP');
+              }
+            }`;
+            }
+            return {
+              contents: `import { appendFileSync as fixtureAppend, writeFileSync as fixtureWrite } from 'node:fs';\n${source}`,
+              loader: 'ts',
+            };
+          });
+        },
+      },
+    ],
+  });
+}
+
+type MemoryObservation = {
+  kind: 'memory' | 'reservation' | 'signal' | 'replacement-signal';
+  pid: number;
+  target?: number;
+  signal?: string;
+  exitCode?: number | null;
+  signalCode?: string | null;
+  authority: boolean;
+  state: ReturnType<SupervisorLaunchMemory['read']>;
+};
+
+function memoryObservations(path: string): MemoryObservation[] {
+  if (!existsSync(path)) return [];
+  const contents = readFileSync(path, 'utf8');
+  const end = contents.lastIndexOf('\n');
+  if (end < 0) return [];
+  return contents
+    .slice(0, end)
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as MemoryObservation);
+}
+
+function namespaceLockHolders(runDir: string): number[] {
+  const { dev, ino } = statSync(supervisorLockPath(runDir), { bigint: true });
+  const major = ((dev >> 8n) & 0xfffn) | ((dev >> 32n) & 0xfffff000n);
+  const minor = (dev & 0xffn) | ((dev >> 12n) & 0xffffff00n);
+  return [
+    ...new Set(
+      readFileSync('/proc/locks', 'utf8')
+        .split('\n')
+        .flatMap((line) => {
+          const match = /POSIX\s+ADVISORY\s+WRITE\s+(\d+)\s+([0-9a-f]+):([0-9a-f]+):(\d+)\s/u.exec(line);
+          return match !== null &&
+            BigInt(match[4]) === ino &&
+            BigInt(`0x${match[2]}`) === major &&
+            BigInt(`0x${match[3]}`) === minor
+            ? [Number(match[1])]
+            : [];
+        }),
+    ),
+  ];
+}
+
 async function waitForReplacementLockHolder(
   record: SupervisorEvidence,
   previousPid: number | undefined,
@@ -85,6 +197,274 @@ async function waitForReplacementLockHolder(
 }
 
 describe('namespace supervisor recovery', () => {
+  it('restores a dead shipped-incumbent observer on the first CLI ensure and upgrades after natural idle retirement', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-legacy-observer-loss-'));
+    roots.push(home);
+    const shipped = createShippedPluginFixture(roots, 'v0.10.13');
+    const target = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
+    const log = join(home, 'memory.jsonl');
+    await buildObservedSupervisor(join(target.root, 'bridge', 'coral-sentinel.cjs'));
+    const incumbent = spawnFixtureCoordinator({
+      fixture: shipped,
+      home,
+      tempRoots: roots,
+      env: { CORAL_BACKEND_IDLE_MS: '1000' },
+    });
+    const naturalExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+      incumbent.child.once('exit', (code, signal) => resolve({ code, signal })),
+    );
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    const evidence = new SupervisorEvidence(runDir);
+    const pids = new Set<number>();
+    let contender: ReturnType<typeof spawnFixtureCoordinator> | undefined;
+    try {
+      const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
+      pids.add(initial.pid);
+      contender = spawnFixtureCoordinator({
+        fixture: target,
+        home,
+        tempRoots: roots,
+        env: { CORAL_FIXTURE_MEMORY_LOG: log },
+      });
+      expect(await waitForProcessExit(contender, 10_000)).toEqual({ code: 0, signal: null });
+      await waitForCondition(() => evidence.lockHolder() !== null, 5_000);
+      const lost = evidence.lockHolder()!.pid;
+      pids.add(lost);
+      expect(readUpgradeIntent(runDir)).toMatchObject({ kind: 'readable', intent: { legacyRetirement: true } });
+      process.kill(lost, 'SIGKILL');
+      await waitForCondition(() => observeProcessLiveness(lost) === 'absent', 5_000);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(evidence.lockHolder()).toBeNull();
+      expect(probeProcessIncarnation(initial.pid)).toBe(initial.incarnation);
+      const trigger = spawn(process.execPath, [join(target.root, 'bridge', 'coral-cli'), 'backend', 'start'], {
+        env: topLevelCliEnvironment(home, {
+          CLAUDE_PLUGIN_ROOT: target.root,
+          CORAL_FIXTURE_MEMORY_LOG: log,
+        }),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let output = '';
+      trigger.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
+      trigger.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
+      const triggerExit = await new Promise<number | null>((resolve) => trigger.once('exit', resolve));
+      expect(triggerExit, output).toBe(0);
+      const restored = evidence.lockHolder();
+      expect(
+        restored?.pid,
+        JSON.stringify({ output, intent: readUpgradeIntent(runDir), memory: memoryObservations(log).slice(-3) }),
+      ).toBeDefined();
+      expect(restored?.pid).not.toBe(lost);
+      pids.add(restored!.pid);
+      expect(namespaceLockHolders(runDir)).toEqual([restored!.pid]);
+      expect(attemptExclusiveFileLockSync(supervisorLockPath(runDir)).kind).toBe('contended');
+      await waitForCondition(
+        () =>
+          memoryObservations(log).some(
+            (event) =>
+              event.pid === restored!.pid &&
+              event.state?.launch?.child?.pid === initial.pid &&
+              event.state.owner.mode === 'recovering',
+          ),
+        3_000,
+      );
+      const discoveryPath = join(runDir, 'coordinator.json');
+      const shippedDiscovery = readFileSync(discoveryPath, 'utf8');
+      writeFileSync(
+        discoveryPath,
+        JSON.stringify({ ...(JSON.parse(shippedDiscovery) as object), bootToken: 'failed-health-observation' }),
+      );
+      expect(await replacementServing(runDir, 'prod', initial.pid)).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      expect(await replacementServing(runDir, 'prod', initial.pid)).toBe(false);
+      const passive = memoryObservations(log).filter((event) => event.pid === restored!.pid && event.kind === 'memory');
+      expect(passive.length).toBeGreaterThan(1);
+      expect(passive.every((event) => event.state.launch?.terminationAt === undefined)).toBe(true);
+      expect(memoryObservations(log).filter((event) => event.kind === 'signal' && event.pid === initial.pid)).toEqual(
+        [],
+      );
+      expect(listLaunchAdmissions(runDir).filter((entry) => entry.kind === 'readable')).toEqual([]);
+      expect(probeProcessIncarnation(initial.pid)).toBe(initial.incarnation);
+      writeFileSync(discoveryPath, shippedDiscovery);
+      expect(await replacementServing(runDir, 'prod', initial.pid)).toBe(true);
+      await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 80_000);
+      expect(await naturalExit, incumbent.output()).toEqual({ code: 0, signal: null });
+      expect(incumbent.output()).toMatch(/idle/i);
+      await waitForCondition(() => evidence.read().launch?.phase === 'serving', 15_000);
+      const successor = evidence.read().launch!;
+      pids.add(successor.child.pid);
+      expect(successor.parent.pid).toBe(restored!.pid);
+      expect(successor.buildSetId).toBe(buildSetId(target.root));
+      const reservation = memoryObservations(log).find(
+        (event) =>
+          event.pid === restored!.pid && event.kind === 'reservation' && event.state.owner.mode === 'supervised',
+      );
+      expect(reservation).toMatchObject({ authority: true, state: { owner: { mode: 'supervised' } } });
+      expect(evidence.lockHolder()?.pid).toBe(restored!.pid);
+      expect(memoryObservations(log).filter((event) => event.kind === 'signal' && event.pid === initial.pid)).toEqual(
+        [],
+      );
+    } finally {
+      evidence.close();
+      contender?.child.kill('SIGKILL');
+      incumbent.child.kill('SIGKILL');
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          continue;
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 110_000);
+
+  it.skipIf(process.platform !== 'linux').each(['owned', 'bridge'] as const)(
+    'retires a permanently frozen accepted replacement after %s and repairs under exactly one new lock holder',
+    async (phase) => {
+      const roots: string[] = [];
+      const home = mkdtempSync(join(tmpdir(), 'coral-accepted-replacement-freeze-'));
+      roots.push(home);
+      const plugin = createPluginFixture(roots, {
+        flavor: 'prod',
+        version: '0.10.14',
+        backend: 'supervisor-silence',
+        accepts: 'bundled',
+      });
+      const sentinel = join(plugin.root, 'bridge', 'coral-sentinel.cjs');
+      await buildObservedSupervisor(sentinel);
+      const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+      const log = join(home, 'memory.jsonl');
+      const marker = join(home, 'frozen.json');
+      const preload = join(home, 'observe-child-signals.cjs');
+      writeFileSync(
+        preload,
+        `
+        const { ChildProcess } = require('node:child_process');
+        const { appendFileSync } = require('node:fs');
+        const kill = ChildProcess.prototype.kill;
+        ChildProcess.prototype.kill = function(signal) {
+          appendFileSync(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'replacement-signal',
+            pid: process.pid, target: this.pid, signal, exitCode: this.exitCode, signalCode: this.signalCode }) + '\\n');
+          return kill.call(this, signal);
+        };
+      `,
+      );
+      const evidence = new SupervisorEvidence(runDir);
+      const supervisor = spawn(process.execPath, [sentinel, join(plugin.root, 'bridge', 'coral-backend.cjs')], {
+        env: {
+          ...process.env,
+          HOME: home,
+          TMPDIR: home,
+          CORAL_SENTINEL_RUN_DIR: runDir,
+          CORAL_FIXTURE_REAL_BACKEND: '1',
+          CORAL_FIXTURE_MEMORY_LOG: log,
+          CORAL_FIXTURE_RECOVERY_FREEZE: phase,
+          CORAL_FIXTURE_FREEZE_MARKER: marker,
+          CORAL_FIXTURE_STARTUP_BUDGET_MS: '6000',
+          NODE_OPTIONS: `--require=${preload}`,
+        },
+        stdio: 'ignore',
+      });
+      const pids = new Set<number>();
+      try {
+        await waitForCondition(() => evidence.read().launch?.phase === 'serving', 20_000);
+        const initial = evidence.read().launch!;
+        pids.add(initial.child.pid);
+        supervisor.kill('SIGKILL');
+        await waitForCondition(() => existsSync(marker), 10_000);
+        const frozen = JSON.parse(readFileSync(marker, 'utf8')) as { pid: number; phase: string };
+        pids.add(frozen.pid);
+        expect(frozen.phase).toBe(phase);
+        expect(evidence.lockHolder()?.pid).toBe(frozen.pid);
+        expect(namespaceLockHolders(runDir)).toEqual([frozen.pid]);
+        const frozenMemory = memoryObservations(log)
+          .reverse()
+          .find((event) => event.kind === 'memory' && event.pid === frozen.pid);
+        expect(frozenMemory?.state.owner.mode).toBe('recovering');
+        expect(attemptExclusiveFileLockSync(supervisorLockPath(runDir)).kind).toBe('contended');
+        expect(probeProcessIncarnation(initial.child.pid)).toBe(initial.child.incarnation);
+        const survivors = listLaunchAdmissions(runDir).flatMap((entry) =>
+          entry.kind === 'readable' ? [entry.admission] : [],
+        );
+        if (phase === 'bridge') expect(survivors.some((entry) => entry.parent.pid === frozen.pid)).toBe(true);
+        for (const admission of survivors) pids.add(admission.child.pid);
+        expect(listLaunchAdmissions(runDir)).toContainEqual(
+          expect.objectContaining({ kind: 'readable', admission: expect.objectContaining({ child: initial.child }) }),
+        );
+        expect(await replacementServing(runDir, 'prod', initial.child.pid)).toBe(true);
+        const started = Date.now();
+        await waitForCondition(() => observeProcessLiveness(frozen.pid) === 'absent', 8_000);
+        const retirement = memoryObservations(log).filter(
+          (event) => event.kind === 'replacement-signal' && event.target === frozen.pid,
+        );
+        expect(retirement.map((event) => event.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+        expect(retirement.every((event) => event.exitCode === null && event.signalCode === null)).toBe(true);
+        expect(evidence.lockHolder()?.pid).not.toBe(frozen.pid);
+        const restored = await waitForReplacementLockHolder(evidence, frozen.pid, 8_000);
+        pids.add(restored);
+        expect(namespaceLockHolders(runDir)).toEqual([restored]);
+        expect(attemptExclusiveFileLockSync(supervisorLockPath(runDir)).kind).toBe('contended');
+        await waitForCondition(
+          () =>
+            memoryObservations(log).some(
+              (event) =>
+                event.pid === restored &&
+                event.state?.launch?.child?.pid === initial.child.pid &&
+                event.state.owner.mode === 'recovering',
+            ),
+          3_000,
+        );
+        for (const admission of survivors) {
+          if (probeProcessIncarnation(admission.child.pid) !== admission.child.incarnation) continue;
+          expect(
+            memoryObservations(log).some(
+              (event) =>
+                event.pid === restored &&
+                [event.state?.launch, event.state?.attempt].some(
+                  (slot) =>
+                    slot?.child?.pid === admission.child.pid && slot.child.incarnation === admission.child.incarnation,
+                ),
+            ),
+          ).toBe(true);
+        }
+        await waitForCondition(
+          () =>
+            memoryObservations(log).some(
+              (event) =>
+                event.pid === restored &&
+                event.state?.owner.mode === 'supervised' &&
+                event.state.launch?.phase === 'serving' &&
+                event.state.launch.child?.pid !== initial.child.pid,
+            ),
+          15_000,
+        );
+        expect(Date.now() - started).toBeLessThan(24_000);
+        const final = evidence.read();
+        pids.add(final.launch!.child.pid);
+        expect(final.launch?.parent.pid).toBe(restored);
+        expect(final.owner?.mode).toBe('supervised');
+        expect(evidence.lockHolder()?.pid).toBe(restored);
+        expect(await replacementServing(runDir, 'prod', final.launch!.child.pid)).toBe(true);
+      } finally {
+        const final = evidence.read();
+        for (const pid of [final.owner?.process.pid, final.launch?.child.pid, final.attempt?.child.pid])
+          if (pid !== undefined) pids.add(pid);
+        evidence.close();
+        supervisor.kill('SIGKILL');
+        for (const pid of pids) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            continue;
+          }
+        }
+        for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+      }
+    },
+    55_000,
+  );
+
   it('keeps an intent-only legacy incumbent passive beyond the escalation budget without committing or delivering signals', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-passive-intent-incumbent-'));

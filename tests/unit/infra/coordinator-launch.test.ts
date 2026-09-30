@@ -12,6 +12,7 @@ import { supervisorLockPath } from '#src/infra/path/index.js';
 import * as backendDiscovery from '#src/infra/backend-discovery.js';
 import * as nodeProcess from '#src/infra/node-process.js';
 import * as upgradeIntent from '#src/infra/upgrade-intent.js';
+import * as admissionRecords from '#src/infra/launch-admission-record.js';
 
 function intentFixture(incarnation: ProcessIncarnation): upgradeIntent.UpgradeIntent {
   return {
@@ -51,6 +52,108 @@ function intentFixture(incarnation: ProcessIncarnation): upgradeIntent.UpgradeIn
 }
 
 describe('namespace supervisor ownership', () => {
+  it('normalizes empty recovery despite proven-dead cleanup residue and retains unreadable intent as unknown', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-recovery-residue-'));
+    const incarnation = 'original' as ProcessIncarnation;
+    const probe = vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+    vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+    vi.spyOn(admissionRecords, 'removeAbsentLaunchSubject').mockReturnValue(false);
+    try {
+      publishLaunchAdmission(runDir, {
+        version: 1,
+        launchId: '00000000-0000-4000-8000-000000000001',
+        child: { pid: 999_995, incarnation },
+        parent: { pid: 999_998, incarnation },
+        admittedAt: Date.now(),
+        purpose: 'startup',
+        build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
+      });
+      const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-A');
+      expect(state.read().owner.mode).toBe('recovering');
+      probe.mockReturnValue('different' as ProcessIncarnation);
+      const intent = vi.spyOn(upgradeIntent, 'readUpgradeIntent').mockReturnValue({ kind: 'corrupt' });
+      state.reconcileAdmissions();
+      expect(state.read().owner.mode).toBe('recovering');
+      expect(state.reserve(state.read().owner, 'build-A', 'startup')).toBeNull();
+      intent.mockReturnValue({ kind: 'absent' });
+      state.reconcileAdmissions();
+      expect(state.read().owner.mode).toBe('supervised');
+      expect(admissionRecords.listLaunchSubjects(runDir)).not.toEqual([]);
+      expect(state.reserve(state.read().owner, 'build-A', 'startup')).not.toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['settled', 'live', 'unknown', 'authority lost'] as const)(
+    'normalizes actual empty recovery before reservation only with settled evidence (%s)',
+    (remaining) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-empty-recovery-'));
+      const incarnation = 'original' as ProcessIncarnation;
+      const intent = intentFixture(incarnation);
+      const probe = vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+      vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+      vi.spyOn(upgradeIntent, 'readUpgradeIntent').mockReturnValue({ kind: 'readable', intent });
+      try {
+        const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-B');
+        expect(state.read().owner.mode).toBe('recovering');
+        probe.mockImplementation((pid) =>
+          pid === 999_995 || remaining === 'settled' || remaining === 'authority lost'
+            ? ('different' as ProcessIncarnation)
+            : remaining === 'unknown'
+              ? null
+              : incarnation,
+        );
+        if (remaining === 'authority lost') state.suspendAuthority();
+        state.reconcileAdmissions();
+        expect(state.read().owner.mode).toBe(remaining === 'settled' ? 'supervised' : 'recovering');
+        const reservation = state.reserve(state.read().owner, 'build-B', 'startup');
+        expect(reservation !== null).toBe(remaining === 'settled');
+      } finally {
+        vi.restoreAllMocks();
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('keeps actual recovery through slot promotion until the parented successor serves', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-parenthood-normalization-'));
+    const incarnation = 'original' as ProcessIncarnation;
+    const parent = { pid: 999_997, incarnation };
+    const predecessor = { pid: 999_995, incarnation };
+    const probe = vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+    vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+    try {
+      publishLaunchAdmission(runDir, {
+        version: 1,
+        launchId: '00000000-0000-4000-8000-000000000001',
+        child: predecessor,
+        parent: { pid: 999_998, incarnation },
+        admittedAt: Date.now(),
+        purpose: 'startup',
+        build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
+      });
+      const state = new SupervisorLaunchMemory(runDir, parent, 'build-A');
+      state.observeInheritedHealth(state.read().launch!, Date.now());
+      expect(state.reserve(state.read().owner, 'build-A', 'succession')).toBeNull();
+      const repair = state.reserveRepairSuccession(state.read().owner, 'build-A', predecessor)!;
+      expect(repair).not.toBeNull();
+      const child = { pid: 999_994, incarnation };
+      expect(state.spawned(repair, parent, child)).toBe(true);
+      expect(state.admit(repair, parent, child, Date.now())).toBe(true);
+      probe.mockImplementation((pid) => (pid === predecessor.pid ? ('different' as ProcessIncarnation) : incarnation));
+      state.reconcileAdmissions();
+      expect(state.read().launch?.id).toBe(repair.id);
+      expect(state.read().owner.mode).toBe('recovering');
+      expect(state.serving(repair, child)).toBe(true);
+      expect(state.read().owner.mode).toBe('supervised');
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
   it('retains every live launch id when reconstruction finds more children than the two active slots', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-extra-children-'));
     const incarnation = probeProcessIncarnation(process.pid);
@@ -573,7 +676,8 @@ describe('namespace supervisor ownership', () => {
         expect(state.reserve(state.read().owner, 'build-A', 'succession')).toBeNull();
         probe.mockReturnValue(incarnation);
         state.observeInheritedHealth(launch, Date.now());
-        expect(state.reserve(state.read().owner, 'build-A', 'succession')).not.toBeNull();
+        expect(state.reserve(state.read().owner, 'build-A', 'succession')).toBeNull();
+        expect(state.reserveRepairSuccession(state.read().owner, 'build-A', child)).not.toBeNull();
       } finally {
         vi.restoreAllMocks();
         rmSync(runDir, { recursive: true, force: true });

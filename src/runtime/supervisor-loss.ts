@@ -9,6 +9,8 @@ import { receiveLaunchStatus, updateLaunchStatus } from '../infra/launch-status.
 import { readUpgradeIntent } from '../infra/upgrade-intent.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
+import { attemptExclusiveFileLockSync } from '../infra/fs-lock.js';
+import { supervisorLockPath } from '../infra/path/coordinator.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
 import { createRealRuntime } from './real.js';
 import { installReplacementSupervisorChannel } from './succession-attempt.js';
@@ -34,6 +36,11 @@ type ReplacementSupervisorAttempt = {
   settled: boolean;
   accepted: boolean;
   bridgeReady: boolean;
+  repairStarted: boolean;
+  lastAnswer: number;
+  lastWake: number;
+  sequence: number;
+  outstanding: number | null;
   launchedIncarnation: ProcessIncarnation | null;
   retirementAt: number | null;
   termSent: boolean;
@@ -45,10 +52,27 @@ type ReplacementSupervisorAttempt = {
 function retryReplacementSupervisor(control: ReplacementSupervisorControl, error: Error): void {
   if (!control.failing) control.onError(error);
   control.failing = true;
-  setTimeout(() => launchReplacementSupervisor(control), RETRY_MS);
+  setTimeout(() => {
+    const path = supervisorLockPath(control.runDir);
+    if (existsSync(path)) {
+      const lock = attemptExclusiveFileLockSync(path);
+      if (lock.kind !== 'acquired') {
+        retryReplacementSupervisor(control, error);
+        return;
+      }
+      lock.lease();
+    }
+    launchReplacementSupervisor(control);
+  }, RETRY_MS);
 }
 
-function repairReplacementSupervisor(control: ReplacementSupervisorControl, root: string): void {
+function repairReplacementSupervisor(attempt: ReplacementSupervisorAttempt): void {
+  const { control, root } = attempt;
+  if (attempt.settled) return;
+  if (attempt.retirementAt !== null) {
+    attempt.repairStarted = false;
+    return;
+  }
   const retry = (): void => {
     const sourceIncarnation = probeProcessIncarnation(process.pid);
     if (sourceIncarnation === null) return;
@@ -59,8 +83,7 @@ function repairReplacementSupervisor(control: ReplacementSupervisorControl, root
         observed.intent.disposition === 'completed' &&
         observed.intent.incumbent.pid === process.pid &&
         observed.intent.incumbent.incarnation === sourceIncarnation;
-      if (!completed && servingSourceStillPresent(control, sourceIncarnation))
-        repairReplacementSupervisor(control, root);
+      if (!completed && servingSourceStillPresent(control, sourceIncarnation)) repairReplacementSupervisor(attempt);
     }, RETRY_MS);
   };
   void control
@@ -77,10 +100,8 @@ function finishReplacementAttempt(attempt: ReplacementSupervisorAttempt, error: 
   attempt.settled = true;
   clearInterval(attempt.retirementPoll);
   clearTimeout(attempt.deadline);
-  if (error === null) {
-    repairReplacementSupervisor(attempt.control, attempt.root);
-    attempt.supervisor.unref();
-  } else retryReplacementSupervisor(attempt.control, error);
+  attempt.supervisor.unref();
+  if (error !== null) retryReplacementSupervisor(attempt.control, error);
 }
 
 function replacementHold(attempt: ReplacementSupervisorAttempt, held: boolean): void {
@@ -102,18 +123,37 @@ function replacementHold(attempt: ReplacementSupervisorAttempt, held: boolean): 
 
 function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void {
   const { supervisor } = attempt;
-  if (
-    attempt.settled ||
-    attempt.accepted ||
-    attempt.retirementAt === null ||
-    supervisor.pid === undefined ||
-    attempt.killSent
-  )
-    return;
+  if (attempt.settled || supervisor.pid === undefined || attempt.killSent) return;
+  if (supervisor.exitCode !== null || supervisor.signalCode !== null) return;
+  const now = Date.now();
+  const gap = now - attempt.lastWake;
+  attempt.lastWake = now;
+  if (attempt.accepted && gap > SENTINEL_TIMING.schedulingGapMs) {
+    attempt.lastAnswer = now;
+    attempt.outstanding = null;
+  }
   const observed = probeProcessIncarnation(supervisor.pid);
-  attempt.launchedIncarnation ??= observed;
-  if (observed === null || observed !== attempt.launchedIncarnation) return;
-  const killDue = Date.now() - attempt.retirementAt >= SENTINEL_TIMING.graceMs;
+  if (observed !== null && attempt.launchedIncarnation !== null && observed !== attempt.launchedIncarnation) {
+    replacementHold(attempt, true);
+    finishReplacementAttempt(attempt, null);
+    return;
+  }
+  if (attempt.accepted && attempt.retirementAt === null) {
+    if (now - attempt.lastAnswer >= SENTINEL_TIMING.lapseMs) attempt.retirementAt = now;
+    else if (supervisor.connected && attempt.outstanding === null) {
+      attempt.outstanding = ++attempt.sequence;
+      supervisor.send(
+        { kind: 'coral-recovery-challenge', challenge: attempt.challenge, id: attempt.outstanding },
+        () => undefined,
+      );
+    }
+  }
+  if (attempt.retirementAt === null) return;
+  if ((attempt.accepted && process.platform !== 'linux') || observed === null || attempt.launchedIncarnation === null) {
+    replacementHold(attempt, true);
+    return;
+  }
+  const killDue = now - attempt.retirementAt >= SENTINEL_TIMING.graceMs;
   if (!killDue && attempt.termSent) return;
   let sent = false;
   if (killDue) {
@@ -157,15 +197,36 @@ function receiveReplacementMessage(attempt: ReplacementSupervisorAttempt, messag
   if (message.kind === 'coral-recovery-ready') {
     installReplacementSupervisorChannel(attempt.supervisor);
     attempt.supervisor.send({ kind: 'coral-recovery-offer', challenge: attempt.challenge });
-  } else if (message.kind === 'coral-recovery-owned') {
+  } else if (
+    message.kind === 'coral-recovery-answer' &&
+    attempt.accepted &&
+    !attempt.termSent &&
+    !attempt.killSent &&
+    'id' in message &&
+    message.id === attempt.outstanding &&
+    attempt.outstanding !== null
+  ) {
+    attempt.lastAnswer = Date.now();
+    attempt.outstanding = null;
+    attempt.retirementAt = null;
+    replacementHold(attempt, false);
+    if ('normalized' in message && message.normalized === true) finishReplacementAttempt(attempt, null);
+  } else if (message.kind === 'coral-recovery-owned' && !attempt.accepted) {
     attempt.accepted = true;
+    attempt.launchedIncarnation ??=
+      attempt.supervisor.pid === undefined ? null : probeProcessIncarnation(attempt.supervisor.pid);
+    attempt.lastAnswer = Date.now();
+    attempt.lastWake = attempt.lastAnswer;
+    attempt.retirementAt = null;
     clearTimeout(attempt.deadline);
     replacementHold(attempt, false);
     attempt.supervisor.unref();
-    if (attempt.bridgeReady) finishReplacementAttempt(attempt, null);
   } else if (message.kind === 'coral-repair-bridge-ready') {
     attempt.bridgeReady = true;
-    if (attempt.accepted) finishReplacementAttempt(attempt, null);
+  }
+  if (attempt.accepted && attempt.bridgeReady && !attempt.repairStarted && !attempt.settled) {
+    attempt.repairStarted = true;
+    repairReplacementSupervisor(attempt);
   }
 }
 
@@ -220,20 +281,34 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
     settled: false,
     accepted: false,
     bridgeReady: false,
-    launchedIncarnation: null,
+    repairStarted: false,
+    lastAnswer: Date.now(),
+    lastWake: Date.now(),
+    sequence: 0,
+    outstanding: null,
+    launchedIncarnation: supervisor.pid === undefined ? null : probeProcessIncarnation(supervisor.pid),
     retirementAt: null,
     termSent: false,
     killSent: false,
     retirementPoll: null as unknown as ReturnType<typeof setInterval>,
     deadline: null as unknown as ReturnType<typeof setTimeout>,
   };
-  attempt.retirementPoll = setInterval(() => pollReplacementRetirement(attempt), 1_000);
+  attempt.retirementPoll = setInterval(() => pollReplacementRetirement(attempt), SENTINEL_TIMING.challengeMs);
   attempt.retirementPoll.unref();
   attempt.deadline = setTimeout(() => {
     attempt.retirementAt = Date.now();
   }, ACCEPTANCE_DEADLINE_MS);
   attempt.deadline.unref();
-  supervisor.once('error', (error) => finishReplacementAttempt(attempt, error));
+  supervisor.once('spawn', () => {
+    attempt.launchedIncarnation ??= supervisor.pid === undefined ? null : probeProcessIncarnation(supervisor.pid);
+  });
+  supervisor.once('error', (error) => {
+    if (supervisor.pid === undefined) finishReplacementAttempt(attempt, error);
+    else {
+      control.onError(error);
+      replacementHold(attempt, true);
+    }
+  });
   supervisor.on('message', (message: unknown) => receiveReplacementMessage(attempt, message));
   supervisor.once('exit', (code, signal) => {
     replacementHold(attempt, false);
@@ -250,7 +325,7 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
   });
 }
 
-/** A surviving coordinator keeps serving until a replacement accepts launch ownership. */
+/** Acceptance cannot end monitoring before custody-preserving normalization. */
 export function startReplacementSupervisor(
   pluginRoot: string,
   runDir: string,

@@ -814,6 +814,7 @@ async function launchSuccessionAttempt(input: {
   attemptId: string;
   timing: SentinelTiming;
   startupBudgetMs: number;
+  repair?: boolean;
   beforeReserve?: () => Promise<void>;
   route: (running: RunningChild, message: unknown, handle: unknown) => boolean;
   forwardParentMessages: boolean;
@@ -834,7 +835,10 @@ async function launchSuccessionAttempt(input: {
   }
   const active = input.record.read().attempt;
   if (active !== null && active.phase !== 'exited') throw new Error('Succession attempt is already active');
-  const reservation = input.record.reserve(input.owner.current, manifest.buildSetId, 'succession');
+  const reservation =
+    input.repair && launch?.child !== undefined
+      ? input.record.reserveRepairSuccession(input.owner.current, manifest.buildSetId, launch.child)
+      : input.record.reserve(input.owner.current, manifest.buildSetId, 'succession');
   if (reservation === null) throw new Error('Succession reservation was refused');
   const running = spawnAdmittedChild(
     input.record,
@@ -945,6 +949,7 @@ function createRepairBridge(
         timing,
         startupBudgetMs,
         forwardParentMessages: false,
+        repair: true,
         route: (running, childMessage, childHandle) => {
           if (servingChild()?.running.child === running.child) onMessage(childMessage, childHandle);
           else {
@@ -1175,6 +1180,8 @@ async function acquireLaunchOwnership(
         try {
           const record = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, manifest.buildSetId);
           if (replacement) process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });
+          else if (process.env.CORAL_OBSERVATION_CHALLENGE !== undefined)
+            process.send?.({ kind: 'coral-observation-owned', challenge: process.env.CORAL_OBSERVATION_CHALLENGE });
           return {
             kind: 'owned',
             record,
@@ -1200,6 +1207,10 @@ async function acquireLaunchOwnership(
       }
       if (attempt.kind === 'unobservable') throw attempt.cause;
       if (!replacement) {
+        if (process.env.CORAL_OBSERVATION_CHALLENGE !== undefined) {
+          process.send?.({ kind: 'coral-observation-owned', challenge: process.env.CORAL_OBSERVATION_CHALLENGE });
+          return { kind: 'finished', exitCode: 0 };
+        }
         if (requested) {
           await sleep(POLL_MS);
           continue;
@@ -1968,6 +1979,31 @@ export async function runNamespaceSupervisor(
   const acquisition = await acquireLaunchOwnership(runDir, executable, originalManifest);
   if (acquisition.kind === 'finished') return acquisition.exitCode;
   const { record, owner, incarnation, replacement, recoveryChallenge } = acquisition;
+  const onRecoveryChallenge = (message: unknown): void => {
+    if (
+      !replacement ||
+      owner.lost ||
+      !record.hasAuthority(owner.current) ||
+      process.ppid !== Number(process.env.CORAL_RECOVERY_SOURCE_PID) ||
+      probeProcessIncarnation(process.ppid) !== process.env.CORAL_RECOVERY_SOURCE_INCARNATION ||
+      typeof message !== 'object' ||
+      message === null ||
+      !('kind' in message) ||
+      message.kind !== 'coral-recovery-challenge' ||
+      !('challenge' in message) ||
+      message.challenge !== recoveryChallenge ||
+      !('id' in message) ||
+      !Number.isSafeInteger(message.id)
+    )
+      return;
+    process.send?.({
+      kind: 'coral-recovery-answer',
+      challenge: recoveryChallenge,
+      id: message.id,
+      normalized: record.read().owner.mode === 'supervised',
+    });
+  };
+  if (replacement) process.on('message', onRecoveryChallenge);
   try {
     const original = { executable, buildSetId: originalManifest.buildSetId };
     const tried = new Set<string>();
@@ -1992,7 +2028,8 @@ export async function runNamespaceSupervisor(
         return 1;
       }
       record.reconcileAdmissions();
-      if (process.connected) process.send?.({ kind: 'coral-launch-status', status: currentLaunchStatus(runDir) });
+      if (process.connected)
+        process.send?.({ kind: 'coral-launch-status', status: currentLaunchStatus(runDir) }, () => undefined);
       const reconciled = await reconcileInheritedChildren({
         record,
         owner,
@@ -2081,6 +2118,7 @@ export async function runNamespaceSupervisor(
       if (selection.released) return 0;
     }
   } finally {
+    process.off('message', onRecoveryChallenge);
     owner.release();
   }
 }

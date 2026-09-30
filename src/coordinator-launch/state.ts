@@ -263,7 +263,10 @@ export class SupervisorLaunchMemory {
         id: randomUUID(),
         process,
         buildSetId,
-        mode: unique.length > 0 || unsettled.length > 0 ? 'recovering' : 'supervised',
+        mode:
+          unique.length > 0 || unsettled.length > 0 || (intent.kind !== 'readable' && intent.kind !== 'absent')
+            ? 'recovering'
+            : 'supervised',
       },
       launch,
       attempt: launch === attempt ? null : attempt,
@@ -448,6 +451,11 @@ export class SupervisorLaunchMemory {
       } else if (disposition === 'unknown') this.#recovering();
     }
     const holds: NonNullable<LaunchStatus['admissionHolds']> = [];
+    const intent = readUpgradeIntent(this.#runDir);
+    if (intent.kind !== 'readable' && intent.kind !== 'absent') {
+      this.#recovering();
+      holds.push({ path: join(this.#runDir, 'upgrade.v1.json'), disposition: 'unknown' });
+    }
     if (
       this.children().some(
         (slot) =>
@@ -481,6 +489,7 @@ export class SupervisorLaunchMemory {
       }
     }
     this.#status((status) => ({ ...status, admissionHolds: holds }));
+    this.#normalizeOwner();
   }
 
   get runDir(): string {
@@ -509,7 +518,9 @@ export class SupervisorLaunchMemory {
   }
 
   hasUnknownOccupancy(): boolean {
+    const intent = readUpgradeIntent(this.#runDir);
     const unknown =
+      (intent.kind !== 'readable' && intent.kind !== 'absent') ||
       this.children().some(
         (slot) =>
           slot.phase !== 'exited' &&
@@ -547,8 +558,36 @@ export class SupervisorLaunchMemory {
   }
 
   reserve(owner: LaunchOwner, buildSetId: string, purpose: LaunchReservation['purpose']): LaunchReservation | null {
+    return this.#reserve(owner, buildSetId, purpose, false);
+  }
+
+  reserveRepairSuccession(
+    owner: LaunchOwner,
+    buildSetId: string,
+    predecessor: LaunchProcess,
+  ): LaunchReservation | null {
+    const launch = this.#state.launch;
+    if (
+      launch?.phase !== 'serving' ||
+      launch.child?.pid !== predecessor.pid ||
+      launch.child.incarnation !== predecessor.incarnation ||
+      !this.supervisionEligible(launch) ||
+      identityDisposition(predecessor) !== 'matching'
+    )
+      return null;
+    return this.#reserve(owner, buildSetId, 'succession', true);
+  }
+
+  #reserve(
+    owner: LaunchOwner,
+    buildSetId: string,
+    purpose: LaunchReservation['purpose'],
+    repair: boolean,
+  ): LaunchReservation | null {
     if (!this.hasAuthority(owner)) return null;
     this.#reconcileAdmissions();
+    if (this.hasUnknownOccupancy()) return null;
+    if (this.#state.owner.mode === 'recovering' && !repair) return null;
     if (
       this.#subjects.some((subject) => {
         if (this.#settledSubjects.has(subject.path)) return false;
@@ -631,6 +670,7 @@ export class SupervisorLaunchMemory {
       return false;
     this.#set(reservation, { ...current, phase: 'serving', observedHealthyAt: Date.now() });
     this.#servedBuilds.add(current.buildSetId);
+    this.#normalizeOwner();
     return true;
   }
 
@@ -668,9 +708,42 @@ export class SupervisorLaunchMemory {
     const { launch, attempt } = this.#state;
     if (launch?.phase === 'exited' && attempt !== null && attempt.phase !== 'exited') {
       this.#state = { ...this.#state, launch: attempt, attempt: null };
+      this.#normalizeOwner();
       return attempt;
     }
     return null;
+  }
+
+  #normalizeOwner(): void {
+    if (!this.#authority || this.#state.owner.mode !== 'recovering') return;
+    if (this.hasUnknownOccupancy()) return;
+    const live = this.children().filter((slot) => slot.phase !== 'exited');
+    if (
+      this.#subjects.some(
+        (subject) =>
+          !this.#settledSubjects.has(subject.path) &&
+          observeLaunchSubject(subject) !== 'absent' &&
+          !live.some(
+            (slot) =>
+              slot.id === subject.admission?.launchId &&
+              slot.child?.pid === subject.admission.child.pid &&
+              slot.child.incarnation === subject.admission.child.incarnation &&
+              subject.problem === undefined,
+          ),
+      ) ||
+      (live.length > 0 &&
+        (this.#state.launch?.phase !== 'serving' ||
+          live.some(
+            (slot) =>
+              slot.child === undefined ||
+              identityDisposition(slot.child) !== 'matching' ||
+              !this.supervisionEligible(slot) ||
+              slot.parent?.pid !== this.#state.owner.process.pid ||
+              slot.parent.incarnation !== this.#state.owner.process.incarnation,
+          )))
+    )
+      return;
+    this.#state = { ...this.#state, owner: { ...this.#state.owner, mode: 'supervised' } };
   }
 
   #hasUnknownEnvelope(launchId: string): boolean {

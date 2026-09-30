@@ -11,6 +11,8 @@ import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { readDiscoveryRecordDisposition } from '#src/infra/backend-discovery.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { readLaunchStatus } from '#src/infra/launch-status.js';
+import { attemptExclusiveFileLockSync, createSharedFileLockSync } from '#src/infra/fs-lock.js';
+import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type * as nodeProcessModule from '#src/infra/node-process.js';
 import { startReplacementSupervisor } from '#src/runtime/supervisor-loss.js';
@@ -23,10 +25,10 @@ vi.mock('#src/infra/upgrade-intent.js', () => ({ readUpgradeIntent: vi.fn(() => 
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 vi.mock('#src/infra/retained-build-root.js', () => ({ validatedRunningBuildRoot: () => '/fixture' }));
-vi.mock('node:fs', async (importOriginal) => ({
-  ...(await importOriginal<typeof fsModule>()),
-  existsSync: () => true,
-}));
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof fsModule>();
+  return { ...original, existsSync: (path: string) => path.startsWith('/fixture') || original.existsSync(path) };
+});
 vi.mock('#src/infra/node-process.js', async (importOriginal) => ({
   ...(await importOriginal<typeof nodeProcessModule>()),
   probeProcessIncarnation: vi.fn(),
@@ -38,9 +40,16 @@ afterEach(() => vi.useRealTimers());
 it('keeps an accepted replacement alive while its repair bridge waits for an unhealthy child', async () => {
   vi.useFakeTimers();
   const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-acceptance-'));
+  let normalized = false;
   const replacement = Object.assign(new EventEmitter(), {
     pid: 999_999,
-    send: vi.fn(),
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send: vi.fn((message: { kind: string; id?: number; challenge?: string }) => {
+      if (message.kind === 'coral-recovery-challenge')
+        replacement.emit('message', { ...message, kind: 'coral-recovery-answer', normalized });
+    }),
     kill: vi.fn(() => true),
     unref: vi.fn(),
   });
@@ -70,7 +79,137 @@ it('keeps an accepted replacement alive while its repair bridge waits for an unh
     await vi.advanceTimersByTimeAsync(200);
     expect(onAccepted).toHaveBeenCalledOnce();
     expect(onError).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(46_000);
+    expect(replacement.kill).not.toHaveBeenCalled();
+    expect(replacement.send.mock.calls.some(([message]) => message.kind === 'coral-recovery-challenge')).toBe(true);
+    normalized = true;
+    await vi.advanceTimersByTimeAsync(1_000);
+    const sends = replacement.send.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(650_000);
+    expect(replacement.kill).not.toHaveBeenCalled();
+    expect(replacement.send).toHaveBeenCalledTimes(sends);
   } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it.each([false, true])(
+  'retires a silent accepted replacement through normalization (bridge ready: %s)',
+  async (bridgeReady) => {
+    vi.useFakeTimers();
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-silence-'));
+    const replacement = Object.assign(new EventEmitter(), {
+      pid: 999_996,
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: vi.fn(),
+      kill: vi.fn(() => true),
+      unref: vi.fn(),
+    });
+    vi.mocked(spawn)
+      .mockClear()
+      .mockReturnValue(replacement as unknown as ChildProcess);
+    vi.mocked(probeProcessIncarnation).mockImplementation(
+      (pid) => (pid === process.pid ? 'source' : 'replacement') as ProcessIncarnation,
+    );
+    let release: (() => void) | undefined;
+    try {
+      startReplacementSupervisor(
+        '/fixture',
+        runDir,
+        { buildSetId: 'build' } as StrictBundleManifest,
+        vi.fn(),
+        vi.fn(async () => {}),
+      );
+      const challenge = vi.mocked(spawn).mock.calls[0]?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
+      replacement.emit('message', { kind: 'coral-recovery-owned', challenge });
+      if (bridgeReady) replacement.emit('message', { kind: 'coral-repair-bridge-ready', challenge });
+      for (let index = 0; index < 610; index++) {
+        replacement.emit('message', { kind: 'coral-recovery-answer', challenge, id: 0, normalized: false });
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      expect(replacement.kill).toHaveBeenCalledWith('SIGTERM');
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(replacement.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(spawn).toHaveBeenCalledOnce();
+      createSharedFileLockSync(supervisorLockPath(runDir))();
+      const lock = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+      if (lock.kind !== 'acquired') throw new Error('Fixture lock was not acquired');
+      release = lock.lease;
+      replacement.emit('exit', null, 'SIGKILL');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(spawn).toHaveBeenCalledOnce();
+      release();
+      release = undefined;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(spawn).toHaveBeenCalledTimes(2);
+    } finally {
+      release?.();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  },
+);
+
+it('holds retirement when fresh replacement identity is unknown and clears refused-only commitment on fresh cooperation', async () => {
+  vi.useFakeTimers();
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-unknown-'));
+  const replacement = Object.assign(new EventEmitter(), {
+    pid: 999_996,
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send: vi.fn(),
+    kill: vi.fn(() => true),
+    unref: vi.fn(),
+  });
+  vi.mocked(spawn)
+    .mockClear()
+    .mockReturnValue(replacement as unknown as ChildProcess);
+  vi.mocked(probeProcessIncarnation).mockReturnValue('replacement' as ProcessIncarnation);
+  vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({
+    kind: 'record',
+    record: { pid: process.pid, incarnation: 'replacement' },
+  } as ReturnType<typeof readDiscoveryRecordDisposition>);
+  const onAccepted = vi.fn(async () => {});
+  try {
+    startReplacementSupervisor(
+      '/fixture',
+      runDir,
+      { buildSetId: 'build' } as StrictBundleManifest,
+      vi.fn(),
+      onAccepted,
+    );
+    const challenge = vi.mocked(spawn).mock.calls[0]?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
+    replacement.emit('message', { kind: 'coral-recovery-owned', challenge });
+    replacement.emit('message', { kind: 'coral-repair-bridge-ready', challenge });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const sent = replacement.send.mock.calls.at(-1)![0] as { id: number };
+    vi.mocked(probeProcessIncarnation).mockImplementation((pid) =>
+      pid === process.pid ? ('replacement' as ProcessIncarnation) : null,
+    );
+    await vi.advanceTimersByTimeAsync(650_000);
+    expect(replacement.kill).not.toHaveBeenCalled();
+    expect(readLaunchStatus(runDir)).toMatchObject({
+      kind: 'readable',
+      status: { signalHolds: [expect.objectContaining({ pid: replacement.pid })] },
+    });
+    replacement.emit('message', { kind: 'coral-recovery-answer', challenge, id: sent.id - 1, normalized: true });
+    const staleHold = readLaunchStatus(runDir);
+    expect(staleHold.kind === 'readable' && staleHold.status.signalHolds.length).toBe(1);
+    const repairs = onAccepted.mock.calls.length;
+    replacement.emit('message', { kind: 'coral-recovery-answer', challenge, id: sent.id, normalized: false });
+    vi.mocked(probeProcessIncarnation).mockReturnValue('replacement' as ProcessIncarnation);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(replacement.kill).not.toHaveBeenCalled();
+    expect(onAccepted.mock.calls.length).toBeGreaterThan(repairs);
+    const fresh = replacement.send.mock.calls.at(-1)![0] as { id: number };
+    replacement.emit('message', { kind: 'coral-recovery-answer', challenge, id: fresh.id, normalized: true });
+    await vi.advanceTimersByTimeAsync(650_000);
+    expect(replacement.kill).not.toHaveBeenCalled();
+    expect(replacement.send).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
     rmSync(runDir, { recursive: true, force: true });
   }
 });
@@ -80,6 +219,8 @@ it('records refused replacement retirement signals until the replacement exits',
   const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-refusal-'));
   const replacement = Object.assign(new EventEmitter(), {
     pid: 999_998,
+    exitCode: null,
+    signalCode: null,
     send: vi.fn(),
     kill: vi.fn(() => false),
     unref: vi.fn(),
@@ -123,6 +264,8 @@ it.each([
   const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-repair-'));
   const replacement = Object.assign(new EventEmitter(), {
     pid: 999_997,
+    exitCode: null,
+    signalCode: null,
     send: vi.fn(),
     kill: vi.fn(),
     unref: vi.fn(),

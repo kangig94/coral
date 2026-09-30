@@ -60,6 +60,7 @@ import { assertNever } from '../../infra/error-format.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
 import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
 import { readCompletedSuccessionReceipts, readUpgradeIntent } from '../../infra/upgrade-intent.js';
+import { resumeLegacyUpgradeObservation } from '../../coordinator-launch/request.js';
 import { HANDOFF_DRAIN_TIMEOUT_MS } from '../../infra/shutdown-contract.js';
 export const STARTUP_POLL_MS = 200;
 /**
@@ -1290,6 +1291,7 @@ async function ensureTopLevelCoordinator(
   if (mayInvocationBeServedByIncumbent(health, admission)) {
     const incumbent = await reuseServingIncumbent(paths, socketPath, desired, health, admission, timePort);
     if (incumbent !== null) {
+      await resumeLegacyUpgradeObservation(paths.runDir);
       return incumbent;
     }
     // `reuseServingIncumbent` failing is not proof the incumbent is gone — an
@@ -1303,6 +1305,7 @@ async function ensureTopLevelCoordinator(
     if (mayInvocationBeServedByIncumbent(replacementEvidence, admission)) {
       const retried = await reuseServingIncumbent(paths, socketPath, desired, replacementEvidence, admission, timePort);
       if (retried !== null) {
+        await resumeLegacyUpgradeObservation(paths.runDir);
         return retried;
       }
     }
