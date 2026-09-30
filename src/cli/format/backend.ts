@@ -804,6 +804,11 @@ export function formatBackendStatus(
             : `Coordinator launch requires build ${launchHold.controller}${launchHold.requestId === undefined ? '' : ` for request ${launchHold.requestId}`}. Last observation: ${launchHold.observation ?? 'no eligible build'}. The supervisor revalidates installed and retained builds or a change in required controller evidence.`,
         );
         break;
+      case 'observation-unavailable':
+        sections.push(
+          `Legacy upgrade observation for request ${launchHold.requestId} is unavailable: ${launchHold.observation}. The next CLI or hook invocation retries; the serving coordinator remains available.`,
+        );
+        break;
       case 'target-indeterminate':
         sections.push(
           `Coordinator launch request ${launchHold.requestId} has an indeterminate target. The supervisor retries when target executable evidence becomes conclusive or the target disappears.`,

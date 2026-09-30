@@ -352,8 +352,7 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
     let parentObservation = probeProcessIncarnation(parentPid);
     const holdId = `parent:${parentPid}`;
     let parentSilent = false;
-    let parentTerminationAt: number | null = null;
-    let parentTermSent = false;
+    let parentTermDeliveredAt: number | null = null;
     let parentKillSent = false;
     let lastParentProgress = Date.now();
     let lastWake = lastParentProgress;
@@ -395,12 +394,11 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
       }
     };
     const parentAnswered = (): void => {
-      if (parentTermSent || parentKillSent) return;
+      if (parentTermDeliveredAt !== null || parentKillSent) return;
       lastParentProgress = Date.now();
       if (!parentSilent) return;
       parentSilent = false;
-      parentTerminationAt = null;
-      parentTermSent = false;
+      parentTermDeliveredAt = null;
       parentKillSent = false;
       recordParentHold(false);
     };
@@ -415,15 +413,14 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
       if (now - lastParentProgress < SENTINEL_TIMING.lapseMs) return;
       if (!parentSilent) {
         parentSilent = true;
-        parentTerminationAt = now;
         replaceSupervisor();
       }
       if (process.ppid !== parentPid) return recordParentHold(false);
       parentObservation = probeProcessIncarnation(parentPid);
-      const killDue = parentTerminationAt !== null && now >= parentTerminationAt + SENTINEL_TIMING.graceMs;
+      const killDue = parentTermDeliveredAt !== null && now >= parentTermDeliveredAt + SENTINEL_TIMING.graceMs;
       if (killDue && !parentKillSent) parentKillSent = signalSilentParent('SIGKILL');
-      else if (!killDue && !parentTermSent) parentTermSent = signalSilentParent('SIGTERM');
-      recordParentHold(killDue ? !parentKillSent : !parentTermSent);
+      else if (parentTermDeliveredAt === null && signalSilentParent('SIGTERM')) parentTermDeliveredAt = now;
+      recordParentHold(killDue ? !parentKillSent : parentTermDeliveredAt === null);
     }, SENTINEL_TIMING.challengeMs);
     supervisorMonitor.unref();
     sentinelArm = new Promise<void>((resolve, reject) => {

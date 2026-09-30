@@ -790,7 +790,7 @@ describe('coordinator retirement of its own replacement supervisor', () => {
       expect(guards).toContain('if (attempt.retirementAt === null) return');
       expect(scope.getText(parsed)).toContain("attempt.accepted && process.platform !== 'linux'");
       expect(guards).toContain('now - attempt.lastAnswer >= SENTINEL_TIMING.lapseMs');
-      expect(guards).toContain('now - attempt.retirementAt >= SENTINEL_TIMING.graceMs');
+      expect(guards).toContain('now - attempt.termDeliveredAt >= SENTINEL_TIMING.graceMs');
     }
   });
 });

@@ -39,6 +39,12 @@ const statusSchema = z
           observation: z.string().optional(),
           retry: z.literal('restore-readable-custody-record'),
         }),
+        z.object({
+          kind: z.literal('observation-unavailable'),
+          requestId: z.string(),
+          observation: z.string(),
+          retry: z.literal('next-trigger'),
+        }),
         z.object({ kind: z.literal('target-indeterminate'), requestId: z.string() }),
         z.object({
           kind: z.literal('inherited-child-unresponsive'),

@@ -1,3 +1,4 @@
+import type * as HandoffTargetMod from '#src/infra/handoff-target.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as IpcClientMod from '#src/transport/ipc/client.js';
 import type * as UpgradeIntentMod from '#src/infra/upgrade-intent.js';
@@ -46,6 +47,7 @@ const mockState = vi.hoisted(() => ({
   ownerLiveness: null as ProcessLiveness | null,
   ownerIncarnationUnprobeable: false,
   validUpgradeTargetRoot: null as string | null,
+  validObserverRoot: null as string | null,
   localInterfaces: null as ReturnType<typeof NodeOs.networkInterfaces> | null,
 }));
 
@@ -78,6 +80,20 @@ vi.mock('#src/infra/node-process.js', async () => {
 vi.mock('#src/infra/bundle-manifest.js', async () => {
   const actual = await vi.importActual<typeof BundleManifestMod>('#src/infra/bundle-manifest.js');
   return { ...actual, resolveStrictBundleIdentity: () => mockState.strictIdentity };
+});
+
+vi.mock('#src/infra/handoff-target.js', async (loadOriginal) => {
+  const actual = await loadOriginal<typeof HandoffTargetMod>();
+  return {
+    ...actual,
+    createForeignTargetValidator: () => {
+      const validate = actual.createForeignTargetValidator();
+      return (bundleDir: string, manifest: StrictBundleManifest) =>
+        bundleDir === `${mockState.validObserverRoot}/bridge`
+          ? { kind: 'validated', target: {} }
+          : validate(bundleDir, manifest);
+    },
+  };
 });
 
 vi.mock('node:child_process', () => ({
@@ -325,6 +341,7 @@ beforeEach(() => {
   mockState.ownerIncarnationUnprobeable = false;
   mockState.localInterfaces = null;
   mockState.validUpgradeTargetRoot = null;
+  mockState.validObserverRoot = null;
 });
 
 afterEach(() => {
@@ -410,6 +427,107 @@ describe('ipc ensure', () => {
       auth: { kind: 'boot', token: 'test-boot-token' },
     });
   });
+
+  it.each(['missing target', 'silent observer', 'disconnected observer'] as const)(
+    'reaches the verified incumbent within its budget with a %s',
+    async (fault) => {
+      vi.useFakeTimers();
+      makeHome();
+      const root = createPluginRoot();
+      writeDiscovery(root, { instanceId: 'existing-coordinator' });
+      mockState.health.mockResolvedValue({
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'existing-coordinator',
+        namespace: pluginRootNamespace(root),
+      });
+      const manifest = provenManifest('test-hash');
+      mockState.strictIdentity = { ok: true, manifest };
+      mockState.validObserverRoot = root;
+      const runDir = coordinatorPaths('prod').runDir;
+      writeFileSync(
+        upgradeIntentPath(runDir),
+        JSON.stringify({
+          version: 'v1',
+          requestId: 'restore-observer',
+          revision: 0,
+          incumbent: {
+            instanceId: 'existing-coordinator',
+            pid: process.pid,
+            incarnation: null,
+            version: '0.5.2',
+            bundleHash: 'test-hash',
+            flavor: 'prod',
+          },
+          target: { pluginRootLabel: fault === 'missing target' ? '/missing-target' : root, build: manifest },
+          legacyRetirement: true,
+          attemptId: null,
+          attemptOwner: null,
+          attemptChild: null,
+          disposition: 'pending',
+          blockers: [],
+          retryCondition: null,
+          attemptDeadline: null,
+          completionReceipt: null,
+        }),
+      );
+      const observer = Object.assign(spawnedChild(), {
+        connected: true,
+        disconnect: vi.fn(() => {
+          observer.connected = false;
+          observer.emit('disconnect');
+        }),
+      });
+      mockState.spawn.mockImplementation((_command, _args, options) => {
+        if (fault === 'missing target')
+          queueMicrotask(() =>
+            observer.emit('message', {
+              kind: 'coral-observation-owned',
+              challenge: (options as { env: NodeJS.ProcessEnv }).env.CORAL_OBSERVATION_CHALLENGE,
+            }),
+          );
+        if (fault === 'disconnected observer') queueMicrotask(() => observer.disconnect());
+        return observer;
+      });
+      const { ensure } = await importEnsure();
+      let settled = false;
+      const ensured = ensure('sessions.create', root).then(
+        (client) => {
+          settled = true;
+          return client;
+        },
+        (error: unknown) => {
+          settled = true;
+          throw error;
+        },
+      );
+      const result = ensured.catch((error: unknown) => error);
+      try {
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(settled).toBe(true);
+        const client = (await result) as IpcClient & { instanceId: string };
+        expect(client.instanceId).toBe('existing-coordinator');
+        mockState.request.mockResolvedValue({ reached: true });
+        await expect(client.request('sessions.create', {})).resolves.toEqual({ reached: true });
+        expect(mockState.spawn).toHaveBeenCalledOnce();
+        expect(mockState.spawn.mock.calls[0]?.[1]?.[0]).toBe(join(root, 'bridge', 'coral-sentinel.cjs'));
+        if (fault !== 'missing target') {
+          const { readLaunchStatus } = await import('#src/infra/launch-status.js');
+          expect(readLaunchStatus(runDir)).toMatchObject({
+            kind: 'readable',
+            status: {
+              hold: { kind: 'observation-unavailable', requestId: 'restore-observer', retry: 'next-trigger' },
+            },
+          });
+        }
+      } finally {
+        observer.emit('exit', 1, null);
+        await result;
+      }
+    },
+  );
 
   it.each([
     { advertised: ['supportsWaitV2', 'supportsHandover'], expected: ['supportsWaitV2', 'supportsHandover'] },

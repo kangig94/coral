@@ -133,6 +133,7 @@ describe('namespace supervisor controller selection', () => {
       expect(record.read().hold).toEqual({
         kind: 'custody-unreadable',
         path: unreadablePath,
+        observation: 'custody-record-unreadable',
         retry: 'restore-readable-custody-record',
       });
       expect(record.read().launch).toBeNull();

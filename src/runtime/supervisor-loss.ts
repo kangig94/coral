@@ -10,7 +10,7 @@ import { readUpgradeIntent } from '../infra/upgrade-intent.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { attemptExclusiveFileLockSync } from '../infra/fs-lock.js';
-import { supervisorLockPath } from '../infra/path/coordinator.js';
+import { supervisorLockPath } from '../infra/path/index.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
 import { createRealRuntime } from './real.js';
 import { installReplacementSupervisorChannel } from './succession-attempt.js';
@@ -44,7 +44,7 @@ type ReplacementSupervisorAttempt = {
   launchedIncarnation: ProcessIncarnation | null;
   holdId: string;
   retirementAt: number | null;
-  termSent: boolean;
+  termDeliveredAt: number | null;
   killSent: boolean;
   retirementPoll: ReturnType<typeof setInterval>;
   deadline: ReturnType<typeof setTimeout>;
@@ -157,8 +157,8 @@ function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void 
     replacementHold(attempt, true);
     return;
   }
-  const killDue = now - attempt.retirementAt >= SENTINEL_TIMING.graceMs;
-  if (!killDue && attempt.termSent) return;
+  const killDue = attempt.termDeliveredAt !== null && now - attempt.termDeliveredAt >= SENTINEL_TIMING.graceMs;
+  if (!killDue && attempt.termDeliveredAt !== null) return;
   let sent = false;
   if (killDue) {
     try {
@@ -173,7 +173,7 @@ function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void 
     } catch {
       /* The exact child may already have exited. */
     }
-    attempt.termSent = sent;
+    if (sent) attempt.termDeliveredAt = now;
   }
   replacementHold(attempt, !sent);
 }
@@ -204,7 +204,7 @@ function receiveReplacementMessage(attempt: ReplacementSupervisorAttempt, messag
   } else if (
     message.kind === 'coral-recovery-answer' &&
     attempt.accepted &&
-    !attempt.termSent &&
+    attempt.termDeliveredAt === null &&
     !attempt.killSent &&
     'id' in message &&
     message.id === attempt.outstanding &&
@@ -294,7 +294,7 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
     launchedIncarnation,
     holdId: `replacement:${supervisor.pid ?? 'unavailable'}:${launchedIncarnation ?? challenge}`,
     retirementAt: null,
-    termSent: false,
+    termDeliveredAt: null,
     killSent: false,
     retirementPoll: null as unknown as ReturnType<typeof setInterval>,
     deadline: null as unknown as ReturnType<typeof setTimeout>,
@@ -347,4 +347,104 @@ export function startReplacementSupervisor(
   delete env.CORAL_STARTUP_ATTEMPT_ID;
   delete env.CORAL_SUCCESSION_ATTEMPT_ID;
   launchReplacementSupervisor({ pluginRoot, runDir, manifest, onError, onAccepted, env, failing: false });
+}
+
+/** A reused shipped incumbent still needs its outstanding upgrade observed under the namespace lock. */
+export async function resumeLegacyUpgradeObservation(
+  runDir: string,
+  installedRoot: string,
+  manifest: StrictBundleManifest | null,
+  budgetMs: number,
+): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  const observed = readUpgradeIntent(runDir);
+  if (
+    observed.kind !== 'readable' ||
+    observed.intent.legacyRetirement !== true ||
+    observed.intent.disposition === 'closed' ||
+    observed.intent.disposition === 'completed'
+  )
+    return;
+  const report = (observation: string | null): void => {
+    try {
+      updateLaunchStatus(runDir, (status) => ({
+        ...status,
+        hold:
+          observation === null
+            ? status.hold?.kind === 'observation-unavailable'
+              ? undefined
+              : status.hold
+            : {
+                kind: 'observation-unavailable',
+                requestId: observed.intent.requestId,
+                observation,
+                retry: 'next-trigger',
+              },
+      }));
+    } catch (error: unknown) {
+      process.stderr.write(`Legacy upgrade observation status is unavailable: ${String(error)}\n`);
+    }
+  };
+  try {
+    const path = supervisorLockPath(runDir);
+    if (existsSync(path)) {
+      const lock = attemptExclusiveFileLockSync(path);
+      if (lock.kind === 'contended') return;
+      if (lock.kind === 'acquired') lock.lease();
+    }
+    const root =
+      (manifest === null ? null : validatedRunningBuildRoot(runDir, installedRoot, manifest)) ??
+      validatedRunningBuildRoot(runDir, observed.intent.target.pluginRootLabel, observed.intent.target.build);
+    if (root === null) return report('no-validated-observer-build');
+    if (Date.now() >= deadline) return report('acknowledgement-budget-exhausted');
+    const bundleDir = join(root, 'bridge');
+    const challenge = randomUUID();
+    const child = spawn(
+      process.execPath,
+      [join(bundleDir, 'coral-sentinel.cjs'), join(bundleDir, 'coral-backend.cjs')],
+      {
+        detached: true,
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+        env: { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir, CORAL_OBSERVATION_CHALLENGE: challenge },
+      },
+    );
+    try {
+      const failure = await new Promise<string | null>((resolve) => {
+        const finish = (reason: string | null): void => {
+          clearTimeout(timeout);
+          child.off('exit', exited);
+          child.off('disconnect', disconnected);
+          child.off('message', acknowledged);
+          resolve(reason);
+        };
+        const exited = (): void => finish('observer-exited-before-acknowledgement');
+        const disconnected = (): void => finish('observer-disconnected-before-acknowledgement');
+        const acknowledged = (message: unknown): void => {
+          if (
+            typeof message === 'object' &&
+            message !== null &&
+            'kind' in message &&
+            message.kind === 'coral-observation-owned' &&
+            'challenge' in message &&
+            message.challenge === challenge
+          )
+            finish(null);
+        };
+        const timeout = setTimeout(
+          () => finish('observer-acknowledgement-timed-out'),
+          Math.max(0, deadline - Date.now()),
+        );
+        child.once('error', (error) => finish(String(error)));
+        child.once('exit', exited);
+        child.once('disconnect', disconnected);
+        child.on('message', acknowledged);
+      });
+      report(failure);
+    } finally {
+      if (child.connected) child.disconnect();
+      child.unref();
+    }
+  } catch (error: unknown) {
+    report(String(error));
+  }
 }

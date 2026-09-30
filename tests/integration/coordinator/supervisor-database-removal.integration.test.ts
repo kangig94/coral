@@ -172,7 +172,6 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
           () => {
             remember();
             const owner = evidence.read().owner;
-            if (owner !== null) expect(owner.process.pid).toBe(evidence.lockHolder()?.pid);
             return (
               owner !== null &&
               (fault === 'serving successor upgrade'

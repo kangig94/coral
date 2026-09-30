@@ -10,12 +10,12 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { readDiscoveryRecordDisposition } from '#src/infra/backend-discovery.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
-import { currentLaunchStatus, readLaunchStatus } from '#src/infra/launch-status.js';
+import { currentLaunchStatus, readLaunchStatus, updateLaunchStatus } from '#src/infra/launch-status.js';
 import { attemptExclusiveFileLockSync, createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type * as nodeProcessModule from '#src/infra/node-process.js';
-import { startReplacementSupervisor } from '#src/runtime/supervisor-loss.js';
+import { resumeLegacyUpgradeObservation, startReplacementSupervisor } from '#src/runtime/supervisor-loss.js';
 
 vi.mock('#src/infra/backend-discovery.js', () => ({
   readDiscoveryRecordDisposition: vi.fn(() => ({ kind: 'missing' })),
@@ -38,6 +38,33 @@ vi.mock('#src/runtime/succession-attempt.js', () => ({ installReplacementSupervi
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+});
+
+it('keeps an unacknowledged observation visible when the next trigger finds an occupied namespace lock', async () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-observation-retry-'));
+  createSharedFileLockSync(supervisorLockPath(runDir))();
+  const lock = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+  if (lock.kind !== 'acquired') throw new Error('Fixture lock was not acquired');
+  const hold = {
+    kind: 'observation-unavailable' as const,
+    requestId: 'observation-retry',
+    observation: 'observer-acknowledgement-timed-out',
+    retry: 'next-trigger' as const,
+  };
+  vi.mocked(readUpgradeIntent).mockReturnValue({
+    kind: 'readable',
+    intent: { requestId: hold.requestId, legacyRetirement: true, disposition: 'pending' },
+  } as ReturnType<typeof readUpgradeIntent>);
+  try {
+    updateLaunchStatus(runDir, (status) => ({ ...status, hold }));
+    await resumeLegacyUpgradeObservation(runDir, '/fixture', { buildSetId: 'build' } as StrictBundleManifest, 3_000);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { hold } });
+  } finally {
+    lock.lease();
+    vi.mocked(readUpgradeIntent).mockReturnValue({ kind: 'absent' });
+    rmSync(runDir, { recursive: true, force: true });
+  }
 });
 
 it('exposes authenticated acquisition and publication holds from its unaccepted nominee in serving memory', () => {
@@ -309,7 +336,7 @@ it('records refused replacement retirement signals until the replacement exits',
     exitCode: null,
     signalCode: null,
     send: vi.fn(),
-    kill: vi.fn(() => false),
+    kill: vi.fn((_signal: NodeJS.Signals) => false),
     unref: vi.fn(),
   });
   vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
@@ -330,7 +357,8 @@ it('records refused replacement retirement signals until the replacement exits',
       },
     });
     await vi.advanceTimersByTimeAsync(31_000);
-    expect(replacement.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(replacement.kill).not.toHaveBeenCalledWith('SIGKILL');
+    expect(replacement.kill.mock.calls.every(([signal]) => signal === 'SIGTERM')).toBe(true);
     const held = readLaunchStatus(runDir);
     expect(held.kind === 'readable' ? held.status.signalHolds : []).toHaveLength(1);
     replacement.emit('exit', null, 'SIGKILL');
@@ -394,6 +422,42 @@ it.each([
   } finally {
     vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
     vi.mocked(readUpgradeIntent).mockReturnValue({ kind: 'absent' });
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('delivers TERM before starting nominee grace when identity recovers after refused retirement', async () => {
+  vi.useFakeTimers();
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-nominee-restored-identity-'));
+  const replacement = Object.assign(new EventEmitter(), {
+    pid: 999_996,
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send: vi.fn(),
+    kill: vi.fn(() => true),
+    unref: vi.fn(),
+  });
+  vi.mocked(spawn)
+    .mockClear()
+    .mockReturnValue(replacement as unknown as ChildProcess);
+  vi.mocked(probeProcessIncarnation).mockReturnValue('replacement' as ProcessIncarnation);
+  try {
+    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+    const challenge = vi.mocked(spawn).mock.calls[0]?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
+    replacement.emit('message', { kind: 'coral-recovery-owned', challenge });
+    vi.mocked(probeProcessIncarnation).mockReturnValue(null);
+    await vi.advanceTimersByTimeAsync(650_000);
+    expect(replacement.kill).not.toHaveBeenCalled();
+    vi.mocked(probeProcessIncarnation).mockReturnValue('replacement' as ProcessIncarnation);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(replacement.kill.mock.calls).toEqual([['SIGTERM']]);
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(replacement.kill.mock.calls).toEqual([['SIGTERM']]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(replacement.kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
+    replacement.emit('exit', 0, null);
+  } finally {
     rmSync(runDir, { recursive: true, force: true });
   }
 });

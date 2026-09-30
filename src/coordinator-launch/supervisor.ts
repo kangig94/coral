@@ -360,7 +360,7 @@ function retireOwnedChild(
       terminationCommitted(record, owner.current, reservation, running.identity) &&
       probeProcessIncarnation(running.identity.pid) === running.identity.incarnation
     )
-      running.child.kill('SIGTERM');
+      if (running.child.kill('SIGTERM')) record.recordTerminationDelivery(owner.current, reservation, 'SIGTERM');
   } catch {
     return;
   }
@@ -477,9 +477,14 @@ function spawnAdmittedChild(
         probeProcessIncarnation(pid) !== identity.incarnation
       )
         return;
+      const current = record.currentChild(reservation, identity);
+      const signal = current?.termDelivered === true ? 'SIGKILL' : 'SIGTERM';
+      if (signal === 'SIGKILL' && Date.now() < (current?.killAt ?? Infinity)) return;
       try {
-        if (child.kill('SIGKILL')) record.clearSignalRefusal(reservation);
-        else record.holdSignalRefusal(owner, reservation, identity);
+        if (child.kill(signal)) {
+          record.recordTerminationDelivery(owner, reservation, signal);
+          record.clearSignalRefusal(reservation);
+        } else record.holdSignalRefusal(owner, reservation, identity);
       } catch {
         record.holdSignalRefusal(owner, reservation, identity);
       }
@@ -535,7 +540,7 @@ function monitorChildHeartbeat(input: {
   if (owner.lost || !record.hasAuthority(owner.current)) return;
   state.escalationAt ??= retirement.at;
   if (state.escalationAt !== null) {
-    if (!state.killed && now - state.escalationAt >= timing.graceMs && now - state.lastKillAttemptAt >= 1_000) {
+    if (!state.killed && now - state.lastKillAttemptAt >= 1_000) {
       state.lastKillAttemptAt = now;
       if (escalateChild(now) === 'sent') state.killed = true;
     }
@@ -568,8 +573,13 @@ function monitorChildHeartbeat(input: {
       if (
         terminationCommitted(record, owner.current, reservation, identity) &&
         probeProcessIncarnation(identity.pid) === identity.incarnation
-      )
-        child.kill('SIGTERM');
+      ) {
+        try {
+          if (child.kill('SIGTERM')) record.recordTerminationDelivery(owner.current, reservation, 'SIGTERM');
+        } catch {
+          record.holdSignalRefusal(owner.current, reservation, identity);
+        }
+      }
       state.escalationAt = now;
     }
     return;
@@ -663,19 +673,23 @@ function escalateWatchedChild(input: {
   const { child, record, owner, reservation, identity, timing, now } = input;
   if (owner.lost || !record.commitTermination(owner.current, reservation, identity, now, timing.graceMs))
     return 'refused';
+  const current = record.currentChild(reservation, identity);
+  const signal = current?.termDelivered === true ? 'SIGKILL' : 'SIGTERM';
+  if (signal === 'SIGKILL' && now < (current?.killAt ?? Infinity)) return 'refused';
   if (
     terminationCommitted(record, owner.current, reservation, identity) &&
     probeProcessIncarnation(identity.pid) === identity.incarnation
   ) {
     let sent: boolean;
     try {
-      sent = child.kill('SIGKILL');
+      sent = child.kill(signal);
     } catch {
       sent = false;
     }
     if (sent) {
+      record.recordTerminationDelivery(owner.current, reservation, signal);
       record.clearSignalRefusal(reservation);
-      return 'sent';
+      return signal === 'SIGKILL' ? 'sent' : 'held';
     }
   }
   if (observeProcessLiveness(identity.pid) === 'absent') {
@@ -1409,8 +1423,12 @@ async function reconcileInheritedChild(
     (slot.phase === 'serving' && now - watch.lastHealthy >= timing.lapseMs);
   if (!overdue && watch.terminationAt === null) return repairBridge;
   if (watch.terminationAt !== null) {
+    if (slot.termDelivered !== true) {
+      if (!signalInheritedChild(record, owner.current, slot, 'SIGTERM')) record.holdInheritedChild(owner.current, slot);
+      return repairBridge;
+    }
     if (
-      now >= (slot.killAt ?? watch.terminationAt + timing.graceMs) &&
+      now >= (slot.killAt ?? Infinity) &&
       record.commitTermination(owner.current, slot, child, now, timing.graceMs) &&
       !signalInheritedChild(record, owner.current, slot, 'SIGKILL')
     ) {

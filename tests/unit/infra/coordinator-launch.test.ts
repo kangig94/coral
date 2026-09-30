@@ -93,6 +93,96 @@ describe('namespace supervisor ownership', () => {
     },
   );
 
+  it('starts inherited escalation grace at successful TERM delivery and preserves it during reconciliation', () => {
+    vi.useFakeTimers();
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-inherited-term-grace-'));
+    const incarnation = 'original' as ProcessIncarnation;
+    const child = { pid: 999_995, incarnation };
+    vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+    vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+    try {
+      publishLaunchAdmission(runDir, {
+        version: 1,
+        launchId: '00000000-0000-4000-8000-000000000001',
+        child,
+        parent: { pid: 999_998, incarnation },
+        admittedAt: Date.now() - 60_000,
+        purpose: 'startup',
+        build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
+      });
+      const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build-A');
+      const slot = state.read().launch!;
+      const owner = state.read().owner;
+      const committedAt = Date.now();
+      expect(state.commitTermination(owner, slot, child, committedAt, 30_000)).toBe(true);
+      vi.advanceTimersByTime(40_000);
+      state.recordTerminationDelivery(owner, slot, 'SIGTERM');
+      const killAt = Date.now() + 30_000;
+      expect(state.read().launch).toMatchObject({ terminationAt: committedAt, killAt, termDelivered: true });
+      vi.advanceTimersByTime(1_000);
+      state.recordTerminationDelivery(owner, slot, 'SIGTERM');
+      state.reconcileAdmissions();
+      expect(state.read().launch).toMatchObject({ terminationAt: committedAt, killAt, termDelivered: true });
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records successful TERM using the original direct-child reservation', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-direct-child-term-'));
+    const incarnation = 'original' as ProcessIncarnation;
+    const parent = { pid: 999_997, incarnation };
+    const child = { pid: 999_995, incarnation };
+    vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+    vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+    try {
+      const state = new SupervisorLaunchMemory(runDir, parent, 'build-A');
+      const owner = state.read().owner;
+      const slot = state.reserve(owner, 'build-A', 'startup')!;
+      state.spawned(slot, parent, child);
+      state.admit(slot, parent, child, Date.now());
+      state.commitTermination(owner, slot, child, Date.now(), 80);
+      state.recordTerminationDelivery(owner, slot, 'SIGTERM');
+      expect(state.read().launch?.termDelivered).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('acknowledges its exact child admission after reconciliation has already recovered the envelope', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-admission-ack-race-'));
+    const incarnation = 'original' as ProcessIncarnation;
+    const parent = { pid: 999_997, incarnation };
+    const child = { pid: 999_995, incarnation };
+    vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+    vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+    try {
+      const state = new SupervisorLaunchMemory(runDir, parent, 'build-A');
+      const slot = state.reserve(state.read().owner, 'build-A', 'startup')!;
+      expect(state.spawned(slot, parent, child)).toBe(true);
+      const admittedAt = Date.now();
+      publishLaunchAdmission(runDir, {
+        version: 1,
+        launchId: slot.id,
+        child,
+        parent,
+        admittedAt,
+        purpose: 'startup',
+        build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
+      });
+      state.reconcileAdmissions();
+      expect(state.read().launch?.phase).toBe('admitted');
+      expect(state.admit(slot, parent, child, admittedAt)).toBe(true);
+      expect(state.admit(slot, parent, child, admittedAt + 1)).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
   it('normalizes empty recovery despite proven-dead cleanup residue and retains unreadable intent as unknown', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-recovery-residue-'));
     const incarnation = 'original' as ProcessIncarnation;
@@ -331,6 +421,65 @@ describe('namespace supervisor ownership', () => {
       rmSync(runDir, { recursive: true, force: true });
     }
   });
+  it.each(['admission restored', 'directory completed', 'intent identity restored'] as const)(
+    'repairs and normalizes the same recovery memory after %s',
+    (restoration) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-restored-evidence-'));
+      const incarnation = 'original' as ProcessIncarnation;
+      const parent = { pid: 999_997, incarnation };
+      const child = { pid: 999_995, incarnation };
+      const launchId = '00000000-0000-4000-8000-000000000001';
+      const probe = vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+      vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+      const intent = intentFixture(incarnation);
+      const deadline = Date.parse(intent.attemptDeadline!);
+      if (restoration === 'intent identity restored') {
+        intent.incumbent.incarnation = null;
+        intent.attemptChild!.incarnation = null;
+      }
+      vi.spyOn(upgradeIntent, 'readUpgradeIntent').mockReturnValue({ kind: 'readable', intent });
+      try {
+        if (restoration === 'directory completed')
+          mkdirSync(join(runDir, 'launch-lifetimes.v1', launchId), { recursive: true });
+        const state = new SupervisorLaunchMemory(runDir, parent, 'build-B');
+        expect(state.supervisionEligible(state.read().attempt!)).toBe(false);
+        intent.incumbent.incarnation = incarnation;
+        intent.attemptChild!.incarnation = incarnation;
+        publishLaunchAdmission(runDir, {
+          version: 1,
+          launchId,
+          child,
+          parent: { pid: 999_998, incarnation },
+          admittedAt: Date.now() - 60_000,
+          purpose: 'succession',
+          build: { version: '0.10.15', buildSetId: 'build-B', bundleHash: 'hash-B', flavor: 'prod' },
+        });
+        state.reconcileAdmissions();
+        const restored = state.read().attempt!;
+        expect(restored).toMatchObject({ id: launchId, child, phase: 'admitted', attemptDeadline: deadline });
+        expect(state.supervisionEligible(restored)).toBe(true);
+        expect(state.hasUnknownOccupancy()).toBe(false);
+        probe.mockImplementation((pid) => (pid === process.pid ? ('different' as ProcessIncarnation) : incarnation));
+        state.reconcileAdmissions();
+        state.observeInheritedHealth(state.read().launch!, Date.now());
+        const repair = state.reserveRepairSuccession(state.read().owner, 'build-B', child)!;
+        expect(repair).not.toBeNull();
+        const successor = { pid: 999_994, incarnation };
+        expect(state.spawned(repair, parent, successor)).toBe(true);
+        expect(state.admit(repair, parent, successor, Date.now())).toBe(true);
+        probe.mockImplementation((pid) =>
+          pid === child.pid || pid === process.pid ? ('different' as ProcessIncarnation) : incarnation,
+        );
+        state.reconcileAdmissions();
+        expect(state.serving(repair, successor)).toBe(true);
+        expect(state.read().owner.mode).toBe('supervised');
+      } finally {
+        vi.restoreAllMocks();
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('reconstructs an intent-only attempt independently of its incumbent and retains its original deadline', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-intent-attempt-'));
     const incarnation = probeProcessIncarnation(process.pid);

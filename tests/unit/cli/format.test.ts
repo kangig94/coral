@@ -87,7 +87,7 @@ it('shows lost launch diagnostics and the platform limit on parent retirement', 
   expect(status).toContain('Previous coordinator launch status is unavailable');
   expect(status).toContain('Parent supervisor 321');
   expect(status).toContain('macOS');
-  expect(status).toContain('cooperation or confirmed absence');
+  expect(status).toContain('cooperation or proven exit');
 });
 
 it('shows the custody quarantine path and retry action in backend status', () => {
@@ -118,6 +118,22 @@ it('renders every launch hold with its identity and exit condition', () => {
   expect(inherited).toContain('PID 321');
   expect(inherited).toContain('cooperation or confirmed absence');
   expect(inherited).not.toContain('command=');
+});
+
+it('reports failed observer restoration with a next-trigger retry while service continues', () => {
+  const status = formatBackendStatus({
+    status: 'no_record_no_socket',
+    launchHold: {
+      kind: 'observation-unavailable',
+      requestId: 'request-1',
+      observation: 'observer-acknowledgement-timed-out',
+      retry: 'next-trigger',
+    },
+  });
+  expect(status).toContain('request-1');
+  expect(status).toContain('observer-acknowledgement-timed-out');
+  expect(status).toContain('next CLI or hook invocation retries');
+  expect(status).toContain('serving coordinator remains available');
 });
 
 it('reports inherited child holds without suggesting a second startup', () => {

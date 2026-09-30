@@ -90,22 +90,30 @@ function sameReservation(left: LaunchReservation, right: LaunchReservation): boo
 
 function mergeReservationEvidence(known: LaunchReservation, entry: LaunchReservation): LaunchReservation {
   const conflict =
-    known.buildSetId !== entry.buildSetId ||
-    known.admittedAt !== entry.admittedAt ||
-    known.parent?.pid !== entry.parent?.pid ||
-    known.parent?.incarnation !== entry.parent?.incarnation ||
+    (known.buildSetId !== 'unknown' && entry.buildSetId !== 'unknown' && known.buildSetId !== entry.buildSetId) ||
+    (known.admittedAt !== undefined && entry.admittedAt !== undefined && known.admittedAt !== entry.admittedAt) ||
+    (known.parent !== undefined &&
+      entry.parent !== undefined &&
+      (known.parent.pid !== entry.parent.pid || known.parent.incarnation !== entry.parent.incarnation)) ||
     known.purpose !== entry.purpose ||
     (known.attemptDeadline !== undefined &&
       entry.attemptDeadline !== undefined &&
       known.attemptDeadline !== entry.attemptDeadline);
   if (conflict) return { ...known, recoveryHold: 'envelope-conflict' };
   return {
-    ...known,
     ...entry,
+    ...known,
+    admittedAt: known.admittedAt ?? entry.admittedAt,
+    parent: known.parent ?? entry.parent,
     admissionProven: known.admissionProven === true || entry.admissionProven === true,
-    phase: known.phase === 'serving' || entry.phase === 'serving' ? 'serving' : entry.phase,
+    phase:
+      known.phase === 'serving' || entry.phase === 'serving'
+        ? 'serving'
+        : known.phase === 'admitted'
+          ? 'admitted'
+          : entry.phase,
     attemptDeadline: known.attemptDeadline ?? entry.attemptDeadline,
-    recoveryHold: known.recoveryHold ?? entry.recoveryHold,
+    recoveryHold: known.recoveryHold === 'envelope-conflict' ? known.recoveryHold : entry.recoveryHold,
   };
 }
 
@@ -417,7 +425,9 @@ export class SupervisorLaunchMemory {
   }
 
   #reconcileAdmissions(): void {
-    const observed = listLaunchSubjects(this.#runDir);
+    const intent = readUpgradeIntent(this.#runDir);
+    const recovered = new SupervisorLaunchMemory(this.#runDir, this.#state.owner.process, this.#state.owner.buildSetId);
+    const observed = recovered.#subjects;
     const subjects = new Map(this.#subjects.map((subject) => [subject.path, subject]));
     for (const subject of observed) {
       if (
@@ -442,8 +452,65 @@ export class SupervisorLaunchMemory {
             previous.acquisitionComplete) === true,
       });
     }
-    this.#subjects = [...subjects.values()];
-    this.#discoveredChild();
+    this.#subjects = [...subjects.values()].filter(
+      (subject) =>
+        subject.admission !== undefined ||
+        observed.some((entry) => entry.path === subject.path) ||
+        !observed.some((entry) => entry.problem === undefined && entry.lifetimePath?.startsWith(`${subject.path}/`)),
+    );
+    for (const entry of recovered.children()) {
+      const exact = this.children().find((slot) => sameReservation(slot, entry));
+      const placeholder = this.children().find((slot) => {
+        if (!/^(incumbent|attempt|discovery):/u.test(slot.id) || entry.child === undefined) return false;
+        if (slot.child !== undefined)
+          return slot.child.pid === entry.child.pid && slot.child.incarnation === entry.child.incarnation;
+        if (slot.unidentifiedPid !== entry.child.pid || intent.kind !== 'readable') return false;
+        const identity =
+          slot.id === `attempt:${intent.intent.attemptChild?.attemptId}`
+            ? intent.intent.attemptChild
+            : slot.id.startsWith(`incumbent:${intent.intent.incumbent.instanceId}:`)
+              ? intent.intent.incumbent
+              : null;
+        return identity?.pid === entry.child.pid && identity.incarnation === entry.child.incarnation;
+      });
+      const known = exact ?? placeholder;
+      if (known !== undefined) {
+        if (known.phase === 'exited') continue;
+        const evidence =
+          known === placeholder && known.id !== entry.id
+            ? {
+                ...known,
+                id: entry.id,
+                buildSetId: entry.buildSetId,
+                purpose: entry.purpose,
+                child: entry.child,
+                unidentifiedPid: undefined,
+                recoveryHold: undefined,
+              }
+            : known;
+        this.#set(known, mergeReservationEvidence(evidence, entry));
+        if (known.id !== entry.id) {
+          const watch = this.#childWatches.get(known.id);
+          const retirement = this.#childRetirements.get(known.id);
+          const inherited = this.inheritedWatch.get(known.id);
+          if (watch !== undefined) this.#childWatches.set(entry.id, watch);
+          if (retirement !== undefined) this.#childRetirements.set(entry.id, retirement);
+          if (inherited !== undefined) this.inheritedWatch.set(entry.id, inherited);
+          this.#childWatches.delete(known.id);
+          this.#childRetirements.delete(known.id);
+          this.inheritedWatch.delete(known.id);
+        }
+      } else if (
+        !/^(incumbent|attempt|discovery):/u.test(entry.id) ||
+        !this.children().some(
+          (slot) => slot.child?.pid === entry.child?.pid && slot.child?.incarnation === entry.child?.incarnation,
+        )
+      ) {
+        if (this.#state.launch === null) this.#state = { ...this.#state, launch: entry };
+        else if (this.#state.attempt === null) this.#state = { ...this.#state, attempt: entry };
+        else this.#retained.push(entry);
+      }
+    }
     for (const slot of this.children()) {
       if (slot.phase === 'exited' || (slot.child === undefined && slot.unidentifiedPid === undefined)) continue;
       const disposition = reservationDisposition(slot);
@@ -453,7 +520,6 @@ export class SupervisorLaunchMemory {
       } else if (disposition === 'unknown') this.#recovering();
     }
     const holds: NonNullable<LaunchStatus['admissionHolds']> = [];
-    const intent = readUpgradeIntent(this.#runDir);
     if (intent.kind !== 'readable' && intent.kind !== 'absent') {
       this.#recovering();
       holds.push({ path: join(this.#runDir, 'upgrade.v1.json'), disposition: 'unknown' });
@@ -647,14 +713,23 @@ export class SupervisorLaunchMemory {
     const current = slot === 'launch' ? this.#state.launch : slot === 'attempt' ? this.#state.attempt : null;
     if (
       !this.#authority ||
-      current?.phase !== 'reserved' ||
+      current === null ||
+      current.phase === 'exited' ||
+      (current.phase !== 'reserved' && current.admittedAt !== admittedAt) ||
       parent.pid !== this.#state.owner.process.pid ||
       parent.incarnation !== this.#state.owner.process.incarnation ||
       current.child?.pid !== child.pid ||
       current.child.incarnation !== child.incarnation
     )
       return false;
-    this.#set(reservation, { ...current, phase: 'admitted', admittedAt, admissionProven: true, parent, child });
+    this.#set(reservation, {
+      ...current,
+      phase: current.phase === 'serving' ? 'serving' : 'admitted',
+      admittedAt,
+      admissionProven: true,
+      parent,
+      child,
+    });
     return true;
   }
 
@@ -820,12 +895,20 @@ export class SupervisorLaunchMemory {
   }
 
   recordTerminationDelivery(owner: LaunchOwner, reservation: LaunchReservation, signal: 'SIGTERM' | 'SIGKILL'): void {
-    if (!this.hasAuthority(owner) || reservation.child === undefined) return;
-    const current = this.currentChild(reservation, reservation.child);
-    if (current === null || current.terminationAt === undefined) return;
+    if (!this.hasAuthority(owner)) return;
+    const current = this.children().find((entry) => matchesReservation(entry, reservation));
+    if (current?.child === undefined || current.terminationAt === undefined) return;
     this.#set(reservation, {
       ...current,
-      ...(signal === 'SIGTERM' ? { termDelivered: true } : { killDelivered: true }),
+      ...(signal === 'SIGTERM'
+        ? {
+            termDelivered: true,
+            killAt:
+              current.termDelivered === true
+                ? current.killAt
+                : Date.now() + ((current.killAt ?? current.terminationAt) - current.terminationAt),
+          }
+        : { killDelivered: true }),
     });
   }
 

@@ -1,62 +1,12 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { createForeignTargetValidator } from '../infra/handoff-target.js';
 import type { LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
 import { compareProductVersions } from '../infra/product-version.js';
-import { readUpgradeIntent, retryUpgradeIntentCas, type UpgradeIntent } from '../infra/upgrade-intent.js';
-import { attemptExclusiveFileLockSync } from '../infra/fs-lock.js';
-import { supervisorLockPath } from '../infra/path/coordinator.js';
-
-/** A reused shipped incumbent still needs its outstanding upgrade observed under the namespace lock. */
-export async function resumeLegacyUpgradeObservation(runDir: string): Promise<void> {
-  const observed = readUpgradeIntent(runDir);
-  if (
-    observed.kind !== 'readable' ||
-    observed.intent.legacyRetirement !== true ||
-    observed.intent.disposition === 'closed' ||
-    observed.intent.disposition === 'completed'
-  )
-    return;
-  const path = supervisorLockPath(runDir);
-  if (existsSync(path)) {
-    const lock = attemptExclusiveFileLockSync(path);
-    if (lock.kind === 'contended') return;
-    if (lock.kind === 'acquired') lock.lease();
-  }
-  const bundleDir = join(observed.intent.target.pluginRootLabel, 'bridge');
-  if (createForeignTargetValidator()(bundleDir, observed.intent.target.build).kind !== 'validated')
-    throw new Error('Outstanding legacy upgrade target is unavailable');
-  const challenge = randomUUID();
-  const child = spawn(process.execPath, [join(bundleDir, 'coral-sentinel.cjs'), join(bundleDir, 'coral-backend.cjs')], {
-    detached: true,
-    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-    env: { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir, CORAL_OBSERVATION_CHALLENGE: challenge },
-  });
-  try {
-    await new Promise<void>((resolve, reject) => {
-      child.once('error', reject);
-      child.once('exit', () => reject(new Error('Legacy upgrade observer exited before restoring observation')));
-      child.on('message', (message: unknown) => {
-        if (
-          typeof message === 'object' &&
-          message !== null &&
-          'kind' in message &&
-          message.kind === 'coral-observation-owned' &&
-          'challenge' in message &&
-          message.challenge === challenge
-        )
-          resolve();
-      });
-    });
-  } finally {
-    if (child.connected) child.disconnect();
-    child.unref();
-  }
-}
+import { retryUpgradeIntentCas, type UpgradeIntent } from '../infra/upgrade-intent.js';
 
 export async function recordLegacyUpgradeIntent(
   options: Readonly<{

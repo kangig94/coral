@@ -1094,7 +1094,7 @@ describe('namespace supervisor recovery', () => {
               event.state?.owner.mode === 'recovering' &&
               event.state.launch?.child?.pid === servingPid &&
               event.state.attempt?.child?.pid === attemptPid &&
-              event.state.attempt.phase === 'exited',
+              event.state.attempt?.phase === 'exited',
           ),
         10_000,
       ).catch((error: unknown) => {
@@ -1110,7 +1110,7 @@ describe('namespace supervisor recovery', () => {
             event.state?.owner.mode === 'recovering' &&
             event.state.launch?.child?.pid === servingPid &&
             event.state.attempt?.child?.pid === attemptPid &&
-            event.state.attempt.phase === 'exited',
+            event.state.attempt?.phase === 'exited',
         ),
       ).toBe(true);
       try {
@@ -2442,7 +2442,7 @@ describe('namespace supervisor recovery', () => {
           (event) =>
             event.pid === replacementPid &&
             [event.state?.launch, event.state?.attempt].some(
-              (slot) => slot?.child?.pid === childPid && (slot.observedHealthyAt ?? 0) >= lostAt,
+              (slot) => slot?.child?.pid === childPid && (slot?.observedHealthyAt ?? 0) >= lostAt,
             ),
         ),
       ).toBe(true);
