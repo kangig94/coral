@@ -917,6 +917,29 @@ function createRepairBridge(
       'bundleDir' in message &&
       typeof message.bundleDir === 'string'
     ) {
+      const predecessor = record.read().launch;
+      const successor = record.read().attempt;
+      if (
+        successor?.child?.pid === process.ppid &&
+        probeProcessIncarnation(process.ppid) === successor.child.incarnation &&
+        predecessor !== null &&
+        predecessor.phase !== 'exited'
+      ) {
+        const child = successor.child;
+        void (async () => {
+          while (
+            !owner.lost &&
+            (record.read().launch?.id !== successor.id || record.read().launch?.phase !== 'serving') &&
+            process.connected &&
+            process.ppid === child.pid
+          )
+            await sleep(POLL_MS);
+          if (!owner.lost && record.read().launch?.id === successor.id && record.read().launch?.phase === 'serving')
+            onMessage(message, handle);
+          else closeHandle(handle);
+        })();
+        return;
+      }
       const attemptId = message.attemptId;
       if (starting) {
         reply({ kind: 'coral-supervisor-attempt-error', attemptId, reason: 'Succession attempt is already active' });
@@ -934,7 +957,35 @@ function createRepairBridge(
         forwardParentMessages: false,
         route: (running, childMessage, childHandle) => {
           if (servingChild()?.running.child === running.child) onMessage(childMessage, childHandle);
-          else reply({ kind: 'coral-supervisor-attempt-message', attemptId, message: childMessage }, childHandle);
+          else {
+            const successor = record.read().attempt;
+            if (
+              (successor?.phase === 'admitted' || successor?.phase === 'serving') &&
+              successor.child?.pid === running.identity.pid &&
+              successor.child.incarnation === running.identity.incarnation &&
+              typeof childMessage === 'object' &&
+              childMessage !== null &&
+              'kind' in childMessage &&
+              childMessage.kind === 'coral-supervisor-start-attempt'
+            ) {
+              void (async () => {
+                while (
+                  !owner.lost &&
+                  (record.read().launch?.id !== successor.id || record.read().launch?.phase !== 'serving') &&
+                  running.child.exitCode === null &&
+                  running.child.signalCode === null
+                )
+                  await sleep(POLL_MS);
+                if (
+                  !owner.lost &&
+                  record.read().launch?.id === successor.id &&
+                  record.read().launch?.phase === 'serving'
+                )
+                  onMessage(childMessage, childHandle);
+                else closeHandle(childHandle);
+              })();
+            } else reply({ kind: 'coral-supervisor-attempt-message', attemptId, message: childMessage }, childHandle);
+          }
           return true;
         },
         onExit: (attempt, result) => {
@@ -1479,6 +1530,28 @@ function createActiveChildRouter({
         return true;
       }
     } else if (attempt !== null && source === attempt.running.child) {
+      if (
+        message.kind === 'coral-supervisor-start-attempt' &&
+        'attemptId' in message &&
+        typeof message.attemptId === 'string' &&
+        'bundleDir' in message &&
+        typeof message.bundleDir === 'string'
+      ) {
+        const { attemptId, bundleDir } = message;
+        void (async () => {
+          while (
+            !owner.lost &&
+            current().child !== source &&
+            source.connected &&
+            source.exitCode === null &&
+            source.signalCode === null
+          )
+            await sleep(POLL_MS);
+          if (!owner.lost && current().child === source) startAttempt(source, attemptId, bundleDir);
+          else closeHandle(handle);
+        })();
+        return true;
+      }
       if (attempt.attemptId === undefined) {
         closeHandle(handle);
         return true;
@@ -1595,7 +1668,8 @@ async function superviseActiveChild(input: {
     const successor = pending.value;
     if (successor === null || successor.running.child.exitCode !== null || successor.running.child.signalCode !== null)
       break;
-    if (record.normalize() === null) break;
+    record.normalize();
+    if (record.read().launch?.id !== successor.reservation.id) break;
     current = successor.running;
     watched = successor.watch;
     pending.value = null;
@@ -1765,6 +1839,7 @@ function releaseSettledInheritedLaunch(record: SupervisorLaunchMemory, incarnati
       (slot) => slot !== null && (slot.parent?.pid !== process.pid || slot.parent.incarnation !== incarnation),
     ) &&
     slots.every((slot) => slot === null || slot.phase === 'exited') &&
+    slots.some((slot) => slot !== null && record.hasServed(slot.buildSetId)) &&
     pendingIntent(runDir) === null &&
     controllerBuild(runDir).kind === 'none' &&
     record.release()

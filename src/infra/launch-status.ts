@@ -9,6 +9,17 @@ const childSchema = z.object({ launchId: z.string().min(1), pid: z.number().int(
 const statusSchema = z
   .object({
     version: z.literal(1),
+    previousStatus: z.literal('unavailable').optional(),
+    inheritedHealth: z
+      .array(
+        z.object({
+          launchId: z.string().min(1),
+          supervisor: z.object({ pid: z.number().int().positive(), incarnation: z.string().min(1) }),
+          child: z.object({ pid: z.number().int().positive(), incarnation: z.string().min(1) }),
+          observedHealthyAt: z.number(),
+        }),
+      )
+      .optional(),
     hold: z
       .discriminatedUnion('kind', [
         z.object({
@@ -59,9 +70,20 @@ export function updateLaunchStatus(runDir: string, change: (current: LaunchStatu
   const release = acquireDirectoryLockSync(join(runDir, 'launch-status.v1.lock'));
   try {
     const observed = readLaunchStatus(runDir);
-    const current =
-      observed.kind === 'readable' ? observed.status : { version: 1 as const, inheritedHolds: [], signalHolds: [] };
-    const next = statusSchema.parse(change(current));
+    const current = statusSchema.parse(
+      observed.kind === 'readable'
+        ? observed.status
+        : {
+            version: 1 as const,
+            inheritedHolds: [],
+            signalHolds: [],
+            ...(observed.kind === 'unreadable' ? { previousStatus: 'unavailable' as const } : {}),
+          },
+    );
+    const next = statusSchema.parse({
+      ...change(current),
+      ...(current.previousStatus === undefined ? {} : { previousStatus: current.previousStatus }),
+    });
     const path = join(runDir, 'launch-status.v1.json');
     const temporary = join(runDir, `.launch-status-${randomUUID()}.tmp`);
     try {

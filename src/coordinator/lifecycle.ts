@@ -2,7 +2,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
-import { supersedeLaunchAdmissionByDiscovery } from '../infra/coordinator-admission.js';
+import { notifyLaunchDiscovery } from '../infra/coordinator-admission.js';
 import { readLaunchAdmission } from '../infra/launch-admission-record.js';
 import { errorMessage, formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
 import { sha256Hex } from '../infra/hash.js';
@@ -1660,9 +1660,12 @@ async function activateRunningLifecycle({
       if (health.phase !== 'online') {
         return;
       }
-      void kbDaemonSupervisor.warmup().catch((error: unknown) => {
-        backendLog.warn(`KB daemon supervisor warmup failed: ${formatError(error)}`);
-      });
+      void kbDaemonSupervisor
+        .warmup()
+        .catch((error: unknown) => {
+          backendLog.warn(`KB daemon supervisor warmup failed: ${formatError(error)}`);
+        })
+        .finally(() => deps.wakeSuccessionReconciler?.());
     })
     .catch((error: unknown) => {
       backendLog.warn(`KB daemon supervisor start failed: ${formatError(error)}`);
@@ -1752,7 +1755,7 @@ function publishStartupDiscovery(
     ...(openedStore === null ? {} : { storeEpoch: openedStore.epoch }),
   });
   if (discoveryPublished === false) throw new Error('Coordinator discovery publication failed.');
-  if (launchId !== undefined) supersedeLaunchAdmissionByDiscovery(runtime.paths.coral.coordinator.runDir, launchId);
+  if (launchId !== undefined) notifyLaunchDiscovery(runtime.paths.coral.coordinator.runDir, launchId);
 }
 
 type LegacyDiscoveryState = {

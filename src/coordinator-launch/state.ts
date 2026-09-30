@@ -4,9 +4,10 @@ import { dirname, join } from 'node:path';
 import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
 import { updateLaunchStatus } from '../infra/launch-status.js';
 import { listLaunchAdmissions, type LaunchAdmission } from '../infra/launch-admission-record.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
+import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { readUpgradeIntent } from '../infra/upgrade-intent.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { childHasExited } from './child-state.js';
 
 export type LaunchProcess = Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
 export type LaunchOwner = Readonly<{
@@ -34,8 +35,11 @@ type SupervisorState = Readonly<{
   attempt: LaunchReservation | null;
 }>;
 
-function active(identity: LaunchProcess): boolean {
-  return probeProcessIncarnation(identity.pid) === identity.incarnation;
+function identityDisposition(identity: LaunchProcess): 'matching' | 'absent' | 'unknown' {
+  if (childHasExited(identity.pid)) return 'absent';
+  const observed = probeProcessIncarnation(identity.pid);
+  if (observed !== null) return observed === identity.incarnation ? 'matching' : 'absent';
+  return observeProcessLiveness(identity.pid) === 'absent' ? 'absent' : 'unknown';
 }
 
 function fromAdmission(admission: LaunchAdmission): LaunchReservation {
@@ -43,7 +47,7 @@ function fromAdmission(admission: LaunchAdmission): LaunchReservation {
     id: admission.launchId,
     buildSetId: admission.build.buildSetId,
     purpose: admission.purpose,
-    phase: 'admitted',
+    phase: admission.discoveredAt === undefined ? 'admitted' : 'serving',
     admittedAt: admission.admittedAt,
     parent: admission.parent,
     child: admission.child,
@@ -61,7 +65,7 @@ export class SupervisorLaunchMemory {
     const admissions = listLaunchAdmissions(runDir)
       .filter((entry): entry is Extract<typeof entry, { kind: 'readable' }> => entry.kind === 'readable')
       .map((entry) => fromAdmission(entry.admission))
-      .filter((entry) => entry.child !== undefined && active(entry.child));
+      .filter((entry) => entry.child !== undefined && identityDisposition(entry.child) !== 'absent');
     const runtime = createRealRuntime(runDir.endsWith('run-dev') ? 'dev' : 'prod', {
       baseDir: dirname(dirname(runDir)),
     });
@@ -81,10 +85,28 @@ export class SupervisorLaunchMemory {
         parent: supervision.parent,
         child: { pid: discovery.record.pid, incarnation: discovery.record.incarnation },
       };
-      if (discovered.child !== undefined && active(discovered.child)) admissions.push(discovered);
+      if (discovered.child !== undefined && identityDisposition(discovered.child) !== 'absent')
+        admissions.push(discovered);
+    }
+    const intent = readUpgradeIntent(runDir);
+    const incumbent = intent.kind === 'readable' ? intent.intent.incumbent : null;
+    if (incumbent !== null && incumbent.incarnation !== null) {
+      const child = { pid: incumbent.pid, incarnation: incumbent.incarnation };
+      const existing = admissions.find(
+        (entry) => entry.child?.pid === child.pid && entry.child.incarnation === child.incarnation,
+      );
+      if (existing !== undefined && incumbent.instanceId !== 'startup')
+        admissions.push({ ...existing, phase: 'serving' });
+      else if (existing === undefined && identityDisposition(child) !== 'absent')
+        admissions.push({
+          id: `incumbent:${incumbent.instanceId}:${incumbent.incarnation}`,
+          buildSetId: 'unknown',
+          purpose: 'legacy-retirement',
+          phase: 'serving',
+          child,
+        });
     }
     const unique = [...new Map(admissions.map((entry) => [entry.id, entry])).values()];
-    const intent = readUpgradeIntent(runDir);
     const attemptIdentity = intent.kind === 'readable' ? intent.intent.attemptChild : null;
     const attempt =
       (attemptIdentity === null || attemptIdentity === undefined
@@ -95,7 +117,15 @@ export class SupervisorLaunchMemory {
           )) ??
       unique.find((entry) => entry.purpose === 'succession' || entry.purpose === 'contender') ??
       null;
-    const launch = unique.find((entry) => entry.id !== attempt?.id) ?? attempt;
+    const launch =
+      unique.find(
+        (entry) =>
+          entry.id !== attempt?.id &&
+          entry.child?.pid === incumbent?.pid &&
+          entry.child?.incarnation === incumbent?.incarnation,
+      ) ??
+      unique.find((entry) => entry.id !== attempt?.id) ??
+      attempt;
     this.#state = {
       owner: { id: randomUUID(), process, buildSetId, mode: unique.length > 0 ? 'recovering' : 'supervised' },
       launch,
@@ -121,6 +151,16 @@ export class SupervisorLaunchMemory {
 
   reserve(owner: LaunchOwner, buildSetId: string, purpose: LaunchReservation['purpose']): LaunchReservation | null {
     if (owner.id !== this.#state.owner.id) return null;
+    if (
+      [this.#state.launch, this.#state.attempt].some(
+        (slot) =>
+          slot !== null &&
+          slot.phase !== 'exited' &&
+          slot.child !== undefined &&
+          identityDisposition(slot.child) === 'unknown',
+      )
+    )
+      return null;
     this.normalize();
     const succession = (purpose === 'succession' || purpose === 'contender') && this.#state.launch?.phase === 'serving';
     const slot = succession ? this.#state.attempt : this.#state.launch;
@@ -195,7 +235,7 @@ export class SupervisorLaunchMemory {
   }
 
   settleAbsentChild(reservation: LaunchReservation): boolean {
-    if (reservation.child === undefined || active(reservation.child)) return false;
+    if (reservation.child === undefined || identityDisposition(reservation.child) !== 'absent') return false;
     return this.exited(reservation, reservation.child);
   }
 
@@ -218,6 +258,11 @@ export class SupervisorLaunchMemory {
     if (owner.id !== this.#state.owner.id) return false;
     const current = this.currentChild(reservation, identity);
     if (current === null || current.phase === 'exited') return false;
+    if (
+      (current.parent?.pid !== owner.process.pid || current.parent.incarnation !== owner.process.incarnation) &&
+      identityDisposition(identity) !== 'matching'
+    )
+      return false;
     if (current.terminationAt === undefined)
       this.#set(reservation, { ...current, terminationAt: now, killAt: now + graceMs });
     return true;
@@ -225,9 +270,22 @@ export class SupervisorLaunchMemory {
 
   observeInheritedHealth(reservation: LaunchReservation, now: number): void {
     const current = reservation.child === undefined ? null : this.currentChild(reservation, reservation.child);
-    if (current !== null && current.terminationAt === undefined) {
+    if (
+      current !== null &&
+      current.child !== undefined &&
+      identityDisposition(current.child) === 'matching' &&
+      current.terminationAt === undefined
+    ) {
       this.#set(reservation, { ...current, phase: 'serving', observedHealthyAt: now });
       this.#servedBuilds.add(current.buildSetId);
+      const child = current.child;
+      this.#status((status) => ({
+        ...status,
+        inheritedHealth: [
+          ...(status.inheritedHealth ?? []).filter((observation) => observation.launchId !== current.id).slice(-1),
+          { launchId: current.id, supervisor: this.#state.owner.process, child, observedHealthyAt: now },
+        ],
+      }));
     }
   }
 

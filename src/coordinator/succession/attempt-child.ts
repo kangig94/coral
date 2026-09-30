@@ -112,11 +112,11 @@ export async function startSuccessionAttempt(options: {
   void listeningClaim(listener);
   const attemptId = preparation.attemptId;
   const child = ports.spawn(bundleDir, attemptId);
-  await new Promise<void>((resolve, reject) => {
+  const spawned = new Promise<void>((resolve, reject) => {
     child.once('spawn', resolve);
     child.once('error', reject);
   });
-  const coordinatorPid = await (child.coordinatorPid ?? Promise.resolve(child.pid));
+  const [, coordinatorPid] = await Promise.all([spawned, child.coordinatorPid ?? spawned.then(() => child.pid)]);
 
   try {
     return await createSuccessionAttemptChannel(

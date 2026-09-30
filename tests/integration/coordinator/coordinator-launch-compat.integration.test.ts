@@ -46,7 +46,7 @@ describe('supervision identity compatibility', () => {
     }
   });
 
-  it('lets older discovery readers ignore additive supervision identity', () => {
+  it('preserves additive supervision identity and unknown fields with the current discovery reader', () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-supervision-discovery-'));
     try {
       const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });

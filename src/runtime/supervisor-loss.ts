@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
 import { updateLaunchStatus } from '../infra/launch-status.js';
+import { readUpgradeIntent } from '../infra/upgrade-intent.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
@@ -48,10 +49,27 @@ function retryReplacementSupervisor(control: ReplacementSupervisorControl, error
 }
 
 function repairReplacementSupervisor(control: ReplacementSupervisorControl, root: string): void {
-  void control.onAccepted(root).catch((error: unknown) => {
-    control.onError(error instanceof Error ? error : new Error(String(error)));
-    setTimeout(() => repairReplacementSupervisor(control, root), RETRY_MS);
-  });
+  const retry = (): void => {
+    const sourceIncarnation = probeProcessIncarnation(process.pid);
+    if (sourceIncarnation === null) return;
+    setTimeout(() => {
+      const observed = readUpgradeIntent(control.runDir);
+      const completed =
+        observed.kind === 'readable' &&
+        observed.intent.disposition === 'completed' &&
+        observed.intent.incumbent.pid === process.pid &&
+        observed.intent.incumbent.incarnation === sourceIncarnation;
+      if (!completed && servingSourceStillPresent(control, sourceIncarnation))
+        repairReplacementSupervisor(control, root);
+    }, RETRY_MS);
+  };
+  void control
+    .onAccepted(root)
+    .then(retry)
+    .catch((error: unknown) => {
+      control.onError(error instanceof Error ? error : new Error(String(error)));
+      retry();
+    });
 }
 
 function finishReplacementAttempt(attempt: ReplacementSupervisorAttempt, error: Error | null): void {

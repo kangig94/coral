@@ -679,16 +679,56 @@ function parentSignalCalls(source: string, fileName: string): readonly string[] 
       const unwrapped = unwrappedExpression(target);
       return isParentPid(unwrapped) || (ts.isIdentifier(unwrapped) && parentPidNames.has(unwrapped.text));
     })
+    .filter((call) => {
+      const sourceFile = call.getSourceFile();
+      const scope = enclosingSignallingFunction(call);
+      if (
+        fileName !== 'src/coordinator/bootstrap.ts' ||
+        scope === null ||
+        signallingFunctionName(scope, sourceFile) !== 'signalSilentParent'
+      )
+        return true;
+      if (call.getText(sourceFile) !== 'process.kill(parentPid, signal)') return true;
+      if (scope.parameters[0]?.type?.getText(sourceFile) !== "'SIGTERM' | 'SIGKILL'") return true;
+      const guards = dominatingStatements(call, scope).flatMap((statement) =>
+        ts.isIfStatement(statement) &&
+        ts.isReturnStatement(statement.thenStatement) &&
+        statement.thenStatement.expression?.kind === ts.SyntaxKind.FalseKeyword
+          ? [statement.expression.getText(sourceFile).replace(/\s/gu, '')]
+          : [],
+      );
+      return ![
+        "process.platform!=='linux'||!incarnationMayAuthorizeSignal(process.platform)",
+        'parentIncarnation===null||process.ppid!==parentPid',
+        'probeProcessIncarnation(parentPid)!==parentIncarnation',
+      ].every((guard) => guards.includes(guard));
+    })
     .map((call) => `${fileName}:${call.getText(parsed)}`);
 }
 
-describe('a child never signals its parent', () => {
-  it('no module aims a signal at process.ppid, because a child cannot pin the parent it would signal', () => {
+describe('a child never signals its parent except guarded Linux supervisor retirement', () => {
+  it('permits only the silent-parent path with a Linux guard, unchanged parenthood and a fresh matching incarnation', () => {
     const violations = listSourceFiles(SRC_ROOT).flatMap((filePath) =>
       parentSignalCalls(readFileSync(filePath, 'utf-8'), canonicalSrcPath(filePath)),
     );
 
     expect(violations).toEqual([]);
+  });
+
+  it.each([
+    "process.platform !== 'linux' || !incarnationMayAuthorizeSignal(process.platform)",
+    'parentIncarnation === null || process.ppid !== parentPid',
+    'probeProcessIncarnation(parentPid) !== parentIncarnation',
+  ])('rejects silent-parent signalling when the refusal guard is removed: %s', (guard) => {
+    const source = readFileSync(join(REPO_ROOT, 'src/coordinator/bootstrap.ts'), 'utf8');
+    expect(source).toContain(`if (${guard}) return false;`);
+    const unguarded = source.replace(`if (${guard}) return false;`, '');
+    expect(parentSignalCalls(unguarded, 'src/coordinator/bootstrap.ts')).toHaveLength(1);
+  });
+
+  it('refuses the same parent path in any other module', () => {
+    const source = readFileSync(join(REPO_ROOT, 'src/coordinator/bootstrap.ts'), 'utf8');
+    expect(parentSignalCalls(source, 'negative-control.ts')).toHaveLength(1);
   });
 
   it('recognizes a parent pid carried through a local', () => {

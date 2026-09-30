@@ -41,6 +41,7 @@ import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import {
   processIncarnationProbeRegistrySize,
   probeProcessIncarnation,
+  incarnationMayAuthorizeSignal,
   snapshotProcessIncarnationProbeSubjects,
   terminateProcessIncarnationProbes,
 } from '../infra/node-process.js';
@@ -337,9 +338,8 @@ async function dispatchBackendRole(): Promise<number | null> {
 }
 
 /**
- * A parent that stops answering is treated as lost, never signalled: a child cannot prove that the pid it would signal
- * is still its parent at the instant the signal lands, so it holds a visible status naming that parent and nominates
- * a replacement supervisor, which takes launch ownership once the silent parent releases its lock by exiting.
+ * Linux accepts the residual check-to-signal race after a fresh parent incarnation check. macOS cannot provide
+ * signal authority, so a silent parent retains a visible hold until it cooperates or exits.
  */
 async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLoss: () => void): Promise<void> {
   let sentinelArm: Promise<void> | null = null;
@@ -349,27 +349,43 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
     const parentIncarnation = probeProcessIncarnation(parentPid);
     const holdId = `parent:${parentPid}`;
     let parentSilent = false;
+    let parentTerminationAt: number | null = null;
+    let parentTermSent = false;
+    let parentKillSent = false;
     let lastParentProgress = Date.now();
     let lastWake = lastParentProgress;
     const recordParentHold = (held: boolean): void => {
       const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
-      if (runDir === undefined || parentIncarnation === null) return;
+      if (runDir === undefined) return;
       try {
         updateLaunchStatus(runDir, (status) => ({
           ...status,
           signalHolds: [
             ...status.signalHolds.filter((hold) => hold.launchId !== holdId),
-            ...(held ? [{ launchId: holdId, pid: parentPid, incarnation: parentIncarnation }] : []),
+            ...(held ? [{ launchId: holdId, pid: parentPid, incarnation: parentIncarnation ?? 'unavailable' }] : []),
           ],
         }));
       } catch (error: unknown) {
         backendLog.error('Could not record unresponsive supervisor hold', error);
       }
     };
+    const signalSilentParent = (signal: 'SIGTERM' | 'SIGKILL'): boolean => {
+      if (process.platform !== 'linux' || !incarnationMayAuthorizeSignal(process.platform)) return false;
+      if (parentIncarnation === null || process.ppid !== parentPid) return false;
+      if (probeProcessIncarnation(parentPid) !== parentIncarnation) return false;
+      try {
+        return process.kill(parentPid, signal);
+      } catch {
+        return false;
+      }
+    };
     const parentAnswered = (): void => {
       lastParentProgress = Date.now();
       if (!parentSilent) return;
       parentSilent = false;
+      parentTerminationAt = null;
+      parentTermSent = false;
+      parentKillSent = false;
       recordParentHold(false);
     };
     const supervisorMonitor = setInterval(() => {
@@ -380,10 +396,17 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
         lastParentProgress = now;
         return;
       }
-      if (parentSilent || now - lastParentProgress < SENTINEL_TIMING.lapseMs) return;
-      parentSilent = true;
-      recordParentHold(true);
-      replaceSupervisor();
+      if (now - lastParentProgress < SENTINEL_TIMING.lapseMs) return;
+      if (!parentSilent) {
+        parentSilent = true;
+        parentTerminationAt = now;
+        replaceSupervisor();
+      }
+      if (process.ppid !== parentPid) return recordParentHold(false);
+      const killDue = parentTerminationAt !== null && now >= parentTerminationAt + SENTINEL_TIMING.graceMs;
+      if (killDue && !parentKillSent) parentKillSent = signalSilentParent('SIGKILL');
+      else if (!killDue && !parentTermSent) parentTermSent = signalSilentParent('SIGTERM');
+      recordParentHold(killDue ? !parentKillSent : !parentTermSent);
     }, SENTINEL_TIMING.challengeMs);
     supervisorMonitor.unref();
     sentinelArm = new Promise<void>((resolve, reject) => {

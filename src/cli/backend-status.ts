@@ -454,7 +454,7 @@ export type SupersededEpochClosures =
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
 export type BackendStatusFull = BackendStatusFullBase & {
-  launchStatusProblem?: 'unreadable';
+  launchStatusProblem?: 'unreadable' | 'previous-status-unavailable';
   launchHold?: NonNullable<LaunchStatus['hold']>;
   launchInheritedHolds?: LaunchStatus['inheritedHolds'];
   launchSignalHolds?: LaunchStatus['signalHolds'];
@@ -1178,7 +1178,11 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         : {}),
     ...(state?.inheritedHolds.length ? { launchInheritedHolds: state.inheritedHolds } : {}),
     ...(state?.signalHolds.length ? { launchSignalHolds: state.signalHolds } : {}),
-    ...(disposition.kind === 'unreadable' ? { launchStatusProblem: 'unreadable' as const } : {}),
+    ...(disposition.kind === 'unreadable'
+      ? { launchStatusProblem: 'unreadable' as const }
+      : state?.previousStatus === 'unavailable'
+        ? { launchStatusProblem: 'previous-status-unavailable' as const }
+        : {}),
     ...upgradeQuarantineStatus,
   };
 }

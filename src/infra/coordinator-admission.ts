@@ -1,4 +1,4 @@
-import { publishLaunchAdmission, removeOwnLaunchAdmission } from './launch-admission-record.js';
+import { publishLaunchAdmission, readLaunchAdmission, removeOwnLaunchAdmission } from './launch-admission-record.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
 
 type AdmissionMessage = Readonly<{
@@ -81,8 +81,14 @@ export async function claimCoordinatorLaunch(): Promise<boolean> {
   });
 }
 
-/** Discovery now names the admitted child, so its self-record is superseded and its parent learns it was published. */
-export function supersedeLaunchAdmissionByDiscovery(runDir: string, launchId: string): void {
-  removeOwnLaunchAdmission(runDir, launchId);
+export function notifyLaunchDiscovery(runDir: string, launchId: string): void {
+  const record = readLaunchAdmission(runDir, launchId);
+  if (
+    record.kind !== 'readable' ||
+    record.admission.child.pid !== process.pid ||
+    record.admission.child.incarnation !== probeProcessIncarnation(process.pid)
+  )
+    throw new Error('Coordinator discovery cannot update another child admission identity.');
+  publishLaunchAdmission(runDir, { ...record.admission, discoveredAt: Date.now() });
   if (process.connected) process.send?.({ kind: 'coral-launch-discovered', pid: process.pid, launchId });
 }

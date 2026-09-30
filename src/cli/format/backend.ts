@@ -755,10 +755,18 @@ export function formatBackendStatus(
     sections.push(
       'Coordinator launch status is unreadable. This diagnostic cannot authorize a signal or prevent startup.',
     );
+  if (daemonStatus.launchStatusProblem === 'previous-status-unavailable')
+    sections.push(
+      'Previous coordinator launch status is unavailable. Live owners re-publish current holds; these diagnostics cannot authorize a signal or prevent startup.',
+    );
   for (const hold of daemonStatus.launchSignalHolds ?? []) {
     if (hold.launchId.startsWith('replacement:'))
       sections.push(
         `Replacement supervisor ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because a retirement signal was refused. The coordinator retries this exact process; once it exits, recovery launches the next replacement.`,
+      );
+    else if (hold.launchId.startsWith('parent:'))
+      sections.push(
+        `Parent supervisor ${hold.pid} (incarnation ${hold.incarnation}) is silent and retirement cannot be verified. Linux retries only with unchanged parenthood and a fresh matching incarnation. macOS refuses parent signalling and waits for cooperation or confirmed absence; automatic recovery is not guaranteed there.`,
       );
     else
       sections.push(

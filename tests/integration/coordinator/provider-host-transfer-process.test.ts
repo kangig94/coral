@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
+import { readLaunchStatus } from '#src/infra/launch-status.js';
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { coordinatorPaths, supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
@@ -287,9 +288,9 @@ async function upgradeTo(
     supervised: true,
   });
   coordinators.push(contender);
-  expect(await waitForProcessExit(contender, 30_000), contender.output()).toMatchObject({ code: 0 });
   const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
   try {
+    expect(await waitForProcessExit(contender, 30_000), contender.output()).toMatchObject({ code: 0 });
     await waitForCondition(() => {
       const discovery = readDiscoveryRecordForHome(world.home, 'prod');
       const intent = readUpgradeIntent(runDir);
@@ -446,10 +447,10 @@ describe('real-process provider host transfer', () => {
       expect(launch.read().launch).toMatchObject({ phase: 'serving', child: { pid: incumbentPid } });
       expect(observeProcessLiveness(incumbentPid)).toBe('alive');
       process.kill(incumbentPid, 'SIGCONT');
-      await waitForCondition(
-        () => launch.read().owner?.process.pid !== claimant?.child.pid && launch.read().owner?.mode === 'recovering',
-        20_000,
-      );
+      await waitForCondition(() => {
+        const owner = launch.read().owner;
+        return owner?.process.pid !== claimant?.child.pid && owner?.mode === 'recovering';
+      }, 20_000);
       try {
         await waitForCondition(
           () =>
@@ -503,13 +504,27 @@ describe('real-process provider host transfer', () => {
     const world = createTransferWorld();
     const { old, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
     if (old.child.pid === undefined) throw new Error('Supervisor has no PID');
-    const launch = new SupervisorEvidence(coordinatorFilesForHome(world.home, 'prod').runDir);
+    const incumbentIncarnation = probeProcessIncarnation(incumbentPid);
+    const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
+    const launch = new SupervisorEvidence(runDir);
     try {
       process.kill(old.child.pid, 'SIGKILL');
-      await waitForCondition(
-        () => launch.read().owner?.process.pid !== undefined && launch.read().owner?.process.pid !== old.child.pid,
-        20_000,
-      );
+      await waitForCondition(() => {
+        const owner = launch.read().owner;
+        const status = readLaunchStatus(runDir);
+        return (
+          owner !== null &&
+          owner.process.pid !== old.child.pid &&
+          status.kind === 'readable' &&
+          status.status.inheritedHealth?.some(
+            (observation) =>
+              observation.supervisor.pid === owner.process.pid &&
+              observation.supervisor.incarnation === owner.process.incarnation &&
+              observation.child.pid === incumbentPid &&
+              observation.child.incarnation === incumbentIncarnation,
+          ) === true
+        );
+      }, 20_000);
       const { newerFixture } = await upgradeTo(world, incumbentPid);
       try {
         await waitForCondition(() => launch.read().launch?.buildSetId === buildSetIdOf(newerFixture), 30_000);

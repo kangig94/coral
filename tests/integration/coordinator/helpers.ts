@@ -67,7 +67,12 @@ function readSourceManifest(buildDir: string | null): SourceManifest {
 }
 
 const interpositionBundles = new Map<
-  'succession-interposition' | 'sentinel-freeze' | 'admission-freeze' | 'setup-error-once',
+  | 'succession-interposition'
+  | 'supervisor-silence'
+  | 'supervisor-signal-refusal'
+  | 'sentinel-freeze'
+  | 'admission-freeze'
+  | 'setup-error-once',
   string
 >();
 
@@ -77,7 +82,13 @@ const interpositionBundles = new Map<
  */
 function buildInterpositionBundle(
   manifest: SourceManifest,
-  kind: 'succession-interposition' | 'sentinel-freeze' | 'admission-freeze' | 'setup-error-once',
+  kind:
+    | 'succession-interposition'
+    | 'supervisor-silence'
+    | 'supervisor-signal-refusal'
+    | 'sentinel-freeze'
+    | 'admission-freeze'
+    | 'setup-error-once',
 ): string {
   const cached = interpositionBundles.get(kind);
   if (cached !== undefined && existsSync(cached)) {
@@ -91,7 +102,14 @@ function buildInterpositionBundle(
     storeFormatFingerprint: manifest.storeFormatFingerprint,
   };
   buildSync({
-    entryPoints: [fileURLToPath(new URL(`./fixtures/${kind}-backend.ts`, import.meta.url))],
+    entryPoints: [
+      fileURLToPath(
+        new URL(
+          `./fixtures/${kind.startsWith('supervisor-') ? 'succession-interposition' : kind}-backend.ts`,
+          import.meta.url,
+        ),
+      ),
+    ],
     outfile,
     bundle: true,
     platform: 'node',
@@ -99,7 +117,7 @@ function buildInterpositionBundle(
     format: 'cjs',
     external: ['node:*', '@lydell/node-pty'],
     loader: { '.sql': 'text' },
-    minify: true,
+    minify: !kind.startsWith('supervisor-'),
     banner: {
       js:
         `var __CORAL_BUILD_IDENTITY__=${JSON.stringify(embeddedIdentity)};` +
@@ -116,6 +134,24 @@ function buildInterpositionBundle(
       'import.meta.url': '__importMetaUrl',
     },
   });
+  if (kind.startsWith('supervisor-')) {
+    const compiled = readFileSync(outfile, 'utf8');
+    const shortened = compiled.replace(
+      /var SENTINEL_TIMING = Object.freeze\(\{[\s\S]*?\}\);/u,
+      'var SENTINEL_TIMING = Object.freeze({ challengeMs: 50, schedulingGapMs: 500, lapseMs: 1500, graceMs: 200, dStateDeferralMs: 800 });',
+    );
+    if (shortened === compiled) throw new Error('Fixture did not shorten the parent watchdog timing');
+    const faultInjected =
+      kind === 'supervisor-signal-refusal'
+        ? shortened.replace(
+            'process.platform !== "linux" || !incarnationMayAuthorizeSignal(process.platform)',
+            'true || !incarnationMayAuthorizeSignal(process.platform)',
+          )
+        : shortened;
+    if (kind === 'supervisor-signal-refusal' && faultInjected === shortened)
+      throw new Error('Fixture did not refuse parent signals');
+    writeFileSync(outfile, faultInjected);
+  }
   interpositionBundles.set(kind, outfile);
   return outfile;
 }
@@ -190,7 +226,13 @@ export function createPluginFixture(
     bundleHash?: string;
     version?: string;
     /** Ships a backend whose succession protocol follows the fault plan in its environment. */
-    backend?: 'succession-interposition' | 'sentinel-freeze' | 'admission-freeze' | 'setup-error-once';
+    backend?:
+      | 'succession-interposition'
+      | 'supervisor-silence'
+      | 'supervisor-signal-refusal'
+      | 'sentinel-freeze'
+      | 'admission-freeze'
+      | 'setup-error-once';
     /** Declares the owner acceptances the bridge build ships, instead of accepting no transferred obligation. */
     accepts?: 'bundled';
     /** Builds the fixture from another build's `clients/build` instead of this tree's. */
@@ -248,6 +290,18 @@ export function createPluginFixture(
   if (existsSync(sourceBundle('coral-sentinel.cjs'))) {
     copyBundle(sourceBundle('coral-sentinel.cjs'), sentinelPath);
   }
+  if (options.backend?.startsWith('supervisor-'))
+    buildSync({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: sentinelPath,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'cjs',
+      external: ['node:*'],
+      banner: { js: 'var __importMetaUrl=require("url").pathToFileURL(__filename).href;' },
+      define: { 'import.meta.url': '__importMetaUrl' },
+    });
   if (options.bundleHash !== undefined) {
     appendFileSync(backendPath, `\n// fixture ${options.bundleHash}\n`);
   }

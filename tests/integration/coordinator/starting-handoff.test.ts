@@ -231,7 +231,9 @@ describe('legacy transport.shutdown at a new incumbent', () => {
       try {
         await waitForProcessExit(contender, 15_000);
       } catch (error) {
-        console.error(`Shipped contender ${tag} output: ${contender.output()}`);
+        console.error(
+          `Shipped contender ${tag} output: ${contender.output()}; discovery=${readFileSync(paths.infoFile, 'utf8')}; liveProcessStartedAt=${shippedProcessStartedAtSeconds(dummy.pid)}; health=${JSON.stringify(ports.health.read())}`,
+        );
         throw error;
       }
       if (['v0.10.0', 'v0.10.1', 'v0.10.4'].includes(tag)) {

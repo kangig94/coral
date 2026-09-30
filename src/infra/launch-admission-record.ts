@@ -24,6 +24,7 @@ const admissionSchema = z
     child: processSchema,
     parent: processSchema,
     admittedAt: z.number().int().positive(),
+    discoveredAt: z.number().int().positive().optional(),
     build: z.object({
       version: z.string().min(1),
       buildSetId: z.string().min(1),

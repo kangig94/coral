@@ -78,6 +78,18 @@ function formatBackendStatus(status: BackendStatusFull): string {
   return formatComposedBackendStatus(status, { kind: 'absent' }, null);
 }
 
+it('shows lost launch diagnostics and the platform limit on parent retirement', () => {
+  const status = formatBackendStatus({
+    status: 'no_record_no_socket',
+    launchStatusProblem: 'previous-status-unavailable',
+    launchSignalHolds: [{ launchId: 'parent:321', pid: 321, incarnation: 'unavailable' }],
+  });
+  expect(status).toContain('Previous coordinator launch status is unavailable');
+  expect(status).toContain('Parent supervisor 321');
+  expect(status).toContain('macOS');
+  expect(status).toContain('cooperation or confirmed absence');
+});
+
 it('shows the custody quarantine path and retry action in backend status', () => {
   expect(
     formatBackendStatus({

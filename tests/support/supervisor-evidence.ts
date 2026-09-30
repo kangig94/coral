@@ -11,6 +11,7 @@ import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/nod
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { childHasExited } from '#src/coordinator-launch/child-state.js';
 import { replacementServing } from '#src/coordinator-launch/health.js';
 import { recordLegacyUpgradeIntent } from '#src/coordinator-launch/request.js';
 
@@ -24,35 +25,28 @@ type EvidenceSlot = {
   admittedAt: number;
 };
 
-function nominatedSupervisor(
-  childPid: number,
-): { pid: number; incarnation: NonNullable<UpgradeIntent['attemptChild']>['incarnation'] } | null {
-  try {
-    const table = execFileSync('ps', ['-eo', 'pid=,ppid=,args='], { encoding: 'utf8' });
-    for (const line of table.split('\n')) {
-      const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/u.exec(line);
-      if (match === null || Number(match[2]) !== childPid || !match[3].includes('coral-sentinel.cjs')) continue;
-      const pid = Number(match[1]);
-      const incarnation = probeProcessIncarnation(pid);
-      if (incarnation !== null) return { pid, incarnation };
-    }
-  } catch {
-    /* A missing process table supplies no evidence. */
-  }
-  return null;
-}
-
 /** The process holding the launch lock, read from the kernel's lock table so observation never contends. */
 function launchLockHolder(runDir: string): { pid: number; incarnation: ProcessIncarnation } | null {
-  let inode: number;
+  let inode: bigint;
+  let device: bigint;
   try {
-    inode = statSync(supervisorLockPath(runDir)).ino;
+    const file = statSync(supervisorLockPath(runDir), { bigint: true });
+    inode = file.ino;
+    device = file.dev;
   } catch {
     return null;
   }
+  const major = ((device >> 8n) & 0xfffn) | ((device >> 32n) & 0xfffff000n);
+  const minor = (device & 0xffn) | ((device >> 12n) & 0xffffff00n);
   for (const line of readFileSync('/proc/locks', 'utf8').split('\n')) {
-    const match = /^\d+:\s+POSIX\s+ADVISORY\s+WRITE\s+(\d+)\s+[0-9a-f]+:[0-9a-f]+:(\d+)\s/u.exec(line);
-    if (match === null || Number(match[2]) !== inode) continue;
+    const match = /^\d+:\s+POSIX\s+ADVISORY\s+WRITE\s+(\d+)\s+([0-9a-f]+):([0-9a-f]+):(\d+)\s/u.exec(line);
+    if (
+      match === null ||
+      BigInt(match[4]) !== inode ||
+      BigInt(`0x${match[2]}`) !== major ||
+      BigInt(`0x${match[3]}`) !== minor
+    )
+      continue;
     const pid = Number(match[1]);
     const incarnation = probeProcessIncarnation(pid);
     if (incarnation !== null) return { pid, incarnation };
@@ -66,7 +60,6 @@ export class SupervisorEvidence {
   private readonly observed = new Map<string, EvidenceSlot>();
   private readonly healthy = new Set<string>();
   private readonly healthProbes = new Set<string>();
-  private firstParentPid: number | null = null;
   private readonly refused = new Map<
     string,
     {
@@ -94,7 +87,7 @@ export class SupervisorEvidence {
         ? [
             {
               id: entry.admission.launchId,
-              phase: 'admitted' as const,
+              phase: this.healthy.has(entry.admission.launchId) ? ('serving' as const) : ('admitted' as const),
               child: entry.admission.child,
               parent: entry.admission.parent,
               buildSetId: entry.admission.build.buildSetId,
@@ -143,10 +136,9 @@ export class SupervisorEvidence {
     }
     for (const entry of [...admitted, ...(serving === null ? [] : [serving])]) {
       this.observed.set(entry.id, entry);
-      this.firstParentPid ??= entry.parent.pid;
     }
     const children = [...this.observed.values()].map((entry) =>
-      probeProcessIncarnation(entry.child.pid) === entry.child.incarnation
+      probeProcessIncarnation(entry.child.pid) === entry.child.incarnation && !childHasExited(entry.child.pid)
         ? entry
         : { ...entry, phase: 'exited' as const },
     );
@@ -164,44 +156,38 @@ export class SupervisorEvidence {
       children.find((entry) => entry.id !== attempt?.id && entry.phase !== 'exited') ??
       (attempt?.phase === 'exited' ? (children.find((entry) => entry.id !== attempt.id) ?? attempt) : attempt);
     const current = serving ?? admitted.at(-1) ?? launch;
-    const nominated = children
-      .filter((entry) => entry.phase !== 'exited')
-      .map((entry) => ({ entry, process: nominatedSupervisor(entry.child.pid) }))
-      .find((candidate) => candidate.process !== null);
     const status = readLaunchStatus(this.runDir);
     const visible = status.kind === 'readable' ? status.status : null;
     const lastBuildSetId =
       intent.kind === 'readable' ? intent.intent.target.build.buildSetId : children.at(-1)?.buildSetId;
-    const waitingSupervisor =
-      (current === null || current === undefined) && lastBuildSetId !== undefined
-        ? launchLockHolder(this.runDir)
-        : null;
+    const holder = launchLockHolder(this.runDir);
+    let ownerBuildSetId: string | undefined;
+    if (holder !== null) {
+      try {
+        const command = execFileSync('ps', ['-o', 'ppid=,args=', '-p', String(holder.pid)], { encoding: 'utf8' });
+        const executable = /\S*\/bridge\/coral-backend\.cjs/u.exec(command)?.[0];
+        const manifest = executable === undefined ? null : readBoundedAdjacentManifest(dirname(executable));
+        const parsed = manifest?.ok ? strictBundleManifestSchema.safeParse(manifest.value) : null;
+        ownerBuildSetId = parsed?.success
+          ? parsed.data.buildSetId
+          : children.find((entry) => entry.child.pid === Number(command.trim().split(/\s/u)[0]))?.buildSetId;
+      } catch {
+        /* A vanished executable supplies no build identity. */
+      }
+    }
     return {
       launch,
       attempt: launch === attempt ? null : attempt,
       owner:
-        current === null || current === undefined
-          ? waitingSupervisor === null || lastBuildSetId === undefined
-            ? null
-            : {
-                process: waitingSupervisor,
-                buildSetId: lastBuildSetId,
-                mode: 'supervised' as const,
-              }
-          : nominated !== undefined && nominated.process !== null
-            ? { process: nominated.process, buildSetId: nominated.entry.buildSetId, mode: 'recovering' as const }
-            : probeProcessIncarnation(current.parent.pid) !== current.parent.incarnation
-              ? null
-              : {
-                  process: current.parent,
-                  buildSetId: current.buildSetId,
-                  mode:
-                    current.parent.pid !== this.firstParentPid && current.id === launch?.id
-                      ? 'supervised'
-                      : current.parent.pid !== this.firstParentPid
-                        ? 'recovering'
-                        : 'supervised',
-                },
+        holder === null || lastBuildSetId === undefined
+          ? null
+          : {
+              process: holder,
+              buildSetId: ownerBuildSetId ?? current?.buildSetId ?? lastBuildSetId,
+              mode: children.some((entry) => entry.phase !== 'exited' && entry.parent.pid !== holder.pid)
+                ? ('recovering' as const)
+                : ('supervised' as const),
+            },
       hold: visible?.hold,
       inheritedHolds: visible?.inheritedHolds ?? [],
       signalHolds: visible?.signalHolds ?? [],

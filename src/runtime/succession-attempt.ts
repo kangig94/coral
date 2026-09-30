@@ -97,18 +97,39 @@ function requestSupervisedAttempt(bundleDir: string, attemptId: string): Success
         signalCode =
           'signal' in message && typeof message.signal === 'string' ? (message.signal as NodeJS.Signals) : null;
         supervisor.off('message', onMessage);
+        supervisor.off('disconnect', onDisconnect);
+        if (pid === undefined) {
+          const error = new Error('Succession child exited before its spawn was confirmed');
+          rejectPid(error);
+          processView.emit('error', error);
+        }
         processView.emit('exit', exitCode, signalCode);
         processView.emit('disconnect');
         break;
       case 'coral-supervisor-attempt-error': {
         const error = new Error('reason' in message ? String(message.reason) : 'Supervisor refused succession launch');
+        connected = false;
+        supervisor.off('message', onMessage);
+        supervisor.off('disconnect', onDisconnect);
         rejectPid(error);
         processView.emit('error', error);
+        processView.emit('disconnect');
         break;
       }
     }
   };
+  const onDisconnect = (): void => {
+    connected = false;
+    supervisor.off('message', onMessage);
+    if (pid === undefined) {
+      const error = new Error('Supervisor disconnected before confirming the succession child');
+      rejectPid(error);
+      processView.emit('error', error);
+    }
+    processView.emit('disconnect');
+  };
   supervisor.on('message', onMessage);
+  supervisor.once('disconnect', onDisconnect);
   supervisor.send?.({ kind: 'coral-supervisor-start-attempt', attemptId, bundleDir });
   return processView;
 }

@@ -8,10 +8,18 @@ import type * as fsModule from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import { readDiscoveryRecordDisposition } from '#src/infra/backend-discovery.js';
+import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { readLaunchStatus } from '#src/infra/launch-status.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type * as nodeProcessModule from '#src/infra/node-process.js';
 import { startReplacementSupervisor } from '#src/runtime/supervisor-loss.js';
+
+vi.mock('#src/infra/backend-discovery.js', () => ({
+  readDiscoveryRecordDisposition: vi.fn(() => ({ kind: 'missing' })),
+}));
+
+vi.mock('#src/infra/upgrade-intent.js', () => ({ readUpgradeIntent: vi.fn(() => ({ kind: 'absent' })) }));
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 vi.mock('#src/infra/retained-build-root.js', () => ({ validatedRunningBuildRoot: () => '/fixture' }));
@@ -101,6 +109,61 @@ it('records refused replacement retirement signals until the replacement exits',
     const cleared = readLaunchStatus(runDir);
     expect(cleared.kind === 'readable' ? cleared.status.signalHolds : []).toEqual([]);
   } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ['discovery replacement', false],
+  ['completion receipt', false],
+  ['discovery replacement', true],
+  ['completion receipt', true],
+] as const)('retries repair until %s settles the original coordinator (rejected: %s)', async (settledBy, rejected) => {
+  vi.useFakeTimers();
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-repair-'));
+  const replacement = Object.assign(new EventEmitter(), {
+    pid: 999_997,
+    send: vi.fn(),
+    kill: vi.fn(),
+    unref: vi.fn(),
+  });
+  vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
+  vi.mocked(probeProcessIncarnation).mockReturnValue('source' as ProcessIncarnation);
+  vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({
+    kind: 'record',
+    record: { pid: process.pid, incarnation: 'source' },
+  } as ReturnType<typeof readDiscoveryRecordDisposition>);
+  const onAccepted = vi.fn(async () => {
+    if (rejected) throw new Error('repair is deferred');
+  });
+  try {
+    startReplacementSupervisor(
+      '/fixture',
+      runDir,
+      { buildSetId: 'build' } as StrictBundleManifest,
+      vi.fn(),
+      onAccepted,
+    );
+    const challenge = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
+    replacement.emit('message', { kind: 'coral-recovery-owned', challenge });
+    replacement.emit('message', { kind: 'coral-repair-bridge-ready', challenge });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(onAccepted).toHaveBeenCalledTimes(2);
+    if (settledBy === 'discovery replacement')
+      vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
+    else
+      vi.mocked(readUpgradeIntent).mockReturnValue({
+        kind: 'readable',
+        intent: { disposition: 'completed', incumbent: { pid: process.pid, incarnation: 'source' } },
+      } as ReturnType<typeof readUpgradeIntent>);
+    const settledCalls = onAccepted.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(onAccepted).toHaveBeenCalledTimes(settledCalls);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(onAccepted).toHaveBeenCalledTimes(settledCalls);
+  } finally {
+    vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
+    vi.mocked(readUpgradeIntent).mockReturnValue({ kind: 'absent' });
     rmSync(runDir, { recursive: true, force: true });
   }
 });
