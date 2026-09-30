@@ -441,6 +441,19 @@ async function createHarness(
   };
   const lease: AppServerSession = {
     rpc: (async (method: string) => {
+      if (method === 'model/list') {
+        return {
+          data: [
+            {
+              model: 'gpt-6-sol',
+              hidden: false,
+              upgrade: null,
+              supportedReasoningEfforts: [{ reasoningEffort: 'high' }],
+            },
+          ],
+          nextCursor: null,
+        };
+      }
       if (method === 'config/read') return { config: {} };
       if (method === 'thread/start') {
         trace.threadStarts += 1;
