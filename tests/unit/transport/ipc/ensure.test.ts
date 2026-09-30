@@ -523,7 +523,6 @@ describe('ipc ensure', () => {
           });
         }
       } finally {
-        observer.emit('exit', 1, null);
         await result;
       }
     },

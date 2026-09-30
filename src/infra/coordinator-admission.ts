@@ -85,6 +85,7 @@ export async function claimCoordinatorLaunch(): Promise<boolean> {
         child: { pid: process.pid, incarnation: childIncarnation },
         parent: message.parent,
         admittedAt: Date.now(),
+        admittedMonotonicMs: Number(process.hrtime.bigint() / 1_000_000n),
         build: message.build,
         purpose: message.purpose,
       });

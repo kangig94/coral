@@ -28,6 +28,7 @@ export type LaunchReservation = Readonly<{
   purpose: 'startup' | 'contender' | 'succession' | 'recovery' | 'legacy-retirement';
   phase: 'reserved' | 'admitted' | 'serving' | 'exited';
   admittedAt?: number;
+  admittedMonotonicMs?: number;
   attemptDeadline?: number;
   admissionProven?: boolean;
   unidentifiedPid?: number;
@@ -37,6 +38,7 @@ export type LaunchReservation = Readonly<{
   child?: LaunchProcess;
   terminationAt?: number;
   killAt?: number;
+  killMonotonicAt?: number;
   termDelivered?: boolean;
   killDelivered?: boolean;
 }>;
@@ -88,10 +90,21 @@ function sameReservation(left: LaunchReservation, right: LaunchReservation): boo
   return reservationKey(left) === reservationKey(right);
 }
 
+function refinableReservation(left: LaunchReservation, right: LaunchReservation): boolean {
+  if (sameReservation(left, right)) return true;
+  if (left.id !== right.id) return false;
+  if (left.child === undefined && right.child !== undefined) return left.unidentifiedPid === right.child.pid;
+  if (right.child === undefined && left.child !== undefined) return right.unidentifiedPid === left.child.pid;
+  return false;
+}
+
 function mergeReservationEvidence(known: LaunchReservation, entry: LaunchReservation): LaunchReservation {
   const conflict =
     (known.buildSetId !== 'unknown' && entry.buildSetId !== 'unknown' && known.buildSetId !== entry.buildSetId) ||
     (known.admittedAt !== undefined && entry.admittedAt !== undefined && known.admittedAt !== entry.admittedAt) ||
+    (known.admittedMonotonicMs !== undefined &&
+      entry.admittedMonotonicMs !== undefined &&
+      known.admittedMonotonicMs !== entry.admittedMonotonicMs) ||
     (known.parent !== undefined &&
       entry.parent !== undefined &&
       (known.parent.pid !== entry.parent.pid || known.parent.incarnation !== entry.parent.incarnation)) ||
@@ -103,7 +116,11 @@ function mergeReservationEvidence(known: LaunchReservation, entry: LaunchReserva
   return {
     ...entry,
     ...known,
+    buildSetId: known.buildSetId === 'unknown' ? entry.buildSetId : known.buildSetId,
+    child: known.child ?? entry.child,
+    unidentifiedPid: known.child !== undefined || entry.child !== undefined ? undefined : known.unidentifiedPid,
     admittedAt: known.admittedAt ?? entry.admittedAt,
+    admittedMonotonicMs: known.admittedMonotonicMs ?? entry.admittedMonotonicMs,
     parent: known.parent ?? entry.parent,
     admissionProven: known.admissionProven === true || entry.admissionProven === true,
     phase:
@@ -113,7 +130,12 @@ function mergeReservationEvidence(known: LaunchReservation, entry: LaunchReserva
           ? 'admitted'
           : entry.phase,
     attemptDeadline: known.attemptDeadline ?? entry.attemptDeadline,
-    recoveryHold: known.recoveryHold === 'envelope-conflict' ? known.recoveryHold : entry.recoveryHold,
+    recoveryHold:
+      known.recoveryHold === 'envelope-conflict'
+        ? known.recoveryHold
+        : entry.recoveryHold === 'identity-unavailable' && (known.child !== undefined || entry.child !== undefined)
+          ? undefined
+          : entry.recoveryHold,
   };
 }
 
@@ -139,6 +161,7 @@ function fromAdmission(admission: LaunchAdmission): LaunchReservation {
     purpose: admission.purpose,
     phase: admission.discoveredAt === undefined ? 'admitted' : 'serving',
     admittedAt: admission.admittedAt,
+    admittedMonotonicMs: admission.admittedMonotonicMs,
     admissionProven: true,
     parent: admission.parent,
     child: admission.child,
@@ -249,7 +272,7 @@ export class SupervisorLaunchMemory {
     }
     const unique: LaunchReservation[] = [];
     for (const entry of admissions) {
-      const index = unique.findIndex((known) => sameReservation(known, entry));
+      const index = unique.findIndex((known) => refinableReservation(known, entry));
       if (index < 0) unique.push(entry);
       else unique[index] = mergeReservationEvidence(unique[index], entry);
     }
@@ -289,13 +312,10 @@ export class SupervisorLaunchMemory {
       baseDir: dirname(dirname(runDir)),
     });
     const discovery = readDiscoveryRecordDisposition(runtime, join(runDir, 'coordinator.json'));
-    if (
-      discovery.kind === 'record' &&
-      (discovery.record.supervision === undefined || discovery.record.incarnation === undefined)
-    ) {
+    if (discovery.kind === 'record' && discovery.record.supervision === undefined) {
       const discovered: LaunchReservation = {
-        id: discovery.record.supervision?.launchId ?? `discovery:${discovery.record.bootToken}`,
-        buildSetId: discovery.record.supervision?.buildSetId ?? 'unknown',
+        id: `discovery:${discovery.record.bootToken}`,
+        buildSetId: 'unknown',
         purpose: 'legacy-retirement',
         phase: 'serving',
         ...(discovery.record.incarnation === undefined
@@ -304,11 +324,7 @@ export class SupervisorLaunchMemory {
       };
       return reservationDisposition(discovered) === 'absent' ? null : discovered;
     }
-    if (
-      discovery.kind === 'record' &&
-      discovery.record.supervision !== undefined &&
-      discovery.record.incarnation !== undefined
-    ) {
+    if (discovery.kind === 'record' && discovery.record.supervision !== undefined) {
       const { supervision } = discovery.record;
       const discovered: LaunchReservation = {
         id: supervision.launchId,
@@ -317,7 +333,9 @@ export class SupervisorLaunchMemory {
         phase: 'serving',
         admittedAt: supervision.admittedAt,
         parent: supervision.parent,
-        child: { pid: discovery.record.pid, incarnation: discovery.record.incarnation },
+        ...(discovery.record.incarnation === undefined
+          ? { unidentifiedPid: discovery.record.pid, recoveryHold: 'identity-unavailable' as const }
+          : { child: { pid: discovery.record.pid, incarnation: discovery.record.incarnation } }),
       };
       const subject = this.#subjects.find((entry) => entry.admission?.launchId === discovered.id);
       const admitted = subject?.admission;
@@ -331,8 +349,8 @@ export class SupervisorLaunchMemory {
           admitted.purpose !== discovered.purpose ||
           admitted.parent?.pid !== discovered.parent?.pid ||
           admitted.parent?.incarnation !== discovered.parent?.incarnation ||
-          admitted.child?.pid !== discovered.child?.pid ||
-          admitted.child?.incarnation !== discovered.child?.incarnation);
+          admitted.child.pid !== discovery.record.pid ||
+          (discovery.record.incarnation !== undefined && admitted.child.incarnation !== discovery.record.incarnation));
       if (conflict && subject !== undefined) {
         this.#subjects = this.#subjects.map((entry) =>
           entry === subject ? { ...entry, problem: 'envelope-conflict' } : entry,
@@ -344,7 +362,7 @@ export class SupervisorLaunchMemory {
           return null;
         return { ...discovered, recoveryHold: 'envelope-conflict' };
       }
-      if (discovered.child !== undefined && identityDisposition(discovered.child) !== 'absent') return discovered;
+      if (reservationDisposition(discovered) !== 'absent') return discovered;
     }
     return null;
   }
@@ -459,12 +477,28 @@ export class SupervisorLaunchMemory {
         !observed.some((entry) => entry.problem === undefined && entry.lifetimePath?.startsWith(`${subject.path}/`)),
     );
     for (const entry of recovered.children()) {
-      const exact = this.children().find((slot) => sameReservation(slot, entry));
+      const exact = this.children().find((slot) => refinableReservation(slot, entry));
       const placeholder = this.children().find((slot) => {
         if (!/^(incumbent|attempt|discovery):/u.test(slot.id) || entry.child === undefined) return false;
         if (slot.child !== undefined)
           return slot.child.pid === entry.child.pid && slot.child.incarnation === entry.child.incarnation;
-        if (slot.unidentifiedPid !== entry.child.pid || intent.kind !== 'readable') return false;
+        if (slot.unidentifiedPid !== entry.child.pid) return false;
+        if (slot.id.startsWith('discovery:')) {
+          const discovery = readDiscoveryRecordDisposition(
+            createRealRuntime(this.#runDir.endsWith('run-dev') ? 'dev' : 'prod', {
+              baseDir: dirname(dirname(this.#runDir)),
+            }),
+            join(this.#runDir, 'coordinator.json'),
+          );
+          return (
+            discovery.kind === 'record' &&
+            slot.id === `discovery:${discovery.record.bootToken}` &&
+            discovery.record.supervision?.launchId === entry.id &&
+            discovery.record.pid === entry.child.pid &&
+            discovery.record.incarnation === entry.child.incarnation
+          );
+        }
+        if (intent.kind !== 'readable') return false;
         const identity =
           slot.id === `attempt:${intent.intent.attemptChild?.attemptId}`
             ? intent.intent.attemptChild
@@ -903,6 +937,11 @@ export class SupervisorLaunchMemory {
       ...(signal === 'SIGTERM'
         ? {
             termDelivered: true,
+            killMonotonicAt:
+              current.termDelivered === true
+                ? current.killMonotonicAt
+                : Number(process.hrtime.bigint() / 1_000_000n) +
+                  ((current.killAt ?? current.terminationAt) - current.terminationAt),
             killAt:
               current.termDelivered === true
                 ? current.killAt
@@ -910,6 +949,14 @@ export class SupervisorLaunchMemory {
           }
         : { killDelivered: true }),
     });
+  }
+
+  terminationGraceElapsed(reservation: LaunchReservation): boolean {
+    const current = this.children().find((entry) => matchesReservation(entry, reservation));
+    if (current?.termDelivered !== true) return false;
+    return current.killMonotonicAt === undefined
+      ? Date.now() >= (current.killAt ?? Infinity)
+      : Number(process.hrtime.bigint() / 1_000_000n) >= current.killMonotonicAt;
   }
 
   release(): boolean {

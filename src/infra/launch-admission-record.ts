@@ -29,6 +29,7 @@ const admissionSchema = z
     child: processSchema,
     parent: processSchema,
     admittedAt: z.number().int().positive(),
+    admittedMonotonicMs: z.number().int().nonnegative().optional(),
     lifetime: z.object({ dev: z.number(), ino: z.number() }).optional(),
     discoveredAt: z.number().int().positive().optional(),
     build: z.object({
@@ -135,8 +136,8 @@ export function removeOwnLaunchAdmission(runDir: string, launchId: string): void
 const lifetimes = new Map<string, { path: string; lease: FileLockLease; inode: { dev: number; ino: number } }>();
 
 function admissionEnvelope(admission: LaunchAdmission): LaunchAdmission {
-  const { version, launchId, child, parent, admittedAt, build, purpose } = admission;
-  return { version, launchId, child, parent, admittedAt, build, purpose };
+  const { version, launchId, child, parent, admittedAt, admittedMonotonicMs, build, purpose } = admission;
+  return { version, launchId, child, parent, admittedAt, admittedMonotonicMs, build, purpose };
 }
 
 /** The address is immutable; no timestamp from the filesystem can establish admission timing. */
@@ -155,6 +156,7 @@ function launchLifetimePath(runDir: string, admission: LaunchAdmission): string 
         envelope.build.buildSetId,
         envelope.build.bundleHash,
         envelope.build.flavor,
+        ...(envelope.admittedMonotonicMs === undefined ? [] : [envelope.admittedMonotonicMs]),
       ]),
     ),
   ).toString('base64url');
@@ -208,13 +210,15 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
       const tuple: unknown = JSON.parse(
         inflateRawSync(Buffer.from(chunks.join(''), 'base64url'), { maxOutputLength: 8192 }).toString('utf8'),
       );
-      if (!Array.isArray(tuple) || tuple.length !== 10) throw new Error('Incomplete lifetime envelope');
+      if (!Array.isArray(tuple) || (tuple.length !== 10 && tuple.length !== 11))
+        throw new Error('Incomplete lifetime envelope');
       const envelope = admissionSchema.parse({
         version: 1,
         launchId,
         child: { pid: tuple[0], incarnation: tuple[1] },
         parent: { pid: tuple[2], incarnation: tuple[3] },
         admittedAt: tuple[4],
+        admittedMonotonicMs: tuple[10],
         purpose: tuple[5],
         build: { version: tuple[6], buildSetId: tuple[7], bundleHash: tuple[8], flavor: tuple[9] },
       });

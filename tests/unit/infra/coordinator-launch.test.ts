@@ -421,6 +421,71 @@ describe('namespace supervisor ownership', () => {
       rmSync(runDir, { recursive: true, force: true });
     }
   });
+  it.each([
+    ['startup', true],
+    ['succession', true],
+    ['startup', false],
+  ] as const)(
+    'refines an incomplete discovery slot from restored %s evidence while its child lives (launch id present: %s)',
+    (purpose, identifiedLaunch) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-discovery-restored-'));
+      const incarnation = 'original' as ProcessIncarnation;
+      const child = { pid: 999_995, incarnation };
+      const parent = { pid: 999_997, incarnation };
+      const launchId = '00000000-0000-4000-8000-000000000001';
+      const admittedAt = Date.now() - 60_000;
+      vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(incarnation);
+      vi.spyOn(nodeProcess, 'observeProcessLiveness').mockReturnValue('alive');
+      const discovery = vi.spyOn(backendDiscovery, 'readDiscoveryRecordDisposition');
+      const discoveredRecord: backendDiscovery.CoordinatorDiscoveryRecord = {
+        pid: child.pid,
+        port: 12345,
+        socketPath: '/tmp/restored.sock',
+        bundleHash: 'hash-A',
+        flavor: 'prod',
+        namespace: 'test',
+        startedAt: admittedAt,
+        token: 'token',
+        bootToken: 'boot',
+        supervision: { version: 1, launchId, admittedAt, buildSetId: 'build-A', purpose, parent },
+      };
+      discovery.mockReturnValue({
+        kind: 'record',
+        record: { ...discoveredRecord, supervision: identifiedLaunch ? discoveredRecord.supervision : undefined },
+      });
+      try {
+        const state = new SupervisorLaunchMemory(runDir, parent, 'build-A');
+        expect(state.hasUnknownOccupancy()).toBe(true);
+        publishLaunchAdmission(runDir, {
+          version: 1,
+          launchId,
+          child,
+          parent,
+          admittedAt,
+          purpose,
+          build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
+        });
+        discovery.mockReturnValue({ kind: 'record', record: { ...discoveredRecord, incarnation } });
+        state.reconcileAdmissions();
+        expect(state.children().filter((slot) => slot.id === launchId)).toHaveLength(1);
+        expect(state.hasUnknownOccupancy()).toBe(false);
+        expect(state.read().owner.mode).toBe('supervised');
+        const restored = state.children()[0];
+        expect(restored).toMatchObject({ id: launchId, child, parent, admittedAt, purpose, admissionProven: true });
+        expect(state.commitTermination(state.read().owner, restored, child, Date.now(), 80)).toBe(true);
+        state.recordTerminationDelivery(state.read().owner, restored, 'SIGTERM');
+        const delivered = state.children()[0];
+        state.reconcileAdmissions();
+        expect(state.children()).toEqual([delivered]);
+        expect(state.children()[0].termDelivered).toBe(true);
+        expect(state.children()[0].killAt).toBe(delivered.killAt);
+      } finally {
+        vi.restoreAllMocks();
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(['admission restored', 'directory completed', 'intent identity restored'] as const)(
     'repairs and normalizes the same recovery memory after %s',
     (restoration) => {
@@ -584,9 +649,16 @@ describe('namespace supervisor ownership', () => {
     }
   });
 
-  it.each(['timing', 'build', 'parent'] as const)(
-    'retains conflicting discovery %s without creating a new admission envelope',
-    (evidence) => {
+  it.each([
+    ['timing', true],
+    ['build', true],
+    ['parent', true],
+    ['timing', false],
+    ['build', false],
+    ['parent', false],
+  ] as const)(
+    'retains conflicting discovery %s without creating a new admission envelope (incarnation present: %s)',
+    (evidence, identified) => {
       const runDir = mkdtempSync(join(tmpdir(), 'coral-conflicting-envelope-'));
       const incarnation = probeProcessIncarnation(process.pid);
       if (incarnation === null) throw new Error('Test process incarnation is unavailable');
@@ -610,7 +682,7 @@ describe('namespace supervisor ownership', () => {
           kind: 'record',
           record: {
             pid: child.pid,
-            incarnation,
+            ...(identified ? { incarnation } : {}),
             port: 12345,
             socketPath: '/tmp/conflict.sock',
             bundleHash: evidence === 'build' ? 'hash-conflict' : 'hash-A',

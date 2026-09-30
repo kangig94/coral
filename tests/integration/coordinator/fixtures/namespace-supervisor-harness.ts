@@ -16,6 +16,7 @@ SupervisorLaunchMemory.prototype.read = function () {
       kind: 'memory',
       pid: process.pid,
       at: Date.now(),
+      monotonicAt: Number(process.hrtime.bigint() / 1_000_000n),
       authority: this.hasAuthority(state.owner),
       state,
     }) + '\n',
@@ -31,6 +32,7 @@ SupervisorLaunchMemory.prototype.reserve = function (...args) {
       kind: 'reservation',
       pid: process.pid,
       at: Date.now(),
+      monotonicAt: Number(process.hrtime.bigint() / 1_000_000n),
       authority: this.hasAuthority(state.owner),
       state,
     }) + '\n',
@@ -55,7 +57,17 @@ if (executable === '--launch-legacy') {
 
   let coordinator: ChildProcess | null = null;
   let refusedKill = false;
+  const readWallClock = Date.now;
   process.on('message', (message: unknown) => {
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      'fixtureClockJump' in message &&
+      typeof message.fixtureClockJump === 'number'
+    ) {
+      const offset = message.fixtureClockJump;
+      Date.now = () => readWallClock() + offset;
+    }
     if (message === 'fixture-status-hold')
       updateLaunchStatus(runDir, (status) => ({
         ...status,

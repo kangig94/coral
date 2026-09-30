@@ -156,6 +156,7 @@ type MemoryObservation = {
   kind: 'memory' | 'reservation' | 'signal' | 'replacement-signal';
   pid: number;
   at?: number;
+  monotonicAt?: number;
   target?: number;
   signal?: string;
   exitCode?: number | null;
@@ -2856,9 +2857,108 @@ describe('namespace supervisor recovery', () => {
     }
   }, 30_000);
 
-  it.skipIf(process.platform !== 'linux').each(['readable', 'corrupt'] as const)(
-    'enforces the original %s admission deadline after takeover without resuming the stopped child',
-    async (admission) => {
+  it('does not accumulate observation supervisors after unobservable acquisition and requester disconnection', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-observer-disconnect-'));
+    roots.push(home);
+    const fixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14', backend: 'admission-freeze' });
+    const harness = join(home, 'observer.cjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      external: ['node:*'],
+      banner: { js: 'var __fixtureImportMetaUrl=require("url").pathToFileURL(__filename).href;' },
+      define: { 'import.meta.url': '__fixtureImportMetaUrl' },
+      plugins: [
+        {
+          name: 'unobservable-observer-lock',
+          setup(builder) {
+            builder.onLoad({ filter: /\/infra\/fs-lock\.ts$/ }, ({ path }) => ({
+              contents: readFileSync(path, 'utf8').replace(
+                'export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): ExclusiveFileLockAttempt {',
+                `export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): ExclusiveFileLockAttempt {
+                if (process.env.CORAL_FIXTURE_UNOBSERVABLE_LOCK === '1') return { kind: 'unobservable', cause: new Error('fixture EACCES') };`,
+              ),
+              loader: 'ts',
+            }));
+          },
+        },
+      ],
+    });
+    const observers: ReturnType<typeof spawn>[] = [];
+    let ownedChild: number | undefined;
+    try {
+      for (let trigger = 0; trigger < 3; trigger++) {
+        const runDir = join(home, `run-${trigger}`);
+        const observer = spawn(process.execPath, [harness, join(fixture.root, 'bridge', 'coral-backend.cjs')], {
+          env: {
+            ...process.env,
+            HOME: home,
+            TMPDIR: home,
+            CORAL_SENTINEL_RUN_DIR: runDir,
+            CORAL_OBSERVATION_CHALLENGE: 'fixture',
+            CORAL_FIXTURE_UNOBSERVABLE_LOCK: '1',
+          },
+          stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+        });
+        observers.push(observer);
+        await waitForCondition(() => readLaunchStatus(runDir).kind === 'readable', 5_000);
+        expect(readLaunchStatus(runDir)).toMatchObject({
+          kind: 'readable',
+          status: { lockHold: { disposition: 'supervisor-lock-unobservable' } },
+        });
+        observer.disconnect();
+        await waitForCondition(() => observer.exitCode !== null || observer.signalCode !== null, 1_000);
+        expect(observers.filter((child) => child.exitCode === null && child.signalCode === null)).toHaveLength(0);
+      }
+      const runDir = join(home, 'owned');
+      const observer = spawn(process.execPath, [harness, join(fixture.root, 'bridge', 'coral-backend.cjs')], {
+        env: {
+          ...process.env,
+          HOME: home,
+          TMPDIR: home,
+          CORAL_SENTINEL_RUN_DIR: runDir,
+          CORAL_OBSERVATION_CHALLENGE: 'fixture',
+        },
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      });
+      observers.push(observer);
+      const record = new SupervisorEvidence(runDir, join(home, 'supervisor-memory.jsonl'));
+      await waitForCondition(() => record.memory()?.launch?.phase === 'admitted', 5_000);
+      ownedChild = record.memory()?.launch?.child?.pid;
+      observer.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(observer.exitCode).toBeNull();
+      expect(observer.signalCode).toBeNull();
+      expect(record.lockHolder()?.pid).toBe(observer.pid);
+    } finally {
+      for (const observer of observers) {
+        if (observer.connected) observer.disconnect();
+        if (observer.exitCode === null && observer.signalCode === null) {
+          const exited = new Promise<void>((resolve) => observer.once('exit', () => resolve()));
+          observer.kill('SIGKILL');
+          await exited;
+        }
+      }
+      if (ownedChild !== undefined && !childHasExited(ownedChild)) process.kill(ownedChild, 'SIGKILL');
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it.skipIf(process.platform !== 'linux').each([
+    ['readable', 0],
+    ['corrupt', 0],
+    ['readable', 10_000],
+    ['readable', -10_000],
+  ] as const)(
+    'enforces the original %s admission deadline after takeover without resuming the stopped child (clock jump: %s)',
+    async (admission, clockJump) => {
+      const readWallClock = Date.now;
+      const startedWall = readWallClock();
+      const startedMonotonic = performance.now();
       const roots: string[] = [];
       const home = mkdtempSync(join(tmpdir(), 'coral-red-inherited-admission-'));
       roots.push(home);
@@ -2924,6 +3024,8 @@ describe('namespace supervisor recovery', () => {
         const subject = listLaunchSubjects(runDir).find((entry) => entry.admission?.launchId === launchId);
         if (subject?.lifetimePath === undefined || subject.inode === undefined)
           throw new Error('Missing lifetime inode');
+        const admittedMonotonicMs = subject.admission?.admittedMonotonicMs;
+        if (admittedMonotonicMs === undefined) throw new Error('Missing monotonic admission time');
         if (admission === 'corrupt') writeFileSync(launchAdmissionPath(runDir, launchId), '{');
         const observerIncarnation = probeProcessIncarnation(process.pid);
         if (observerIncarnation === null) throw new Error('Missing observer incarnation');
@@ -2943,17 +3045,24 @@ describe('namespace supervisor recovery', () => {
         serviceProbe = setInterval(() => {
           serviceAnswers.push(replacementServing(independentRunDir, 'prod', independentPid!));
         }, 100);
-        await waitForCondition(() => Date.now() >= admittedAt + 2_800, 4_000);
+        await waitForCondition(
+          () => Number(process.hrtime.bigint() / 1_000_000n) >= admittedMonotonicMs + 2_800,
+          4_000,
+        );
         process.kill(stalledPid, 'SIGSTOP');
         parent.kill('SIGKILL');
 
         replacement = spawn(process.execPath, [harness, join(recovery.root, 'bridge', 'coral-backend.cjs')], {
           env,
-          stdio: 'ignore',
+          stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
         });
         await waitForCondition(() => record.read().owner?.process.pid === replacement?.pid, 10_000);
         expect(record.lockHolder()?.pid).toBe(replacement.pid);
         expect(namespaceLockHolders(runDir)).toEqual([replacement.pid]);
+        if (clockJump !== 0) {
+          replacement.send({ fixtureClockJump: clockJump });
+          vi.spyOn(Date, 'now').mockImplementation(() => readWallClock() + clockJump);
+        }
         await waitForCondition(() => record.memory()?.launch?.child?.pid === stalledPid, 500);
         expect(record.memory()?.launch).toMatchObject({ phase: 'admitted', admittedAt, child: { pid: stalledPid } });
         expect(listLaunchSubjects(runDir).find((entry) => entry.admission?.launchId === launchId)).toMatchObject({
@@ -2966,12 +3075,16 @@ describe('namespace supervisor recovery', () => {
         await waitForCondition(
           () =>
             stalledPid !== undefined && (observeProcessLiveness(stalledPid) === 'absent' || childHasExited(stalledPid)),
-          Math.max(1, admittedAt + 4_000 + 1_000 - Date.now()),
+          Math.max(1, admittedMonotonicMs + 5_000 - Number(process.hrtime.bigint() / 1_000_000n)),
         );
         expect(
-          Date.now(),
-          JSON.stringify({ admittedAt, memory: memoryObservations(join(home, 'supervisor-memory.jsonl')).slice(-10) }),
-        ).toBeLessThan(admittedAt + 5_000);
+          Number(process.hrtime.bigint() / 1_000_000n),
+          JSON.stringify({
+            admittedAt,
+            clockDrift: readWallClock() - startedWall - (performance.now() - startedMonotonic),
+            memory: memoryObservations(join(home, 'supervisor-memory.jsonl')).slice(-10),
+          }),
+        ).toBeLessThan(admittedMonotonicMs + 5_000);
         const retirement = memoryObservations(join(home, 'supervisor-memory.jsonl')).filter(
           (event) =>
             event.pid === replacement?.pid &&
@@ -2979,9 +3092,16 @@ describe('namespace supervisor recovery', () => {
             event.state.launch.terminationAt !== undefined,
         );
         expect(retirement.length).toBeGreaterThan(0);
-        expect(retirement.every((event) => event.state.launch!.terminationAt! >= admittedAt + 4_000)).toBe(true);
+        expect(retirement.every((event) => event.monotonicAt! >= admittedMonotonicMs + 4_000)).toBe(true);
         await waitForCondition(() => !existsSync(subject.path) && !existsSync(subject.lifetimePath!), 2_000);
-        expect(Date.now()).toBeLessThan(admittedAt + 5_000);
+        expect(
+          Number(process.hrtime.bigint() / 1_000_000n),
+          JSON.stringify({
+            clockDrift: readWallClock() - startedWall - (performance.now() - startedMonotonic),
+            admittedAt,
+            memory: memoryObservations(join(home, 'supervisor-memory.jsonl')).slice(-10),
+          }),
+        ).toBeLessThan(admittedMonotonicMs + 5_000);
         clearInterval(serviceProbe);
         expect(serviceAnswers.length).toBeGreaterThan(0);
         expect((await Promise.all(serviceAnswers)).every(Boolean)).toBe(true);
@@ -2993,6 +3113,7 @@ describe('namespace supervisor recovery', () => {
         );
         expect(observeProcessLiveness(stalledPid) === 'absent' || childHasExited(stalledPid)).toBe(true);
       } finally {
+        vi.restoreAllMocks();
         clearInterval(serviceProbe);
         const currentPid = record.read().launch?.child?.pid;
         record.close();

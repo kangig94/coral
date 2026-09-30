@@ -479,7 +479,7 @@ function spawnAdmittedChild(
         return;
       const current = record.currentChild(reservation, identity);
       const signal = current?.termDelivered === true ? 'SIGKILL' : 'SIGTERM';
-      if (signal === 'SIGKILL' && Date.now() < (current?.killAt ?? Infinity)) return;
+      if (signal === 'SIGKILL' && !record.terminationGraceElapsed(reservation)) return;
       try {
         if (child.kill(signal)) {
           record.recordTerminationDelivery(owner, reservation, signal);
@@ -675,7 +675,7 @@ function escalateWatchedChild(input: {
     return 'refused';
   const current = record.currentChild(reservation, identity);
   const signal = current?.termDelivered === true ? 'SIGKILL' : 'SIGTERM';
-  if (signal === 'SIGKILL' && now < (current?.killAt ?? Infinity)) return 'refused';
+  if (signal === 'SIGKILL' && !record.terminationGraceElapsed(reservation)) return 'refused';
   if (
     terminationCommitted(record, owner.current, reservation, identity) &&
     probeProcessIncarnation(identity.pid) === identity.incarnation
@@ -1218,7 +1218,11 @@ async function acquireLaunchOwnership(
     };
     let requested = false;
     for (let retry = 0; !replacement || retry < 150; retry += 1) {
-      if (replacement && (!process.connected || process.ppid !== sourcePid)) return { kind: 'finished', exitCode: 1 };
+      if (
+        ((replacement || process.env.CORAL_OBSERVATION_CHALLENGE !== undefined) && !process.connected) ||
+        (replacement && process.ppid !== sourcePid)
+      )
+        return { kind: 'finished', exitCode: 1 };
       if (replacement && !offered) {
         await sleep(POLL_MS);
         continue;
@@ -1419,7 +1423,10 @@ async function reconcileInheritedChild(
   const overdue =
     (slot.phase === 'admitted' &&
       slot.admittedAt !== undefined &&
-      now >= Math.min(slot.admittedAt + startupBudgetMs, slot.attemptDeadline ?? Infinity)) ||
+      (slot.admittedMonotonicMs === undefined
+        ? now >= Math.min(slot.admittedAt + startupBudgetMs, slot.attemptDeadline ?? Infinity)
+        : Number(process.hrtime.bigint() / 1_000_000n) - slot.admittedMonotonicMs >=
+          Math.min(startupBudgetMs, (slot.attemptDeadline ?? Infinity) - slot.admittedAt))) ||
     (slot.phase === 'serving' && now - watch.lastHealthy >= timing.lapseMs);
   if (!overdue && watch.terminationAt === null) return repairBridge;
   if (watch.terminationAt !== null) {
@@ -1428,7 +1435,7 @@ async function reconcileInheritedChild(
       return repairBridge;
     }
     if (
-      now >= (slot.killAt ?? Infinity) &&
+      record.terminationGraceElapsed(slot) &&
       record.commitTermination(owner.current, slot, child, now, timing.graceMs) &&
       !signalInheritedChild(record, owner.current, slot, 'SIGKILL')
     ) {

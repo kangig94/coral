@@ -31,6 +31,7 @@ type ReplacementSupervisorControl = {
 type ReplacementSupervisorAttempt = {
   control: ReplacementSupervisorControl;
   root: string;
+  sourceIncarnation: ProcessIncarnation;
   challenge: string;
   supervisor: ChildProcess;
   settled: boolean;
@@ -67,6 +68,17 @@ function retryReplacementSupervisor(control: ReplacementSupervisorControl, error
   }, RETRY_MS);
 }
 
+function sourceIdentityHold(attempt: ReplacementSupervisorAttempt, held: boolean): void {
+  const path = join(attempt.control.runDir, 'coordinator.json');
+  updateLaunchStatus(attempt.control.runDir, (status) => ({
+    ...status,
+    admissionHolds: [
+      ...(status.admissionHolds ?? []).filter((hold) => hold.path !== path),
+      ...(held ? [{ path, disposition: 'unknown' as const }] : []),
+    ],
+  }));
+}
+
 function repairReplacementSupervisor(attempt: ReplacementSupervisorAttempt): void {
   const { control, root } = attempt;
   if (attempt.settled) return;
@@ -75,16 +87,24 @@ function repairReplacementSupervisor(attempt: ReplacementSupervisorAttempt): voi
     return;
   }
   const retry = (): void => {
-    const sourceIncarnation = probeProcessIncarnation(process.pid);
-    if (sourceIncarnation === null) return;
     setTimeout(() => {
+      if (attempt.settled) return;
+      if (attempt.retirementAt !== null) {
+        attempt.repairStarted = false;
+        return;
+      }
       const observed = readUpgradeIntent(control.runDir);
       const completed =
         observed.kind === 'readable' &&
         observed.intent.disposition === 'completed' &&
         observed.intent.incumbent.pid === process.pid &&
-        observed.intent.incumbent.incarnation === sourceIncarnation;
-      if (!completed && servingSourceStillPresent(control, sourceIncarnation)) repairReplacementSupervisor(attempt);
+        observed.intent.incumbent.incarnation === attempt.sourceIncarnation;
+      const source = probeProcessIncarnation(process.pid);
+      const unknown = source === null;
+      sourceIdentityHold(attempt, unknown && !completed);
+      if (completed || (source !== null && source !== attempt.sourceIncarnation)) return;
+      if (unknown) retry();
+      else if (servingSourceStillPresent(control, attempt.sourceIncarnation)) repairReplacementSupervisor(attempt);
     }, RETRY_MS);
   };
   void control
@@ -99,6 +119,7 @@ function repairReplacementSupervisor(attempt: ReplacementSupervisorAttempt): voi
 function finishReplacementAttempt(attempt: ReplacementSupervisorAttempt, error: Error | null): void {
   if (attempt.settled) return;
   attempt.settled = true;
+  sourceIdentityHold(attempt, false);
   clearInterval(attempt.retirementPoll);
   clearTimeout(attempt.deadline);
   attempt.supervisor.unref();
@@ -129,7 +150,7 @@ function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void 
   const { supervisor } = attempt;
   if (attempt.settled || supervisor.pid === undefined || attempt.killSent) return;
   if (supervisor.exitCode !== null || supervisor.signalCode !== null) return;
-  const now = Date.now();
+  const now = performance.now();
   const gap = now - attempt.lastWake;
   attempt.lastWake = now;
   if (attempt.accepted && gap > SENTINEL_TIMING.schedulingGapMs) {
@@ -210,16 +231,22 @@ function receiveReplacementMessage(attempt: ReplacementSupervisorAttempt, messag
     message.id === attempt.outstanding &&
     attempt.outstanding !== null
   ) {
-    attempt.lastAnswer = Date.now();
+    attempt.lastAnswer = performance.now();
     attempt.outstanding = null;
     attempt.retirementAt = null;
     replacementHold(attempt, false);
     if ('normalized' in message && message.normalized === true) finishReplacementAttempt(attempt, null);
-  } else if (message.kind === 'coral-recovery-owned' && !attempt.accepted) {
+  } else if (
+    message.kind === 'coral-recovery-owned' &&
+    !attempt.accepted &&
+    !attempt.settled &&
+    attempt.termDeliveredAt === null &&
+    !attempt.killSent
+  ) {
     attempt.accepted = true;
     attempt.launchedIncarnation ??=
       attempt.supervisor.pid === undefined ? null : probeProcessIncarnation(attempt.supervisor.pid);
-    attempt.lastAnswer = Date.now();
+    attempt.lastAnswer = performance.now();
     attempt.lastWake = attempt.lastAnswer;
     attempt.retirementAt = null;
     clearTimeout(attempt.deadline);
@@ -241,10 +268,10 @@ function servingSourceStillPresent(
   try {
     const runtime = createRealRuntime(control.manifest.flavor, { baseDir: join(control.runDir, '..', '..') });
     const observed = readDiscoveryRecordDisposition(runtime);
+    if (observed.kind !== 'record') return observed.kind !== 'missing';
     return (
-      observed.kind === 'record' &&
       observed.record.pid === process.pid &&
-      observed.record.incarnation === sourceIncarnation
+      (observed.record.incarnation === undefined || observed.record.incarnation === sourceIncarnation)
     );
   } catch {
     return true;
@@ -281,14 +308,15 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
   const attempt: ReplacementSupervisorAttempt = {
     control,
     root,
+    sourceIncarnation,
     challenge,
     supervisor,
     settled: false,
     accepted: false,
     bridgeReady: false,
     repairStarted: false,
-    lastAnswer: Date.now(),
-    lastWake: Date.now(),
+    lastAnswer: performance.now(),
+    lastWake: performance.now(),
     sequence: 0,
     outstanding: null,
     launchedIncarnation,
@@ -302,7 +330,7 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
   attempt.retirementPoll = setInterval(() => pollReplacementRetirement(attempt), SENTINEL_TIMING.challengeMs);
   attempt.retirementPoll.unref();
   attempt.deadline = setTimeout(() => {
-    attempt.retirementAt = Date.now();
+    attempt.retirementAt = performance.now();
   }, ACCEPTANCE_DEADLINE_MS);
   attempt.deadline.unref();
   supervisor.once('spawn', () => {
@@ -356,7 +384,7 @@ export async function resumeLegacyUpgradeObservation(
   manifest: StrictBundleManifest | null,
   budgetMs: number,
 ): Promise<void> {
-  const deadline = Date.now() + budgetMs;
+  const deadline = performance.now() + budgetMs;
   const observed = readUpgradeIntent(runDir);
   if (
     observed.kind !== 'readable' ||
@@ -396,7 +424,7 @@ export async function resumeLegacyUpgradeObservation(
       (manifest === null ? null : validatedRunningBuildRoot(runDir, installedRoot, manifest)) ??
       validatedRunningBuildRoot(runDir, observed.intent.target.pluginRootLabel, observed.intent.target.build);
     if (root === null) return report('no-validated-observer-build');
-    if (Date.now() >= deadline) return report('acknowledgement-budget-exhausted');
+    if (performance.now() >= deadline) return report('acknowledgement-budget-exhausted');
     const bundleDir = join(root, 'bridge');
     const challenge = randomUUID();
     const child = spawn(
@@ -432,7 +460,7 @@ export async function resumeLegacyUpgradeObservation(
         };
         const timeout = setTimeout(
           () => finish('observer-acknowledgement-timed-out'),
-          Math.max(0, deadline - Date.now()),
+          Math.max(0, deadline - performance.now()),
         );
         child.once('error', (error) => finish(String(error)));
         child.once('exit', exited);
