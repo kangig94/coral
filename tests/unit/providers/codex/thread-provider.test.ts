@@ -49,6 +49,16 @@ type MockLease = AppServerSession & {
   subscribeMock: ReturnType<typeof vi.fn>;
 };
 
+const LISTED_SIZES = {
+  data: ['gpt-6-astra', 'gpt-6-sol', 'gpt-5.6-terra', 'gpt-6-luna'].map((model) => ({
+    model,
+    hidden: false,
+    upgrade: null,
+    supportedReasoningEfforts: [],
+  })),
+  nextCursor: null,
+};
+
 function makeLease(
   rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>,
   effectiveConfig: Record<string, unknown> = {},
@@ -57,9 +67,11 @@ function makeLease(
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
   const closed = createDeferred<Error | void>();
   const rpcMock = vi.fn((method: string, params: Record<string, unknown>) =>
-    method === 'config/read'
-      ? (configRead?.(params) ?? Promise.resolve({ config: effectiveConfig }))
-      : rpcImpl(method, params),
+    method === 'model/list'
+      ? Promise.resolve(LISTED_SIZES)
+      : method === 'config/read'
+        ? (configRead?.(params) ?? Promise.resolve({ config: effectiveConfig }))
+        : rpcImpl(method, params),
   );
   const subscribeMock = vi.fn((next: (message: { method: string; params?: Record<string, unknown> }) => void) => {
     handlers.add(next);
@@ -387,10 +399,10 @@ describe('codexThreadProvider', () => {
 
     expect(lease.rpcMock).toHaveBeenCalledWith('config/read', { cwd: TEST_WORKSPACE, includeLayers: false });
     expect(downstreamRpc).not.toHaveBeenCalled();
-    expect(lease.rpcMock.mock.calls.map(([method]) => method)).not.toEqual(
-      expect.arrayContaining(['thread/start', 'thread/resume', 'turn/start']),
-    );
+    expect(lease.rpcMock.mock.calls.map(([method]) => method)).toEqual(['config/read']);
     expect(events).toHaveLength(1);
+    if (events[0].kind !== 'terminal') throw new Error('Expected terminal');
+    expect(events[0].terminal).not.toHaveProperty('model');
     expect(events[0]).toMatchObject({
       kind: 'terminal',
       terminal: {
