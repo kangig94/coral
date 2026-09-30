@@ -202,10 +202,7 @@ async function createDurableFixture(version?: string, schemaSuffix?: string): Pr
       buildSetId: strict.buildSetId,
       bundleHash,
       protocols: ['prepare', 'commit'],
-      accepts: [
-        { owner: 'durable-cli', generation: 1 },
-        { owner: 'child-principals', generation: 1 },
-      ],
+      accepts: [{ owner: 'durable-cli', generation: 1 }],
     })}\n`,
   );
   mkdirSync(join(fixture.root, 'fixtures'));

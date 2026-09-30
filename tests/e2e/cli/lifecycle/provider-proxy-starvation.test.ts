@@ -245,6 +245,8 @@ function startCli(fixture: Fixture, promptPath: string, watchdogMs: number): Cli
   const {
     CORAL_CHILD: _coralChild,
     CORAL_CHILD_PRINCIPAL_HANDLE: _childPrincipal,
+    CORAL_CHILD_CREDENTIAL_ID: _childCredentialId,
+    CORAL_CHILD_CREDENTIAL_KEY: _childCredentialKey,
     CORAL_JOB_ID: _coralJobId,
     CORAL_SESSION_ID: _coralSessionId,
     ...topLevelEnv

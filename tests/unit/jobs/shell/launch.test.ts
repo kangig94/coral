@@ -58,7 +58,7 @@ import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { hydrateJobRecoveryProjection, JobStore } from '#src/jobs/store.js';
@@ -326,7 +326,7 @@ function createService(
     }
   };
   return new ExecutionService(ctx, {
-    childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+    childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
@@ -355,7 +355,7 @@ function createServiceThroughProductionComposition(
   if (provider !== undefined) providerRegistry.register(provider);
   const operationRegistry = new LocalOperationRegistry();
   const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
-  const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids);
+  const childPrincipalRegistry = testChildPrincipalRegistry(runtime.ids);
   const services = createExecutionServices({
     world: {
       identity: {

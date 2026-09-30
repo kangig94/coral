@@ -138,7 +138,6 @@ function assembleSuccessionCommitter(
     writers: () => state.lifecycleController,
     kbDaemon: kbDaemonSupervisorWithTrackedShutdown,
     launchCoordinator: world.launchCoordinator,
-    childPrincipals: world.childPrincipalRegistry,
     providerHosts: providerHostTransfer,
     setLaunchFenceActive: (active) => runtimeState.setLaunchFenceActive(active),
     waitHandover: {

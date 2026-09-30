@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -30,7 +30,6 @@ import { SuccessionWriterParkedError } from '#src/store/db.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
-import type { Principal } from '#src/security/principal.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 import {
   createProviderHostCommandOperations,
@@ -55,8 +54,14 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import { IdleTimer } from '#src/coordinator/live/idle.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { domainSuccess } from '#src/transport/tool-result.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
-import { ChildPrincipalNonceLedger } from '#src/infra/child-principal-nonce-ledger.js';
+import { ChildPrincipalRegistry, type ChildPrincipalCredential } from '#src/coordinator/child-principal-registry.js';
+import { createStoreChildPrincipalCredentials } from '#src/coordinator/child-principal-credentials.js';
+import { childPrincipalAuthFromEnv } from '#src/transport/ipc/child-principal-auth.js';
+import { CORAL_CHILD_CREDENTIAL_ID, CORAL_CHILD_CREDENTIAL_KEY } from '#src/security/child-principal-env.js';
+import type { ChildProvenRequest } from '#src/security/child-credential.js';
+import type { Capability } from '#src/security/capability.js';
+import type { Database } from '#src/store/db.js';
+import { childCredentialDatabase } from '#tests/helpers/child-principal-registry.js';
 import { testPrincipal } from '#tests/helpers/principal.js';
 import { createRequestLeaseOwner } from '#src/coordinator/live/request-leases.js';
 import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
@@ -1064,223 +1069,356 @@ describe('ipc server', () => {
     await expect(sender.list()).rejects.toThrow(/Work directory must be absolute and normalized/u);
   });
 
-  it('authenticates catalog requests through child principal handles and rejects over-cap/replayed requests', async () => {
-    const childPrincipal: Principal = {
-      subject: 'operator',
-      transport: 'ipc',
-      credential: { kind: 'child-principal', id: 'job-a:session-a' },
-      binding: { kind: 'unbound' },
-      attenuatedCaps: new Set(['jobs:read']),
-    };
-    const ports: HttpHandlerPorts = {
-      ...createPorts(),
-      childPrincipals: {
-        authenticate: vi.fn((auth, namespace, nowMs) => {
-          if (
-            namespace === null &&
-            nowMs === 0 &&
-            auth.handle === 'handle-a' &&
-            auth.jobId === 'job-a' &&
-            auth.sessionId === 'session-a'
-          ) {
-            return childPrincipal;
-          }
-          return null;
-        }),
-      },
-    };
-    const listener = createIpcServer(ports);
-    const socketPath = makeSocketPath();
+  describe('challenged child authentication', () => {
+    type ChallengedAuth = Extract<NonNullable<ReturnType<typeof childPrincipalAuthFromEnv>>, { kind: 'challenged' }>;
+    type CapturedProof = Readonly<{ auth: ReturnType<ChallengedAuth['prove']>; request: ChildProvenRequest }>;
 
-    await listenIpcServer(listener, socketPath);
-    try {
-      await expect(
-        requestIpcMethod(
-          socketPath,
-          'jobs.list',
-          {},
-          {
-            auth: {
-              kind: 'child',
-              handle: 'handle-a',
-              token: 'nonce-1',
-              jobId: 'job-a',
-              sessionId: 'session-a',
-            },
-          },
-        ),
-      ).resolves.toEqual({ jobs: [] });
-
-      const denied = await requestIpcMethod(
-        socketPath,
-        'coordinator.listExpansion',
-        {},
+    /** Each call is a separate coordinator incarnation over the same store. */
+    function registryOn(db: Database): ChildPrincipalRegistry {
+      return new ChildPrincipalRegistry(
+        { randomBytes },
+        createStoreChildPrincipalCredentials(() => db),
         {
-          auth: {
-            kind: 'child',
-            handle: 'handle-a',
-            token: 'nonce-2',
-            jobId: 'job-a',
-            sessionId: 'session-a',
-          },
+          namespace: 'test-namespace',
         },
-      ).catch((error: unknown) => error);
+      );
+    }
 
-      expect(denied).toBeInstanceOf(IpcRpcError);
-      expect(denied).toMatchObject({
-        code: 'missing_capability',
-        rpcCode: -32603,
-        message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
-        data: {
-          code: 'missing_capability',
-          message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
-          detail: { requires: expect.any(String) },
-        },
+    function issue(registry: ChildPrincipalRegistry, caps: readonly Capability[] = ['jobs:read', 'kb:read']) {
+      return registry.register({
+        issuer: 'durable-job',
+        parentPrincipal: testPrincipal(),
+        childCaps: caps,
+        namespace: 'test-namespace',
+        parentJobId: 'job-a',
+        parentSessionId: 'session-a',
+        nowMs: 0,
       });
+    }
 
-      // An operational route gates before catalog dispatch, so the authenticated child must read the same
-      // authorization answer there or the nested-session instruction and its exit code are lost. Every
-      // operational route whose refusal this change moved off `unauthorized` is listed, not just the new ones.
-      for (const method of [
-        'jobs.abort',
-        providerProxySetContainRpcSpec.name,
-        'transport.health',
-        providerHostListRpcSpec.name,
-      ]) {
-        const deniedOperationalRoute = await requestIpcMethod(
-          socketPath,
-          method,
-          {},
-          {
-            auth: {
-              kind: 'child',
-              handle: 'handle-a',
-              token: 'nonce-4',
-              jobId: 'job-a',
-              sessionId: 'session-a',
-            },
-          },
-        ).catch((error: unknown) => error);
+    /** The auth a launched child's CLI derives from its environment. */
+    function childAuth(credential: ChildPrincipalCredential, captured: CapturedProof[] = []): ChallengedAuth {
+      const auth = childPrincipalAuthFromEnv({
+        [CORAL_CHILD_CREDENTIAL_ID]: credential.credentialId,
+        [CORAL_CHILD_CREDENTIAL_KEY]: credential.privateKey,
+        CORAL_JOB_ID: credential.parentJobId,
+        CORAL_SESSION_ID: credential.parentSessionId,
+      });
+      if (auth === null || auth === undefined || typeof auth === 'function')
+        throw new Error('Expected challenged auth');
+      return {
+        kind: 'challenged',
+        prove: (challenge, request) => {
+          const proof = auth.prove(challenge, request);
+          captured.push({ auth: proof, request });
+          return proof;
+        },
+      };
+    }
 
-        expect(deniedOperationalRoute, method).toBeInstanceOf(IpcRpcError);
-        expect(deniedOperationalRoute, method).toMatchObject({
-          code: 'missing_capability',
-          message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
-          data: { code: 'missing_capability' },
+    /** Sends each frame on one connection and collects one answer per frame. */
+    async function exchange(socketPath: string, frames: readonly Record<string, unknown>[]): Promise<unknown[]> {
+      const socket = await connectRawIpcSocket(socketPath);
+      try {
+        const answers: unknown[] = [];
+        let buffered = '';
+        let deliver: (line: string) => void = () => undefined;
+        socket.on('data', (chunk) => {
+          buffered += chunk.toString();
+          for (let end = buffered.indexOf('\n'); end !== -1; end = buffered.indexOf('\n')) {
+            const line = buffered.slice(0, end);
+            buffered = buffered.slice(end + 1);
+            deliver(line);
+          }
         });
+        for (const frame of frames) {
+          const line = await withTestTimeout(
+            new Promise<string>((resolve) => {
+              deliver = resolve;
+              socket.write(`${JSON.stringify(frame)}\n`);
+            }),
+            'raw IPC answer',
+          );
+          answers.push(JSON.parse(line) as unknown);
+        }
+        return answers;
+      } finally {
+        socket.destroy();
+      }
+    }
+
+    function replayFrame(proof: CapturedProof): Record<string, unknown> {
+      return {
+        kind: 'request',
+        id: proof.request.id,
+        method: proof.request.method,
+        ...(proof.request.params === undefined ? {} : { params: proof.request.params }),
+        auth: proof.auth,
+      };
+    }
+
+    async function serve(registry: ChildPrincipalRegistry, overrides: Partial<HttpHandlerPorts> = {}) {
+      const listener = createIpcServer({ ...createPorts(), childPrincipals: registry, ...overrides });
+      const socketPath = makeSocketPath();
+      await listenIpcServer(listener, socketPath);
+      return { listener, socketPath };
+    }
+
+    it('should authenticate catalog requests and keep capability refusals for an authenticated child', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const credential = issue(registry, ['jobs:read']);
+      const { listener, socketPath } = await serve(registry);
+      try {
+        const auth = childAuth(credential);
+        await expect(requestIpcMethod(socketPath, 'jobs.list', {}, { auth })).resolves.toEqual({ jobs: [] });
+
+        const denied = await requestIpcMethod(socketPath, 'coordinator.listExpansion', {}, { auth }).catch(
+          (error: unknown) => error,
+        );
+        expect(denied).toBeInstanceOf(IpcRpcError);
+        expect(denied).toMatchObject({
+          code: 'missing_capability',
+          rpcCode: -32603,
+          message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
+          data: {
+            code: 'missing_capability',
+            message:
+              'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
+            detail: { requires: expect.any(String) },
+          },
+        });
+
+        // An operational route gates before catalog dispatch, so the authenticated child must read the same
+        // authorization answer there or the nested-session instruction and its exit code are lost.
+        for (const method of [
+          'jobs.abort',
+          providerProxySetContainRpcSpec.name,
+          'transport.health',
+          providerHostListRpcSpec.name,
+        ]) {
+          const deniedOperationalRoute = await requestIpcMethod(socketPath, method, {}, { auth }).catch(
+            (error: unknown) => error,
+          );
+          expect(deniedOperationalRoute, method).toMatchObject({
+            code: 'missing_capability',
+            data: { code: 'missing_capability' },
+          });
+        }
+
+        // No principal at all stays `unauthorized`: the caller presented no credential to attenuate.
+        await expect(requestIpcMethod(socketPath, providerHostListRpcSpec.name, {})).rejects.toMatchObject({
+          code: 'unauthorized',
+        });
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should refuse one proof reused for a second request', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const captured: CapturedProof[] = [];
+      const { listener, socketPath } = await serve(registry);
+      try {
+        await expect(
+          requestIpcMethod(socketPath, 'jobs.list', {}, { auth: childAuth(issue(registry), captured) }),
+        ).resolves.toEqual({ jobs: [] });
+        const proof = captured[0];
+        if (proof === undefined) throw new Error('Expected a captured proof');
+
+        const [withoutChallenge] = await exchange(socketPath, [replayFrame(proof)]);
+        const [, underFreshChallenge] = await exchange(socketPath, [
+          { kind: 'request', id: 'challenge', method: 'transport.challenge' },
+          replayFrame(proof),
+        ]);
+
+        for (const answer of [withoutChallenge, underFreshChallenge]) {
+          expect(answer).toMatchObject({ kind: 'error', error: { data: { code: 'unauthorized' } } });
+        }
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should refuse a second challenge on one connection', async () => {
+      const { listener, socketPath } = await serve(registryOn(childCredentialDatabase()));
+      try {
+        const [first, second] = await exchange(socketPath, [
+          { kind: 'request', id: 1, method: 'transport.challenge' },
+          { kind: 'request', id: 2, method: 'transport.challenge' },
+        ]);
+
+        expect(first).toMatchObject({ kind: 'response', result: { namespace: 'test-namespace' } });
+        expect(second).toMatchObject({ kind: 'error', error: { data: { code: 'unauthorized' } } });
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should refuse at the successor a proof the incumbent accepted before it crashed', async () => {
+      const db = childCredentialDatabase();
+      const incumbent = registryOn(db);
+      const credential = issue(incumbent);
+      const captured: CapturedProof[] = [];
+      const first = await serve(incumbent);
+      try {
+        await expect(
+          requestIpcMethod(first.socketPath, 'jobs.list', {}, { auth: childAuth(credential, captured) }),
+        ).resolves.toEqual({ jobs: [] });
+      } finally {
+        await closeIpcServer(first.listener);
+      }
+      const proof = captured[0];
+      if (proof === undefined) throw new Error('Expected a captured proof');
+
+      const successor = await serve(registryOn(db));
+      try {
+        const [withoutChallenge] = await exchange(successor.socketPath, [replayFrame(proof)]);
+        const [, underFreshChallenge] = await exchange(successor.socketPath, [
+          { kind: 'request', id: 'challenge', method: 'transport.challenge' },
+          replayFrame(proof),
+        ]);
+
+        for (const answer of [withoutChallenge, underFreshChallenge]) {
+          expect(answer).toMatchObject({ kind: 'error', error: { data: { code: 'unauthorized' } } });
+        }
+      } finally {
+        await closeIpcServer(successor.listener);
+      }
+    });
+
+    it('should re-authenticate a child that stays alive across succession against the successor', async () => {
+      const db = childCredentialDatabase();
+      const incumbent = registryOn(db);
+      const auth = childAuth(issue(incumbent));
+      const first = await serve(incumbent);
+      try {
+        await expect(requestIpcMethod(first.socketPath, 'jobs.list', {}, { auth })).resolves.toEqual({ jobs: [] });
+      } finally {
+        await closeIpcServer(first.listener);
       }
 
-      // No principal at all stays `unauthorized`: the caller presented no credential to attenuate.
-      const unauthenticatedOperationalRoute = await requestIpcMethod(
-        socketPath,
-        providerHostListRpcSpec.name,
-        {},
-      ).catch((error: unknown) => error);
-
-      expect(unauthenticatedOperationalRoute).toBeInstanceOf(IpcRpcError);
-      expect(unauthenticatedOperationalRoute).toMatchObject({ code: 'unauthorized' });
-
-      await expect(
-        requestIpcMethod(
-          socketPath,
-          'jobs.list',
-          {},
-          {
-            auth: {
-              kind: 'child',
-              handle: 'handle-a',
-              token: 'nonce-3',
-              jobId: 'job-b',
-              sessionId: 'session-a',
-            },
-          },
-        ),
-      ).rejects.toThrow('IPC boot token or child principal required');
-    } finally {
-      await closeIpcServer(listener);
-    }
-  });
-
-  it('authorizes KB search for an adopted child handle against its origin namespace', async () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-succession-ipc-'));
-    tempDirs.push(runDir);
-    const incumbentLedger = new ChildPrincipalNonceLedger(runDir);
-    const successorLedger = new ChildPrincipalNonceLedger(runDir);
-    const ids = { randomBytes: (length: number) => Buffer.alloc(length, 7) };
-    const originNamespace = () => 'incumbent-namespace';
-    const incumbent = new ChildPrincipalRegistry(ids, { ledger: incumbentLedger, originNamespace });
-    const credential = incumbent.register({
-      issuer: 'durable-job',
-      parentPrincipal: testPrincipal(),
-      childCaps: ['kb:read'],
-      namespace: 'incumbent-namespace',
-      parentJobId: 'job-a',
-      parentSessionId: 'session-a',
-      nowMs: 0,
+      const readSearch = vi.fn(async () => domainSuccess({ results: [] }));
+      const basePorts = createPorts();
+      const successor = await serve(registryOn(db), { kb: { ...basePorts.kb, readSearch } });
+      try {
+        await expect(
+          requestIpcMethod(successor.socketPath, 'kb.entries.search', { q: 'carried work' }, { auth }),
+        ).resolves.toEqual({ results: [] });
+        expect(readSearch).toHaveBeenCalledOnce();
+      } finally {
+        await closeIpcServer(successor.listener);
+      }
     });
-    const receipt = incumbent.prepareTransfer('attempt', 0);
-    if (receipt === null) throw new Error('Expected child transfer receipt.');
-    expect(
-      incumbent.authenticate(
-        {
-          kind: 'child',
-          handle: credential.handle,
-          token: 'consumed',
-          jobId: 'job-a',
-          sessionId: 'session-a',
-        },
-        null,
-        1,
-      ),
-    ).not.toBeNull();
-    incumbent.fenceAuthentication();
 
-    const successor = new ChildPrincipalRegistry(ids, { ledger: successorLedger, originNamespace });
-    expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 2)).toBe(true);
-    const basePorts = createPorts();
-    const readSearch = vi.fn(async () => domainSuccess({ results: [] }));
-    const ports: HttpHandlerPorts = {
-      ...basePorts,
-      identity: { ...basePorts.identity, namespace: 'successor-namespace' },
-      childPrincipals: successor,
-      kb: { ...basePorts.kb, readSearch },
-    };
-    const listener = createIpcServer(ports);
-    const socketPath = makeSocketPath();
-    await listenIpcServer(listener, socketPath);
-    try {
-      await expect(
-        requestIpcMethod(
-          socketPath,
-          'kb.entries.search',
-          { q: 'carried work' },
-          {
-            auth: { kind: 'child', handle: credential.handle, token: 'fresh', jobId: 'job-a', sessionId: 'session-a' },
-          },
-        ),
-      ).resolves.toEqual({ results: [] });
-      expect(readSearch).toHaveBeenCalledOnce();
-      await expect(
-        requestIpcMethod(
-          socketPath,
-          'kb.entries.search',
-          { q: 'replay' },
-          {
-            auth: {
-              kind: 'child',
-              handle: credential.handle,
-              token: 'consumed',
-              jobId: 'job-a',
-              sessionId: 'session-a',
-            },
-          },
-        ),
-      ).rejects.toThrow();
-    } finally {
-      await closeIpcServer(listener);
-      incumbentLedger.close();
-      successorLedger.close();
-    }
+    it('should accept at each of two overlapping generations only proofs answering its own challenge', async () => {
+      const db = childCredentialDatabase();
+      const incumbent = registryOn(db);
+      const successor = registryOn(db);
+      const credential = issue(incumbent);
+      const incumbentCaptured: CapturedProof[] = [];
+      const successorCaptured: CapturedProof[] = [];
+      const older = await serve(incumbent);
+      const newer = await serve(successor);
+      try {
+        await expect(
+          requestIpcMethod(older.socketPath, 'jobs.list', {}, { auth: childAuth(credential, incumbentCaptured) }),
+        ).resolves.toEqual({ jobs: [] });
+        await expect(
+          requestIpcMethod(newer.socketPath, 'jobs.list', {}, { auth: childAuth(credential, successorCaptured) }),
+        ).resolves.toEqual({ jobs: [] });
+        const [incumbentProof] = incumbentCaptured;
+        const [successorProof] = successorCaptured;
+        if (incumbentProof === undefined || successorProof === undefined) throw new Error('Expected proofs');
+
+        const [, crossedIntoSuccessor] = await exchange(newer.socketPath, [
+          { kind: 'request', id: 'challenge', method: 'transport.challenge' },
+          replayFrame(incumbentProof),
+        ]);
+        const [, crossedIntoIncumbent] = await exchange(older.socketPath, [
+          { kind: 'request', id: 'challenge', method: 'transport.challenge' },
+          replayFrame(successorProof),
+        ]);
+
+        for (const answer of [crossedIntoSuccessor, crossedIntoIncumbent]) {
+          expect(answer).toMatchObject({ kind: 'error', error: { data: { code: 'unauthorized' } } });
+        }
+      } finally {
+        await closeIpcServer(older.listener);
+        await closeIpcServer(newer.listener);
+      }
+    });
+
+    it('should authenticate a retry whose earlier reply was lost with a fresh challenge', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const captured: CapturedProof[] = [];
+      const auth = childAuth(issue(registry), captured);
+      const basePorts = createPorts();
+      let calls = 0;
+      const list = vi.fn(() => {
+        calls += 1;
+        return calls === 1 ? new Promise<never>(() => undefined) : [];
+      });
+      const { listener, socketPath } = await serve(registry, {
+        jobs: { ...basePorts.jobs, list } as unknown as HttpHandlerPorts['jobs'],
+      });
+      try {
+        await expect(requestIpcMethod(socketPath, 'jobs.list', {}, { auth, timeoutMs: 200 })).rejects.toThrow();
+        await expect(requestIpcMethod(socketPath, 'jobs.list', {}, { auth })).resolves.toEqual({ jobs: [] });
+
+        expect(list).toHaveBeenCalledTimes(2);
+        expect(captured).toHaveLength(2);
+        expect(captured[0]?.auth).not.toEqual(captured[1]?.auth);
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should deny a credential whose record is unreadable by name while serving other children', async () => {
+      const db = childCredentialDatabase();
+      const issuer = registryOn(db);
+      const damaged = issue(issuer);
+      const intact = issue(issuer);
+      db.prepare('UPDATE meta SET value = ? WHERE key = ?').run(
+        'not json',
+        `child_principal_credential.v1:${damaged.credentialId}`,
+      );
+      const { listener, socketPath } = await serve(registryOn(db));
+      try {
+        const refused = await requestIpcMethod(socketPath, 'jobs.list', {}, { auth: childAuth(damaged) }).catch(
+          (error: unknown) => error,
+        );
+        expect(refused).toBeInstanceOf(IpcRpcError);
+        expect(refused).toMatchObject({
+          code: 'child_credential_unavailable',
+          data: { code: 'child_credential_unavailable', credentialId: damaged.credentialId },
+        });
+        await expect(requestIpcMethod(socketPath, 'jobs.list', {}, { auth: childAuth(intact) })).resolves.toEqual({
+          jobs: [],
+        });
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should never authenticate a challenged credential presented through the bearer protocol', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const credential = issue(registry);
+      const { listener, socketPath } = await serve(registry);
+      try {
+        for (const handle of [credential.credentialId, credential.privateKey]) {
+          await expect(
+            requestIpcMethod(
+              socketPath,
+              'jobs.list',
+              {},
+              { auth: { kind: 'child', handle, token: 'nonce', jobId: 'job-a', sessionId: 'session-a' } },
+            ),
+          ).rejects.toMatchObject({ code: 'unauthorized' });
+        }
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
   });
 
   it('exposes unauthenticated ping and boot-token-authenticated health while refusing legacy shutdown', async () => {

@@ -646,3 +646,60 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
     },
   );
 });
+
+/** A signal whose target is `process.ppid`, directly or through a local bound to it in the signalling function. */
+function parentSignalCalls(source: string, fileName: string): readonly string[] {
+  const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const isParentPid = (expression: ts.Expression): boolean => {
+    const unwrapped = unwrappedExpression(expression);
+    return (
+      ts.isPropertyAccessExpression(unwrapped) &&
+      unwrapped.name.text === 'ppid' &&
+      ts.isIdentifier(unwrapped.expression) &&
+      unwrapped.expression.text === 'process'
+    );
+  };
+  const parentPidNames = new Set<string>();
+  const collect = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      isParentPid(node.initializer)
+    ) {
+      parentPidNames.add(node.name.text);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(parsed);
+  return barePidSignalCalls(source, fileName)
+    .filter((call) => {
+      const target = call.arguments[0];
+      if (target === undefined) return false;
+      const unwrapped = unwrappedExpression(target);
+      return isParentPid(unwrapped) || (ts.isIdentifier(unwrapped) && parentPidNames.has(unwrapped.text));
+    })
+    .map((call) => `${fileName}:${call.getText(parsed)}`);
+}
+
+describe('a child never signals its parent', () => {
+  it('no module aims a signal at process.ppid, because a child cannot pin the parent it would signal', () => {
+    const violations = listSourceFiles(SRC_ROOT).flatMap((filePath) =>
+      parentSignalCalls(readFileSync(filePath, 'utf-8'), canonicalSrcPath(filePath)),
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it('recognizes a parent pid carried through a local', () => {
+    const fixture = `
+      function retireParent() {
+        const parentPid = process.ppid;
+        process.kill(parentPid, 'SIGTERM');
+        process.kill(process.ppid, 'SIGKILL');
+      }
+    `;
+
+    expect(parentSignalCalls(fixture, 'negative-control.ts')).toHaveLength(2);
+  });
+});

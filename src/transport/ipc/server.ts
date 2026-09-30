@@ -44,6 +44,7 @@ import { linkRequestLeaseIdentity } from '../../runtime/request-lease-identity.j
 import { acquireDirectoryLock } from '../../infra/fs-lock.js';
 import type { Capability } from '../../security/capability.js';
 import type { Principal } from '../../security/principal.js';
+import type { ChildAuthChallenge } from '../../security/child-credential.js';
 import { authorize } from '../../security/policy/authorize.js';
 import { buildTransportErrorResponse } from '../error-response.js';
 import { lifecycleRefusalResult } from '../lifecycle-refusal.js';
@@ -65,6 +66,29 @@ const IPC_UNAUTHORIZED_RESPONSE = {
   code: 'unauthorized',
   message: 'IPC boot token or child principal required',
 };
+const CHALLENGE_UNAVAILABLE_RESPONSE = {
+  code: 'unauthorized',
+  message: 'This coordinator issues no further authentication challenge on this connection',
+};
+const CHILD_CREDENTIAL_UNREADABLE_RESPONSE = {
+  code: 'child_credential_unavailable',
+  message:
+    "This nested Coral command's credential cannot be verified because its authorization record is unreadable, so it was refused. Other jobs are unaffected. Retry the parent workflow instead of editing CORAL_* environment variables.",
+};
+
+/**
+ * A challenge lives only in the memory of the connection it was issued on, and is taken from there before the
+ * request after it is dispatched, so it authenticates at most one request.
+ */
+type IpcConnectionChallenge = Readonly<{
+  taken: ChildAuthChallenge | null;
+  issued: boolean;
+  awaitProof(challenge: ChildAuthChallenge): void;
+}>;
+
+type IpcAuthentication =
+  | Readonly<{ kind: 'principal'; principal: Principal | null }>
+  | Readonly<{ kind: 'credential-unreadable'; credentialId: string }>;
 
 const IPC_OPERATOR_PRINCIPAL: Principal = {
   subject: 'operator',
@@ -272,18 +296,31 @@ function armShutdownRecoveryContinuation(socket: Socket, continuation: () => voi
   return complete;
 }
 
-function authenticateIpcRequest(auth: IpcAuthMetadata | undefined, rpcPorts: HttpHandlerPorts): Principal | null {
-  if (auth?.kind === 'child') {
-    return rpcPorts.childPrincipals?.authenticate(auth, null, rpcPorts.identity.now()) ?? null;
+/** The bearer `child` protocol is refused outright: this build never issues a credential it could verify. */
+function authenticateIpcRequest(
+  request: JsonRpcRequestEnvelope,
+  challenge: ChildAuthChallenge | null,
+  rpcPorts: HttpHandlerPorts,
+): IpcAuthentication {
+  const auth: IpcAuthMetadata | undefined = request.auth;
+  if (auth?.kind === 'child-proof') {
+    const authentication = rpcPorts.childPrincipals?.authenticate(
+      auth,
+      challenge,
+      { method: request.method, id: request.id, params: request.params },
+      rpcPorts.identity.now(),
+    ) ?? { kind: 'refused' as const };
+    if (authentication.kind === 'credential-unreadable') return authentication;
+    return {
+      kind: 'principal',
+      principal: authentication.kind === 'authenticated' ? authentication.principal : null,
+    };
   }
 
-  if (auth?.kind !== 'boot') {
-    return null;
+  if (auth?.kind !== 'boot' || !constantTimeCredentialMatch(auth.token, rpcPorts.identity.bootToken)) {
+    return { kind: 'principal', principal: null };
   }
-  if (!constantTimeCredentialMatch(auth.token, rpcPorts.identity.bootToken)) {
-    return null;
-  }
-  return IPC_OPERATOR_PRINCIPAL;
+  return { kind: 'principal', principal: IPC_OPERATOR_PRINCIPAL };
 }
 
 function routeCredentialRefusal(spec: IpcOperationalSpec): typeof IPC_UNAUTHORIZED_RESPONSE | null {
@@ -957,6 +994,7 @@ async function dispatchFrame(
   startRequest: () => void,
   finishRequest: () => void,
   options: { writeDrainTimeoutMs: number },
+  connection: IpcConnectionChallenge,
 ): Promise<void> {
   const finishUnaryResponse = async (response: JsonRpcEnvelope, onUnwritten?: () => void): Promise<void> => {
     const wroteResponse = await writeEnvelope(socket, response, {
@@ -991,7 +1029,43 @@ async function dispatchFrame(
     return;
   }
 
-  const principal = authenticateIpcRequest(request.auth, rpcPorts);
+  if (operationalSpec?.dispatch.kind === 'challenge') {
+    const issuer = rpcPorts.childPrincipals;
+    if (issuer === undefined || connection.issued) {
+      await finishUnaryResponse(
+        requestErrorResponse(request.id, CHALLENGE_UNAVAILABLE_RESPONSE.message, CHALLENGE_UNAVAILABLE_RESPONSE),
+      );
+      return;
+    }
+    const challenge = issuer.issueChallenge();
+    // Armed before the answer is written: the proof frame can arrive as soon as the client reads it.
+    connection.awaitProof(challenge);
+    const answer = { kind: 'response', id: request.id, result: challenge } as const;
+    if (!(await writeEnvelope(socket, answer, { drainTimeoutMs: options.writeDrainTimeoutMs }))) {
+      socket.destroy();
+    }
+    return;
+  }
+
+  let authentication: IpcAuthentication;
+  try {
+    authentication = authenticateIpcRequest(request, connection.taken, rpcPorts);
+  } catch (error: unknown) {
+    rpcPorts.identity.log(`IPC authentication error (${request.method}): ${formatError(error)}\n`);
+    const response = buildTransportErrorResponse(error);
+    await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
+    return;
+  }
+  if (authentication.kind === 'credential-unreadable') {
+    await finishUnaryResponse(
+      requestErrorResponse(request.id, CHILD_CREDENTIAL_UNREADABLE_RESPONSE.message, {
+        ...CHILD_CREDENTIAL_UNREADABLE_RESPONSE,
+        credentialId: authentication.credentialId,
+      }),
+    );
+    return;
+  }
+  const principal = authentication.principal;
   if (operationalSpec?.authentication === 'principal') {
     const authError = authorizeIpcOperation(request, operationalSpec, principal);
     if (authError) {
@@ -1194,13 +1268,19 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
   const carriedFrame = Buffer.from(pendingFrameBase64, 'base64');
   const pending = { frame: Buffer.alloc(0) };
   let inflightRequest = false;
+  let outstandingChallenge: ChildAuthChallenge | null = null;
+  let challengeIssued = false;
   let pendingFrameBytes = framer.pendingBytes();
   resources.aggregatePendingFrameBytes += pendingFrameBytes;
-  const firstFrameTimer = timers.setTimeout(() => {
-    rpcPorts.identity.log(`IPC socket did not send a complete frame within ${firstFrameTimeoutMs}ms; destroying\n`);
-    socket.destroy();
-  }, firstFrameTimeoutMs);
-  firstFrameTimer.unref?.();
+  const armFrameTimer = (): ReturnType<typeof timers.setTimeout> => {
+    const timer = timers.setTimeout(() => {
+      rpcPorts.identity.log(`IPC socket did not send a complete frame within ${firstFrameTimeoutMs}ms; destroying\n`);
+      socket.destroy();
+    }, firstFrameTimeoutMs);
+    timer.unref?.();
+    return timer;
+  };
+  let firstFrameTimer = armFrameTimer();
 
   const updatePendingFrameBytes = (nextBytes: number) => {
     resources.aggregatePendingFrameBytes += nextBytes - pendingFrameBytes;
@@ -1274,6 +1354,8 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
       releasePendingFrameBytes();
       socket.off('data', onData);
       pendingSockets.delete(socket);
+      const taken = outstandingChallenge;
+      outstandingChallenge = null;
       void dispatchFrame(
         frame,
         socket,
@@ -1286,6 +1368,17 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
         },
         finishRequest,
         { writeDrainTimeoutMs },
+        {
+          taken,
+          issued: challengeIssued,
+          // Never re-offered for forwarding: the challenge exists only in this process.
+          awaitProof: (challenge) => {
+            outstandingChallenge = challenge;
+            challengeIssued = true;
+            firstFrameTimer = armFrameTimer();
+            socket.on('data', onData);
+          },
+        },
       );
       return;
     }

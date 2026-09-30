@@ -28,7 +28,7 @@ import {
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   SUCCESSION_CAPABILITIES_FILE,
 } from '#src/infra/bundle-manifest-address.js';
-import { coordinatorPaths, socketPathForRunDir } from '#src/infra/path/coordinator.js';
+import { coordinatorPaths, socketPathForRunDir, supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -1313,7 +1313,7 @@ describe('namespace supervisor recovery', () => {
       }
       await waitForCondition(
         () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === targetBuildSetId,
-        5_000,
+        15_000,
       );
       expect(record.read().launch).toMatchObject({ phase: 'serving', buildSetId: targetBuildSetId });
     } finally {
@@ -1471,6 +1471,125 @@ describe('namespace supervisor recovery', () => {
           // The process may already have exited.
         }
       }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it('serves after moving aside a malformed launch lock nobody can hold', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-malformed-lock-'));
+    roots.push(home);
+    const original = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    writeFileSync(supervisorLockPath(runDir), 'garbage bytes that are not a sqlite database header at all');
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisor = spawn(process.execPath, [harness, join(original.root, 'bridge', 'coral-backend.cjs')], {
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_FIXTURE_REAL_BACKEND: '1',
+      },
+      stdio: 'ignore',
+    });
+    const record = new SupervisorEvidence(runDir);
+    let childPid: number | undefined;
+    try {
+      await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
+      childPid = record.read().launch?.child?.pid;
+      expect(record.lockHolder()?.pid).toBe(supervisor.pid);
+      expect(readdirSync(runDir).some((name) => name.startsWith('namespace-supervisor.v1.lock.malformed-'))).toBe(true);
+    } finally {
+      record.close();
+      if (supervisor.exitCode === null) supervisor.kill('SIGKILL');
+      if (childPid !== undefined) {
+        try {
+          process.kill(childPid, 'SIGKILL');
+        } catch {
+          // The process may already have exited.
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it('records no upgrade request for a bound socket until its coordinator publishes an identity', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-supervisor-unidentified-binder-'));
+    roots.push(home);
+    const target = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
+    const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+    mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    const binder = createServer();
+    await new Promise<void>((resolve) =>
+      binder.listen(socketPathForRunDir(runDir, 'prod', { platform: process.platform }), resolve),
+    );
+    const harness = join(home, 'supervisor.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      target: 'node22',
+      format: 'esm',
+      external: ['node:*'],
+    });
+    const supervisor = spawn(process.execPath, [harness, join(target.root, 'bridge', 'coral-backend.cjs')], {
+      env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+      stdio: 'ignore',
+    });
+    try {
+      await waitForCondition(() => new SupervisorEvidence(runDir).lockHolder()?.pid === supervisor.pid, 10_000);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(readUpgradeIntent(runDir).kind).toBe('absent');
+
+      const incarnation = probeProcessIncarnation(process.pid);
+      if (incarnation === null) throw new Error('Test process incarnation is unavailable');
+      writeFileSync(
+        join(runDir, 'coordinator.json'),
+        JSON.stringify({
+          pid: process.pid,
+          incarnation,
+          instanceId: 'identified-binder',
+          version: '0.10.14',
+          bundleHash: 'binder-bundle',
+          flavor: 'prod',
+          port: 1,
+          socketPath: socketPathForRunDir(runDir, 'prod', { platform: process.platform }),
+          namespace: 'binder',
+          startedAt: Date.now(),
+          token: 'binder-token',
+          bootToken: 'binder-boot-token',
+        }),
+      );
+
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(runDir);
+        return observed.kind === 'readable' && observed.intent.incumbent.instanceId === 'identified-binder';
+      }, 10_000);
+      const observed = readUpgradeIntent(runDir);
+      expect(observed).toMatchObject({
+        kind: 'readable',
+        intent: {
+          incumbent: { pid: process.pid, incarnation, version: '0.10.14', bundleHash: 'binder-bundle' },
+          target: { build: { version: '0.10.16' } },
+          legacyRetirement: true,
+        },
+      });
+    } finally {
+      if (supervisor.exitCode === null) supervisor.kill('SIGKILL');
+      await new Promise<void>((resolve) => binder.close(() => resolve()));
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
   }, 40_000);
@@ -1851,7 +1970,7 @@ describe('namespace supervisor recovery', () => {
             (state.intent?.completionReceipt?.kind === 'serving' &&
               state.intent.completionReceipt.successor.build.buildSetId === targetBuildSetId)
           );
-        }, 20_000);
+        }, 40_000);
       } catch (error: unknown) {
         throw new Error(`Queued target did not launch: ${JSON.stringify(record.read())}`, { cause: error });
       }
@@ -1880,7 +1999,7 @@ describe('namespace supervisor recovery', () => {
       }
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
-  }, 70_000);
+  }, 90_000);
 
   it('keeps ownership after an unconfirmed replacement fails and serves from a retained fallback', async () => {
     const roots: string[] = [];

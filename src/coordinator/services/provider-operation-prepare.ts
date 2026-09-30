@@ -13,7 +13,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderJobLaunch } from '../../jobs/records.js';
 import { toProviderRequest } from '../../jobs/provider-request.js';
 import type { ProviderSession } from '../../sessions/entry.js';
-import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
+import { CORAL_CHILD_CREDENTIAL_ID, CORAL_CHILD_CREDENTIAL_KEY } from '../../security/child-principal-env.js';
 import type { ChildPrincipalRegistry } from '../child-principal-registry.js';
 import type {
   ProviderOperationIdentity,
@@ -143,7 +143,8 @@ export function materializeProviderOperationPrepare(
       protectedEnv: {
         CORAL_JOB_ID: operation.jobId,
         CORAL_SESSION_ID: source.sessionId,
-        [CORAL_CHILD_PRINCIPAL_HANDLE]: child.handle,
+        [CORAL_CHILD_CREDENTIAL_ID]: child.credentialId,
+        [CORAL_CHILD_CREDENTIAL_KEY]: child.privateKey,
       },
       platform: source.platform,
     }),

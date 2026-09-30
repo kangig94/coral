@@ -49,11 +49,11 @@ import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
 import { ChildPrincipalRegistry } from '../child-principal-registry.js';
-import { ChildPrincipalNonceLedger } from '../../infra/child-principal-nonce-ledger.js';
+import { createStoreChildPrincipalCredentials } from '../child-principal-credentials.js';
 import { readJobLaunchOriginNamespace } from '../../jobs/succession-coverage.js';
 import { createDefaultStoreReadContext } from '../../read-model/read-context.js';
 import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
-import { isLivePhase } from '../../jobs/phase.js';
+import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
 import { resolveCurrentStoreEpoch } from '../../store/epoch.js';
 import { bindCustodyProcessTicket, recordChildRoleCustodyIntent } from '../../infra/custody-process-ticket.js';
 
@@ -585,24 +585,22 @@ export function createCoordinatorWorld(
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
   const eventBus = options.eventBus ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
-  const childNonceRunDir = runtime.paths.coral.coordinator?.runDir;
-  let childNonceLedger: ChildPrincipalNonceLedger | undefined;
-  if (typeof childNonceRunDir === 'string' && childNonceRunDir.length > 0) {
-    try {
-      childNonceLedger = new ChildPrincipalNonceLedger(childNonceRunDir);
-    } catch (error: unknown) {
-      log(`Child principal nonce ledger is unavailable: ${errorMessage(error)}\n`);
-    }
-  }
-  const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids, {
-    ...(childNonceLedger === undefined ? {} : { ledger: childNonceLedger }),
-    originNamespace: (jobId) => {
-      const services = storeServicesRef.tryGet();
-      return services === null
-        ? null
-        : readJobLaunchOriginNamespace(services.progressStore.getDb(), jobId, createDefaultStoreReadContext());
+  const childPrincipalRegistry = new ChildPrincipalRegistry(
+    runtime.ids,
+    createStoreChildPrincipalCredentials(() => storeServicesRef.get().progressStore.getDb()),
+    {
+      namespace,
+      activeJobOrigin: (jobId) => {
+        const services = storeServicesRef.tryGet();
+        if (services === null) return null;
+        const status = services.progressStore.readStatus(jobId);
+        return status === null || isTerminalPhase(status.phase)
+          ? null
+          : readJobLaunchOriginNamespace(services.progressStore.getDb(), jobId, createDefaultStoreReadContext());
+      },
+      log,
     },
-  });
+  );
   const pluginRegistry = createPluginRegistry({
     storage: runtime.storage,
     env: runtime.env,

@@ -1,17 +1,23 @@
 import { attenuate } from '../security/attenuate.js';
-import { z } from 'zod';
 import type { Capability } from '../security/capability.js';
+import {
+  childProofSubject,
+  mintChildCredentialKeyPair,
+  verifyChildProof,
+  type ChildAuthChallenge,
+  type ChildPrincipalAuthentication,
+  type ChildProvenRequest,
+} from '../security/child-credential.js';
 import type { Principal } from '../security/principal.js';
 import {
   canonicalizePrincipalWire,
   principalFromWire,
   principalToWire,
-  principalWireSchema,
   type PrincipalWire,
   type RawPrincipalWire,
 } from '../security/principal-wire.js';
 import type { IdPort } from '../runtime/ports.js';
-import { RECOVERY_GRANT_INFIX, type ChildPrincipalNonceLedger } from '../infra/child-principal-nonce-ledger.js';
+import type { ChildPrincipalCredentialStore } from './child-principal-credentials.js';
 
 const CHILD_PRINCIPAL_TTL_MS = 24 * 60 * 60 * 1000;
 export const CHILD_PRINCIPAL_CAPABILITIES = [
@@ -21,8 +27,10 @@ export const CHILD_PRINCIPAL_CAPABILITIES = [
   'discuss:participate',
 ] as const satisfies readonly Capability[];
 
+/** `privateKey` exists only here and in the child's environment; the store keeps the public half. */
 export type ChildPrincipalCredential = {
-  readonly handle: string;
+  readonly credentialId: string;
+  readonly privateKey: string;
   readonly parentJobId: string;
   readonly parentSessionId: string;
   readonly expiresAt: number;
@@ -60,281 +68,69 @@ export type PersistedChildPrincipalRegistration = Readonly<{
   nowMs: number;
 }>;
 
-type ChildPrincipalEntry = {
-  readonly issuer: string;
-  readonly wire: PrincipalWire;
-  readonly namespace: string;
-  readonly parentJobId: string;
-  readonly parentSessionId: string;
-  readonly expiresAt: number;
-  readonly usedNonces: Set<string>;
-};
-
-export type TransferredChildPrincipal = Readonly<{
-  handle: string;
-  issuer: string;
-  authorization: ChildPrincipalAuthorization;
-  parentJobId: string;
-  parentSessionId: string;
+type ChildProofClaim = Readonly<{
+  kind: 'child-proof';
+  credentialId: string;
+  jobId: string;
+  sessionId: string;
+  proof: string;
 }>;
 
-export type ChildPrincipalSnapshot = Readonly<{
-  entries: readonly TransferredChildPrincipal[];
-  consumedNonceCheckpoint: number;
-}>;
-
-export type ChildPrincipalTransfer = ChildPrincipalSnapshot &
-  Readonly<{
-    recoveryGrantId: string;
-    authorityGeneration: number;
-  }>;
-
-const childPrincipalTransferSchema = z
-  .object({
-    entries: z.array(
-      z
-        .object({
-          handle: z.string().min(1),
-          issuer: z.string().min(1),
-          authorization: z
-            .object({
-              principalWire: principalWireSchema.passthrough(),
-              namespace: z.string().min(1),
-              expiresAtMs: z.number().int().positive(),
-            })
-            .passthrough(),
-          parentJobId: z.string().min(1),
-          parentSessionId: z.string().min(1),
-        })
-        .passthrough(),
-    ),
-    consumedNonceCheckpoint: z.number().int().nonnegative(),
-    recoveryGrantId: z.string().min(1),
-    authorityGeneration: z.number().int().positive(),
-  })
-  .passthrough();
-
-export function decodeChildPrincipalTransfer(payload: unknown): ChildPrincipalTransfer | null {
-  const parsed = childPrincipalTransferSchema.safeParse(payload);
-  if (!parsed.success) return null;
-  try {
-    return {
-      ...parsed.data,
-      entries: parsed.data.entries.map((entry) => ({
-        ...entry,
-        authorization: {
-          ...entry.authorization,
-          principalWire: canonicalizePrincipalWire(entry.authorization.principalWire),
-        },
-      })),
-    };
-  } catch {
-    return null;
-  }
-}
-
-type ChildAuthMetadata = {
-  readonly kind: 'child';
-  readonly handle: string;
-  readonly token: string;
-  readonly jobId: string;
-  readonly sessionId: string;
-};
-
+/**
+ * Issues child credentials and verifies proofs of them. Replay protection lives in challenges this incarnation
+ * issued and the connection consumed, so nothing about past authentications needs to survive this process: a
+ * successor has a different incarnation and accepts only its own challenges.
+ */
 export class ChildPrincipalRegistry {
-  private readonly entries = new Map<string, ChildPrincipalEntry>();
   private readonly ids: Pick<IdPort, 'randomBytes'>;
-  private readonly ledger: ChildPrincipalNonceLedger | null;
-  private readonly originNamespace: ((jobId: string) => string | null) | null;
-  private generation: number;
-  private fenced = false;
+  private readonly credentials: ChildPrincipalCredentialStore;
+  private readonly namespace: string;
+  private readonly activeJobOrigin: ((jobId: string) => string | null) | null;
+  private readonly incarnation: string;
+  private readonly reportedUnreadable = new Set<string>();
+  private readonly log: (message: string) => void;
 
   constructor(
     ids: Pick<IdPort, 'randomBytes'>,
+    credentials: ChildPrincipalCredentialStore,
     options: {
-      ledger?: ChildPrincipalNonceLedger;
-      originNamespace?: (jobId: string) => string | null;
-    } = {},
+      namespace: string;
+      /**
+       * The launch namespace of a job that has not reached a terminal phase, or null. A record names the namespace
+       * its job was launched in, which a successor built from another plugin root does not share.
+       */
+      activeJobOrigin?: (jobId: string) => string | null;
+      log?: (message: string) => void;
+    },
   ) {
     this.ids = ids;
-    this.ledger = options.ledger ?? null;
-    this.originNamespace = options.originNamespace ?? null;
-    this.generation = this.ledger?.generation() ?? 1;
+    this.credentials = credentials;
+    this.namespace = options.namespace;
+    this.activeJobOrigin = options.activeJobOrigin ?? null;
+    this.log = options.log ?? (() => undefined);
+    this.incarnation = ids.randomBytes(16).toString('hex');
   }
 
-  transferSnapshot(nowMs: number): ChildPrincipalSnapshot {
-    this.pruneExpired(nowMs);
+  issueChallenge(): ChildAuthChallenge {
     return {
-      entries: [...this.entries].map(([handle, entry]) => ({
-        handle,
-        issuer: entry.issuer,
-        authorization: {
-          principalWire: entry.wire,
-          namespace: entry.namespace,
-          expiresAtMs: entry.expiresAt,
-        },
-        parentJobId: entry.parentJobId,
-        parentSessionId: entry.parentSessionId,
-      })),
-      consumedNonceCheckpoint: this.ledger?.checkpoint() ?? 0,
+      challenge: this.ids.randomBytes(32).toString('base64url'),
+      incarnation: this.incarnation,
+      namespace: this.namespace,
     };
-  }
-
-  prepareTransfer(attemptId: string, nowMs: number): ChildPrincipalTransfer | null {
-    if (this.ledger === null) return null;
-    const grant = this.ledger.prepareGrant(attemptId, this.generation);
-    if (grant === null) return null;
-    return {
-      ...this.transferSnapshot(nowMs),
-      consumedNonceCheckpoint: grant.checkpoint,
-      recoveryGrantId: grant.grantId,
-      authorityGeneration: this.generation,
-    };
-  }
-
-  adoptTransfer(
-    transfer: ChildPrincipalTransfer,
-    acceptedJobIds: ReadonlySet<string>,
-    generation: number,
-    nowMs: number,
-  ): boolean {
-    if (this.ledger === null) return false;
-    if (this.originNamespace === null) return false;
-    if (new Set(transfer.entries.map((entry) => entry.handle)).size !== transfer.entries.length) return false;
-    const adopted = new Map<string, ChildPrincipalEntry>();
-    for (const entry of transfer.entries) {
-      if (
-        entry.handle.length === 0 ||
-        entry.issuer.length === 0 ||
-        entry.parentJobId.length === 0 ||
-        entry.parentSessionId.length === 0 ||
-        entry.authorization.namespace.length === 0 ||
-        entry.authorization.expiresAtMs <= nowMs ||
-        !acceptedJobIds.has(entry.parentJobId) ||
-        !this.matchesOrigin(entry.parentJobId, entry.authorization.namespace)
-      )
-        return false;
-      try {
-        adopted.set(entry.handle, {
-          issuer: entry.issuer,
-          wire: canonicalizePrincipalWire(entry.authorization.principalWire),
-          namespace: entry.authorization.namespace,
-          parentJobId: entry.parentJobId,
-          parentSessionId: entry.parentSessionId,
-          expiresAt: entry.authorization.expiresAtMs,
-          usedNonces: new Set(),
-        });
-      } catch {
-        return false;
-      }
-    }
-    const consumed = this.ledger.claimGenerationAndReplay(
-      transfer.recoveryGrantId,
-      transfer.consumedNonceCheckpoint,
-      transfer.authorityGeneration,
-      generation,
-      transfer.entries.map((entry) => entry.handle),
-    );
-    if (consumed === null) return false;
-    for (const [handle, entry] of adopted) {
-      for (const token of consumed.get(handle) ?? []) entry.usedNonces.add(token);
-    }
-    try {
-      if (this.ledger.generation() !== generation) return false;
-    } catch {
-      return false;
-    }
-    for (const [handle, entry] of adopted) {
-      this.entries.set(handle, entry);
-    }
-    this.generation = generation;
-    this.fenced = false;
-    return true;
-  }
-
-  adoptRecoveredTransfer(
-    transfer: ChildPrincipalTransfer,
-    acceptedJobIds: ReadonlySet<string>,
-    attemptId: string,
-    generation: number,
-    nowMs: number,
-  ): boolean {
-    if (this.ledger === null) return false;
-    let current: number;
-    try {
-      current = this.ledger.generation();
-    } catch {
-      return false;
-    }
-    if (generation <= current) return false;
-    const grant = this.ledger.prepareGrant(`${attemptId}${RECOVERY_GRANT_INFIX}${generation}`, current);
-    if (grant === null) return false;
-    return this.adoptTransfer(
-      {
-        ...transfer,
-        authorityGeneration: current,
-        recoveryGrantId: grant.grantId,
-        consumedNonceCheckpoint: grant.checkpoint,
-      },
-      acceptedJobIds,
-      generation,
-      nowMs,
-    );
-  }
-
-  dischargeGrants(retainedAttemptIds: ReadonlySet<string>): void {
-    this.ledger?.dischargeGrants(retainedAttemptIds);
-  }
-
-  fenceAuthentication(): void {
-    this.fenced = true;
-  }
-
-  reclaimAuthentication(generation?: number): boolean {
-    if (this.ledger === null) return false;
-    let reclaimedGeneration: number;
-    try {
-      const current = this.ledger.generation();
-      const target = generation ?? current + 1;
-      if (current > target || (current < target && !this.ledger.advanceGeneration(current, target))) return false;
-      reclaimedGeneration = target;
-    } catch {
-      return false;
-    }
-    try {
-      for (const [handle, entry] of this.entries) {
-        entry.usedNonces.clear();
-        for (const token of this.ledger.consumedTokens(handle)) entry.usedNonces.add(token);
-      }
-    } catch {
-      return false;
-    }
-    try {
-      if (this.ledger.generation() !== reclaimedGeneration) return false;
-    } catch {
-      return false;
-    }
-    this.generation = reclaimedGeneration;
-    this.fenced = false;
-    return true;
   }
 
   register(registration: ChildPrincipalRegistration): ChildPrincipalCredential {
-    this.pruneExpired(registration.nowMs);
-
     const ttlMs = registration.ttlMs ?? CHILD_PRINCIPAL_TTL_MS;
-    const expiresAt = registration.nowMs + ttlMs;
     const childPrincipal = attenuate(
       registration.parentPrincipal,
       registration.childCaps ?? CHILD_PRINCIPAL_CAPABILITIES,
     );
-
-    return this.storeAuthorization({
+    return this.issue({
       issuer: registration.issuer,
       authorization: {
         principalWire: principalToWire(childPrincipal),
         namespace: registration.namespace,
-        expiresAtMs: expiresAt,
+        expiresAtMs: registration.nowMs + ttlMs,
       },
       parentJobId: registration.parentJobId,
       parentSessionId: registration.parentSessionId,
@@ -343,12 +139,10 @@ export class ChildPrincipalRegistry {
   }
 
   registerPersistedAuthorization(registration: PersistedChildPrincipalRegistration): ChildPrincipalCredential {
-    this.pruneExpired(registration.nowMs);
     if (registration.authorization.expiresAtMs <= registration.nowMs) {
       throw new Error('Provider operation child authorization has expired.');
     }
-
-    return this.storeAuthorization({
+    return this.issue({
       ...registration,
       authorization: {
         ...registration.authorization,
@@ -357,100 +151,119 @@ export class ChildPrincipalRegistry {
     });
   }
 
-  private storeAuthorization(
+  /** Durable before it returns: a child launched with this credential can be verified by any later coordinator. */
+  private issue(
     registration: Omit<PersistedChildPrincipalRegistration, 'authorization'> & {
       authorization: ChildPrincipalAuthorization;
     },
   ): ChildPrincipalCredential {
-    const authorization: ChildPrincipalAuthorization = {
-      principalWire: registration.authorization.principalWire,
-      namespace: registration.authorization.namespace,
-      expiresAtMs: registration.authorization.expiresAtMs,
-    };
-    const handle = this.ids.randomBytes(32).toString('hex');
-
-    this.entries.set(handle, {
+    this.pruneExpired(registration.nowMs);
+    const keys = mintChildCredentialKeyPair();
+    const credentialId = this.ids.randomBytes(16).toString('hex');
+    this.credentials.write({
+      credentialId,
       issuer: registration.issuer,
-      wire: authorization.principalWire,
-      namespace: authorization.namespace,
       parentJobId: registration.parentJobId,
       parentSessionId: registration.parentSessionId,
-      expiresAt: authorization.expiresAtMs,
-      usedNonces: new Set(),
+      namespace: registration.authorization.namespace,
+      principalWire: registration.authorization.principalWire,
+      expiresAtMs: registration.authorization.expiresAtMs,
+      publicKey: keys.publicKey,
     });
-
     return {
-      handle,
+      credentialId,
+      privateKey: keys.privateKey,
       parentJobId: registration.parentJobId,
       parentSessionId: registration.parentSessionId,
-      expiresAt: authorization.expiresAtMs,
-      authorization,
+      expiresAt: registration.authorization.expiresAtMs,
+      authorization: registration.authorization,
     };
   }
 
-  authenticate(auth: ChildAuthMetadata, namespace: string | null, nowMs: number): Principal | null {
-    const entry = this.entries.get(auth.handle);
-    if (entry === undefined || this.fenced || (this.originNamespace !== null && this.ledger === null)) {
-      return null;
+  /**
+   * `challenge` is the one the requesting connection held, already consumed by that connection; null when it
+   * held none. A proof for any other challenge, incarnation, or request fails verification.
+   */
+  authenticate(
+    claim: ChildProofClaim,
+    challenge: ChildAuthChallenge | null,
+    request: ChildProvenRequest,
+    nowMs: number,
+  ): ChildPrincipalAuthentication {
+    if (challenge === null || challenge.incarnation !== this.incarnation || challenge.namespace !== this.namespace) {
+      return { kind: 'refused' };
     }
-    if (entry.expiresAt <= nowMs) {
-      this.entries.delete(auth.handle);
-      return null;
-    }
+    const read = this.credentials.read(claim.credentialId);
+    if (read.kind === 'absent') return { kind: 'refused' };
+    if (read.kind === 'unreadable') return this.unreadable(claim.credentialId);
+    const record = read.record;
     if (
-      (namespace !== null && entry.namespace !== namespace) ||
-      (this.originNamespace !== null && !this.matchesOrigin(entry.parentJobId, entry.namespace)) ||
-      entry.parentJobId !== auth.jobId ||
-      entry.parentSessionId !== auth.sessionId ||
-      entry.usedNonces.has(auth.token)
+      record.expiresAtMs <= nowMs ||
+      record.parentJobId !== claim.jobId ||
+      record.parentSessionId !== claim.sessionId ||
+      (this.activeJobOrigin !== null && this.readActiveJobOrigin(record.parentJobId) !== record.namespace) ||
+      !verifyChildProof(record.publicKey, childProofSubject(challenge, claim, request), claim.proof)
     ) {
-      return null;
+      return { kind: 'refused' };
     }
-
-    if (this.ledger !== null && !this.ledger.consume(auth.handle, auth.token, this.generation)) return null;
-    entry.usedNonces.add(auth.token);
-    return principalFromWire(entry.wire, {
-      transport: 'ipc',
-      credential: {
-        kind: 'child-principal',
-        id: `${entry.parentJobId}:${entry.parentSessionId}`,
-      },
-    });
+    let wire: PrincipalWire;
+    try {
+      wire = canonicalizePrincipalWire(record.principalWire);
+    } catch {
+      // A project root that no longer resolves binds the child to nothing it could be authorized for.
+      return { kind: 'refused' };
+    }
+    return {
+      kind: 'authenticated',
+      principal: principalFromWire(wire, {
+        transport: 'ipc',
+        credential: {
+          kind: 'child-principal',
+          id: `${record.parentJobId}:${record.parentSessionId}`,
+        },
+      }),
+    };
   }
 
-  private matchesOrigin(jobId: string, namespace: string): boolean {
+  private unreadable(credentialId: string): ChildPrincipalAuthentication {
+    if (!this.reportedUnreadable.has(credentialId)) {
+      this.reportedUnreadable.add(credentialId);
+      this.log(`Child credential ${credentialId} has an unreadable authorization record; it is refused.\n`);
+    }
+    return { kind: 'credential-unreadable', credentialId };
+  }
+
+  private readActiveJobOrigin(jobId: string): string | null {
     try {
-      return this.originNamespace?.(jobId) === namespace;
+      return this.activeJobOrigin?.(jobId) ?? null;
     } catch {
-      return false;
+      return null;
     }
   }
 
   revokeParentJob(parentJobId: string): void {
-    for (const [handle, entry] of this.entries) {
-      if (entry.parentJobId === parentJobId) {
-        this.entries.delete(handle);
-      }
-    }
+    this.forget((record) => record.parentJobId === parentJobId);
   }
 
   revokeParentSession(parentSessionId: string): void {
-    for (const [handle, entry] of this.entries) {
-      if (entry.parentSessionId === parentSessionId) {
-        this.entries.delete(handle);
-      }
-    }
+    this.forget((record) => record.parentSessionId === parentSessionId);
   }
 
   pruneExpired(nowMs: number): void {
-    for (const [handle, entry] of this.entries) {
-      if (entry.expiresAt <= nowMs) {
-        this.entries.delete(handle);
-      }
-    }
+    this.forget((record) => record.expiresAtMs <= nowMs);
   }
 
-  size(): number {
-    return this.entries.size;
+  /**
+   * A record that could not be removed stays refusable: authentication also requires the parent job to be active
+   * and the record unexpired, so a missed removal authorizes nothing.
+   */
+  private forget(matches: Parameters<ChildPrincipalCredentialStore['deleteWhere']>[0]): void {
+    try {
+      this.credentials.deleteWhere(matches);
+    } catch (error: unknown) {
+      this.log(
+        `Child credential records could not be removed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
   }
 }

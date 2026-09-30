@@ -4,7 +4,6 @@ import { z } from 'zod';
 import { backendLog } from '../../infra/backend-log.js';
 import { readLaunchAdmission } from '../../infra/launch-admission-record.js';
 import { resolveRunningBundleDir, type StrictBundleManifest } from '../../infra/bundle-manifest.js';
-import { verifyChildPrincipalRecoveryGrant } from '../../infra/child-principal-nonce-ledger.js';
 import { errorMessage, formatError } from '../../infra/error-format.js';
 import { inspectValidatedHandoffTarget, type ValidatedHandoffTarget } from '../../infra/handoff-target.js';
 import {
@@ -55,7 +54,6 @@ import {
   recordSuccessionServing,
   type SuccessionWriterGeneration,
 } from '../../store/succession-writer-generation.js';
-import { decodeChildPrincipalTransfer } from '../child-principal-registry.js';
 import { decodeDurableCliTransfer, verifyDurableCliRecoveryGrant } from '../services/durable-cli-transfer.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 import type { SuccessionAttemptChild } from './attempt-child.js';
@@ -459,21 +457,6 @@ function recoveryGrantsVerify(
       }
       if (receipt.owner === PROVIDER_PROXY_SETS_OWNER || receipt.owner === PROVIDER_OPERATIONS_OWNER) {
         return providerHostRecoveryGrantVerifies(runtime, flavor, preparation, receipt);
-      }
-      if (receipt.owner === 'child-principals') {
-        const transfer = decodeChildPrincipalTransfer(receipt.payload);
-        return (
-          transfer !== null &&
-          transfer.recoveryGrantId === receipt.recoveryGrantId &&
-          verifyChildPrincipalRecoveryGrant(
-            runtime.storage,
-            runtime.paths.coral.coordinator.runDir,
-            attemptId,
-            receipt.recoveryGrantId,
-            transfer.authorityGeneration,
-            transfer.consumedNonceCheckpoint,
-          )
-        );
       }
       return false;
     })

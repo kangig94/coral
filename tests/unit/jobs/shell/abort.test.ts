@@ -35,7 +35,7 @@ import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle } from '#src/providers/app-server-transport.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -140,7 +140,7 @@ function createService(
   if (provider !== undefined) providerRegistry.register(provider);
   const progressStore = options.progressStore ?? createProgressStore();
   return new ExecutionService(ctx, {
-    childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+    childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
     runtime,
     progressStore,
     bundleHash: options.bundleHash,

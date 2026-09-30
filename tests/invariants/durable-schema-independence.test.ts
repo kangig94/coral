@@ -19,6 +19,7 @@ const localFunctionsBySource = new WeakMap<ts.SourceFile, ReadonlyMap<string, ts
 
 const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/causality/cause-ref.ts#causeRefSchema',
+  'src/coordinator/child-principal-credentials.ts#recordSchema',
   'src/coordinator/handoff-routing/status.ts#durableHandoffRoutingBasisSchema',
   'src/coordinator/handoff-routing/status.ts#handoffRoutingMutationSchema',
   'src/coordinator/handoff-routing/status.ts#handoffRoutingTransitionSchema',

@@ -6,11 +6,17 @@ import {
   encode,
   decode,
   decodeIpcErrorData,
+  ipcAuthChallengeSchema,
   type IpcAuthMetadata,
   type JsonRpcEnvelope,
   type JsonRpcRequestEnvelope,
 } from './json-rpc.js';
 import { createLineFramer } from '../line-framing.js';
+import {
+  CHILD_AUTH_CHALLENGE_METHOD,
+  type ChildAuthChallenge,
+  type ChildProvenRequest,
+} from '../../security/child-credential.js';
 import { isLifecycleRefusalResult, lifecycleRefusalResult } from '../lifecycle-refusal.js';
 import type { TimePort } from '../../infra/port-types.js';
 
@@ -27,18 +33,25 @@ const IPC_RETRY_BACKOFF_MS = 100;
 export type IpcRequestOptions = {
   timeoutMs?: number;
   time?: TimePort;
-  auth?: IpcAuthMetadata | IpcAuthProvider | null;
+  auth?: IpcClientAuth | null;
 };
 
 export type IpcSubscriptionOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   time?: TimePort;
-  auth?: IpcAuthMetadata | IpcAuthProvider | null;
+  auth?: IpcClientAuth | null;
 };
 
 export type IpcAuthProvider = () => IpcAuthMetadata | undefined;
-export type IpcClientAuth = IpcAuthMetadata | IpcAuthProvider;
+
+/** Authenticates by answering a challenge the coordinator issues on the request's own connection. */
+export type IpcChallengedAuth = Readonly<{
+  kind: 'challenged';
+  prove(challenge: ChildAuthChallenge, request: ChildProvenRequest): IpcAuthMetadata;
+}>;
+
+export type IpcClientAuth = IpcAuthMetadata | IpcAuthProvider | IpcChallengedAuth;
 
 export type IpcSubscription<TResult> = AsyncIterable<TResult> & {
   close(): Promise<void>;
@@ -274,8 +287,81 @@ function isSubscriptionAck(value: unknown, method: string): boolean {
   return record.status === 'subscribed' && record.method === method;
 }
 
-function resolveAuthMetadata(auth: IpcAuthMetadata | IpcAuthProvider | null | undefined): IpcAuthMetadata | undefined {
-  return typeof auth === 'function' ? auth() : (auth ?? undefined);
+/** One exchange on `socket`, before the request is written; the server sends nothing else until that request. */
+async function receiveAuthChallenge(
+  socket: Socket,
+  deadlineMs: number | null,
+  timePort: TimePort,
+): Promise<ChildAuthChallenge> {
+  const challengeId = nextRequestId++;
+  return await new Promise<ChildAuthChallenge>((resolve, reject) => {
+    const framer = createLineFramer();
+    let timer: ReturnType<TimePort['setTimeout']> | null = null;
+    const finish = (settle: () => void): void => {
+      if (timer) timePort.clearTimeout(timer);
+      socket.off('data', onData);
+      socket.off('error', onError);
+      socket.off('close', onClose);
+      settle();
+    };
+    const onError = (error: Error): void => finish(() => reject(error));
+    const onClose = (): void =>
+      finish(() =>
+        reject(new Error('IPC connection closed before the coordinator issued an authentication challenge')),
+      );
+    const onData = (chunk: Buffer | string): void => {
+      for (const frame of framer.push(chunk)) {
+        if (frame.trim().length === 0) continue;
+        let envelope: JsonRpcEnvelope;
+        try {
+          envelope = decode(frame);
+        } catch (error: unknown) {
+          finish(() => reject(normalizeIpcError(error)));
+          return;
+        }
+        if (envelope.kind === 'error' && envelope.id === challengeId) {
+          finish(() => reject(buildIpcRpcError(envelope.error)));
+          return;
+        }
+        if (envelope.kind === 'response' && envelope.id === challengeId) {
+          const parsed = ipcAuthChallengeSchema.safeParse(envelope.result);
+          finish(() =>
+            parsed.success
+              ? resolve(parsed.data)
+              : reject(buildIpcError('Coordinator issued a malformed authentication challenge', envelope.result)),
+          );
+          return;
+        }
+      }
+    };
+    socket.on('data', onData);
+    socket.once('error', onError);
+    socket.once('close', onClose);
+    const budget = remainingMs(deadlineMs, timePort);
+    if (typeof budget === 'number') {
+      timer = timePort.setTimeout(() => {
+        socket.destroy(new IpcRequestTimeout(`IPC authentication challenge timed out after ${budget}ms`));
+      }, budget);
+    }
+    socket.write(`${encode({ kind: 'request', id: challengeId, method: CHILD_AUTH_CHALLENGE_METHOD })}\n`);
+  });
+}
+
+async function resolveAuthMetadata(
+  auth: IpcClientAuth | null | undefined,
+  socket: Socket,
+  request: ChildProvenRequest,
+  deadlineMs: number | null,
+  timePort: TimePort,
+): Promise<IpcAuthMetadata | undefined> {
+  if (typeof auth === 'function') return auth();
+  if (auth?.kind !== 'challenged') return auth ?? undefined;
+  try {
+    return auth.prove(await receiveAuthChallenge(socket, deadlineMs, timePort), request);
+  } catch (error: unknown) {
+    socket.destroy();
+    throw error;
+  }
 }
 
 export async function requestIpcMethod<TResult>(
@@ -285,11 +371,17 @@ export async function requestIpcMethod<TResult>(
   options?: IpcRequestOptions,
 ): Promise<TResult> {
   const timePort = options?.time ?? createRealTimePort();
-  const auth = resolveAuthMetadata(options?.auth);
   const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
   const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
   const socket = await connectSocket(socketPath, deadlineMs, timePort);
+  const auth = await resolveAuthMetadata(
+    options?.auth,
+    socket,
+    { method, id: requestId, params },
+    deadlineMs,
+    timePort,
+  );
 
   return new Promise<TResult>((resolve, reject) => {
     let settled = false;
@@ -391,11 +483,17 @@ export async function subscribeIpcMethod<TResult>(
   options?: IpcSubscriptionOptions,
 ): Promise<IpcSubscription<TResult>> {
   const timePort = options?.time ?? createRealTimePort();
-  const auth = resolveAuthMetadata(options?.auth);
   const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
   const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
   const socket = await connectSocket(socketPath, deadlineMs, timePort);
+  const auth = await resolveAuthMetadata(
+    options?.auth,
+    socket,
+    { method, id: requestId, params },
+    deadlineMs,
+    timePort,
+  );
 
   let done = false;
   let failure: Error | null = null;

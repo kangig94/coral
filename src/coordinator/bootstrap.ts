@@ -40,7 +40,6 @@ import { generationMutationCoordinationSeam } from '../store/generation-mutation
 import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import {
   processIncarnationProbeRegistrySize,
-  incarnationMayAuthorizeSignal,
   probeProcessIncarnation,
   snapshotProcessIncarnationProbeSubjects,
   terminateProcessIncarnationProbes,
@@ -337,29 +336,41 @@ async function dispatchBackendRole(): Promise<number | null> {
   return null;
 }
 
+/**
+ * A parent that stops answering is treated as lost, never signalled: a child cannot prove that the pid it would signal
+ * is still its parent at the instant the signal lands, so it holds a visible status naming that parent and nominates
+ * a replacement supervisor, which takes launch ownership once the silent parent releases its lock by exiting.
+ */
 async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLoss: () => void): Promise<void> {
   let sentinelArm: Promise<void> | null = null;
   if (process.env.CORAL_SENTINEL_ID !== undefined) {
     const sentinelId = process.env.CORAL_SENTINEL_ID;
     const parentPid = process.ppid;
     const parentIncarnation = probeProcessIncarnation(parentPid);
-    let parentRetirementAt: number | null = null;
+    const holdId = `parent:${parentPid}`;
+    let parentSilent = false;
     let lastParentProgress = Date.now();
     let lastWake = lastParentProgress;
-    const holdParentSignal = (): void => {
+    const recordParentHold = (held: boolean): void => {
       const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
       if (runDir === undefined || parentIncarnation === null) return;
       try {
         updateLaunchStatus(runDir, (status) => ({
           ...status,
           signalHolds: [
-            ...status.signalHolds.filter((hold) => hold.launchId !== `parent:${parentPid}`),
-            { launchId: `parent:${parentPid}`, pid: parentPid, incarnation: parentIncarnation },
+            ...status.signalHolds.filter((hold) => hold.launchId !== holdId),
+            ...(held ? [{ launchId: holdId, pid: parentPid, incarnation: parentIncarnation }] : []),
           ],
         }));
       } catch (error: unknown) {
         backendLog.error('Could not record unresponsive supervisor hold', error);
       }
+    };
+    const parentAnswered = (): void => {
+      lastParentProgress = Date.now();
+      if (!parentSilent) return;
+      parentSilent = false;
+      recordParentHold(false);
     };
     const supervisorMonitor = setInterval(() => {
       const now = Date.now();
@@ -369,26 +380,9 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
         lastParentProgress = now;
         return;
       }
-      if (now - lastParentProgress < SENTINEL_TIMING.lapseMs) return;
-      parentRetirementAt ??= now;
-      if (!incarnationMayAuthorizeSignal(process.platform)) {
-        holdParentSignal();
-        replaceSupervisor();
-        return;
-      }
-      if (
-        parentIncarnation !== null &&
-        process.ppid === parentPid &&
-        probeProcessIncarnation(parentPid) === parentIncarnation
-      ) {
-        try {
-          process.kill(parentPid, now - parentRetirementAt < SENTINEL_TIMING.graceMs ? 'SIGTERM' : 'SIGKILL');
-        } catch (error: unknown) {
-          backendLog.error('Could not retire unresponsive coordinator supervisor', error);
-        }
-      } else {
-        holdParentSignal();
-      }
+      if (parentSilent || now - lastParentProgress < SENTINEL_TIMING.lapseMs) return;
+      parentSilent = true;
+      recordParentHold(true);
       replaceSupervisor();
     }, SENTINEL_TIMING.challengeMs);
     supervisorMonitor.unref();
@@ -420,11 +414,12 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
         'id' in message &&
         Number.isSafeInteger(message.id)
       ) {
-        lastParentProgress = Date.now();
+        parentAnswered();
         process.send?.({ kind: 'coral-sentinel-answer', id: message.id });
       }
     });
     process.on('disconnect', () => {
+      if (parentSilent) recordParentHold(false);
       onSentinelLoss();
     });
   }

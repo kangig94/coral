@@ -75,8 +75,9 @@ import {
   TEST_PROVIDER_SCOPE,
   withTestProfileLocation,
 } from '#tests/helpers/provider-credentials.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
-import { CORAL_CHILD_PRINCIPAL_HANDLE } from '#src/security/child-principal-env.js';
+import type { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
+import { CORAL_CHILD_CREDENTIAL_ID, CORAL_CHILD_CREDENTIAL_KEY } from '#src/security/child-principal-env.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -334,7 +335,7 @@ function createService(
     eventBus,
     providerRegistry,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
-    childPrincipalRegistry: options.childPrincipalRegistry ?? new ChildPrincipalRegistry(runtime.ids),
+    childPrincipalRegistry: options.childPrincipalRegistry ?? testChildPrincipalRegistry(runtime.ids),
     coordinatorCommit: (cb) => progressStore.commit(cb),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
@@ -2042,7 +2043,7 @@ describe('ExecutionService', () => {
       it('restores the complete protected child tuple before a queued provider can launch', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = createService(ctx, { childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids) });
+        const service = createService(ctx, { childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids) });
         const { progressStore } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */
           getInternals(service);
@@ -2095,7 +2096,8 @@ describe('ExecutionService', () => {
             env: {
               CORAL_JOB_ID: jobId,
               CORAL_SESSION_ID: sessionId,
-              [CORAL_CHILD_PRINCIPAL_HANDLE]: expect.any(String),
+              [CORAL_CHILD_CREDENTIAL_ID]: expect.any(String),
+              [CORAL_CHILD_CREDENTIAL_KEY]: expect.any(String),
             },
             childAuthorization: expect.objectContaining({
               namespace: 'test-namespace',

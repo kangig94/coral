@@ -405,7 +405,7 @@ describe('AC18 first-release version pairing', () => {
     55_000,
   );
 
-  it('keeps a supervisor request owned before a starting shipped incumbent publishes discovery', async () => {
+  it('records the supervisor request only once a starting shipped incumbent publishes discovery', async () => {
     assertBuildArtifactsAvailable();
     const home = newHome();
     const marker = join(home, 'shipped-ipc-bound');
@@ -430,28 +430,26 @@ describe('AC18 first-release version pairing', () => {
     coordinators.push(supervisor);
     const launch = new SupervisorEvidence(coordinatorFilesForHome(home, 'prod').runDir);
     try {
-      try {
-        await waitForCondition(
-          () =>
-            launch
-              .read()
-              .requests.some(
-                (request) =>
-                  request.executable === join(branch.root, 'bridge', 'coral-backend.cjs') &&
-                  request.status === 'accepted' &&
-                  readDiscoveryRecordForHome(home, 'prod') === null,
-              ),
-          10_000,
-        );
-      } catch (error: unknown) {
-        throw new Error(
-          `Starting predecessor request missing: ${JSON.stringify({ state: launch.read(), intent: readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir), supervisor: supervisor.output(), exitCode: supervisor.child.exitCode })}`,
-          { cause: error },
-        );
-      }
+      // The bound socket names nobody yet, so no request may be written under an invented incumbent.
+      await waitForCondition(() => launch.lockHolder()?.pid !== undefined, 10_000);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(readDiscoveryRecordForHome(home, 'prod')).toBeNull();
+      expect(readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir).kind).toBe('absent');
       expect(supervisor.child.exitCode).toBeNull();
       const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
       expect(initial.pid).toBe(incumbent.child.pid);
+      await waitForCondition(
+        () =>
+          launch
+            .read()
+            .requests.some(
+              (request) =>
+                request.executable === join(branch.root, 'bridge', 'coral-backend.cjs') &&
+                request.status === 'accepted' &&
+                request.incumbent.pid === incumbent.child.pid,
+            ),
+        10_000,
+      );
       await stopCoordinator(incumbent);
       await waitForCondition(() => {
         const current = readDiscoveryRecordForHome(home, 'prod');

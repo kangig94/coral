@@ -13,7 +13,6 @@ export const REQUIRED_SUCCESSION_OWNERS = [
   'kb-daemon',
   'discuss',
   'session-continuation',
-  'child-principals',
 ] as const;
 
 export type SuccessionOwnerId = (typeof REQUIRED_SUCCESSION_OWNERS)[number];
@@ -39,7 +38,7 @@ export const SHUTDOWN_OBLIGATION_OWNERS = {
   'store services availability check': 'recovery',
   'provider host shutdown': 'provider-hosts',
   'pending launch settlement': 'launch-admission',
-  'child termination': 'child-principals',
+  'child termination': 'launch-admission',
   'crashed job terminalization': 'recovery',
   'app-server handoff quiesce': 'provider-hosts',
   'provider host drain for handoff': 'provider-hosts',

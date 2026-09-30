@@ -161,6 +161,73 @@ export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): E
   }
 }
 
+export type MalformedFileLockRepair =
+  | Readonly<{ kind: 'moved-aside'; quarantinePath: string }>
+  | Readonly<{ kind: 'not-malformed' }>
+  | Readonly<{ kind: 'held' }>
+  | Readonly<{ kind: 'repair-in-progress' }>
+  | Readonly<{ kind: 'unobservable'; cause: unknown }>;
+
+/**
+ * Moves a data-free lock file aside only once no process can hold it, so the path can be recreated without two
+ * processes each holding a lock at one address. A lock binds the inode, not the name: an entry moved aside while a
+ * holder kept it open would leave that holder locked on an address nobody else contends for.
+ *
+ * An entry that is not a regular file was never locked through this module, which refuses one before opening it. A
+ * regular file is proven unheld by SQLite itself: `database is locked` means a holder; `file is not a database` can
+ * only be answered after a shared lock was granted, which no exclusive holder allows, and no later caller can take a
+ * lock on those bytes either; an exclusive lock granted to this call is held until the entry is moved.
+ */
+export function repairMalformedFileLockSync(path: string): MalformedFileLockRepair {
+  const repair = tryAcquireDirectoryLock(`${path}.repair`);
+  if (repair === null) return { kind: 'repair-in-progress' };
+  try {
+    let entry: ReturnType<typeof lstatSync>;
+    try {
+      entry = lstatSync(path);
+    } catch (cause: unknown) {
+      return (cause as NodeJS.ErrnoException).code === 'ENOENT'
+        ? { kind: 'not-malformed' }
+        : { kind: 'unobservable', cause };
+    }
+    const quarantinePath = `${path}.malformed-${Date.now()}-${randomUUID()}`;
+    const moveAside = (): MalformedFileLockRepair => {
+      renameSync(path, quarantinePath);
+      return { kind: 'moved-aside', quarantinePath };
+    };
+    if (!entry.isFile() || entry.isSymbolicLink()) return moveAside();
+
+    let db: DatabaseSync;
+    try {
+      db = new DatabaseSync(path, { timeout: 0 });
+    } catch (cause: unknown) {
+      return { kind: 'unobservable', cause };
+    }
+    try {
+      db.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE');
+    } catch (error: unknown) {
+      db.close();
+      if (sqliteErrorCode(error) === 'ERR_SQLITE_ERROR' && /database is locked/u.test(String(error))) {
+        return { kind: 'held' };
+      }
+      if (sqliteErrorCode(error) === 'ERR_SQLITE_ERROR' && /file is not a database/u.test(String(error))) {
+        return moveAside();
+      }
+      return { kind: 'unobservable', cause: error };
+    }
+    const release = sqliteLockLease(db);
+    try {
+      return entry.nlink === 1 ? { kind: 'not-malformed' } : moveAside();
+    } finally {
+      release();
+    }
+  } catch (cause: unknown) {
+    return { kind: 'unobservable', cause };
+  } finally {
+    repair();
+  }
+}
+
 export function tryAcquireExclusiveFileLockSync(path: string): FileLockLease | null {
   const attempt = attemptExclusiveFileLockSync(path);
   if (attempt.kind === 'acquired') return attempt.lease;

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { JsonRpcErrorObject } from '../../infra/json-rpc.js';
+import type { ChildAuthChallenge } from '../../security/child-credential.js';
 
 // Coral's internal IPC speaks a *tagged* dialect of JSON-RPC: every envelope
 // carries an explicit `kind` discriminator so the inbound parser can route
@@ -27,7 +28,22 @@ export type IpcAuthMetadata =
       readonly token: string;
       readonly jobId: string;
       readonly sessionId: string;
+    }
+  | {
+      readonly kind: 'child-proof';
+      readonly credentialId: string;
+      readonly jobId: string;
+      readonly sessionId: string;
+      readonly proof: string;
     };
+
+export const ipcAuthChallengeSchema: z.ZodType<ChildAuthChallenge> = z
+  .object({
+    challenge: z.string().min(1),
+    incarnation: z.string().min(1),
+    namespace: z.string().min(1),
+  })
+  .passthrough();
 
 export interface JsonRpcRequestEnvelope<TParams = unknown> {
   readonly kind: 'request';
@@ -77,6 +93,15 @@ const ipcAuthMetadataSchema = z.discriminatedUnion('kind', [
       token: z.string().min(1),
       jobId: z.string().min(1),
       sessionId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('child-proof'),
+      credentialId: z.string().min(1),
+      jobId: z.string().min(1),
+      sessionId: z.string().min(1),
+      proof: z.string().min(1),
     })
     .strict(),
 ]);

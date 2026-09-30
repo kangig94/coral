@@ -8,7 +8,7 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '#src/providers/contract.js';
@@ -149,7 +149,7 @@ describe('pipe executor coral cascade invariant', () => {
           providerScope: TEST_CODEX_SCOPE,
         },
         {
-          childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+          childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
           runtime,
           progressStore,
           bundleHash: 'pipe-executor-cascade-test',
@@ -293,7 +293,7 @@ describe('pipe executor coral cascade invariant', () => {
           providerScope: TEST_CODEX_SCOPE,
         },
         {
-          childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+          childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
           runtime,
           progressStore,
           bundleHash: 'pipe-executor-retention-test',

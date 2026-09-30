@@ -111,15 +111,6 @@ export function createCommitReclaim(ports: SuccessionCommitPorts, dependencies: 
         reclaimed.generation.generation,
       );
     }
-    const childPrincipalHold =
-      failure.transfersChildPrincipals && !ports.childPrincipals.reclaimAuthentication(reclaimed.generation.generation)
-        ? [
-            {
-              owner: 'child-principals',
-              reason: 'consumed-nonce ledger could not be reclaimed; child handles stay fenced',
-            },
-          ]
-        : [];
     writers.adoptProviderOperationAdmission(reclaimed.providerOperationAdmission);
     ports.providerHosts.reclaimTransferred();
     ports.setLaunchFenceActive(false);
@@ -140,7 +131,6 @@ export function createCommitReclaim(ports: SuccessionCommitPorts, dependencies: 
       blockers: [
         { owner: 'succession-commit', reason: `incumbent reclaimed after ${failure.reason}` },
         ...childHoldBlockers(failure.childHold),
-        ...childPrincipalHold,
       ],
       ...failedAttemptRetry(intent, failure.retry, 'successor committed-open failure', runtime.time.now()),
     }));

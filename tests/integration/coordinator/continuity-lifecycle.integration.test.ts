@@ -15,7 +15,7 @@ import { admittedByThisCoordinator, createObserveCarriers } from '#src/coordinat
 import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import type { CarrierInterruptedWaitEvent, WaitStreamEvent } from '#src/jobs/wait.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -203,7 +203,7 @@ describe('coordinator continuity lifecycle integration', () => {
     });
     const journalDeps = createTestJobJournalDeps(progressStore, runtime);
     const service = new ExecutionService(ctx, {
-      childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+      childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
       runtime,
       progressStore,
       backendNamespace: TEST_BACKEND_NAMESPACE,

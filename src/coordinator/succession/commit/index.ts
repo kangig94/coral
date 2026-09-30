@@ -15,7 +15,6 @@ import {
   type SuccessionWriterGeneration,
 } from '../../../store/succession-writer-generation.js';
 import type { IpcListener } from '../../../transport/ipc/server.js';
-import type { ChildPrincipalRegistry } from '../../child-principal-registry.js';
 import type { KbDaemonSupervisor } from '../../live/kb-daemon-supervisor/index.js';
 import type { LaunchCoordinator } from '../../live/admission.js';
 import type { RetiringCustodyCertificate } from '../../services/recovery/epoch-closure.js';
@@ -157,7 +156,6 @@ export type SuccessionCommitPorts = Readonly<{
     LaunchCoordinator,
     'admissionRevision' | 'beginSuccessionCommitWindow' | 'beginSuccessionWriterPark' | 'endSuccessionCommitWindow'
   >;
-  childPrincipals: Pick<ChildPrincipalRegistry, 'fenceAuthentication' | 'reclaimAuthentication'>;
   /**
    * Provider hosts that authorized the successor. Control is released only once the incumbent's writers are
    * parked, and taken back through each host's recovery grant when the attempt fails before it serves.
@@ -215,7 +213,6 @@ export type FailedCommit = Readonly<{
   retry: AttemptRetry;
   writer: SuccessionWriterEntitlement | null;
   retirementStoreParked: boolean;
-  transfersChildPrincipals: boolean;
   pauseDeadlineAtMs: number;
   childHold: string | null;
   /** Recorded only by the write that clears the attempt, so the attempt never clears without it. */
@@ -231,7 +228,6 @@ export type CommitOutcome =
 export type CommitPlan = Readonly<{
   successorFingerprint: string;
   formatChanging: boolean;
-  transfersChildPrincipals: boolean;
 }>;
 
 /** An open commit window, and the parked state a failure inside it leaves for reclaim. */
@@ -250,7 +246,6 @@ export type CommitWindow = {
 export type RecoveryContext = Readonly<{
   writer: SuccessionWriterEntitlement;
   retirementStoreParked: boolean;
-  transfersChildPrincipals: boolean;
 }>;
 
 export type CommitState = {

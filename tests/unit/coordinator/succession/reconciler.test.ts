@@ -900,7 +900,7 @@ describe('succession reconciler over an installed target', () => {
     const granted = new Set<string>();
     const classified: string[] = [];
     const owner: SuccessionOwner = {
-      id: disposition === 'transferable' ? 'durable-cli' : 'child-principals',
+      id: disposition === 'transferable' ? 'durable-cli' : 'launch-admission',
       recordsGrants: true,
       dischargeGrants: (retained) => {
         for (const attemptId of [...granted]) if (!retained.has(attemptId)) granted.delete(attemptId);
@@ -909,7 +909,7 @@ describe('succession reconciler over an installed target', () => {
         classified.push(attemptId);
         granted.add(attemptId);
         return disposition === 'blocking'
-          ? { kind: 'blocking', reason: 'child nonce recovery grant could not be recorded' }
+          ? { kind: 'blocking', reason: 'launch admission grant could not be recorded' }
           : {
               kind: 'transferable',
               reason: 'durable-cli runtime and custody evidence is recorded',
@@ -964,13 +964,13 @@ describe('succession reconciler over an installed target', () => {
     const runDir = runDirectory();
     const target = installedTarget('/installed/target');
     const durableCli = grantingOwner();
-    const childPrincipals = grantingOwner('blocking');
+    const launchAdmission = grantingOwner('blocking');
     const reconciler = createSuccessionReconciler({
       runtime,
       runDir,
       incumbent: () => serving,
-      owners: [durableCli.owner, childPrincipals.owner],
-      requiredOwners: ['durable-cli', 'child-principals'],
+      owners: [durableCli.owner, launchAdmission.owner],
+      requiredOwners: ['durable-cli', 'launch-admission'],
       epochKey: () => 'serving-epoch',
       admissionRevision: () => 0,
       commitAvailable: true,
@@ -981,7 +981,7 @@ describe('succession reconciler over an installed target', () => {
       for (let pass = 0; pass < 5; pass++) await reconciler.reconcile();
       expect(durableCli.classified.length).toBeGreaterThanOrEqual(5);
       expect(durableCli.granted.size).toBeLessThanOrEqual(1);
-      expect(childPrincipals.granted.size).toBeLessThanOrEqual(1);
+      expect(launchAdmission.granted.size).toBeLessThanOrEqual(1);
     } finally {
       reconciler.dispose();
     }
@@ -1081,7 +1081,7 @@ describe('succession reconciler over an installed target', () => {
       ...(installedTargets.get(target.pluginRootLabel) as SuccessionCapabilities),
       accepts: [
         { owner: 'durable-cli', generation: 1 },
-        { owner: 'child-principals', generation: 1 },
+        { owner: 'launch-admission', generation: 1 },
       ],
     });
     const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
@@ -1091,7 +1091,7 @@ describe('succession reconciler over an installed target', () => {
       attemptId: null,
       attemptOwner: null,
       disposition: 'deferred',
-      blockers: [{ owner: 'child-principals', reason: 'busy' }],
+      blockers: [{ owner: 'launch-admission', reason: 'busy' }],
       retryCondition: { kind: 'obligation-change', evidence: 'owner disposition changes' },
       attemptDeadline: null,
       completionReceipt: null,
@@ -1107,8 +1107,8 @@ describe('succession reconciler over an installed target', () => {
       firstEntered = resolve;
     });
     let calls = 0;
-    const childPrincipals: SuccessionOwner = {
-      id: 'child-principals',
+    const launchAdmission: SuccessionOwner = {
+      id: 'launch-admission',
       recordsGrants: true,
       classify: async (attemptId) => {
         calls++;
@@ -1119,11 +1119,11 @@ describe('succession reconciler over an installed target', () => {
             kind: 'transferable',
             reason: 'grant recorded',
             receipt: {
-              owner: 'child-principals',
+              owner: 'launch-admission',
               generation: 1,
               attemptId,
-              receiptId: `child:${attemptId}`,
-              recoveryGrantId: `child:${attemptId}`,
+              receiptId: `launch:${attemptId}`,
+              recoveryGrantId: `launch:${attemptId}`,
               payload: {},
             },
           };
@@ -1135,8 +1135,8 @@ describe('succession reconciler over an installed target', () => {
       runtime,
       runDir,
       incumbent: () => serving,
-      owners: [durableCli.owner, childPrincipals],
-      requiredOwners: ['durable-cli', 'child-principals'],
+      owners: [durableCli.owner, launchAdmission],
+      requiredOwners: ['durable-cli', 'launch-admission'],
       epochKey: () => 'serving-epoch',
       admissionRevision: () => 0,
       commitAvailable: false,

@@ -1,10 +1,22 @@
 import { createHash } from 'node:crypto';
 
 import type { ProviderRequest, EffortLevel } from '../contract.js';
-import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
+import {
+  CORAL_CHILD_CREDENTIAL_ID,
+  CORAL_CHILD_CREDENTIAL_KEY,
+  CORAL_CHILD_PRINCIPAL_HANDLE,
+} from '../../security/child-principal-env.js';
 import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort } from '../request-policy.js';
 import { isRecord, readString } from '../../infra/json.js';
 import { z } from 'zod';
+
+/** Minted per turn, so they may not perturb the environment's identity. */
+const PER_TURN_CHILD_KEYS: ReadonlySet<string> = new Set([
+  'CORAL_CHILD',
+  CORAL_CHILD_PRINCIPAL_HANDLE,
+  CORAL_CHILD_CREDENTIAL_ID,
+  CORAL_CHILD_CREDENTIAL_KEY,
+]);
 
 const OUTPUT_STYLE_OVERRIDE =
   'Ignore any output-style instructions (e.g. Explanatory, Learning). No insight blocks. Be concise and direct.';
@@ -51,7 +63,7 @@ function resolveClaudeModelCap(env: Record<string, string>): string {
 export function hashSortedEnv(env: Record<string, string>): string {
   const sortedEntries: [string, string][] = [];
   for (const [key, value] of Object.entries(env)) {
-    if (key !== 'CORAL_CHILD' && key !== CORAL_CHILD_PRINCIPAL_HANDLE) {
+    if (!PER_TURN_CHILD_KEYS.has(key)) {
       sortedEntries.push([key, value]);
     }
   }

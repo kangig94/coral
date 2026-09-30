@@ -28,7 +28,6 @@ import {
   verifyDurableCliRecoveryGrant,
   verifyUnsettledDurableCliTransfer,
 } from '../services/durable-cli-transfer.js';
-import { decodeChildPrincipalTransfer } from '../child-principal-registry.js';
 import { isTerminalPhase } from '../../jobs/phase.js';
 import type { JobStore } from '../../jobs/store.js';
 import type { CoordinatorIdentity, LifecycleDeps } from '../lifecycle.js';
@@ -141,10 +140,6 @@ function createSuccessionReceiptVerifier(
         )
           throw new Error('Durable-cli recovery grant is unavailable or changed.');
         for (const jobId of verified.liveJobIds) accepted.add(jobId);
-      } else if (receipt.owner === 'child-principals') {
-        if (decodeChildPrincipalTransfer(receipt.payload) === null) {
-          throw new Error('Child-principal transfer receipt is invalid.');
-        }
       } else if (receipt.owner !== PROVIDER_PROXY_SETS_OWNER && receipt.owner !== PROVIDER_OPERATIONS_OWNER) {
         throw new Error(`Unsupported succession receipt owner: ${receipt.owner}`);
       }
@@ -168,8 +163,8 @@ function createSuccessionReceiptVerifier(
 function createSuccessionReceiptAdopter(
   input: LifecycleRecoveryInput,
 ): NonNullable<LifecycleDeps['adoptSuccessionReceipts']> {
-  const { runtime, providerHostTransfer, getProgressStore, world } = input;
-  return (preparation, acceptedJobIds, generation, recovery) => {
+  const { providerHostTransfer, getProgressStore, world } = input;
+  return (preparation, acceptedJobIds) => {
     const accepted = new Set(acceptedJobIds);
     providerHostTransfer.adoptReceipts(preparation);
     const hostTransferredJobIds = new Set(providerHostTransfer.transferredJobIds(preparation));
@@ -180,30 +175,6 @@ function createSuccessionReceiptAdopter(
       const permit = world.launchCoordinator.activeLaunchPermits().find((entry) => entry.jobId === jobId);
       if (permit?.holder.kind !== 'recovery') {
         throw new Error(`Durable-cli job ${jobId} was not adopted with a launch permit.`);
-      }
-    }
-    for (const receipt of preparation.receipts) {
-      if (receipt.owner !== 'child-principals') continue;
-      const decoded = decodeChildPrincipalTransfer(receipt.payload);
-      if (decoded === null) throw new Error('Child-principal transfer receipt is invalid.');
-      const entries = decoded.entries.filter((entry) => {
-        if (accepted.has(entry.parentJobId)) return true;
-        const status = getProgressStore().readStatus(entry.parentJobId);
-        return status !== null && !isTerminalPhase(status.phase);
-      });
-      if (entries.length === 0) continue;
-      const transfer = { ...decoded, entries };
-      const adopted = recovery
-        ? world.childPrincipalRegistry.adoptRecoveredTransfer(
-            transfer,
-            accepted,
-            preparation.attemptId,
-            generation.generation,
-            runtime.time.now(),
-          )
-        : world.childPrincipalRegistry.adoptTransfer(transfer, accepted, generation.generation, runtime.time.now());
-      if (!adopted) {
-        throw new Error('Child-principal receipt could not be adopted.');
       }
     }
   };

@@ -64,7 +64,6 @@ export function createSameBuildRecovery(
     const recovery: RecoveryContext = {
       writer,
       retirementStoreParked: failure.retirementStoreParked,
-      transfersChildPrincipals: failure.transfersChildPrincipals,
     };
     let recoveryPreparation: SuccessionPreparation = failure.preparation;
     let attempt: SuccessionAttempt | null = null;

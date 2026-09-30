@@ -74,6 +74,7 @@ type ExpectedOperationalRouteId =
   | 'http.admin.kb.restart'
   | 'http.events.stream'
   | 'ipc.transport.ping'
+  | 'ipc.transport.challenge'
   | 'ipc.transport.health'
   | 'ipc.transport.shutdown'
   | 'ipc.transport.kb.restart'
@@ -95,6 +96,7 @@ type OperationalRouteSummary = {
   readonly requiresRunningLifecycle: boolean;
   readonly dispatchKind:
     | 'ping'
+    | 'challenge'
     | 'health'
     | 'event-stream'
     | 'shutdown'
@@ -160,6 +162,14 @@ const expectedOperationalSpecs = {
     requires: 'liveness',
     requiresRunningLifecycle: false,
     dispatchKind: 'ping',
+    authentication: 'none',
+  },
+  'ipc.transport.challenge': {
+    transport: 'ipc',
+    method: 'transport.challenge',
+    requires: 'liveness',
+    requiresRunningLifecycle: false,
+    dispatchKind: 'challenge',
     authentication: 'none',
   },
   'ipc.transport.health': {

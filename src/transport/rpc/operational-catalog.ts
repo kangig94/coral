@@ -1,5 +1,6 @@
 import type { Capability } from '../../security/capability.js';
 import { SUCCESSION_METHODS } from '../../infra/succession-address.js';
+import { CHILD_AUTH_CHALLENGE_METHOD } from '../../security/child-credential.js';
 import {
   jobsAbortRpcSpec,
   providerHostEvictRpcSpec,
@@ -16,6 +17,7 @@ const [healthPath, shutdownPath, kbRestartPath, eventsStreamPath] = transportOpe
 
 type OperationalDispatchKind =
   | 'ping'
+  | 'challenge'
   | 'health'
   | 'event-stream'
   | 'shutdown'
@@ -54,6 +56,7 @@ export type IpcOperationalSpec = OperationalBaseSpec & {
   readonly ipc: {
     readonly method:
       | 'transport.ping'
+      | typeof CHILD_AUTH_CHALLENGE_METHOD
       | 'transport.health'
       | 'transport.shutdown'
       | 'transport.kb.restart'
@@ -124,6 +127,15 @@ export const operationalRouteSpecs: readonly OperationalRouteSpec[] = [
     requires: 'liveness',
     requiresRunningLifecycle: false,
     dispatch: { kind: 'ping' },
+    authentication: 'none',
+  },
+  {
+    id: 'ipc.transport.challenge',
+    transport: 'ipc',
+    ipc: { method: CHILD_AUTH_CHALLENGE_METHOD },
+    requires: 'liveness',
+    requiresRunningLifecycle: false,
+    dispatch: { kind: 'challenge' },
     authentication: 'none',
   },
   {

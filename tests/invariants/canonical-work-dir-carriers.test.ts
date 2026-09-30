@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { WorkDirectoryError } from '#src/runtime/canonical-work-dir.js';
 import { decodeProviderOperationRecord, encodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
@@ -234,7 +234,7 @@ describe('canonical work-directory carrier closure', () => {
     const selected = resolve(root, 'selected');
     mkdirSync(physical);
     symlinkSync(physical, selected, 'dir');
-    const registry = new ChildPrincipalRegistry(ids());
+    const registry = testChildPrincipalRegistry(ids());
 
     const credential = registry.registerPersistedAuthorization({
       issuer: 'provider-operation-recovery',
@@ -254,7 +254,7 @@ describe('canonical work-directory carrier closure', () => {
     const root = mkdtempSync(resolve(tmpdir(), 'coral-missing-persisted-principal-'));
     tempDirs.push(root);
     const missing = resolve(root, 'missing');
-    const registry = new ChildPrincipalRegistry(ids());
+    const registry = testChildPrincipalRegistry(ids());
 
     expect(() =>
       registry.registerPersistedAuthorization({

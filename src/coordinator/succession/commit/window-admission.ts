@@ -117,7 +117,6 @@ export function createCommitWindowAdmission(
       await recertifyObligations(attempt.attemptId, deadlineAt);
       writer.park();
     }
-    if (plan.transfersChildPrincipals) ports.childPrincipals.fenceAuthentication();
     if (!recovering && ports.providerHosts.transfersHosts(preparation)) {
       try {
         await ports.providerHosts.releaseForTransfer(

@@ -181,7 +181,11 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'backend_unreachable') {
     return 69;
   }
-  if (code === 'missing_capability' || code === 'child_credentials_incomplete') {
+  if (
+    code === 'missing_capability' ||
+    code === 'child_credentials_incomplete' ||
+    code === 'child_credential_unavailable'
+  ) {
     return 77;
   }
   if (code === 'internal' || code === 'internal_error' || httpStatus === 500) {

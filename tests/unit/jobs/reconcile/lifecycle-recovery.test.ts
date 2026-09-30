@@ -47,7 +47,7 @@ import type { RunJobsStartupFn } from '#src/jobs/startup.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { none } from '#src/providers/capability.js';
@@ -938,7 +938,7 @@ function createActualRecoveryService(
     },
     {
       runtime,
-      childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+      childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
       progressStore: options.progressStore,
       bundleHash: '1111111111111111',
       backendNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),

@@ -927,12 +927,7 @@ export type LifecycleDeps = {
     committedSuccessorInstanceId: string | null,
   ) => readonly string[];
   readonly transferredHostJobIds?: (preparation: SuccessionPreparation) => readonly string[];
-  readonly adoptSuccessionReceipts?: (
-    preparation: SuccessionPreparation,
-    acceptedJobIds: readonly string[],
-    generation: SuccessionWriterGeneration,
-    recovery: boolean,
-  ) => void;
+  readonly adoptSuccessionReceipts?: (preparation: SuccessionPreparation, acceptedJobIds: readonly string[]) => void;
   readonly recordSuccessionControllerReceipts?: (
     preparation: SuccessionPreparation,
     epochKey: string,
@@ -1892,7 +1887,6 @@ async function adoptStartupReceipts({
   runStartupRecovery,
   recoveryCoordinator,
   recoveryInputs,
-  successionAttemptChild,
   successionGeneration,
   recoveryGeneration,
   committedRecoveryStep,
@@ -1910,7 +1904,6 @@ async function adoptStartupReceipts({
   runStartupRecovery: RunStartupRecoveryOrchestratorFn;
   recoveryCoordinator: RecoveryCoordinator;
   recoveryInputs: StartupRecoveryInputs;
-  successionAttemptChild: ReturnType<typeof currentSuccessionAttemptChild>;
   successionGeneration: SuccessionWriterGeneration | null;
   recoveryGeneration: SuccessionWriterGeneration | null;
   committedRecoveryStep: <T>(step: () => T | Promise<T>) => Promise<T | typeof ABANDONED_COMMITTED_RECOVERY>;
@@ -1931,14 +1924,7 @@ async function adoptStartupReceipts({
     }
     const adoptSuccessionReceipts = deps.adoptSuccessionReceipts;
     const preparation = acceptedSuccessionPreparation;
-    const adopted = await committedRecoveryStep(() =>
-      adoptSuccessionReceipts(
-        preparation,
-        acceptedSuccessionJobs,
-        adoptedGeneration,
-        successionAttemptChild?.recovery === true || committedRecovery !== null,
-      ),
-    );
+    const adopted = await committedRecoveryStep(() => adoptSuccessionReceipts(preparation, acceptedSuccessionJobs));
     if (adopted === ABANDONED_COMMITTED_RECOVERY) {
       committedRecovery = null;
       acceptedSuccessionPreparation = null;
@@ -2395,7 +2381,6 @@ async function runStartupRecoveryAndServe(
     runStartupRecovery,
     recoveryCoordinator,
     recoveryInputs,
-    successionAttemptChild,
     successionGeneration,
     recoveryGeneration,
     committedRecoveryStep,

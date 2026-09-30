@@ -65,7 +65,6 @@ export function createFailedCommitWindow(
       retry,
       writer: window.writer,
       retirementStoreParked: window.retirementStoreParked,
-      transfersChildPrincipals: plan.transfersChildPrincipals,
       pauseDeadlineAtMs: window.pauseDeadlineAtMs,
       childHold,
       unservedMintDiscard,

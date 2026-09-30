@@ -10,7 +10,6 @@ import { type createProviderHostTransfer } from '../../succession/provider-host-
 import { type createCoordinatorWorld } from '../world.js';
 import { createLaunchSuccessionOwners } from './launch-admission.js';
 import { createLocalAuthoritySuccessionOwners } from './local-authority.js';
-import { createChildPrincipalSuccessionOwner } from './child-principals.js';
 
 export type SuccessionOwnersInput = {
   runtime: Runtime;
@@ -32,6 +31,5 @@ export function createSuccessionOwners(input: SuccessionOwnersInput): readonly S
     ...createLaunchSuccessionOwners(input),
     ...providerHostTransfer.owners,
     ...createLocalAuthoritySuccessionOwners(input),
-    createChildPrincipalSuccessionOwner(input),
   ];
 }

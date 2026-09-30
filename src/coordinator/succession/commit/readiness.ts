@@ -85,7 +85,6 @@ export function createCommitReadiness(ports: SuccessionCommitPorts) {
     return {
       successorFingerprint,
       formatChanging: !recovering && successorFingerprint !== ports.incumbent.storeFormatFingerprint,
-      transfersChildPrincipals: preparation.receipts.some((receipt) => receipt.owner === 'child-principals'),
     };
   }
 

@@ -36,7 +36,7 @@ import {
   toPreflightRuntime,
 } from './execution-policies.js';
 import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../child-principal-registry.js';
-import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
+import { CORAL_CHILD_CREDENTIAL_ID, CORAL_CHILD_CREDENTIAL_KEY } from '../../security/child-principal-env.js';
 import type { ProviderOperationProtectedEnvironment } from '../../jobs/contracts/provider-operation-lifecycle.js';
 import { canonicalizeWorkDir, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
@@ -497,7 +497,8 @@ export class JobLaunchService {
       env: {
         CORAL_JOB_ID: jobId,
         CORAL_SESSION_ID: sessionId,
-        [CORAL_CHILD_PRINCIPAL_HANDLE]: credential.handle,
+        [CORAL_CHILD_CREDENTIAL_ID]: credential.credentialId,
+        [CORAL_CHILD_CREDENTIAL_KEY]: credential.privateKey,
       },
       childAuthorization: credential.authorization,
     };

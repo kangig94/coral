@@ -11,7 +11,11 @@ import type { JobTerminal } from '../jobs/records.js';
 import type { JobCreatedEvent } from '../jobs/contracts/event-stream.js';
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import type { RpcPorts } from './rpc/ports.js';
-import type { Principal } from '../security/principal.js';
+import type {
+  ChildAuthChallenge,
+  ChildPrincipalAuthentication,
+  ChildProvenRequest,
+} from '../security/child-credential.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
 import type {
@@ -466,11 +470,13 @@ type HandlerIdentity = {
 };
 
 interface ChildPrincipalRegistryPort {
+  issueChallenge(): ChildAuthChallenge;
   authenticate(
-    auth: Extract<IpcAuthMetadata, { kind: 'child' }>,
-    namespace: string | null,
+    claim: Extract<IpcAuthMetadata, { kind: 'child-proof' }>,
+    challenge: ChildAuthChallenge | null,
+    request: ChildProvenRequest,
     nowMs: number,
-  ): Principal | null;
+  ): ChildPrincipalAuthentication;
 }
 
 export interface HttpHandlerPorts extends RpcPorts {

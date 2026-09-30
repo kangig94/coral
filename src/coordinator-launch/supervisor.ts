@@ -15,7 +15,12 @@ import { createForeignTargetValidator, inspectValidatedHandoffTarget } from '../
 import { compareProductVersions } from '../infra/product-version.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
 import { SupervisorLaunchMemory, type LaunchOwner, type LaunchProcess, type LaunchReservation } from './state.js';
-import { attemptExclusiveFileLockSync, createSharedFileLockSync, type FileLockLease } from '../infra/fs-lock.js';
+import {
+  attemptExclusiveFileLockSync,
+  createSharedFileLockSync,
+  repairMalformedFileLockSync,
+  type FileLockLease,
+} from '../infra/fs-lock.js';
 import { socketPathForRunDir, supervisorLockPath } from '../infra/path/index.js';
 import {
   incarnationMayAuthorizeSignal,
@@ -44,11 +49,11 @@ import { childHasExited, childIsUninterruptible } from './child-state.js';
 import { listLaunchAdmissions, readLaunchAdmission } from '../infra/launch-admission-record.js';
 import { replacementServing, requestInheritedSuccession } from './health.js';
 import { recordLegacyUpgradeIntent } from './request.js';
+import { writeAuditEvent } from '../infra/audit-log.js';
 import { relaunchRoots, validatedBuild } from './selection.js';
 
 const STARTUP_BUDGET_MS = 120_000;
 const POLL_MS = 200;
-const UNIDENTIFIED_INCUMBENT = 'unidentified-starting-incumbent';
 
 type Candidate = Readonly<{ executable: string; buildSetId: string }>;
 
@@ -1069,45 +1074,6 @@ async function socketClaimedBeforeDiscovery(runDir: string, flavor: StrictBundle
   });
 }
 
-async function recordUnidentifiedIncumbentRequest(
-  runDir: string,
-  owner: LaunchOwner,
-  target: UpgradeIntent['target'],
-): Promise<void> {
-  await retryUpgradeIntentCas(runDir, (observed) => {
-    if (observed.kind !== 'absent' && observed.kind !== 'readable') return { kind: 'settle', value: undefined };
-    const current = observed.kind === 'readable' ? observed.intent : null;
-    if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed')
-      return { kind: 'settle', value: undefined };
-    return {
-      kind: 'write',
-      expectedRevision: current?.revision ?? null,
-      change: {
-        requestId: randomUUID(),
-        incumbent: {
-          instanceId: UNIDENTIFIED_INCUMBENT,
-          pid: owner.process.pid,
-          incarnation: owner.process.incarnation,
-          version: '0.0.0',
-          bundleHash: 'unidentified',
-          flavor: target.build.flavor,
-        },
-        target,
-        legacyRetirement: true,
-        attemptId: null,
-        attemptChild: null,
-        attemptOwner: null,
-        disposition: 'deferred' as const,
-        blockers: [{ owner: 'protocol', reason: 'bound incumbent has not published its identity' }],
-        retryCondition: { kind: 'obligation-change' as const, evidence: 'incumbent discovery' },
-        attemptDeadline: null,
-        completionReceipt: null,
-      },
-      settle: () => undefined,
-    };
-  });
-}
-
 async function acquireLaunchOwnership(
   runDir: string,
   executable: string,
@@ -1179,7 +1145,16 @@ async function acquireLaunchOwnership(
           throw error;
         }
       }
-      if (attempt.kind === 'malformed') throw new Error(`Supervisor lock is malformed: ${path}`);
+      if (attempt.kind === 'malformed') {
+        const repair = repairMalformedFileLockSync(path);
+        if (repair.kind === 'unobservable') throw repair.cause;
+        if (repair.kind === 'moved-aside') {
+          writeAuditEvent('supervisor_lock_moved_aside', { path, quarantinePath: repair.quarantinePath }, 'warn');
+          continue;
+        }
+        await sleep(POLL_MS);
+        continue;
+      }
       if (attempt.kind === 'unobservable') throw attempt.cause;
       if (!replacement) {
         if (requested) {
@@ -1690,6 +1665,13 @@ async function superviseAdoptedChild(input: {
   return releaseAfterSettledServedExit(record, runDir, result);
 }
 
+/**
+ * A socket bound before its discovery record names nobody, so nothing about it is written down: the request for it
+ * waits in this process until the binder publishes an identity, and a supervisor that dies meanwhile loses only a
+ * request the next launch makes again.
+ */
+type UnidentifiedBinder = { observed: boolean };
+
 async function selectNextCandidate(input: {
   record: SupervisorLaunchMemory;
   owner: OwnerHandle;
@@ -1698,38 +1680,25 @@ async function selectNextCandidate(input: {
   originalManifest: StrictBundleManifest;
   tried: Set<string>;
   firstLaunch: boolean;
+  unidentifiedBinder: UnidentifiedBinder;
 }): Promise<{ kind: 'released' } | { kind: 'retry' } | { kind: 'candidate'; candidate: Candidate }> {
-  const { record, owner, runDir, original, originalManifest, tried, firstLaunch } = input;
+  const { record, owner, runDir, original, originalManifest, tried, firstLaunch, unidentifiedBinder } = input;
   let requested = pendingIntent(runDir);
   if (incumbentAt(runDir) === null && (await socketClaimedBeforeDiscovery(runDir, originalManifest.flavor))) {
-    if (requested === null)
-      await recordUnidentifiedIncumbentRequest(runDir, owner.current, {
-        build: originalManifest,
-        pluginRootLabel: dirname(dirname(original.executable)),
-      });
+    unidentifiedBinder.observed = true;
     await sleep(POLL_MS);
     return { kind: 'retry' };
   }
-  if (requested?.incumbent.instanceId === UNIDENTIFIED_INCUMBENT) {
+  if (unidentifiedBinder.observed) {
+    unidentifiedBinder.observed = false;
     const identified = observedLaunchIncumbent(runDir, originalManifest.flavor);
-    if (identified !== null && identified.pid !== process.pid) {
-      const refreshed = await recordLegacyUpgradeIntent({
+    if (requested === null && identified !== null && identified.pid !== process.pid) {
+      await recordLegacyUpgradeIntent({
         runDir,
-        requestId: requested.requestId,
+        requestId: randomUUID(),
         incumbent: identified,
-        target: requested.target,
+        target: { build: originalManifest, pluginRootLabel: dirname(dirname(original.executable)) },
       });
-      if (refreshed.kind === 'refused' && refreshed.disposition === 'redundant')
-        await retryUpgradeIntentCas(runDir, (observed) =>
-          observed.kind === 'readable' && observed.intent.requestId === requested?.requestId
-            ? {
-                kind: 'write',
-                expectedRevision: observed.intent.revision,
-                change: { ...observed.intent, disposition: 'closed' as const },
-                settle: () => undefined,
-              }
-            : { kind: 'settle', value: undefined },
-        );
       requested = pendingIntent(runDir);
     }
   }
@@ -1842,6 +1811,7 @@ async function selectAndSuperviseCandidate(input: {
   originalManifest: StrictBundleManifest;
   tried: Set<string>;
   firstLaunch: boolean;
+  unidentifiedBinder: UnidentifiedBinder;
   args: readonly string[];
   timing: SentinelTiming;
   startupBudgetMs: number;
@@ -1855,6 +1825,7 @@ async function selectAndSuperviseCandidate(input: {
     originalManifest,
     tried,
     firstLaunch,
+    unidentifiedBinder,
     args,
     timing,
     startupBudgetMs,
@@ -1868,6 +1839,7 @@ async function selectAndSuperviseCandidate(input: {
     originalManifest,
     tried,
     firstLaunch,
+    unidentifiedBinder,
   });
   if (selection.kind === 'released') return { released: true, firstLaunch };
   if (selection.kind === 'retry') return { released: false, firstLaunch };
@@ -1913,6 +1885,7 @@ export async function runNamespaceSupervisor(
     const lastInheritedRequest = new Map<string, number>();
     let repairBridge: ReturnType<typeof createRepairBridge> | null = null;
     let firstLaunch = true;
+    const unidentifiedBinder: UnidentifiedBinder = { observed: false };
     while (true) {
       if (owner.lost) {
         repairBridge?.close();
@@ -2008,6 +1981,7 @@ export async function runNamespaceSupervisor(
         originalManifest,
         tried,
         firstLaunch,
+        unidentifiedBinder,
         args,
         timing,
         startupBudgetMs,

@@ -3,14 +3,16 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ChildPrincipalRegistry, decodeChildPrincipalTransfer } from '#src/coordinator/child-principal-registry.js';
-import { ChildPrincipalNonceLedger } from '#src/infra/child-principal-nonce-ledger.js';
+import { ChildPrincipalRegistry, type ChildPrincipalCredential } from '#src/coordinator/child-principal-registry.js';
+import { createStoreChildPrincipalCredentials } from '#src/coordinator/child-principal-credentials.js';
 import { authorize } from '#src/security/policy/authorize.js';
 import type { Capability } from '#src/security/capability.js';
+import type { ChildAuthChallenge, ChildProvenRequest } from '#src/security/child-credential.js';
 import type { Principal } from '#src/security/principal.js';
-import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { childPrincipalAuthFromEnv } from '#src/transport/ipc/child-principal-auth.js';
+import { testPrincipal, testProjectPrincipal } from '#tests/helpers/principal.js';
+import { childCredentialDatabase, testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
-import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 function ids() {
   let counter = 0;
@@ -26,18 +28,17 @@ function register(
   registry: ChildPrincipalRegistry,
   parentPrincipal: Principal,
   options: {
-    namespace?: string;
     jobId?: string;
     sessionId?: string;
     nowMs?: number;
     ttlMs?: number;
     childCaps?: readonly Capability[];
   } = {},
-) {
+): ChildPrincipalCredential {
   return registry.register({
     issuer: 'test-launch',
     parentPrincipal,
-    namespace: options.namespace ?? 'ns-a',
+    namespace: 'ns-a',
     parentJobId: options.jobId ?? 'job-a',
     parentSessionId: options.sessionId ?? 'session-a',
     nowMs: options.nowMs ?? 1_000,
@@ -46,230 +47,133 @@ function register(
   });
 }
 
-function childAuth(
-  handle: string,
-  options: {
-    token?: string;
-    jobId?: string;
-    sessionId?: string;
-  } = {},
+const REQUEST: ChildProvenRequest = { method: 'jobs.list', id: 7, params: { projectRoot: '/p' } };
+
+/** Proves exactly as the CLI does, from the environment the child was launched with. */
+function prove(
+  credential: ChildPrincipalCredential,
+  challenge: ChildAuthChallenge,
+  request: ChildProvenRequest = REQUEST,
+  claim: { jobId?: string; sessionId?: string } = {},
 ) {
-  return {
-    kind: 'child' as const,
-    handle,
-    token: options.token ?? 'nonce-1',
-    jobId: options.jobId ?? 'job-a',
-    sessionId: options.sessionId ?? 'session-a',
-  };
+  const auth = childPrincipalAuthFromEnv({
+    CORAL_CHILD_CREDENTIAL_ID: credential.credentialId,
+    CORAL_CHILD_CREDENTIAL_KEY: credential.privateKey,
+    CORAL_JOB_ID: claim.jobId ?? credential.parentJobId,
+    CORAL_SESSION_ID: claim.sessionId ?? credential.parentSessionId,
+  });
+  if (auth === null || auth === undefined || typeof auth === 'function') throw new Error('Expected challenged auth.');
+  const proof = auth.prove(challenge, request);
+  if (proof.kind !== 'child-proof') throw new Error('Expected a child proof.');
+  return proof;
 }
 
-function projectIn(runDir: string): string {
-  const projectRoot = join(runDir, 'project');
-  mkdirSync(projectRoot);
-  return projectRoot;
+function authenticated(registry: ChildPrincipalRegistry, credential: ChildPrincipalCredential, nowMs = 1_001) {
+  const challenge = registry.issueChallenge();
+  const result = registry.authenticate(prove(credential, challenge), challenge, REQUEST, nowMs);
+  return result.kind === 'authenticated' ? result.principal : null;
 }
 
 describe('ChildPrincipalRegistry', () => {
-  it('keeps a transferred handle and rejects a nonce consumed after its receipt was prepared', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-ledger-'));
-    try {
-      const projectRoot = projectIn(runDir);
-      const incumbentLedger = new ChildPrincipalNonceLedger(runDir);
-      const successorLedger = new ChildPrincipalNonceLedger(runDir);
-      const originNamespace = () => 'ns-a';
-      const incumbent = new ChildPrincipalRegistry(ids(), { ledger: incumbentLedger, originNamespace });
-      const credential = register(incumbent, testProjectPrincipal(projectRoot));
-      const receipt = incumbent.prepareTransfer('attempt', 1_001);
-      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
+  it('should refuse a proof bound to another challenge, request, or coordinator incarnation', () => {
+    const db = childCredentialDatabase();
+    const incumbent = testChildPrincipalRegistry(ids(), { db });
+    const successor = testChildPrincipalRegistry({ randomBytes: (length) => Buffer.alloc(length, 99) }, { db });
+    const credential = register(incumbent, testPrincipal());
+    const first = incumbent.issueChallenge();
+    const second = incumbent.issueChallenge();
+    const proof = prove(credential, first);
 
-      expect(incumbent.authenticate(childAuth(credential.handle), null, 1_002)).not.toBeNull();
-      const successor = new ChildPrincipalRegistry(ids(), { ledger: successorLedger, originNamespace });
-      expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_003)).toBe(true);
-      expect(incumbent.authenticate(childAuth(credential.handle, { token: 'nonce-3' }), null, 1_003)).toBeNull();
-      expect(successor.authenticate(childAuth(credential.handle), null, 1_004)).toBeNull();
-      const transferredChild = successor.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_004);
-      expect(transferredChild).not.toBeNull();
-      if (transferredChild === null) throw new Error('Transferred child authentication failed.');
-      expect(
-        authorize(transferredChild, 'kb:read', {
-          kind: 'project',
-          root: fixtureCanonicalWorkDir(projectRoot),
-        }),
-      ).toEqual({ ok: true });
-
-      expect(incumbent.reclaimAuthentication(3)).toBe(true);
-      expect(incumbent.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_005)).toBeNull();
-      expect(successor.authenticate(childAuth(credential.handle, { token: 'nonce-4' }), null, 1_005)).toBeNull();
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
+    expect(incumbent.authenticate(proof, first, REQUEST, 1_001)).toMatchObject({ kind: 'authenticated' });
+    expect(incumbent.authenticate(proof, second, REQUEST, 1_001)).toEqual({ kind: 'refused' });
+    expect(incumbent.authenticate(proof, null, REQUEST, 1_001)).toEqual({ kind: 'refused' });
+    expect(incumbent.authenticate(proof, first, { ...REQUEST, params: { projectRoot: '/q' } }, 1_001)).toEqual({
+      kind: 'refused',
+    });
+    expect(incumbent.authenticate(proof, first, { ...REQUEST, method: 'kb.entries.search' }, 1_001)).toEqual({
+      kind: 'refused',
+    });
+    expect(successor.authenticate(proof, first, REQUEST, 1_001)).toEqual({ kind: 'refused' });
   });
 
-  it('decodes a transfer receipt that a newer writer extended with fields this build does not know', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-additive-'));
-    try {
-      const incumbent = new ChildPrincipalRegistry(ids(), {
-        ledger: new ChildPrincipalNonceLedger(runDir),
-        originNamespace: () => 'ns-a',
+  it('should verify a credential issued before a coordinator was replaced from the store alone', () => {
+    const db = childCredentialDatabase();
+    const incumbent = testChildPrincipalRegistry(ids(), { db });
+    const credential = register(incumbent, testPrincipal());
+    const successor = testChildPrincipalRegistry(
+      { randomBytes: (length) => Buffer.alloc(length, 99) },
+      { db, namespace: 'ns-successor', activeJobOrigin: () => 'ns-a' },
+    );
+    const foreignOrigin = testChildPrincipalRegistry(
+      { randomBytes: (length) => Buffer.alloc(length, 98) },
+      { db, namespace: 'ns-successor', activeJobOrigin: () => 'ns-other' },
+    );
+
+    expect(authenticated(successor, credential)).not.toBeNull();
+    expect(authenticated(foreignOrigin, credential)).toBeNull();
+  });
+
+  it('should refuse a proof that claims another job or session', () => {
+    const registry = testChildPrincipalRegistry(ids());
+    const credential = register(registry, testPrincipal());
+    const challenge = registry.issueChallenge();
+
+    for (const claim of [{ jobId: 'job-b' }, { sessionId: 'session-b' }]) {
+      expect(registry.authenticate(prove(credential, challenge, REQUEST, claim), challenge, REQUEST, 1_001)).toEqual({
+        kind: 'refused',
       });
-      register(incumbent, testProjectPrincipal(projectIn(runDir)));
-      const receipt = incumbent.prepareTransfer('attempt', 1_001);
-      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
-      const [entry] = receipt.entries;
-      if (entry === undefined) throw new Error('Expected a transferred handle.');
-      const extended = {
-        ...receipt,
-        laterField: 'added',
-        entries: [{ ...entry, laterField: 'added', authorization: { ...entry.authorization, laterField: 'added' } }],
-      };
-
-      expect(decodeChildPrincipalTransfer(JSON.parse(JSON.stringify(extended)))).toMatchObject({
-        recoveryGrantId: receipt.recoveryGrantId,
-        entries: [{ handle: entry.handle }],
-      });
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
     }
   });
 
-  it('decodes and adopts a transfer whose nested principal wire carries a newer writer field', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-wire-additive-'));
-    try {
-      const incumbent = new ChildPrincipalRegistry(ids(), {
-        ledger: new ChildPrincipalNonceLedger(runDir),
-        originNamespace: () => 'ns-a',
-      });
-      register(incumbent, testProjectPrincipal(projectIn(runDir)));
-      const receipt = incumbent.prepareTransfer('attempt', 1_001);
-      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
-      const [entry] = receipt.entries;
-      if (entry === undefined) throw new Error('Expected a transferred handle.');
-      const extended = {
-        ...receipt,
-        entries: [
-          {
-            ...entry,
-            authorization: {
-              ...entry.authorization,
-              principalWire: { ...entry.authorization.principalWire, laterField: 'added' },
-            },
-          },
-        ],
-      };
-      const decoded = decodeChildPrincipalTransfer(JSON.parse(JSON.stringify(extended)));
+  it('should refuse an expired credential, a revoked job or session, and a job no longer active', () => {
+    let active = true;
+    const registry = testChildPrincipalRegistry(ids(), { activeJobOrigin: () => (active ? 'ns-a' : null) });
+    const parent = testPrincipal();
+    const expiring = register(registry, parent, { jobId: 'job-expiring', ttlMs: 10 });
+    const revokedJob = register(registry, parent, { jobId: 'job-terminal' });
+    const revokedSession = register(registry, parent, { jobId: 'job-live', sessionId: 'session-terminal' });
+    const settled = register(registry, parent, { jobId: 'job-settled' });
 
-      expect(decoded).toMatchObject({
-        recoveryGrantId: receipt.recoveryGrantId,
-        entries: [{ handle: entry.handle }],
-      });
-
-      const successor = new ChildPrincipalRegistry(ids(), {
-        ledger: new ChildPrincipalNonceLedger(runDir),
-        originNamespace: () => 'ns-a',
-      });
-      if (decoded === null) throw new Error('Expected the extended transfer to decode.');
-      expect(successor.adoptTransfer(decoded, new Set(['job-a']), 2, 1_002)).toBe(true);
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
+    expect(authenticated(registry, expiring, 1_010)).toBeNull();
+    registry.revokeParentJob('job-terminal');
+    registry.revokeParentSession('session-terminal');
+    expect(authenticated(registry, revokedJob)).toBeNull();
+    expect(authenticated(registry, revokedSession)).toBeNull();
+    expect(authenticated(registry, settled)).not.toBeNull();
+    active = false;
+    expect(authenticated(registry, settled)).toBeNull();
   });
 
-  it('refuses a transferred handle without its accepted job and persisted origin', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-origin-'));
-    try {
-      const projectRoot = projectIn(runDir);
-      const ledger = new ChildPrincipalNonceLedger(runDir);
-      const incumbent = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
-      register(incumbent, testProjectPrincipal(projectRoot));
-      const receipt = incumbent.prepareTransfer('attempt', 1_001);
-      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
-      const successor = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-b' });
-      expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_002)).toBe(false);
-      expect(successor.adoptTransfer(receipt, new Set(), 2, 1_002)).toBe(false);
-      expect(ledger.generation()).toBe(1);
-      const matchingOrigin = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
-      expect(matchingOrigin.adoptTransfer({ ...receipt, authorityGeneration: 2 }, new Set(['job-a']), 2, 1_002)).toBe(
-        false,
-      );
-      expect(
-        matchingOrigin.adoptTransfer(
-          { ...receipt, consumedNonceCheckpoint: receipt.consumedNonceCheckpoint + 1 },
-          new Set(['job-a']),
-          2,
-          1_002,
-        ),
-      ).toBe(false);
-      expect(ledger.generation()).toBe(1);
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
+  it('should deny only the credential whose record is unreadable, and name it', () => {
+    const db = childCredentialDatabase();
+    const logged: string[] = [];
+    const issuer = testChildPrincipalRegistry(ids(), { db });
+    const parent = testPrincipal();
+    const damaged = register(issuer, parent, { jobId: 'job-damaged' });
+    const intact = register(issuer, parent, { jobId: 'job-intact' });
+    db.prepare('UPDATE meta SET value = ? WHERE key = ?').run(
+      '{"credentialId":',
+      `child_principal_credential.v1:${damaged.credentialId}`,
+    );
+
+    const booted = new ChildPrincipalRegistry(
+      { randomBytes: (length) => Buffer.alloc(length, 42) },
+      createStoreChildPrincipalCredentials(() => db),
+      { namespace: 'ns-a', log: (message) => logged.push(message) },
+    );
+    const challenge = booted.issueChallenge();
+
+    expect(booted.authenticate(prove(damaged, challenge), challenge, REQUEST, 1_001)).toEqual({
+      kind: 'credential-unreadable',
+      credentialId: damaged.credentialId,
+    });
+    expect(booted.authenticate(prove(damaged, challenge), challenge, REQUEST, 1_001)).toMatchObject({
+      kind: 'credential-unreadable',
+    });
+    expect(authenticated(booted, intact)).not.toBeNull();
+    expect(logged).toEqual([expect.stringContaining(damaged.credentialId)]);
   });
 
-  it('replays a consumed nonce after the incumbent closes before a final delta', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-replay-'));
-    try {
-      const projectRoot = projectIn(runDir);
-      const ledger = new ChildPrincipalNonceLedger(runDir);
-      const incumbent = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
-      const credential = register(incumbent, testProjectPrincipal(projectRoot));
-      const receipt = incumbent.prepareTransfer('attempt', 1_001);
-      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
-      expect(incumbent.authenticate(childAuth(credential.handle), null, 1_002)).not.toBeNull();
-      ledger.close();
-
-      const recoveredLedger = new ChildPrincipalNonceLedger(runDir);
-      try {
-        const successor = new ChildPrincipalRegistry(ids(), {
-          ledger: recoveredLedger,
-          originNamespace: () => 'ns-a',
-        });
-        expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_003)).toBe(true);
-        expect(successor.authenticate(childAuth(credential.handle), null, 1_004)).toBeNull();
-      } finally {
-        recoveredLedger.close();
-      }
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
-  });
-
-  it('replays a committed successor receipt after that successor exits', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-successor-recovery-'));
-    try {
-      const projectRoot = projectIn(runDir);
-      const ledger = new ChildPrincipalNonceLedger(runDir);
-      const originNamespace = () => 'ns-a';
-      const incumbent = new ChildPrincipalRegistry(ids(), { ledger, originNamespace });
-      const credential = register(incumbent, testProjectPrincipal(projectRoot));
-      const receipt = incumbent.prepareTransfer('attempt', 1_001);
-      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
-      const successor = new ChildPrincipalRegistry(ids(), { ledger, originNamespace });
-      expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_002)).toBe(true);
-      expect(successor.authenticate(childAuth(credential.handle), null, 1_003)).not.toBeNull();
-
-      const recovered = new ChildPrincipalRegistry(ids(), { ledger, originNamespace });
-      expect(recovered.adoptRecoveredTransfer(receipt, new Set(['job-a']), 'recovery', 3, 1_004)).toBe(true);
-      expect(recovered.authenticate(childAuth(credential.handle), null, 1_005)).toBeNull();
-      expect(recovered.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_005)).not.toBeNull();
-      ledger.close();
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
-  });
-
-  it('refuses authentication when nonce consumption cannot be durably recorded', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-ledger-failure-'));
-    try {
-      const ledger = new ChildPrincipalNonceLedger(runDir);
-      const registry = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
-      const credential = register(registry, testProjectPrincipal('/workspace/project'));
-      ledger.close();
-
-      expect(registry.authenticate(childAuth(credential.handle), null, 1_001)).toBeNull();
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
-  });
   it('keeps a nested canonical descendant authorized while denying a symlink target outside the parent root', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-child-principal-canonical-'));
     const allowed = join(root, 'allowed');
@@ -282,11 +186,10 @@ describe('ChildPrincipalRegistry', () => {
     symlinkSync(outside, escape, 'dir');
 
     try {
-      const registry = new ChildPrincipalRegistry(ids());
+      const registry = testChildPrincipalRegistry(ids());
       const parentRoot = canonicalizeWorkDir(allowed, root);
       const parent = testProjectPrincipal(parentRoot, { subject: 'agent' });
-      const credential = register(registry, parent, { childCaps: ['kb:read'] });
-      const child = registry.authenticate(childAuth(credential.handle), 'ns-a', 1_001);
+      const child = authenticated(registry, register(registry, parent, { childCaps: ['kb:read'] }));
       if (child === null) throw new Error('Expected child authentication to succeed.');
 
       expect(
@@ -307,92 +210,21 @@ describe('ChildPrincipalRegistry', () => {
   });
 
   it('authenticates an attenuated child principal whose effective caps stay within the parent', () => {
-    const registry = new ChildPrincipalRegistry(ids());
-    const parent = testProjectPrincipal('/workspace/project', { subject: 'agent' });
-    const credential = register(registry, parent, { childCaps: ['kb:read', 'kb:write'] });
+    const root = mkdtempSync(join(tmpdir(), 'coral-child-principal-attenuated-'));
+    try {
+      const projectRoot = canonicalizeWorkDir(root, root);
+      const registry = testChildPrincipalRegistry(ids());
+      const parent = testProjectPrincipal(projectRoot, { subject: 'agent' });
+      const child = authenticated(registry, register(registry, parent, { childCaps: ['kb:read', 'kb:write'] }));
 
-    const child = registry.authenticate(childAuth(credential.handle), 'ns-a', 1_001);
-
-    expect(child).not.toBeNull();
-    const projectRoot = fixtureCanonicalWorkDir('/workspace/project');
-    expect(authorize(child, 'kb:read', { kind: 'project', root: projectRoot })).toEqual({ ok: true });
-    expect(authorize(child, 'kb:write', { kind: 'project', root: projectRoot })).toMatchObject({
-      ok: false,
-      reason: 'missing_capability',
-    });
-  });
-
-  it('rejects a job-bound handle replayed under another job', () => {
-    const registry = new ChildPrincipalRegistry(ids());
-    const parent = testProjectPrincipal('/workspace/project');
-    const credential = register(registry, parent, { jobId: 'job-a', sessionId: 'session-a' });
-
-    expect(
-      registry.authenticate(
-        childAuth(credential.handle, { token: 'nonce-1', jobId: 'job-b', sessionId: 'session-a' }),
-        'ns-a',
-        1_001,
-      ),
-    ).toBeNull();
-  });
-
-  it('rejects nonce replay but accepts a fresh nonce for the same live handle', () => {
-    const registry = new ChildPrincipalRegistry(ids());
-    const parent = testProjectPrincipal('/workspace/project');
-    const credential = register(registry, parent);
-
-    expect(registry.authenticate(childAuth(credential.handle, { token: 'nonce-1' }), 'ns-a', 1_001)).not.toBeNull();
-    expect(registry.authenticate(childAuth(credential.handle, { token: 'nonce-1' }), 'ns-a', 1_002)).toBeNull();
-    expect(registry.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), 'ns-a', 1_003)).not.toBeNull();
-  });
-
-  it('rejects namespace mismatch, TTL expiry, and terminal revocation', () => {
-    const registry = new ChildPrincipalRegistry(ids());
-    const parent = testProjectPrincipal('/workspace/project');
-    const namespaceCredential = register(registry, parent, { namespace: 'ns-a' });
-    const expiringCredential = register(registry, parent, {
-      jobId: 'job-expiring',
-      sessionId: 'session-expiring',
-      ttlMs: 10,
-    });
-    const jobCredential = register(registry, parent, { jobId: 'job-terminal', sessionId: 'session-live' });
-    const sessionCredential = register(registry, parent, { jobId: 'job-live', sessionId: 'session-terminal' });
-
-    expect(
-      registry.authenticate(childAuth(namespaceCredential.handle, { token: 'nonce-ns' }), 'ns-b', 1_001),
-    ).toBeNull();
-    expect(
-      registry.authenticate(
-        childAuth(expiringCredential.handle, {
-          token: 'nonce-expired',
-          jobId: 'job-expiring',
-          sessionId: 'session-expiring',
-        }),
-        'ns-a',
-        1_010,
-      ),
-    ).toBeNull();
-
-    registry.revokeParentJob('job-terminal');
-    registry.revokeParentSession('session-terminal');
-
-    expect(
-      registry.authenticate(
-        childAuth(jobCredential.handle, { token: 'nonce-job', jobId: 'job-terminal', sessionId: 'session-live' }),
-        'ns-a',
-        1_001,
-      ),
-    ).toBeNull();
-    expect(
-      registry.authenticate(
-        childAuth(sessionCredential.handle, {
-          token: 'nonce-session',
-          jobId: 'job-live',
-          sessionId: 'session-terminal',
-        }),
-        'ns-a',
-        1_001,
-      ),
-    ).toBeNull();
+      expect(child).not.toBeNull();
+      expect(authorize(child, 'kb:read', { kind: 'project', root: projectRoot })).toEqual({ ok: true });
+      expect(authorize(child, 'kb:write', { kind: 'project', root: projectRoot })).toMatchObject({
+        ok: false,
+        reason: 'missing_capability',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

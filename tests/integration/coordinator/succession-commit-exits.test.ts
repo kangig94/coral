@@ -421,7 +421,6 @@ async function harness(
       }),
       endSuccessionCommitWindow: () => true,
     },
-    childPrincipals: { fenceAuthentication: () => undefined, reclaimAuthentication: () => true },
     providerHosts: options.providerHosts ?? {
       transfersHosts: () => false,
       releaseForTransfer: async () => undefined,

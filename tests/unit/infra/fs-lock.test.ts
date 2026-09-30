@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,8 @@ import {
   acquireDirectoryLock,
   acquireDirectoryLockSync,
   attemptExclusiveFileLockSync,
+  createSharedFileLockSync,
+  repairMalformedFileLockSync,
   type DirectoryLockDeps,
   type DirectoryLockOwner,
 } from '#src/infra/fs-lock.js';
@@ -607,5 +609,107 @@ describe('exclusive file lock wait', () => {
   it('should refuse a lock whose holder outlasts the busy timeout', async () => {
     const path = await sharedHolder(60_000);
     expect(attemptExclusiveFileLockSync(path, 200).kind).toBe('contended');
+  });
+});
+
+describe('malformed file lock repair', () => {
+  const holders: ChildProcess[] = [];
+  const roots: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      holders.splice(0).map(async (holder) => {
+        if (holder.exitCode !== null || holder.signalCode !== null) return;
+        const exited = once(holder, 'exit');
+        holder.kill('SIGKILL');
+        await exited;
+      }),
+    );
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  function lockPath(): string {
+    const root = mkdtempSync(join(tmpdir(), 'coral-lock-repair-'));
+    roots.push(root);
+    return join(root, 'namespace-supervisor.v1.lock');
+  }
+
+  function recreatedAndAcquired(path: string): boolean {
+    createSharedFileLockSync(path)();
+    const attempt = attemptExclusiveFileLockSync(path);
+    if (attempt.kind === 'acquired') attempt.lease();
+    return attempt.kind === 'acquired';
+  }
+
+  it('should move aside a lock file whose bytes no process can lock, and let the address be locked again', () => {
+    const path = lockPath();
+    writeFileSync(path, 'not a sqlite database, and long enough to have a header to reject');
+    expect(attemptExclusiveFileLockSync(path).kind).toBe('malformed');
+
+    const repair = repairMalformedFileLockSync(path);
+
+    expect(repair.kind).toBe('moved-aside');
+    if (repair.kind === 'moved-aside') expect(readFileSync(repair.quarantinePath, 'utf8')).toContain('not a sqlite');
+    expect(recreatedAndAcquired(path)).toBe(true);
+  });
+
+  it('should move aside a directory standing at the lock address', () => {
+    const path = lockPath();
+    mkdirSync(path);
+
+    expect(repairMalformedFileLockSync(path).kind).toBe('moved-aside');
+    expect(recreatedAndAcquired(path)).toBe(true);
+  });
+
+  it('should move aside a second link only while holding its lock', () => {
+    const path = lockPath();
+    createSharedFileLockSync(path)();
+    linkSync(path, `${path}.alias`);
+    expect(attemptExclusiveFileLockSync(path).kind).toBe('malformed');
+
+    expect(repairMalformedFileLockSync(path).kind).toBe('moved-aside');
+    expect(recreatedAndAcquired(path)).toBe(true);
+  });
+
+  it('should leave a lock file in place while another process holds it, however its bytes read', async () => {
+    const path = lockPath();
+    createSharedFileLockSync(path)();
+    const holder = spawn(
+      process.execPath,
+      [
+        '--no-warnings',
+        '-e',
+        `const { DatabaseSync } = require('node:sqlite');
+         const db = new DatabaseSync(process.argv[1]);
+         db.exec('BEGIN EXCLUSIVE');
+         process.stdout.write('held\\n');
+         setInterval(() => {}, 1000);`,
+        path,
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+    holders.push(holder);
+    await new Promise<void>((resolve, reject) => {
+      holder.once('exit', () => reject(new Error('Lock holder exited before holding.')));
+      holder.stdout?.once('data', () => resolve());
+    });
+    const inode = statSync(path).ino;
+    writeFileSync(path, 'bytes written over a held lock file');
+    linkSync(path, `${path}.alias`);
+
+    expect(repairMalformedFileLockSync(path)).toEqual({ kind: 'held' });
+    expect(statSync(path).ino).toBe(inode);
+  });
+
+  it('should defer to a repair already in progress', () => {
+    const path = lockPath();
+    mkdirSync(path);
+    const inProgress = acquireDirectoryLockSync(`${path}.repair`);
+    try {
+      expect(repairMalformedFileLockSync(path)).toEqual({ kind: 'repair-in-progress' });
+      expect(statSync(path).isDirectory()).toBe(true);
+    } finally {
+      inProgress();
+    }
   });
 });
