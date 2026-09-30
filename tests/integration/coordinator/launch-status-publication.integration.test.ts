@@ -98,6 +98,8 @@ it.each(['owner', 'claim'])(
       });
       expect(readFileSync(oldAdmission, 'utf8')).toBe('{');
       expect(readFileSync(oldDatabase, 'utf8')).toBe('leftover branch database');
+      expect(probeProcessIncarnation(process.pid)).not.toBeNull();
+      const retryStarted = Date.now();
       rmSync(lockDir, { recursive: true });
       await waitForCondition(() => {
         const status = readLaunchStatus(runDir);
@@ -107,7 +109,14 @@ it.each(['owner', 'claim'])(
         kind: 'readable',
         status: { hold: { path: '/fixture/custody' } },
       });
-      await expect(health()).resolves.toMatchObject({ status: 'ok' });
+      current = await health();
+      while (current.launchStatus?.publicationFailure !== undefined && Date.now() - retryStarted < 3_000) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        current = await health();
+      }
+      expect(current).toMatchObject({ status: 'ok', launchStatus: { hold: { path: '/fixture/custody' } } });
+      expect(current.launchStatus?.publicationFailure).toBeUndefined();
+      expect(Date.now() - retryStarted).toBeLessThan(3_000);
       expect(readdirSync(runDir).some((name) => name.includes('fallback'))).toBe(false);
     } finally {
       for (const supervisor of supervisors) supervisor.kill('SIGKILL');

@@ -1,8 +1,48 @@
 import { runNamespaceSupervisor } from '#src/coordinator-launch/supervisor.js';
+import { SupervisorLaunchMemory } from '#src/coordinator-launch/state.js';
 import { launchLegacyBackend } from '#src/coordinator-launch/legacy-bootstrap.js';
 import type { ChildProcess } from 'node:child_process';
 import { updateLaunchStatus } from '#src/infra/launch-status.js';
-import { writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const memoryLog = process.env.CORAL_FIXTURE_MEMORY_LOG ?? join(process.env.HOME!, 'supervisor-memory.jsonl');
+const readMemory = SupervisorLaunchMemory.prototype.read;
+SupervisorLaunchMemory.prototype.read = function () {
+  const state = readMemory.call(this);
+  appendFileSync(
+    memoryLog,
+    JSON.stringify({
+      kind: 'memory',
+      pid: process.pid,
+      at: Date.now(),
+      authority: this.hasAuthority(state.owner),
+      state,
+    }) + '\n',
+  );
+  return state;
+};
+const reserve = SupervisorLaunchMemory.prototype.reserve;
+SupervisorLaunchMemory.prototype.reserve = function (...args) {
+  const state = readMemory.call(this);
+  appendFileSync(
+    memoryLog,
+    JSON.stringify({
+      kind: 'reservation',
+      pid: process.pid,
+      at: Date.now(),
+      authority: this.hasAuthority(state.owner),
+      state,
+    }) + '\n',
+  );
+  return reserve.apply(this, args);
+};
+const settleAbsentChild = SupervisorLaunchMemory.prototype.settleAbsentChild;
+SupervisorLaunchMemory.prototype.settleAbsentChild = function (...args) {
+  const settled = settleAbsentChild.apply(this, args);
+  this.read();
+  return settled;
+};
 
 const executable = process.argv[2];
 if (executable === '--launch-legacy') {

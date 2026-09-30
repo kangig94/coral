@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SupervisorLaunchMemory } from '#src/coordinator-launch/state.js';
-import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
+import { attemptExclusiveFileLockSync, createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import * as fileLocks from '#src/infra/fs-lock.js';
 import * as nodeProcess from '#src/infra/node-process.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
@@ -21,6 +21,7 @@ import {
 } from '#src/infra/launch-admission-record.js';
 import { currentLaunchStatus } from '#src/infra/launch-status.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
+import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 
 function message(child: ChildProcess, kind: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -65,6 +66,14 @@ async function launch(runDir: string, pause: boolean, parented = false) {
         ]
       : [],
   });
+  let releaseNamespace: (() => void) | undefined;
+  if (!parented) {
+    createSharedFileLockSync(supervisorLockPath(runDir))();
+    const namespace = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+    if (namespace.kind !== 'acquired') throw new Error('Test parent did not acquire namespace ownership');
+    releaseNamespace = namespace.lease;
+    if (process.platform === 'linux') expect(new SupervisorEvidence(runDir).lockHolder()?.pid).toBe(process.pid);
+  }
   const child = spawn(process.execPath, [executable, ...(parented ? ['parent'] : [])], {
     env: { ...process.env, CORAL_LAUNCH_ADMISSION: '1' },
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
@@ -88,7 +97,7 @@ async function launch(runDir: string, pause: boolean, parented = false) {
     purpose: 'startup',
     build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
   });
-  return { child, admitted, window, launchId, parentIncarnation };
+  return { child, admitted, window, launchId, parentIncarnation, releaseNamespace };
 }
 
 async function stop(child: ChildProcess, signal?: NodeJS.Signals): Promise<void> {
@@ -122,6 +131,8 @@ describe('child lifetime admission', () => {
         if (namespace.kind !== 'acquired') throw new Error('Replacement did not acquire namespace');
         release = namespace.lease;
         expect(statSync(supervisorLockPath(runDir)).ino).toBe(namespaceInode.ino);
+        expect(statSync(supervisorLockPath(runDir)).dev).toBe(namespaceInode.dev);
+        if (process.platform === 'linux') expect(new SupervisorEvidence(runDir).lockHolder()?.pid).toBe(process.pid);
         expect(nodeProcess.observeProcessLiveness(childPid)).toBe('alive');
         const probe =
           identity === 'unknown' ? vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(null) : null;
@@ -154,6 +165,7 @@ describe('child lifetime admission', () => {
         await vi.waitFor(() => expect(nodeProcess.probeProcessIncarnation(childPid!)).toBeNull(), { timeout: 3_000 });
         memory.reconcileAdmissions();
         expect(memory.read().launch?.phase).toBe('exited');
+        expect(memory.read().owner.mode).toBe('supervised');
         expect(existsSync(subject.lifetimePath)).toBe(false);
         memory.reconcileAdmissions();
         expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
@@ -189,6 +201,7 @@ describe('child lifetime admission', () => {
         'build-A',
       );
       expect(memory.read().launch?.admittedAt).toBe(originalTime);
+      expect(memory.read().owner.mode).toBe('recovering');
       expect(memory.reserve(memory.read().owner, 'build-B', 'startup')).toBeNull();
       const probe = vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(null);
       expect(observeLaunchSubject(subject)).toBe('acquisition-window');
@@ -198,6 +211,7 @@ describe('child lifetime admission', () => {
         disposition: 'acquisition-window',
       });
       expect(memory.reserve(memory.read().owner, 'build-B', 'startup')).toBeNull();
+      expect(memory.read().owner.mode).toBe('recovering');
       expect(existsSync(subject.lifetimePath)).toBe(true);
       probe.mockRestore();
       running.child.kill('SIGCONT');
@@ -212,6 +226,7 @@ describe('child lifetime admission', () => {
     } finally {
       vi.restoreAllMocks();
       await stop(running.child, 'SIGKILL');
+      running.releaseNamespace?.();
       rmSync(runDir, { recursive: true, force: true });
     }
   });
@@ -237,6 +252,7 @@ describe('child lifetime admission', () => {
         .mockReturnValue({ kind: 'unobservable', cause: new Error('cleanup unavailable') });
       memory.reconcileAdmissions();
       expect(memory.read().launch?.phase).toBe('exited');
+      expect(memory.read().owner.mode).toBe('supervised');
       expect(currentLaunchStatus(runDir)?.admissionHolds).toContainEqual({
         path: subject.path,
         disposition: 'cleanup-pending',
@@ -252,6 +268,7 @@ describe('child lifetime admission', () => {
     } finally {
       vi.restoreAllMocks();
       await stop(running.child, 'SIGKILL');
+      running.releaseNamespace?.();
       rmSync(runDir, { recursive: true, force: true });
     }
   });
@@ -276,6 +293,7 @@ describe('child lifetime admission', () => {
     } finally {
       if (descendant !== undefined) process.kill(descendant, 'SIGKILL');
       await stop(running.child, 'SIGKILL');
+      running.releaseNamespace?.();
       rmSync(runDir, { recursive: true, force: true });
     }
   });

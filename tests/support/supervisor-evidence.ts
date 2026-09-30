@@ -14,6 +14,9 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { childHasExited } from '#src/coordinator-launch/child-state.js';
 import { replacementServing } from '#src/coordinator-launch/health.js';
 import { recordLegacyUpgradeIntent } from '#src/coordinator-launch/request.js';
+import type { SupervisorLaunchMemory } from '#src/coordinator-launch/state.js';
+
+type SupervisorState = ReturnType<SupervisorLaunchMemory['read']>;
 
 type EvidenceSlot = {
   id: string;
@@ -57,6 +60,7 @@ function launchLockHolder(runDir: string): { pid: number; incarnation: ProcessIn
 /** A read-only test view assembled from the production recovery evidence. */
 export class SupervisorEvidence {
   private readonly runDir: string;
+  private readonly memoryLog: string;
   private readonly observed = new Map<string, EvidenceSlot>();
   private readonly healthy = new Set<string>();
   private readonly healthProbes = new Set<string>();
@@ -72,8 +76,37 @@ export class SupervisorEvidence {
     }
   >();
 
-  constructor(runDir: string) {
+  constructor(runDir: string, memoryLog = join(dirname(dirname(dirname(runDir))), 'supervisor-memory.jsonl')) {
     this.runDir = runDir;
+    this.memoryLog = memoryLog;
+  }
+
+  memory(): SupervisorState | null {
+    const holder = this.lockHolder();
+    if (holder === null) return null;
+    let contents: string;
+    try {
+      contents = readFileSync(this.memoryLog, 'utf8');
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    const end = contents.lastIndexOf('\n');
+    for (const line of contents
+      .slice(0, end < 0 ? 0 : end)
+      .split('\n')
+      .reverse()) {
+      if (line.length === 0) continue;
+      const event = JSON.parse(line) as { kind: string; pid: number; authority: boolean; state?: SupervisorState };
+      if (
+        event.kind === 'memory' &&
+        event.pid === holder.pid &&
+        event.authority &&
+        event.state?.owner.process.incarnation === holder.incarnation
+      )
+        return event.state;
+    }
+    return null;
   }
 
   read() {
@@ -184,9 +217,7 @@ export class SupervisorEvidence {
           : {
               process: holder,
               buildSetId: ownerBuildSetId ?? current?.buildSetId ?? lastBuildSetId,
-              mode: children.some((entry) => entry.phase !== 'exited' && entry.parent.pid !== holder.pid)
-                ? ('recovering' as const)
-                : ('supervised' as const),
+              mode: this.memory()?.owner.mode,
             },
       hold: visible?.hold,
       inheritedHolds: visible?.inheritedHolds ?? [],

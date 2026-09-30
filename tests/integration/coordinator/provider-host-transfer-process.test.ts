@@ -229,6 +229,12 @@ function hostsAlive(recorded: readonly { pid: number; incarnation: ProcessIncarn
 async function startProxiedJob(
   world: TransferWorld,
   oldEnv: Record<string, string> = {},
+  oldFixture = createPluginFixture(roots, {
+    flavor: 'prod',
+    version: '0.0.1',
+    backend: 'succession-interposition',
+    accepts: 'bundled',
+  }),
 ): Promise<
   Readonly<{
     oldFixture: PluginFixture;
@@ -239,12 +245,6 @@ async function startProxiedJob(
     waiter: ReturnType<typeof startCli>;
   }>
 > {
-  const oldFixture = createPluginFixture(roots, {
-    flavor: 'prod',
-    version: '0.0.1',
-    backend: 'succession-interposition',
-    accepts: 'bundled',
-  });
   const old = spawnCoordinator({
     fixture: oldFixture,
     home: world.home,
@@ -418,7 +418,40 @@ describe('real-process provider host transfer', () => {
   it('transfers a live provider job when a hook claimant wins before the coordinator replacement', async () => {
     assertBuildArtifactsAvailable();
     const world = createTransferWorld();
-    const { oldFixture, old, incumbentPid, jobId, hosts } = await startProxiedJob(world);
+    const fixture = createPluginFixture(roots, {
+      flavor: 'prod',
+      version: '0.0.1',
+      backend: 'succession-interposition',
+      accepts: 'bundled',
+    });
+    await build({
+      entryPoints: [fileURLToPath(new URL('../../../src/coordinator-launch/main.ts', import.meta.url))],
+      outfile: join(fixture.root, 'bridge', 'coral-sentinel.cjs'),
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      external: ['node:*'],
+      banner: { js: 'var __fixtureImportMetaUrl=require("url").pathToFileURL(__filename).href;' },
+      define: { 'import.meta.url': '__fixtureImportMetaUrl' },
+      plugins: [
+        {
+          name: 'observe-supervisor-memory',
+          setup(builder) {
+            builder.onLoad({ filter: /\/coordinator-launch\/state\.ts$/ }, ({ path }) => ({
+              contents:
+                "import { appendFileSync as fixtureAppend } from 'node:fs';\n" +
+                readFileSync(path, 'utf8').replace(
+                  'return this.#state;',
+                  `fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG!, JSON.stringify({ kind: 'memory', pid: process.pid, authority: this.#authority, state: this.#state }) + '\\n'); return this.#state;`,
+                ),
+              loader: 'ts',
+            }));
+          },
+        },
+      ],
+    });
+    world.env.CORAL_FIXTURE_MEMORY_LOG = join(world.home, 'supervisor-memory.jsonl');
+    const { oldFixture, old, incumbentPid, jobId, hosts } = await startProxiedJob(world, {}, fixture);
     if (old.child.pid === undefined) throw new Error('Supervisor has no PID');
     const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
     const launch = new SupervisorEvidence(runDir);

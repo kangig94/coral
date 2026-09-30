@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -22,6 +23,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { supervisorLockPath, v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
+import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
+import {
+  launchAdmissionPath,
+  listLaunchSubjects,
+  publishLaunchAdmission,
+  removeOwnLaunchAdmission,
+} from '#src/infra/launch-admission-record.js';
 import { readUpgradeIntent, visibleUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { retainedBuildRoot } from '#src/infra/retained-build-root.js';
 import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
@@ -40,6 +48,7 @@ import {
   SHIPPED_RELEASE_TAGS,
   shippedCliEnvironment,
   spawnCoordinator,
+  storeDbPathForHome,
   stopCoordinator,
   terminateChildProcess,
   waitForDiscoveryRecord,
@@ -793,6 +802,10 @@ describe('AC18 first-release version pairing', () => {
     assertBuildArtifactsAvailable();
     const home = newHome();
     const branch = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+    mkdirSync(runDir, { recursive: true });
+    const leftovers = ['coordinator-launch.v1.sqlite', 'child-principal-nonces.v1.sqlite'];
+    for (const name of leftovers) writeFileSync(join(runDir, name), `ignored ${name}`);
     const newer = spawnCoordinator({ fixture: branch, home, tempRoots: roots });
     coordinators.push(newer);
     await waitForDiscoveryRecord(home, 'prod', 20_000);
@@ -800,18 +813,82 @@ describe('AC18 first-release version pairing', () => {
     const selected = readActiveStoreSelectionForCoordination(runtime);
     if (selected.kind !== 'valid') throw new Error(`Newer build did not publish a selection: ${selected.kind}`);
     expect(selected.selection.manifest.version).toBe('0.10.14');
+    for (const name of leftovers) expect(readFileSync(join(runDir, name), 'utf8')).toBe(`ignored ${name}`);
+    const db = new DatabaseSync(storeDbPathForHome(home, 'prod'));
+    try {
+      db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('child_principal_credential.v1:rollback', '{');
+    } finally {
+      db.close();
+    }
     await stopCoordinator(newer);
     rmSync(dirname(selected.selection.bundleDir), { recursive: true, force: true });
 
-    const shipped = createShippedPluginFixture(roots, 'v0.10.13');
-    const rollback = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
-    coordinators.push(rollback);
-    await waitForCondition(() => readDiscoveryRecordForHome(home, 'prod')?.version === '0.10.13', 20_000);
-    const serving = readDiscoveryRecordForHome(home, 'prod');
-    if (serving === null) throw new Error('Rollback coordinator has no discovery record.');
-    expect(serving.version).toBe('0.10.13');
-    expect(serving.bundleHash).toBe(shipped.bundleHash);
-    expect(await probeCoordinatorSocket(serving.socketPath)).toBe('accepting');
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Missing rollback fixture incarnation');
+    const launchId = '00000000-0000-4000-8000-000000000018';
+    publishLaunchAdmission(runDir, {
+      version: 1,
+      launchId,
+      child: { pid: process.pid, incarnation },
+      parent: { pid: process.pid, incarnation },
+      admittedAt: Date.now(),
+      build: { version: '0.10.14', buildSetId: 'rollback-residue', bundleHash: branch.bundleHash, flavor: 'prod' },
+      purpose: 'startup',
+    });
+    const [subject] = listLaunchSubjects(runDir).filter((entry) => entry.admission?.launchId === launchId);
+    if (subject?.lifetimePath === undefined) throw new Error('Missing rollback lifetime lock');
+    expect(attemptExclusiveFileLockSync(subject.lifetimePath).kind).toBe('contended');
+    const artifacts = [
+      launchAdmissionPath(runDir, launchId),
+      subject.lifetimePath,
+      join(runDir, 'launch-status.v1.json'),
+    ];
+    writeFileSync(artifacts[2], '{');
+    const statusLock = join(runDir, 'launch-status.v1.lock');
+    mkdirSync(statusLock, { recursive: true });
+    for (const marker of ['owner-one.lock', 'owner-two.lock', 'claim-one.lock', 'claim-two.lock']) {
+      const path = join(statusLock, marker);
+      writeFileSync(path, '{}');
+      artifacts.push(path);
+    }
+    const oldAdmission = join(runDir, 'launch-admissions.v1', `${launchId}.json`);
+    mkdirSync(dirname(oldAdmission), { recursive: true });
+    writeFileSync(oldAdmission, '{');
+    artifacts.push(oldAdmission);
+    const before = artifacts.map((path) => readFileSync(path));
+    if (!existsSync(supervisorLockPath(runDir))) writeFileSync(supervisorLockPath(runDir), '');
+    const namespace = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+    if (namespace.kind !== 'acquired') throw new Error('Rollback fixture did not acquire the new supervisor lock');
+
+    try {
+      const shipped = createShippedPluginFixture(roots, 'v0.10.13');
+      const rollback = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
+      coordinators.push(rollback);
+      await waitForCondition(() => readDiscoveryRecordForHome(home, 'prod')?.version === '0.10.13', 20_000);
+      const serving = readDiscoveryRecordForHome(home, 'prod');
+      if (serving === null) throw new Error('Rollback coordinator has no discovery record.');
+      expect(serving.version).toBe('0.10.13');
+      expect(serving.bundleHash).toBe(shipped.bundleHash);
+      expect(await probeCoordinatorSocket(serving.socketPath)).toBe('accepting');
+      await expect(
+        requestIpcMethod(serving.socketPath, 'transport.ping', undefined, { timeoutMs: 2_000 }),
+      ).resolves.toMatchObject({ status: 'ok', pid: serving.pid });
+      expect(attemptExclusiveFileLockSync(subject.lifetimePath).kind).toBe('contended');
+      expect(attemptExclusiveFileLockSync(supervisorLockPath(runDir)).kind).toBe('contended');
+      artifacts.forEach((path, index) => expect(readFileSync(path)).toEqual(before[index]));
+      for (const name of leftovers) expect(readFileSync(join(runDir, name), 'utf8')).toBe(`ignored ${name}`);
+      const rolledBackDb = new DatabaseSync(storeDbPathForHome(home, 'prod'), { readOnly: true });
+      try {
+        expect(
+          rolledBackDb.prepare('SELECT value FROM meta WHERE key = ?').get('child_principal_credential.v1:rollback'),
+        ).toMatchObject({ value: '{' });
+      } finally {
+        rolledBackDb.close();
+      }
+    } finally {
+      namespace.lease();
+      removeOwnLaunchAdmission(runDir, launchId);
+    }
   }, 50_000);
 
   it('lets the older build take rollback after a completed upgrade once the successor root stops validating', async () => {
