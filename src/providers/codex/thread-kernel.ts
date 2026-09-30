@@ -26,7 +26,8 @@ import {
   mapThreadStartParams,
   mapTurnStartParams,
   readCodexPersistedContinuity,
-  resolveCodexModel,
+  resolveCodexSelection,
+  type CodexModelSelection,
   resolveCodexServiceTier,
   type CodexServiceTier,
 } from './request-mapping.js';
@@ -42,6 +43,7 @@ import {
   type RecoverableTurnFailure,
 } from './turn-recovery.js';
 import type { CodexExecutionPlan } from './execution-plan.js';
+import { readCodexModelCatalog, type CodexModelCatalog } from './model-catalog.js';
 
 type CodexProviderRuntime = Extract<ProviderRuntime<CodexExecutionPlan>, { appServerSession: unknown }>;
 
@@ -110,7 +112,7 @@ export type TurnAttempt = {
 export type CodexTurnState = {
   startedAt: number;
   cwd: string;
-  model: string;
+  selection: CodexModelSelection | null;
   serviceTier: CodexServiceTier | undefined;
   sessionId: string;
   persistedThreadId: string | null;
@@ -188,7 +190,7 @@ function createState(request: ProviderRequest, runtime: CodexProviderRuntime): C
   const state = {
     startedAt: runtime.time.now(),
     cwd: persistedContinuity.cwd ?? request.cwd,
-    model: resolveCodexModel(request),
+    selection: null,
     serviceTier: resolveCodexServiceTier(request, runtime),
     sessionId: request.sessionId,
     persistedThreadId,
@@ -819,14 +821,37 @@ async function ensureInterrupt(
   return await attempt.interruptRequest;
 }
 
+function emitCatalogNotice(
+  emit: (event: ProviderEventBody) => void,
+  selection: CodexModelSelection,
+  catalog: CodexModelCatalog,
+): void {
+  const findings: string[] = [];
+  if (catalog.kind === 'unavailable') {
+    findings.push(`unavailable (${catalog.reason})`);
+  } else {
+    if (selection.source.kind === 'built-in' && selection.source.cause === 'size-unlisted') {
+      findings.push(`lists no ${selection.source.size} model`);
+    }
+    if (catalog.skippedEntries > 0) {
+      findings.push(
+        `skipped ${catalog.skippedEntries} malformed ${catalog.skippedEntries === 1 ? 'entry' : 'entries'}`,
+      );
+    }
+  }
+  if (findings.length === 0) return;
+  const model = selection.source.kind === 'built-in' ? `built-in ${selection.model}` : selection.model;
+  emitProgress(emit, `Codex model catalog ${findings.join('; ')}; continuing with ${model}.`);
+}
+
 async function initializeThread(
   request: ProviderRequest,
   runtime: CodexProviderRuntime,
   lease: AppServerSession,
   state: CodexTurnState,
+  selection: CodexModelSelection,
   emit: (event: ProviderEventBody) => void,
 ): Promise<void> {
-  await verifyCodexEffectiveTransport(lease, request.cwd);
   let threadId: string;
 
   if (request.action === 'resume') {
@@ -835,7 +860,13 @@ async function initializeThread(
       const response = await rpc(
         lease,
         'thread/resume',
-        mapThreadResumeParams(request, conversationRef, runtime.executionPlan.turn.threadConfig, state.serviceTier),
+        mapThreadResumeParams(
+          request,
+          selection,
+          conversationRef,
+          runtime.executionPlan.turn.threadConfig,
+          state.serviceTier,
+        ),
       );
       threadId = requireRpcThreadId(response, 'thread/resume');
       if (threadId !== conversationRef) {
@@ -854,7 +885,7 @@ async function initializeThread(
     const response = await rpc(
       lease,
       'thread/start',
-      mapThreadStartParams(request, runtime.executionPlan.turn.threadConfig, state.serviceTier),
+      mapThreadStartParams(request, selection, runtime.executionPlan.turn.threadConfig, state.serviceTier),
     );
     threadId = requireRpcThreadId(response, 'thread/start');
   }
@@ -1164,13 +1195,17 @@ function isAbortedTurn(status: string | undefined): boolean {
   return status === 'aborted' || status === 'cancelled' || status === 'canceled' || status === 'interrupted';
 }
 
+function terminalModel(state: CodexTurnState): { model?: string } {
+  return state.selection === null ? {} : { model: state.selection.model };
+}
+
 function buildAbortedTerminal(state: CodexTurnState): Extract<ProviderEventBody, { kind: 'terminal' }> {
   const usage = normalizeCodexUsage(state.latestTokenCount);
   return {
     kind: 'terminal',
     terminal: buildJobTerminal({
       content: '',
-      model: state.model,
+      ...terminalModel(state),
       durationMs: state.time.now() - state.startedAt,
       outcome: { kind: 'aborted', reason: 'signal_abort' },
       usage,
@@ -1189,7 +1224,7 @@ function buildFailedTerminal(
     kind: 'terminal',
     terminal: buildJobTerminal({
       content: '',
-      model: state.model,
+      ...terminalModel(state),
       durationMs: state.time.now() - state.startedAt,
       outcome: {
         kind: 'provider_exit',
@@ -1220,7 +1255,7 @@ function buildCompletedTerminal(state: CodexTurnState, turn: Turn): Extract<Prov
     kind: 'terminal',
     terminal: buildJobTerminal({
       content: state.lastAgentMessage,
-      model: state.model,
+      ...terminalModel(state),
       durationMs: state.time.now() - state.startedAt,
       outcome: codexTurnOutcome(turnAborted, turnFailed, failureNote),
       usage,
@@ -1314,7 +1349,12 @@ export const codexTurnKernel: Provider<
     });
 
     try {
-      await initializeThread(request, runtime, lease, state, emit);
+      await verifyCodexEffectiveTransport(lease, request.cwd);
+      const catalog = await readCodexModelCatalog(lease);
+      const selection = resolveCodexSelection(request, catalog);
+      state.selection = selection;
+      emitCatalogNotice(emit, selection, catalog);
+      await initializeThread(request, runtime, lease, state, selection, emit);
 
       if (runtime.signal.aborted) {
         const terminal = await finishInvocation(state, { kind: 'aborted', reason: 'signal_abort' }, emit);
@@ -1325,7 +1365,7 @@ export const codexTurnKernel: Provider<
       if (state.threadId === null) {
         throw new Error('Codex thread id missing after initialization.');
       }
-      const originalParams = mapTurnStartParams(request, state.threadId, state.serviceTier);
+      const originalParams = mapTurnStartParams(request, selection, state.threadId, state.serviceTier);
       let params = originalParams;
       let continuationCount = 0;
       const recoveredFailures = new Set<RecoverableTurnFailure>();

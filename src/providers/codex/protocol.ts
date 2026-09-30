@@ -101,7 +101,25 @@ interface TurnInterruptParams {
 export const turnInterruptResponseSchema = z.object({}).strict();
 type TurnInterruptResponse = z.infer<typeof turnInterruptResponseSchema>;
 
+export const modelListEntrySchema = z.object({
+  model: z.string().min(1),
+  hidden: z.boolean(),
+  upgrade: z.string().nullable(),
+  supportedReasoningEfforts: z.array(z.object({ reasoningEffort: z.string() })),
+});
+export type ModelListEntry = z.infer<typeof modelListEntrySchema>;
+
+export const modelListResponseSchema = z.object({
+  data: z.array(z.unknown()),
+  nextCursor: z.string().min(1).nullable(),
+});
+export type ModelListResponse = z.infer<typeof modelListResponseSchema>;
+
 interface AppServerMethodMap {
+  'model/list': {
+    params: { cursor?: string | null; limit?: number | null; includeHidden?: boolean | null };
+    result: ModelListResponse;
+  };
   'config/read': {
     params: { includeLayers: false; cwd: string };
     result: { config: Record<string, unknown> };

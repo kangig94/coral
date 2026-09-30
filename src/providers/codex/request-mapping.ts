@@ -10,6 +10,7 @@ import type { ProviderTransportClose } from '../protocol.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 import type { RecoverableTurnFailure } from './turn-recovery.js';
 import type { CodexExecutionPlan } from './execution-plan.js';
+import { isCodexSizedModel, isCodexSize, type CodexModelCatalog, type CodexSize } from './model-catalog.js';
 import { zodPersistedParser } from '../binding-parser.js';
 import {
   canonicalizeWorkDir,
@@ -95,13 +96,24 @@ function isCodexLuna(model: string): boolean {
 }
 
 function codexEffortCeiling(model: string): EffortLevel {
-  if (!isCodexSizedFamily(model)) {
+  if (!isCodexSizedModel(model)) {
     return CODEX_LEGACY_EFFORT_CEILING;
   }
   if (isCodexLuna(model)) {
     return CODEX_LUNA_EFFORT_CEILING;
   }
   return CODEX_SIZED_EFFORT_CEILING;
+}
+
+/** An effort string Coral cannot rank must never become a ceiling. */
+function highestKnownEffort(efforts: readonly string[]): EffortLevel | undefined {
+  let highest: EffortLevel | undefined;
+  for (const effort of efforts) {
+    if (!Object.hasOwn(EFFORT_RANK, effort)) continue;
+    const level = effort as EffortLevel;
+    if (highest === undefined || EFFORT_RANK[level] > EFFORT_RANK[highest]) highest = level;
+  }
+  return highest;
 }
 
 function clampEffort(level: EffortLevel, min: EffortLevel | undefined, max: EffortLevel): EffortLevel {
@@ -115,10 +127,10 @@ function clampEffort(level: EffortLevel, min: EffortLevel | undefined, max: Effo
   return result;
 }
 
-function resolveCodexEffort(request: ProviderRequest, model: string): EffortLevel {
+function resolveCodexEffort(request: ProviderRequest, model: string, ceiling: EffortLevel): EffortLevel {
   const resolved = resolveProviderEffort(request, 'CORAL_CODEX_EFFORT', request.coralEnv) ?? CODEX_DEFAULT_EFFORT;
   const floor = isCodexTerraOrLuna(model) ? CODEX_TERRA_LUNA_MIN_EFFORT : undefined;
-  return clampEffort(resolved, floor, codexEffortCeiling(model));
+  return clampEffort(resolved, floor, ceiling);
 }
 
 function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-write' | 'danger-full-access' {
@@ -279,43 +291,38 @@ function buildCodexTurnInput(prompt: string): UserInput[] {
   return [{ type: 'text', text: prompt, text_elements: [] }];
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-6-sol';
+const DEFAULT_CODEX_MODEL = 'sol';
 
-/**
- * Canonical sized Codex model ids, keyed by their bare size alias. Single home for these
- * literals: the abstract-tier map, the family check, and the bare-alias normalization in
- * `resolveCodexModel` all derive from this.
- */
-const CODEX_SIZE_MODEL: Readonly<Record<string, string>> = Object.freeze({
+const CODEX_SIZE_MODEL: Readonly<Record<CodexSize, string>> = Object.freeze({
   astra: 'gpt-6-astra',
   sol: 'gpt-6-sol',
   terra: 'gpt-5.6-terra',
   luna: 'gpt-6-luna',
 });
 
-function normalizeCodexSizeAlias(model: string | undefined): string | undefined {
-  if (model === undefined) return undefined;
-  const key = model.trim().toLowerCase();
-  return Object.hasOwn(CODEX_SIZE_MODEL, key) ? CODEX_SIZE_MODEL[key] : model;
+type ResolvedCodexModel = Pick<CodexModelSelection, 'model' | 'source'>;
+
+function resolveCodexModelId(model: string, catalog: CodexModelCatalog): ResolvedCodexModel {
+  const size = model.trim().toLowerCase();
+  if (!isCodexSize(size)) return { model, source: { kind: 'pinned' } };
+  if (catalog.kind === 'unavailable') {
+    return {
+      model: CODEX_SIZE_MODEL[size],
+      source: { kind: 'built-in', cause: 'catalog-unavailable', reason: catalog.reason },
+    };
+  }
+  const listedModel = catalog.newestBySize[size];
+  return listedModel === undefined
+    ? { model: CODEX_SIZE_MODEL[size], source: { kind: 'built-in', cause: 'size-unlisted', size } }
+    : { model: listedModel, source: { kind: 'catalog' } };
 }
 
-/**
- * Coral abstract tiers → sized Codex models. Applied only when the baseline model is itself a
- * sized line; a single-size line (e.g. `gpt-5.5`) has no size split, so every abstract tier
- * collapses to that baseline.
- */
-const CODEX_ABSTRACT_MODEL: Readonly<Record<string, string>> = Object.freeze({
-  fable: CODEX_SIZE_MODEL.astra,
-  opus: CODEX_SIZE_MODEL.sol,
-  sonnet: CODEX_SIZE_MODEL.terra,
-  haiku: CODEX_SIZE_MODEL.luna,
+const CODEX_ABSTRACT_MODEL: Readonly<Record<string, CodexSize>> = Object.freeze({
+  fable: 'astra',
+  opus: 'sol',
+  sonnet: 'terra',
+  haiku: 'luna',
 });
-
-function isCodexSizedFamily(model: string): boolean {
-  const normalized = model.trim().toLowerCase();
-  if (normalized.includes('gpt-5.6')) return true;
-  return Object.hasOwn(CODEX_SIZE_MODEL, normalized) || Object.values(CODEX_SIZE_MODEL).includes(normalized);
-}
 
 function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | undefined {
   if (!value) {
@@ -399,36 +406,47 @@ export function resolveCodexServiceTier(
   return normalizeServiceTierEnv(rawEnvTier);
 }
 
-/**
- * The wire model for a Codex request. Baseline = `CORAL_CODEX_MODEL` ?? default. Codex has no
- * name for a Coral abstract tier, so one must never reach the wire unmapped. A bare size alias
- * (`astra`, `sol`, …) is a concrete request for that size, whatever the baseline line, and is
- * sent under its canonical id.
- */
-export function resolveCodexModel(request: Pick<ProviderRequest, 'model' | 'coralEnv'>): string {
-  const baseline = normalizeCodexSizeAlias(request.coralEnv['CORAL_CODEX_MODEL']) ?? DEFAULT_CODEX_MODEL;
+function resolveCodexModel(
+  request: Pick<ProviderRequest, 'model' | 'coralEnv'>,
+  catalog: CodexModelCatalog,
+): ResolvedCodexModel {
+  const baseline = request.coralEnv['CORAL_CODEX_MODEL'] ?? DEFAULT_CODEX_MODEL;
+  const size =
+    request.model !== undefined && Object.hasOwn(CODEX_ABSTRACT_MODEL, request.model)
+      ? CODEX_ABSTRACT_MODEL[request.model]
+      : undefined;
+  if (size === undefined) return resolveCodexModelId(request.model ?? baseline, catalog);
+  return resolveCodexModelId(isCodexSizedModel(baseline) ? size : baseline, catalog);
+}
 
-  if (request.model !== undefined) {
-    const mapped = Object.hasOwn(CODEX_ABSTRACT_MODEL, request.model) ? CODEX_ABSTRACT_MODEL[request.model] : undefined;
-    if (mapped !== undefined) {
-      return isCodexSizedFamily(baseline) ? mapped : baseline;
-    }
-    const sizeModel = normalizeCodexSizeAlias(request.model) ?? request.model;
-    if (sizeModel !== request.model) {
-      return sizeModel;
-    }
-  }
-  return request.model ?? baseline;
+/** Thread creation or resume and every turn of one invocation must share one selection. */
+export type CodexModelSelection = Readonly<{
+  model: string;
+  effort: EffortLevel;
+  source:
+    | { kind: 'catalog' }
+    | { kind: 'pinned' }
+    | { kind: 'built-in'; cause: 'size-unlisted'; size: CodexSize }
+    | { kind: 'built-in'; cause: 'catalog-unavailable'; reason: string };
+}>;
+
+/** An abstract Coral tier must never reach the wire unmapped. */
+export function resolveCodexSelection(request: ProviderRequest, catalog: CodexModelCatalog): CodexModelSelection {
+  const resolved = resolveCodexModel(request, catalog);
+  const supported = catalog.kind === 'listed' ? catalog.supportedEfforts.get(resolved.model) : undefined;
+  const ceiling = highestKnownEffort(supported ?? []) ?? codexEffortCeiling(resolved.model);
+  return { ...resolved, effort: resolveCodexEffort(request, resolved.model, ceiling) };
 }
 
 export function mapThreadStartParams(
   request: ProviderRequest,
+  selection: CodexModelSelection,
   threadConfig: Readonly<Record<string, unknown>>,
   serviceTier?: CodexServiceTier,
 ): ThreadStartParams {
   return {
     cwd: request.cwd,
-    model: resolveCodexModel(request),
+    model: selection.model,
     modelProvider: 'openai',
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
@@ -440,6 +458,7 @@ export function mapThreadStartParams(
 
 export function mapThreadResumeParams(
   request: ProviderRequest,
+  selection: CodexModelSelection,
   threadId: string,
   threadConfig: Readonly<Record<string, unknown>>,
   serviceTier?: CodexServiceTier,
@@ -447,7 +466,7 @@ export function mapThreadResumeParams(
   return {
     threadId,
     cwd: request.cwd,
-    model: resolveCodexModel(request),
+    model: selection.model,
     modelProvider: 'openai',
     approvalPolicy: 'never',
     // Codex merge_persisted_resume_metadata() does not restore sandbox from stored
@@ -460,15 +479,15 @@ export function mapThreadResumeParams(
 
 export function mapTurnStartParams(
   request: ProviderRequest,
+  selection: CodexModelSelection,
   threadId: string,
   serviceTier?: CodexServiceTier,
 ): TurnStartParams {
-  const model = resolveCodexModel(request);
   return {
     threadId,
     input: buildCodexTurnInput(buildCodexPrompt(request)),
-    model,
-    effort: resolveCodexEffort(request, model),
+    model: selection.model,
+    effort: selection.effort,
     ...(serviceTier && { serviceTier }),
   };
 }
