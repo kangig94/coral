@@ -2648,7 +2648,10 @@ export class ProviderOperationReconciler
   }
 
   #poll(preferredAuthority?: DurableProviderProxyOperationAuthority): Promise<void> {
-    if (!this.#canMutate()) return Promise.resolve();
+    if (!this.#canMutate()) {
+      if (!this.#admissionClosed) this.#schedule(TIMER_MAX_MS);
+      return Promise.resolve();
+    }
     return this.#admission().run('provider-operation-due-poll', async () => {
       if (this.#fatal) return;
       if (this.#polling) {

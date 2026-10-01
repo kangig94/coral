@@ -4,6 +4,7 @@ import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { JobStore } from '../../jobs/store.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
+import { SuccessionWriterParkedError } from '../../store/db.js';
 import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import { type createCoordinatorWorld } from './world.js';
 
@@ -101,6 +102,7 @@ function attachDaemonJobExitSettlement(
 ): () => void {
   const { cleanupDaemonJobAbortProxy } = proxies;
   const daemonOwnedKbJobs = proxies.state.daemonOwnedKbJobs;
+  let disposed = false;
   const describeKbDaemonExit = (snapshot: KbDaemonHealthSnapshot): string => {
     const exit = snapshot.lastExit;
     const suffix =
@@ -152,10 +154,20 @@ function attachDaemonJobExitSettlement(
         world.log(`[kb-daemon] marked ${failed.length} daemon-owned KB job(s) as error after daemon exit\n`);
       }
     } catch (error: unknown) {
+      if (error instanceof SuccessionWriterParkedError) {
+        void error.unparked.then(() => {
+          if (!disposed) failTrackedDaemonJobs(snapshot);
+        });
+        return;
+      }
       world.log(`[kb-daemon] failed to reconcile daemon-owned KB jobs after daemon exit: ${formatError(error)}\n`);
     }
   };
-  return kbDaemonSupervisor.onExit?.(failTrackedDaemonJobs) ?? (() => {});
+  const unsubscribe = kbDaemonSupervisor.onExit?.(failTrackedDaemonJobs);
+  return () => {
+    disposed = true;
+    unsubscribe?.();
+  };
 }
 
 export function createKbDaemonJobTracking({

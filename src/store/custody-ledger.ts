@@ -1,6 +1,7 @@
 import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
 import { processIncarnationSchema } from '../infra/node-process.js';
+import { tryAcquireDirectoryLock } from '../infra/fs-lock.js';
 import type { Runtime } from '../runtime/ports.js';
 import { readEpochKey } from './epoch-key.js';
 import { observeStorePath } from './path-observation.js';
@@ -146,6 +147,24 @@ function readRecord<T>(runtime: Pick<Runtime, 'storage'>, path: string, schema: 
   }
 }
 
+function readCustodyAbsence(runtime: Pick<Runtime, 'storage'>, runDir: string, intent: CustodyIntent) {
+  const absence = readRecord(runtime, join(intentDir(runDir, intent.id), 'absence.v1.json'), custodyAbsenceSchema);
+  if (absence !== null && (absence.intentId !== intent.id || absence.processToken !== intent.processToken)) {
+    throw new Error('Custody absence does not match its intent.');
+  }
+  return absence;
+}
+
+function quarantineDamagedCustodyAbsence(runtime: Runtime, runDir: string, intent: CustodyIntent): void {
+  try {
+    readCustodyAbsence(runtime, runDir, intent);
+  } catch {
+    const path = join(intentDir(runDir, intent.id), 'absence.v1.json');
+    runtime.storage.renameSync(path, `${path}.damaged.${runtime.ids.uuid()}`);
+    syncDirectory(runtime, dirname(path));
+  }
+}
+
 /** Intent persistence is the permission boundary for the external effect. */
 export function recordCustodyIntent(
   runtime: Runtime,
@@ -214,6 +233,26 @@ export function bindCustodyIdentity(
   observation: Pick<CustodyBinding, 'process' | 'capsule' | 'observedAtMs'>,
   mode: 'initial' | 'recovered' = 'initial',
 ): CustodyBinding {
+  const release = tryAcquireDirectoryLock(join(intentDir(runDir, intent.id), '.reconcile.lock'), {
+    storage: runtime.storage,
+    time: runtime.time,
+  });
+  if (release === null) throw new Error('Custody reconciliation is in progress.');
+  try {
+    release.assertOwned();
+    return bindCustodyIdentityUnderLock(runtime, runDir, intent, observation, mode);
+  } finally {
+    release();
+  }
+}
+
+function bindCustodyIdentityUnderLock(
+  runtime: Runtime,
+  runDir: string,
+  intent: CustodyIntent,
+  observation: Pick<CustodyBinding, 'process' | 'capsule' | 'observedAtMs'>,
+  mode: 'initial' | 'recovered',
+): CustodyBinding {
   const dir = intentDir(runDir, intent.id);
   const stored = readRecord(runtime, join(dir, 'intent.v1.json'), custodyIntentSchema);
   if (stored === null || stored.processToken !== intent.processToken || stored.operationId !== intent.operationId) {
@@ -225,7 +264,8 @@ export function bindCustodyIdentity(
   ) {
     throw new Error('Custody binding does not match the intended effect.');
   }
-  if (readRecord(runtime, join(dir, 'absence.v1.json'), custodyAbsenceSchema) !== null) {
+  quarantineDamagedCustodyAbsence(runtime, runDir, stored);
+  if (readCustodyAbsence(runtime, runDir, stored) !== null) {
     throw new Error('Custody intent was already settled absent.');
   }
   const binding = custodyBindingSchema.parse({
@@ -236,7 +276,15 @@ export function bindCustodyIdentity(
     operationId: stored.operationId,
   });
   const path = join(dir, mode === 'recovered' ? 'binding.recovered.v1.json' : 'binding.v1.json');
-  const existing = readRecord(runtime, path, custodyBindingSchema);
+  let existing: CustodyBinding | null;
+  try {
+    existing = readRecord(runtime, path, custodyBindingSchema);
+  } catch (error: unknown) {
+    if (mode !== 'recovered' || !(error instanceof SyntaxError || error instanceof z.ZodError)) throw error;
+    runtime.storage.renameSync(path, `${path}.damaged.${runtime.ids.uuid()}`);
+    syncDirectory(runtime, dir);
+    existing = null;
+  }
   if (existing !== null) {
     if (
       existing.processToken !== binding.processToken ||
@@ -322,35 +370,43 @@ export function readCustodyLedger(runtime: Pick<Runtime, 'storage'>, runDir: str
   }
   return names
     .filter((name) => name !== 'root.v1.json' && !name.includes('.stage.'))
-    .map((name): CustodyEntry => {
-      const dir = join(custodyLedgerDir(runDir), name);
-      try {
-        const intent = readRecord(runtime, join(dir, 'intent.v1.json'), custodyIntentSchema);
-        if (intent === null || intent.id !== name) throw new Error('Custody intent is missing or mismatched.');
-        let bindingInvalid = false;
-        try {
-          const binding = readCustodyBinding(runtime, runDir, intent);
-          if (binding !== null) return { kind: 'bound', intent, binding };
-        } catch {
-          bindingInvalid = true;
-        }
-        const absence = readRecord(runtime, join(dir, 'absence.v1.json'), custodyAbsenceSchema);
-        if (absence !== null) {
-          if (absence.intentId !== intent.id || absence.processToken !== intent.processToken) {
-            throw new Error('Custody absence does not match its intent.');
-          }
-          return { kind: 'absent', intent, evidence: absence.evidence };
-        }
-        return {
-          kind: 'holding',
-          intent,
-          exit: 'identity-binding-or-proven-absence',
-          ...(bindingInvalid ? { reason: 'identity binding is incomplete or mismatched' } : {}),
-        };
-      } catch (error: unknown) {
-        return { kind: 'unreadable', path: dir, reason: String(error) };
+    .map((name) => readCustodyEntry(runtime, runDir, name));
+}
+
+function readCustodyEntry(runtime: Pick<Runtime, 'storage'>, runDir: string, id: string): CustodyEntry {
+  const dir = join(custodyLedgerDir(runDir), id);
+  try {
+    const intent = readRecord(runtime, join(dir, 'intent.v1.json'), custodyIntentSchema);
+    if (intent === null || intent.id !== id) throw new Error('Custody intent is missing or mismatched.');
+    let bindingInvalid = false;
+    try {
+      const binding = readCustodyBinding(runtime, runDir, intent);
+      if (binding !== null) return { kind: 'bound', intent, binding };
+    } catch {
+      bindingInvalid = true;
+    }
+    let absenceInvalid = false;
+    try {
+      const absence = readCustodyAbsence(runtime, runDir, intent);
+      if (absence !== null) {
+        return { kind: 'absent', intent, evidence: absence.evidence };
       }
-    });
+    } catch {
+      absenceInvalid = true;
+    }
+    return {
+      kind: 'holding',
+      intent,
+      exit: 'identity-binding-or-proven-absence',
+      ...(absenceInvalid
+        ? { reason: 'absence receipt is incomplete or mismatched' }
+        : bindingInvalid
+          ? { reason: 'identity binding is incomplete or mismatched' }
+          : {}),
+    };
+  } catch (error: unknown) {
+    return { kind: 'unreadable', path: dir, reason: String(error) };
+  }
 }
 
 /** Time alone cannot settle an unbound external effect. */
@@ -364,23 +420,34 @@ export function reconcileCustodyLedger(
   if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new RangeError('Custody observation time is invalid.');
   if (!Number.isSafeInteger(graceMs) || graceMs < 0) throw new RangeError('Custody grace must be nonnegative.');
   return readCustodyLedger(runtime, runDir).map((entry): CustodyEntry => {
-    if (
-      entry.kind !== 'holding' ||
-      !Number.isSafeInteger(entry.intent.bindDeadlineMs + graceMs) ||
-      nowMs < entry.intent.bindDeadlineMs + graceMs
-    )
-      return entry;
-    const observation = observe(entry.intent);
-    if (observation.kind === 'unreadable') return { ...entry, reason: observation.reason };
-    if (observation.kind !== 'absent' || observation.processToken !== entry.intent.processToken) return entry;
-    const absence = custodyAbsenceSchema.parse({
-      version: 'v1',
-      intentId: entry.intent.id,
-      processToken: entry.intent.processToken,
-      provenAtMs: nowMs,
-      evidence: observation.evidence,
+    if (entry.kind !== 'holding') return entry;
+    const release = tryAcquireDirectoryLock(join(intentDir(runDir, entry.intent.id), '.reconcile.lock'), {
+      storage: runtime.storage,
+      time: runtime.time,
     });
-    writeOnce(runtime, join(intentDir(runDir, entry.intent.id), 'absence.v1.json'), absence);
-    return { kind: 'absent', intent: entry.intent, evidence: observation.evidence };
+    if (release === null) return entry;
+    try {
+      release.assertOwned();
+      const current = readCustodyEntry(runtime, runDir, entry.intent.id);
+      if (current.kind === 'unreadable') return entry;
+      if (current.kind !== 'holding' || current.intent.processToken !== entry.intent.processToken) return current;
+      quarantineDamagedCustodyAbsence(runtime, runDir, current.intent);
+      if (!Number.isSafeInteger(entry.intent.bindDeadlineMs + graceMs) || nowMs < entry.intent.bindDeadlineMs + graceMs)
+        return entry;
+      const observation = observe(entry.intent);
+      if (observation.kind === 'unreadable') return { ...entry, reason: observation.reason };
+      if (observation.kind !== 'absent' || observation.processToken !== entry.intent.processToken) return entry;
+      const absence = custodyAbsenceSchema.parse({
+        version: 'v1',
+        intentId: entry.intent.id,
+        processToken: entry.intent.processToken,
+        provenAtMs: nowMs,
+        evidence: observation.evidence,
+      });
+      writeOnce(runtime, join(intentDir(runDir, entry.intent.id), 'absence.v1.json'), absence);
+      return { kind: 'absent', intent: entry.intent, evidence: observation.evidence };
+    } finally {
+      release();
+    }
   });
 }

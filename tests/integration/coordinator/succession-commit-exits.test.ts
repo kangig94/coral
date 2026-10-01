@@ -6,6 +6,12 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { createProviderOperationReconcilerHarness } from '#tests/helpers/provider-operation-reconciler-harness.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { attachProviderOperation } from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import { controlExchangeForTest, ControlClientError } from '#src/provider-proxy/control-client.js';
+import { insertProviderOperation, providerOperationMutationAdmission } from '#src/store/provider-operation-journal.js';
+
 import type { SuccessionAttempt } from '#src/coordinator/succession/attempt-child.js';
 import {
   createSuccessionCommitter,
@@ -289,6 +295,8 @@ async function harness(
     releaseAuthorityThrowsOnce?: boolean;
     refusalWriteFailures?: number;
     serveAfterRefusalWriteFailure?: boolean;
+    operationProbe?: ReturnType<typeof createProviderOperationReconcilerHarness>;
+    onWriterPark?: () => void;
   }>,
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'coral-succession-exits-'));
@@ -355,6 +363,10 @@ async function harness(
   const writers: IncumbentWriterPorts = {
     parkProviderOperationMutations: async () => {
       commitEvents.push('park');
+      if (options.operationProbe !== undefined) {
+        expect(providerOperationMutationAdmission(options.operationProbe.db).close().kind).toBe('drained');
+        options.onWriterPark?.();
+      }
     },
     adoptProviderOperationAdmission: () => {
       state.adoptedAdmissions += 1;
@@ -441,7 +453,7 @@ async function harness(
       certifyCustody: options.certifyCustody ?? (async () => null),
       confirmCustody: async () => false,
     },
-    storeDb: () => settled.db,
+    storeDb: () => options.operationProbe?.db ?? settled.db,
     startAttempt: async (input) => {
       if (input.recoveryBundleDir === undefined) return attempt;
       state.startedRecoveries += 1;
@@ -1239,5 +1251,116 @@ describe('succession commit failure exits', () => {
     await test.committer.shutdown.settleUncommittedAttempt();
     expect(commitEvents).toContain('stop-forwarding');
     expect(commitEvents.indexOf('stop-forwarding')).toBeLessThan(commitEvents.indexOf('abort'));
+  });
+});
+
+describe('fatal hunt: exhausted provider-transfer attempt drops the due poll', () => {
+  it('resumes a pending provider attachment after actual commit failure and writer reclamation', async () => {
+    const timers = new Set<{ callback: () => void; unref: () => void }>();
+    let attachAttempts = 0;
+    let controlFaults = 0;
+    let retrySafeIncidents = 0;
+    const operationProbe = createProviderOperationReconcilerHarness({
+      time: {
+        setTimeout: (callback) => {
+          const timer = { callback, unref() {} };
+          timers.add(timer);
+          return timer;
+        },
+        clearTimeout: (timer) => {
+          timers.delete(timer as { callback: () => void; unref: () => void });
+        },
+      },
+      attachOperation: async (operation, watermark) => {
+        attachAttempts++;
+        const client = {
+          exchange: async () =>
+            controlExchangeForTest({
+              kind: 'no-response' as const,
+              cause: 'timeout' as const,
+              error: new ControlClientError('control_call_failed', 'temporary attachment response loss', 'timeout'),
+            }),
+        };
+        return attachProviderOperation(
+          {
+            proxyClient: client,
+            guardianClient: client,
+            setIdentity: operationProbe.authority.setIdentity,
+            mutationRpcTimeoutMs: 5_000,
+            faultAuthority: () => {
+              controlFaults++;
+            },
+            reportIncident: () => {
+              retrySafeIncidents++;
+            },
+          },
+          operation,
+          watermark,
+        );
+      },
+    });
+    const fireDueTimer = () => {
+      expect(timers.size).toBe(1);
+      for (const timer of [...timers]) {
+        timers.delete(timer);
+        timer.callback();
+      }
+    };
+    try {
+      const record = providerOperationRecord('executing');
+      insertProviderOperation(operationProbe.db, record);
+      await operationProbe.reconciler.reconcile(record);
+      expect(controlFaults).toBe(0);
+      expect(retrySafeIncidents).toBe(1);
+      expect(operationProbe.registry.attach).not.toHaveBeenCalled();
+      operationProbe.reconciler.start();
+      let releasedHostControl = false;
+      const test = await harness({
+        operationProbe,
+        onWriterPark: fireDueTimer,
+        failingPoints: () => false,
+        recoveryLaunch: 'fails',
+        pauseMs: 3_000,
+        priorTransientFailures: 6,
+        providerHosts: {
+          transfersHosts: () => true,
+          releaseForTransfer: (_attemptId, signal) =>
+            new Promise<void>((_resolve, reject) => {
+              // A controller-transfer reply misses the commit deadline. The production transfer authorizer
+              // races the RPC against this signal without closing host control sockets.
+              signal.addEventListener('abort', () => reject(new Error('controller-transfer reply delayed')));
+            }),
+          reclaimTransferred: () => {
+            releasedHostControl = false;
+          },
+        },
+      });
+      await test.launch();
+      await waitForCondition(() => test.adoptedAdmissions === 1, 5_000);
+      const intent = readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir);
+      expect(intent.kind).toBe('readable');
+      if (intent.kind !== 'readable') throw new Error('missing intent');
+      expect(intent.intent.disposition).toBe('closed');
+      expect(intent.intent.retryCondition?.kind).toBe('target-change');
+      expect(test.launchFence).toContain(false);
+      expect(test.releases).toHaveLength(0);
+      expect(releasedHostControl).toBe(false);
+      expect(providerOperationMutationAdmission(operationProbe.db).accepting).toBe(true);
+      operationProbe.advance(60_000);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const scheduledAfterReclaim = timers.size;
+      expect(scheduledAfterReclaim, 'reclaimed recovery retains an automatic timer').toBeGreaterThan(0);
+      fireDueTimer();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(attachAttempts).toBe(2);
+      expect(timers.size).toBeGreaterThan(0);
+      expect(
+        scheduledAfterReclaim,
+        'live reclaimed coordinator has no automatic provider recovery turn',
+      ).toBeGreaterThan(0);
+    } finally {
+      operationProbe.reconciler.stop();
+      operationProbe.db.close();
+    }
   });
 });

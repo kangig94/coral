@@ -53,7 +53,7 @@ import {
   terminateChildProcess,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
-import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
+import { freezeRecordedProcesses, stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
 function createPluginFixture(...args: Parameters<typeof createBasePluginFixture>) {
@@ -115,8 +115,8 @@ async function buildObservedSupervisor(outfile: string): Promise<void> {
               source = source
                 .replace('return this.#state;', `${log} return this.#state;`)
                 .replace(
-                  'return this.#reserve(owner, buildSetId, purpose, false);',
-                  `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'reservation', pid: process.pid, authority: this.#authority, state: this.#state }) + '\\n'); return this.#reserve(owner, buildSetId, purpose, false);`,
+                  'const reservation: LaunchReservation = {',
+                  `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'reservation', pid: process.pid, authority: this.#authority, state: this.#state }) + '\\n'); const reservation: LaunchReservation = {`,
                 );
             } else {
               source = source
@@ -3198,17 +3198,18 @@ describe('namespace supervisor recovery', () => {
         const current = record.read().launch?.child;
         if (current !== undefined) identities.set(current.pid, current.incarnation);
         record.close();
-        await Promise.all(
-          [parent, replacement, independent]
-            .filter((supervisor) => supervisor !== null)
-            .map((supervisor) => terminateChildProcess(supervisor, 'SIGKILL')),
-        );
         for (const directory of [runDir, independentRunDir]) {
           for (const subject of listLaunchSubjects(directory)) {
             const child = subject.admission?.child;
             if (child !== undefined) identities.set(child.pid, child.incarnation ?? identities.get(child.pid) ?? null);
           }
         }
+        freezeRecordedProcesses([...identities].map(([pid, incarnation]) => ({ pid, incarnation })));
+        await Promise.all(
+          [parent, replacement, independent]
+            .filter((supervisor) => supervisor !== null)
+            .map((supervisor) => terminateChildProcess(supervisor, 'SIGKILL')),
+        );
         await stopRecordedProcesses([...identities].map(([pid, incarnation]) => ({ pid, incarnation })));
         for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
       }

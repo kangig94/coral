@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -244,6 +244,51 @@ describe('custody ledger', () => {
     ).toMatchObject([{ kind: 'absent' }]);
     expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'absent' }]);
   });
+
+  it.each(['{', JSON.stringify({ version: 'v1', intentId: 'wrong' })])(
+    'recovers damaged absence evidence (%s) without discarding the intent',
+    (damage) => {
+      const run = runDir();
+      const runtime = runtimeFor(run);
+      const intent = recordCustodyIntent(runtime, run, {
+        effect: 'process-spawn',
+        epoch: 'epoch-4',
+        owner: 'durable-cli',
+        operationId: 'job-damaged',
+        capsule: null,
+        bindWithinMs: 1_000,
+        nowMs: 100,
+      });
+      const directory = join(custodyLedgerDir(run), intent.id);
+      const receipt = join(directory, 'absence.v1.json');
+      writeFileSync(receipt, damage);
+      expect(readCustodyLedger(runtime, run)).toMatchObject([{ kind: 'holding', intent }]);
+      expect(readFileSync(receipt, 'utf8')).toBe(damage);
+      expect(reconcileCustodyLedger(runtime, run, 1_200, 100, () => ({ kind: 'unknown' }))).toMatchObject([
+        { kind: 'holding', intent },
+      ]);
+      expect(existsSync(receipt)).toBe(false);
+      const quarantined = readdirSync(directory).find((name) => name.startsWith('absence.v1.json.damaged.'));
+      expect(quarantined).toBeDefined();
+      expect(readFileSync(join(directory, quarantined!), 'utf8')).toBe(damage);
+      expect(
+        reconcileCustodyLedger(runtime, run, 1_200, 100, () => ({
+          kind: 'absent',
+          processToken: runtime.ids.uuid(),
+          evidence: 'wrong token',
+        })),
+      ).toMatchObject([{ kind: 'holding' }]);
+      expect(existsSync(receipt)).toBe(false);
+      expect(
+        reconcileCustodyLedger(runtime, run, 1_200, 100, () => ({
+          kind: 'absent',
+          processToken: intent.processToken,
+          evidence: 'matching token absent',
+        })),
+      ).toMatchObject([{ kind: 'absent' }]);
+      expect(readCustodyLedger(runtime, run)).toMatchObject([{ kind: 'absent' }]);
+    },
+  );
 
   it('should bind a published operation without inventing a process', () => {
     const run = runDir();

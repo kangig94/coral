@@ -19,7 +19,12 @@ import { validatedBuild } from '#src/coordinator-launch/selection.js';
 import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { custodyLedgerDir, recordCustodyIntent, reconcileCustodyLedger } from '#src/store/custody-ledger.js';
+import {
+  custodyLedgerDir,
+  recordCustodyIntent,
+  readCustodyLedger,
+  reconcileCustodyLedger,
+} from '#src/store/custody-ledger.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 import { supervisorAcceptedUpgrade } from '#src/transport/ipc/ensure.js';
 
@@ -105,6 +110,55 @@ describe('namespace supervisor controller selection', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+  it('launches and repairs a damaged absence receipt without hiding its valid custody intent', async () => {
+    const roots: string[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'coral-damaged-absence-boot-'));
+    roots.push(home);
+    const plugin = createPluginFixture(roots, { flavor: 'prod' });
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    const intent = recordCustodyIntent(runtime, runDir, {
+      effect: 'process-spawn',
+      epoch: join(home, 'never-created-epoch'),
+      owner: 'durable-cli',
+      operationId: 'never-spawned-job',
+      capsule: null,
+      nowMs: 1,
+      bindWithinMs: 1,
+    });
+    const receipt = join(custodyLedgerDir(runDir), intent.id, 'absence.v1.json');
+    writeFileSync(receipt, '{');
+    expect(controllerBuild(runDir)).toEqual({ kind: 'none' });
+    expect(readCustodyLedger(runtime, runDir)).toMatchObject([{ kind: 'holding', intent }]);
+    const record = new SupervisorEvidence(runDir);
+    const supervisor = spawn(
+      process.execPath,
+      [join(plugin.root, 'bridge', 'coral-sentinel.cjs'), join(plugin.root, 'bridge', 'coral-backend.cjs')],
+      {
+        env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+        stdio: 'ignore',
+      },
+    );
+    try {
+      await waitForCondition(() => record.read().launch?.phase === 'serving', 15_000);
+      await waitForCondition(() => readCustodyLedger(runtime, runDir).some((entry) => entry.kind === 'absent'), 5_000);
+      expect(readCustodyLedger(runtime, runDir)).toMatchObject([{ kind: 'absent', intent }]);
+      expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ processToken: intent.processToken });
+    } finally {
+      const state = record.read();
+      record.close();
+      supervisor.kill('SIGKILL');
+      if (state.launch?.child?.pid !== undefined) {
+        try {
+          process.kill(state.launch.child.pid, 'SIGKILL');
+        } catch {
+          /* The fixture may have exited. */
+        }
+      }
+      for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('records unreadable custody quarantine and launches after the record is repaired', async () => {
     const roots: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'coral-custody-quarantine-'));

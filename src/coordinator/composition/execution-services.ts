@@ -657,6 +657,7 @@ type ExecutionServices = {
     signal: AbortSignal,
   ) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
+  wakeProviderOperationReconciler: () => void;
   stopProviderOperationReconciler: () => ProviderOperationReconcilerStopDisposition;
   requestStops: (jobIds: readonly string[], cause: ProviderStopCause) => ProviderStopDecision;
 };
@@ -698,6 +699,7 @@ function createExecutionServicePorts(input: {
       return providerOperationReconciler.reconcileAtStartup(ownership, signal);
     },
     startProviderOperationReconciler: () => providerOperationReconciler.start(),
+    wakeProviderOperationReconciler: () => providerOperationReconciler.wake(),
     requestStops: (jobIds, cause) => providerOperationReconciler.requestStops(jobIds, cause),
     stopProviderOperationReconciler: () => {
       const disposition = providerOperationReconciler.stop();

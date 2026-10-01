@@ -113,6 +113,7 @@ function createCoordinatorLifecycleDeps(
     reconcileProviderOperationsAtStartup: services.reconcileProviderOperationsAtStartup,
     reconcileCustodyAtStartup: () => armCustodyReconciliation(),
     startProviderOperationReconciler: services.startProviderOperationReconciler,
+    wakeProviderOperationReconciler: services.wakeProviderOperationReconciler,
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
     scheduleStoreEpochSweepFn: storeEpochSweep.schedule,

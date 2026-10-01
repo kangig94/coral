@@ -419,6 +419,41 @@ describe('upgrade intent', () => {
     expect(readCompletedSuccessionReceipts(dir)[0]).toMatchObject({ futureEntry: 'keep' });
   });
 
+  it.each(['{', JSON.stringify({ version: 1, receipts: 'damaged' })])(
+    'quarantines damaged optional receipt history (%s) while retaining the current completion',
+    async (damage) => {
+      const dir = runDir();
+      const pending = await compareAndSwapUpgradeIntent(dir, null, pendingIntent('current'));
+      if (pending.kind !== 'written') throw new Error('Missing pending intent');
+      const completionReceipt = {
+        kind: 'serving' as const,
+        attemptId: 'attempt-current',
+        successor: { instanceId: 'successor', pid: 200, incarnation: null, build },
+        epochKey: 'epoch-1:lineage-1',
+        controlGeneration: 2,
+        acceptedObligations: [],
+        recordedAt: '2026-09-25T00:59:00.000Z',
+      };
+      const completed = await compareAndSwapUpgradeIntent(dir, pending.intent.revision, {
+        ...pendingIntent('current'),
+        disposition: 'completed',
+        completionReceipt,
+        attemptId: 'attempt-current',
+        attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: 100, incarnation: null },
+        attemptDeadline: '2026-09-25T01:00:00.000Z',
+      });
+      if (completed.kind !== 'written') throw new Error('Missing completed intent');
+      const history = join(dir, 'upgrade-receipts.v1.json');
+      writeFileSync(history, damage);
+      const next = await compareAndSwapUpgradeIntent(dir, completed.intent.revision, pendingIntent('next'));
+      expect(next.kind).toBe('written');
+      expect(readCompletedSuccessionReceipts(dir)).toMatchObject([{ receipt: completionReceipt }]);
+      const quarantine = readdirSync(dir).find((name) => name.startsWith('upgrade-receipts.v1.json.damaged.'));
+      expect(quarantine).toBeDefined();
+      expect(readFileSync(join(dir, quarantine!), 'utf8')).toBe(damage);
+    },
+  );
+
   it('should decide again from the winning revision after losing a write race', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));

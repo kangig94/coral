@@ -1,6 +1,17 @@
 import { observeProcessLiveness, probeProcessIncarnation } from '#src/infra/node-process.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
+export function freezeRecordedProcesses(recorded: readonly { pid: number; incarnation: string | null }[]): void {
+  for (const { pid, incarnation } of recorded) {
+    if (incarnation === null || probeProcessIncarnation(pid) !== incarnation) continue;
+    try {
+      process.kill(pid, 'SIGSTOP');
+    } catch {
+      // stopRecordedProcesses still verifies departure if the process exited during observation.
+    }
+  }
+}
+
 export async function stopRecordedProcesses(
   recorded: readonly { pid: number; incarnation: string | null }[],
   signal: NodeJS.Signals = 'SIGKILL',

@@ -633,7 +633,7 @@ describe('namespace supervisor ownership', () => {
     }
   });
 
-  it('keeps incomplete v2 envelopes in recovery instead of normalizing empty occupancy', () => {
+  it('cleans incomplete v2 envelopes once no lifetime lock is held', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-v2-unknown-'));
     const incarnation = probeProcessIncarnation(process.pid);
     if (incarnation === null) throw new Error('Test process incarnation is unavailable');
@@ -644,7 +644,9 @@ describe('namespace supervisor ownership', () => {
       const memory = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, 'build-A');
       expect(memory.read().owner.mode).toBe('recovering');
       expect(memory.release()).toBe(false);
-      expect(memory.reserve(memory.read().owner, 'build-A', 'startup')).toBeNull();
+      expect(memory.reserve(memory.read().owner, 'build-A', 'startup')).not.toBeNull();
+      expect(listLaunchAdmissions(runDir)).toEqual([]);
+      expect(memory.read().owner.mode).toBe('supervised');
     } finally {
       rmSync(runDir, { recursive: true, force: true });
     }

@@ -8,6 +8,7 @@ import {
   observeLaunchSubject,
   removeAbsentLaunchSubject,
   removeAbandonedLaunchPreparations,
+  repairDamagedLaunchSubject,
   type LaunchSubject,
   type LaunchAdmission,
 } from '../infra/launch-admission-record.js';
@@ -476,7 +477,11 @@ export class SupervisorLaunchMemory {
       (subject) =>
         subject.admission !== undefined ||
         observed.some((entry) => entry.path === subject.path) ||
-        !observed.some((entry) => entry.problem === undefined && entry.lifetimePath?.startsWith(`${subject.path}/`)),
+        !observed.some(
+          (entry) =>
+            (entry.lifetimePath?.startsWith(`${subject.path}/`) ?? false) ||
+            (entry.lifetimeDirectory?.startsWith(`${subject.path}/`) ?? false),
+        ),
     );
     for (const entry of recovered.children()) {
       const exact = this.children().find((slot) => refinableReservation(slot, entry));
@@ -582,6 +587,7 @@ export class SupervisorLaunchMemory {
     )
       holds.push({ path: join(this.#runDir, 'upgrade.v1.json'), disposition: 'unknown' });
     for (const subject of this.#subjects) {
+      repairDamagedLaunchSubject(subject);
       const disposition = this.#settledSubjects.has(subject.path) ? 'absent' : observeLaunchSubject(subject);
       if (disposition === 'absent') {
         this.#settledSubjects.set(subject.path, subject);
@@ -592,8 +598,10 @@ export class SupervisorLaunchMemory {
             entry.child.incarnation === subject.admission.child.incarnation,
         );
         if (slot?.child !== undefined && slot.phase !== 'exited') this.exited(slot, slot.child);
-        if (!removeAbsentLaunchSubject(subject)) holds.push({ path: subject.path, disposition: 'cleanup-pending' });
-        else {
+        if (!removeAbsentLaunchSubject(subject)) {
+          this.#settledSubjects.delete(subject.path);
+          holds.push({ path: subject.path, disposition: 'cleanup-pending' });
+        } else {
           this.#subjects = this.#subjects.filter((entry) => entry !== subject);
           this.#settledSubjects.delete(subject.path);
         }

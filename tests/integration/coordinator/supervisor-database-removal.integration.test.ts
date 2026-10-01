@@ -31,7 +31,7 @@ import { getBackendStatusFull } from '#src/cli/backend-status.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
-import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
+import { freezeRecordedProcesses, stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 
 vi.mock('node:fs', async (importOriginal) => ({ ...(await importOriginal<typeof nodeFs>()) }));
 
@@ -47,12 +47,10 @@ async function stopFixtureProcesses(
   identities: Map<number, string>,
   timeoutMs = 5_000,
 ): Promise<void> {
+  const recorded = [...identities].map(([pid, incarnation]) => ({ pid, incarnation }));
+  freezeRecordedProcesses(recorded);
   for (const supervisor of supervisors) supervisor.kill('SIGKILL');
-  await stopRecordedProcesses(
-    [...identities].map(([pid, incarnation]) => ({ pid, incarnation })),
-    'SIGKILL',
-    timeoutMs,
-  );
+  await stopRecordedProcesses(recorded, 'SIGKILL', timeoutMs);
   await waitForCondition(
     () => supervisors.every((supervisor) => supervisor.exitCode !== null || supervisor.signalCode !== null),
     timeoutMs,
@@ -76,7 +74,7 @@ it.runIf(process.platform === 'linux')('waits for every recorded fixture writer 
     const incarnation = probeProcessIncarnation(pid);
     if (incarnation === null) throw new Error('Fixture writer identity is unavailable');
     vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
-      if (target !== pid || signal === 0) return kill(target, signal);
+      if (target !== pid || signal !== 'SIGKILL') return kill(target, signal);
       delayedKill ??= setTimeout(() => kill(target, signal), 100);
       return true;
     });
@@ -602,6 +600,12 @@ it.each([
       for (const identity of [state.owner?.process, state.launch?.child, state.attempt?.child])
         if (identity?.incarnation !== undefined && identity.incarnation !== null)
           identities.set(identity.pid, identity.incarnation);
+      for (const entry of listLaunchAdmissions(runDir)) {
+        if (entry.kind !== 'readable') continue;
+        for (const identity of [entry.admission.parent, entry.admission.child]) {
+          if (identity.incarnation !== null) identities.set(identity.pid, identity.incarnation);
+        }
+      }
     };
     const start = (root: string) => {
       const supervisor = spawn(process.execPath, [harness, join(fixture.root, 'bridge', 'coral-backend.cjs')], {

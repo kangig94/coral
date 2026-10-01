@@ -2648,9 +2648,8 @@ describe('launch admission', () => {
       startTime: new Date(0).toISOString(),
     };
     let processAbsent = false;
-    let retryCleanup!: () => void;
-    const retryHandle = {};
-    const clearInterval = vi.fn();
+    const intervals = new Map<object, () => void>();
+    const clearInterval = vi.fn((handle: object) => intervals.delete(handle));
     const exitRecord = { exitCode: 0, signal: null, endTime: new Date(1).toISOString() } as const;
     let resolveExit!: (record: typeof exitRecord) => void;
     const exit = new Promise<typeof exitRecord>((resolve) => {
@@ -2662,8 +2661,9 @@ describe('launch admission', () => {
       time: {
         ...base.time,
         setInterval: (callback) => {
-          retryCleanup = callback;
-          return retryHandle;
+          const handle = { unref: vi.fn() };
+          intervals.set(handle, callback);
+          return handle;
         },
         clearInterval,
       },
@@ -2738,6 +2738,10 @@ describe('launch admission', () => {
     const retainedCleanup = [...cleanupOwnership.cleanupHandles.values()][0];
     if (retainedCleanup === undefined) throw new Error('Expected retained durable cleanup ownership');
     await retainedCleanup();
+    expect(intervals.size).toBe(1);
+    const retry = [...intervals.entries()][0];
+    if (retry === undefined) throw new Error('Expected active containment retry');
+    const [retryHandle, retryCleanup] = retry;
     processAbsent = true;
     retryCleanup();
     expect(holdControl?.abandon()).toEqual({
@@ -2751,7 +2755,8 @@ describe('launch admission', () => {
     expect(absencePublicationAttempts).toBe(1);
     expect(cleanupOwnership.cleanupHandles.size).toBe(1);
     expect(cleanupOwnership.cleanupRetentions.size).toBe(1);
-    expect(clearInterval).not.toHaveBeenCalled();
+    expect(clearInterval).not.toHaveBeenCalledWith(retryHandle);
+    expect(intervals.has(retryHandle)).toBe(true);
     expect(settled).toBe(false);
 
     expect(holdControl?.abandon()).toEqual({

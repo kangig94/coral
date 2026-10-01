@@ -342,7 +342,9 @@ function retainCompletedSuccessionReceipt(runDir: string, intent: UpgradeIntent)
   try {
     previous = completedSuccessionReceiptsSchema.parse(JSON.parse(readFileSync(path, 'utf8')) as unknown);
   } catch (error: unknown) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      renameSync(path, `${path}.damaged.${randomUUID()}`);
+    } else if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
   }
   const existing = previous.receipts.find((entry) => entry.receipt.attemptId === intent.completionReceipt?.attemptId);
   const receipt = completedSuccessionReceiptSchema.parse(

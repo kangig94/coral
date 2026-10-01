@@ -13,33 +13,36 @@ import { providerOperationRecord } from '../../../store/provider-operation-fixtu
 import { createRealRuntime } from '../../../../../src/runtime/real.js';
 
 describe('startup custody reconciliation', () => {
-  it('recovers publication after a crash between the database insert and identity binding', () => {
-    const root = mkdtempSync(join(tmpdir(), 'coral-custody-publication-'));
-    const db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db, currentCoralStoreFormat());
-    const runDir = join(root, 'run');
-    const runtime = createRealRuntime('prod', { baseDir: root });
-    const record = providerOperationRecord('prepare-pending');
-    try {
-      const intent = recordCustodyIntent(runtime, runDir, {
-        effect: 'provider-operation-publication',
-        epoch: 'epoch-a',
-        owner: 'provider-operation',
-        operationId: record.operation.operationId,
-        capsule: null,
-        nowMs: 100,
-        bindWithinMs: 1_000,
-      });
-      insertProviderOperation(db, record);
-      writeFileSync(join(custodyLedgerDir(runDir), intent.id, 'binding.v1.json'), '{"pid":');
-      expect(reconcileStartupCustody(runtime, runDir, 3_200, db, 'epoch-a')).toMatchObject([
-        { kind: 'bound', binding: { process: null } },
-      ]);
-    } finally {
-      db.close();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+  it.each(['binding.v1.json', 'binding.recovered.v1.json', 'absence.v1.json'])(
+    'recovers publication after a crash with a damaged %s sidecar',
+    (sidecar) => {
+      const root = mkdtempSync(join(tmpdir(), 'coral-custody-publication-'));
+      const db = newRawDatabase(':memory:');
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const runDir = join(root, 'run');
+      const runtime = createRealRuntime('prod', { baseDir: root });
+      const record = providerOperationRecord('prepare-pending');
+      try {
+        const intent = recordCustodyIntent(runtime, runDir, {
+          effect: 'provider-operation-publication',
+          epoch: 'epoch-a',
+          owner: 'provider-operation',
+          operationId: record.operation.operationId,
+          capsule: null,
+          nowMs: 100,
+          bindWithinMs: 1_000,
+        });
+        insertProviderOperation(db, record);
+        writeFileSync(join(custodyLedgerDir(runDir), intent.id, sidecar), '{"pid":');
+        expect(reconcileStartupCustody(runtime, runDir, 3_200, db, 'epoch-a')).toMatchObject([
+          { kind: 'bound', binding: { process: null } },
+        ]);
+      } finally {
+        db.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('does not prove an old epoch publication absent from the current epoch database', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-custody-epoch-'));

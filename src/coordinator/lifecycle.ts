@@ -860,6 +860,7 @@ export type LifecycleDeps = {
   ) => Promise<StartupReconciliationReport>;
   readonly reconcileCustodyAtStartup?: () => void;
   readonly startProviderOperationReconciler?: () => void;
+  readonly wakeProviderOperationReconciler?: () => void;
   readonly stopProviderOperationReconciler?: () => ProviderOperationReconcilerStopDisposition;
   /**
    * Optional only for narrow lifecycle harnesses; production composition supplies the sole publishing facet
@@ -3161,6 +3162,7 @@ export function createLifecycle(
 
   function adoptProviderOperationAdmission(admission: ProviderOperationMutationAdmission): void {
     state.providerOperationMutationAdmission = admission;
+    deps.wakeProviderOperationReconciler?.();
   }
 
   const protectRetiringStore = (epochKey: string, openerDrainMs: number): RetiringStoreProtection =>

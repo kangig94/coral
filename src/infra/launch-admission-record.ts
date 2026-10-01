@@ -17,7 +17,12 @@ import { basename, dirname, join, relative } from 'node:path';
 import { z } from 'zod';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
-import { createSharedFileLockSync, attemptExclusiveFileLockSync, type FileLockLease } from './fs-lock.js';
+import {
+  createSharedFileLockSync,
+  attemptExclusiveFileLockSync,
+  repairMalformedFileLockSync,
+  type FileLockLease,
+} from './fs-lock.js';
 import { observeProcessLiveness } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
 import { probeProcessIncarnation, processIncarnationSchema } from './node-process.js';
@@ -115,7 +120,13 @@ export function listLaunchAdmissions(runDir: string): readonly LaunchAdmissionRe
   } catch (error: unknown) {
     return isNoEntryError(error) ? [] : [{ kind: 'unreadable', path: join(runDir, 'launch-admissions.v2') }];
   }
-  return names.filter((name) => name.endsWith('.json')).map((name) => readLaunchAdmission(runDir, name.slice(0, -5)));
+  return names
+    .filter((name) => name.endsWith('.json'))
+    .map((name) =>
+      z.string().uuid().safeParse(name.slice(0, -5)).success
+        ? readLaunchAdmission(runDir, name.slice(0, -5))
+        : { kind: 'unreadable' as const, path: join(runDir, 'launch-admissions.v2', name) },
+    );
 }
 
 /** Only the child that published this identity may remove it. */
@@ -237,20 +248,126 @@ export function removeAbandonedLaunchPreparations(runDir: string): string[] {
   return failures;
 }
 
-export type LaunchSubject = Readonly<{
+type LaunchSubjectEvidence = Readonly<{
   path: string;
   launchId?: string;
   admission?: LaunchAdmission;
   conflictingAdmission?: LaunchAdmission;
   lifetimePath?: string;
-  lifetimeDirectory?: string;
   inode?: { dev: number; ino: number };
   acquisitionComplete: boolean;
   problem?: 'envelope-conflict' | 'envelope-unavailable';
 }>;
 
+type LifetimeDirectorySubject = LaunchSubjectEvidence &
+  Readonly<{
+    runDir: string;
+    lifetimeDirectory: string;
+    branches: readonly LaunchSubject[];
+  }>;
+
+export type LaunchSubject =
+  | LifetimeDirectorySubject
+  | (LaunchSubjectEvidence &
+      Readonly<{
+        runDir?: undefined;
+        branches?: undefined;
+        lifetimeDirectory?: string;
+      }>);
+
 function sameEnvelope(a: LaunchAdmission, b: LaunchAdmission): boolean {
   return JSON.stringify(admissionEnvelope(a)) === JSON.stringify(admissionEnvelope(b));
+}
+
+function lifetimeDirectorySnapshot(path: string): { path: string; dev: number; ino: number }[] {
+  const stat = lstatSync(path);
+  const entries = [{ path, dev: stat.dev, ino: stat.ino }];
+  if (stat.isDirectory()) {
+    for (const name of readdirSync(path).sort()) {
+      if (/^lifetime\.lock-(journal|wal|shm)$/u.test(name)) continue;
+      entries.push(...lifetimeDirectorySnapshot(join(path, name)));
+    }
+  }
+  return entries;
+}
+
+function lifetimeDirectoryReleased(path: string): boolean {
+  const releases: FileLockLease[] = [];
+  try {
+    for (const entry of lifetimeDirectorySnapshot(path)) {
+      if (basename(entry.path) !== 'lifetime.lock') continue;
+      const lock = attemptExclusiveFileLockSync(entry.path);
+      if (lock.kind !== 'acquired') return false;
+      releases.push(lock.lease);
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    for (const release of releases.reverse()) release();
+  }
+}
+
+const pendingLifetimeCleanups = new Map<string, { path: string; dev: number; ino: number }>();
+
+function removeAbsentLifetimeDirectory(subject: LifetimeDirectorySubject): boolean {
+  const releases: FileLockLease[] = [];
+  try {
+    const published = subject.lifetimeDirectory;
+    const pending = pendingLifetimeCleanups.get(published);
+    if (pending === undefined && observeLaunchSubject(subject) !== 'absent') return false;
+    const directory = pending?.path ?? published;
+    if (!existsSync(directory) && pending !== undefined) {
+      pendingLifetimeCleanups.delete(published);
+      return true;
+    }
+    const snapshot = lifetimeDirectorySnapshot(directory);
+    if (pending !== undefined && (snapshot[0].dev !== pending.dev || snapshot[0].ino !== pending.ino)) return false;
+    for (const entry of snapshot) {
+      if (basename(entry.path) !== 'lifetime.lock') continue;
+      const lock = attemptExclusiveFileLockSync(entry.path);
+      if (lock.kind !== 'acquired') return false;
+      releases.push(lock.lease);
+      const checked = lstatSync(entry.path);
+      if (checked.dev !== entry.dev || checked.ino !== entry.ino) return false;
+    }
+    if (pending === undefined) {
+      const current = listLaunchSubjects(subject.runDir).find((entry) => entry.lifetimeDirectory === directory);
+      if (
+        current === undefined
+          ? snapshot.length !== 1
+          : current.branches === undefined || JSON.stringify(current) !== JSON.stringify(subject)
+      )
+        return false;
+    }
+    if (JSON.stringify(lifetimeDirectorySnapshot(directory)) !== JSON.stringify(snapshot)) return false;
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) return false;
+    const temporary =
+      pending?.path ??
+      launchPreparationPath(subject.runDir, {
+        launchId: randomUUID(),
+        child: { pid: process.pid, incarnation },
+      });
+    if (pending === undefined) {
+      mkdirSync(dirname(temporary), { recursive: true, mode: 0o700 });
+      renameSync(directory, temporary);
+      pendingLifetimeCleanups.set(published, { path: temporary, dev: snapshot[0].dev, ino: snapshot[0].ino });
+    }
+    for (const branch of subject.branches) {
+      if (branch.admission === undefined) continue;
+      const json = readLaunchAdmission(subject.runDir, branch.admission.launchId);
+      if (json.kind === 'readable' && sameEnvelope(json.admission, branch.admission)) unlinkSync(branch.path);
+    }
+    rmSync(temporary, { recursive: true, force: true });
+    pendingLifetimeCleanups.delete(published);
+    return true;
+  } catch (error: unknown) {
+    process.stderr.write(`Coordinator lifetime cleanup failed: ${String(error)}\n`);
+    return false;
+  } finally {
+    for (const release of releases.reverse()) release();
+  }
 }
 
 /** Neither damaged JSON nor an acquisition window may erase a possible live subject. */
@@ -262,12 +379,16 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
     let lifetimePath: string | undefined;
     let inode: { dev: number; ino: number } | undefined;
     try {
+      if (!lstatSync(path).isDirectory()) throw new Error('Lifetime envelope is not a directory');
       const names = readdirSync(path);
-      if (names.length > 1 || chunks.length > 20) {
-        subjects.push({ path, acquisitionComplete: false, problem: 'envelope-conflict' });
-        return;
+      if (names.length > 1) {
+        for (const name of names) {
+          const child = join(path, name);
+          if (lstatSync(child).isDirectory()) visit(child, launchId, [...chunks, name]);
+        }
+        if (!names.includes('lifetime.lock')) return;
       }
-      const name = names[0] ?? 'lifetime.lock';
+      const name = names.includes('lifetime.lock') ? 'lifetime.lock' : (names[0] ?? 'lifetime.lock');
       if (name !== 'lifetime.lock') {
         visit(join(path, name), launchId, [...chunks, name]);
         return;
@@ -336,7 +457,11 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
         inode !== undefined;
       subjects.push({
         path: addressed ? launchAdmissionPath(runDir, addressedId) : path,
-        ...(addressed ? { launchId: addressedId, lifetimePath, inode, lifetimeDirectory: join(root, launchId) } : {}),
+        ...(addressed
+          ? { launchId: addressedId, lifetimePath, inode, lifetimeDirectory: join(root, launchId) }
+          : inode === undefined
+            ? {}
+            : { lifetimePath, inode }),
         ...(matchingAdmission && json?.kind === 'readable' ? { admission: json.admission } : {}),
         acquisitionComplete: matchingAdmission,
         problem: 'envelope-unavailable',
@@ -346,11 +471,40 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
   try {
     for (const id of readdirSync(root)) {
       if (preparationName.test(id)) continue;
-      visit(join(root, id), id, []);
+      const directory = join(root, id);
+      const first = subjects.length;
+      visit(directory, id, []);
+      const branches = subjects.slice(first);
+      if (branches.length !== 1 || (branches[0]?.admission === undefined && branches[0]?.launchId === undefined)) {
+        const recorded = readLaunchAdmission(runDir, id);
+        if (recorded.kind === 'readable' && !branches.some((branch) => branch.admission?.launchId === id)) {
+          branches.push({
+            path: launchAdmissionPath(runDir, id),
+            admission: recorded.admission,
+            acquisitionComplete: false,
+          });
+        }
+        subjects.splice(first, subjects.length - first, {
+          path: recorded.kind === 'readable' ? launchAdmissionPath(runDir, id) : directory,
+          ...(recorded.kind === 'readable' ? { admission: recorded.admission } : {}),
+          runDir,
+          lifetimeDirectory: directory,
+          branches,
+          acquisitionComplete: false,
+          problem: branches.length > 1 ? 'envelope-conflict' : (branches[0]?.problem ?? 'envelope-unavailable'),
+        });
+      }
     }
   } catch (error: unknown) {
     if (!isNoEntryError(error))
-      subjects.push({ path: root, acquisitionComplete: false, problem: 'envelope-unavailable' });
+      subjects.push({
+        path: root,
+        runDir,
+        lifetimeDirectory: root,
+        branches: [],
+        acquisitionComplete: false,
+        problem: 'envelope-unavailable',
+      });
   }
   for (const json of admissions) {
     if (json.kind === 'absent') continue;
@@ -364,15 +518,52 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
       problem: 'envelope-unavailable',
     });
   }
+  const attributed = [...subjects];
+  for (let index = 0; index < subjects.length; index++) {
+    const subject = subjects[index];
+    if (subject.admission !== undefined || subject.launchId !== undefined || subject.branches !== undefined) continue;
+    subjects[index] = {
+      ...subject,
+      runDir,
+      lifetimeDirectory: subject.path,
+      branches: attributed.filter((entry) => entry.path !== subject.path),
+    };
+  }
   return subjects;
+}
+
+/** Only the namespace owner repairs a damaged lock after excluding attributable live children. */
+export function repairDamagedLaunchSubject(subject: LaunchSubject): void {
+  if (subject.branches === undefined || subject.lifetimeDirectory === undefined) return;
+  if (
+    subject.branches.some(
+      (branch) =>
+        branch.admission !== undefined && observeLaunchSubject({ ...branch, lifetimePath: undefined }) !== 'absent',
+    )
+  )
+    return;
+  try {
+    for (const entry of lifetimeDirectorySnapshot(subject.lifetimeDirectory)) {
+      if (basename(entry.path) !== 'lifetime.lock') continue;
+      const attempt = attemptExclusiveFileLockSync(entry.path);
+      if (attempt.kind === 'acquired') attempt.lease();
+      else if (attempt.kind === 'malformed') repairMalformedFileLockSync(entry.path);
+    }
+  } catch {
+    // Unobservable lifetime evidence remains held for the next namespace pass.
+  }
 }
 
 type LaunchSubjectDisposition = 'occupied' | 'acquisition-window' | 'unknown' | 'absent';
 
 /** An exclusive probe before the first shared acquisition is not evidence of lease release. */
 export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDisposition {
+  if (subject.branches !== undefined) {
+    if (pendingLifetimeCleanups.has(subject.lifetimeDirectory)) return 'absent';
+    if (subject.branches.some((branch) => observeLaunchSubject(branch) !== 'absent')) return 'unknown';
+    return lifetimeDirectoryReleased(subject.lifetimeDirectory) ? 'absent' : 'unknown';
+  }
   if (subject.admission === undefined) {
-    if (subject.launchId === undefined) return 'unknown';
     if (subject.lifetimePath !== undefined) {
       const attempt = attemptExclusiveFileLockSync(subject.lifetimePath);
       if (attempt.kind !== 'acquired') return 'unknown';
@@ -385,6 +576,7 @@ export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDispo
         attempt.lease();
       }
     }
+    if (subject.launchId === undefined) return lifetimeDirectoryReleased(subject.path) ? 'absent' : 'unknown';
     try {
       lstatSync(join(dirname(dirname(subject.path)), 'launch-lifetimes.v1', subject.launchId));
       return 'unknown';
@@ -425,6 +617,7 @@ export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDispo
 
 /** Only the namespace lock holder calls this after independently settling the exact subject. */
 export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
+  if (subject.branches !== undefined) return removeAbsentLifetimeDirectory(subject);
   const launchId = subject.admission?.launchId ?? subject.launchId;
   if (launchId === undefined) return false;
   if (observeLaunchSubject(subject) !== 'absent') return false;

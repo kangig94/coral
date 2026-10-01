@@ -26,6 +26,7 @@ import { supervisorLockPath, v0109CoordinatorSocketGuardSetForRunDir } from '#sr
 import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import {
   launchAdmissionPath,
+  listLaunchAdmissions,
   listLaunchSubjects,
   publishLaunchAdmission,
   removeOwnLaunchAdmission,
@@ -59,7 +60,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
-import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
+import { freezeRecordedProcesses, stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 
 const roots: string[] = [];
 const homes: string[] = [];
@@ -111,16 +112,19 @@ afterEach(async () => {
     const launch = new SupervisorEvidence(runDir);
     try {
       const state = launch.read();
-      await stopRecordedProcesses(
-        [state.owner?.process, state.launch?.child, state.attempt?.child].filter((identity) => identity !== undefined),
-        'SIGTERM',
-        15_000,
+      const recorded = [state.owner?.process, state.launch?.child, state.attempt?.child].filter(
+        (identity) => identity !== undefined,
       );
+      for (const entry of listLaunchAdmissions(runDir)) {
+        if (entry.kind === 'readable') recorded.push(entry.admission.parent, entry.admission.child);
+      }
+      freezeRecordedProcesses(recorded);
+      await stopRecordedProcesses(recorded, 'SIGKILL', 15_000);
     } finally {
       launch.close();
     }
   }
-  await stopRecordedProcesses(successors.splice(0), 'SIGTERM', 15_000);
+  await stopRecordedProcesses(successors.splice(0), 'SIGKILL', 15_000);
   for (const coordinator of coordinators.splice(0).reverse()) await stopCoordinator(coordinator);
   await stopRecordedProcesses(hostProcesses.splice(0), 'SIGKILL', 15_000);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
@@ -900,17 +904,19 @@ describe('AC18 first-release version pairing', () => {
     }, 60_000);
     const successor = readDiscoveryRecordForHome(home, 'prod');
     if (successor === null) throw new Error('Completed upgrade has no serving successor.');
+    const successorBuildSetId = successor.supervision?.buildSetId;
+    if (successorBuildSetId === undefined) throw new Error('Completed upgrade has no successor build identity.');
     await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
     const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     const selected = readActiveStoreSelectionForCoordination(runtime);
     if (selected.kind !== 'valid') throw new Error(`Completed upgrade selection is ${selected.kind}`);
     incumbent.child.kill('SIGSTOP');
-    process.kill(successor.pid, 'SIGTERM');
+    process.kill(successor.pid, 'SIGKILL');
     incumbent.child.kill('SIGKILL');
     await waitForProcessExit(incumbent, 15_000);
     await waitForCondition(() => observeProcessLiveness(successor.pid) === 'absent', 30_000);
     rmSync(newer.root, { recursive: true, force: true });
-    rmSync(retainedBuildRoot(runtime, selected.selection.manifest.buildSetId), { recursive: true, force: true });
+    rmSync(retainedBuildRoot(runtime, successorBuildSetId), { recursive: true, force: true });
 
     const rollback = spawnCoordinator({ fixture: older, home, tempRoots: roots, supervised: true });
     coordinators.push(rollback);

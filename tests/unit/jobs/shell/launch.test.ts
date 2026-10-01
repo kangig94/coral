@@ -1651,10 +1651,9 @@ describe('ExecutionService launch', () => {
   it('keeps the abort hold when deleting the durable containment row fails', async () => {
     const base = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
     prepareDurableStore(base);
-    const retryHandle = {};
-    let retryCleanup!: () => void;
+    const intervals = new Map<object, () => void>();
     let processAbsent = false;
-    const clearInterval = vi.fn();
+    const clearInterval = vi.fn((handle: object) => intervals.delete(handle));
     const exitRecord = { exitCode: 0, signal: null, endTime: new Date(1).toISOString() } as const;
     let resolveExit!: (record: typeof exitRecord) => void;
     const exit = new Promise<typeof exitRecord>((resolve) => {
@@ -1673,8 +1672,9 @@ describe('ExecutionService launch', () => {
       time: {
         ...base.time,
         setInterval: (callback) => {
-          retryCleanup = callback;
-          return retryHandle;
+          const handle = { unref: vi.fn() };
+          intervals.set(handle, callback);
+          return handle;
         },
         clearInterval,
       },
@@ -1765,6 +1765,10 @@ describe('ExecutionService launch', () => {
       END
     `);
 
+    expect(intervals.size).toBe(1);
+    const retry = [...intervals.entries()][0];
+    if (retry === undefined) throw new Error('Expected active containment retry');
+    const [retryHandle, retryCleanup] = retry;
     processAbsent = true;
     retryCleanup();
     await retainedCleanup();
@@ -1775,7 +1779,8 @@ describe('ExecutionService launch', () => {
       kind: 'valid',
       status: { disposition: { kind: 'held' } },
     });
-    expect(clearInterval).not.toHaveBeenCalled();
+    expect(clearInterval).not.toHaveBeenCalledWith(retryHandle);
+    expect(intervals.has(retryHandle)).toBe(true);
     expect(progressStore.readStatus(decision.jobId)?.phase).toBe('running');
 
     progressStore.getDb().exec('DROP TRIGGER fail_containment_delete');
