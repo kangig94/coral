@@ -68,6 +68,8 @@ import {
   type ProviderOperationKey,
 } from '#src/provider-proxy/ledger.js';
 import { ControlEndpointError } from '#src/provider-proxy/control-endpoint.js';
+import { controlExchangeForTest } from '#src/provider-proxy/control-client.js';
+import { createProxyGuardianContainment } from '#src/provider-proxy/role-main.js';
 import type { Proxy } from '#src/provider-proxy/proxy.js';
 import { ReplayAdmissionError } from '#src/provider-proxy/replay-budget.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
@@ -1060,6 +1062,247 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
       expect(emittedEvents.filter(({ event }) => event.kind === 'terminal')).toHaveLength(1);
     },
   );
+
+  it.each(
+    [false, true].flatMap((recovery) =>
+      ['exact', 'throw-after-exact', 'retired', 'none'].map((confirmation) => ({ recovery, confirmation })),
+    ),
+  )('settles active real Codex aborts: recovery=$recovery, $confirmation', async ({ recovery, confirmation }) => {
+    vi.useFakeTimers();
+    const operationA = supervisedOperation(81);
+    const operationB = supervisedOperation(82);
+    const prepared = preparedFixture({
+      provider: 'codex',
+      binding: { provider: 'codex', kind: 'account', binding: {} },
+    });
+    const shared = sharedHostAuthority();
+    const hostRef = { ...sharedHostRef(), provider: 'codex' };
+    const closeA = vi.fn();
+    const evidence: ProviderTurnTerminalEvidence[] = [];
+    const events: Array<{ key: ProviderOperationKey; event: ProviderEventBody }> = [];
+    const notifications = new Map<
+      string,
+      Set<(message: { method: string; params?: Record<string, unknown> }) => void>
+    >();
+    let siblingSignal!: AbortSignal;
+    let startsA = 0;
+    const notify = (threadId: string, turnId: string, status: string) => {
+      for (const handler of notifications.get(threadId) ?? [])
+        handler({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status } } });
+    };
+    const interrupt = vi.fn(async (identity: { threadId: string; turnId: string }) => {
+      expect(identity).toEqual({ threadId: 'thread-a', turnId: 'turn-a' });
+      if (confirmation !== 'none') notify('thread-a', 'turn-retired', 'interrupted');
+      if (confirmation === 'exact' || confirmation === 'throw-after-exact') notify('thread-a', 'turn-a', 'interrupted');
+      return { kind: 'accepted' as const };
+    });
+    for (const sibling of [false, true]) {
+      const threadId = sibling ? 'thread-b' : 'thread-a';
+      const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
+      notifications.set(threadId, handlers);
+      const lease: AppServerSession = {
+        rpc: (async (method: string) => {
+          if (method === 'config/read') return { config: {} };
+          if (method === 'model/list') return { data: [], nextCursor: null };
+          if (method === 'thread/start') return { thread: { id: threadId } };
+          if (method === 'turn/start') {
+            if (!sibling) startsA += 1;
+            if (!sibling && recovery && startsA === 1)
+              return {
+                turn: {
+                  id: 'turn-retired',
+                  status: 'failed',
+                  error: { message: 'capacity', codexErrorInfo: 'serverOverloaded' },
+                },
+              };
+            return { turn: { id: sibling ? 'turn-b' : 'turn-a', status: 'inProgress' } };
+          }
+          throw new Error(`Unexpected Codex RPC: ${method}`);
+        }) as AppServerSession['rpc'],
+        subscribe: (handler) => {
+          handlers.add(handler);
+          return () => {
+            handlers.delete(handler);
+          };
+        },
+        closed: new Promise(() => {}),
+        interrupt,
+      };
+      providerRegistryDouble.rehydrateBinding.mockReturnValueOnce({
+        ok: true,
+        value: fakeBoundProvider({
+          name: 'codex',
+          supportsInterrupt: true,
+          executionHostRef: hostRef,
+          openReplacement: async () => ({ hostRef, close: sibling ? vi.fn() : closeA }),
+          execute: async function* (execRuntime) {
+            if (sibling) siblingSignal = execRuntime.signal;
+            for await (const event of codexTurnKernel(prepared.request, {
+              ...execRuntime,
+              transport: 'app-server',
+              appServerSession: lease,
+              persistedContinuity: undefined,
+              continuityBridge: { checkpoint: () => {}, transportClosed: () => {} },
+              executionPlan: TEST_CODEX_PLAN,
+              onProviderTurnTerminal: (terminal) => {
+                if (!sibling) evidence.push(terminal);
+                execRuntime.onProviderTurnTerminal(terminal);
+              },
+            })) {
+              if (
+                !sibling &&
+                confirmation === 'throw-after-exact' &&
+                event.kind === 'progress' &&
+                execRuntime.signal.aborted
+              )
+                throw new Error('consumer failed after exact confirmation');
+              yield event;
+            }
+          },
+        }),
+      });
+    }
+    const proxy = {} as Proxy;
+    const onRelinquish = vi.fn();
+    const semantic = createSemanticOperationRuntime({
+      runtime,
+      hostAuthority: shared.authority,
+      getProxy: () => proxy,
+      onRelinquish,
+    });
+    const guardianExchange = vi.fn(async (method: string) => {
+      const value =
+        method === 'guardian.register-provider-root.v1'
+          ? {
+              state: 'staged-contained',
+              providerRoot: shared.authority.rootIdentity(hostRef),
+              jointContainmentReceipt: 'contained',
+            }
+          : { state: 'membership-released' };
+      return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } });
+    });
+    const semanticReleases: ProviderOperationKey[] = [];
+    const containment = createProxyGuardianContainment({
+      identity: {
+        proxyInstanceId: operationA.proxyInstanceId,
+        buildSetId: operationA.buildSetId,
+        pid: 6_000,
+        incarnation: testIncarnation(850),
+        processGroupId: 6_000,
+        guardianInstanceId: '50000000-0000-4000-8000-000000000001',
+        reaperInstanceId: '60000000-0000-4000-8000-000000000001',
+        generation: 'gen2',
+        flavor: 'prod',
+        hostFingerprint: 'a'.repeat(64),
+        canonicalEndpoint: '/tmp/unused-codex-abort.sock',
+      },
+      guardianChannel: { exchange: guardianExchange },
+      stageProviderRoot: (key, payload) => {
+        const stage = semantic.stage(key, payload);
+        return {
+          result: stage.result,
+          abortAndRelease: () => {
+            semanticReleases.push(key);
+            return stage.abortAndRelease();
+          },
+        };
+      },
+    });
+    const supervisor = new OperationSupervisor({
+      host: semantic.host,
+      timer: supervisorTimer,
+      mintReservation: () => asReservation('40000000-0000-4000-8000-000000000001'),
+      wallClockNow: () => Date.now(),
+      nowMs: () => Date.now(),
+      proxyInstanceId: operationA.proxyInstanceId,
+      buildSetId: operationA.buildSetId,
+      stageProviderRoot: containment.stageProviderRoot,
+      pushProviderEvent: () => {
+        throw new ControlEndpointError('control_endpoint_push_no_tenancy', 'offline');
+      },
+      faultProviderEventControl: () => {},
+    });
+    Object.assign(proxy, {
+      ledger: () => supervisor.ledger(),
+      emitProviderEvent: (key: ProviderOperationKey, event: ProviderEventBody) => {
+        events.push({ key, event });
+        return supervisor.emitProviderEvent(key, event);
+      },
+    });
+    for (const operation of [operationA, operationB]) {
+      const request = { operation, hostFingerprint: 'a'.repeat(64), prepareAttemptNumber: 1, prepared };
+      const reservation = proxyOperationPreparePendingResultSchema.parse(
+        await supervisor.prepare(operation, {
+          prepareAttemptNumber: 1,
+          prepareAttemptKey: operationPrepareAttemptKey(request),
+          prepared,
+        }),
+      );
+      await supervisor.activate(operation, {
+        reservation: reservation.reservation,
+        jointContainmentReceipt: reservation.jointContainmentReceipt,
+        jointActivationReceipt: asJointActivationReceipt('activated'),
+        activationFingerprint: 'f'.repeat(64),
+      });
+      await supervisor.attach(operation, 0);
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(startsA).toBe(recovery ? 2 : 1);
+    expect(supervisor.ledger().get(operationB)?.state).toBe('executing');
+    const stopped = supervisor.stop(operationA, 'user_abort').then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(interrupt).toHaveBeenCalledOnce();
+    const confirmed = confirmation === 'exact' || confirmation === 'throw-after-exact';
+    if (!confirmed) await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS);
+    expect(await stopped).toEqual(
+      confirmed ? null : expect.objectContaining({ code: 'semantic_operation_cancellation_unconfirmed' }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const finalSeq = supervisor.ledger().nextProviderSeq(operationA) - 1;
+    if (confirmed) {
+      expect(evidence.at(-1)).toMatchObject({ providerTurnId: 'turn-a', status: 'interrupted' });
+      expect(
+        events.filter(({ key, event }) => key.jobId === operationA.jobId && event.kind === 'terminal'),
+      ).toHaveLength(1);
+      expect(events.at(-1)?.event).toMatchObject({ terminal: { outcome: { kind: 'aborted' } } });
+      if (confirmation === 'exact')
+        expect(events.at(-1)?.event).toMatchObject({ terminal: { model: expect.any(String) } });
+      const receipt = await supervisor.settle(operationA, finalSeq);
+      expect(receipt).toMatchObject({ state: 'released-after-terminal' });
+      expect(await supervisor.settle(operationA, finalSeq)).toEqual(receipt);
+      expect(closeA).toHaveBeenCalledOnce();
+      expect(guardianExchange.mock.calls.filter(([method]) => method === 'guardian.operation-release.v1')).toHaveLength(
+        1,
+      );
+    } else {
+      await expect(supervisor.settle(operationA, finalSeq)).rejects.toMatchObject({
+        code: 'semantic_operation_cancellation_unconfirmed',
+      });
+      expect(supervisor.ledger().get(operationA)?.state).toBe('releasing');
+      const releaseAttempts = guardianExchange.mock.calls.length;
+      const semanticAttempts = semanticReleases.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(semanticReleases.length).toBeGreaterThan(semanticAttempts);
+      expect(guardianExchange).toHaveBeenCalledTimes(releaseAttempts);
+      expect(closeA).not.toHaveBeenCalled();
+      expect(semantic.host.cancellationHold?.(operationA)).toMatchObject({ state: 'draining', pendingSiblings: 1 });
+    }
+    expect(onRelinquish).not.toHaveBeenCalled();
+    expect(siblingSignal.aborted).toBe(false);
+    expect(supervisor.ledger().get(operationB)?.state).toBe('executing');
+    expect(shared.rootAlive()).toBe(true);
+    expect(shared.forceClose).not.toHaveBeenCalled();
+    notify('thread-b', 'turn-b', 'completed');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events.at(-1)).toMatchObject({
+      key: { jobId: operationB.jobId },
+      event: { terminal: { outcome: { kind: 'completed' } } },
+    });
+    supervisor.close();
+  });
 
   it('keeps a same-host sibling usable after exact interrupt confirmation (C3-M1)', async () => {
     const { proxy, ledger, emittedEvents } = createTestProxy();

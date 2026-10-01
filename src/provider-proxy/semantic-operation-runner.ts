@@ -702,7 +702,10 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
       // single call ever resolves `entry.done` concurrently with it.
       while (true) {
-        entry.abortController.signal.throwIfAborted();
+        // A started shared turn owns interrupt confirmation; drain its terminal or suspension under
+        // driveCancellation's deadline rather than interrupting the pump between provider events.
+        if (!entry.startCommitted || entry.cancellationMode !== 'shared-acknowledged-interrupt')
+          entry.abortController.signal.throwIfAborted();
         const step = await Promise.race([
           iterator.next(),
           entry.transportClosed.then((error) => {
@@ -710,7 +713,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           }),
         ]);
         if (step.done) throw new Error('Provider event stream ended without terminal or suspension.');
-        if (step.value.kind === 'suspended') {
+        if (step.value.kind === 'suspended' && currentTurnTerminalEvidence(entry) === null) {
           entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: step.value.reason };
         }
         const emission = proxy.emitProviderEvent(key, step.value);
@@ -774,7 +777,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       if (entry.releaseRequested) return;
       const cause = entry.pendingStopCause;
       if (cause !== null) {
-        if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
+        if (entry.cancellationMode === 'shared-acknowledged-interrupt' && currentTurnTerminalEvidence(entry) === null) {
           entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: errorMessage(error) };
         }
         // A `stop()` was already in flight when the kernel unwound — trust why we asked it to stop rather
@@ -870,7 +873,8 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           if (!entry.startCommitted) settle({ kind: 'never-started', reason: errorMessage(error) });
           else if (!entry.releaseRequested) {
             if (entry.cancellationMode === 'shared-acknowledged-interrupt' && entry.pendingStopCause !== null) {
-              entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: errorMessage(error) };
+              if (currentTurnTerminalEvidence(entry) === null)
+                entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: errorMessage(error) };
             } else {
               synthesizeAndEmitFailure(key, bound.name, error);
             }
