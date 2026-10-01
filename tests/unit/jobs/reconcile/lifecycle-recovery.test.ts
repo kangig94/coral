@@ -2687,6 +2687,7 @@ describe('lifecycle recovery', () => {
       const control = createCoordinatorControl({
         world: { idleTimer: { requestDrain() {} } } as never,
         listExecutionServices: () => [service] as never,
+        isLifecycleRunning: () => true,
         getLifecycleController: () => controller,
         getProgressStore: () => progressStore,
         internalJobAbortRegistry: { abort: (jobIds: string[]) => ({ aborted: [], notFound: jobIds }) } as never,
@@ -2788,6 +2789,7 @@ describe('lifecycle recovery', () => {
       const control = createCoordinatorControl({
         world: { idleTimer: { requestDrain() {} } } as never,
         listExecutionServices: () => [service] as never,
+        isLifecycleRunning: () => true,
         getLifecycleController: () => controller,
         getProgressStore: () => progressStore,
         internalJobAbortRegistry: {

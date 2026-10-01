@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorControl } from '#src/coordinator/composition/job-control.js';
+import { IdleTimer } from '#src/coordinator/live/idle.js';
+import type { LifecycleController } from '#src/coordinator/lifecycle.js';
 import type { CoordinatorWorld } from '#src/coordinator/composition/world.js';
 import type { ProviderStopDecision } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
@@ -25,6 +27,7 @@ function controlFor(
   return createCoordinatorControl({
     world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
     listExecutionServices: () => [],
+    isLifecycleRunning: () => true,
     getLifecycleController: () => null,
     getProgressStore: () => harness.progressStore as never,
     internalJobAbortRegistry,
@@ -44,6 +47,7 @@ function createControlHarness(): {
   const control = createCoordinatorControl({
     world,
     listExecutionServices: () => [],
+    isLifecycleRunning: () => true,
     getLifecycleController: () => null,
     getProgressStore: () => ({}) as never,
     internalJobAbortRegistry,
@@ -66,6 +70,7 @@ describe('createCoordinatorControl.abortJobs', () => {
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
+      isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => harness.progressStore as never,
       internalJobAbortRegistry: new AbortRegistry(runtime.ids),
@@ -90,6 +95,7 @@ describe('createCoordinatorControl.abortJobs', () => {
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [],
+      isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => harness.progressStore as never,
       internalJobAbortRegistry: new AbortRegistry(runtime.ids),
@@ -200,6 +206,7 @@ describe('createCoordinatorControl.abortJobs', () => {
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
+      isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => ({}) as never,
       internalJobAbortRegistry: new AbortRegistry(runtime.ids),
@@ -238,6 +245,7 @@ describe('createCoordinatorControl.abortJobs', () => {
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
+      isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => harness.progressStore as never,
       internalJobAbortRegistry: new AbortRegistry(new SimulationRuntime().ids),
@@ -275,6 +283,7 @@ describe('createCoordinatorControl.abortJobs', () => {
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
+      isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => harness.progressStore as never,
       internalJobAbortRegistry: new AbortRegistry(new SimulationRuntime().ids),
@@ -302,6 +311,7 @@ describe('createCoordinatorControl.abortJobs', () => {
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
+      isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => harness.progressStore as never,
       internalJobAbortRegistry: new AbortRegistry(runtime.ids),
@@ -456,6 +466,7 @@ describe('createCoordinatorControl.abortJobs', () => {
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: executionAbort }] as never,
+      isLifecycleRunning: () => true,
       getLifecycleController: () => ({ getRecoveryRegistry: () => recoveryRegistry }) as never,
       getProgressStore: () => ({}) as never,
       internalJobAbortRegistry,
@@ -488,6 +499,7 @@ describe('createCoordinatorControl.abortJobs', () => {
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: executionAbort }] as never,
+      isLifecycleRunning: () => true,
       getLifecycleController: () => ({ getRecoveryRegistry: () => recoveryRegistry }) as never,
       getProgressStore: () => ({}) as never,
       internalJobAbortRegistry,
@@ -513,6 +525,7 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
     const control = createCoordinatorControl({
       world,
       listExecutionServices: () => [],
+      isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () =>
         ({
@@ -546,6 +559,7 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
     const control = createCoordinatorControl({
       world,
       listExecutionServices: () => [],
+      isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => ({ readStatus: (id: string) => statuses[id as keyof typeof statuses] ?? null }) as never,
       internalJobAbortRegistry,
@@ -571,6 +585,7 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
     const control = createCoordinatorControl({
       world,
       listExecutionServices: () => [],
+      isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => ({ readStatus: () => status }) as never,
       internalJobAbortRegistry,
@@ -580,5 +595,43 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
 
     expect(control.scopeCheckJobs(['job'], callerRoot, 'contains').mismatch).toEqual([]);
     expect(control.scopeCheckJobs(['job'], callerRoot, 'exact').mismatch).toEqual(['job']);
+  });
+});
+
+describe('createCoordinatorControl.requestDrain', () => {
+  it.each([0, 1])('starts shutdown once after %i in-flight requests drain', (inflight) => {
+    const runtime = new SimulationRuntime();
+    const idleTimer = new IdleTimer({ time: runtime.time });
+    let running = true;
+    const shutdown = vi.fn<LifecycleController['shutdown']>(async () => {
+      running = false;
+      return { disposition: 'finalized' as const };
+    });
+    idleTimer.startWatching(
+      () => false,
+      (reason) => {
+        void shutdown(reason);
+      },
+    );
+    if (inflight > 0) idleTimer.beginRequest();
+    const control = createCoordinatorControl({
+      world: { idleTimer } as unknown as CoordinatorWorld,
+      isLifecycleRunning: () => running,
+      getLifecycleController: () => ({ shutdown }) as unknown as LifecycleController,
+      listExecutionServices: () => [],
+      getProgressStore: () => ({}) as never,
+      internalJobAbortRegistry: new AbortRegistry(runtime.ids),
+      requestStops: noProviderStops,
+    });
+
+    control.requestDrain('replaced');
+
+    expect(control.isDrainRequested()).toBe(true);
+    if (inflight > 0) {
+      expect(shutdown).not.toHaveBeenCalled();
+      idleTimer.endRequest();
+    }
+    expect(shutdown).toHaveBeenCalledExactlyOnceWith('replaced');
+    idleTimer.stopWatching();
   });
 });
