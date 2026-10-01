@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
-import { launchAdmissionPath, listLaunchSubjects, readLaunchAdmission } from '#src/infra/launch-admission-record.js';
+import {
+  launchAdmissionPath,
+  listLaunchAdmissions,
+  listLaunchSubjects,
+  readLaunchAdmission,
+} from '#src/infra/launch-admission-record.js';
 import { readLaunchStatus, updateLaunchStatus } from '#src/infra/launch-status.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
@@ -33,6 +38,129 @@ function buildSetId(root: string): string {
 }
 
 describe.runIf(process.platform === 'linux')('supervisor database removal recovery', () => {
+  it.each([false, true])(
+    'recovers a stopped direct child after transient unknown evidence under retained lock authority (resumed: %s)',
+    async (resumed) => {
+      const roots: string[] = [];
+      const home = mkdtempSync(join(tmpdir(), 'coral-retirement-evidence-retry-'));
+      roots.push(home);
+      const fixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+      const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
+      const marker = join(home, 'unknown.json');
+      const harness = join(home, 'supervisor.mjs');
+      await build({
+        entryPoints: [fileURLToPath(new URL('./fixtures/namespace-supervisor-harness.ts', import.meta.url))],
+        outfile: harness,
+        bundle: true,
+        platform: 'node',
+        format: 'esm',
+        external: ['node:*'],
+        plugins: [
+          {
+            name: 'transient-retirement-observation',
+            setup(builder) {
+              builder.onLoad({ filter: /\/coordinator-launch\/supervisor\.ts$/ }, ({ path }) => ({
+                contents:
+                  `import { writeFileSync as fixtureWrite } from 'node:fs';\n` +
+                  readFileSync(path, 'utf8')
+                    .replace(
+                      'state.wedged = true;',
+                      `state.wedged = true;
+              if (process.env.CORAL_FIXTURE_UNKNOWN_UNTIL === undefined) {
+                process.env.CORAL_FIXTURE_UNKNOWN_PID = String(identity.pid);
+                process.env.CORAL_FIXTURE_UNKNOWN_UNTIL = String(Date.now() + 1000);
+                fixtureWrite(process.env.CORAL_FIXTURE_UNKNOWN_MARKER!, JSON.stringify(identity));
+              }`,
+                    )
+                    .replace(
+                      'state.outstanding = null;\n      state.lastAnswer = Date.now();',
+                      `state.outstanding = null;
+              state.lastAnswer = Date.now();
+              process.send?.({ kind: 'fixture-heartbeat-ready' });`,
+                    ),
+                loader: 'ts',
+              }));
+              builder.onLoad({ filter: /\/infra\/node-process\.ts$/ }, ({ path }) => ({
+                contents: readFileSync(path, 'utf8').replace(
+                  'export function probeProcessIncarnation(pid: number, platform = process.platform): ProcessIncarnation | null {',
+                  `export function probeProcessIncarnation(pid: number, platform = process.platform): ProcessIncarnation | null {
+                if (pid === Number(process.env.CORAL_FIXTURE_UNKNOWN_PID) && Date.now() < Number(process.env.CORAL_FIXTURE_UNKNOWN_UNTIL)) return null;`,
+                ),
+                loader: 'ts',
+              }));
+            },
+          },
+        ],
+      });
+      const supervisor = spawn(process.execPath, [harness, join(fixture.root, 'bridge', 'coral-backend.cjs')], {
+        env: {
+          ...process.env,
+          HOME: home,
+          TMPDIR: home,
+          CORAL_SENTINEL_RUN_DIR: runDir,
+          CORAL_FIXTURE_REAL_BACKEND: '1',
+          CORAL_FIXTURE_UNKNOWN_MARKER: marker,
+        },
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      });
+      let heartbeatReady = false;
+      supervisor.on('message', (message: unknown) => {
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          'kind' in message &&
+          message.kind === 'fixture-heartbeat-ready'
+        )
+          heartbeatReady = true;
+      });
+      const evidence = new SupervisorEvidence(runDir);
+      let first: { pid: number; incarnation?: string } | undefined;
+      try {
+        first = await waitForDiscoveryRecord(home, 'prod', 15_000);
+        await waitForCondition(() => evidence.memory()?.launch?.phase === 'serving', 5_000);
+        await waitForCondition(() => heartbeatReady, 5_000);
+        const inode = statSync(coordinatorPaths('prod', { baseDir: join(home, '.coral') }).supervisorLockFile);
+        process.kill(first.pid, 'SIGSTOP');
+        await waitForCondition(() => existsSync(marker), 12_000);
+        expect(evidence.lockHolder()?.pid).toBe(supervisor.pid);
+        expect(evidence.memory()?.launch?.terminationAt).toBeUndefined();
+        await waitForCondition(() => {
+          const status = readLaunchStatus(runDir);
+          return status.kind === 'readable' && status.status.signalHolds.some((hold) => hold.pid === first!.pid);
+        }, 800);
+        if (resumed) {
+          process.kill(first.pid, 'SIGCONT');
+          await waitForCondition(() => {
+            const status = readLaunchStatus(runDir);
+            return status.kind === 'readable' && !status.status.signalHolds.some((hold) => hold.pid === first!.pid);
+          }, 5_000);
+          expect(probeProcessIncarnation(first.pid)).toBe(first.incarnation);
+          expect(evidence.memory()?.launch?.terminationAt).toBeUndefined();
+          await waitForCondition(() => evidence.memory()?.owner.mode === 'supervised', 3_000);
+        } else await waitForCondition(() => probeProcessIncarnation(first!.pid) === null, 5_000);
+        expect(evidence.lockHolder()?.pid).toBe(supervisor.pid);
+        const retained = statSync(coordinatorPaths('prod', { baseDir: join(home, '.coral') }).supervisorLockFile);
+        expect({ dev: retained.dev, ino: retained.ino }).toEqual({ dev: inode.dev, ino: inode.ino });
+      } finally {
+        const survivors = listLaunchAdmissions(runDir);
+        supervisor.kill('SIGKILL');
+        for (const entry of survivors) {
+          if (
+            entry.kind === 'readable' &&
+            probeProcessIncarnation(entry.admission.child.pid) === entry.admission.child.incarnation
+          )
+            process.kill(entry.admission.child.pid, 'SIGKILL');
+        }
+        if (first?.incarnation !== undefined && probeProcessIncarnation(first.pid) === first.incarnation)
+          process.kill(first.pid, 'SIGKILL');
+        if (supervisor.exitCode === null && supervisor.signalCode === null)
+          await new Promise<void>((resolve) => supervisor.once('exit', () => resolve()));
+        for (const root of roots) rmSync(root, { recursive: true, force: true });
+      }
+    },
+    35_000,
+  );
+
   it.each([
     'permanent parent freeze',
     'initially unknown parent then permanent freeze',

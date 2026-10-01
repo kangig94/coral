@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   currentLaunchStatus,
@@ -11,6 +11,52 @@ import {
 } from '#src/infra/launch-status.js';
 
 describe('launch status diagnostics', () => {
+  it.each(['admissionHolds', 'inheritedHealth'] as const)(
+    'merges local %s additions and deletions over remote snapshots during publication failure',
+    async (key) => {
+      vi.useFakeTimers();
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-status-local-list-'));
+      const lockDir = join(runDir, 'launch-status.v1.lock');
+      mkdirSync(lockDir);
+      for (const id of ['one', 'two']) writeFileSync(join(lockDir, `owner-${id}.lock`), '{}');
+      const entry =
+        key === 'admissionHolds'
+          ? { path: '/source', disposition: 'unknown' as const }
+          : {
+              launchId: 'source',
+              supervisor: { pid: 101, incarnation: 'parent' },
+              child: { pid: 202, incarnation: 'child' },
+              observedHealthyAt: 1,
+            };
+      try {
+        updateLaunchStatus(runDir, (status) => ({ ...status, [key]: [entry] }));
+        receiveLaunchStatus(runDir, { version: 1, [key]: [] });
+        expect(currentLaunchStatus(runDir)?.[key]).toEqual([entry]);
+        expect(currentLaunchStatus(runDir)?.publicationFailure).toBeDefined();
+        rmSync(lockDir, { recursive: true });
+        await vi.advanceTimersByTimeAsync(200);
+        expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { [key]: [entry] } });
+        expect(currentLaunchStatus(runDir)?.publicationFailure).toBeUndefined();
+        mkdirSync(lockDir);
+        for (const id of ['one', 'two']) writeFileSync(join(lockDir, `owner-${id}.lock`), '{}');
+        receiveLaunchStatus(runDir, { version: 1, [key]: [entry] });
+        updateLaunchStatus(runDir, (status) => ({ ...status, [key]: [] }));
+        receiveLaunchStatus(runDir, { version: 1, [key]: [entry] });
+        expect(currentLaunchStatus(runDir)?.[key]).toEqual([]);
+        expect(currentLaunchStatus(runDir)?.publicationFailure).toBeDefined();
+        rmSync(lockDir, { recursive: true });
+        await vi.advanceTimersByTimeAsync(200);
+        expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { [key]: [] } });
+        expect(currentLaunchStatus(runDir)?.publicationFailure).toBeUndefined();
+        receiveLaunchStatus(runDir, { version: 1, [key]: [entry] });
+        expect(currentLaunchStatus(runDir)?.[key]).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('does not resurrect a cleared inherited hold from an unrelated publisher snapshot or serving memory', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-status-cleared-hold-'));
     try {

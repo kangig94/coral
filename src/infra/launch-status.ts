@@ -117,7 +117,7 @@ export function currentLaunchStatus(runDir: string): LaunchStatus | undefined {
   const remote = receivedStatuses.get(runDir);
   if (remote === undefined) return local;
   if (local === undefined) return remote;
-  const currentHolds = (key: 'inheritedHolds' | 'signalHolds'): unknown[] => {
+  const currentHolds = (key: 'inheritedHolds' | 'signalHolds' | 'admissionHolds' | 'inheritedHealth'): unknown[] => {
     const entries = indexedStatusList(remote[key]);
     for (const [id, value] of pending?.lists.get(key) ?? []) {
       if (value === undefined) entries.delete(id);
@@ -134,6 +134,8 @@ export function currentLaunchStatus(runDir: string): LaunchStatus | undefined {
     publicationFailure: local.publicationFailure ?? remote.publicationFailure,
     inheritedHolds: currentHolds('inheritedHolds'),
     signalHolds: currentHolds('signalHolds'),
+    admissionHolds: currentHolds('admissionHolds'),
+    inheritedHealth: currentHolds('inheritedHealth'),
   });
 }
 

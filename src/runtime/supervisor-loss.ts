@@ -100,11 +100,14 @@ function repairReplacementSupervisor(attempt: ReplacementSupervisorAttempt): voi
         observed.intent.incumbent.pid === process.pid &&
         observed.intent.incumbent.incarnation === attempt.sourceIncarnation;
       const source = probeProcessIncarnation(process.pid);
-      const unknown = source === null;
-      sourceIdentityHold(attempt, unknown && !completed);
-      if (completed || (source !== null && source !== attempt.sourceIncarnation)) return;
-      if (unknown) retry();
-      else if (servingSourceStillPresent(control, attempt.sourceIncarnation)) repairReplacementSupervisor(attempt);
+      const discovery = servingSourceDisposition(control, attempt.sourceIncarnation);
+      const unknown = source === null || discovery === 'unknown';
+      const settled =
+        completed || (source !== null && source !== attempt.sourceIncarnation) || discovery === 'superseded';
+      sourceIdentityHold(attempt, unknown && !settled);
+      if (settled) return;
+      if (source === null) retry();
+      else repairReplacementSupervisor(attempt);
     }, RETRY_MS);
   };
   void control
@@ -261,20 +264,19 @@ function receiveReplacementMessage(attempt: ReplacementSupervisorAttempt, messag
   }
 }
 
-function servingSourceStillPresent(
+function servingSourceDisposition(
   control: ReplacementSupervisorControl,
   sourceIncarnation: ProcessIncarnation,
-): boolean {
+): 'matching' | 'superseded' | 'unknown' {
   try {
     const runtime = createRealRuntime(control.manifest.flavor, { baseDir: join(control.runDir, '..', '..') });
     const observed = readDiscoveryRecordDisposition(runtime);
-    if (observed.kind !== 'record') return observed.kind !== 'missing';
-    return (
-      observed.record.pid === process.pid &&
-      (observed.record.incarnation === undefined || observed.record.incarnation === sourceIncarnation)
-    );
+    if (observed.kind !== 'record') return 'unknown';
+    if (observed.record.incarnation === undefined) return 'unknown';
+    if (observed.record.pid !== process.pid) return 'superseded';
+    return observed.record.incarnation === sourceIncarnation ? 'matching' : 'superseded';
   } catch {
-    return true;
+    return 'unknown';
   }
 }
 
@@ -351,7 +353,7 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
         attempt,
         new Error(`Replacement supervisor exited before accepting ownership (${code ?? signal})`),
       );
-    else if (servingSourceStillPresent(control, sourceIncarnation))
+    else if (servingSourceDisposition(control, sourceIncarnation) !== 'superseded')
       retryReplacementSupervisor(
         control,
         new Error(`Replacement supervisor exited after accepting ownership (${code ?? signal})`),

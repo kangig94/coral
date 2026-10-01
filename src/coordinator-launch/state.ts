@@ -7,6 +7,7 @@ import {
   listLaunchSubjects,
   observeLaunchSubject,
   removeAbsentLaunchSubject,
+  removeAbandonedLaunchPreparations,
   type LaunchSubject,
   type LaunchAdmission,
 } from '../infra/launch-admission-record.js';
@@ -443,6 +444,7 @@ export class SupervisorLaunchMemory {
   }
 
   #reconcileAdmissions(): void {
+    const preparationFailures = removeAbandonedLaunchPreparations(this.#runDir);
     const intent = readUpgradeIntent(this.#runDir);
     const recovered = new SupervisorLaunchMemory(this.#runDir, this.#state.owner.process, this.#state.owner.buildSetId);
     const observed = recovered.#subjects;
@@ -553,7 +555,10 @@ export class SupervisorLaunchMemory {
         else this.#set(slot, { ...slot, phase: 'exited' });
       } else if (disposition === 'unknown') this.#recovering();
     }
-    const holds: NonNullable<LaunchStatus['admissionHolds']> = [];
+    const holds: NonNullable<LaunchStatus['admissionHolds']> = preparationFailures.map((path) => ({
+      path,
+      disposition: 'cleanup-pending',
+    }));
     if (intent.kind !== 'readable' && intent.kind !== 'absent') {
       this.#recovering();
       holds.push({ path: join(this.#runDir, 'upgrade.v1.json'), disposition: 'unknown' });

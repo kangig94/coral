@@ -1128,7 +1128,12 @@ describe('namespace supervisor recovery', () => {
           { cause: error },
         );
       }
-      await waitForCondition(() => record.memory()?.owner.mode === 'supervised', 1_000);
+      await waitForCondition(() => record.memory()?.owner.mode === 'supervised', 1_000).catch((error: unknown) => {
+        throw new Error(
+          `Recovered successor did not normalize: memory=${JSON.stringify(record.memory())}; state=${JSON.stringify(record.read())}; status=${JSON.stringify(readLaunchStatus(runDir))}; recent=${JSON.stringify(memoryObservations(log).slice(-5))}`,
+          { cause: error },
+        );
+      });
       expect(record.memory()?.launch?.parent?.pid).toBe(replacementPid);
       expect(Date.now() - retiredAt).toBeLessThan(26_000);
     } finally {
@@ -3256,6 +3261,10 @@ describe('namespace supervisor recovery', () => {
             // The test process may already have exited.
           }
         }
+        await waitForCondition(
+          () => [...pids].every((pid) => observeProcessLiveness(pid) === 'absent' || childHasExited(pid)),
+          3_000,
+        );
         for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
       }
     },

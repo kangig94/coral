@@ -1,18 +1,19 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
+  existsSync,
   fsyncSync,
   lstatSync,
-  rmdirSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { z } from 'zod';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
@@ -170,10 +171,62 @@ function acquireLaunchLifetime(runDir: string, admission: LaunchAdmission): void
   const existing = lifetimes.get(key);
   if (existing !== undefined && existing.path !== path) throw new Error('Coordinator admission envelope is immutable');
   if (existing === undefined) {
+    const root = join(runDir, 'launch-lifetimes.v1');
+    const published = join(root, admission.launchId);
+    if (!existsSync(dirname(path))) {
+      const temporary = launchPreparationPath(runDir, admission);
+      const temporaryPath = join(temporary, relative(published, path));
+      try {
+        mkdirSync(dirname(temporaryPath), { recursive: true, mode: 0o700 });
+        if (existsSync(published)) {
+          if (readdirSync(published).length !== 0)
+            throw new Error('Coordinator admission envelope is incomplete or conflicting');
+          const [firstChunk] = readdirSync(temporary);
+          renameSync(join(temporary, firstChunk), join(published, firstChunk));
+        } else renameSync(temporary, published);
+      } finally {
+        rmSync(temporary, { recursive: true, force: true });
+      }
+    }
     const lease = createSharedFileLockSync(path);
     const { dev, ino } = lstatSync(path);
     lifetimes.set(key, { path, lease, inode: { dev, ino } });
   }
+}
+
+const preparationName = /^\.([0-9a-f-]{36})\.([1-9][0-9]*)\.([0-9a-f]{64})\.tmp$/iu;
+
+function launchPreparationPath(runDir: string, admission: LaunchAdmission): string {
+  const identity = createHash('sha256').update(admission.child.incarnation).digest('hex');
+  return join(runDir, 'launch-lifetimes.v1', `.${admission.launchId}.${admission.child.pid}.${identity}.tmp`);
+}
+
+/** An unpublished hierarchy may be pruned only after the exact publisher is proven absent. */
+export function removeAbandonedLaunchPreparations(runDir: string): string[] {
+  const root = join(runDir, 'launch-lifetimes.v1');
+  const failures: string[] = [];
+  try {
+    for (const name of readdirSync(root)) {
+      const match = preparationName.exec(name);
+      if (match === null) continue;
+      const pid = Number(match[2]);
+      const observed = probeProcessIncarnation(pid);
+      if (
+        observeProcessLiveness(pid) !== 'absent' &&
+        (observed === null || createHash('sha256').update(observed).digest('hex') === match[3])
+      )
+        continue;
+      const path = join(root, name);
+      try {
+        rmSync(path, { recursive: true, force: true });
+      } catch {
+        failures.push(path);
+      }
+    }
+  } catch (error: unknown) {
+    if (!isNoEntryError(error)) failures.push(root);
+  }
+  return failures;
 }
 
 export type LaunchSubject = Readonly<{
@@ -253,7 +306,10 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
     }
   };
   try {
-    for (const id of readdirSync(root)) visit(join(root, id), id, []);
+    for (const id of readdirSync(root)) {
+      if (preparationName.test(id)) continue;
+      visit(join(root, id), id, []);
+    }
   } catch (error: unknown) {
     if (!isNoEntryError(error))
       subjects.push({ path: root, acquisitionComplete: false, problem: 'envelope-unavailable' });
@@ -312,7 +368,19 @@ export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDispo
 export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
   if (subject.admission === undefined || subject.lifetimePath === undefined) return false;
   if (observeLaunchSubject(subject) !== 'absent') return false;
+  const runDir = dirname(dirname(subject.path));
+  const published = join(runDir, 'launch-lifetimes.v1', subject.admission.launchId);
+  const temporary = launchPreparationPath(runDir, subject.admission);
   try {
+    if (existsSync(published)) {
+      const current = listLaunchSubjects(runDir).find((entry) => entry.lifetimePath === subject.lifetimePath);
+      if (
+        current?.admission === undefined ||
+        !sameEnvelope(current.admission, subject.admission) ||
+        observeLaunchSubject(current) !== 'absent'
+      )
+        return false;
+    }
     let inode: ReturnType<typeof lstatSync> | undefined;
     try {
       inode = lstatSync(subject.lifetimePath);
@@ -350,17 +418,15 @@ export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
         if (checked.dev !== jsonInode.dev || checked.ino !== jsonInode.ino) return false;
         unlinkSync(subject.path);
       }
-      if (inode !== undefined) unlinkSync(subject.lifetimePath);
-    } finally {
-      release?.();
-    }
-    for (let dir = dirname(subject.lifetimePath); !dir.endsWith('launch-lifetimes.v1'); dir = dirname(dir)) {
       try {
-        rmdirSync(dir);
+        renameSync(published, temporary);
       } catch (error: unknown) {
         if (!isNoEntryError(error)) throw error;
       }
+    } finally {
+      release?.();
     }
+    rmSync(temporary, { recursive: true, force: true });
     return true;
   } catch (error: unknown) {
     process.stderr.write(`Coordinator admission cleanup failed: ${String(error)}\n`);

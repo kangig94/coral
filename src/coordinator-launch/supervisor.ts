@@ -566,8 +566,11 @@ function monitorChildHeartbeat(input: {
       state.lastAnswer = now;
     } else {
       state.wedged = true;
+      if (now - state.lastKillAttemptAt < 1_000) return;
       if (!record.commitTermination(owner.current, reservation, identity, now, timing.graceMs)) {
-        owner.lost = true;
+        state.lastKillAttemptAt = now;
+        if (!record.hasAuthority(owner.current)) owner.lost = true;
+        else record.holdSignalRefusal(owner.current, reservation, identity);
         return;
       }
       if (
@@ -583,6 +586,11 @@ function monitorChildHeartbeat(input: {
       state.escalationAt = now;
     }
     return;
+  }
+  if (state.wedged && probeProcessIncarnation(identity.pid) === identity.incarnation && !record.hasUnknownOccupancy()) {
+    record.reconcileAdmissions();
+    state.wedged = false;
+    record.clearSignalRefusal(reservation);
   }
   const status = currentLaunchStatus(record.runDir);
   if (status !== undefined && child.connected) child.send({ kind: 'coral-launch-status', status });
@@ -709,10 +717,14 @@ function pollWatchedChildServing(input: {
   state: ChildWatchState;
 }): void {
   const { child, manifest, reservation, identity, record, runDir, state } = input;
-  if (!state.admitted || child.pid === undefined || state.served) return;
+  if (!state.admitted || child.pid === undefined) return;
   const launchState = record.read();
   const authority = launchState.owner;
   if (!record.hasAuthority(authority)) return;
+  if (state.served) {
+    if (authority.mode === 'recovering') record.reconcileAdmissions();
+    return;
+  }
   if (
     ![launchState.launch, launchState.attempt].some(
       (launch) => launch?.id === reservation.id && launch.phase === 'admitted',

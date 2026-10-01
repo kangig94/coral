@@ -1,5 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import * as nodeFs from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,12 +26,15 @@ import {
   launchAdmissionPath,
   listLaunchSubjects,
   observeLaunchSubject,
+  publishLaunchAdmission,
   readLaunchAdmission,
   removeAbsentLaunchSubject,
 } from '#src/infra/launch-admission-record.js';
 import { currentLaunchStatus } from '#src/infra/launch-status.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
+
+vi.mock('node:fs', async (importOriginal) => ({ ...(await importOriginal<typeof nodeFs>()) }));
 
 function message(child: ChildProcess, kind: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -39,7 +52,7 @@ function message(child: ChildProcess, kind: string): Promise<Record<string, unkn
   });
 }
 
-async function launch(runDir: string, pause: boolean, parented = false) {
+async function launch(runDir: string, pause: boolean | 'directory', parented = false) {
   const executable = join(runDir, 'child.cjs');
   await build({
     entryPoints: [fileURLToPath(new URL('./fixtures/launch-lifetime-child.ts', import.meta.url))],
@@ -53,12 +66,24 @@ async function launch(runDir: string, pause: boolean, parented = false) {
           {
             name: 'first-acquisition-window',
             setup(builder) {
-              builder.onLoad({ filter: /\/infra\/fs-lock\.ts$/ }, ({ path }) => ({
-                contents: readFileSync(path, 'utf8').replace(
-                  "db.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');",
-                  `if (path.includes('launch-lifetimes.v1')) { process.send?.({ kind: 'window' }); process.kill(process.pid, 'SIGSTOP'); }
+              builder.onLoad({ filter: /\/infra\/(fs-lock|launch-admission-record)\.ts$/ }, ({ path }) => ({
+                contents:
+                  pause === 'directory'
+                    ? readFileSync(path, 'utf8').replace(
+                        /mkdirSync\(dirname\((\w+)\), \{ recursive: true, mode: 0o700 \}\);/u,
+                        `if ($1.includes('launch-lifetimes.v1')) {
+                    const parts = dirname($1).split('/');
+                    mkdirSync(parts.slice(0, parts.indexOf('launch-lifetimes.v1') + 2).join('/'), { recursive: true });
+                    process.send?.({ kind: 'window' });
+                    process.kill(process.pid, 'SIGSTOP');
+                  }
+                  mkdirSync(dirname($1), { recursive: true, mode: 0o700 });`,
+                      )
+                    : readFileSync(path, 'utf8').replace(
+                        "db.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');",
+                        `if (path.includes('launch-lifetimes.v1')) { process.send?.({ kind: 'window' }); process.kill(process.pid, 'SIGSTOP'); }
            db.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');`,
-                ),
+                      ),
                 loader: 'ts',
               }));
             },
@@ -78,10 +103,10 @@ async function launch(runDir: string, pause: boolean, parented = false) {
     env: { ...process.env, CORAL_LAUNCH_ADMISSION: '1' },
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
   });
-  const launchId = randomUUID();
+  const launchId = pause === 'directory' ? randomUUID().toUpperCase() : randomUUID();
   const parentIncarnation = probeProcessIncarnation(process.pid);
   if (parentIncarnation === null) throw new Error('No test parent incarnation');
-  const admitted = parented ? Promise.resolve({}) : message(child, 'coral-launch-admitted');
+  const admitted = parented || pause === 'directory' ? Promise.resolve({}) : message(child, 'coral-launch-admitted');
   child.on('message', (value: unknown) => {
     if (typeof value !== 'object' || value === null || !('kind' in value) || value.kind !== 'coral-launch-admitted')
       return;
@@ -111,6 +136,142 @@ async function stop(child: ChildProcess, signal?: NodeJS.Signals): Promise<void>
 }
 
 describe('child lifetime admission', () => {
+  it('retains conflicting published prefixes when another publication is attempted', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-incomplete-published-'));
+    const launchId = randomUUID();
+    const published = join(runDir, 'launch-lifetimes.v1', launchId);
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('No test publisher incarnation');
+    mkdirSync(join(published, 'unknown-envelope'), { recursive: true });
+    try {
+      expect(() =>
+        publishLaunchAdmission(runDir, {
+          version: 1,
+          launchId,
+          child: { pid: process.pid, incarnation },
+          parent: { pid: process.pid, incarnation },
+          admittedAt: Date.now(),
+          purpose: 'startup',
+          build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
+        }),
+      ).toThrow('Coordinator admission envelope is incomplete or conflicting');
+      expect(readdirSync(published)).toEqual(['unknown-envelope']);
+      expect(readLaunchAdmission(runDir, launchId).kind).toBe('absent');
+      expect(listLaunchSubjects(runDir)).toMatchObject([{ problem: 'envelope-unavailable' }]);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('retains newly conflicting lifetime evidence during stale-subject cleanup', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-cleanup-conflict-'));
+    const running = await launch(runDir, false);
+    try {
+      await running.admitted;
+      const [subject] = listLaunchSubjects(runDir);
+      if (subject === undefined) throw new Error('Missing lifetime subject');
+      await stop(running.child, 'SIGKILL');
+      const conflict = join(runDir, 'launch-lifetimes.v1', running.launchId, 'unknown-envelope');
+      mkdirSync(conflict);
+      expect(removeAbsentLaunchSubject(subject)).toBe(false);
+      expect(existsSync(conflict)).toBe(true);
+      expect(readLaunchAdmission(runDir, running.launchId).kind).toBe('readable');
+    } finally {
+      await stop(running.child, 'SIGKILL');
+      running.releaseNamespace?.();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes a new owner after lifetime cleanup is interrupted', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-cleanup-interrupted-'));
+    const running = await launch(runDir, false);
+    const removeTree = nodeFs.rmSync;
+    try {
+      await running.admitted;
+      await stop(running.child, 'SIGKILL');
+      vi.spyOn(nodeFs, 'rmSync').mockImplementation((path, options) => {
+        if (String(path).includes('launch-lifetimes.v1')) throw new Error('Interrupted hierarchy cleanup');
+        removeTree(path, options);
+      });
+      const owner = { pid: process.pid, incarnation: running.parentIncarnation };
+      const memory = new SupervisorLaunchMemory(runDir, owner, 'build-A');
+      memory.reconcileAdmissions();
+      expect(currentLaunchStatus(runDir)?.admissionHolds).toContainEqual({
+        path: launchAdmissionPath(runDir, running.launchId),
+        disposition: 'cleanup-pending',
+      });
+      const replacement = new SupervisorLaunchMemory(runDir, owner, 'build-A');
+      replacement.reconcileAdmissions();
+      expect(replacement.read().owner.mode).toBe('supervised');
+      expect(replacement.hasUnknownOccupancy()).toBe(false);
+      expect(replacement.reserve(replacement.read().owner, 'build-A', 'startup')).not.toBeNull();
+      vi.restoreAllMocks();
+      replacement.reconcileAdmissions();
+      expect(readdirSync(join(runDir, 'launch-lifetimes.v1'))).toEqual([]);
+      expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+      await stop(running.child, 'SIGKILL');
+      running.releaseNamespace?.();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes and launches after a crash before lifetime directory creation completes', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-directory-crash-'));
+    const interrupted = await launch(runDir, 'directory');
+    let recovered: Awaited<ReturnType<typeof launch>> | undefined;
+    let release: (() => void) | undefined;
+    try {
+      await interrupted.window;
+      expect.soft(listLaunchSubjects(runDir)).toEqual([]);
+      const preparation = readdirSync(join(runDir, 'launch-lifetimes.v1'));
+      const probe = vi.spyOn(nodeProcess, 'probeProcessIncarnation').mockReturnValue(null);
+      try {
+        const memory = new SupervisorLaunchMemory(
+          runDir,
+          { pid: process.pid, incarnation: interrupted.parentIncarnation },
+          'build-A',
+        );
+        memory.reconcileAdmissions();
+        expect(readdirSync(join(runDir, 'launch-lifetimes.v1'))).toEqual(preparation);
+      } finally {
+        probe.mockRestore();
+      }
+      await stop(interrupted.child, 'SIGKILL');
+      interrupted.releaseNamespace?.();
+      const namespace = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+      if (namespace.kind !== 'acquired') throw new Error('Recovery did not acquire namespace ownership');
+      release = namespace.lease;
+      const memory = new SupervisorLaunchMemory(
+        runDir,
+        { pid: process.pid, incarnation: interrupted.parentIncarnation },
+        'build-A',
+      );
+      memory.reconcileAdmissions();
+      expect(memory.read().owner.mode).toBe('supervised');
+      expect(memory.hasUnknownOccupancy()).toBe(false);
+      expect(memory.reserve(memory.read().owner, 'build-A', 'startup')).not.toBeNull();
+      expect(readdirSync(join(runDir, 'launch-lifetimes.v1'))).toEqual([]);
+      release();
+      release = undefined;
+      recovered = await launch(runDir, false);
+      await recovered.admitted;
+      expect(readLaunchAdmission(runDir, recovered.launchId).kind).toBe('readable');
+      expect(listLaunchSubjects(runDir)).toHaveLength(1);
+    } finally {
+      release?.();
+      interrupted.releaseNamespace?.();
+      if (recovered !== undefined) {
+        await stop(recovered.child, 'SIGKILL');
+        recovered.releaseNamespace?.();
+      }
+      await stop(interrupted.child, 'SIGKILL');
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(['matching', 'unknown'] as const)(
     'retains a %s first-acquisition subject after its actual supervisor dies, then settles only on exit',
     async (identity) => {

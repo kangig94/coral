@@ -372,8 +372,10 @@ it('records refused replacement retirement signals until the replacement exits',
 it.each([
   ['discovery replacement', false],
   ['completion receipt', false],
+  ['source replacement', false],
   ['discovery replacement', true],
   ['completion receipt', true],
+  ['source replacement', true],
 ] as const)('retries repair until %s settles the original coordinator (rejected: %s)', async (settledBy, rejected) => {
   vi.useFakeTimers({ toFake: ['Date', 'performance', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
   const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-repair-'));
@@ -408,8 +410,14 @@ it.each([
     await vi.advanceTimersByTimeAsync(1_000);
     expect(onAccepted).toHaveBeenCalledTimes(2);
     if (settledBy === 'discovery replacement')
+      vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({
+        kind: 'record',
+        record: { pid: replacement.pid, incarnation: 'successor' },
+      } as ReturnType<typeof readDiscoveryRecordDisposition>);
+    else if (settledBy === 'source replacement') {
+      vi.mocked(probeProcessIncarnation).mockReturnValue('different-source' as ProcessIncarnation);
       vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
-    else
+    } else
       vi.mocked(readUpgradeIntent).mockReturnValue({
         kind: 'readable',
         intent: { disposition: 'completed', incumbent: { pid: process.pid, incarnation: 'source' } },
@@ -419,12 +427,72 @@ it.each([
     expect(onAccepted).toHaveBeenCalledTimes(settledCalls);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(onAccepted).toHaveBeenCalledTimes(settledCalls);
+    expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
   } finally {
     vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
     vi.mocked(readUpgradeIntent).mockReturnValue({ kind: 'absent' });
     rmSync(runDir, { recursive: true, force: true });
   }
 });
+
+it.each([false, true])(
+  'retries repair after missing discovery is restored (registration deferred: %s)',
+  async (deferred) => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-missing-discovery-retry-'));
+    let normalized = false;
+    const replacement = Object.assign(new EventEmitter(), {
+      pid: 999_994,
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: vi.fn((message: { kind: string }) => {
+        if (message.kind === 'coral-recovery-challenge')
+          replacement.emit('message', { ...message, kind: 'coral-recovery-answer', normalized });
+      }),
+      kill: vi.fn(() => true),
+      unref: vi.fn(),
+    });
+    vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
+    vi.mocked(probeProcessIncarnation).mockImplementation(
+      (pid) => (pid === process.pid ? 'source' : 'replacement') as ProcessIncarnation,
+    );
+    vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
+    const repair = vi.fn(async () => {
+      if (deferred) throw new Error('repair registration is deferred');
+    });
+    try {
+      startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), repair);
+      const challenge = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
+      replacement.emit('message', { kind: 'coral-recovery-owned', challenge });
+      replacement.emit('message', { kind: 'coral-repair-bridge-ready', challenge });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(repair.mock.calls.length).toBeGreaterThan(1);
+      expect(currentLaunchStatus(runDir)?.admissionHolds).toContainEqual({
+        path: join(runDir, 'coordinator.json'),
+        disposition: 'unknown',
+      });
+      vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({
+        kind: 'record',
+        record: { pid: process.pid, incarnation: 'source' },
+      } as ReturnType<typeof readDiscoveryRecordDisposition>);
+      repair.mockImplementation(async () => {});
+      const before = repair.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(repair.mock.calls.length).toBeGreaterThan(before);
+      expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
+      expect(replacement.kill).not.toHaveBeenCalled();
+      normalized = true;
+      await vi.advanceTimersByTimeAsync(1_000);
+      const completed = repair.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(repair).toHaveBeenCalledTimes(completed);
+    } finally {
+      vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  },
+);
 
 it('delivers TERM before starting nominee grace when identity recovers after refused retirement', async () => {
   vi.useFakeTimers({ toFake: ['Date', 'performance', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
@@ -586,41 +654,44 @@ it('keeps nominee TERM grace across a forward wall-clock jump', async () => {
   }
 });
 
-it('keeps repair retries when discovery temporarily loses the established source incarnation', async () => {
-  vi.useFakeTimers({ toFake: ['Date', 'performance', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
-  const runDir = mkdtempSync(join(tmpdir(), 'coral-source-discovery-retry-'));
-  const replacement = Object.assign(new EventEmitter(), {
-    pid: 999_994,
-    connected: true,
-    exitCode: null,
-    signalCode: null,
-    send: vi.fn(),
-    kill: vi.fn(() => true),
-    unref: vi.fn(),
-  });
-  vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
-  vi.mocked(probeProcessIncarnation).mockReturnValue('source' as ProcessIncarnation);
-  vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({
-    kind: 'record',
-    record: { pid: process.pid },
-  } as ReturnType<typeof readDiscoveryRecordDisposition>);
-  const repair = vi.fn(async () => {});
-  try {
-    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), repair);
-    const challenge = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
-    replacement.emit('message', { kind: 'coral-recovery-owned', challenge });
-    replacement.emit('message', { kind: 'coral-repair-bridge-ready', challenge });
-    await vi.advanceTimersByTimeAsync(3_000);
-    expect(repair.mock.calls.length).toBeGreaterThan(1);
+it.each([false, true])(
+  'keeps repair retries when discovery lacks an incarnation (different pid: %s)',
+  async (differentPid) => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-source-discovery-retry-'));
+    const replacement = Object.assign(new EventEmitter(), {
+      pid: 999_994,
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: vi.fn(),
+      kill: vi.fn(() => true),
+      unref: vi.fn(),
+    });
+    vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
+    vi.mocked(probeProcessIncarnation).mockReturnValue('source' as ProcessIncarnation);
     vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({
       kind: 'record',
-      record: { pid: process.pid, incarnation: 'source' },
+      record: { pid: differentPid ? replacement.pid : process.pid },
     } as ReturnType<typeof readDiscoveryRecordDisposition>);
-    const before = repair.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(repair.mock.calls.length).toBeGreaterThan(before);
-  } finally {
-    vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
-    rmSync(runDir, { recursive: true, force: true });
-  }
-});
+    const repair = vi.fn(async () => {});
+    try {
+      startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), repair);
+      const challenge = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
+      replacement.emit('message', { kind: 'coral-recovery-owned', challenge });
+      replacement.emit('message', { kind: 'coral-repair-bridge-ready', challenge });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(repair.mock.calls.length).toBeGreaterThan(1);
+      vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({
+        kind: 'record',
+        record: { pid: process.pid, incarnation: 'source' },
+      } as ReturnType<typeof readDiscoveryRecordDisposition>);
+      const before = repair.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(repair.mock.calls.length).toBeGreaterThan(before);
+    } finally {
+      vi.mocked(readDiscoveryRecordDisposition).mockReturnValue({ kind: 'missing' });
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  },
+);
