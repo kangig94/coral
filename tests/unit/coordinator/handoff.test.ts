@@ -2579,6 +2579,75 @@ describe('bindWithHandoff', () => {
     expect(signalLedger.write).toHaveBeenCalledTimes(1);
   });
 
+  it.each([true, false])(
+    'bounds socket release after consented shutdown stalls and SIGTERM exits (release=%s)',
+    async (release) => {
+      const identity: IncumbentIdentity = {
+        pid: 8645,
+        incarnation: testIncarnation(906),
+        source: 'discovery',
+        instanceId: 'consented-but-wedged',
+        token: 'token',
+        bootToken: 'boot-token',
+        shutdownToken: 'shutdown-token',
+      };
+      let signalled = false;
+      let goneAt: number | null = null;
+      let shutdownCallsAtSignal = 0;
+      let signalAt: bigint | null = null;
+      const { options, time, killCalls } = buildHarness({
+        totalBudgetMs: 30_000,
+        bindAttempt: async () =>
+          release && goneAt !== null && time.now() - goneAt >= 1_000
+            ? { kind: 'bound' }
+            : { kind: 'incumbent', reason: 'live-listener' },
+        readDiscovery: () => (signalled ? null : identity),
+        observeLiveness: () => {
+          if (!signalled) return 'alive';
+          goneAt ??= time.now();
+          return 'absent';
+        },
+        killReturns: () => {
+          signalled = true;
+          shutdownCallsAtSignal = mockedShutdown.mock.calls.length;
+          signalAt = time.monotonicNow();
+          return true;
+        },
+      });
+      mockedShutdown.mockResolvedValue(shutdownResult({ verifiedIdentity: identity }));
+      mockedProbe.mockImplementation(() => (signalled ? null : (identity.incarnation ?? null)));
+
+      const startedAt = time.monotonicNow();
+      let settledAt = 0;
+      const promise = bindWithHandoff(options)
+        .catch((error: unknown) => error)
+        .then((outcome: unknown) => {
+          settledAt = time.now();
+          return outcome;
+        });
+      for (let elapsed = 0; elapsed < 42_000; elapsed += 200) {
+        await flush();
+        time.tick(200);
+      }
+      const outcome = await promise;
+
+      if (release) {
+        expect(outcome).toMatchObject({ acquiredViaHandoff: true });
+      } else {
+        expectHandoffRefusal(outcome, 'handoff_socket_holder_unverified', {
+          stage: 'handoff-deadline',
+          socketPath: options.socketPath,
+        });
+      }
+      expect(goneAt).not.toBeNull();
+      expect(signalAt).toBe(startedAt + 30_000n);
+      expect(goneAt).toBe(Number(startedAt) + 30_000 + SIGTERM_GRACE_MS);
+      expect(settledAt).toBe((goneAt ?? 0) + (release ? 1_000 : 5_000));
+      expect(mockedShutdown.mock.calls.length).toBe(shutdownCallsAtSignal);
+      expect(killCalls).toEqual([{ pid: identity.pid, signal: 'SIGTERM' }]);
+    },
+  );
+
   it('follows a successor after a signalled incumbent disappears and reports the successor after another grace pair', async () => {
     const first: IncumbentIdentity = {
       pid: 9_001,
@@ -2615,7 +2684,7 @@ describe('bindWithHandoff', () => {
     );
 
     const promise = bindWithHandoff(options).catch((error: unknown) => error);
-    const elapsedMs = 500 + SIGTERM_GRACE_MS * 2 + SIGKILL_GRACE_MS + 5_000;
+    const elapsedMs = 500 + SIGTERM_GRACE_MS * 2 + SIGKILL_GRACE_MS + 10_000;
     for (let elapsed = 0; elapsed < elapsedMs; elapsed += 200) {
       await flush();
       time.tick(200);

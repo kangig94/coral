@@ -107,6 +107,7 @@ describe('handoff refusal classification ownership', () => {
       'bindWithHandoff:handoff_shutdown_capability_rejected',
       'bindWithHandoff:handoff_shutdown_credential_unavailable',
       'bindWithHandoff:handoff_socket_holder_unverified',
+      'bindWithHandoff:handoff_socket_holder_unverified',
       'bindWithHandoff:handoff_manual_policy',
     ];
 
