@@ -314,6 +314,9 @@ type StagedOperation = {
   cancellationMode: ProxyHostCancellationMode | null;
   cancellationEvidence: OperationCancellationEvidence | null;
   cancellationPromise: Promise<void> | null;
+  readonly cancellationDeadlineController: AbortController;
+  cancellationExpired: Promise<SemanticOperationCancellationTimeoutError>;
+  resolveCancellationExpired(error: SemanticOperationCancellationTimeoutError): void;
   turnSettlement: ProviderTurnSettlement | null;
   settlementRefusals: number;
   completionEmitted: boolean;
@@ -510,12 +513,18 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     });
   };
 
-  const withinCancellationDeadline = async (operation: Promise<void>): Promise<void> => {
+  const withinCancellationDeadline = async (entry: StagedOperation, operation: Promise<void>): Promise<void> => {
+    entry.cancellationDeadlineController.signal.throwIfAborted();
     const deadlineController = new AbortController();
     const deadline = runtime.time
       .sleep(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS, { signal: deadlineController.signal })
       .then(() => {
-        if (!deadlineController.signal.aborted) throw new SemanticOperationCancellationTimeoutError();
+        if (!deadlineController.signal.aborted) {
+          const error = new SemanticOperationCancellationTimeoutError();
+          entry.cancellationDeadlineController.abort(error);
+          entry.resolveCancellationExpired(error);
+          throw error;
+        }
       });
     try {
       await Promise.race([operation, deadline]);
@@ -566,7 +575,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           await forceClose(entry.hostRef);
         }
       });
-      await withinCancellationDeadline(release).catch((error: unknown) => {
+      await withinCancellationDeadline(entry, release).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
       entry.cancellationEvidence = { kind: 'not-started' };
@@ -575,7 +584,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     }
 
     if (reason.kind === 'stop' && reason.cause === 'coordinator_rekey_refused') {
-      await withinCancellationDeadline(completion).catch((error: unknown) => {
+      await withinCancellationDeadline(entry, completion).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
       if (entry.bound === null) {
@@ -593,7 +602,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     }
 
     if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
-      await withinCancellationDeadline(completion).catch((error: unknown) => {
+      await withinCancellationDeadline(entry, completion).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
       if (currentTurnTerminalEvidence(entry) === null && entry.turnSettlement !== null) {
@@ -629,7 +638,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     const isolatedCancellation = Promise.all([completion, initialForceClose]).then(async () => {
       if (initialHostRef === null && entry.hostRef !== null) await forceClose(entry.hostRef);
     });
-    await withinCancellationDeadline(isolatedCancellation).catch((error: unknown) => {
+    await withinCancellationDeadline(entry, isolatedCancellation).catch((error: unknown) => {
       throw requireSetRelinquishment(entry, errorMessage(error));
     });
     entry.cancellationEvidence = { kind: 'isolated-root-closed' };
@@ -702,6 +711,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
       // single call ever resolves `entry.done` concurrently with it.
       while (true) {
+        entry.cancellationDeadlineController.signal.throwIfAborted();
         // A started shared turn owns interrupt confirmation; drain its terminal or suspension under
         // driveCancellation's deadline rather than interrupting the pump between provider events.
         if (!entry.startCommitted || entry.cancellationMode !== 'shared-acknowledged-interrupt')
@@ -711,7 +721,10 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           entry.transportClosed.then((error) => {
             throw error ?? new Error('Provider transport closed before a completion event.');
           }),
+          entry.cancellationExpired,
         ]);
+        if (step instanceof SemanticOperationCancellationTimeoutError) throw step;
+        entry.cancellationDeadlineController.signal.throwIfAborted();
         if (step.done) throw new Error('Provider event stream ended without terminal or suspension.');
         if (step.value.kind === 'suspended' && currentTurnTerminalEvidence(entry) === null) {
           entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: step.value.reason };
@@ -724,7 +737,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         if (emission.kind === 'proxy-emergency-terminal') {
           entry.completionEmitted = true;
           try {
-            await iterator.return?.();
+            await Promise.race([iterator.return?.(), entry.cancellationExpired]);
           } catch (error: unknown) {
             backendLog.error(
               `semantic operation runtime: replay-refusal iterator cleanup failed for ${operationKeyString(key)}`,
@@ -738,7 +751,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           const settlement = emission.settlement;
           entry.activeContinuitySettlement = settlement;
           try {
-            await settlement.committed;
+            await Promise.race([settlement.committed, entry.cancellationExpired]);
           } finally {
             if (entry.activeContinuitySettlement === settlement) entry.activeContinuitySettlement = null;
           }
@@ -746,7 +759,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
 
         if (step.value.kind === 'terminal') {
           try {
-            await iterator.return?.();
+            await Promise.race([iterator.return?.(), entry.cancellationExpired]);
           } catch (error: unknown) {
             // The terminal already names the outcome; iterator cleanup cannot replace it with another one.
             backendLog.error(
@@ -758,7 +771,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         }
         if (step.value.kind === 'suspended') {
           try {
-            await iterator.return?.();
+            await Promise.race([iterator.return?.(), entry.cancellationExpired]);
           } catch (error: unknown) {
             // Suspension is already durable work; iterator cleanup cannot turn it into a terminal.
             backendLog.error(
@@ -855,14 +868,17 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
               settle({ kind: 'started', hostRef });
             },
             (terminal) => {
+              if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.cancellationEvidence = { kind: 'provider-turn-terminal', terminal };
             },
             (settlement) => {
+              if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.turnSettlement = settlement;
               if (currentTurnTerminalEvidence(entry) === null) entry.cancellationEvidence = null;
               entry.settlementRefusals = 0;
             },
             () => {
+              if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.cancellationEvidence = null;
               entry.settlementRefusals = 0;
             },
@@ -912,6 +928,10 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     const transportClosed = new Promise<Error | void>((resolve) => {
       resolveTransportClosed = resolve;
     });
+    let resolveCancellationExpired!: (error: SemanticOperationCancellationTimeoutError) => void;
+    const cancellationExpired = new Promise<SemanticOperationCancellationTimeoutError>((resolve) => {
+      resolveCancellationExpired = resolve;
+    });
     const entry: StagedOperation = {
       key,
       abortController,
@@ -920,6 +940,9 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       cancellationMode: null,
       cancellationEvidence: null,
       cancellationPromise: null,
+      cancellationDeadlineController: new AbortController(),
+      cancellationExpired,
+      resolveCancellationExpired,
       turnSettlement: null,
       settlementRefusals: 0,
       completionEmitted: false,

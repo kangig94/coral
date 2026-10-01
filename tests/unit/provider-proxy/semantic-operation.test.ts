@@ -610,6 +610,84 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
 });
 
 describe('semantic-operation runtime: bounded cancellation', () => {
+  it('observes deadline expiry when the kernel throws before its first wait', async () => {
+    vi.useFakeTimers();
+    const { proxy, ledger } = createTestProxy();
+    const key = testKey();
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, key, prepared);
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        execute: () => ({
+          [Symbol.asyncIterator]: () => ({
+            next: () => {
+              throw new Error('synchronous kernel failure');
+            },
+          }),
+        }),
+      }),
+    });
+    const hostAuthority = {
+      ...fakeHostAuthority(),
+      forceClose: () => new Promise<never>(() => {}),
+    };
+    const semantic = createSemanticOperationRuntime({ runtime, hostAuthority, getProxy: () => proxy });
+    await semantic.ensureProviderRoot(key, prepared);
+    await semantic.host.start({ key, prepared }).result;
+    await vi.advanceTimersByTimeAsync(0);
+    const stopped = Promise.resolve(semantic.host.stop({ key, cause: 'user_abort' })).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS);
+    expect(await stopped).toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
+  });
+
+  it('does not request another kernel event after the cancellation deadline', async () => {
+    vi.useFakeTimers();
+    const { proxy, ledger, emittedEvents } = createTestProxy();
+    const key = testKey('late-tail');
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, key, prepared);
+    const late = deferred();
+    const never = deferred();
+    const closeStaged = vi.fn();
+    const hostAuthority = { ...fakeHostAuthority(), forceClose: vi.fn() };
+    let drained = 0;
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        supportsInterrupt: true,
+        openReplacement: async () => ({ hostRef: fakeHostRef(), close: closeStaged }),
+        execute: async function* () {
+          yield { kind: 'progress', message: 'ready' };
+          await late.promise;
+          drained += 1;
+          yield { kind: 'progress', message: 'late-1' };
+          drained += 1;
+          yield { kind: 'progress', message: 'late-2' };
+          await never.promise;
+        },
+      }),
+    });
+    const semantic = createSemanticOperationRuntime({ runtime, hostAuthority, getProxy: () => proxy });
+    await semantic.ensureProviderRoot(key, prepared);
+    await semantic.host.start({ key, prepared }).result;
+    await vi.advanceTimersByTimeAsync(0);
+    const stopped = Promise.resolve(semantic.host.stop({ key, cause: 'user_abort' })).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS + 1);
+    expect(await stopped).toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
+    const eventsAtDeadline = emittedEvents.length;
+
+    late.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(drained).toBe(1);
+    expect(emittedEvents).toHaveLength(eventsAtDeadline);
+    expect(closeStaged).not.toHaveBeenCalled();
+    expect(hostAuthority.forceClose).not.toHaveBeenCalled();
+    await expect(semantic.shutdown('signal_abort')).rejects.toMatchObject({
+      code: 'semantic_operation_shutdown_incomplete',
+    });
+  });
+
   it('force-closes the tracked host and lets transport closure settle a pull that ignores abort', async () => {
     const { proxy, ledger } = createTestProxy();
     const key = testKey();
