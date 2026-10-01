@@ -13,6 +13,7 @@ import type {
   ProviderPreflightOutcome,
   ProviderInterruptRequestOutcome,
   ProviderTurnTerminalEvidence,
+  ProviderTurnSettlement,
   ProviderRecoveryContract,
   ProviderRequest,
   ProviderRuntime,
@@ -89,7 +90,7 @@ export type BoundProviderHostPreparationInput = Omit<BoundProviderExecutionPrepa
 
 type BoundProviderExecutionRuntimeCommon = Omit<
   ProviderRuntime<never>,
-  'transport' | 'executionPlan' | 'appServerSession' | 'runCli' | 'onProviderTurnTerminal'
+  'transport' | 'executionPlan' | 'appServerSession' | 'runCli' | 'onProviderTurnTerminal' | 'onProviderTurnSettlement'
 > &
   Readonly<{
     jobId: string;
@@ -101,6 +102,7 @@ export type BoundProviderAppServerExecutionRuntime = BoundProviderExecutionRunti
     onAppServerWaiting(observation: { provider: string }): void;
     onHostRef(hostRef: HostRef): void;
     onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
+    onProviderTurnSettlement?(settlement: ProviderTurnSettlement): void;
   }>;
 
 export type BoundProviderStandaloneExecutionRuntime = BoundProviderExecutionRuntimeCommon &

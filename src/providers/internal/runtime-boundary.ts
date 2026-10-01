@@ -61,17 +61,25 @@ function snapshotCommonRuntime(runtime: CommonRuntimeInput) {
 }
 
 export function snapshotAppServerExecutionRuntime<Plan extends ProviderExecutionPlan>(
-  runtime: CommonRuntimeInput & Pick<ProviderAppServerRuntime<never>, 'onProviderTurnTerminal'>,
+  runtime: CommonRuntimeInput &
+    Pick<ProviderAppServerRuntime<never>, 'onProviderTurnTerminal' | 'onProviderTurnSettlement'>,
   executionPlan: Plan,
   appServerSession: AppServerSession,
 ): ProviderAppServerRuntime<Plan> {
   const onProviderTurnTerminal = runtime.onProviderTurnTerminal;
+  const onProviderTurnSettlement = runtime.onProviderTurnSettlement;
   return Object.freeze({
     ...snapshotCommonRuntime(runtime),
     transport: 'app-server' as const,
     appServerSession: wrapAppServerSession(appServerSession, 'Provider app-server session'),
     onProviderTurnTerminal: (evidence: Parameters<typeof onProviderTurnTerminal>[0]) =>
       onProviderTurnTerminal.call(runtime, snapshotBoundaryData(evidence, 'Provider turn terminal evidence')),
+    ...(onProviderTurnSettlement === undefined
+      ? {}
+      : {
+          onProviderTurnSettlement: (settlement: Parameters<typeof onProviderTurnSettlement>[0]) =>
+            onProviderTurnSettlement.call(runtime, snapshotPlainReceiver(settlement, 'Provider turn settlement')),
+        }),
     executionPlan,
   });
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
@@ -13,6 +13,7 @@ import type {
   ProviderRequest,
   ProviderServerSpec,
   AppServerTransport,
+  ProviderTurnSettlement,
 } from '#src/providers/contract.js';
 import { PROVIDER_ARTIFACT_DISCARD_PROTOCOL } from '#src/providers/contract.js';
 import { defineProvider, ProviderRegistry, type ProviderDefinition } from '#src/providers/registry.js';
@@ -1343,97 +1344,122 @@ describe('ProviderRegistry', () => {
     expect(Object.isFrozen(executedContext)).toBe(true);
   });
 
-  it('executes exactly the request captured by preparation', async () => {
-    let preparedRequest: ProviderRequest | undefined;
-    let executedRequest: ProviderRequest | undefined;
-    let appServerRequest: ProviderRequest | undefined;
-    const definition = defineProvider<EmptyPlan, FixtureProviderAccess>({
-      name: 'single-request',
-      transport: 'app-server',
-      prepareExecutionPlan: (
-        input: Parameters<ProviderAppServerImplementation<EmptyPlan, FixtureProviderAccess>['prepareExecutionPlan']>[0],
-      ) => {
-        preparedRequest = input.request;
-        appServerRequest = input.request;
-        return {
-          session: undefined,
-          turn: undefined,
-        };
-      },
-      run: async function* (request) {
-        executedRequest = request;
-      },
-      appServer: {
+  it.each([false, true])(
+    'executes the captured request and retains a settlement lease: %s',
+    async (retainSettlement) => {
+      const closeSession = vi.fn();
+      const closeObservation = vi.fn();
+      let settlement: ProviderTurnSettlement | undefined;
+      let preparedRequest: ProviderRequest | undefined;
+      let executedRequest: ProviderRequest | undefined;
+      let appServerRequest: ProviderRequest | undefined;
+      const definition = defineProvider<EmptyPlan, FixtureProviderAccess>({
         name: 'single-request',
-        planHost: () => undefined,
-        compileStableHost: () => ({
-          provider: 'single-request',
-          command: 'single-request',
-          args: [],
-          cwd: appServerRequest?.cwd ?? fixtureCanonicalWorkDir('/missing'),
-          leaseMode: 'job-exclusive' as const,
-        }),
-      },
-      recovery: {
-        finalizeInterrupted: () => ({ kind: 'preserve' }),
-        finalizeFromArtifacts: async () => ({
-          terminal: {
-            kind: 'terminal',
-            terminal: { content: '', durationMs: 0, outcome: { kind: 'completed' } },
-            diagnostics: {},
-          },
-        }),
-      },
-    })
-      .binding(fixtureProviderBindingCodec('single-request'))
-      .artifacts(none('no artifacts'))
-      .build();
-    const registry = new ProviderRegistry();
-    registry.register(definition);
-    registry.connectAppServerHost({
-      openSession: async () => ({
-        session: { rpc: async <R>() => ({}) as R, subscribe: () => () => {}, closed: Promise.resolve() },
-        hostRef: {
-          provider: 'single-request',
-          fingerprint: '0'.repeat(64),
-          instanceId: 'single-request-instance',
-          leaseMode: 'job-exclusive',
-          ownerJobId: 'registry-test-job',
+        transport: 'app-server',
+        prepareExecutionPlan: (
+          input: Parameters<
+            ProviderAppServerImplementation<EmptyPlan, FixtureProviderAccess>['prepareExecutionPlan']
+          >[0],
+        ) => {
+          preparedRequest = input.request;
+          appServerRequest = input.request;
+          return {
+            session: undefined,
+            turn: undefined,
+          };
         },
-        close: () => {},
-      }),
-      attachSession: async () => null,
-    });
-    const request: ProviderRequest = {
-      action: 'exec',
-      sessionId: 'single-request-session',
-      prompt: 'prepared prompt',
-      cwd: fixtureCanonicalWorkDir('/tmp'),
-      bypassPermissions: false,
-      coralEnv: { ROUTING: 'prepared' },
-    };
-    const prepared = successfulBinding(registry, 'single-request').prepareExecution({
-      request,
-      baseEnv: {},
-      storage: TEST_PREPARATION_STORAGE,
-      platform: 'linux',
-    });
+        run: async function* (request, runtime) {
+          executedRequest = request;
+          if (retainSettlement)
+            runtime.onProviderTurnSettlement!({ settle: async () => null, close: closeObservation });
+        },
+        appServer: {
+          name: 'single-request',
+          planHost: () => undefined,
+          compileStableHost: () => ({
+            provider: 'single-request',
+            command: 'single-request',
+            args: [],
+            cwd: appServerRequest?.cwd ?? fixtureCanonicalWorkDir('/missing'),
+            leaseMode: 'job-exclusive' as const,
+          }),
+        },
+        recovery: {
+          finalizeInterrupted: () => ({ kind: 'preserve' }),
+          finalizeFromArtifacts: async () => ({
+            terminal: {
+              kind: 'terminal',
+              terminal: { content: '', durationMs: 0, outcome: { kind: 'completed' } },
+              diagnostics: {},
+            },
+          }),
+        },
+      })
+        .binding(fixtureProviderBindingCodec('single-request'))
+        .artifacts(none('no artifacts'))
+        .build();
+      const registry = new ProviderRegistry();
+      registry.register(definition);
+      registry.connectAppServerHost({
+        openSession: async () => ({
+          session: { rpc: async <R>() => ({}) as R, subscribe: () => () => {}, closed: Promise.resolve() },
+          hostRef: {
+            provider: 'single-request',
+            fingerprint: '0'.repeat(64),
+            instanceId: 'single-request-instance',
+            leaseMode: 'job-exclusive',
+            ownerJobId: 'registry-test-job',
+          },
+          close: closeSession,
+        }),
+        attachSession: async () => null,
+      });
+      const request: ProviderRequest = {
+        action: 'exec',
+        sessionId: 'single-request-session',
+        prompt: 'prepared prompt',
+        cwd: fixtureCanonicalWorkDir('/tmp'),
+        bypassPermissions: false,
+        coralEnv: { ROUTING: 'prepared' },
+      };
+      const prepared = successfulBinding(registry, 'single-request').prepareExecution({
+        request,
+        baseEnv: {},
+        storage: TEST_PREPARATION_STORAGE,
+        platform: 'linux',
+      });
 
-    request.prompt = 'caller mutation';
-    request.coralEnv.ROUTING = 'caller mutation';
-    if (prepared.kind !== 'app-server') throw new Error('Expected app-server prepared execution.');
-    for await (const _event of prepared.execute(executionRuntime() as never)) {
-      // Empty provider stream.
-    }
+      request.prompt = 'caller mutation';
+      request.coralEnv.ROUTING = 'caller mutation';
+      if (prepared.kind !== 'app-server') throw new Error('Expected app-server prepared execution.');
+      for await (const _event of prepared.execute({
+        ...executionRuntime(),
+        onProviderTurnTerminal: () => {},
+        onProviderTurnSettlement: (value: ProviderTurnSettlement) => {
+          settlement = value;
+        },
+      } as never)) {
+        // Empty provider stream.
+      }
 
-    expect(prepared.execute).toHaveLength(1);
-    expect(executedRequest).toBe(preparedRequest);
-    expect(appServerRequest).toBe(preparedRequest);
-    expect(executedRequest).toMatchObject({ prompt: 'prepared prompt', coralEnv: { ROUTING: 'prepared' } });
-    expect(Object.isFrozen(executedRequest)).toBe(true);
-    expect(Object.isFrozen(executedRequest?.coralEnv)).toBe(true);
-    expect(prepared).not.toHaveProperty('prepareCliRequest');
-  });
+      expect(closeSession).toHaveBeenCalledTimes(retainSettlement ? 0 : 1);
+      if (retainSettlement) {
+        expect(settlement).toBeDefined();
+        await expect(settlement!.settle()).resolves.toBeNull();
+        expect(closeSession).not.toHaveBeenCalled();
+        settlement!.close();
+        expect(closeObservation).toHaveBeenCalledOnce();
+        expect(closeSession).toHaveBeenCalledOnce();
+      }
+      expect(prepared.execute).toHaveLength(1);
+      expect(executedRequest).toBe(preparedRequest);
+      expect(appServerRequest).toBe(preparedRequest);
+      expect(executedRequest).toMatchObject({ prompt: 'prepared prompt', coralEnv: { ROUTING: 'prepared' } });
+      expect(Object.isFrozen(executedRequest)).toBe(true);
+      expect(Object.isFrozen(executedRequest?.coralEnv)).toBe(true);
+      expect(prepared).not.toHaveProperty('prepareCliRequest');
+    },
+  );
 
   it('rejects forged definition accessors by provenance without executing them', () => {
     let getterCalls = 0;

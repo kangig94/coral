@@ -11,6 +11,7 @@ import type {
   AppServerSession,
   HostRef,
   ProviderTurnTerminalEvidence,
+  ProviderTurnSettlement,
 } from '../contract.js';
 import { buildProviderFailureMessage } from '../app-server.js';
 import { providerHostUnserviceableTerminalWarning, ProviderHostUnserviceableResponseError } from '../host-admission.js';
@@ -44,11 +45,12 @@ import {
 } from './turn-recovery.js';
 import type { CodexExecutionPlan } from './execution-plan.js';
 import { readCodexModelCatalog, type CodexModelCatalog } from './model-catalog.js';
+import { observeCodexTurnSettlement } from './turn-settlement.js';
 
 type CodexProviderRuntime = Extract<ProviderRuntime<CodexExecutionPlan>, { appServerSession: unknown }>;
 
+const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
-const FINAL_ANSWER_QUIET_PERIOD_MS = 250;
 
 // Sentinel exit code surfaced when the Codex app-server reports a turn failure
 // over RPC instead of the wrapper observing a process exit. Codex thread-kernel
@@ -71,7 +73,7 @@ type CodexKernelResult =
   | {
       kind: 'completed';
       turn: Turn;
-      source: 'notification' | 'start_response';
+      source: 'notification' | 'start_response' | 'inferred';
       attempt: TurnAttempt;
     }
   | {
@@ -82,7 +84,6 @@ type CodexKernelResult =
       attempt?: TurnAttempt;
     }
   | { kind: 'suspended'; reason: 'interrupt_unconfirmed'; attempt: TurnAttempt }
-  | { kind: 'recovery-required'; reason: 'terminal_notification_missing'; attempt: TurnAttempt }
   | { kind: 'aborted'; reason: 'signal_abort'; preserveRecoverySnapshot?: boolean; attempt?: TurnAttempt };
 
 export type TurnAttempt = {
@@ -107,7 +108,7 @@ export type TurnAttempt = {
   pendingCollaborations: Set<string>;
   activeSubagentTurns: Set<string>;
   completionTimer: ReturnType<TimePort['setTimeout']> | null;
-  terminalObservationStarted: boolean;
+  awaitingExplicitCompletion: boolean;
 };
 
 export type CodexTurnState = {
@@ -172,7 +173,7 @@ function createAttempt(sequence: number): TurnAttempt {
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
     completionTimer: null,
-    terminalObservationStarted: false,
+    awaitingExplicitCompletion: false,
   };
 }
 
@@ -369,42 +370,12 @@ function admitBufferedNotification(state: CodexTurnState, message: AppServerNoti
   return true;
 }
 
-function clearCompletionTimer(state: CodexTurnState, attempt: TurnAttempt): void {
-  if (attempt.completionTimer !== null) {
-    state.time.clearTimeout(attempt.completionTimer);
-    attempt.completionTimer = null;
-  }
-}
-
-function scheduleTerminalObservation(state: CodexTurnState, attempt: TurnAttempt): void {
-  clearCompletionTimer(state, attempt);
-  if (
-    state.finalized ||
-    state.activeAttempt !== attempt ||
-    attempt.completed ||
-    !attempt.finalAnswerSeen ||
-    attempt.terminalObservationStarted ||
-    attempt.pendingCollaborations.size > 0 ||
-    attempt.activeSubagentTurns.size > 0
-  )
+function clearCompletionTimer(state: CodexTurnState, attempt = state.activeAttempt): void {
+  if (!attempt.completionTimer) {
     return;
-  attempt.completionTimer = state.time.setTimeout(() => {
-    attempt.completionTimer = null;
-    if (state.finalized || state.activeAttempt !== attempt || attempt.completed || state.lease === null) return;
-    attempt.terminalObservationStarted = true;
-    void finishAbortedStart(state.lease, state, attempt).then(
-      (result) =>
-        settleAttempt(
-          state,
-          attempt,
-          result.kind === 'suspended' && !state.signal.aborted
-            ? { kind: 'recovery-required', reason: 'terminal_notification_missing', attempt }
-            : result,
-        ),
-      () =>
-        settleAttempt(state, attempt, { kind: 'recovery-required', reason: 'terminal_notification_missing', attempt }),
-    );
-  }, FINAL_ANSWER_QUIET_PERIOD_MS);
+  }
+  state.time.clearTimeout(attempt.completionTimer);
+  attempt.completionTimer = null;
 }
 
 function settleAttempt(state: CodexTurnState, attempt: TurnAttempt, result: CodexKernelResult): void {
@@ -420,21 +391,32 @@ function settleAttempt(state: CodexTurnState, attempt: TurnAttempt, result: Code
 function completeTurn(
   state: CodexTurnState,
   attempt: TurnAttempt,
-  turn: Turn,
-  source: 'notification' | 'start_response',
+  turn: Turn | null = null,
+  source: 'notification' | 'start_response' | 'inferred' = turn === null ? 'inferred' : 'notification',
 ): void {
   if (state.finalized || state.activeAttempt !== attempt || attempt.completed) {
     return;
   }
-  const turnId = readTurnId(turn);
-  attempt.finalTurn = canonicalTurn(turn, attempt.turnId);
-  const finalStatus = codexFinalTurnStatusSchema.safeParse(turn.status);
-  if (turnId !== null && finalStatus.success) {
-    state.onProviderTurnTerminal({ kind: 'provider-turn-terminal', providerTurnId: turnId, status: finalStatus.data });
-  }
-  if (turnId !== null && attempt.turnId === null) {
-    attempt.turnId = turnId;
-    attempt.resolveIdReady(turnId);
+  if (turn) {
+    const turnId = readTurnId(turn);
+    const finalStatus = codexFinalTurnStatusSchema.safeParse(turn.status);
+    if (turnId !== null && finalStatus.success) {
+      state.onProviderTurnTerminal({
+        kind: 'provider-turn-terminal',
+        providerTurnId: turnId,
+        status: finalStatus.data,
+      });
+    }
+    attempt.finalTurn = canonicalTurn(turn, attempt.turnId);
+    if (turnId !== null && attempt.turnId === null) {
+      attempt.turnId = turnId;
+      attempt.resolveIdReady(turnId);
+    }
+  } else {
+    attempt.finalTurn ??= {
+      id: attempt.turnId ?? 'inferred-turn',
+      status: 'completed',
+    };
   }
   settleAttempt(state, attempt, {
     kind: 'completed',
@@ -442,6 +424,42 @@ function completeTurn(
     source,
     attempt,
   });
+}
+
+function scheduleInferredCompletion(state: CodexTurnState, attempt = state.activeAttempt): void {
+  if (
+    state.activeAttempt !== attempt ||
+    state.finalized ||
+    attempt.completed ||
+    attempt.finalTurn ||
+    !attempt.finalAnswerSeen ||
+    attempt.awaitingExplicitCompletion
+  ) {
+    return;
+  }
+  if (attempt.pendingCollaborations.size > 0 || attempt.activeSubagentTurns.size > 0) {
+    return;
+  }
+
+  clearCompletionTimer(state, attempt);
+  attempt.completionTimer = state.time.setTimeout(() => {
+    attempt.completionTimer = null;
+    if (
+      state.activeAttempt !== attempt ||
+      state.finalized ||
+      attempt.completed ||
+      attempt.finalTurn ||
+      !attempt.finalAnswerSeen ||
+      attempt.awaitingExplicitCompletion
+    ) {
+      return;
+    }
+    if (attempt.pendingCollaborations.size > 0 || attempt.activeSubagentTurns.size > 0) {
+      return;
+    }
+    completeTurn(state, attempt);
+  }, INFERRED_COMPLETION_DELAY_MS);
+  attempt.completionTimer.unref?.();
 }
 
 function belongsToTurn(state: CodexTurnState, message: AppServerNotificationMessage): boolean {
@@ -535,14 +553,14 @@ function recordItem(
   threadId: string | null,
 ): void {
   if (item.type === 'collabAgentToolCall') {
-    const itemId = readString(item.id);
-    if (threadId === state.threadId && itemId !== undefined) {
+    const itemId = typeof item.id === 'string' ? item.id : null;
+    if (threadId === state.threadId && itemId) {
       if (lifecycle === 'started' || item.status === 'inProgress') {
         attempt.pendingCollaborations.add(itemId);
-      } else {
+      } else if (lifecycle === 'completed') {
         attempt.pendingCollaborations.delete(itemId);
+        scheduleInferredCompletion(state, attempt);
       }
-      scheduleTerminalObservation(state, attempt);
     }
     if (Array.isArray(item.receiverThreadIds)) {
       for (const receiverThreadId of item.receiverThreadIds) {
@@ -563,7 +581,7 @@ function recordItem(
       }
       if (lifecycle === 'completed' && item.phase === 'final_answer') {
         attempt.finalAnswerSeen = true;
-        scheduleTerminalObservation(state, attempt);
+        scheduleInferredCompletion(state, attempt);
       }
     }
   }
@@ -612,7 +630,6 @@ function applyNotificationCore(
       } else if (threadId !== null && turnId !== null && attempt.subagentThreadIds.has(threadId)) {
         state.subagentTurnIds.set(threadId, turnId);
         attempt.activeSubagentTurns.add(threadId);
-        scheduleTerminalObservation(state, attempt);
       }
       emitProgress(emit, `Turn started (${turnId ?? 'unknown'}).`);
       return;
@@ -643,6 +660,8 @@ function applyNotificationCore(
       ) {
         return;
       }
+      attempt.awaitingExplicitCompletion = true;
+      clearCompletionTimer(state, attempt);
       if (!evidence.willRetry) {
         attempt.terminalErrors.push(evidence);
       }
@@ -658,7 +677,7 @@ function applyNotificationCore(
       const completedTurnId = readTurnId(turn);
       if (threadId !== null && threadId !== state.threadId) {
         attempt.activeSubagentTurns.delete(threadId);
-        scheduleTerminalObservation(state, attempt);
+        scheduleInferredCompletion(state, attempt);
         return;
       }
       if (
@@ -1296,23 +1315,6 @@ async function finishInvocation(
     return { kind: 'suspended', reason: result.reason };
   }
 
-  if (result.kind === 'recovery-required') {
-    return {
-      kind: 'terminal',
-      terminal: buildJobTerminal({
-        content: state.lastAgentMessage,
-        ...terminalModel(state),
-        durationMs: state.time.now() - state.startedAt,
-        outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
-      }),
-      diagnostics: buildJobDiagnostics({
-        warnings: [
-          'Codex terminal notification missing; interrupt unconfirmed. Provider cleanup remains owned by operation settlement.',
-        ],
-      }),
-    };
-  }
-
   if (result.kind === 'aborted') {
     if (!result.preserveRecoverySnapshot && state.threadId !== null) {
       await checkpoint(state, state.threadId);
@@ -1327,6 +1329,7 @@ async function finishInvocation(
 }
 
 async function retireAttempt(state: CodexTurnState, attempt: TurnAttempt): Promise<void> {
+  clearCompletionTimer(state, attempt);
   attempt.lifecycle = 'settled';
   if (attempt.turnId !== null) {
     state.retiredControllerTurnIds.add(attempt.turnId);
@@ -1358,6 +1361,8 @@ export const codexTurnKernel: Provider<
     const clearNotificationBinding = lease.subscribe((message) => {
       applyNotification(state, message, emit);
     });
+    let turnSettlement: ProviderTurnSettlement | null = null;
+    let settlementTransferred = false;
 
     try {
       await verifyCodexEffectiveTransport(lease, request.cwd);
@@ -1384,6 +1389,9 @@ export const codexTurnKernel: Provider<
       for (;;) {
         const attempt = state.activeAttempt;
         const started = await startTurn(runtime, lease, state, attempt, params, emit);
+        if (runtime.onProviderTurnSettlement !== undefined && attempt.turnId !== null) {
+          turnSettlement = observeCodexTurnSettlement(lease, runtime.time, state.threadId, attempt.turnId);
+        }
         const result = started ?? (await waitForTurnResult(lease, runtime, state));
 
         const recoveryReason =
@@ -1394,6 +1402,8 @@ export const codexTurnKernel: Provider<
           recoveryReason !== null &&
           !recoveredFailures.has(recoveryReason)
         ) {
+          turnSettlement?.close();
+          turnSettlement = null;
           await retireAttempt(state, attempt);
           emitProgress(
             emit,
@@ -1414,6 +1424,15 @@ export const codexTurnKernel: Provider<
         }
 
         emitFinalTurnProgress(result, emit);
+        if (
+          result.kind === 'completed' &&
+          result.source === 'inferred' &&
+          turnSettlement !== null &&
+          runtime.onProviderTurnSettlement !== undefined
+        ) {
+          runtime.onProviderTurnSettlement(turnSettlement);
+          settlementTransferred = true;
+        }
         const terminal = await finishInvocation(state, result, emit);
         if (terminal) emit(terminal);
         return;
@@ -1450,5 +1469,6 @@ export const codexTurnKernel: Provider<
     } finally {
       clearCompletionTimer(state, state.activeAttempt);
       clearNotificationBinding();
+      if (!settlementTransferred) turnSettlement?.close();
     }
   });

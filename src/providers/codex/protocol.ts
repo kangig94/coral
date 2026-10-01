@@ -116,6 +116,10 @@ export const modelListResponseSchema = z.object({
 export type ModelListResponse = z.infer<typeof modelListResponseSchema>;
 
 interface AppServerMethodMap {
+  'thread/read': {
+    params: { threadId: string; includeTurns: true };
+    result: { thread: { id: string; turns: Turn[] } };
+  };
   'model/list': {
     params: { cursor?: string | null; limit?: number | null; includeHidden?: boolean | null };
     result: ModelListResponse;
