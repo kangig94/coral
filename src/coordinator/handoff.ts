@@ -32,6 +32,7 @@ import {
 } from '../transport/ipc/handoff.js';
 
 const SOCKET_BIND_POLL_MS = 200;
+const POST_EXIT_BIND_TIMEOUT_MS = 5_000;
 const SHUTDOWN_RPC_TIMEOUT_MS = 1_000;
 const DEFAULT_SIGNAL_COOLDOWN_MS = 60_000;
 const LEGACY_SIGNAL_LEDGER_FILE = 'handoff-signal.json';
@@ -955,6 +956,7 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
   let incumbent: IncumbentIdentity | null = null;
   let lastHealth: IncumbentHealth | null = null;
   let pendingSignal: PendingSignalSettlement | null = null;
+  let postExitBindDeadlineMonotonicMs: bigint | null = null;
   /** This contender's own first observation of the incumbent's pid — see `verifySignalTarget`. */
   let signalAnchor: { pid: number; incarnation: ProcessIncarnation } | null = null;
 
@@ -1033,6 +1035,7 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       if (targetGoneMessage !== null) {
         backendLog.info(targetGoneMessage);
         abandonIncumbent();
+        postExitBindDeadlineMonotonicMs = opts.runtime.time.monotonicNow() + BigInt(POST_EXIT_BIND_TIMEOUT_MS);
         await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
       }
       continue;
@@ -1048,6 +1051,21 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
     }
 
     sawIncumbent = true;
+    if (postExitBindDeadlineMonotonicMs !== null) {
+      const bindRemaining = Number(postExitBindDeadlineMonotonicMs - opts.runtime.time.monotonicNow());
+      if (bindRemaining > 0) {
+        await sleepForHandoffPoll(opts, Math.min(SOCKET_BIND_POLL_MS, bindRemaining));
+        continue;
+      }
+      const fresh = readFreshDiscovery(opts, lastHealth);
+      if (fresh === null || opts.runtime.process.observeLiveness(fresh.pid) === 'absent') {
+        throw new HandoffEscalationError({
+          code: 'handoff_socket_holder_unverified',
+          context: { stage: 'handoff-deadline', socketPath: opts.socketPath },
+        });
+      }
+      postExitBindDeadlineMonotonicMs = null;
+    }
     let remaining = Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow());
     if (remaining > 0) {
       const shutdownCredentialIdentity = readFreshDiscovery(opts, lastHealth);
@@ -1159,6 +1177,7 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       if (verification.kind === 'gone') {
         backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGTERM; retrying bind`);
         abandonIncumbent();
+        postExitBindDeadlineMonotonicMs = opts.runtime.time.monotonicNow() + BigInt(POST_EXIT_BIND_TIMEOUT_MS);
         await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
         continue;
       }
@@ -1178,6 +1197,7 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       ) {
         backendLog.info(`Incumbent pid=${incumbent.pid} was gone after rejected SIGTERM; retrying bind`);
         abandonIncumbent();
+        postExitBindDeadlineMonotonicMs = opts.runtime.time.monotonicNow() + BigInt(POST_EXIT_BIND_TIMEOUT_MS);
         await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
         continue;
       }

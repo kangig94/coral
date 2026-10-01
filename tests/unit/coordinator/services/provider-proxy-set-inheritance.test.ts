@@ -790,6 +790,54 @@ async function startRegisteredProxy(
 }
 
 describe('attemptProviderProxySetInheritance', () => {
+  it('drains containment proof inside a set mutation nested under set-less startup reconciliation', async () => {
+    const loc = locator();
+    const db = proofDatabase([proofRecord(loc, { pid: 104, incarnation: testIncarnation(4) })]);
+    const admission = providerOperationMutationAdmission(db);
+    const identity = providerProxySetIdentityFromRecord(loc);
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    mockedConnect.mockRejectedValueOnce(
+      new ControlClientError('control_client_connect_failed', 'guardian is absent', 'closed'),
+    );
+    const containmentProver = createProviderProxySetContainmentProver({
+      ...runtime,
+      process: { ...runtime.process, readProcessIncarnation: () => null, observeLiveness: () => 'absent' },
+    });
+    const collectContainmentProof = vi.spyOn(containmentProver, 'collectContainmentProof');
+    const closeSet = vi.spyOn(admission, 'closeSet');
+    const reapRecordedContainment = vi.fn(reapRecordedEvidence);
+
+    try {
+      const outcome = await admission.run('provider-operation-startup-reconciliation', () =>
+        admission.run(
+          'provider-operation:reboot-set',
+          () =>
+            attemptProviderProxySetInheritance(
+              loc,
+              db,
+              {
+                runtime,
+                coordinatorIdentity: COORDINATOR_IDENTITY,
+                operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+                collectContainmentProof: containmentProver.collectContainmentProof,
+                reapRecordedContainment,
+              },
+              neverAborts,
+            ),
+          identity,
+        ),
+      );
+
+      expect(outcome.kind).toBe('containment-disappeared');
+      expect(closeSet).toHaveBeenCalledWith(identity);
+      expect(closeSet.mock.results[0]?.value).toMatchObject({ kind: 'drained' });
+      expect(collectContainmentProof).toHaveBeenCalledOnce();
+      expect(reapRecordedContainment).toHaveBeenCalledOnce();
+    } finally {
+      db.close();
+    }
+  });
+
   it('reports not-bequeathed without touching a socket when no capsule exists at the address', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
