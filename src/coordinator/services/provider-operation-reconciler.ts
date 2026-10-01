@@ -1897,7 +1897,7 @@ export class ProviderOperationReconciler
                   code: 'provider_lost',
                   reason: 'The provider became unavailable, so this job stopped before completion. Retry the job.',
                 };
-        const directive = this.#rekeyRefusalDirective(record) ?? fallback;
+        const directive = this.#rekeyRefusalDirective(record) ?? this.#stopAbortDirective(record) ?? fallback;
         const terminalized = await this.#terminalizeDisappearance(record, directive);
         if (terminalized.kind === 'operational-failure') return terminalized;
         if (terminalized.kind === 'conflict') continue;
@@ -2157,11 +2157,12 @@ export class ProviderOperationReconciler
       this.#attachments.delete(key);
       return this.#terminalize(
         record,
-        this.#rekeyRefusalDirective(record) ?? {
-          kind: 'terminal-failed',
-          code: 'provider_lost',
-          reason: 'The provider proxy proved that the committed operation is absent.',
-        },
+        this.#rekeyRefusalDirective(record) ??
+          this.#stopAbortDirective(record) ?? {
+            kind: 'terminal-failed',
+            code: 'provider_lost',
+            reason: 'The provider proxy proved that the committed operation is absent.',
+          },
       );
     }
 
@@ -2227,11 +2228,22 @@ export class ProviderOperationReconciler
     }
   }
 
-  #completeExecutingAttachment(
+  async #completeExecutingAttachment(
     record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
     retryOwnership: ProviderOperationRetryOwnership,
     completePublication: boolean,
-  ): ProviderOperationRecord | null {
+  ): Promise<ProviderOperationRecord | null> {
+    const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+    if (current?.phase === 'executing' && current.controlIntent.kind === 'stop') {
+      await this.#recordRetry(
+        current,
+        Object.assign(new Error('The provider stop is pending; waiting for terminal or absence evidence.'), {
+          code: 'provider_stop_pending',
+        }),
+      );
+      if (completePublication) this.#complete(record.operation, { kind: 'remote-executing' });
+      return null;
+    }
     const result = completeExecutingProviderOperationAttachment(
       this.#deps.getProgressStore().getDb(),
       record.operation,
@@ -2401,7 +2413,9 @@ export class ProviderOperationReconciler
         next = this.#activationResolutionRecord(current, aborted, current.lastError);
       } else if (current.phase === 'activation-resolution-pending') {
         if (current.onNeverStarted.kind === 'terminal-aborted') {
-          return aborted === null ? { kind: 'not-applicable' } : { kind: 'already-carried' };
+          if (aborted === null) return { kind: 'not-applicable' };
+          this.#runControlIntentFollowUp(current, preferredAuthority);
+          return { kind: 'already-carried' };
         }
         if (aborted === null) return { kind: 'not-applicable' };
         next = providerOperationRecordSchema.parse({
@@ -2414,7 +2428,9 @@ export class ProviderOperationReconciler
         });
       } else if (current.phase === 'prestart-cleanup-pending') {
         if (current.afterRelease.kind === 'terminal-aborted') {
-          return aborted === null ? { kind: 'not-applicable' } : { kind: 'already-carried' };
+          if (aborted === null) return { kind: 'not-applicable' };
+          this.#runControlIntentFollowUp(current, preferredAuthority);
+          return { kind: 'already-carried' };
         }
         if (aborted === null || current.afterRelease.kind !== 'local-authorized') {
           return { kind: 'not-applicable' };
@@ -2473,7 +2489,15 @@ export class ProviderOperationReconciler
       const cause = record.controlIntent.cause;
       runReportedEffect(() => this.#deps.registry.stop(record.operation.jobId, cause), report);
     }
-    runReportedEffect(() => this.reconcile(record, preferredAuthority), report);
+    runReportedEffect(async () => {
+      const precedingDrive = this.#serializerFor(operationKey(record.operation)).inFlight;
+      await this.reconcile(record, preferredAuthority);
+      if (precedingDrive === null) return;
+      const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+      if (current !== null && current.retryNotBeforeMs <= this.#deps.time.now()) {
+        await this.reconcile(current, preferredAuthority);
+      }
+    }, report);
   }
 
   #transition(expected: ProviderOperationRecord, next: ProviderOperationRecord): ProviderOperationRecord | null {
@@ -2532,6 +2556,23 @@ export class ProviderOperationReconciler
       kind: 'terminal-failed',
       code: 'coordinator_rekey_refused',
       reason: record.controlIntent.reason,
+    };
+  }
+
+  #stopAbortDirective(
+    record: ProviderOperationRecord,
+  ): Extract<ProviderOperationTerminalDirective, { kind: 'terminal-aborted' }> | null {
+    if (
+      record.phase !== 'executing' ||
+      record.controlIntent.kind !== 'stop' ||
+      !isAbortStopCause(record.controlIntent.cause)
+    ) {
+      return null;
+    }
+    return {
+      kind: 'terminal-aborted',
+      cause: record.controlIntent.cause,
+      requestedAt: record.controlIntent.requestedAt,
     };
   }
 
