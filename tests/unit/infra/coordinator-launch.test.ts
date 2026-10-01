@@ -639,6 +639,7 @@ describe('namespace supervisor ownership', () => {
     if (incarnation === null) throw new Error('Test process incarnation is unavailable');
     try {
       mkdirSync(join(runDir, 'launch-admissions.v2'));
+      mkdirSync(join(runDir, 'launch-lifetimes.v1', '00000000-0000-4000-8000-000000000001'), { recursive: true });
       writeFileSync(join(runDir, 'launch-admissions.v2', '00000000-0000-4000-8000-000000000001.json'), '{');
       const memory = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, 'build-A');
       expect(memory.read().owner.mode).toBe('recovering');

@@ -883,6 +883,17 @@ export class SupervisorLaunchMemory {
     );
   }
 
+  canTerminateChild(owner: LaunchOwner, reservation: LaunchReservation, identity: LaunchProcess): boolean {
+    if (!this.hasAuthority(owner)) return false;
+    const current = this.currentChild(reservation, identity);
+    if (current === null || current.phase === 'exited' || current.parent === undefined) return false;
+    if (this.#hasUnknownEnvelope(current.id) || current.recoveryHold !== undefined) return false;
+    if (reservationDisposition(current) === 'unknown') return false;
+    if (current.parent.pid === owner.process.pid && current.parent.incarnation === owner.process.incarnation)
+      return true;
+    return this.supervisionEligible(current) && identityDisposition(identity) === 'matching';
+  }
+
   commitTermination(
     owner: LaunchOwner,
     reservation: LaunchReservation,
@@ -890,21 +901,9 @@ export class SupervisorLaunchMemory {
     now: number,
     graceMs: number,
   ): boolean {
-    if (!this.hasAuthority(owner)) return false;
+    if (!this.canTerminateChild(owner, reservation, identity)) return false;
     const current = this.currentChild(reservation, identity);
-    if (current === null || current.phase === 'exited' || current.parent === undefined) return false;
-    if (this.#hasUnknownEnvelope(current.id) || current.recoveryHold !== undefined || this.hasUnknownOccupancy())
-      return false;
-    if (
-      (current.parent.pid !== owner.process.pid || current.parent.incarnation !== owner.process.incarnation) &&
-      !this.supervisionEligible(current)
-    )
-      return false;
-    if (
-      (current.parent?.pid !== owner.process.pid || current.parent.incarnation !== owner.process.incarnation) &&
-      identityDisposition(identity) !== 'matching'
-    )
-      return false;
+    if (current === null) return false;
     if (current.terminationAt === undefined)
       this.#set(reservation, { ...current, terminationAt: now, killAt: now + graceMs });
     return true;

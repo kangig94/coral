@@ -13,7 +13,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { z } from 'zod';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
@@ -196,7 +196,7 @@ function acquireLaunchLifetime(runDir: string, admission: LaunchAdmission): void
 
 const preparationName = /^\.([0-9a-f-]{36})\.([1-9][0-9]*)\.([0-9a-f]{64})\.tmp$/iu;
 
-function launchPreparationPath(runDir: string, admission: LaunchAdmission): string {
+function launchPreparationPath(runDir: string, admission: Pick<LaunchAdmission, 'launchId' | 'child'>): string {
   const identity = createHash('sha256').update(admission.child.incarnation).digest('hex');
   return join(runDir, 'launch-lifetimes.v1', `.${admission.launchId}.${admission.child.pid}.${identity}.tmp`);
 }
@@ -231,6 +231,7 @@ export function removeAbandonedLaunchPreparations(runDir: string): string[] {
 
 export type LaunchSubject = Readonly<{
   path: string;
+  launchId?: string;
   admission?: LaunchAdmission;
   conflictingAdmission?: LaunchAdmission;
   lifetimePath?: string;
@@ -248,6 +249,8 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
   const subjects: LaunchSubject[] = [];
   const root = join(runDir, 'launch-lifetimes.v1');
   const visit = (path: string, launchId: string, chunks: string[]): void => {
+    let lifetimePath: string | undefined;
+    let inode: { dev: number; ino: number } | undefined;
     try {
       const names = readdirSync(path);
       if (names.length > 1 || chunks.length > 20) {
@@ -259,7 +262,13 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
         visit(join(path, name), launchId, [...chunks, name]);
         return;
       }
-      const lifetimePath = join(path, name);
+      lifetimePath = join(path, name);
+      try {
+        const { dev, ino } = lstatSync(lifetimePath);
+        inode = { dev, ino };
+      } catch (error: unknown) {
+        if (!isNoEntryError(error)) throw error;
+      }
       const tuple: unknown = JSON.parse(
         inflateRawSync(Buffer.from(chunks.join(''), 'base64url'), { maxOutputLength: 8192 }).toString('utf8'),
       );
@@ -277,13 +286,6 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
       });
       if (envelope.launchId !== launchId || launchLifetimePath(runDir, envelope) !== lifetimePath)
         throw new Error('Lifetime launch identity mismatch');
-      let inode: { dev: number; ino: number } | undefined;
-      try {
-        const { dev, ino } = lstatSync(lifetimePath);
-        inode = { dev, ino };
-      } catch (error: unknown) {
-        if (!isNoEntryError(error)) throw error;
-      }
       const json = readLaunchAdmission(runDir, launchId);
       const conflict = json.kind === 'readable' && !sameEnvelope(envelope, json.admission);
       subjects.push({
@@ -302,7 +304,18 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
           json.admission.lifetime.ino === inode.ino,
       });
     } catch {
-      subjects.push({ path, acquisitionComplete: false, problem: 'envelope-unavailable' });
+      const json = readLaunchAdmission(runDir, launchId);
+      const addressed =
+        z.string().uuid().safeParse(launchId).success &&
+        json.kind === 'unreadable' &&
+        lifetimePath !== undefined &&
+        inode !== undefined;
+      subjects.push({
+        path: addressed && json.kind === 'unreadable' ? json.path : path,
+        ...(addressed ? { launchId, lifetimePath, inode } : {}),
+        acquisitionComplete: false,
+        problem: 'envelope-unavailable',
+      });
     }
   };
   try {
@@ -320,6 +333,7 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
     if (subjects.some((subject) => subject.path === path)) continue;
     subjects.push({
       path,
+      launchId: z.string().uuid().safeParse(basename(path, '.json')).data,
       ...(json.kind === 'readable' ? { admission: json.admission } : {}),
       acquisitionComplete: false,
       problem: 'envelope-unavailable',
@@ -332,7 +346,27 @@ type LaunchSubjectDisposition = 'occupied' | 'acquisition-window' | 'unknown' | 
 
 /** An exclusive probe before the first shared acquisition is not evidence of lease release. */
 export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDisposition {
-  if (subject.admission === undefined) return 'unknown';
+  if (subject.admission === undefined) {
+    if (subject.launchId === undefined) return 'unknown';
+    if (subject.lifetimePath !== undefined) {
+      const attempt = attemptExclusiveFileLockSync(subject.lifetimePath);
+      if (attempt.kind !== 'acquired') return 'unknown';
+      try {
+        const current = lstatSync(subject.lifetimePath);
+        return subject.inode?.dev === current.dev && subject.inode.ino === current.ino ? 'absent' : 'unknown';
+      } catch {
+        return 'unknown';
+      } finally {
+        attempt.lease();
+      }
+    }
+    try {
+      lstatSync(join(dirname(dirname(subject.path)), 'launch-lifetimes.v1', subject.launchId));
+      return 'unknown';
+    } catch (error: unknown) {
+      return isNoEntryError(error) ? 'absent' : 'unknown';
+    }
+  }
   const { child } = subject.admission;
   const incarnation = probeProcessIncarnation(child.pid);
   const absent =
@@ -366,31 +400,41 @@ export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDispo
 
 /** Only the namespace lock holder calls this after independently settling the exact subject. */
 export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
-  if (subject.admission === undefined) return false;
+  const launchId = subject.admission?.launchId ?? subject.launchId;
+  if (launchId === undefined) return false;
   if (observeLaunchSubject(subject) !== 'absent') return false;
   const runDir = dirname(dirname(subject.path));
-  const published = join(runDir, 'launch-lifetimes.v1', subject.admission.launchId);
-  const temporary = launchPreparationPath(runDir, subject.admission);
-  const lifetimePath = subject.lifetimePath ?? launchLifetimePath(runDir, subject.admission);
+  const published = join(runDir, 'launch-lifetimes.v1', launchId);
+  const lifetimePath =
+    subject.lifetimePath ??
+    (subject.admission === undefined ? undefined : launchLifetimePath(runDir, subject.admission));
   try {
+    const cleanupIncarnation = subject.admission === undefined ? probeProcessIncarnation(process.pid) : null;
+    const cleanupChild =
+      subject.admission?.child ??
+      (cleanupIncarnation === null ? undefined : { pid: process.pid, incarnation: cleanupIncarnation });
+    if (cleanupChild === undefined) return false;
+    const temporary = launchPreparationPath(runDir, { launchId, child: cleanupChild });
     if (existsSync(published)) {
       const current = listLaunchSubjects(runDir).find((entry) => entry.lifetimePath === lifetimePath);
       if (
-        current?.admission === undefined ||
-        !sameEnvelope(current.admission, subject.admission) ||
+        current === undefined ||
+        (subject.admission === undefined
+          ? current.admission !== undefined || current.launchId !== launchId || current.problem === 'envelope-conflict'
+          : current.admission === undefined || !sameEnvelope(current.admission, subject.admission)) ||
         observeLaunchSubject(current) !== 'absent'
       )
         return false;
     }
     let inode: ReturnType<typeof lstatSync> | undefined;
     try {
-      inode = lstatSync(lifetimePath);
+      if (lifetimePath !== undefined) inode = lstatSync(lifetimePath);
     } catch (error: unknown) {
       if (!isNoEntryError(error)) throw error;
     }
     let release: FileLockLease | undefined;
-    if (inode !== undefined) {
-      const expected = subject.inode ?? subject.admission.lifetime;
+    if (inode !== undefined && lifetimePath !== undefined) {
+      const expected = subject.inode ?? subject.admission?.lifetime;
       if (expected !== undefined && (inode.dev !== expected.dev || inode.ino !== expected.ino)) return false;
       const attempt = attemptExclusiveFileLockSync(lifetimePath);
       if (attempt.kind === 'acquired') release = attempt.lease;
@@ -401,7 +445,7 @@ export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
         return false;
     }
     try {
-      if (inode !== undefined) {
+      if (inode !== undefined && lifetimePath !== undefined) {
         const current = lstatSync(lifetimePath);
         if (current.dev !== inode.dev || current.ino !== inode.ino) return false;
       }
@@ -412,15 +456,17 @@ export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
         if (!isNoEntryError(error)) throw error;
       }
       if (jsonInode !== undefined) {
-        const json = readLaunchAdmission(dirname(dirname(subject.path)), subject.admission.launchId);
+        const json = readLaunchAdmission(runDir, launchId);
         if (
           json.kind === 'readable' &&
-          !sameEnvelope(json.admission, subject.admission) &&
+          (subject.admission === undefined || !sameEnvelope(json.admission, subject.admission)) &&
           (subject.conflictingAdmission === undefined || !sameEnvelope(json.admission, subject.conflictingAdmission))
         )
           return false;
         const checked = lstatSync(subject.path);
         if (checked.dev !== jsonInode.dev || checked.ino !== jsonInode.ino) return false;
+        if (subject.admission === undefined && lifetimePath === undefined && observeLaunchSubject(subject) !== 'absent')
+          return false;
         unlinkSync(subject.path);
       }
       try {

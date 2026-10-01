@@ -98,7 +98,10 @@ async function launch(runDir: string, pause: boolean | 'directory', parented = f
     const namespace = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
     if (namespace.kind !== 'acquired') throw new Error('Test parent did not acquire namespace ownership');
     releaseNamespace = namespace.lease;
-    if (process.platform === 'linux') expect(new SupervisorEvidence(runDir).lockHolder()?.pid).toBe(process.pid);
+    if (process.platform === 'linux')
+      await vi.waitFor(() => expect(new SupervisorEvidence(runDir).lockHolder()?.pid).toBe(process.pid), {
+        timeout: 1_000,
+      });
   }
   const child = spawn(process.execPath, [executable, ...(parented ? ['parent'] : [])], {
     env: { ...process.env, CORAL_LAUNCH_ADMISSION: '1' },
@@ -137,6 +140,47 @@ async function stop(child: ChildProcess, signal?: NodeJS.Signals): Promise<void>
 }
 
 describe('child lifetime admission', () => {
+  it.each(['missing', 'released', 'unreadable-envelope'] as const)(
+    'cleans an unreadable admission with a %s lifetime after its holder exits',
+    async (lifetime) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-unreadable-abandoned-'));
+      const running = await launch(runDir, false);
+      try {
+        await running.admitted;
+        const path = launchAdmissionPath(runDir, running.launchId);
+        writeFileSync(path, '{');
+        if (lifetime === 'unreadable-envelope') {
+          const hierarchy = join(runDir, 'launch-lifetimes.v1', running.launchId);
+          nodeFs.renameSync(join(hierarchy, readdirSync(hierarchy)[0]), join(hierarchy, 'unknown-envelope'));
+        }
+        const memory = new SupervisorLaunchMemory(
+          runDir,
+          { pid: process.pid, incarnation: running.parentIncarnation },
+          'build-A',
+        );
+        memory.reconcileAdmissions();
+        expect(memory.reserve(memory.read().owner, 'build-B', 'startup')).toBeNull();
+        expect(existsSync(path)).toBe(true);
+        await stop(running.child, 'SIGKILL');
+        if (lifetime === 'missing') rmSync(join(runDir, 'launch-lifetimes.v1'), { recursive: true });
+        const replacement = new SupervisorLaunchMemory(
+          runDir,
+          { pid: process.pid, incarnation: running.parentIncarnation },
+          'build-A',
+        );
+        replacement.reconcileAdmissions();
+        expect(existsSync(path)).toBe(false);
+        expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
+        expect(replacement.read().owner.mode).toBe('supervised');
+        expect(replacement.reserve(replacement.read().owner, 'build-B', 'startup')).not.toBeNull();
+      } finally {
+        await stop(running.child, 'SIGKILL');
+        running.releaseNamespace?.();
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(['missing', 'malformed'] as const)(
     'cleans a proven-dead admission with %s lifetime evidence',
     async (damage) => {

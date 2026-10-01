@@ -374,8 +374,7 @@ function terminationCommitted(
 ): boolean {
   const slot = record.currentChild(reservation, identity);
   return (
-    record.hasAuthority(owner) &&
-    !record.hasUnknownOccupancy() &&
+    record.canTerminateChild(owner, reservation, identity) &&
     slot?.terminationAt !== undefined &&
     slot.child?.pid === identity.pid &&
     slot.child.incarnation === identity.incarnation
@@ -587,10 +586,13 @@ function monitorChildHeartbeat(input: {
     }
     return;
   }
-  if (state.wedged && probeProcessIncarnation(identity.pid) === identity.incarnation && !record.hasUnknownOccupancy()) {
+  if (state.wedged && probeProcessIncarnation(identity.pid) === identity.incarnation) {
     record.reconcileAdmissions();
-    state.wedged = false;
-    record.clearSignalRefusal(reservation);
+    const current = record.currentChild(reservation, identity);
+    if (current !== null && record.supervisionEligible(current)) {
+      state.wedged = false;
+      record.clearSignalRefusal(reservation);
+    }
   }
   const status = currentLaunchStatus(record.runDir);
   if (status !== undefined && child.connected) child.send({ kind: 'coral-launch-status', status });
