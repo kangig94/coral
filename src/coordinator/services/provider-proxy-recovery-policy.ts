@@ -633,11 +633,9 @@ export function createProviderProxyRecoveryDispatcher(
         const redemption = exactSources.get('redemption');
         const absence = exactSources.get('absence');
         if (redemption === undefined || absence === undefined) return;
-        if (
-          redemption.kind === 'evidence' &&
-          absence.kind === 'evidence' &&
-          containmentProofRequiresReap(absence.value)
-        ) {
+        const redeemed =
+          redemption.kind === 'evidence' && (redemption.value as ProviderProxySetRedemptionOutcome).kind === 'redeemed';
+        if (redeemed && absence.kind === 'evidence' && containmentProofRequiresReap(absence.value)) {
           retireFatal(
             'redemption',
             corrupt('capsule-redemption', new Error('provider_proxy_capsule_recovery_evidence_conflict')) as Extract<
@@ -648,14 +646,14 @@ export function createProviderProxyRecoveryDispatcher(
           return;
         }
         retired = true;
-        if (redemption.kind === 'evidence') {
-          disposeCachedEvidence({ transferred: { sourceId: 'redemption', value: redemption.value } });
-          sinks.evidence(redemption.value, 'redemption');
-          return;
-        }
         if (absence.kind === 'evidence' && containmentProofRequiresReap(absence.value)) {
           disposeCachedEvidence({ transferred: { sourceId: 'absence', value: absence.value } });
           sinks.evidence(absence.value, 'absence');
+          return;
+        }
+        if (redemption.kind === 'evidence') {
+          disposeCachedEvidence({ transferred: { sourceId: 'redemption', value: redemption.value } });
+          sinks.evidence(redemption.value, 'redemption');
           return;
         }
         if (redemption.kind === 'unavailable') {

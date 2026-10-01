@@ -840,7 +840,11 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
           };
         },
         closed: new Promise(() => {}),
-        interrupt: async () => {
+        interrupt: async (continuity) => {
+          if (path === 'final-answer') {
+            expect(continuity).toEqual({ threadId: 'thread-normal', turnId: 'turn-normal' });
+            return { kind: 'accepted' };
+          }
           throw new Error('A completed turn must not be interrupted');
         },
       };

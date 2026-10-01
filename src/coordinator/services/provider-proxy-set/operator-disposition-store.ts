@@ -230,7 +230,9 @@ export type DurableProviderProxySetOperatorDispositionRecord = Readonly<{
         kind: 'successor-observed';
         observedByIncarnation: string;
         observedAtMs: number;
-        evidence: ProviderProxySetContainmentEvidence | Readonly<{ kind: 'canonical-hold-observation' }>;
+        evidence:
+          | Exclude<ProviderProxySetContainmentEvidence, { kind: 'proxy-absent' }>
+          | Readonly<{ kind: 'canonical-hold-observation' }>;
         reapOutcome?: DurableProviderProxySetContainmentHoldOutcome;
       }>;
 }>;

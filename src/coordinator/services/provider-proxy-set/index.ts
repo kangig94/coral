@@ -11,7 +11,6 @@ import {
 import { type HandoffCapsule, type HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import {
   providerProxySetEnforcerVerdict,
-  type ProviderProxySetContainmentEvidence,
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
@@ -907,7 +906,10 @@ type DurableOperatorDispositionWriteStatus =
       kind: 'successor-observed';
       observedByIncarnation: string;
       observedAtMs: number;
-      evidence: ProviderProxySetContainmentEvidence | Readonly<{ kind: 'canonical-hold-observation' }>;
+      evidence: Extract<
+        DurableProviderProxySetOperatorDispositionRecord['status'],
+        { kind: 'successor-observed' }
+      >['evidence'];
     }>;
 
 type PendingOperatorDispositionWrite = Readonly<{ timer: TimerHandle }>;
@@ -1540,7 +1542,10 @@ export class ProviderProxySetLifecycle {
 
   #recordDurableSetReobservation(
     records: readonly DurableProviderProxySetOperatorDispositionRecord[],
-    evidence: ProviderProxySetContainmentEvidence,
+    evidence: Extract<
+      DurableProviderProxySetOperatorDispositionRecord['status'],
+      { kind: 'successor-observed' }
+    >['evidence'],
     reapOutcome?: DurableProviderProxySetContainmentHoldOutcome,
   ): ProviderProxySetOperatorDispositionRecording {
     const next = records.map((record) => ({

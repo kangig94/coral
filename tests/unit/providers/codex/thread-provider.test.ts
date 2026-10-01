@@ -28,6 +28,7 @@ import {
   type CodexExecutionPlan,
 } from '#src/providers/codex/execution-plan.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { TEST_CODEX_ACCESS } from '../../../helpers/provider-credentials.js';
 
 const TEST_WORKSPACE = mkdtempSync(join(tmpdir(), 'coral-codex-thread-provider-'));
@@ -585,10 +586,117 @@ describe('codexThreadProvider', () => {
     },
   );
 
+  it.each(['accepted', 'wedged', 'failed', 'completed', 'interrupted'] as const)(
+    'bounds missing terminal observation after a final answer with an %s interrupt',
+    async (interrupt) => {
+      const time = new VirtualTime();
+      const lease = makeLease(async (method) => {
+        if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+        if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
+        if (method === 'turn/interrupt') {
+          if (interrupt === 'wedged') return new Promise(() => {});
+          if (interrupt === 'failed') throw new Error('interrupt unavailable');
+          if (interrupt === 'completed' || interrupt === 'interrupted') {
+            lease.emit({
+              method: 'turn/completed',
+              params: { threadId: 'thread-1', turn: { id: 'turn-1', status: interrupt } },
+            });
+          }
+          return {};
+        }
+        throw new Error(`Unexpected method: ${method}`);
+      });
+      const onProviderTurnTerminal = vi.fn();
+      const checkpoint = vi.fn();
+      let settled = false;
+      const eventsPromise = collect(
+        codexTurnKernel(
+          makeRequest(),
+          makeRuntime(lease, undefined, {
+            time,
+            onProviderTurnTerminal,
+            continuityBridge: { checkpoint, transportClosed: () => {} },
+          }),
+        ),
+      ).then((events) => {
+        settled = true;
+        return events;
+      });
+      await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+      lease.emit({
+        method: 'item/completed',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: { type: 'agentMessage', text: 'Final answer', phase: 'final_answer' },
+        },
+      });
+      time.tick(250);
+      await flushMicrotasks(50);
+      time.tick(10_000);
+      await flushMicrotasks(50);
+      expect(settled).toBe(true);
+      expect(lease.rpcMock).toHaveBeenCalledWith('turn/interrupt', { threadId: 'thread-1', turnId: 'turn-1' });
+      const events = await eventsPromise;
+      if (interrupt === 'completed' || interrupt === 'interrupted') {
+        expect(onProviderTurnTerminal).toHaveBeenCalledExactlyOnceWith({
+          kind: 'provider-turn-terminal',
+          providerTurnId: 'turn-1',
+          status: interrupt,
+        });
+        expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
+      } else {
+        expect(onProviderTurnTerminal).not.toHaveBeenCalled();
+        expect(events.at(-1)).toMatchObject({
+          kind: 'terminal',
+          terminal: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
+        });
+        expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
+        expect(checkpoint.mock.calls.at(-1)?.[0]).toMatchObject({
+          providerContinuity: { threadId: 'thread-1', turnId: 'turn-1' },
+        });
+      }
+    },
+  );
+
+  it('cancels automatic terminal observation when normal completion arrives during the quiet period', async () => {
+    const time = new VirtualTime();
+    const lease = makeLease(async (method) => {
+      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const onProviderTurnTerminal = vi.fn();
+    const eventsPromise = collect(
+      codexTurnKernel(makeRequest(), makeRuntime(lease, undefined, { time, onProviderTurnTerminal })),
+    );
+    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+    lease.emit({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        item: { type: 'agentMessage', text: 'Final answer', phase: 'final_answer' },
+      },
+    });
+    time.tick(249);
+    lease.emit({
+      method: 'turn/completed',
+      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+    });
+    const events = await eventsPromise;
+    time.tick(10_001);
+    await flushMicrotasks(50);
+    expect(lease.rpcMock.mock.calls.some(([method]) => method === 'turn/interrupt')).toBe(false);
+    expect(onProviderTurnTerminal).toHaveBeenCalledOnce();
+    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'completed' } } });
+  });
+
   it('keeps observing inferred final-answer completion until exact terminal evidence arrives', async () => {
     const lease = makeLease(async (method) => {
       if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
       if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
+      if (method === 'turn/interrupt') return {};
       throw new Error(`Unexpected method: ${method}`);
     });
     const onProviderTurnTerminal = vi.fn();
@@ -1457,6 +1565,7 @@ describe('codexThreadProvider', () => {
         starts += 1;
         return { turn: { id: 'turn-1', status: 'inProgress' } };
       }
+      if (method === 'turn/interrupt') return {};
       throw new Error(`Unexpected method: ${method}`);
     });
     const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
@@ -1505,6 +1614,7 @@ describe('codexThreadProvider', () => {
     const lease = makeLease(async (method) => {
       if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
       if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
+      if (method === 'turn/interrupt') return {};
       throw new Error(`Unexpected method: ${method}`);
     });
     const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));

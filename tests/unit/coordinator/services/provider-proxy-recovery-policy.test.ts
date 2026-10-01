@@ -276,6 +276,52 @@ describe('provider proxy recovery producer classification', () => {
     expect(disposeLateEvidence).toHaveBeenCalledWith(absence.proof, 'absence');
   });
 
+  it.each(['redemption', 'absence'] as const)(
+    'transfers reaping proof and disposes partial redemption when %s arrives first',
+    async (first) => {
+      const absence = await testContainmentProof(true);
+      const redemption = {
+        kind: 'proxy-unavailable',
+        setIdentity: absence.identity,
+        guardianAuthority: { stopHeartbeats: vi.fn(), initiateControlClose: vi.fn(async () => {}) },
+        incident: unavailable.incident,
+      };
+      const evidence = vi.fn();
+      const fatal = vi.fn();
+      const globalFatal = vi.fn();
+      const disposeLateEvidence = vi.fn();
+      const dispatcher = createTestProviderProxyRecoveryDispatcher(
+        {
+          'containment-proof': async () => absence.proof,
+          'capsule-redemption': () => redemption as never,
+        },
+        globalFatal,
+      );
+      const turn = dispatcher.begin(
+        'exact-capsule-recovery',
+        { setIdentity: absence.identity },
+        {
+          evidence,
+          retry: vi.fn(),
+          fatal,
+          disposeLateEvidence,
+        },
+      );
+      for (const sourceId of [first, first === 'redemption' ? 'absence' : 'redemption']) {
+        turn.start({
+          sourceId,
+          producerId: sourceId === 'absence' ? 'containment-proof' : 'capsule-redemption',
+          input: {},
+        } as ProviderProxyRecoveryAnySource);
+        await flushRecoveryTurn();
+      }
+      expect(evidence).toHaveBeenCalledExactlyOnceWith(absence.proof, 'absence');
+      expect(disposeLateEvidence).toHaveBeenCalledExactlyOnceWith(redemption, 'redemption');
+      expect(fatal).not.toHaveBeenCalled();
+      expect(globalFatal).not.toHaveBeenCalled();
+    },
+  );
+
   it('disposes cached absence proof when exact recovery retires on conflicting evidence', async () => {
     const absence = await testContainmentProof(true);
     const redemption = { kind: 'redeemed', set: { setIdentity: absence.identity } };

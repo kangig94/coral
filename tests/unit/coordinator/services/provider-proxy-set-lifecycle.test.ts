@@ -6457,6 +6457,56 @@ describe('ProviderProxySetLifecycle', () => {
     expect(retireCapsule).toHaveBeenCalledWith('/capsules/unmatched-v3.handoff.json');
   });
 
+  it('reaps exact capsule containment and closes partial guardian control without fatal', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const guardianFaults = createProviderProxyAuthorityFaultLatch();
+    const guardianAuthority: ProviderProxyGuardianRedemptionAuthority = {
+      faulted: guardianFaults.faulted,
+      onFault: guardianFaults.onFault,
+      onIncident: guardianFaults.onIncident,
+      commitContainment: vi.fn(),
+      stopHeartbeats: vi.fn(),
+      initiateControlClose: vi.fn(async () => {}),
+    };
+    const fatals = vi.fn();
+    const reapRecordedContainment = vi.fn(reapContainmentEvidence);
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: async () => containmentEvidence('partial-capsule-reaped'),
+      reapRecordedContainment,
+      redeemCapsule: async () => ({
+        kind: 'proxy-unavailable',
+        setIdentity: authority.setIdentity,
+        guardianAuthority,
+        incident: {
+          kind: 'role-control-unavailable',
+          role: 'proxy',
+          stage: 'connect',
+          method: null,
+          origin: 'closed',
+          controlCode: 'control_client_closed',
+        },
+      }),
+      onFatal: fatals,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/partial-v3.handoff.json', capsule: capsuleV3For(authority) }],
+      retainsEveryCapsule,
+    );
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+    expect(reapRecordedContainment).toHaveBeenCalledOnce();
+    expect(guardianAuthority.stopHeartbeats).toHaveBeenCalledOnce();
+    expect(guardianAuthority.initiateControlClose).toHaveBeenCalledOnce();
+    expect(guardianAuthority.commitContainment).not.toHaveBeenCalled();
+    expect(fatals).not.toHaveBeenCalled();
+  });
+
   it('fails exact capsule recovery on redeemed identity corruption', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
