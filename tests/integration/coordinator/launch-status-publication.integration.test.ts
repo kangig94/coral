@@ -19,7 +19,7 @@ import { build } from 'esbuild';
 import { expect, it, vi } from 'vitest';
 
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
-import { probeProcessIncarnation } from '#src/infra/node-process.js';
+import { probeProcessIncarnation, readPidNamespace } from '#src/infra/node-process.js';
 import { currentLaunchStatus, readLaunchStatus, updateLaunchStatus } from '#src/infra/launch-status.js';
 import { tryAcquireDiagnosticDirectoryLock } from '#src/infra/fs-lock.js';
 import { listLaunchAdmissions } from '#src/infra/launch-admission-record.js';
@@ -60,27 +60,172 @@ it.each(['owner-foreign.lock', 'claim-foreign.lock'])(
   },
 );
 
-it('keeps publisher identity recoverable when status lease release is interrupted', () => {
+it('keeps publisher identity recoverable when status lease release is interrupted', async () => {
   const runDir = mkdtempSync(join(tmpdir(), 'coral-status-release-crash-'));
   const lockDir = join(runDir, 'launch-status.v1.lock');
-  const removeDirectory = nodeFs.rmdirSync;
-  vi.spyOn(nodeFs, 'rmdirSync').mockImplementation((path, options) => {
-    if (String(path) === lockDir) throw new Error('Interrupted directory release');
+  const removeDirectory = nodeFs.rmSync;
+  let interrupted = false;
+  vi.spyOn(nodeFs, 'rmSync').mockImplementation((path, options) => {
+    if (!interrupted && String(path).includes('.publisher-')) {
+      interrupted = true;
+      throw new Error('Interrupted directory release');
+    }
     removeDirectory(path, options);
   });
   const release = tryAcquireDiagnosticDirectoryLock(lockDir);
   if (release === null) throw new Error('Missing publisher lease');
   try {
     release();
+    expect(interrupted).toBe(true);
     expect(existsSync(lockDir)).toBe(false);
+    const [prepared] = readdirSync(runDir);
+    expect(prepared).toContain('.publisher-');
+    const [claim] = readdirSync(join(runDir, prepared));
+    expect(claim).toMatch(/^claim-release-/u);
+    expect(JSON.parse(readFileSync(join(runDir, prepared, claim), 'utf8'))).toMatchObject({ pid: process.pid });
     const next = tryAcquireDiagnosticDirectoryLock(lockDir);
     expect(next).not.toBeNull();
     next?.();
+    await waitForCondition(() => readdirSync(runDir).length === 0, 3_000);
   } finally {
     vi.restoreAllMocks();
     rmSync(runDir, { recursive: true, force: true });
   }
 });
+
+it.runIf(process.platform === 'linux').each(['resumes', 'exits'] as const)(
+  'protects a live stale reclaimer until it %s',
+  async (outcome) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-status-reclaimer-race-'));
+    const lockDir = join(runDir, 'launch-status.v1.lock');
+    const executable = join(runDir, 'reclaimer.cjs');
+    await build({
+      stdin: {
+        contents: `import { tryAcquireDiagnosticDirectoryLock } from '${fileURLToPath(new URL('../../../src/infra/fs-lock.ts', import.meta.url))}'; const lease = tryAcquireDiagnosticDirectoryLock(process.argv[2]); lease?.assertOwned(); process.send?.({ acquired: lease !== null }); setInterval(() => {}, 1000);`,
+        resolveDir: process.cwd(),
+        loader: 'ts',
+      },
+      outfile: executable,
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      external: ['node:*'],
+      plugins: [
+        {
+          name: 'pause-verified-reclaimer',
+          setup(builder) {
+            builder.onLoad({ filter: /\/infra\/fs-lock\.ts$/ }, ({ path }) => ({
+              contents: readFileSync(path, 'utf8').replace(
+                'deps.storage.renameSync(lockDir, quarantinePath);',
+                "process.send?.('verified-claim'); process.kill(process.pid, 'SIGSTOP'); deps.storage.renameSync(lockDir, quarantinePath);",
+              ),
+              loader: 'ts',
+            }));
+          },
+        },
+      ],
+    });
+    mkdirSync(lockDir);
+    writeFileSync(
+      join(lockDir, 'owner-dead.lock'),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        pidNamespace: readPidNamespace(),
+      }),
+    );
+    const claimant = spawn(process.execPath, [executable, lockDir], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    let verified = false;
+    let acquired = false;
+    claimant.on('message', (message) => {
+      if (message === 'verified-claim') verified = true;
+      if (typeof message === 'object' && message !== null && 'acquired' in message)
+        acquired = message.acquired === true;
+    });
+    let next: ReturnType<typeof tryAcquireDiagnosticDirectoryLock> = null;
+    try {
+      await waitForCondition(() => verified, 5_000);
+      const inode = statSync(lockDir).ino;
+      next = tryAcquireDiagnosticDirectoryLock(lockDir);
+      expect(next).toBeNull();
+      expect(statSync(lockDir).ino).toBe(inode);
+      if (outcome === 'resumes') {
+        claimant.kill('SIGCONT');
+        await waitForCondition(() => acquired, 5_000);
+        expect(tryAcquireDiagnosticDirectoryLock(lockDir)).toBeNull();
+      }
+      claimant.kill('SIGKILL');
+      await waitForCondition(() => claimant.signalCode !== null, 5_000);
+      next = tryAcquireDiagnosticDirectoryLock(lockDir);
+      expect(next).not.toBeNull();
+      next?.assertOwned();
+    } finally {
+      claimant.kill('SIGKILL');
+      await waitForCondition(() => claimant.signalCode !== null, 5_000);
+      next?.();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  },
+);
+
+it('refuses to quarantine a replaced directory after verifying a stale marker', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-reclaimer-inode-'));
+  const lockDir = join(runDir, 'launch-status.v1.lock');
+  const retired = join(runDir, 'retired');
+  const read = nodeFs.readFileSync;
+  const rename = nodeFs.renameSync;
+  const next: { lease: ReturnType<typeof tryAcquireDiagnosticDirectoryLock> } = { lease: null };
+  let replaced = false;
+  mkdirSync(lockDir);
+  writeFileSync(
+    join(lockDir, 'owner-dead.lock'),
+    JSON.stringify({ pid: 2_147_483_647, pidNamespace: readPidNamespace() }),
+  );
+  vi.spyOn(nodeFs, 'readFileSync').mockImplementation((...args) => {
+    const content = read(...args);
+    if (!replaced && String(args[0]).includes('/claim-')) {
+      replaced = true;
+      rename(lockDir, retired);
+      next.lease = tryAcquireDiagnosticDirectoryLock(lockDir);
+    }
+    return content;
+  });
+  try {
+    expect(tryAcquireDiagnosticDirectoryLock(lockDir)).toBeNull();
+    expect(replaced).toBe(true);
+    expect(next.lease).not.toBeNull();
+    next.lease?.assertOwned();
+  } finally {
+    next.lease?.();
+    vi.restoreAllMocks();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it.each(['legacy', 'malformed', 'foreign namespace'] as const)(
+  'preserves a reclamation claim with %s claimant identity',
+  (identity) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-status-unknown-reclaimer-'));
+    const lockDir = join(runDir, 'launch-status.v1.lock');
+    const claimant =
+      identity === 'malformed'
+        ? 'invalid'
+        : Buffer.from(JSON.stringify([2_147_483_647, null, 'foreign'])).toString('base64url');
+    const name =
+      identity === 'legacy'
+        ? 'claim-interrupted.lock'
+        : `claim-reclaim-${claimant}-00000000-0000-0000-0000-000000000000.lock`;
+    mkdirSync(lockDir);
+    writeFileSync(join(lockDir, name), JSON.stringify({ pid: 2_147_483_647, pidNamespace: readPidNamespace() }));
+    const inode = statSync(lockDir).ino;
+    try {
+      expect(tryAcquireDiagnosticDirectoryLock(lockDir)).toBeNull();
+      expect(statSync(lockDir).ino).toBe(inode);
+      expect(readdirSync(lockDir)).toEqual([name]);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  },
+);
 
 it('retries a refused status directory release while publication reports the closed publisher hold', async () => {
   const runDir = mkdtempSync(join(tmpdir(), 'coral-status-release-retry-'));

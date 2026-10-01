@@ -55,6 +55,7 @@ function retryReplacementSupervisor(control: ReplacementSupervisorControl, error
   if (!control.failing) control.onError(error);
   control.failing = true;
   setTimeout(() => {
+    sourceIdentityHold(control, probeProcessIncarnation(process.pid) === null);
     const path = supervisorLockPath(control.runDir);
     if (existsSync(path)) {
       const lock = attemptExclusiveFileLockSync(path);

@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  appendFileSync,
   chmodSync,
   copyFileSync,
   existsSync,
@@ -1238,6 +1239,8 @@ describe('namespace supervisor recovery', () => {
           TMPDIR: home,
           CORAL_SENTINEL_RUN_DIR: runDir,
           CORAL_TEST_SUCCESSION_RELEASE_DELAY_MS: '5000',
+          CORAL_FIXTURE_REAL_BACKEND: '1',
+          CORAL_FIXTURE_SUCCESSION_LOG: join(home, 'succession-evidence.jsonl'),
         },
         stdio: 'ignore',
       });
@@ -1287,6 +1290,28 @@ describe('namespace supervisor recovery', () => {
           );
         }, 20_000);
         rememberProcesses();
+        if (winner === 'predecessor') {
+          const state = record.read();
+          const child = [state.launch, state.attempt].find((slot) => slot?.buildSetId === successorBuildSetId)?.child;
+          if (child === undefined) throw new Error('Serving successor identity is unavailable');
+          appendFileSync(
+            join(home, 'succession-evidence.jsonl'),
+            JSON.stringify({ pid: child.pid, pause: 'begin', at: Date.now() }) + '\n',
+          );
+          process.kill(child.pid, 'SIGSTOP');
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          if (observeProcessLiveness(child.pid) !== 'absent') process.kill(child.pid, 'SIGCONT');
+          appendFileSync(
+            join(home, 'succession-evidence.jsonl'),
+            JSON.stringify({ pid: child.pid, pause: 'end', at: Date.now() }) + '\n',
+          );
+          expect(probeProcessIncarnation(child.pid)).toBe(child.incarnation);
+          const recovered = record.memory();
+          expect(recovered?.owner.mode).toBe('recovering');
+          const slot = [recovered?.launch, recovered?.attempt].find((entry) => entry?.child?.pid === child.pid);
+          expect(slot).toBeDefined();
+          expect(slot?.terminationAt).toBeUndefined();
+        }
         renameSync(heldRoot, blockedRoot);
         renameSync(heldRetained, blockedRetained);
         try {
@@ -1295,7 +1320,10 @@ describe('namespace supervisor recovery', () => {
             return launch?.phase === 'serving' && launch.buildSetId === successorBuildSetId;
           }, 20_000);
         } catch (error: unknown) {
-          throw new Error(`Serving successor was not normalized: ${JSON.stringify(record.read())}`, { cause: error });
+          throw new Error(
+            `Serving successor was not normalized: ${JSON.stringify(record.read())}\n${readFileSync(join(home, 'succession-evidence.jsonl'), 'utf8')}`,
+            { cause: error },
+          );
         }
         await waitForCondition(() => {
           const observed = record.read();
@@ -1680,6 +1708,7 @@ describe('namespace supervisor recovery', () => {
     const older = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
     const newer = createPluginFixture(roots, { flavor: 'prod', version: '0.10.16' });
     const registry = join(home, 'installed.json');
+    const helloMarker = join(home, 'paused-after-hello');
     writeFileSync(registry, JSON.stringify({ plugins: { 'coral@fixture': [{ installPath: newer.root }] } }));
     const runDir = coordinatorPaths('prod', { baseDir: join(home, '.coral') }).runDir;
     const harness = join(home, 'supervisor.mjs');
@@ -1699,20 +1728,31 @@ describe('namespace supervisor recovery', () => {
         TMPDIR: home,
         CORAL_SENTINEL_RUN_DIR: runDir,
         CORAL_PLUGIN_REGISTRY: registry,
+        CORAL_FIXTURE_REAL_BACKEND: '1',
+        CORAL_FIXTURE_PAUSE_AFTER_HELLO: helloMarker,
       },
       stdio: 'ignore',
     });
     const record = new SupervisorEvidence(runDir);
+    let pausedPid: number | undefined;
     try {
+      await waitForCondition(() => existsSync(helloMarker), 5_000);
+      pausedPid = Number(readFileSync(helloMarker, 'utf8'));
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      process.kill(pausedPid, 'SIGCONT');
+      const memory = record.memory();
+      expect(memory?.launch?.child?.pid).toBe(pausedPid);
+      expect(memory?.launch?.terminationAt).toBeUndefined();
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
       expect(record.read().launch?.buildSetId).toBe(buildSetId(newer.root));
     } finally {
       const childPid = record.read().launch?.child?.pid;
       record.close();
       if (supervisor.exitCode === null) supervisor.kill('SIGKILL');
-      if (childPid !== undefined) {
+      for (const pid of new Set([childPid, pausedPid])) {
+        if (pid === undefined) continue;
         try {
-          process.kill(childPid, 'SIGKILL');
+          process.kill(pid, 'SIGKILL');
         } catch {
           // The child may have exited.
         }

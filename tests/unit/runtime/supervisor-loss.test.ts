@@ -178,6 +178,35 @@ it('publishes a source identity hold before nomination and clears it when observ
   }
 });
 
+it('refreshes source identity holds on every retry while the namespace lock remains contended', async () => {
+  vi.useFakeTimers();
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-contended-source-identity-'));
+  const path = join(runDir, 'coordinator.json');
+  const unrelated = { path: '/unrelated-child', disposition: 'unknown' as const };
+  vi.mocked(probeProcessIncarnation).mockReturnValue(null);
+  createSharedFileLockSync(supervisorLockPath(runDir))();
+  const lock = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+  if (lock.kind !== 'acquired') throw new Error('Missing namespace holder');
+  try {
+    updateLaunchStatus(runDir, (status) => ({ ...status, admissionHolds: [unrelated] }));
+    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+    expect(currentLaunchStatus(runDir)?.admissionHolds).toContainEqual({ path, disposition: 'unknown' });
+    for (const incarnation of ['source', null, 'source'] as const) {
+      vi.mocked(probeProcessIncarnation).mockReturnValue(incarnation as ProcessIncarnation | null);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const holds = incarnation === null ? [unrelated, { path, disposition: 'unknown' }] : [unrelated];
+      expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual(holds);
+      expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { admissionHolds: holds } });
+      expect(currentLaunchStatus(runDir)?.lockHold?.observation).toBe('contended');
+      expect(spawn).not.toHaveBeenCalled();
+      expect(attemptExclusiveFileLockSync(supervisorLockPath(runDir)).kind).toBe('contended');
+    }
+  } finally {
+    lock.lease();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
 it('keeps an unacknowledged observation visible when the next trigger finds an occupied namespace lock', async () => {
   const runDir = mkdtempSync(join(tmpdir(), 'coral-observation-retry-'));
   createSharedFileLockSync(supervisorLockPath(runDir))();

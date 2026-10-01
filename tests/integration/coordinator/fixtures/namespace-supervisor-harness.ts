@@ -102,6 +102,33 @@ if (executable === '--launch-legacy') {
     startupBudgetMs: Number(process.env.CORAL_FIXTURE_STARTUP_BUDGET_MS ?? 25_000),
     onChild: (child) => {
       coordinator = child;
+      const helloMarker = process.env.CORAL_FIXTURE_PAUSE_AFTER_HELLO;
+      if (helloMarker !== undefined) {
+        let paused = false;
+        child.on('message', (message: unknown) => {
+          if (
+            !paused &&
+            typeof message === 'object' &&
+            message !== null &&
+            'kind' in message &&
+            message.kind === 'coral-sentinel-hello' &&
+            child.pid !== undefined
+          ) {
+            paused = true;
+            process.kill(child.pid, 'SIGSTOP');
+            writeFileSync(helloMarker, String(child.pid));
+          }
+        });
+      }
+      if (process.env.CORAL_FIXTURE_SUCCESSION_LOG !== undefined) {
+        const log = process.env.CORAL_FIXTURE_SUCCESSION_LOG;
+        child.once('exit', (code, signal) => {
+          appendFileSync(
+            log,
+            JSON.stringify({ parent: process.pid, pid: child.pid, exitCode: code, signal, at: Date.now() }) + '\n',
+          );
+        });
+      }
       if (process.env.CORAL_FIXTURE_CHILD_PID_PATH !== undefined && child.pid !== undefined)
         writeFileSync(process.env.CORAL_FIXTURE_CHILD_PID_PATH, String(child.pid));
       if (process.env.CORAL_FIXTURE_REFUSE_KILL_ONCE === '1' && !refusedKill) {

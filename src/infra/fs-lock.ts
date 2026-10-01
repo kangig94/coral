@@ -675,8 +675,12 @@ function quarantineClaimedLock(
   lockDir: string,
   claimPath: string,
   restorePath: string,
+  expectedIdentity: LockDirectoryIdentity,
   deps: DirectoryLockDeps,
 ): boolean {
+  if (!lockDirectoryIdentityMatches(lockDir, expectedIdentity, deps.storage)) return false;
+  const entries = deps.storage.readdirSync(lockDir);
+  if (entries.length !== 1 || entries[0] !== basename(claimPath)) return false;
   const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
   try {
     deps.storage.renameSync(lockDir, quarantinePath);
@@ -684,11 +688,12 @@ function quarantineClaimedLock(
     if (isMissingPathError(error)) {
       return false;
     }
-    try {
-      deps.storage.renameSync(claimPath, restorePath);
-    } catch {
-      // A later contender can recover the stale claim if restoration loses a
-      // race or the claimant crashes during this error path.
+    if (lockDirectoryIdentityMatches(lockDir, expectedIdentity, deps.storage)) {
+      try {
+        deps.storage.renameSync(claimPath, restorePath);
+      } catch {
+        // A later contender can recover after decisive claimant absence.
+      }
     }
     throw error;
   }
@@ -702,9 +707,22 @@ function tryClaimAndQuarantineStaleMarker(
   restorePath: string,
   deps: DirectoryLockDeps,
 ): boolean {
+  const identity = readLockDirectoryIdentity(lockDir, deps.storage);
+  if (identity === null) return false;
   if (!RECLAIMABLE_OWNER_MARKERS.has(ownerMarkerDisposition(markerPath, deps))) return false;
 
-  const claimPath = join(lockDir, `claim-${randomUUID()}.lock`);
+  const claimant = ownerProbe(deps).self;
+  if (deps.reclaim === 'absent-only' && claimant.pidNamespace === null)
+    throw new Error('Status reclaimer identity is unavailable');
+  const claimantName = Buffer.from(
+    JSON.stringify([claimant.pid, claimant.incarnation, claimant.pidNamespace]),
+  ).toString('base64url');
+  const claimPath = join(
+    lockDir,
+    deps.reclaim === 'absent-only'
+      ? `claim-reclaim-${claimantName}-${randomUUID()}.lock`
+      : `claim-${randomUUID()}.lock`,
+  );
   try {
     deps.storage.renameSync(markerPath, claimPath);
   } catch (error) {
@@ -720,7 +738,32 @@ function tryClaimAndQuarantineStaleMarker(
     }
     return false;
   }
-  return quarantineClaimedLock(lockDir, claimPath, restorePath, deps);
+  return quarantineClaimedLock(lockDir, claimPath, restorePath, identity, deps);
+}
+
+function reclamationClaimantDisposition(claimPath: string, deps: DirectoryLockDeps): OwnerMarkerDisposition {
+  const name = basename(claimPath);
+  if (name.startsWith('claim-release-') || name.startsWith('claim-refresh-'))
+    return ownerMarkerDisposition(claimPath, deps);
+  if (!name.startsWith('claim-reclaim-')) return 'owner-unobserved';
+  let tuple: unknown;
+  try {
+    tuple = JSON.parse(Buffer.from(name.slice('claim-reclaim-'.length, -42), 'base64url').toString('utf8'));
+  } catch {
+    return 'owner-unobserved';
+  }
+  if (!Array.isArray(tuple) || tuple.length !== 3) return 'owner-unobserved';
+  const claimant = lockOwnerRecordSchema.safeParse({
+    pid: tuple[0],
+    incarnation: tuple[1] ?? undefined,
+    pidNamespace: tuple[2],
+  });
+  const probe = ownerProbe(deps);
+  if (!claimant.success || probe.self.pidNamespace === null || claimant.data.pidNamespace !== probe.self.pidNamespace)
+    return 'owner-unobserved';
+  const liveness = probe.observe(claimant.data);
+  if (liveness === 'absent') return 'owner-absent';
+  return liveness === 'alive' ? 'owner-alive' : 'owner-unobserved';
 }
 
 /**
@@ -741,6 +784,8 @@ function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boole
     const claimEntries = claimMarkerEntries(lockDir, deps);
     if (claimEntries.length === 1) {
       const staleClaimPath = join(lockDir, claimEntries[0]);
+      if (deps.reclaim === 'absent-only' && reclamationClaimantDisposition(staleClaimPath, deps) !== 'owner-absent')
+        return false;
       return tryClaimAndQuarantineStaleMarker(lockDir, staleClaimPath, staleClaimPath, deps);
     }
     if (claimEntries.length > 1) {
