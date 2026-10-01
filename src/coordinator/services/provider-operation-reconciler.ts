@@ -29,6 +29,7 @@ import {
   deleteProviderOperation,
   finishProviderOperationDueSelection,
   insertProviderOperation,
+  ProviderOperationMutationSetClosedError,
   providerOperationMutationAdmission,
   readProviderOperation,
   readProviderOperationDueSelections,
@@ -2663,7 +2664,7 @@ export class ProviderOperationReconciler
     selection: ProviderOperationDueSelection,
     scanCutoffMs: number,
     preferredAuthority?: DurableProviderProxyOperationAuthority,
-  ): Promise<'finished' | 'finished-with-drive-error' | 'fatal'> {
+  ): Promise<'finished' | 'finished-with-drive-error' | 'deferred-to-set-fence' | 'fatal'> {
     let driveError: unknown;
     try {
       if (preferredAuthority === undefined || sameAuthority(selection.record, preferredAuthority)) {
@@ -2689,6 +2690,12 @@ export class ProviderOperationReconciler
         scanCutoffMs + TIMER_MIN_MS,
       );
     } catch (repairError: unknown) {
+      // A fenced set is a refusal, not corruption: the due row stays unfinished and is reselected on a later pass,
+      // which settles once the fence holder releases or retires the set.
+      if (repairError instanceof ProviderOperationMutationSetClosedError) {
+        if (driveError !== undefined && this.#observeFatal(driveError)) return 'fatal';
+        return 'deferred-to-set-fence';
+      }
       const cause =
         driveError === undefined
           ? repairError

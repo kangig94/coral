@@ -708,7 +708,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: #poll :: catch#1 :: calls=[this.#latchFatal, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #poll :: catch#2 :: calls=[this.#observeFatal, this.#deps.onError, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileDueSelection :: catch#1 :: calls=[] assignments=[driveError]',
-  'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileDueSelection :: catch#2 :: calls=[this.#latchFatal, providerOperationErrorReason] assignments=[]',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileDueSelection :: catch#2 :: calls=[this.#observeFatal, this.#latchFatal, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #recoverPrepare :: catch#1 :: calls=[providerOperationErrorIsAmbiguous, this.#transition, this.#prepareRefusalRecord, providerOperationPreparePermanentRefusalSchema.parse, boundedPrepareRefusalReason, this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #recoverPrepare :: catch#2 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: awaitStartup :: Promise.then(rejected) :: operation.then',
