@@ -116,6 +116,15 @@ function providerOperationMutationSetKey(set: ProviderOperationMutationSet): str
   return JSON.stringify([set.proxyInstanceId, set.buildSetId]);
 }
 
+/** A set fence refused this mutation; the fence holder owns the set's records until it releases. */
+export class ProviderOperationMutationSetClosedError extends Error {
+  constructor() {
+    super('Provider operation mutation admission is closed for this proxy set.');
+    this.name = 'ProviderOperationMutationSetClosedError';
+    Object.setPrototypeOf(this, ProviderOperationMutationSetClosedError.prototype);
+  }
+}
+
 export class ProviderOperationMutationAdmission {
   readonly #context = new AsyncLocalStorage<symbol>();
   readonly #active = new Map<symbol, ActiveProviderOperationMutation>();
@@ -164,7 +173,7 @@ export class ProviderOperationMutationAdmission {
       setFence !== undefined &&
       (inherited === undefined || !this.#active.has(inherited) || !setFence.admittedTokens.has(inherited))
     ) {
-      throw new Error('Provider operation mutation admission is closed for this proxy set.');
+      throw new ProviderOperationMutationSetClosedError();
     }
 
     const token = Symbol(label);
@@ -201,7 +210,7 @@ export class ProviderOperationMutationAdmission {
       setFence !== undefined &&
       (inherited === undefined || !this.#active.has(inherited) || !setFence.admittedTokens.has(inherited))
     ) {
-      throw new Error('Provider operation mutation admission is closed for this proxy set.');
+      throw new ProviderOperationMutationSetClosedError();
     }
     if (inheritedAdmission) {
       try {

@@ -27,6 +27,7 @@ import {
   acquireProviderOperationMutationAdmission,
   compareAndSwapProviderOperation,
   insertProviderOperation,
+  providerOperationMutationAdmission,
   readProviderOperation,
   readProviderOperationDueSelections,
   readProviderOperations,
@@ -1605,6 +1606,62 @@ describe('ProviderOperationReconciler publication', () => {
       operation: selected.operation,
       rawKey: dueSelection.rawKey,
     } satisfies Partial<ProviderOperationReconcilerFatalError>);
+  });
+
+  it('defers selected due work whose proxy set is fenced instead of fail-stopping', async () => {
+    type ControlledTimer = ReturnType<TimePort['setTimeout']> & { callback: () => void };
+    const timers = new Set<ControlledTimer>();
+    const harness = createHarness({
+      terminalize: () => {
+        throw new ProviderOperationAtomicTerminalizationError(
+          selected.operation,
+          new Error('repair-disappearance-reset'),
+        );
+      },
+      time: {
+        setTimeout: (callback) => {
+          const timer: ControlledTimer = { callback, unref: () => undefined };
+          timers.add(timer);
+          return timer;
+        },
+        clearTimeout: (timer) => {
+          if (timer !== null) timers.delete(timer as ControlledTimer);
+        },
+      },
+    });
+    const selected = {
+      ...providerOperationRecord('executing', { retryCount: 1, retryNotBeforeMs: 0 }),
+      lastError: { observedAtMs: 1, code: 'attach_failed', message: 'retry attachment' },
+    } as Extract<ProviderOperationRecord, { phase: 'executing' }>;
+    insertProviderOperation(harness.db, selected);
+    await expect(
+      harness.reconciler.containmentDisappeared({
+        operation: selected.operation,
+        setIdentity: providerProxySetIdentityFromRecord(selected),
+        disappearanceReceipt: 'repair-ready',
+      }),
+    ).resolves.toMatchObject({ kind: 'operational-failure' });
+    await nextEventLoopTurn();
+    harness.advance(51);
+    const dueSelection = readProviderOperationDueSelections(harness.db, 151, 1)[0];
+    if (dueSelection === undefined) throw new Error('expected one selected due row');
+
+    const fence = providerOperationMutationAdmission(harness.db).closeSet(selected.operation);
+    harness.reconciler.start();
+    harness.reconciler.wake();
+    await nextEventLoopTurn();
+    await nextEventLoopTurn();
+
+    expect(harness.fatalErrors).toEqual([]);
+    expect(timers.size).toBe(1);
+    expect(readProviderOperationDueSelections(harness.db, 151, 1).map(({ rawKey }) => rawKey)).toEqual([
+      dueSelection.rawKey,
+    ]);
+
+    fence.release();
+    harness.reconciler.wake();
+    await vi.waitFor(() => expect(readProviderOperationDueSelections(harness.db, 151, 1)).toEqual([]));
+    expect(harness.fatalErrors).toEqual([]);
   });
 
   it('does not convert attachment completion failures into provider retry ownership', async () => {
