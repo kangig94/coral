@@ -4,7 +4,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { applyBundledStoreSchema } from '#src/store/db.js';
+import { applyBundledStoreSchema, SuccessionWriterParkedError } from '#src/store/db.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
@@ -41,6 +41,71 @@ function readCursorCount(db: Database, consumerId: string): number {
 }
 
 describe('ConsumerDriver handle lifecycle + fault isolation', () => {
+  it.each(['reclaim', 'stop'] as const)('retains pending journal work during writer park until %s', async (exit) => {
+    const db = createDb();
+    let parked = false;
+    let unpark!: () => void;
+    const unparked = new Promise<void>((resolve) => {
+      unpark = resolve;
+    });
+    const guarded = new Proxy(db, {
+      get(target, property) {
+        if (property === 'prepare')
+          return (...args: Parameters<Database['prepare']>) => {
+            if (parked) throw new SuccessionWriterParkedError(unparked);
+            const statement = target.prepare(...args);
+            return new Proxy(statement, {
+              get(current, key) {
+                if (parked) throw new SuccessionWriterParkedError(unparked);
+                const value: unknown = Reflect.get(current, key, current);
+                return typeof value === 'function' ? value.bind(current) : value;
+              },
+            });
+          };
+        return Reflect.get(target, property, target);
+      },
+    });
+    const driver = new ConsumerDriver({ db: guarded, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+    const onApplyFailure = vi.fn();
+    let finishFirst!: () => void;
+    const first = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
+    const calls: number[] = [];
+    const handle = driver.register({
+      id: 'parked-consumer',
+      authority: 'journal',
+      kind: 'apply',
+      registrationKind: 'expansion',
+      async apply({ upToSeq }) {
+        calls.push(upToSeq);
+        if (calls.length === 1) await first;
+      },
+      onApplyFailure,
+    });
+    try {
+      driver.notify('journal', 1);
+      driver.notify('journal', 2);
+      parked = true;
+      finishFirst();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(onApplyFailure).not.toHaveBeenCalled();
+      expect(readJournalCursor(db, 'parked-consumer')).toBe(0);
+      if (exit === 'stop') await handle.stop();
+      else {
+        parked = false;
+        unpark();
+        await vi.waitFor(() => expect(readJournalCursor(db, 'parked-consumer')).toBe(2));
+        expect(onApplyFailure).not.toHaveBeenCalled();
+      }
+    } finally {
+      parked = false;
+      unpark();
+      await handle.stop();
+      db.close();
+    }
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });

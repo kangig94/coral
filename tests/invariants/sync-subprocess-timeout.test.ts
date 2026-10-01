@@ -293,6 +293,7 @@ describe('synchronous subprocess timeout invariant', () => {
       'src/cli/commands/kb.ts',
       'src/infra/custody-process-ticket.ts',
       'src/infra/env-sanitize.ts',
+      'src/infra/fs-lock.ts',
       'src/infra/node-process.ts',
       'src/infra/project-source.ts',
       'src/runtime/real.ts',

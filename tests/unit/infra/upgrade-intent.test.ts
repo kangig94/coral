@@ -67,7 +67,7 @@ describe('upgrade intent', () => {
     const dir = runDir();
     writeFileSync(upgradeIntentPath(dir), '{broken');
     expect(readUpgradeIntent(dir).kind).toBe('corrupt');
-    expect(await quarantineCorruptUpgradeIntent(dir)).toBe(true);
+    expect(await quarantineCorruptUpgradeIntent(dir)).toBe('quarantined');
     expect(readUpgradeIntent(dir).kind).toBe('absent');
     const quarantined = readdirSync(dir).find((name) => name.startsWith('upgrade.v1.corrupt-'));
     expect(quarantined).toBeDefined();

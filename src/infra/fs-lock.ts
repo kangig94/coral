@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -159,7 +160,12 @@ export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): E
     }
     if (sqliteErrorCode(error) === 'ERR_SQLITE_ERROR') {
       if (/database is locked/u.test(String(error))) return { kind: 'contended' };
-      if (/file is not a database/u.test(String(error))) return { kind: 'malformed' };
+      if (
+        /file is not a database|database disk image is malformed|attempt to write a readonly database/u.test(
+          String(error),
+        )
+      )
+        return { kind: 'malformed' };
     }
     return { kind: 'unobservable', cause: error };
   }
@@ -173,15 +179,49 @@ export type MalformedFileLockRepair =
   | Readonly<{ kind: 'unobservable'; cause: unknown }>;
 
 /**
- * Moves a data-free lock file aside only once no process can hold it, so the path can be recreated without two
- * processes each holding a lock at one address. A lock binds the inode, not the name: an entry moved aside while a
- * holder kept it open would leave that holder locked on an address nobody else contends for.
- *
- * An entry that is not a regular file was never locked through this module, which refuses one before opening it. A
- * regular file is proven unheld by SQLite itself: `database is locked` means a holder; `file is not a database` can
- * only be answered after a shared lock was granted, which no exclusive holder allows, and no later caller can take a
- * lock on those bytes either; an exclusive lock granted to this call is held until the entry is moved.
+ * The repair child uses SQLite's unix-excl VFS: its first read takes a kernel write lock before parsing the
+ * header, retained until close even if parsing fails. A separate process avoids SQLite's in-process inode
+ * lock sharing. The child checks the exact inode and keeps that lock across the rename. See unixFileLock in
+ * https://sqlite.org/src/doc/trunk/src/os_unix.c.
  */
+const malformedLockRepairProbe = `
+(() => {
+  const { DatabaseSync } = require('node:sqlite');
+  const { lstatSync, renameSync } = require('node:fs');
+  const { pathToFileURL } = require('node:url');
+  const [path, dev, ino, quarantinePath] = process.argv.slice(1);
+  const unchanged = () => {
+    const entry = lstatSync(path);
+    return entry.isFile() && !entry.isSymbolicLink() && String(entry.dev) === dev && String(entry.ino) === ino;
+  };
+  if (!unchanged()) throw new Error('Lock inode changed before repair');
+  const uri = pathToFileURL(path);
+  uri.search = 'mode=rw&vfs=unix-excl';
+  const db = new DatabaseSync(uri.href, { timeout: 0 });
+  try {
+    let malformed = false;
+    try {
+      db.exec('PRAGMA busy_timeout = 0; PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE');
+    } catch (error) {
+      if (error.code !== 'ERR_SQLITE_ERROR') throw error;
+      if (/database is locked/u.test(error.message)) {
+        process.stdout.write('held');
+        return;
+      }
+      if (!/file is not a database|database disk image is malformed|attempt to write a readonly database/u.test(error.message)) throw error;
+      malformed = true;
+    }
+    if (!unchanged()) throw new Error('Lock inode changed during repair');
+    if (malformed || lstatSync(path).nlink !== 1) {
+      renameSync(path, quarantinePath);
+      process.stdout.write('moved-aside');
+    } else process.stdout.write('not-malformed');
+  } finally {
+    db.close();
+  }
+})();
+`;
+
 export function repairMalformedFileLockSync(path: string): MalformedFileLockRepair {
   let repair: DirectoryLockLease | null;
   try {
@@ -206,30 +246,15 @@ export function repairMalformedFileLockSync(path: string): MalformedFileLockRepa
     };
     if (!entry.isFile() || entry.isSymbolicLink()) return moveAside();
 
-    let db: DatabaseSync;
-    try {
-      db = new DatabaseSync(path, { timeout: 0 });
-    } catch (cause: unknown) {
-      return { kind: 'unobservable', cause };
-    }
-    try {
-      db.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE');
-    } catch (error: unknown) {
-      db.close();
-      if (sqliteErrorCode(error) === 'ERR_SQLITE_ERROR' && /database is locked/u.test(String(error))) {
-        return { kind: 'held' };
-      }
-      if (sqliteErrorCode(error) === 'ERR_SQLITE_ERROR' && /file is not a database/u.test(String(error))) {
-        return moveAside();
-      }
-      return { kind: 'unobservable', cause: error };
-    }
-    const release = sqliteLockLease(db);
-    try {
-      return entry.nlink === 1 ? { kind: 'not-malformed' } : moveAside();
-    } finally {
-      release();
-    }
+    const result = execFileSync(
+      process.execPath,
+      ['-e', malformedLockRepairProbe, path, String(entry.dev), String(entry.ino), quarantinePath],
+      { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    if (result === 'moved-aside') return { kind: 'moved-aside', quarantinePath };
+    if (result === 'held') return { kind: 'held' };
+    if (result === 'not-malformed') return { kind: 'not-malformed' };
+    return { kind: 'unobservable', cause: new Error(`Unexpected lock repair result: ${result}`) };
   } catch (cause: unknown) {
     return { kind: 'unobservable', cause };
   } finally {

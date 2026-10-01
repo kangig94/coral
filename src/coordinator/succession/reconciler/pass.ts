@@ -147,7 +147,7 @@ async function reconcilePending(context: ReconciliationContext): Promise<Success
   }
   const observed = status();
   if (!state.disposed && observed.kind === 'corrupt' && state.launchedAttempt === null && state.owedClear === null) {
-    if (await quarantineCorruptUpgradeIntent(options.runDir)) {
+    if ((await quarantineCorruptUpgradeIntent(options.runDir)) === 'quarantined') {
       options.onIntentChanged?.();
       notifyObligationChange();
       return { kind: 'deferred', reason: 'corrupt upgrade intent was quarantined for a fresh request' };

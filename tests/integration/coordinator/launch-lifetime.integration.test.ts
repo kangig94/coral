@@ -31,6 +31,7 @@ import {
   removeAbsentLaunchSubject,
 } from '#src/infra/launch-admission-record.js';
 import { currentLaunchStatus, readLaunchStatus } from '#src/infra/launch-status.js';
+import { quarantineCorruptUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
@@ -53,7 +54,12 @@ function message(child: ChildProcess, kind: string): Promise<Record<string, unkn
   });
 }
 
-async function launch(runDir: string, pause: boolean | 'directory', parented = false) {
+async function launch(
+  runDir: string,
+  pause: boolean | 'directory',
+  parented = false,
+  purpose: 'startup' | 'succession' = 'startup',
+) {
   const executable = join(runDir, 'child.cjs');
   await build({
     entryPoints: [fileURLToPath(new URL('./fixtures/launch-lifetime-child.ts', import.meta.url))],
@@ -123,7 +129,7 @@ async function launch(runDir: string, pause: boolean | 'directory', parented = f
     runDir,
     launchId,
     parent: { pid: process.pid, incarnation: parentIncarnation },
-    purpose: 'startup',
+    purpose,
     build: { version: '0.10.14', buildSetId: 'build-A', bundleHash: 'hash-A', flavor: 'prod' },
   });
   return { child, admitted, window, launchId, parentIncarnation, releaseNamespace };
@@ -140,6 +146,162 @@ async function stop(child: ChildProcess, signal?: NodeJS.Signals): Promise<void>
 }
 
 describe('child lifetime admission', () => {
+  it.each(['readable', 'unreadable', 'unknown-identity'] as const)(
+    'retains corrupt intent while a %s succession subject may live',
+    async (evidence) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-corrupt-intent-live-attempt-'));
+      const running = await launch(runDir, false, false, 'succession');
+      try {
+        await running.admitted;
+        writeFileSync(join(runDir, 'upgrade.v1.json'), '{');
+        if (evidence === 'unreadable') writeFileSync(launchAdmissionPath(runDir, running.launchId), '{');
+        const probe = nodeProcess.probeProcessIncarnation;
+        const unavailable =
+          evidence === 'unknown-identity'
+            ? vi
+                .spyOn(nodeProcess, 'probeProcessIncarnation')
+                .mockImplementation((pid) => (pid === running.child.pid ? null : probe(pid)))
+            : null;
+        expect(await quarantineCorruptUpgradeIntent(runDir)).toBe('held');
+        expect(readFileSync(join(runDir, 'upgrade.v1.json'), 'utf8')).toBe('{');
+        unavailable?.mockRestore();
+        await stop(running.child, 'SIGKILL');
+        expect(await quarantineCorruptUpgradeIntent(runDir)).toBe('quarantined');
+      } finally {
+        vi.restoreAllMocks();
+        await stop(running.child, 'SIGKILL');
+        running.releaseNamespace?.();
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('retains the disk-damage boot exit when external tampering removes all child identity evidence', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-red-tampered-lifetime-'));
+    const running = await launch(runDir, false);
+    try {
+      await running.admitted;
+      const incarnation = probeProcessIncarnation(running.child.pid!);
+      writeFileSync(launchAdmissionPath(runDir, running.launchId), '{');
+      rmSync(join(runDir, 'launch-lifetimes.v1', running.launchId), { recursive: true });
+      const memory = new SupervisorLaunchMemory(
+        runDir,
+        { pid: process.pid, incarnation: running.parentIncarnation },
+        'build-A',
+      );
+      expect(probeProcessIncarnation(running.child.pid!)).toBe(incarnation);
+      expect(memory.reserve(memory.read().owner, 'build-B', 'startup')).not.toBeNull();
+    } finally {
+      await stop(running.child, 'SIGKILL');
+      running.releaseNamespace?.();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['envelope', 'launch-id'] as const)(
+    'recovers a renamed readable %s directory only after its exact child exits',
+    async (damage) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-renamed-readable-envelope-'));
+      const running = await launch(runDir, false);
+      try {
+        await running.admitted;
+        const [original] = listLaunchSubjects(runDir);
+        if (original?.lifetimePath === undefined) throw new Error('Missing lifetime');
+        let hierarchy = join(runDir, 'launch-lifetimes.v1', running.launchId);
+        if (damage === 'envelope')
+          nodeFs.renameSync(join(hierarchy, readdirSync(hierarchy)[0]), join(hierarchy, 'damaged-envelope'));
+        else {
+          const renamed = join(runDir, 'launch-lifetimes.v1', 'damaged-launch-id');
+          nodeFs.renameSync(hierarchy, renamed);
+          hierarchy = renamed;
+        }
+        const owner = { pid: process.pid, incarnation: running.parentIncarnation };
+        const memory = new SupervisorLaunchMemory(runDir, owner, 'build-A');
+        memory.reconcileAdmissions();
+        expect(memory.reserve(memory.read().owner, 'build-B', 'startup')).toBeNull();
+        expect(existsSync(original.path)).toBe(true);
+        await stop(running.child, 'SIGKILL');
+        const replacement = new SupervisorLaunchMemory(runDir, owner, 'build-A');
+        replacement.reconcileAdmissions();
+        expect(existsSync(original.path)).toBe(false);
+        expect(existsSync(hierarchy)).toBe(false);
+        expect(replacement.read().owner.mode).toBe('supervised');
+        expect(replacement.reserve(replacement.read().owner, 'build-B', 'startup')).not.toBeNull();
+      } finally {
+        await stop(running.child, 'SIGKILL');
+        running.releaseNamespace?.();
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('keeps a renamed envelope with a conflicting inode after exact child exit', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-renamed-conflicting-envelope-'));
+    const running = await launch(runDir, false);
+    try {
+      await running.admitted;
+      const [original] = listLaunchSubjects(runDir);
+      if (original?.lifetimePath === undefined) throw new Error('Missing lifetime');
+      await stop(running.child, 'SIGKILL');
+      const hierarchy = join(runDir, 'launch-lifetimes.v1', running.launchId);
+      const damaged = join(hierarchy, 'damaged-envelope');
+      nodeFs.renameSync(join(hierarchy, readdirSync(hierarchy)[0]), damaged);
+      rmSync(join(damaged, 'lifetime.lock'));
+      createSharedFileLockSync(join(damaged, 'lifetime.lock'))();
+      const memory = new SupervisorLaunchMemory(
+        runDir,
+        { pid: process.pid, incarnation: running.parentIncarnation },
+        'build-A',
+      );
+      memory.reconcileAdmissions();
+      expect(memory.reserve(memory.read().owner, 'build-B', 'startup')).toBeNull();
+      expect(existsSync(damaged)).toBe(true);
+    } finally {
+      await stop(running.child, 'SIGKILL');
+      running.releaseNamespace?.();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])('syncs the publishing rename parent (existing launch directory: %s)', async (existing) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-envelope-directory-sync-'));
+    const launchId = randomUUID();
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('Missing incarnation');
+    const published = join(runDir, 'launch-lifetimes.v1', launchId);
+    if (existing) mkdirSync(published, { recursive: true });
+    const paths = new Map<number, string>();
+    const synced: string[] = [];
+    const open = nodeFs.openSync;
+    const sync = nodeFs.fsyncSync;
+    vi.spyOn(nodeFs, 'openSync').mockImplementation((...args) => {
+      const fd = open(...args);
+      paths.set(fd, String(args[0]));
+      return fd;
+    });
+    vi.spyOn(nodeFs, 'fsyncSync').mockImplementation((fd) => {
+      synced.push(paths.get(fd) ?? 'unknown');
+      sync(fd);
+    });
+    try {
+      publishLaunchAdmission(runDir, {
+        version: 1,
+        launchId,
+        child: { pid: process.pid, incarnation },
+        parent: { pid: process.pid, incarnation },
+        admittedAt: Date.now(),
+        purpose: 'startup',
+        build: { version: '0.10.15', buildSetId: 'A', bundleHash: 'A', flavor: 'prod' },
+      });
+      expect(synced).toContain(existing ? published : join(runDir, 'launch-lifetimes.v1'));
+    } finally {
+      vi.restoreAllMocks();
+      const { removeOwnLaunchAdmission } = await import('#src/infra/launch-admission-record.js');
+      removeOwnLaunchAdmission(runDir, launchId);
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(['missing', 'released', 'unreadable-envelope'] as const)(
     'cleans an unreadable admission with a %s lifetime after its holder exits',
     async (lifetime) => {

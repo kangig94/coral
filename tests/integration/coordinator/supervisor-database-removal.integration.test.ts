@@ -23,6 +23,7 @@ import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import {
   createPluginFixture,
+  readDiscoveryRecordForHome,
   storeDbPathForHome,
   waitForDiscoveryRecord,
 } from '#tests/integration/coordinator/helpers.js';
@@ -659,14 +660,20 @@ it.each([
           timeoutMs: 1_000,
         }),
       ).resolves.toMatchObject({ status: 'ok' });
-      const current = await waitForDiscoveryRecord(home, 'prod', 15_000);
-      if (current.incarnation !== undefined) identities.set(current.pid, current.incarnation);
-      await expect(
-        requestIpcMethod(current.socketPath, 'transport.health', undefined, {
-          auth: { kind: 'boot', token: current.bootToken },
-          timeoutMs: 1_000,
-        }),
-      ).resolves.toMatchObject({ status: 'ok' });
+      await vi.waitFor(
+        async () => {
+          const current = readDiscoveryRecordForHome(home, 'prod');
+          if (current === null) throw new Error('Recovery has not published discovery.');
+          if (current.incarnation !== undefined) identities.set(current.pid, current.incarnation);
+          await expect(
+            requestIpcMethod(current.socketPath, 'transport.health', undefined, {
+              auth: { kind: 'boot', token: current.bootToken },
+              timeoutMs: 1_000,
+            }),
+          ).resolves.toMatchObject({ status: 'ok', pid: current.pid });
+        },
+        { timeout: 15_000, interval: 50 },
+      );
       if (artifact.startsWith('lifetime')) {
         expect(probeProcessIncarnation(serving.pid)).toBe(serving.incarnation);
         expect(evidence.read().launch?.child.pid).toBe(serving.pid);

@@ -178,12 +178,20 @@ function acquireLaunchLifetime(runDir: string, admission: LaunchAdmission): void
       const temporaryPath = join(temporary, relative(published, path));
       try {
         mkdirSync(dirname(temporaryPath), { recursive: true, mode: 0o700 });
+        let publicationParent = root;
         if (existsSync(published)) {
           if (readdirSync(published).length !== 0)
             throw new Error('Coordinator admission envelope is incomplete or conflicting');
           const [firstChunk] = readdirSync(temporary);
           renameSync(join(temporary, firstChunk), join(published, firstChunk));
+          publicationParent = published;
         } else renameSync(temporary, published);
+        const directoryFd = openSync(publicationParent, 'r');
+        try {
+          fsyncSync(directoryFd);
+        } finally {
+          closeSync(directoryFd);
+        }
       } finally {
         rmSync(temporary, { recursive: true, force: true });
       }
@@ -235,6 +243,7 @@ export type LaunchSubject = Readonly<{
   admission?: LaunchAdmission;
   conflictingAdmission?: LaunchAdmission;
   lifetimePath?: string;
+  lifetimeDirectory?: string;
   inode?: { dev: number; ino: number };
   acquisitionComplete: boolean;
   problem?: 'envelope-conflict' | 'envelope-unavailable';
@@ -247,6 +256,7 @@ function sameEnvelope(a: LaunchAdmission, b: LaunchAdmission): boolean {
 /** Neither damaged JSON nor an acquisition window may erase a possible live subject. */
 export function listLaunchSubjects(runDir: string): LaunchSubject[] {
   const subjects: LaunchSubject[] = [];
+  const admissions = listLaunchAdmissions(runDir);
   const root = join(runDir, 'launch-lifetimes.v1');
   const visit = (path: string, launchId: string, chunks: string[]): void => {
     let lifetimePath: string | undefined;
@@ -304,16 +314,31 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
           json.admission.lifetime.ino === inode.ino,
       });
     } catch {
-      const json = readLaunchAdmission(runDir, launchId);
+      const recorded = readLaunchAdmission(runDir, launchId);
+      const matching = admissions.filter(
+        (entry) =>
+          entry.kind === 'readable' &&
+          inode !== undefined &&
+          entry.admission.lifetime?.dev === inode.dev &&
+          entry.admission.lifetime.ino === inode.ino,
+      );
+      const json = recorded.kind !== 'readable' && matching.length === 1 ? matching[0] : recorded;
+      const matchingAdmission =
+        json?.kind === 'readable' &&
+        inode !== undefined &&
+        json.admission.lifetime?.dev === inode.dev &&
+        json.admission.lifetime.ino === inode.ino;
+      const addressedId = matchingAdmission && json?.kind === 'readable' ? json.admission.launchId : launchId;
       const addressed =
-        z.string().uuid().safeParse(launchId).success &&
-        json.kind === 'unreadable' &&
+        z.string().uuid().safeParse(addressedId).success &&
+        (json?.kind === 'unreadable' || matchingAdmission) &&
         lifetimePath !== undefined &&
         inode !== undefined;
       subjects.push({
-        path: addressed && json.kind === 'unreadable' ? json.path : path,
-        ...(addressed ? { launchId, lifetimePath, inode } : {}),
-        acquisitionComplete: false,
+        path: addressed ? launchAdmissionPath(runDir, addressedId) : path,
+        ...(addressed ? { launchId: addressedId, lifetimePath, inode, lifetimeDirectory: join(root, launchId) } : {}),
+        ...(matchingAdmission && json?.kind === 'readable' ? { admission: json.admission } : {}),
+        acquisitionComplete: matchingAdmission,
         problem: 'envelope-unavailable',
       });
     }
@@ -327,7 +352,7 @@ export function listLaunchSubjects(runDir: string): LaunchSubject[] {
     if (!isNoEntryError(error))
       subjects.push({ path: root, acquisitionComplete: false, problem: 'envelope-unavailable' });
   }
-  for (const json of listLaunchAdmissions(runDir)) {
+  for (const json of admissions) {
     if (json.kind === 'absent') continue;
     const path = json.kind === 'readable' ? launchAdmissionPath(runDir, json.admission.launchId) : json.path;
     if (subjects.some((subject) => subject.path === path)) continue;
@@ -404,7 +429,7 @@ export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
   if (launchId === undefined) return false;
   if (observeLaunchSubject(subject) !== 'absent') return false;
   const runDir = dirname(dirname(subject.path));
-  const published = join(runDir, 'launch-lifetimes.v1', launchId);
+  const published = subject.lifetimeDirectory ?? join(runDir, 'launch-lifetimes.v1', launchId);
   const lifetimePath =
     subject.lifetimePath ??
     (subject.admission === undefined ? undefined : launchLifetimePath(runDir, subject.admission));

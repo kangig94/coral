@@ -2821,7 +2821,7 @@ describe('namespace supervisor recovery', () => {
       external: ['node:*'],
     });
     const registry = join(home, 'installed.json');
-    writeFileSync(registry, JSON.stringify({ plugins: { 'coral@fixture': [{ installPath: installed.root }] } }));
+    writeFileSync(registry, JSON.stringify({ plugins: {} }));
     const supervisor = spawn(process.execPath, [harness, join(retained, 'bridge', 'coral-backend.cjs')], {
       env: {
         ...process.env,
@@ -2840,6 +2840,8 @@ describe('namespace supervisor recovery', () => {
     try {
       await waitForCondition(() => existsSync(join(runDir, 'coordinator.json')), 20_000);
       firstPid = (JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as { pid: number }).pid;
+      expect(record.read().launch?.buildSetId).toBe(manifest.buildSetId);
+      writeFileSync(registry, JSON.stringify({ plugins: { 'coral@fixture': [{ installPath: installed.root }] } }));
       supervisor.send({ kind: 'freeze-coordinator' });
       await waitForCondition(() => {
         const launch = record.read().launch;

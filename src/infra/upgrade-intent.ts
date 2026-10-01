@@ -18,8 +18,8 @@ import { writeAuditEvent } from './audit-log.js';
 import { createForeignTargetValidator, type ForeignTargetValidationResult } from './handoff-target.js';
 import { processIncarnationSchema } from './node-process.js';
 import { upgradeIntentPath } from './path/index.js';
-import { listLaunchAdmissions } from './launch-admission-record.js';
-import { probeProcessIncarnation } from './node-process.js';
+import { listLaunchSubjects, observeLaunchSubject } from './launch-admission-record.js';
+import { observeProcessLiveness, probeProcessIncarnation } from './node-process.js';
 
 const buildIdentitySchema = z
   .object({
@@ -506,19 +506,18 @@ export function readUpgradeIntent(runDir: string): UpgradeIntentRead {
   return readUpgradeIntentAtPath(upgradeIntentPath(runDir));
 }
 
-export async function quarantineCorruptUpgradeIntent(runDir: string): Promise<boolean> {
+export async function quarantineCorruptUpgradeIntent(runDir: string): Promise<'quarantined' | 'held' | 'unchanged'> {
   const lease = await acquireDirectoryLock(join(runDir, 'upgrade.v1.lock'));
   try {
-    if (readUpgradeIntentAtPath(upgradeIntentPath(runDir)).kind !== 'corrupt') return false;
+    if (readUpgradeIntentAtPath(upgradeIntentPath(runDir)).kind !== 'corrupt') return 'unchanged';
     if (
-      listLaunchAdmissions(runDir).some(
-        (entry) =>
-          entry.kind === 'readable' &&
-          (entry.admission.purpose === 'succession' || entry.admission.purpose === 'contender') &&
-          probeProcessIncarnation(entry.admission.child.pid) === entry.admission.child.incarnation,
-      )
+      listLaunchSubjects(runDir).some((subject) => {
+        if (observeLaunchSubject(subject) === 'absent') return false;
+        const purpose = subject.admission?.purpose;
+        return purpose === undefined || purpose === 'succession' || purpose === 'contender';
+      })
     )
-      return false;
+      return 'held';
     try {
       const discovery = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as {
         pid?: number;
@@ -529,9 +528,10 @@ export async function quarantineCorruptUpgradeIntent(runDir: string): Promise<bo
         (discovery.supervision?.purpose === 'succession' || discovery.supervision?.purpose === 'contender') &&
         discovery.pid !== undefined &&
         discovery.incarnation !== undefined &&
-        probeProcessIncarnation(discovery.pid) === discovery.incarnation
+        (probeProcessIncarnation(discovery.pid) === discovery.incarnation ||
+          (probeProcessIncarnation(discovery.pid) === null && observeProcessLiveness(discovery.pid) !== 'absent'))
       )
-        return false;
+        return 'held';
     } catch {
       /* Absent or unreadable discovery supplies no active-attempt proof. */
     }
@@ -543,7 +543,7 @@ export async function quarantineCorruptUpgradeIntent(runDir: string): Promise<bo
     } finally {
       closeSync(directoryFd);
     }
-    return true;
+    return 'quarantined';
   } finally {
     lease();
   }

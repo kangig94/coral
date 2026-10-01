@@ -1200,8 +1200,9 @@ describe('real-process durable-cli succession', () => {
       successors.push({ pid: successor.pid, incarnation: probeProcessIncarnation(successor.pid) });
       await waitForCondition(() => observeProcessLiveness(incumbent.pid) === 'absent', 30_000);
       await abortDurableJob(newerFixture, home, projectRoot, jobId);
-      await stopCoordinator(old);
+      expect(probeProcessIncarnation(successor.pid)).toBe(successor.incarnation);
       process.kill(successor.pid, successorEnd === 'exits cleanly' ? 'SIGTERM' : 'SIGKILL');
+      await stopCoordinator(old);
       await waitForCondition(() => observeProcessLiveness(successor.pid) === 'absent', 30_000);
 
       // The first cold start retires the settled job's runtime record; the second must not need it.

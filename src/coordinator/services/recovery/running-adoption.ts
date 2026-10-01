@@ -1,3 +1,4 @@
+import { SuccessionWriterParkedError } from '../../../store/db.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { ProcessContainmentError, type RecordedContainmentObservation } from '../../../infra/process-containment.js';
@@ -207,11 +208,13 @@ function createRecoveredProgress(
           fromOffset: adoptedRuntimeRecord.tailWatermark ?? 0,
         });
         if (newOffset !== (adoptedRuntimeRecord.tailWatermark ?? 0)) {
-          adoptedRuntimeRecord = { ...adoptedRuntimeRecord, tailWatermark: newOffset };
-          progressStore.appendRuntimeStarted(jobId, adoptedRuntimeRecord);
+          const nextRuntimeRecord = { ...adoptedRuntimeRecord, tailWatermark: newOffset };
+          progressStore.appendRuntimeStarted(jobId, nextRuntimeRecord);
+          adoptedRuntimeRecord = nextRuntimeRecord;
         }
         for (const message of messages) progressStore.appendProgress(jobId, launchRecord.sessionId, message);
       } catch (error: unknown) {
+        if (error instanceof SuccessionWriterParkedError) throw error;
         settlement.controls.report(`Failed to tail recovered progress for job ${jobId}: ${formatError(error)}\n`);
       }
     },
@@ -571,8 +574,8 @@ function pollAdoptedContainment(
   } = settlement.deps;
   const { jobId } = settlement.recovery;
   const { signal } = settlement.context;
-  progress.drain();
   const observation = observeDurableRecoveryContainment(jobId, runtimeRecord).observation;
+  progress.drain();
   if (observation.kind === 'unobservable') {
     const unanswered = (state.unansweredAdoptionProbes.get(jobId) ?? 0) + 1;
     state.unansweredAdoptionProbes.set(jobId, unanswered);
@@ -644,10 +647,14 @@ async function pollAdoptedRuntime(
   state.adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
   state.adoptedRunningJobCleanups.set(jobId, cleanupOnce);
 
-  const pollInterval = runtime.time.setInterval(
-    () => pollAdoptedContainment(settlement, runtimeRecord, progress),
-    RECOVERY_POLL_MS,
-  );
+  const pollInterval = runtime.time.setInterval(() => {
+    try {
+      pollAdoptedContainment(settlement, runtimeRecord, progress);
+    } catch (error: unknown) {
+      if (error instanceof SuccessionWriterParkedError) return;
+      settlement.deps.log(`Adopted durable recovery poll failed for ${jobId}: ${formatError(error)}\n`);
+    }
+  }, RECOVERY_POLL_MS);
   pollInterval.unref?.();
   state.recoveryPollIntervals.set(jobId, pollInterval);
   settlement.controls.clearProcessLocalCleanup();

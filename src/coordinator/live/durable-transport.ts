@@ -1,3 +1,4 @@
+import { SuccessionWriterParkedError } from '../../store/db.js';
 import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { join } from 'node:path';
 import { backendLog } from '../../infra/backend-log.js';
@@ -751,16 +752,25 @@ async function awaitDurableLaunchResult(
       durableState.exitError = error;
     });
 
-  const drainStdout = (): void => {
+  const drainStdout = async (): Promise<void> => {
     const { lines, newOffset } = readAppendedLines(durable.stdoutPath, tailOffset, runtime.storage);
     if (newOffset === tailOffset) {
       return;
     }
 
+    const nextRuntimeRecord = { ...runtimeRecord, tailWatermark: newOffset };
+    for (;;) {
+      try {
+        options.onRuntimeRecord?.(nextRuntimeRecord);
+        break;
+      } catch (error: unknown) {
+        if (!(error instanceof SuccessionWriterParkedError)) throw error;
+        await error.unparked;
+      }
+    }
+    runtimeRecord = nextRuntimeRecord;
     tailOffset = newOffset;
     observedIdle.reset(runtime.time.monotonicNow());
-    runtimeRecord = { ...runtimeRecord, tailWatermark: newOffset };
-    options.onRuntimeRecord?.(runtimeRecord);
 
     for (const line of lines) {
       options.onEvent?.(line);
@@ -773,17 +783,17 @@ async function awaitDurableLaunchResult(
       if (disposition.kind !== 'held') return;
       enterContainmentHold(disposition.reason);
       await Promise.race([runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS), state.containmentAbsence]);
-      drainStdout();
+      await drainStdout();
     }
   };
 
   while (true) {
-    drainStdout();
+    await drainStdout();
 
     const completedExit = durableState.exitRecord;
     if (completedExit !== null) {
       await awaitProviderResultContainment();
-      drainStdout();
+      await drainStdout();
       return {
         stdout: readOutputFile(runtime.storage, durable.stdoutPath),
         stderr: readOutputFile(runtime.storage, durable.stderrPath),

@@ -36,7 +36,12 @@ import {
   type ProcessLiveness,
 } from '../infra/node-process.js';
 import { SENTINEL_TIMING, validSentinelTiming, type SentinelTiming } from '../infra/sentinel-timing.js';
-import { readUpgradeIntent, retryUpgradeIntentCas, type UpgradeIntent } from '../infra/upgrade-intent.js';
+import {
+  quarantineCorruptUpgradeIntent,
+  readUpgradeIntent,
+  retryUpgradeIntentCas,
+  type UpgradeIntent,
+} from '../infra/upgrade-intent.js';
 import { handoffCapsuleControllerBuildSetId, type HandoffCapsule } from '../provider-proxy/handoff-capsule.js';
 import {
   providerProxySetIdentityFromCapsule,
@@ -1977,6 +1982,11 @@ async function superviseSelectedCandidate(input: {
   onChild?: (child: ChildProcess) => void;
 }): Promise<boolean> {
   const { record, owner, candidate, triedCount, args, runDir, timing, startupBudgetMs, onChild } = input;
+  if (!record.hasAuthority(owner.current)) return false;
+  if (readUpgradeIntent(runDir).kind === 'corrupt') {
+    await quarantineCorruptUpgradeIntent(runDir);
+    record.reconcileAdmissions();
+  }
   const intent = pendingIntent(runDir);
   const purpose =
     intent !== null && pendingExecutable(intent) === candidate.executable

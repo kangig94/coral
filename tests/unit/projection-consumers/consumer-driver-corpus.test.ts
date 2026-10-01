@@ -7,7 +7,7 @@ import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import type { KbProjectionInput, PrepareKbProjectionInputOptions } from '#src/kb/projection-input-contract.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { applyBundledStoreSchema } from '#src/store/db.js';
+import { applyBundledStoreSchema, SuccessionWriterParkedError } from '#src/store/db.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type {
@@ -83,6 +83,70 @@ function readCursorRow(db: Database, consumerId: string): CursorRow {
 }
 
 describe('ConsumerDriver corpus registrations', () => {
+  it.each(['reclaim', 'stop'] as const)('retains pending corpus work during writer park until %s', async (exit) => {
+    const db = createDb();
+    let parked = false;
+    const unparked = createDeferred<void>();
+    const guarded = new Proxy(db, {
+      get(target, property) {
+        if (property === 'prepare')
+          return (...args: Parameters<Database['prepare']>) => {
+            if (parked) throw new SuccessionWriterParkedError(unparked.promise);
+            const statement = target.prepare(...args);
+            return new Proxy(statement, {
+              get(current, key) {
+                if (parked) throw new SuccessionWriterParkedError(unparked.promise);
+                const value: unknown = Reflect.get(current, key, current);
+                return typeof value === 'function' ? value.bind(current) : value;
+              },
+            });
+          };
+        return Reflect.get(target, property, target);
+      },
+    });
+    const driver = new ConsumerDriver({ db: guarded, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+    const first = createDeferred<void>();
+    const onApplyFailure = vi.fn();
+    const calls: string[] = [];
+    const handle = driver.register({
+      id: 'parked-corpus',
+      authority: 'corpus',
+      kind: 'apply',
+      corpusInterest: 'content',
+      registrationKind: 'expansion',
+      ...staleFreshnessCapability(),
+      async apply({ snapshot }) {
+        calls.push(snapshot.snapshotId);
+        if (calls.length === 1) await first.promise;
+      },
+      onApplyFailure,
+    });
+    const snapshot1 = buildSnapshot({ snapshotId: 'park-1', contentSeq: 1 });
+    const snapshot2 = buildSnapshot({ snapshotId: 'park-2', contentSeq: 2 });
+    try {
+      driver.notify('corpus', snapshot1);
+      await vi.waitFor(() => expect(calls).toEqual(['park-1']));
+      driver.notify('corpus', snapshot2);
+      parked = true;
+      first.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(onApplyFailure).not.toHaveBeenCalled();
+      expect(readCursorRow(db, 'parked-corpus').content_seq).toBe(0);
+      if (exit === 'stop') await handle.stop();
+      else {
+        parked = false;
+        unparked.resolve();
+        await vi.waitFor(() => expect(readCursorRow(db, 'parked-corpus').snapshot_id).toBe('park-2'));
+        expect(onApplyFailure).not.toHaveBeenCalled();
+      }
+    } finally {
+      parked = false;
+      unparked.resolve();
+      await handle.stop();
+      db.close();
+    }
+  });
+
   it('prepares corpus projection input without forcing corpus freshness', async () => {
     const db = createDb();
     const emptyProjectionInput: KbProjectionInput = {

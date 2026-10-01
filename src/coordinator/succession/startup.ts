@@ -566,7 +566,8 @@ export async function resolveIncompleteSuccessionAtStartup(
   const { runtime } = options;
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
   if (observed.kind === 'corrupt') {
-    if (await quarantineCorruptUpgradeIntent(runtime.paths.coral.coordinator.runDir)) return { kind: 'none' };
+    if ((await quarantineCorruptUpgradeIntent(runtime.paths.coral.coordinator.runDir)) === 'quarantined')
+      return { kind: 'none' };
     if (readUpgradeIntent(runtime.paths.coral.coordinator.runDir).kind === 'absent') return { kind: 'none' };
     return {
       kind: 'hold',
