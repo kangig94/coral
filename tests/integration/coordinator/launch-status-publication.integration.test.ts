@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import * as nodeFs from 'node:fs';
 import {
   existsSync,
@@ -29,6 +29,134 @@ import { createPluginFixture, waitForDiscoveryRecord } from '#tests/integration/
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 vi.mock('node:fs', async (importOriginal) => ({ ...(await importOriginal<typeof nodeFs>()) }));
+
+it.each(['directory read', 'inode observation', 'marker population', 'marker observation', 'quarantine rename'])(
+  'resumes an abandoned reclamation after transient %s and failed restoration',
+  async (fault) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-status-abandoned-claim-'));
+    const lockDir = join(runDir, 'launch-status.v1.lock');
+    const rename = nodeFs.renameSync;
+    const readDirectory = nodeFs.readdirSync;
+    const read = nodeFs.readFileSync;
+    const stat = nodeFs.statSync;
+    let claimed = false;
+    let injected = false;
+    let retry = false;
+    const fail = (): never => {
+      injected = true;
+      throw Object.assign(new Error('Transient reclamation failure'), { code: 'EIO' });
+    };
+    mkdirSync(lockDir);
+    writeFileSync(
+      join(lockDir, 'owner-dead.lock'),
+      JSON.stringify({ pid: 2_147_483_647, pidNamespace: readPidNamespace() }),
+    );
+    vi.spyOn(nodeFs, 'renameSync').mockImplementation((source, destination) => {
+      if (!retry && String(source).includes('/claim-reclaim-')) throw new Error('Restoration unavailable');
+      if (claimed && !injected && fault === 'quarantine rename' && String(source) === lockDir) fail();
+      rename(source, destination);
+      if (String(destination).includes('/claim-reclaim-')) claimed = true;
+    });
+    vi.spyOn(nodeFs, 'readdirSync').mockImplementation((...args) => {
+      if (claimed && !injected && String(args[0]) === lockDir) {
+        if (fault === 'directory read') fail();
+        if (fault === 'marker population') {
+          injected = true;
+          writeFileSync(join(lockDir, 'claim-conflict.lock'), 'unknown');
+        }
+      }
+      return readDirectory(...args);
+    });
+    vi.spyOn(nodeFs, 'statSync').mockImplementation((...args) => {
+      if (claimed && !injected && fault === 'inode observation' && String(args[0]) === lockDir) fail();
+      return stat(...args);
+    });
+    vi.spyOn(nodeFs, 'readFileSync').mockImplementation((...args) => {
+      if (claimed && !injected && fault === 'marker observation' && String(args[0]).includes('/claim-reclaim-')) fail();
+      return read(...args);
+    });
+    try {
+      updateLaunchStatus(runDir, (status) => ({
+        ...status,
+        admissionHolds: [{ path: '/child', disposition: 'unknown' }],
+      }));
+      expect(injected).toBe(true);
+      expect(currentLaunchStatus(runDir)?.publicationFailure).toBeDefined();
+      expect(readdirSync(lockDir)).toContainEqual(expect.stringMatching(/^claim-reclaim-/u));
+      retry = true;
+      rmSync(join(lockDir, 'claim-conflict.lock'), { force: true });
+      await waitForCondition(() => readLaunchStatus(runDir).kind === 'readable', 3_000);
+      expect(currentLaunchStatus(runDir)?.publicationFailure).toBeUndefined();
+      expect(readLaunchStatus(runDir)).toMatchObject({
+        kind: 'readable',
+        status: { admissionHolds: [{ path: '/child', disposition: 'unknown' }] },
+      });
+    } finally {
+      retry = true;
+      vi.restoreAllMocks();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  },
+);
+
+it.runIf(process.platform === 'linux')('republishes after an old UUID-only reclaimer crashes', async () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-old-reclaimer-'));
+  const lockDir = join(runDir, 'launch-status.v1.lock');
+  const executable = join(runDir, 'old-reclaimer.cjs');
+  const previous = execFileSync('git', ['show', 'c43ff437^:src/infra/fs-lock.ts'], { encoding: 'utf8' });
+  await build({
+    stdin: {
+      contents: `import { tryAcquireDiagnosticDirectoryLock } from '${fileURLToPath(new URL('../../../src/infra/fs-lock.ts', import.meta.url))}'; tryAcquireDiagnosticDirectoryLock(process.argv[2]);`,
+      resolveDir: process.cwd(),
+      loader: 'ts',
+    },
+    outfile: executable,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    external: ['node:*'],
+    plugins: [
+      {
+        name: 'old-claimant-crash',
+        setup(builder) {
+          builder.onLoad({ filter: /\/infra\/fs-lock\.ts$/ }, () => ({
+            contents: previous.replace(
+              'deps.storage.renameSync(lockDir, quarantinePath);',
+              "process.send?.('claimed'); process.kill(process.pid, 'SIGSTOP'); deps.storage.renameSync(lockDir, quarantinePath);",
+            ),
+            loader: 'ts',
+          }));
+        },
+      },
+    ],
+  });
+  mkdirSync(lockDir);
+  writeFileSync(
+    join(lockDir, 'owner-dead.lock'),
+    JSON.stringify({ pid: 2_147_483_647, pidNamespace: readPidNamespace() }),
+  );
+  const claimant = spawn(process.execPath, [executable, lockDir], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  let claimed = false;
+  claimant.on('message', (message) => {
+    if (message === 'claimed') claimed = true;
+  });
+  try {
+    await waitForCondition(() => claimed, 5_000);
+    expect(readdirSync(lockDir)).toEqual([expect.stringMatching(/^claim-[0-9a-f-]{36}\.lock$/u)]);
+    claimant.kill('SIGKILL');
+    await waitForCondition(() => claimant.signalCode !== null, 5_000);
+    updateLaunchStatus(runDir, (status) => ({
+      ...status,
+      admissionHolds: [{ path: '/child', disposition: 'unknown' }],
+    }));
+    await waitForCondition(() => readLaunchStatus(runDir).kind === 'readable', 3_000);
+    expect(currentLaunchStatus(runDir)?.publicationFailure).toBeUndefined();
+  } finally {
+    claimant.kill('SIGKILL');
+    await waitForCondition(() => claimant.signalCode !== null, 5_000);
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
 
 it.each(['owner-foreign.lock', 'claim-foreign.lock'])(
   'preserves a conflicting %s during diagnostic release and resumes publication after repair',
@@ -201,7 +329,7 @@ it('refuses to quarantine a replaced directory after verifying a stale marker', 
   }
 });
 
-it.each(['legacy', 'malformed', 'foreign namespace'] as const)(
+it.each(['unidentifiable', 'malformed', 'foreign namespace'] as const)(
   'preserves a reclamation claim with %s claimant identity',
   (identity) => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-status-unknown-reclaimer-'));
@@ -211,7 +339,7 @@ it.each(['legacy', 'malformed', 'foreign namespace'] as const)(
         ? 'invalid'
         : Buffer.from(JSON.stringify([2_147_483_647, null, 'foreign'])).toString('base64url');
     const name =
-      identity === 'legacy'
+      identity === 'unidentifiable'
         ? 'claim-interrupted.lock'
         : `claim-reclaim-${claimant}-00000000-0000-0000-0000-000000000000.lock`;
     mkdirSync(lockDir);
@@ -226,6 +354,25 @@ it.each(['legacy', 'malformed', 'foreign namespace'] as const)(
     }
   },
 );
+
+it.each(['live', 'unknown'] as const)('preserves UUID-only residue with %s publisher evidence', (evidence) => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-uuid-residue-'));
+  const lockDir = join(runDir, 'launch-status.v1.lock');
+  const name = 'claim-00000000-0000-0000-0000-000000000000.lock';
+  mkdirSync(lockDir);
+  writeFileSync(
+    join(lockDir, name),
+    evidence === 'live' ? JSON.stringify({ pid: process.pid, pidNamespace: readPidNamespace() }) : '{}',
+  );
+  const inode = statSync(lockDir).ino;
+  try {
+    expect(tryAcquireDiagnosticDirectoryLock(lockDir)).toBeNull();
+    expect(statSync(lockDir).ino).toBe(inode);
+    expect(readdirSync(lockDir)).toEqual([name]);
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
 
 it('retries a refused status directory release while publication reports the closed publisher hold', async () => {
   const runDir = mkdtempSync(join(tmpdir(), 'coral-status-release-retry-'));

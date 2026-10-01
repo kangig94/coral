@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +36,61 @@ function buildSetId(root: string): string {
   };
   return manifest.buildSetId;
 }
+
+async function stopFixtureProcesses(supervisors: ChildProcess[], identities: Map<number, string>): Promise<void> {
+  for (const supervisor of supervisors) supervisor.kill('SIGKILL');
+  for (const [pid, incarnation] of identities) {
+    if (probeProcessIncarnation(pid) !== incarnation) continue;
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* empty */
+    }
+  }
+  await Promise.all(
+    supervisors.map((supervisor) =>
+      supervisor.exitCode !== null || supervisor.signalCode !== null
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => supervisor.once('exit', () => resolve())),
+    ),
+  );
+  await waitForCondition(
+    () => [...identities].every(([pid, incarnation]) => probeProcessIncarnation(pid) !== incarnation),
+    5_000,
+  );
+}
+
+it.runIf(process.platform === 'linux')('waits for every recorded fixture writer before removing its root', async () => {
+  const supervisor = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+  const writer = spawn(process.execPath, ['-e', 'process.send("ready"); setInterval(() => {}, 1000)'], {
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+  });
+  let ready = false;
+  writer.on('message', () => {
+    ready = true;
+  });
+  const kill = process.kill;
+  let delayedKill: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await waitForCondition(() => ready, 5_000);
+    const pid = writer.pid!;
+    const incarnation = probeProcessIncarnation(pid);
+    if (incarnation === null) throw new Error('Fixture writer identity is unavailable');
+    vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+      if (target !== pid) return kill(target, signal);
+      delayedKill = setTimeout(() => kill(target, signal), 100);
+      return true;
+    });
+    await stopFixtureProcesses([supervisor], new Map([[pid, incarnation]]));
+    expect(probeProcessIncarnation(pid)).not.toBe(incarnation);
+  } finally {
+    clearTimeout(delayedKill);
+    vi.restoreAllMocks();
+    supervisor.kill('SIGKILL');
+    writer.kill('SIGKILL');
+    await waitForCondition(() => writer.signalCode !== null && supervisor.signalCode !== null, 5_000);
+  }
+});
 
 describe.runIf(process.platform === 'linux')('supervisor database removal recovery', () => {
   it.each([false, true])(
@@ -120,8 +175,11 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
         await waitForCondition(() => evidence.memory()?.launch?.phase === 'serving', 5_000);
         await waitForCondition(() => heartbeatReady, 5_000);
         const inode = statSync(coordinatorPaths('prod', { baseDir: join(home, '.coral') }).supervisorLockFile);
+        const admittedAt = evidence.memory()?.launch?.admittedAt;
+        if (admittedAt === undefined) throw new Error('Fixture admission time is unavailable');
+        const originalAdmissionDeadline = admittedAt + 25_000;
         process.kill(first.pid, 'SIGSTOP');
-        await waitForCondition(() => existsSync(marker), 12_000);
+        await waitForCondition(() => existsSync(marker), Math.max(1, originalAdmissionDeadline - Date.now()));
         expect(evidence.lockHolder()?.pid).toBe(supervisor.pid);
         expect(evidence.memory()?.launch?.terminationAt).toBeUndefined();
         await waitForCondition(() => {
@@ -141,20 +199,16 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
         expect(evidence.lockHolder()?.pid).toBe(supervisor.pid);
         const retained = statSync(coordinatorPaths('prod', { baseDir: join(home, '.coral') }).supervisorLockFile);
         expect({ dev: retained.dev, ino: retained.ino }).toEqual({ dev: inode.dev, ino: inode.ino });
+        expect(Date.now()).toBeLessThan(originalAdmissionDeadline);
       } finally {
         const survivors = listLaunchAdmissions(runDir);
-        supervisor.kill('SIGKILL');
+        const identities = new Map<number, string>();
         for (const entry of survivors) {
-          if (
-            entry.kind === 'readable' &&
-            probeProcessIncarnation(entry.admission.child.pid) === entry.admission.child.incarnation
-          )
-            process.kill(entry.admission.child.pid, 'SIGKILL');
+          if (entry.kind === 'readable' && entry.admission.child.incarnation !== null)
+            identities.set(entry.admission.child.pid, entry.admission.child.incarnation);
         }
-        if (first?.incarnation !== undefined && probeProcessIncarnation(first.pid) === first.incarnation)
-          process.kill(first.pid, 'SIGKILL');
-        if (supervisor.exitCode === null && supervisor.signalCode === null)
-          await new Promise<void>((resolve) => supervisor.once('exit', () => resolve()));
+        if (first?.incarnation !== undefined) identities.set(first.pid, first.incarnation);
+        await stopFixtureProcesses([supervisor], identities);
         for (const root of roots) rmSync(root, { recursive: true, force: true });
       }
     },
@@ -333,20 +387,7 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
       } finally {
         vi.unstubAllEnvs();
         remember();
-        supervisor.kill('SIGKILL');
-        for (const [pid, incarnation] of identities) {
-          if (probeProcessIncarnation(pid) !== incarnation) continue;
-          try {
-            process.kill(pid, 'SIGKILL');
-          } catch {
-            /* The exact fixture may have exited. */
-          }
-        }
-        await new Promise<void>((resolve) =>
-          supervisor.signalCode !== null || supervisor.exitCode !== null
-            ? resolve()
-            : supervisor.once('exit', () => resolve()),
-        );
+        await stopFixtureProcesses([supervisor], identities);
         for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
       }
     },
@@ -458,17 +499,11 @@ it.each(['creation', 'acquisition', 'repair'] as const)(
         }),
       ).resolves.toMatchObject({ status: 'ok' });
     } finally {
-      for (const supervisor of supervisors) supervisor.kill('SIGKILL');
+      const identities = new Map<number, string>();
       for (const child of children) {
-        if (probeProcessIncarnation(child.pid) === child.incarnation) process.kill(child.pid, 'SIGKILL');
+        if (child.incarnation !== undefined) identities.set(child.pid, child.incarnation);
       }
-      await Promise.all(
-        supervisors.map((supervisor) =>
-          supervisor.exitCode !== null || supervisor.signalCode !== null
-            ? Promise.resolve()
-            : new Promise<void>((resolve) => supervisor.once('exit', () => resolve())),
-        ),
-      );
+      await stopFixtureProcesses(supervisors, identities);
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
   },
@@ -581,16 +616,7 @@ it.each([
       }
     } finally {
       remember();
-      for (const supervisor of supervisors) supervisor.kill('SIGKILL');
-      for (const [pid, incarnation] of identities)
-        if (probeProcessIncarnation(pid) === incarnation) process.kill(pid, 'SIGKILL');
-      await Promise.all(
-        supervisors.map((supervisor) =>
-          supervisor.exitCode !== null || supervisor.signalCode !== null
-            ? Promise.resolve()
-            : new Promise<void>((resolve) => supervisor.once('exit', () => resolve())),
-        ),
-      );
+      await stopFixtureProcesses(supervisors, identities);
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
   },
@@ -666,14 +692,9 @@ it.runIf(process.platform === 'darwin')(
                 const incarnation = probeProcessIncarnation(pid);
                 return incarnation === null ? [] : [{ pid, incarnation }];
               });
-      parent.kill('SIGKILL');
-      if (serving !== undefined && probeProcessIncarnation(serving.pid) === serving.incarnation)
-        process.kill(serving.pid, 'SIGKILL');
-      for (const nominee of nominees)
-        if (probeProcessIncarnation(nominee.pid) === nominee.incarnation) process.kill(nominee.pid, 'SIGKILL');
-      await new Promise<void>((resolve) =>
-        parent.exitCode !== null || parent.signalCode !== null ? resolve() : parent.once('exit', () => resolve()),
-      );
+      const identities = new Map(nominees.map(({ pid, incarnation }) => [pid, incarnation]));
+      if (serving?.incarnation !== undefined) identities.set(serving.pid, serving.incarnation);
+      await stopFixtureProcesses([parent], identities);
       for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
     }
   },
@@ -854,16 +875,11 @@ it('repairs after an inherited child stops, holds with refused-only termination,
       false,
     );
   } finally {
-    parent.kill('SIGKILL');
     const state = evidence.read();
     for (const identity of [state.launch?.child, state.attempt?.child])
       if (identity?.incarnation !== undefined && identity.incarnation !== null)
         identities.set(identity.pid, identity.incarnation);
-    for (const [pid, incarnation] of identities)
-      if (probeProcessIncarnation(pid) === incarnation) process.kill(pid, 'SIGKILL');
-    await new Promise<void>((resolve) =>
-      parent.exitCode !== null || parent.signalCode !== null ? resolve() : parent.once('exit', () => resolve()),
-    );
+    await stopFixtureProcesses([parent], identities);
     for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
   }
 }, 50_000);

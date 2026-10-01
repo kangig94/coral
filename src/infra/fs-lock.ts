@@ -674,7 +674,6 @@ function isMissingPathError(error: unknown): boolean {
 function quarantineClaimedLock(
   lockDir: string,
   claimPath: string,
-  restorePath: string,
   expectedIdentity: LockDirectoryIdentity,
   deps: DirectoryLockDeps,
 ): boolean {
@@ -688,17 +687,45 @@ function quarantineClaimedLock(
     if (isMissingPathError(error)) {
       return false;
     }
-    if (lockDirectoryIdentityMatches(lockDir, expectedIdentity, deps.storage)) {
-      try {
-        deps.storage.renameSync(claimPath, restorePath);
-      } catch {
-        // A later contender can recover after decisive claimant absence.
-      }
-    }
     throw error;
   }
   tryRemoveLockDirectory(quarantinePath, deps.storage);
   return true;
+}
+
+type ReclamationAttempt = {
+  readonly identity: LockDirectoryIdentity;
+  readonly restorePath: string;
+};
+
+const abandonedReclamations = new Map<string, ReclamationAttempt>();
+
+function completeReclamationAttempt(
+  lockDir: string,
+  claimPath: string,
+  attempt: ReclamationAttempt,
+  deps: DirectoryLockDeps,
+): boolean {
+  let quarantined = false;
+  try {
+    if (!RECLAIMABLE_OWNER_MARKERS.has(ownerMarkerDisposition(claimPath, deps))) return false;
+    quarantined = quarantineClaimedLock(lockDir, claimPath, attempt.identity, deps);
+    return quarantined;
+  } finally {
+    abandonedReclamations.delete(claimPath);
+    if (!quarantined) {
+      const identity = readLockDirectoryIdentity(lockDir, deps.storage);
+      if (identity === null) {
+        abandonedReclamations.set(claimPath, attempt);
+      } else if (identity.dev === attempt.identity.dev && identity.ino === attempt.identity.ino) {
+        try {
+          deps.storage.renameSync(claimPath, attempt.restorePath);
+        } catch (error) {
+          if (!isMissingPathError(error)) abandonedReclamations.set(claimPath, attempt);
+        }
+      }
+    }
+  }
 }
 
 function tryClaimAndQuarantineStaleMarker(
@@ -730,20 +757,14 @@ function tryClaimAndQuarantineStaleMarker(
     throw error;
   }
 
-  if (!RECLAIMABLE_OWNER_MARKERS.has(ownerMarkerDisposition(claimPath, deps))) {
-    try {
-      deps.storage.renameSync(claimPath, restorePath);
-    } catch {
-      /* recoverable after the marker becomes stale */
-    }
-    return false;
-  }
-  return quarantineClaimedLock(lockDir, claimPath, restorePath, identity, deps);
+  return completeReclamationAttempt(lockDir, claimPath, { identity, restorePath }, deps);
 }
 
 function reclamationClaimantDisposition(claimPath: string, deps: DirectoryLockDeps): OwnerMarkerDisposition {
   const name = basename(claimPath);
   if (name.startsWith('claim-release-') || name.startsWith('claim-refresh-'))
+    return ownerMarkerDisposition(claimPath, deps);
+  if (/^claim-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.lock$/u.test(name))
     return ownerMarkerDisposition(claimPath, deps);
   if (!name.startsWith('claim-reclaim-')) return 'owner-unobserved';
   let tuple: unknown;
@@ -766,51 +787,40 @@ function reclamationClaimantDisposition(claimPath: string, deps: DirectoryLockDe
   return liveness === 'alive' ? 'owner-alive' : 'owner-unobserved';
 }
 
-/**
- * Claims a stale owner marker with an atomic rename before deleting anything.
- * Heartbeats rename that same marker through a claim-prefixed refresh path, so
- * a refresh and a stale claimant cannot both win. Other contenders cannot
- * claim the marker after it has moved.
- */
-function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
-  if (deps.reclaim === 'absent-only') {
-    const owners = ownerMarkerEntries(lockDir, deps);
-    const claims = claimMarkerEntries(lockDir, deps);
-    if (owners.length + claims.length !== 1) return false;
-  }
-  const ownerEntries = ownerMarkerEntries(lockDir, deps);
-  const [ownerEntry] = ownerEntries;
-  if (ownerEntry === undefined) {
-    const claimEntries = claimMarkerEntries(lockDir, deps);
-    if (claimEntries.length === 1) {
-      const staleClaimPath = join(lockDir, claimEntries[0]);
-      if (deps.reclaim === 'absent-only' && reclamationClaimantDisposition(staleClaimPath, deps) !== 'owner-absent')
-        return false;
-      return tryClaimAndQuarantineStaleMarker(lockDir, staleClaimPath, staleClaimPath, deps);
-    }
-    if (claimEntries.length > 1) {
-      return false;
-    }
-    if (!directoryIsStale(lockDir, deps)) {
-      return false;
-    }
-    const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
-    try {
-      deps.storage.renameSync(lockDir, quarantinePath);
-    } catch (error) {
-      if (isMissingPathError(error)) {
-        return false;
-      }
-      throw error;
-    }
-    tryRemoveLockDirectory(quarantinePath, deps.storage);
-    return true;
-  }
-  if (ownerEntries.length !== 1) {
+function tryReclaimClaim(lockDir: string, claimPath: string, deps: DirectoryLockDeps): boolean {
+  const abandoned = abandonedReclamations.get(claimPath);
+  if (abandoned !== undefined) return completeReclamationAttempt(lockDir, claimPath, abandoned, deps);
+  if (deps.reclaim === 'absent-only' && reclamationClaimantDisposition(claimPath, deps) !== 'owner-absent')
     return false;
+  return tryClaimAndQuarantineStaleMarker(lockDir, claimPath, claimPath, deps);
+}
+
+function tryQuarantineEmptyLock(lockDir: string, deps: DirectoryLockDeps): boolean {
+  if (!directoryIsStale(lockDir, deps)) return false;
+  const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
+  try {
+    deps.storage.renameSync(lockDir, quarantinePath);
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
   }
-  const ownerPath = join(lockDir, ownerEntry);
-  return tryClaimAndQuarantineStaleMarker(lockDir, ownerPath, ownerPath, deps);
+  tryRemoveLockDirectory(quarantinePath, deps.storage);
+  return true;
+}
+
+function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
+  const owners = ownerMarkerEntries(lockDir, deps);
+  const claims = claimMarkerEntries(lockDir, deps);
+  if (deps.reclaim === 'absent-only' && owners.length + claims.length !== 1) return false;
+  if (owners.length > 1 || claims.length > 1) return false;
+  const [owner] = owners;
+  if (owner !== undefined) {
+    const ownerPath = join(lockDir, owner);
+    return tryClaimAndQuarantineStaleMarker(lockDir, ownerPath, ownerPath, deps);
+  }
+  const [claim] = claims;
+  if (claim !== undefined) return tryReclaimClaim(lockDir, join(lockDir, claim), deps);
+  return tryQuarantineEmptyLock(lockDir, deps);
 }
 
 function createDirectoryLockLease(
