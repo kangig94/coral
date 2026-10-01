@@ -927,6 +927,7 @@ async function startTurn(
     throw new Error('Codex thread id missing before turn/start.');
   }
 
+  runtime.onProviderTurnStart?.();
   const aborted = abortResultPromise(lease, runtime, state, attempt);
   const startOutcome = rpc(lease, 'turn/start', params).then(
     (response) => ({ kind: 'response' as const, response }),

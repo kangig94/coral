@@ -73,6 +73,7 @@ export function observeCodexTurnSettlement(
   };
 
   return {
+    providerTurnId: turnId,
     settle: async () => {
       if (evidence !== null) return evidence;
       const deadline = time.now() + OBSERVATION_BOUND_MS;

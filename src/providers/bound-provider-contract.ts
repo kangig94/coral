@@ -90,7 +90,13 @@ export type BoundProviderHostPreparationInput = Omit<BoundProviderExecutionPrepa
 
 type BoundProviderExecutionRuntimeCommon = Omit<
   ProviderRuntime<never>,
-  'transport' | 'executionPlan' | 'appServerSession' | 'runCli' | 'onProviderTurnTerminal' | 'onProviderTurnSettlement'
+  | 'transport'
+  | 'executionPlan'
+  | 'appServerSession'
+  | 'runCli'
+  | 'onProviderTurnStart'
+  | 'onProviderTurnTerminal'
+  | 'onProviderTurnSettlement'
 > &
   Readonly<{
     jobId: string;
@@ -101,6 +107,7 @@ export type BoundProviderAppServerExecutionRuntime = BoundProviderExecutionRunti
     transport: 'app-server';
     onAppServerWaiting(observation: { provider: string }): void;
     onHostRef(hostRef: HostRef): void;
+    onProviderTurnStart?(): void;
     onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
     onProviderTurnSettlement?(settlement: ProviderTurnSettlement): void;
   }>;

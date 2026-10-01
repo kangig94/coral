@@ -1349,6 +1349,7 @@ describe('ProviderRegistry', () => {
     async (retainSettlement) => {
       const closeSession = vi.fn();
       const closeObservation = vi.fn();
+      const onProviderTurnStart = vi.fn();
       let settlement: ProviderTurnSettlement | undefined;
       let preparedRequest: ProviderRequest | undefined;
       let executedRequest: ProviderRequest | undefined;
@@ -1370,8 +1371,13 @@ describe('ProviderRegistry', () => {
         },
         run: async function* (request, runtime) {
           executedRequest = request;
+          runtime.onProviderTurnStart?.();
           if (retainSettlement)
-            runtime.onProviderTurnSettlement!({ settle: async () => null, close: closeObservation });
+            runtime.onProviderTurnSettlement!({
+              providerTurnId: 'turn-1',
+              settle: async () => null,
+              close: closeObservation,
+            });
         },
         appServer: {
           name: 'single-request',
@@ -1435,6 +1441,7 @@ describe('ProviderRegistry', () => {
       for await (const _event of prepared.execute({
         ...executionRuntime(),
         onProviderTurnTerminal: () => {},
+        onProviderTurnStart,
         onProviderTurnSettlement: (value: ProviderTurnSettlement) => {
           settlement = value;
         },
@@ -1443,8 +1450,10 @@ describe('ProviderRegistry', () => {
       }
 
       expect(closeSession).toHaveBeenCalledTimes(retainSettlement ? 0 : 1);
+      expect(onProviderTurnStart).toHaveBeenCalledOnce();
       if (retainSettlement) {
         expect(settlement).toBeDefined();
+        expect(settlement!.providerTurnId).toBe('turn-1');
         await expect(settlement!.settle()).resolves.toBeNull();
         expect(closeSession).not.toHaveBeenCalled();
         settlement!.close();

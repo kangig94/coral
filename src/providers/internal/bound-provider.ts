@@ -270,6 +270,7 @@ function executeBoundAppServer<Plan extends ProviderExecutionPlan>(
         : {
             onProviderTurnSettlement: (settlement) => {
               onProviderTurnSettlement({
+                providerTurnId: settlement.providerTurnId,
                 settle: () => settlement.settle(),
                 close: () => {
                   try {

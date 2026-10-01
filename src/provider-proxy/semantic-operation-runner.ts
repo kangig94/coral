@@ -267,6 +267,7 @@ function buildExecutionRuntime(
   onHostRef: BoundProviderAppServerExecutionRuntime['onHostRef'],
   onProviderTurnTerminal: BoundProviderAppServerExecutionRuntime['onProviderTurnTerminal'],
   onProviderTurnSettlement: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnSettlement']>,
+  onProviderTurnStart: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnStart']>,
 ): BoundProviderAppServerExecutionRuntime {
   return {
     transport: 'app-server',
@@ -295,6 +296,7 @@ function buildExecutionRuntime(
     onHostRef,
     onProviderTurnTerminal,
     onProviderTurnSettlement,
+    onProviderTurnStart,
   };
 }
 
@@ -342,6 +344,14 @@ export type OperationCancellationEvidence =
   | Readonly<{ kind: 'provider-turn-terminal'; terminal: ProviderTurnTerminalEvidence }>
   | Readonly<{ kind: 'interrupt-unconfirmed'; reason: string }>
   | Readonly<{ kind: 'isolated-root-closed' }>;
+
+function currentTurnTerminalEvidence(entry: StagedOperation): ProviderTurnTerminalEvidence | null {
+  const evidence = entry.cancellationEvidence;
+  if (evidence?.kind !== 'provider-turn-terminal') return null;
+  if (entry.turnSettlement !== null && evidence.terminal.providerTurnId !== entry.turnSettlement.providerTurnId)
+    return null;
+  return evidence.terminal;
+}
 
 export type SemanticOperationStageResult =
   | Readonly<{ state: 'staged'; providerRoot: ProviderRootIdentity }>
@@ -586,9 +596,10 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       await withinCancellationDeadline(completion).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
-      if (entry.cancellationEvidence?.kind !== 'provider-turn-terminal' && entry.turnSettlement !== null) {
+      if (currentTurnTerminalEvidence(entry) === null && entry.turnSettlement !== null) {
         const terminal = await entry.turnSettlement.settle();
-        if (terminal !== null) entry.cancellationEvidence = { kind: 'provider-turn-terminal', terminal };
+        if (terminal !== null && terminal.providerTurnId === entry.turnSettlement.providerTurnId)
+          entry.cancellationEvidence = { kind: 'provider-turn-terminal', terminal };
         else {
           entry.settlementRefusals += 1;
           const reason = 'the inferred turn has no authoritative cessation evidence';
@@ -599,7 +610,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         }
       }
       const evidence = entry.cancellationEvidence;
-      if (evidence?.kind !== 'provider-turn-terminal') {
+      if (currentTurnTerminalEvidence(entry) === null) {
         const unconfirmedReason =
           evidence?.kind === 'interrupt-unconfirmed'
             ? evidence.reason
@@ -845,6 +856,12 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
             },
             (settlement) => {
               entry.turnSettlement = settlement;
+              if (currentTurnTerminalEvidence(entry) === null) entry.cancellationEvidence = null;
+              entry.settlementRefusals = 0;
+            },
+            () => {
+              entry.cancellationEvidence = null;
+              entry.settlementRefusals = 0;
             },
           );
           const iterable = preparedExecution.execute(executionRuntime);

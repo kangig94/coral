@@ -249,6 +249,7 @@ export type ProviderTurnTerminalEvidence = Readonly<{
 }>;
 
 export type ProviderTurnSettlement = Readonly<{
+  providerTurnId: string;
   settle(): Promise<ProviderTurnTerminalEvidence | null>;
   close(): void;
 }>;
@@ -568,6 +569,7 @@ export type ProviderAppServerRuntime<Plan extends ProviderExecutionPlan = Provid
   ProviderRuntimeCommon<Plan> & {
     readonly transport: 'app-server';
     readonly appServerSession: AppServerSession;
+    onProviderTurnStart?(): void;
     onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
     onProviderTurnSettlement?(settlement: ProviderTurnSettlement): void;
   };
