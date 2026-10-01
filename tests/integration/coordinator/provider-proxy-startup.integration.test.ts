@@ -1,3 +1,6 @@
+import * as controlRedemption from '#src/coordinator/live/provider-proxy/control-redemption.js';
+import { ProviderProxyRoleControlUnavailableError } from '#src/coordinator/live/provider-proxy/role-control.js';
+import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname } from 'node:path';
@@ -1161,6 +1164,167 @@ async function terminalizationUncertaintyStartupCase(mode: 'atomic-unknown' | 'm
 }
 
 describe('provider proxy startup set recovery', () => {
+  it('startup contains an identity-proven dead proxy with live enforcers and discharges executing plus settled claims', async () => {
+    const executing = deadlinePrecedenceRecord();
+    const settled = providerOperationRecord('settlement-pending', {
+      job: 9,
+      locator: executing.locator,
+      operation: { ...executing.operation, jobId: randomUUID(), operationId: randomUUID() },
+    });
+    const records = [executing, settled];
+    const time = new VirtualTime();
+    const base = sandboxedRuntime(time);
+    const capsule = v3CapsuleFor(executing);
+    const capsuleStorage = capsuleBackedStorage(new InMemoryStorage(time), base.paths.coral.generation.root, capsule, {
+      discover: false,
+      unlink: () => {},
+      syncDirectoryDurableSync: () => true,
+    });
+    const identity = providerProxySetIdentityFromRecord(executing);
+    const runtime = {
+      ...base,
+      storage: capsuleStorage.storage,
+      process: {
+        ...base.process,
+        readProcessIncarnation: (pid: number) =>
+          pid === identity.guardianPid
+            ? identity.guardianIncarnation
+            : pid === identity.reaperPid
+              ? identity.reaperIncarnation
+              : null,
+        observeLiveness: (pid: number) => (pid === identity.proxyPid ? ('absent' as const) : ('alive' as const)),
+        kill: () => {
+          throw new Error('No raw reaping while enforcers are live');
+        },
+      },
+    };
+    const commit = vi.fn(async () => ({
+      kind: 'containment-absent' as const,
+      disappearanceReceipt: 'startup-guardian-confirmed',
+    }));
+    const close = vi.fn(async () => {});
+    const redemption = vi.spyOn(controlRedemption, 'redeemProviderProxyControl').mockResolvedValue({
+      kind: 'refused',
+      refusal: {
+        kind: 'downstream-role-unavailable',
+        error: new ProviderProxyRoleControlUnavailableError({
+          kind: 'role-control-unavailable',
+          role: 'proxy',
+          stage: 'connect',
+          method: null,
+          origin: 'closed',
+          controlCode: 'control_client_connect_failed',
+        }),
+        guardianAuthority: {
+          commitContainment: commit,
+          stopHeartbeats: () => {},
+          initiateControlClose: close,
+          faulted: new Promise(() => {}),
+          onFault: () => () => {},
+          onIncident: () => () => {},
+        },
+      },
+    } as never);
+    const prover = createProviderProxySetContainmentProver(runtime);
+    const inheritance = {
+      inheritProviderProxySet: (locator: ProviderOperationRecord, db: Database, signal: AbortSignal) =>
+        attemptProviderProxySetInheritance(
+          locator,
+          db,
+          {
+            runtime,
+            baseDir: dirname(runtime.paths.coral.generation.root),
+            coordinatorIdentity: {
+              instanceId: randomUUID(),
+              pid: 9999,
+              incarnation: testIncarnation(9999),
+              generation: 'gen2',
+              flavor: 'prod',
+              buildSetId: executing.operation.buildSetId,
+            },
+            operationRegistry: new LocalOperationRegistry(),
+            collectContainmentProof: prover.collectContainmentProof,
+            reapRecordedContainment: async () => {
+              throw new Error('No raw reaping');
+            },
+          },
+          signal,
+        ),
+      redeemDiscoveredCapsule: async () => {
+        throw new Error('No discovery');
+      },
+    };
+    let progressStore!: JobStore;
+    const harness = composeProductionStartup(executing, inheritance, {
+      runtime,
+      createProgressStore: (db) => {
+        insertProviderOperation(db, settled);
+        progressStore = new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+          db,
+          providers: permissiveProviderLookupPort,
+        });
+        for (const record of records) {
+          const jobId = record.operation.jobId;
+          seedTestSessionProjection(db, {
+            sessionId: jobId,
+            provider: 'codex',
+            projectRoot: process.cwd(),
+            backendNamespace: 'provider-proxy-startup-integration',
+            activeJobId: jobId,
+          });
+          const launch = startupProgressStore(db, records).readLaunchProjection(jobId)!;
+          progressStore.appendLaunchRequested(jobId, launch);
+          progressStore.appendRuntimeStarted(jobId, {
+            transport: 'app-server',
+            startTime: '2026-08-09T12:34:56.000Z',
+            providerMeta: {
+              provider: 'codex',
+              leaseState: 'acquired',
+              hostRef: {
+                provider: 'codex',
+                fingerprint: record.locator.hostFingerprint,
+                instanceId: record.operation.proxyInstanceId,
+                leaseMode: 'shared',
+              },
+            },
+          });
+        }
+        progressStore.commit((c) => {
+          appendJobTerminalRecorded(c, {
+            jobId: settled.operation.jobId,
+            sessionId: settled.operation.jobId,
+            namespace: 'provider-proxy-startup-integration',
+            project: process.cwd(),
+            correlationId: settled.operation.jobId,
+            terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+          });
+        });
+        return progressStore;
+      },
+    });
+    harness.services.connectProviderOperationRecovery({
+      releaseProviderOperationStartupOwnership: harness.ownershipService.release,
+    } as never);
+    try {
+      expect((await productionStartupOutcome(harness)).kind).toBe('fulfilled');
+      await vi.waitFor(() => expect(readProviderOperations(harness.db).records).toEqual([]));
+      expect(commit).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+      expect(progressStore.readStatus(executing.operation.jobId)?.phase).toBe('error');
+      expect(progressStore.readStatus(settled.operation.jobId)?.phase).toBe('completed');
+      for (const record of records)
+        expect(
+          progressStore.readJobEvents(record.operation.jobId).filter((event) => event.type === 'terminal'),
+        ).toHaveLength(1);
+      expect(harness.lifecycleRef.get()?.snapshot().pendingOperationCounts).toEqual([]);
+      expect(harness.fatals).not.toHaveBeenCalled();
+    } finally {
+      redemption.mockRestore();
+      harness.services.stopProviderOperationReconciler();
+      harness.db.close();
+    }
+  });
+
   it('shares one recovery promise while same-set delivery is gated', async () => {
     const record = providerOperationRecord('executing');
     const time = new VirtualTime();

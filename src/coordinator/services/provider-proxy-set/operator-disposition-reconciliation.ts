@@ -22,7 +22,7 @@ export type DurableProviderProxySetReobservation =
     }>
   | Readonly<{
       kind: 'publish-hold';
-      evidence: ProviderProxySetContainmentEvidence;
+      evidence: Exclude<ProviderProxySetContainmentEvidence, { kind: 'proxy-absent' }>;
       reapOutcome?: DurableProviderProxySetContainmentHoldOutcome;
     }>;
 
@@ -69,7 +69,13 @@ export async function reobserveDurableProviderProxySetDisposition(
   const evidence = providerProxySetContainmentEvidenceFor(proof, options.identity);
   if (evidence.kind !== 'reap-required') {
     releaseProviderProxySetContainmentProofFence(proof);
-    return { kind: 'publish-hold', evidence };
+    return {
+      kind: 'publish-hold',
+      evidence:
+        evidence.kind === 'proxy-absent'
+          ? { kind: 'enforcers-observed', observations: evidence.observations }
+          : evidence,
+    };
   }
   return options.reobserveContainment(options.identity, proof, options.signal);
 }

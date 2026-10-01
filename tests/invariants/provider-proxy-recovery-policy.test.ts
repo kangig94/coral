@@ -724,16 +724,20 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: runProviderProxyRecoveryDeadline :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: Promise.then(rejected) :: Promise.resolve(produced).then',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: catch#1 :: calls=[submit, classifyRejection] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #awaitControlReattachmentAbsence :: Promise.then(rejected) :: this.#deps.collectOperatorDispositionContainmentProof(slot.identity, abort.signal).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginContainment :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginHeartbeatLocalFailureHold :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #commitOperatorAbandonment :: Promise.catch :: slot.containmentAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #containUnavailableCapsuleProxy :: Promise.catch :: attempt() .catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #containUnavailableCapsuleProxy :: Promise.catch :: outcome.guardianAuthority .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #containmentAbsent :: Promise.catch :: authority .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.cancelAttempt, window.attemptAbort]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #recordOperatorExitRefusal :: catch#1 :: calls=[singleLineErrorSummary, this.#operatorDispositions.set] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: Promise.then(rejected) :: this.#trackDestructiveAttempt( slot, this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined), ).then',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #releaseLateReattachmentEvidence :: Promise.catch :: outcome.guardianAuthority .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #releasePartialRedemption :: Promise.catch :: refusal.guardianAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runAcquisitionCleanupRetry :: catch#1 :: calls=[this.#report, singleLineErrorSummary, this.#scheduleAcquisitionCleanupRetry] assignments=[]',
@@ -800,6 +804,17 @@ function rejectionJustification(fingerprint: string): string {
   }
   if (fingerprint.includes(' :: #recoverExactCapsule :: ')) {
     return 'Lifecycle retains and retries exact-capsule recovery after its sanctioned exact-set reaper rejects.';
+  }
+  if (fingerprint.includes(' :: #awaitControlReattachmentAbsence :: ')) {
+    return 'Failed exact proxy observation retains live claims and resumes the existing paced reattachment hold.';
+  }
+  if (fingerprint.includes(' :: #containUnavailableCapsuleProxy :: ')) {
+    return fingerprint.includes('attempt()')
+      ? 'Failed guardian containment retains the capsule and claims for the next paced exact-capsule retry.'
+      : 'Partial guardian close cannot revoke confirmed disappearance or the retained capsule retry.';
+  }
+  if (fingerprint.includes(' :: #releaseLateReattachmentEvidence :: ')) {
+    return 'Closing displaced guardian ownership cannot alter the current recovery attempt.';
   }
   if (fingerprint.includes(' :: #releasePartialRedemption :: ')) {
     return 'A partial guardian close failure cannot revoke the hold that succeeded redemption still owns.';
