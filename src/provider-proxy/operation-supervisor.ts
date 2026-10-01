@@ -54,6 +54,7 @@ import {
   type ProviderOperationPreparePermanentRefusal,
   type ProviderEventResult,
   type ProxyOperationActivationOutcome,
+  type ProxyOperationCancellationHold,
   type ProxyOperationPrepareCapacityResult,
   type ProxyOperationReleaseReceipt,
   type ProxyPreparedAppServerOperation,
@@ -119,6 +120,7 @@ export interface SemanticOperationStartHandle {
 }
 
 export interface SemanticOperationHost {
+  cancellationHold?(key: ProviderOperationKey): ProxyOperationCancellationHold | null;
   start(
     input: Readonly<{ key: ProviderOperationKey; prepared: ProxyPreparedAppServerOperation }>,
   ): SemanticOperationStartHandle;
@@ -753,13 +755,18 @@ export class OperationSupervisor {
    */
   status(
     operations: readonly OperationIdentity[],
-  ): ReadonlyArray<Readonly<{ operation: OperationIdentity; state: 'held' | 'absent' }>> {
+  ): ReturnType<typeof proxyOperationStatusResultSchema.shape.operations.parse> {
     return proxyOperationStatusResultSchema.shape.operations.parse(
       operations.map((operation) => {
         const record = this.#operations.get(operationToken(operation));
         const held =
           record !== undefined && sameOperation(record.operation, operation) && this.#ledger.get(record.key) !== null;
-        return { operation, state: held ? 'held' : 'absent' };
+        const cancellationHold = held ? this.#options.host.cancellationHold?.(record.key) : null;
+        return {
+          operation,
+          state: held ? 'held' : 'absent',
+          ...(cancellationHold === null || cancellationHold === undefined ? {} : { cancellationHold }),
+        };
       }),
     );
   }

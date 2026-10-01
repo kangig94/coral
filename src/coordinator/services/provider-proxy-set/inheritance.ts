@@ -12,6 +12,7 @@ import { providerOperationMutationAdmission } from '../../../store/provider-oper
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
   ProviderProxyRoleControlUnavailableError,
+  providerProxyRoleControlTeardownIncident,
   type ProviderProxyRoleControlAvailabilityIncident,
 } from '../../live/provider-proxy/role-control.js';
 import { createProviderProxySetAuthority } from '../../live/provider-proxy/set-authority.js';
@@ -143,7 +144,19 @@ async function collectFencedContainmentProof(
     authorizeProviderProxySetContainmentProof(identity, {
       mutationFence,
       closeAdmission: async () => {
-        if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+        signal.throwIfAborted();
+        if (mutationFence.kind !== 'holding') return;
+        let onAbort!: () => void;
+        const aborted = new Promise<void>((resolve) => {
+          onAbort = resolve;
+          signal.addEventListener('abort', onAbort, { once: true });
+        });
+        try {
+          await Promise.race([mutationFence.retryAfter, aborted]);
+          signal.throwIfAborted();
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+        }
       },
     }),
     db,
@@ -156,6 +169,11 @@ type ProviderProxySetRedemptionAttempt = Exclude<ProviderProxySetRedemptionOutco
 export type ProviderProxySetAvailabilityIncident =
   | ProviderProxyRoleControlAvailabilityIncident
   | ProviderProxySetPublicationUnknown
+  | Readonly<{ kind: 'publication-not-attempted'; role: 'guardian' | 'proxy'; reason: string }>
+  | Readonly<{
+      kind: 'recorded-containment-unavailable';
+      reason: 'authorization-missing' | 'authorization-stale' | 'store-unreadable';
+    }>
   | Readonly<{ kind: 'recovery-deadline'; timeoutMs: 45_000 }>;
 
 function dispatchProviderProxySetInheritance(
@@ -246,6 +264,8 @@ function heartbeatObservationAvailabilityReason(observation: HeartbeatObservatio
 
 export function providerProxySetAvailabilityReason(incident: ProviderProxySetAvailabilityIncident): string {
   switch (incident.kind) {
+    case 'role-control-teardown-latched':
+      return [incident.kind, incident.role, incident.stage, incident.method ?? 'none'].join(':');
     case 'role-control-unavailable':
       return [
         incident.kind,
@@ -267,7 +287,10 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
     case 'recovery-deadline':
       return `${incident.kind}:${incident.timeoutMs}`;
     case 'publication-unknown':
+    case 'publication-not-attempted':
       return `${incident.kind}:${incident.role}:${incident.reason}`;
+    case 'recorded-containment-unavailable':
+      return `${incident.kind}:${incident.reason}`;
   }
 }
 
@@ -329,7 +352,9 @@ function capsuleMatchesLocator(
   );
 }
 
-function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal): Error {
+function inheritanceRefusalError(
+  refusal: Exclude<ProviderProxyControlRedemptionRefusal, { kind: 'publication-refused' }>,
+): Error {
   switch (refusal.kind) {
     case 'guardian-role-refused':
     case 'downstream-role-refused':
@@ -346,8 +371,6 @@ function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal)
         'capsule_identity_disagreement',
         'Provider proxy redemption identities disagree with the handoff capsule.',
       );
-    case 'publication-refused':
-      return new Error(`provider_proxy_set_publication_refused:${refusal.role}:${refusal.reason}`);
   }
 }
 
@@ -438,6 +461,16 @@ async function redeemCapsule(
     return { kind: 'temporarily-unavailable', incident: redemption.incident };
   }
   if (redemption.kind === 'refused') {
+    if (redemption.refusal.kind === 'publication-refused') {
+      return {
+        kind: 'temporarily-unavailable',
+        incident: {
+          kind: 'publication-not-attempted',
+          role: redemption.refusal.role,
+          reason: redemption.refusal.reason,
+        },
+      };
+    }
     if (redemption.refusal.kind === 'downstream-role-refused') {
       redemption.refusal.guardianAuthority.stopHeartbeats();
       await redemption.refusal.guardianAuthority.initiateControlClose();
@@ -510,7 +543,11 @@ export async function attemptProviderProxySetInheritance(
   try {
     outcome = await redeem(locator, deps, signal);
   } catch (error: unknown) {
-    if (!(error instanceof ProviderProxyRoleControlUnavailableError)) throw error;
+    const incident =
+      error instanceof ProviderProxyRoleControlUnavailableError
+        ? error.incident
+        : providerProxyRoleControlTeardownIncident(error);
+    if (incident === null) throw error;
     try {
       const proof = await collectFencedContainmentProof(identity, db, deps, signal);
       const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
@@ -531,17 +568,21 @@ export async function attemptProviderProxySetInheritance(
         ) {
           return reapResult;
         }
-        throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`, { cause: error });
+        return {
+          kind: 'temporarily-unavailable',
+          incident: { kind: 'recorded-containment-unavailable', reason: reapResult.kind },
+        };
       }
       releaseProviderProxySetContainmentProofFence(proof);
     } catch (proofError: unknown) {
+      if (signal.aborted && proofError === signal.reason) throw proofError;
       throw new AggregateError(
         [error, proofError],
         'Provider proxy role control was unavailable and containment proof failed.',
         { cause: proofError },
       );
     }
-    return { kind: 'temporarily-unavailable', incident: error.incident };
+    return { kind: 'temporarily-unavailable', incident };
   }
   if (outcome.kind !== 'not-bequeathed') return outcome;
   const proof = await collectFencedContainmentProof(identity, db, deps, signal);
@@ -566,7 +607,10 @@ export async function attemptProviderProxySetInheritance(
   ) {
     return reapResult;
   }
-  throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`);
+  return {
+    kind: 'temporarily-unavailable',
+    incident: { kind: 'recorded-containment-unavailable', reason: reapResult.kind },
+  };
 }
 
 /**

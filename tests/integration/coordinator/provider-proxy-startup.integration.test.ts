@@ -63,6 +63,7 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { createProviderOperationStartupOwnership } from '#src/coordinator/services/recovery/provider-operation-startup-ownership.js';
 import type { ProviderOperationStartupOwnership } from '#src/jobs/startup.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { createHandoffCoresHarness } from '#tests/integration/coordinator/handoff-cores-harness.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -702,6 +703,7 @@ async function startRoleEndpoint(
     fields: Record<string, unknown>;
     time: VirtualTime;
     open(params: unknown): Promise<void>;
+    challenges?: ControlChallengeAuthority;
   }>,
 ) {
   let challenge = 0;
@@ -733,7 +735,7 @@ async function startRoleEndpoint(
         ],
       ]),
     },
-    challenges,
+    challenges: options.challenges ?? challenges,
     observer: { onControlLost: () => undefined },
     timer: options.time,
     holderAuthority: createControlHolderAuthority(),
@@ -744,7 +746,7 @@ async function startRoleEndpoint(
 }
 
 async function roleRecoveryStartupCase(
-  mode: 'operation-set-disagreement' | 'protocol-violation' | 'grant-replayed' | 'timeout',
+  mode: 'operation-set-disagreement' | 'protocol-violation' | 'grant-replayed' | 'timeout' | 'teardown-latched',
 ) {
   const record = deadlinePrecedenceRecord();
   const time = new VirtualTime();
@@ -779,6 +781,17 @@ async function roleRecoveryStartupCase(
       fields: guardianFields(record, [record.operation]),
       time,
       open: guardianOpen,
+      ...(mode !== 'teardown-latched'
+        ? {}
+        : {
+            challenges: {
+              issueFirstChallenge: () => ({ accepted: false as const, reason: 'teardown-latched' as const }),
+              admitSuccessor: () => ({ accepted: false as const, reason: 'teardown-latched' as const }),
+              reattachControl: () => ({ accepted: false as const, reason: 'teardown-latched' as const }),
+              controlIsLive: () => false,
+              echoChallenge: () => ({ accepted: false as const, reason: 'teardown-latched' as const }),
+            },
+          }),
     }),
     startRoleEndpoint({
       path: record.locator.reaper.controlEndpoint,
@@ -1459,6 +1472,33 @@ describe('provider proxy startup set recovery', () => {
 });
 
 describe('production provider proxy startup classification', () => {
+  it('reaches running with durable retry ownership after teardown-latched inheritance', async () => {
+    const cores = createHandoffCoresHarness();
+    try {
+      const booted = await cores.bootCore({
+        instanceId: 'teardown-latched-successor',
+        runStartupRecoveryFn: async (deps) => {
+          const result = await roleRecoveryStartupCase('teardown-latched');
+          expect(result.outcome.kind).toBe('fulfilled');
+          expect(result.fatalCalls).toBe(0);
+          expect(result.dueRows).toHaveLength(1);
+          expect(result.current?.lastError?.code).toBe('provider_proxy_set_recovery_unavailable');
+          expect(result.current?.lastError?.message).toContain('role-control-teardown-latched');
+          return deps.recoverPersistedDiscussFn({
+            knownDiscussSources: deps.knownDiscussSources,
+            getDiscussStoreForSource: deps.getDiscussStoreForSource,
+            getDiscussContext: deps.getDiscussContext,
+            createInvocationContext: deps.createInvocationContext,
+            signal: deps.signal,
+          });
+        },
+      });
+      expect(booted.core.runtimeState.getLifecycle()).toBe('running');
+    } finally {
+      await cores.cleanup();
+    }
+  });
+
   it('classifies terminalization uncertainty only with causal retry safety', async () => {
     const atomic = await terminalizationUncertaintyStartupCase('atomic-unknown');
     const metadata = await terminalizationUncertaintyStartupCase('metadata');

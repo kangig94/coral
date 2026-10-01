@@ -898,6 +898,140 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
     await semantic.host.stop({ key: operationB, cause: 'user_abort' });
   });
 
+  const siblingDrainFailures = [
+    'unconfirmed-interrupt',
+    'cancellation-deadline',
+    'sibling-cancellation-deadline',
+    'quarantined-sibling-settlement',
+    'quarantined-sibling-cancellation',
+  ];
+  it.each(siblingDrainFailures)(
+    'bounds sibling draining through quarantine before relinquishing an unsafe set: %s',
+    async (failureMode) => {
+      vi.useFakeTimers();
+      const { proxy, ledger, emittedEvents } = createTestProxy();
+      const operationA = testKey('op-a');
+      const operationB = { jobId: 'job-2', operationId: 'op-b' };
+      const prepared = preparedFixture();
+      prepareAndActivate(ledger, operationA, prepared);
+      prepareAndActivate(ledger, operationB, prepared);
+      const hostRef = sharedHostRef();
+      const shared = sharedHostAuthority();
+      const continueB = deferred();
+      let siblingSignal!: AbortSignal;
+      const closeA = vi.fn();
+      providerRegistryDouble.rehydrateBinding
+        .mockReturnValueOnce({
+          ok: true,
+          value: fakeBoundProvider({
+            supportsInterrupt: true,
+            executionHostRef: hostRef,
+            openReplacement: async () => ({ hostRef, close: closeA }),
+            execute: async function* (execRuntime) {
+              await new Promise<void>((resolve) => {
+                if (failureMode === 'cancellation-deadline') return;
+                execRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
+              });
+              yield { kind: 'suspended', reason: 'interrupt_unconfirmed' };
+            },
+          }),
+        })
+        .mockReturnValueOnce({
+          ok: true,
+          value: fakeBoundProvider({
+            supportsInterrupt: true,
+            executionHostRef: hostRef,
+            openReplacement: async () => ({ hostRef, close: vi.fn() }),
+            execute: async function* (execRuntime) {
+              siblingSignal = execRuntime.signal;
+              yield { kind: 'progress', message: 'sibling-ready' };
+              await continueB.promise;
+              execRuntime.onProviderTurnTerminal({
+                kind: 'provider-turn-terminal',
+                providerTurnId: 'turn-b',
+                status: 'completed',
+              });
+              yield terminalCompleted;
+            },
+          }),
+        });
+      const onRelinquish = vi.fn(() => {
+        void semantic.shutdown('signal_abort').catch(() => {});
+      });
+      const semantic = createSemanticOperationRuntime({
+        runtime,
+        hostAuthority: shared.authority,
+        getProxy: () => proxy,
+        onRelinquish,
+      });
+      await semantic.ensureProviderRoot(operationA, prepared);
+      await semantic.ensureProviderRoot(operationB, prepared);
+      await semantic.host.start({ key: operationA, prepared }).result;
+      const startedB = semantic.host.start({ key: operationB, prepared });
+      await startedB.result;
+      const stopped = Promise.resolve(semantic.host.stop({ key: operationA, cause: 'signal_abort' })).catch(
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(
+        failureMode.startsWith('quarantined-') ? 0 : SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
+      );
+      const failure = await stopped;
+      expect(failure).toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
+      expect(siblingSignal.aborted).toBe(false);
+      expect(onRelinquish).not.toHaveBeenCalled();
+      expect(closeA).not.toHaveBeenCalled();
+      expect(() => semantic.stage(testKey('op-c'), prepared)).toThrow(
+        expect.objectContaining({ code: 'semantic_operation_admission_closed' }),
+      );
+      await expect(semantic.host.stop({ key: operationA, cause: 'signal_abort' })).rejects.toBe(failure);
+      if (failureMode.startsWith('quarantined-')) {
+        expect(semantic.host.cancellationHold?.(operationA)).toMatchObject({ state: 'draining', pendingSiblings: 1 });
+        await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS - 1);
+        expect(semantic.host.cancellationHold?.(operationA)?.state).toBe('draining');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(semantic.host.cancellationHold?.(operationA)).toMatchObject({
+          state: 'quarantined',
+          drainTimeoutMs: SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
+          pendingSiblings: 1,
+          exit: 'sibling-settlement-or-cancellation',
+        });
+        await vi.advanceTimersByTimeAsync(86_400_000);
+        expect(siblingSignal.aborted).toBe(false);
+        expect(onRelinquish).not.toHaveBeenCalled();
+        expect(closeA).not.toHaveBeenCalled();
+        expect(shared.forceClose).not.toHaveBeenCalled();
+        expect(() => semantic.stage(testKey('op-c'), prepared)).toThrow(
+          expect.objectContaining({ code: 'semantic_operation_admission_closed' }),
+        );
+        await expect(semantic.host.stop({ key: operationA, cause: 'signal_abort' })).rejects.toBe(failure);
+      }
+      if (failureMode === 'sibling-cancellation-deadline' || failureMode === 'quarantined-sibling-cancellation') {
+        const stopB = Promise.resolve(semantic.host.stop({ key: operationB, cause: 'signal_abort' })).catch(
+          (error: unknown) => error,
+        );
+        await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS);
+        expect(await stopB).toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed', key: operationB });
+        expect(onRelinquish).toHaveBeenCalledExactlyOnceWith(failure);
+        expect(semantic.host.cancellationHold?.(operationA)).toMatchObject({
+          state: 'relinquishing',
+          pendingSiblings: 0,
+        });
+        return;
+      }
+      continueB.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(emittedEvents.some(({ key, event }) => key === operationB && event === terminalCompleted)).toBe(true);
+      expect(onRelinquish).not.toHaveBeenCalled();
+      await startedB.abortAndRelease();
+      expect(onRelinquish).toHaveBeenCalledExactlyOnceWith(failure);
+      expect(shared.forceClose).not.toHaveBeenCalled();
+      expect(semantic.host.cancellationHold?.(operationA)).toMatchObject({
+        state: 'relinquishing',
+        pendingSiblings: 0,
+      });
+    },
+  );
+
   it('does not authenticate cancellation from a generic provider terminal', async () => {
     const { proxy, ledger } = createTestProxy();
     const operationA = testKey('op-a');

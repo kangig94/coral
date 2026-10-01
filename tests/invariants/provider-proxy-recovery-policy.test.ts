@@ -746,7 +746,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #runReattachmentHoldAttempt :: Promise.then(rejected) :: this.#trackDestructiveAttempt( slot, this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined), ).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #trackDestructiveAttempt :: Promise.then(rejected) :: operation.then',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
-  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[collectFencedContainmentProof, providerProxySetContainmentEvidenceFor, deps.reapRecordedContainment, releaseProviderProxySetContainmentProofFence, releaseProviderProxySetContainmentProofFence] assignments=[reapResult]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[providerProxyRoleControlTeardownIncident, collectFencedContainmentProof, providerProxySetContainmentEvidenceFor, deps.reapRecordedContainment, releaseProviderProxySetContainmentProofFence, releaseProviderProxySetContainmentProofFence] assignments=[reapResult]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: buildInheritedAuthority :: catch#1 :: calls=[closeRedeemedProviderProxyControl] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: readProviderHostUnserviceableEvidence :: catch#1 :: calls=[] assignments=[]',
