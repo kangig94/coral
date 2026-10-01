@@ -42,6 +42,7 @@ import {
   ProxyControlProtocolError,
   type ProviderOperationPreparePermanentRefusal,
   type ProxyOperationPrepareCapacityResult,
+  type ProxyOperationCancellationHold,
   type ProxyPreparedAppServerOperation,
 } from './protocol.js';
 
@@ -394,10 +395,15 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
   let relinquishmentFailure: SemanticOperationCancellationUnconfirmedError | null = null;
   const relinquishmentSiblings = new Set<StagedOperation>();
   let relinquishmentNotified = false;
+  let relinquishmentState: ProxyOperationCancellationHold['state'] = 'draining';
+  let relinquishmentTimer: ReturnType<typeof runtime.time.setTimeout> | null = null;
 
   const notifyRelinquishment = (): void => {
     if (relinquishmentFailure === null || relinquishmentNotified || relinquishmentSiblings.size > 0) return;
     relinquishmentNotified = true;
+    relinquishmentState = 'relinquishing';
+    if (relinquishmentTimer !== null) runtime.time.clearTimeout(relinquishmentTimer);
+    relinquishmentTimer = null;
     options.onRelinquish?.(relinquishmentFailure);
   };
 
@@ -433,6 +439,15 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         relinquishmentSiblings.delete(sibling);
         notifyRelinquishment();
       });
+    }
+    if (relinquishmentSiblings.size > 0) {
+      // Quarantine retains ownership without stopping siblings; their settlement or cancellation ends it.
+      relinquishmentTimer = runtime.time.setTimeout(() => {
+        relinquishmentTimer = null;
+        relinquishmentState = 'quarantined';
+        backendLog.warn(`proxy: cancellation quarantine retains live siblings: ${failure.message}`);
+      }, SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS);
+      relinquishmentTimer.unref?.();
     }
     notifyRelinquishment();
     return failure;
@@ -749,6 +764,18 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
   };
 
   const host: SemanticOperationHost = {
+    cancellationHold: (key) => {
+      if (relinquishmentFailure === null || operationKeyString(key) !== operationKeyString(relinquishmentFailure.key)) {
+        return null;
+      }
+      return {
+        state: relinquishmentState,
+        reason: relinquishmentFailure.message,
+        drainTimeoutMs: SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
+        pendingSiblings: relinquishmentSiblings.size,
+        exit: 'sibling-settlement-or-cancellation',
+      };
+    },
     start: ({ key, prepared }) => {
       assertAdmissionOpen();
       const entry = requireStaged(key);

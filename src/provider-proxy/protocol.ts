@@ -1047,8 +1047,8 @@ export const proxyOperationAttachResultSchema = z.discriminatedUnion('state', [
 
 /**
  * The proxy echoes both correlation and build identity so the observer can reject a well-formed answer from
- * the wrong batch or set. Rows deliberately expose only ledger liveness: reconciliation attempt state stays
- * confined to `operation.inspect.v1`, whose more detailed vocabulary carries different authority semantics.
+ * the wrong batch or set. Rows expose ledger liveness and any retained cancellation hold. Reconciliation
+ * attempt state stays confined to `operation.inspect.v1`, whose details carry different authority semantics.
  */
 export const proxyOperationStatusResultSchema = z
   .object({
@@ -1064,11 +1064,25 @@ export const proxyOperationStatusResultSchema = z
         .object({
           operation: operationIdentitySchema,
           state: z.enum(['held', 'absent']),
+          cancellationHold: z
+            .object({
+              state: z.enum(['draining', 'quarantined', 'relinquishing']),
+              reason: z.string(),
+              drainTimeoutMs: z.number().int().positive().safe(),
+              pendingSiblings: nonNegativeSafeIntegerSchema,
+              exit: z.literal('sibling-settlement-or-cancellation'),
+            })
+            .strict()
+            .optional(),
         })
         .strict(),
     ),
   })
   .strict();
+
+export type ProxyOperationCancellationHold = NonNullable<
+  z.output<typeof proxyOperationStatusResultSchema>['operations'][number]['cancellationHold']
+>;
 
 const proxyOperationInspectPreExecutionBaseSchema = z.object({
   reservation: reservationSchema,

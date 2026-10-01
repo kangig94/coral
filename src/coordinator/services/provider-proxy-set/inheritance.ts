@@ -144,7 +144,19 @@ async function collectFencedContainmentProof(
     authorizeProviderProxySetContainmentProof(identity, {
       mutationFence,
       closeAdmission: async () => {
-        if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+        signal.throwIfAborted();
+        if (mutationFence.kind !== 'holding') return;
+        let onAbort!: () => void;
+        const aborted = new Promise<void>((resolve) => {
+          onAbort = resolve;
+          signal.addEventListener('abort', onAbort, { once: true });
+        });
+        try {
+          await Promise.race([mutationFence.retryAfter, aborted]);
+          signal.throwIfAborted();
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+        }
       },
     }),
     db,
@@ -563,6 +575,7 @@ export async function attemptProviderProxySetInheritance(
       }
       releaseProviderProxySetContainmentProofFence(proof);
     } catch (proofError: unknown) {
+      if (signal.aborted && proofError === signal.reason) throw proofError;
       throw new AggregateError(
         [error, proofError],
         'Provider proxy role control was unavailable and containment proof failed.',

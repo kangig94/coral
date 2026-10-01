@@ -98,6 +98,16 @@ Retry-safe incidents therefore travel a repeatable, non-consuming channel and re
 
 The destructive boundary encodes the same distinction. Reaping a set with live claims requires a containment-qualified terminal fault; faultless retirement may reach `stopAndReap` only with literal `liveClaims: 0`. The rejected alternative is the old one-axis rule that treated “may have taken effect” as authority loss by itself. Under that rule, an unrelated replay-safe settlement failure could reap executing siblings even though their supervision remained intact. Approximate idleness or a non-consuming incident is likewise not a substitute for either qualification.
 
+An unconfirmed operation cancellation closes proxy admission while live siblings drain for
+`SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS` (10 seconds, the existing SIGTERM plus SIGKILL grace).
+Expiry moves the runtime to retained quarantine; it does not stop a sibling or invoke set relinquishment.
+The proxy keeps the unresolved cancellation and its rejected promise, and `operation.status.v1` reports
+its `cancellationHold` with the phase, reason, bound, remaining sibling count, and exit. The coordinator's
+unsettled operation record remains recovery-owned. A sibling leaves the hold after settlement releases
+its semantic handle, or after its own cancellation has completed or become unconfirmed. Once every
+sibling has left, the proxy invokes set relinquishment exactly once. Pump completion alone does not
+discharge a started sibling's settlement obligation. No operator action is needed for either exit.
+
 ### 3.2 Why workflow slot identity is not job identity
 
 A workflow slot is stable semantic lineage; a child job is one runtime execution of that slot. Each newly launched child therefore receives a separately minted canonical UUID job id, while durable child rows carry the slot identity separately. Recovery reconstructs the current mapping by reusing the durable job id for a slot with a current child row, mints an id for a slot without a row, and mints a new id for the next replacement generation when a pending continuation lease requires one. Operator surfaces preserve the same distinction by carrying and displaying slot identity separately, and a proxy launch rejection identifies the operation-identity component it rejected.
