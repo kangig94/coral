@@ -394,6 +394,39 @@ describe('provider proxy control redemption', () => {
     expect(unavailable.kind).toBe('unavailable');
   });
 
+  it('retains verified guardian containment ownership when the proxy connection is unavailable', async () => {
+    const [guardian, reaper] = sessions();
+    for (const session of [guardian, reaper])
+      mockedEstablishRoleControl.mockImplementationOnce(async (opened) => {
+        opened.push(session.client);
+        return session as never;
+      });
+    const error = new ProviderProxyRoleControlUnavailableError({
+      kind: 'role-control-unavailable',
+      role: 'proxy',
+      stage: 'connect',
+      method: null,
+      origin: 'closed',
+      controlCode: 'control_client_connect_failed',
+    });
+    mockedEstablishRoleControl.mockRejectedValueOnce(error);
+    const outcome = await redeemProviderProxyControl(
+      capsule,
+      setIdentity,
+      { runtime: runtimeWithNow(), coordinatorIdentity },
+      new AbortController().signal,
+    );
+    expect(outcome.kind).toBe('refused');
+    if (outcome.kind !== 'refused' || outcome.refusal.kind !== 'downstream-role-unavailable')
+      throw new Error('Missing guardian successor');
+    expect(stop).not.toHaveBeenCalled();
+    expect(guardian.client.close).not.toHaveBeenCalled();
+    outcome.refusal.guardianAuthority.stopHeartbeats();
+    await outcome.refusal.guardianAuthority.initiateControlClose();
+    expect(guardian.client.close).toHaveBeenCalledOnce();
+    expect(reaper.client.close).toHaveBeenCalledOnce();
+  });
+
   it('returns verified guardian ownership when a downstream role refuses', async () => {
     const [guardian] = sessions();
     const remote = new ProviderProxyRoleControlRemoteError(

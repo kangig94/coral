@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ProviderOperationAtomicTerminalizationError } from '#src/jobs/provider-operation-terminalization.js';
-import { ProviderProxyRoleControlUnavailableError } from '#src/coordinator/live/provider-proxy/role-control.js';
+import {
+  ProviderProxyRoleControlUnavailableError,
+  ProviderProxyRoleControlRemoteError,
+} from '#src/coordinator/live/provider-proxy/role-control.js';
+import { ControlClientError } from '#src/provider-proxy/control-client.js';
 import {
   type ProviderProxyRecoveryConsumerSeam,
   type ProviderProxyRecoveryAnySource,
@@ -271,6 +275,52 @@ describe('provider proxy recovery producer classification', () => {
     expect(disposeLateEvidence).toHaveBeenCalledOnce();
     expect(disposeLateEvidence).toHaveBeenCalledWith(absence.proof, 'absence');
   });
+
+  it.each(['redemption', 'absence'] as const)(
+    'transfers reaping proof and disposes partial redemption when %s arrives first',
+    async (first) => {
+      const absence = await testContainmentProof(true);
+      const redemption = {
+        kind: 'proxy-unavailable',
+        setIdentity: absence.identity,
+        guardianAuthority: { stopHeartbeats: vi.fn(), initiateControlClose: vi.fn(async () => {}) },
+        incident: unavailable.incident,
+      };
+      const evidence = vi.fn();
+      const fatal = vi.fn();
+      const globalFatal = vi.fn();
+      const disposeLateEvidence = vi.fn();
+      const dispatcher = createTestProviderProxyRecoveryDispatcher(
+        {
+          'containment-proof': async () => absence.proof,
+          'capsule-redemption': () => redemption as never,
+        },
+        globalFatal,
+      );
+      const turn = dispatcher.begin(
+        'exact-capsule-recovery',
+        { setIdentity: absence.identity },
+        {
+          evidence,
+          retry: vi.fn(),
+          fatal,
+          disposeLateEvidence,
+        },
+      );
+      for (const sourceId of [first, first === 'redemption' ? 'absence' : 'redemption']) {
+        turn.start({
+          sourceId,
+          producerId: sourceId === 'absence' ? 'containment-proof' : 'capsule-redemption',
+          input: {},
+        } as ProviderProxyRecoveryAnySource);
+        await flushRecoveryTurn();
+      }
+      expect(evidence).toHaveBeenCalledExactlyOnceWith(absence.proof, 'absence');
+      expect(disposeLateEvidence).toHaveBeenCalledExactlyOnceWith(redemption, 'redemption');
+      expect(fatal).not.toHaveBeenCalled();
+      expect(globalFatal).not.toHaveBeenCalled();
+    },
+  );
 
   it('disposes cached absence proof when exact recovery retires on conflicting evidence', async () => {
     const absence = await testContainmentProof(true);
@@ -623,6 +673,40 @@ describe('provider proxy recovery producer classification', () => {
     }).toEqual({ roleControlCalls: 0, containmentProofCalls: 1 });
     expect(retry).toHaveBeenCalledOnce();
   });
+
+  it.each(['open', 'heartbeat'] as const)(
+    'keeps a typed teardown-latched %s refusal retryable while rejecting message-only matches',
+    async (stage) => {
+      const error = (teardown: boolean) =>
+        new ProviderProxyRoleControlRemoteError(
+          'guardian',
+          stage,
+          stage === 'open' ? 'guardian.handoff-redeem.v1' : 'guardian.heartbeat.v1',
+          new ControlClientError('control_call_failed', 'teardown-latched', 'remote-response', {
+            kind: 'json-rpc-error',
+            jsonRpcCode: -32600,
+            protocolCode: 'invalid_state',
+            admissionReason: teardown && stage === 'open' ? 'teardown-latched' : null,
+            heartbeatRefusal:
+              teardown && stage === 'heartbeat' ? { reason: 'teardown-latched', nextHeartbeatChallenge: null } : null,
+          }),
+        );
+      for (const producerId of ['set-inheritance', 'capsule-redemption'] as const) {
+        expect(await observe(producerId, { kind: 'throw', error: error(true) })).toEqual({
+          evidence: 0,
+          retry: 1,
+          localFatal: 0,
+          globalFatal: 0,
+        });
+        expect(await observe(producerId, { kind: 'throw', error: error(false) })).toEqual({
+          evidence: 0,
+          retry: 0,
+          localFatal: 1,
+          globalFatal: 1,
+        });
+      }
+    },
+  );
 
   it('classifies every closed producer with positive and opposite facts', async () => {
     const record = providerOperationRecord('executing');

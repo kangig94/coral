@@ -65,11 +65,19 @@ Run project review agents by tier taxonomy, consolidate findings, issue a verdic
     ## Phase 4 — Consolidate
 
     Apply merge rules to all agent results:
-    1. **Verdict mapping**: agent PASS → no BLOCKING; agent NEEDS WORK → STRONG findings
+    1. **A verdict never lowers a finding.** A finding keeps the severity its agent labelled it with, and
+       only that label can make it BLOCKING — the agent is where the fact is known. A verdict floors only
+       that agent's *unlabelled* findings: `PASS` → MINOR; `FAIL`, `NEEDS WORK`, and the `NO VERDICT`
+       recorded for an INVOKED agent whose report carries none → STRONG. A finding labelled in a scale
+       this table cannot order is labelled, not unlabelled: carry its label verbatim, never floor it and
+       never drop it, and say that rule 3 could not order it. A `PASS` beside a labelled BLOCKING
+       contradicts itself — carry the BLOCKING and name the contradiction in that agent's `Key Findings`
+       cell. An agent reaching `NEEDS WORK` from its own score floor with nothing above MINOR is not
+       contradicting itself, and does not move the run verdict on its own.
     2. **Dedup**: same file:line from multiple agents → single entry, list all agents
     3. **Severity**: agents disagree → use higher severity
     4. **Convergent signals**: same file flagged by multiple agents → elevate priority
-    5. **Root cause**: tier 1 finding that explains tier 3 symptom → connect and elevate
+    5. **Root cause**: tier 1 finding that explains tier 3 symptom → connect and elevate priority
 
     Issue final verdict:
     | Condition | Verdict |
@@ -85,7 +93,7 @@ Run project review agents by tier taxonomy, consolidate findings, issue a verdic
 
     | Tier | Agent | Status | Verdict | Key Findings |
     |------|-------|--------|---------|--------------|
-    | {1/2/3/doc} | {agent} | INVOKED/SKIPPED/DEFERRED | PASS/FAIL/- | {summary, skip reason, or deferral reason} |
+    | {1/2/3/doc} | {agent} | INVOKED/SKIPPED/DEFERRED | PASS/NEEDS WORK/FAIL/NO VERDICT/- | {summary, skip reason, or deferral reason} |
 
     ### Strengths
     - {Positive observations from agents with file:line evidence}

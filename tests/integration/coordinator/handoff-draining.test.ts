@@ -50,7 +50,8 @@ describe('administratively draining coordinator', () => {
     const runtime = {
       time: createRealTimePort(),
       env: { platform: () => 'linux' },
-    } as unknown as Pick<Runtime, 'time' | 'env'>;
+      process: { observeLiveness: () => 'alive' },
+    } as unknown as Pick<Runtime, 'time' | 'env' | 'process'>;
 
     let thrown: unknown;
     try {
@@ -109,7 +110,8 @@ describe('IPC-saturated coordinator', () => {
     const runtime = {
       time: createRealTimePort(),
       env: { platform: () => 'linux' },
-    } as unknown as Pick<Runtime, 'time' | 'env'>;
+      process: { observeLiveness: () => 'alive' },
+    } as unknown as Pick<Runtime, 'time' | 'env' | 'process'>;
 
     await expect(
       bindWithHandoff({

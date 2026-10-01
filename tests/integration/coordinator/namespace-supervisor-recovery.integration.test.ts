@@ -1089,8 +1089,8 @@ describe('namespace supervisor recovery', () => {
       if (owner === null || servingPid === undefined) throw new Error('Fixture processes are unavailable');
       pids.add(servingPid);
       await record.request(join(target.root, 'bridge', 'coral-backend.cjs'), buildSetId(target.root));
-      await waitForCondition(() => record.read().attempt?.phase === 'admitted', 10_000);
-      attemptPid = record.read().attempt?.child.pid;
+      await waitForCondition(() => record.memory()?.attempt?.phase === 'admitted', 10_000);
+      attemptPid = record.memory()?.attempt?.child?.pid;
       if (attemptPid === undefined) throw new Error('Attempt has no PID');
       pids.add(attemptPid);
       process.kill(attemptPid, 'SIGSTOP');

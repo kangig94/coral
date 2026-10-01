@@ -38,6 +38,12 @@ export type ProviderProxyRecoveryOpenMethod = Extract<
 
 export type ProviderProxyRoleControlAvailabilityIncident =
   | Readonly<{
+      kind: 'role-control-teardown-latched';
+      role: ProviderProxyRole;
+      stage: 'open' | 'heartbeat';
+      method: ProviderProxyRoleOpenMethod | ProviderProxyHeartbeatMethod | null;
+    }>
+  | Readonly<{
       kind: 'role-control-unavailable';
       role: ProviderProxyRole;
       stage: 'connect' | 'open' | 'heartbeat';
@@ -116,6 +122,21 @@ export class ProviderProxyRoleControlRemoteError extends Error {
     this.remoteFailure = remoteFailure;
     Object.setPrototypeOf(this, ProviderProxyRoleControlRemoteError.prototype);
   }
+}
+
+export function providerProxyRoleControlTeardownIncident(
+  error: unknown,
+): Extract<ProviderProxyRoleControlAvailabilityIncident, { kind: 'role-control-teardown-latched' }> | null {
+  if (!(error instanceof ProviderProxyRoleControlRemoteError)) return null;
+  const failure = error.remoteFailure;
+  if (failure.kind !== 'json-rpc-error') return null;
+  if (
+    (error.stage === 'open' && failure.admissionReason === 'teardown-latched') ||
+    (error.stage === 'heartbeat' && failure.heartbeatRefusal?.reason === 'teardown-latched')
+  ) {
+    return { kind: 'role-control-teardown-latched', role: error.role, stage: error.stage, method: error.method };
+  }
+  return null;
 }
 
 const RECOVERY_OPEN_METHODS = new Set<string>([

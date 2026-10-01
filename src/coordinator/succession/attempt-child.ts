@@ -86,7 +86,7 @@ export type SuccessionAttempt = Readonly<{
 
 function retireAttemptChild(child: SuccessionAttemptProcess): void {
   if (child.coordinatorPid === undefined) child.kill();
-  else child.send({ kind: 'coral-sentinel-retire-child' });
+  else if (child.connected) child.send({ kind: 'coral-sentinel-retire-child' }, () => {});
 }
 
 export async function startSuccessionAttempt(options: {

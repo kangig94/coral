@@ -70,6 +70,7 @@ export function createCoordinatorExecutionAssembly(
     world,
     listExecutionServices: services.listExecutionServices,
     getLifecycleController: () => state.lifecycleController,
+    isLifecycleRunning: () => core.runtimeState.getLifecycle() === 'running',
     getProgressStore,
     internalJobAbortRegistry,
     requestStops: services.requestStops,

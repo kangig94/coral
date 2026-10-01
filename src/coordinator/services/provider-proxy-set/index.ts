@@ -12,7 +12,6 @@ import {
 import { type HandoffCapsule, type RedeemableHandoffCapsule } from '../../../provider-proxy/handoff-capsule.js';
 import {
   providerProxySetEnforcerVerdict,
-  type ProviderProxySetContainmentEvidence,
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
@@ -912,7 +911,10 @@ type DurableOperatorDispositionWriteStatus =
       kind: 'successor-observed';
       observedByIncarnation: string;
       observedAtMs: number;
-      evidence: ProviderProxySetContainmentEvidence | Readonly<{ kind: 'canonical-hold-observation' }>;
+      evidence: Extract<
+        DurableProviderProxySetOperatorDispositionRecord['status'],
+        { kind: 'successor-observed' }
+      >['evidence'];
     }>;
 
 type PendingOperatorDispositionWrite = Readonly<{ timer: TimerHandle }>;
@@ -1545,7 +1547,10 @@ export class ProviderProxySetLifecycle {
 
   #recordDurableSetReobservation(
     records: readonly DurableProviderProxySetOperatorDispositionRecord[],
-    evidence: ProviderProxySetContainmentEvidence,
+    evidence: Extract<
+      DurableProviderProxySetOperatorDispositionRecord['status'],
+      { kind: 'successor-observed' }
+    >['evidence'],
     reapOutcome?: DurableProviderProxySetContainmentHoldOutcome,
   ): ProviderProxySetOperatorDispositionRecording {
     const next = records.map((record) => ({
@@ -4114,6 +4119,62 @@ export class ProviderProxySetLifecycle {
     this.#recoverExactCapsule(recovering);
   }
 
+  #containUnavailableCapsuleProxy(
+    slot: CapsuleRecoveringSlot,
+    outcome: Extract<ProviderProxySetRedemptionOutcome, { kind: 'proxy-unavailable' }>,
+  ): void {
+    const token = slot.attemptToken;
+    const abort = new AbortController();
+    slot.attemptAbort = abort;
+    const attempt = async (): Promise<void> => {
+      const proof = await this.#deps.collectOperatorDispositionContainmentProof(slot.identity, abort.signal);
+      let transferred = false;
+      try {
+        const evidence = providerProxySetContainmentEvidenceFor(proof, slot.identity);
+        if (abort.signal.aborted || this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
+        if (
+          evidence.kind !== 'proxy-absent' ||
+          verifyProviderProxySetContainmentProofCurrent(proof, slot.identity).kind !== 'current'
+        )
+          return;
+        const commit = await this.#trackDestructiveAttempt(
+          slot,
+          outcome.guardianAuthority.commitContainment(abort.signal),
+        );
+        if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
+        if (
+          commit.kind !== 'containment-absent' ||
+          verifyProviderProxySetContainmentProofCurrent(proof, slot.identity).kind !== 'current'
+        )
+          return;
+        transferred = true;
+        this.#containmentAbsent(slot.identity, commit.disappearanceReceipt, proof);
+      } finally {
+        if (!transferred) releaseProviderProxySetContainmentProofFence(proof);
+      }
+    };
+    void attempt()
+      .catch((error: unknown) => {
+        this.#deps.onError?.(`Provider capsule proxy-loss containment failed: ${singleLineErrorSummary(error)}`);
+      })
+      .finally(() => {
+        outcome.guardianAuthority.stopHeartbeats();
+        void outcome.guardianAuthority
+          .initiateControlClose()
+          .catch((error: unknown) =>
+            this.#deps.onError?.(`Partial provider proxy control close failed: ${singleLineErrorSummary(error)}`),
+          );
+        if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
+        slot.attemptAbort = null;
+        slot.completedAttempts += 1;
+        slot.retryTimer = this.#deps.time.setTimeout(() => {
+          slot.retryTimer = null;
+          this.#recoverExactCapsule(slot);
+        }, retryDelayMs(slot.completedAttempts));
+        slot.retryTimer.unref?.();
+      });
+  }
+
   #recoverExactCapsule(slot: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>): void {
     if (this.#slots.get(slot.key) !== slot || slot.recoveryPhase !== 'redemption') return;
     const dispatcher = this.#deps.recoveryDispatcher;
@@ -4136,6 +4197,10 @@ export class ProviderProxySetLifecycle {
             const outcome = value as Exclude<ProviderProxySetRedemptionOutcome, { kind: 'temporarily-unavailable' }>;
             if (outcome.kind === 'protocol-incompatible') {
               this.#dispositionProtocolIncompatibleCapsule(slot, outcome.role, outcome.method);
+              return;
+            }
+            if (outcome.kind === 'proxy-unavailable') {
+              this.#containUnavailableCapsuleProxy(slot, outcome);
               return;
             }
             this.#slots.delete(slot.key);
@@ -4463,6 +4528,7 @@ export class ProviderProxySetLifecycle {
           }
           if (sourceId === 'absence') {
             const proof = value as ProviderProxySetFencedContainmentProof;
+            if (this.#beginProxyLossContainment(slot, window, proof)) return;
             const reapAbort = new AbortController();
             window.attemptAbort = reapAbort;
             void this.#trackDestructiveAttempt(
@@ -4498,6 +4564,10 @@ export class ProviderProxySetLifecycle {
           }
           const outcome = value as ProviderProxyControlRedemptionOutcome;
           if (outcome.kind === 'refused') {
+            if (outcome.refusal.kind === 'downstream-role-unavailable') {
+              this.#awaitControlReattachmentAbsence(slot, window, 'control_reattachment_refused', outcome.refusal);
+              return;
+            }
             const decisive = decisiveTeardownLatchedRefusal(outcome.refusal);
             if (decisive !== null) {
               this.#commitReattachmentTeardownLatched(slot, window, decisive);
@@ -4670,6 +4740,33 @@ export class ProviderProxySetLifecycle {
     refusal?: ProviderProxyControlRedemptionRefusal,
   ): void {
     if (this.#slots.get(slot.key) !== slot || slot.controlReattachmentWindow !== window) return;
+    if (refusal?.kind === 'downstream-role-unavailable') {
+      const token = slot.attemptToken;
+      const abort = new AbortController();
+      window.attemptAbort = abort;
+      void this.#deps.collectOperatorDispositionContainmentProof(slot.identity, abort.signal).then(
+        (proof) => {
+          if (!this.#isCurrentControlReattachment(slot, window, token)) {
+            releaseProviderProxySetContainmentProofFence(proof);
+            this.#releasePartialRedemption(refusal);
+            return;
+          }
+          window.attemptAbort = null;
+          if (this.#beginProxyLossContainment(slot, window, proof, refusal.guardianAuthority)) return;
+          releaseProviderProxySetContainmentProofFence(proof);
+          this.#releasePartialRedemption(refusal);
+          this.#awaitControlReattachmentAbsence(slot, window, reason);
+        },
+        (error: unknown) => {
+          this.#releasePartialRedemption(refusal);
+          if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+          window.attemptAbort = null;
+          this.#deps.onError?.(`Provider proxy loss observation failed: ${singleLineErrorSummary(error)}`);
+          this.#awaitControlReattachmentAbsence(slot, window, reason);
+        },
+      );
+      return;
+    }
     const decisive = refusal === undefined ? null : decisiveTeardownLatchedRefusal(refusal);
     if (decisive !== null) {
       this.#commitReattachmentTeardownLatched(slot, window, decisive);
@@ -4708,6 +4805,36 @@ export class ProviderProxySetLifecycle {
       liveClaims,
       setIdentity: slot.identity,
     });
+  }
+
+  #beginProxyLossContainment(
+    slot: EstablishedSlot,
+    window: ControlReattachmentWindow,
+    proof: ProviderProxySetFencedContainmentProof,
+    authority?: ProviderProxyContainmentAuthority,
+  ): boolean {
+    const evidence = providerProxySetContainmentEvidenceFor(proof, slot.identity);
+    if (
+      evidence.kind !== 'proxy-absent' ||
+      verifyProviderProxySetContainmentProofCurrent(proof, slot.identity).kind !== 'current'
+    )
+      return false;
+    releaseProviderProxySetContainmentProofFence(proof);
+    slot.attemptToken += 1;
+    this.#clearControlReattachment(slot, window);
+    slot.operatorExitNotBeforeMonotonicMs = null;
+    this.#clearLocalOperatorDispositions(slot.identity);
+    if (authority !== undefined) slot.containmentAuthority = authority;
+    this.#beginFaultContainment(slot, {
+      action: 'stop-and-reap',
+      reason: 'provider_authority_lost',
+      fault: 'proxy-process-absent',
+      role: 'proxy',
+      error: 'The recorded proxy pid and incarnation are absent.',
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    });
+    return true;
   }
 
   /** Only a decisive teardown latch may begin fault containment. */
@@ -4798,6 +4925,7 @@ export class ProviderProxySetLifecycle {
           }
           if (sourceId === 'absence') {
             const proof = value as ProviderProxySetFencedContainmentProof;
+            if (this.#beginProxyLossContainment(slot, window, proof)) return;
             const reapAbort = new AbortController();
             window.attemptAbort = reapAbort;
             void this.#trackDestructiveAttempt(
@@ -4833,6 +4961,10 @@ export class ProviderProxySetLifecycle {
           }
           const outcome = value as ProviderProxyControlRedemptionOutcome;
           if (outcome.kind === 'refused') {
+            if (outcome.refusal.kind === 'downstream-role-unavailable') {
+              this.#awaitControlReattachmentAbsence(slot, window, 'control_reattachment_refused', outcome.refusal);
+              return;
+            }
             const decisive = decisiveTeardownLatchedRefusal(outcome.refusal);
             if (decisive !== null) {
               this.#commitReattachmentTeardownLatched(slot, window, decisive);
@@ -4888,7 +5020,7 @@ export class ProviderProxySetLifecycle {
   }
 
   #releasePartialRedemption(refusal: ProviderProxyControlRedemptionRefusal): void {
-    if (refusal.kind !== 'downstream-role-refused') return;
+    if (refusal.kind !== 'downstream-role-refused' && refusal.kind !== 'downstream-role-unavailable') return;
     refusal.guardianAuthority.stopHeartbeats();
     void refusal.guardianAuthority.initiateControlClose().catch((error: unknown) => {
       this.#deps.onError?.(`Partial provider proxy control close failed: ${singleLineErrorSummary(error)}`);
@@ -4898,6 +5030,22 @@ export class ProviderProxySetLifecycle {
   #releaseLateReattachmentEvidence(value: unknown, sourceId: string): void {
     if (sourceId === 'absence') {
       releaseProviderProxySetContainmentProofFence(value as ProviderProxySetContainmentProof);
+      return;
+    }
+    if (
+      sourceId === 'redemption' &&
+      typeof value === 'object' &&
+      value !== null &&
+      'kind' in value &&
+      value.kind === 'proxy-unavailable'
+    ) {
+      const outcome = value as Extract<ProviderProxySetRedemptionOutcome, { kind: 'proxy-unavailable' }>;
+      outcome.guardianAuthority.stopHeartbeats();
+      void outcome.guardianAuthority
+        .initiateControlClose()
+        .catch((error: unknown) =>
+          this.#deps.onError?.(`Partial provider proxy control close failed: ${singleLineErrorSummary(error)}`),
+        );
       return;
     }
     if (sourceId !== 'redemption' || typeof value !== 'object' || value === null || !('kind' in value)) return;
@@ -5587,6 +5735,39 @@ export class ProviderProxySetLifecycle {
     };
   }
 
+  async #commitContainmentWithRecovery(
+    slot: EstablishedSlot,
+    decision: ProviderProxySetContainmentDecision | null,
+    signal: AbortSignal,
+  ): Promise<ContainmentCommitOutcome> {
+    const outcome = await (slot.containmentAuthority ?? slot.authority).commitContainment(signal);
+    if (outcome.kind === 'containment-absent' || decision?.fault !== 'proxy-process-absent') return outcome;
+    const redemption = await slot.authority.redeemControl(signal);
+    if (signal.aborted) {
+      this.#releaseLateReattachmentEvidence(redemption, 'redemption');
+      signal.throwIfAborted();
+    }
+    if (redemption.kind === 'refused') {
+      const authority =
+        redemption.refusal.kind === 'downstream-role-unavailable'
+          ? redemption.refusal.guardianAuthority
+          : decisiveTeardownLatchedRefusal(redemption.refusal)?.authority;
+      if (authority !== undefined && authority !== null) {
+        const previous = slot.containmentAuthority;
+        slot.containmentAuthority = authority;
+        if (previous !== null && previous !== authority) {
+          previous.stopHeartbeats();
+          await previous.initiateControlClose();
+        }
+        return authority.commitContainment(signal);
+      }
+      this.#releasePartialRedemption(redemption.refusal);
+    } else if (redemption.kind === 'redeemed') {
+      closeRedeemedProviderProxyControl(redemption);
+    }
+    return outcome;
+  }
+
   #runContainmentAttempt(
     slot: EstablishedSlot | Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>,
     decision: ProviderProxySetContainmentDecision | null,
@@ -5719,10 +5900,7 @@ export class ProviderProxySetLifecycle {
         input: {
           signal: abort.signal,
           run: (signal) =>
-            this.#trackDestructiveAttempt(
-              slot,
-              (slot.containmentAuthority ?? slot.authority).commitContainment(signal),
-            ),
+            this.#trackDestructiveAttempt(slot, this.#commitContainmentWithRecovery(slot, decision, signal)),
         },
         abort: (reason) => abort.abort(reason),
       });

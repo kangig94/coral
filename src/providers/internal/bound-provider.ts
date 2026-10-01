@@ -168,7 +168,10 @@ type PreparedBoundAppServer<Plan extends ProviderExecutionPlan> = {
   readonly hostSpec: ProviderServerSpec;
   execute(
     runtime: BoundProviderAppServerExecutionRuntime,
-    operation: (session: AppServerSession) => AsyncIterable<ProviderEventBody>,
+    operation: (
+      session: AppServerSession,
+      runtime: BoundProviderAppServerExecutionRuntime,
+    ) => AsyncIterable<ProviderEventBody>,
   ): AsyncIterable<ProviderEventBody>;
 };
 
@@ -247,7 +250,10 @@ function executeBoundAppServer<Plan extends ProviderExecutionPlan>(
   tools: BoundAppServerTools<Plan>,
   hostPlan: Plan['host'],
   runtime: BoundProviderAppServerExecutionRuntime,
-  operation: (session: AppServerSession) => AsyncIterable<ProviderEventBody>,
+  operation: (
+    session: AppServerSession,
+    runtime: BoundProviderAppServerExecutionRuntime,
+  ) => AsyncIterable<ProviderEventBody>,
 ): AsyncIterable<ProviderEventBody> {
   return (async function* () {
     runtime.signal.throwIfAborted();
@@ -255,13 +261,36 @@ function executeBoundAppServer<Plan extends ProviderExecutionPlan>(
     runtime.onAppServerWaiting({ provider: spec.provider });
     const managed = await tools.host().openSession(spec, { jobId: runtime.jobId, signal: runtime.signal });
     let unsubscribe = () => {};
+    let settlementOwnsSession = false;
+    const onProviderTurnSettlement = runtime.onProviderTurnSettlement;
+    const executionRuntime: BoundProviderAppServerExecutionRuntime = {
+      ...runtime,
+      ...(onProviderTurnSettlement === undefined
+        ? {}
+        : {
+            onProviderTurnSettlement: (settlement) => {
+              onProviderTurnSettlement({
+                providerTurnId: settlement.providerTurnId,
+                settle: () => settlement.settle(),
+                close: () => {
+                  try {
+                    settlement.close();
+                  } finally {
+                    closeManagedHostSession(managed, unsubscribe);
+                  }
+                },
+              });
+              settlementOwnsSession = true;
+            },
+          }),
+    };
     try {
       runtime.signal.throwIfAborted();
       runtime.onHostRef(managed.hostRef);
       unsubscribe = subscribeBoundAppServerNotifications(tools, managed);
-      yield* snapshotEventStream(operation(tools.session(managed.session)));
+      yield* snapshotEventStream(operation(tools.session(managed.session), executionRuntime));
     } finally {
-      closeManagedHostSession(managed, unsubscribe);
+      if (!settlementOwnsSession) closeManagedHostSession(managed, unsubscribe);
     }
   })();
 }
@@ -659,8 +688,8 @@ function sealPreparedAppServerExecution<Plan extends ProviderExecutionPlan>(
     kind: 'app-server' as const,
     hostSpec: preparedAppServer.hostSpec,
     execute: (runtime: BoundProviderAppServerExecutionRuntime) =>
-      preparedAppServer.execute(runtime, (appServerSession) =>
-        implementation.run(request, snapshotAppServerExecutionRuntime(runtime, plan, appServerSession)),
+      preparedAppServer.execute(runtime, (appServerSession, executionRuntime) =>
+        implementation.run(request, snapshotAppServerExecutionRuntime(executionRuntime, plan, appServerSession)),
       ),
   });
 }

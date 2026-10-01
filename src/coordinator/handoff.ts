@@ -20,6 +20,7 @@ import {
 
 const SOCKET_BIND_POLL_MS = 200;
 const HEALTH_RPC_TIMEOUT_MS = 1_000;
+const POST_EXIT_BIND_TIMEOUT_MS = 5_000;
 
 export class HandoffEscalationError extends CoralSetupError {
   constructor(init: HandoffRefusalInit, options?: ErrorOptions) {
@@ -77,7 +78,7 @@ export interface HandoffOptions {
   desired: DesiredIncumbentIdentity;
   bindAttempt: () => Promise<HandoffBindResult>;
   runStartupRecovery: RunStartupRecoveryOrchestratorFn;
-  runtime: Pick<Runtime, 'time' | 'env'>;
+  runtime: Pick<Runtime, 'time' | 'env' | 'process'>;
   readVerifiedIncumbentFromDiscovery: (evidence: {
     socketPath: string;
     desired: DesiredIncumbentIdentity;
@@ -197,6 +198,8 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
   let opts = { ...initialOptions };
   const deadlineMonotonicMs = opts.runtime.time.monotonicNow() + BigInt(opts.totalBudgetMs);
   let sawIncumbent = false;
+  let incumbent: IncumbentIdentity | null = null;
+  let postExitBindDeadlineMonotonicMs: bigint | null = null;
   let sawDrainingReply = false;
   let sawCapacityRefusal = false;
   let unansweredProbes = 0;
@@ -204,7 +207,15 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
 
   while (true) {
     opts.signal?.throwIfAborted();
-    if (sawIncumbent && opts.runtime.time.monotonicNow() >= deadlineMonotonicMs) {
+    if (
+      postExitBindDeadlineMonotonicMs === null &&
+      incumbent !== null &&
+      opts.runtime.process.observeLiveness(incumbent.pid) === 'absent'
+    ) {
+      incumbent = null;
+      postExitBindDeadlineMonotonicMs = opts.runtime.time.monotonicNow() + BigInt(POST_EXIT_BIND_TIMEOUT_MS);
+    }
+    if (sawIncumbent && opts.runtime.time.monotonicNow() >= (postExitBindDeadlineMonotonicMs ?? deadlineMonotonicMs)) {
       if (sawDrainingReply) {
         throw new HandoffEscalationError({
           code: 'handoff_administrative_drain_timeout',
@@ -230,8 +241,8 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       opts = { ...opts, socketPath: result.socketPath };
     }
     sawIncumbent = true;
-
-    const remaining = Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow());
+    const activeDeadlineMonotonicMs = postExitBindDeadlineMonotonicMs ?? deadlineMonotonicMs;
+    const remaining = Number(activeDeadlineMonotonicMs - opts.runtime.time.monotonicNow());
     if (remaining <= 0) {
       if (sawDrainingReply) {
         throw new HandoffEscalationError({
@@ -268,6 +279,12 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       lastAnswerAt = opts.runtime.time.monotonicNow();
       health = null;
     }
+    incumbent =
+      opts.readVerifiedIncumbentFromDiscovery({
+        socketPath: opts.socketPath,
+        desired: opts.desired,
+        lastHealth: health,
+      }) ?? incumbent;
     if (health?.status === 'draining') {
       sawDrainingReply = true;
       sawCapacityRefusal = false;
@@ -292,7 +309,10 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
           lastHealth: health,
         });
         if (incumbent === null && health.status === 'starting') {
-          const pollMs = Math.min(SOCKET_BIND_POLL_MS, Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow()));
+          const pollMs = Math.min(
+            SOCKET_BIND_POLL_MS,
+            Number(activeDeadlineMonotonicMs - opts.runtime.time.monotonicNow()),
+          );
           if (pollMs > 0)
             await opts.runtime.time.sleep(pollMs, opts.signal === undefined ? undefined : { signal: opts.signal });
           continue;
@@ -311,7 +331,7 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
 
     // An unanswered probe of a live holder is not a refusal: a stalled incumbent answers the next one, and only
     // the deadline may turn continued silence into `handoff_socket_holder_unverified`.
-    const pollMs = Math.min(SOCKET_BIND_POLL_MS, Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow()));
+    const pollMs = Math.min(SOCKET_BIND_POLL_MS, Number(activeDeadlineMonotonicMs - opts.runtime.time.monotonicNow()));
     if (pollMs > 0) {
       await opts.runtime.time.sleep(pollMs, opts.signal === undefined ? undefined : { signal: opts.signal });
     }

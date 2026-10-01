@@ -127,6 +127,7 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'ProviderHostUnsupportedPlatformError',
   'ProviderOperationAtomicTerminalizationError',
   'ProviderOperationJournalError',
+  'ProviderOperationMutationSetClosedError',
   'ProviderOperationReconcilerFatalError',
   'ProviderOperationRecordCodecError',
   'ProviderOperationTerminalMetadataError',

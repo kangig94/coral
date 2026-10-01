@@ -7,6 +7,7 @@ import ts from 'typescript';
 const REPO_ROOT = join(__dirname, '..', '..');
 const PROXY_FILE = join(REPO_ROOT, 'src/provider-proxy/proxy.ts');
 const SUPERVISOR_FILE = join(REPO_ROOT, 'src/provider-proxy/operation-supervisor.ts');
+const SEMANTIC_RUNNER_FILE = join(REPO_ROOT, 'src/provider-proxy/semantic-operation-runner.ts');
 
 const SUPERVISOR_ALLOWED_CALLS = new Set([
   'proxyOperationStatusResultSchema.shape.operations.parse',
@@ -15,6 +16,7 @@ const SUPERVISOR_ALLOWED_CALLS = new Set([
   'operationToken',
   'sameOperation',
   'this.#ledger.get',
+  'this.#options.host.cancellationHold',
 ]);
 const SUPERVISOR_REQUIRED_CALLS = new Set([
   'proxyOperationStatusResultSchema.shape.operations.parse',
@@ -131,7 +133,7 @@ function mutationViolation(call: ts.CallExpression): string | null {
   const name = callName(call);
   if (TIMER_AND_QUEUE_CALLS.has(name)) return `timer/queue call: ${name}`;
   if (MUTATING_HELPERS.has(name)) return `mutating helper call: ${name}`;
-  if (callee.includes('.host.')) return `host call: ${name}`;
+  if (callee.includes('.host.') && callee !== 'this.#options.host.cancellationHold') return `host call: ${name}`;
   if (callee.startsWith('this.#ledger.') && name !== 'get') return `ledger method other than get: ${name}`;
   return null;
 }
@@ -181,6 +183,49 @@ function parsedStatusResultObject(handler: StatusMethodEntry['handler']): ts.Obj
 }
 
 describe('operation.status.v1 is structurally read-only', () => {
+  it('keeps the cancellation hold getter inside a read-only call allowlist', () => {
+    const source = parse(SEMANTIC_RUNNER_FILE);
+    const factory = source.statements.find(
+      (statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === 'createSemanticOperationHost',
+    );
+    expect(factory).toBeDefined();
+    if (factory === undefined) return;
+    expect(factory.parameters.at(-1)?.name.getText()).toBe('cancellationHold');
+
+    let forwardedGetter: ts.ObjectLiteralElementLike | undefined;
+    const findForwardedGetter = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText() === 'host' &&
+        node.initializer !== undefined &&
+        ts.isObjectLiteralExpression(node.initializer)
+      ) {
+        forwardedGetter = node.initializer.properties.find((property) => propertyName(property) === 'cancellationHold');
+      }
+      ts.forEachChild(node, findForwardedGetter);
+    };
+    findForwardedGetter(factory);
+    expect(forwardedGetter?.getText()).toBe('cancellationHold');
+
+    let getter: ts.ArrowFunction | undefined;
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'createSemanticOperationHost'
+      ) {
+        const argument = node.arguments[factory.parameters.length - 1];
+        if (argument !== undefined && ts.isArrowFunction(argument)) getter = argument;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(getter).toBeDefined();
+    if (getter === undefined) return;
+    expect(readOnlyViolations(getter, new Set(['operationKeyString']), new Set(['operationKeyString']))).toEqual([]);
+  });
+
   it('registers the handler with observation authority and the status-specific budget', () => {
     const entry = findStatusMethodEntry(parse(PROXY_FILE));
     expect(entry, 'operation.status.v1 must exist in the proxy method map').toBeDefined();

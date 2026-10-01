@@ -1,3 +1,6 @@
+import * as controlRedemption from '#src/coordinator/live/provider-proxy/control-redemption.js';
+import { ProviderProxyRoleControlUnavailableError } from '#src/coordinator/live/provider-proxy/role-control.js';
+import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname } from 'node:path';
@@ -63,11 +66,19 @@ import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { decodeBody } from '#src/store/body-codec.js';
+import type { EventsRow } from '#src/store/schema.js';
+import { jobProgressBodySchema } from '#src/jobs/event-bodies.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { JobStore } from '#src/jobs/store.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { createProviderOperationStartupOwnership } from '#src/coordinator/services/recovery/provider-operation-startup-ownership.js';
 import type { ProviderOperationStartupOwnership } from '#src/jobs/startup.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { createHandoffCoresHarness } from '#tests/integration/coordinator/handoff-cores-harness.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -441,6 +452,8 @@ type ProductionStartupHarness = Readonly<{
   lifecycleRef: ProviderProxySetLifecycleRef;
   services: ReturnType<typeof createExecutionServices>;
   startupOwnership: ProviderOperationStartupOwnership;
+  ownershipService: ReturnType<typeof createProviderOperationStartupOwnership>;
+  launchCoordinator: LaunchCoordinator;
 }>;
 
 /** Later than every `incarnation` the shared fixture records, so no recorded identity can match. */
@@ -489,6 +502,7 @@ function composeProductionStartup(
     /** For a case that only wants to drive the clock, and should keep the sandbox. */
     time?: TimePort;
     progressStore?: Partial<Pick<JobProgressStore, 'commit' | 'readStatus' | 'readLaunchProjection'>>;
+    createProgressStore?: (db: Database, runtime: Runtime) => JobStore;
   }> = {},
 ): ProductionStartupHarness {
   const db = createDb([record]);
@@ -498,7 +512,10 @@ function composeProductionStartup(
   const { time } = runtime;
   const fatals = vi.fn();
   const lifecycleRef = new ProviderProxySetLifecycleRef();
-  const progressStore = { ...startupProgressStore(db, [record]), ...options.progressStore };
+  const progressStore = options.createProgressStore?.(db, runtime) ?? {
+    ...startupProgressStore(db, [record]),
+    ...options.progressStore,
+  };
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const startupOwnership = createProviderOperationStartupOwnership({
     runtime,
@@ -538,6 +555,8 @@ function composeProductionStartup(
     lifecycleRef,
     services,
     startupOwnership: startupOwnership.hydrate(startupOwnership.snapshot()),
+    ownershipService: startupOwnership,
+    launchCoordinator,
   };
 }
 
@@ -707,6 +726,7 @@ async function startRoleEndpoint(
     fields: Record<string, unknown>;
     time: VirtualTime;
     open(params: unknown): Promise<void>;
+    challenges?: ControlChallengeAuthority;
   }>,
 ) {
   let challenge = 0;
@@ -738,7 +758,7 @@ async function startRoleEndpoint(
         ],
       ]),
     },
-    challenges,
+    challenges: options.challenges ?? challenges,
     observer: { onControlLost: () => undefined },
     timer: options.time,
     holderAuthority: createControlHolderAuthority(),
@@ -749,7 +769,7 @@ async function startRoleEndpoint(
 }
 
 async function roleRecoveryStartupCase(
-  mode: 'operation-set-disagreement' | 'protocol-violation' | 'grant-replayed' | 'timeout',
+  mode: 'operation-set-disagreement' | 'protocol-violation' | 'grant-replayed' | 'timeout' | 'teardown-latched',
 ) {
   const record = deadlinePrecedenceRecord();
   const time = new VirtualTime();
@@ -784,6 +804,17 @@ async function roleRecoveryStartupCase(
       fields: guardianFields(record, [record.operation]),
       time,
       open: guardianOpen,
+      ...(mode !== 'teardown-latched'
+        ? {}
+        : {
+            challenges: {
+              issueFirstChallenge: () => ({ accepted: false as const, reason: 'teardown-latched' as const }),
+              admitSuccessor: () => ({ accepted: false as const, reason: 'teardown-latched' as const }),
+              reattachControl: () => ({ accepted: false as const, reason: 'teardown-latched' as const }),
+              controlIsLive: () => false,
+              echoChallenge: () => ({ accepted: false as const, reason: 'teardown-latched' as const }),
+            },
+          }),
     }),
     startRoleEndpoint({
       path: record.locator.reaper.controlEndpoint,
@@ -1199,6 +1230,167 @@ describe('provider proxy startup set recovery', () => {
     harness.db.close();
   });
 
+  it('startup contains an identity-proven dead proxy with live enforcers and discharges executing plus settled claims', async () => {
+    const executing = deadlinePrecedenceRecord();
+    const settled = providerOperationRecord('settlement-pending', {
+      job: 9,
+      locator: executing.locator,
+      operation: { ...executing.operation, jobId: randomUUID(), operationId: randomUUID() },
+    });
+    const records = [executing, settled];
+    const time = new VirtualTime();
+    const base = sandboxedRuntime(time);
+    const capsule = v3CapsuleFor(executing);
+    const capsuleStorage = capsuleBackedStorage(new InMemoryStorage(time), base.paths.coral.generation.root, capsule, {
+      discover: false,
+      unlink: () => {},
+      syncDirectoryDurableSync: () => true,
+    });
+    const identity = providerProxySetIdentityFromRecord(executing);
+    const runtime = {
+      ...base,
+      storage: capsuleStorage.storage,
+      process: {
+        ...base.process,
+        readProcessIncarnation: (pid: number) =>
+          pid === identity.guardianPid
+            ? identity.guardianIncarnation
+            : pid === identity.reaperPid
+              ? identity.reaperIncarnation
+              : null,
+        observeLiveness: (pid: number) => (pid === identity.proxyPid ? ('absent' as const) : ('alive' as const)),
+        kill: () => {
+          throw new Error('No raw reaping while enforcers are live');
+        },
+      },
+    };
+    const commit = vi.fn(async () => ({
+      kind: 'containment-absent' as const,
+      disappearanceReceipt: 'startup-guardian-confirmed',
+    }));
+    const close = vi.fn(async () => {});
+    const redemption = vi.spyOn(controlRedemption, 'redeemProviderProxyControl').mockResolvedValue({
+      kind: 'refused',
+      refusal: {
+        kind: 'downstream-role-unavailable',
+        error: new ProviderProxyRoleControlUnavailableError({
+          kind: 'role-control-unavailable',
+          role: 'proxy',
+          stage: 'connect',
+          method: null,
+          origin: 'closed',
+          controlCode: 'control_client_connect_failed',
+        }),
+        guardianAuthority: {
+          commitContainment: commit,
+          stopHeartbeats: () => {},
+          initiateControlClose: close,
+          faulted: new Promise(() => {}),
+          onFault: () => () => {},
+          onIncident: () => () => {},
+        },
+      },
+    } as never);
+    const prover = createProviderProxySetContainmentProver(runtime);
+    const inheritance = {
+      inheritProviderProxySet: (locator: ProviderOperationRecord, db: Database, signal: AbortSignal) =>
+        attemptProviderProxySetInheritance(
+          locator,
+          db,
+          {
+            runtime,
+            baseDir: dirname(runtime.paths.coral.generation.root),
+            coordinatorIdentity: {
+              instanceId: randomUUID(),
+              pid: 9999,
+              incarnation: testIncarnation(9999),
+              generation: 'gen2',
+              flavor: 'prod',
+              buildSetId: executing.operation.buildSetId,
+            },
+            operationRegistry: new LocalOperationRegistry(),
+            collectContainmentProof: prover.collectContainmentProof,
+            reapRecordedContainment: async () => {
+              throw new Error('No raw reaping');
+            },
+          },
+          signal,
+        ),
+      redeemDiscoveredCapsule: async () => {
+        throw new Error('No discovery');
+      },
+    };
+    let progressStore!: JobStore;
+    const harness = composeProductionStartup(executing, inheritance, {
+      runtime,
+      createProgressStore: (db) => {
+        insertProviderOperation(db, settled);
+        progressStore = new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+          db,
+          providers: permissiveProviderLookupPort,
+        });
+        for (const record of records) {
+          const jobId = record.operation.jobId;
+          seedTestSessionProjection(db, {
+            sessionId: jobId,
+            provider: 'codex',
+            projectRoot: process.cwd(),
+            backendNamespace: 'provider-proxy-startup-integration',
+            activeJobId: jobId,
+          });
+          const launch = startupProgressStore(db, records).readLaunchProjection(jobId)!;
+          progressStore.appendLaunchRequested(jobId, launch);
+          progressStore.appendRuntimeStarted(jobId, {
+            transport: 'app-server',
+            startTime: '2026-08-09T12:34:56.000Z',
+            providerMeta: {
+              provider: 'codex',
+              leaseState: 'acquired',
+              hostRef: {
+                provider: 'codex',
+                fingerprint: record.locator.hostFingerprint,
+                instanceId: record.operation.proxyInstanceId,
+                leaseMode: 'shared',
+              },
+            },
+          });
+        }
+        progressStore.commit((c) => {
+          appendJobTerminalRecorded(c, {
+            jobId: settled.operation.jobId,
+            sessionId: settled.operation.jobId,
+            namespace: 'provider-proxy-startup-integration',
+            project: process.cwd(),
+            correlationId: settled.operation.jobId,
+            terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+          });
+        });
+        return progressStore;
+      },
+    });
+    harness.services.connectProviderOperationRecovery({
+      releaseProviderOperationStartupOwnership: harness.ownershipService.release,
+    } as never);
+    try {
+      expect((await productionStartupOutcome(harness)).kind).toBe('fulfilled');
+      await vi.waitFor(() => expect(readProviderOperations(harness.db).records).toEqual([]));
+      expect(commit).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+      expect(progressStore.readStatus(executing.operation.jobId)?.phase).toBe('error');
+      expect(progressStore.readStatus(settled.operation.jobId)?.phase).toBe('completed');
+      for (const record of records)
+        expect(
+          progressStore.readJobEvents(record.operation.jobId).filter((event) => event.type === 'terminal'),
+        ).toHaveLength(1);
+      expect(harness.lifecycleRef.get()?.snapshot().pendingOperationCounts).toEqual([]);
+      expect(harness.fatals).not.toHaveBeenCalled();
+    } finally {
+      redemption.mockRestore();
+      harness.services.stopProviderOperationReconciler();
+      harness.db.close();
+    }
+  });
+
   it('shares one recovery promise while same-set delivery is gated', async () => {
     const record = providerOperationRecord('executing');
     const time = new VirtualTime();
@@ -1524,7 +1716,237 @@ describe('provider proxy startup set recovery', () => {
   });
 });
 
+describe('orphaned provider operation retries after double startup hydration', () => {
+  it.each([
+    { build: 'cross-build', refuseBinding: false },
+    { build: 'same-build', refuseBinding: false },
+    { build: 'cross-build', refuseBinding: true },
+    { build: 'same-build', refuseBinding: true },
+  ])(
+    '$build orphan settles once after double hydration (binding refusal: $refuseBinding) without restart',
+    async ({ build, refuseBinding }) => {
+      const record = providerOperationRecord('executing');
+      const time = new VirtualTime();
+      const scheduled = vi.spyOn(time, 'setTimeout');
+      const base = sandboxedRuntime(time);
+      let observation: 'alive' | 'unknown' | 'absent' = 'alive';
+      const kills = vi.fn(() => false);
+      const runtime: Runtime = {
+        ...base,
+        process: {
+          ...base.process,
+          kill: kills,
+          observeLiveness: () => observation,
+          observeRecordedProcessAsync: async () => observation,
+          readProcessIncarnation: (pid) =>
+            observation === 'alive'
+              ? pid === record.locator.guardian.pid
+                ? record.locator.guardian.incarnation
+                : pid === record.locator.reaper.pid
+                  ? record.locator.reaper.incarnation
+                  : pid === record.locator.proxy.pid
+                    ? record.locator.proxy.incarnation
+                    : testIncarnation(1_003)
+              : observation === 'unknown'
+                ? null
+                : FIXTURE_PROCESS_LONG_GONE_INCARNATION,
+        },
+      };
+      const prover = createProviderProxySetContainmentProver(runtime);
+      const reap = vi.fn(createProviderProxySetRecordedContainmentReaper(runtime));
+      const inherit = vi.fn((locator: ProviderOperationRecord, db: Database, signal: AbortSignal) =>
+        attemptProviderProxySetInheritance(
+          locator,
+          db,
+          {
+            runtime,
+            baseDir: dirname(runtime.paths.coral.generation.root),
+            coordinatorIdentity: {
+              instanceId: randomUUID(),
+              pid: process.pid,
+              incarnation: testIncarnation(1),
+              generation: 'gen2',
+              flavor: 'prod',
+              buildSetId: build === 'same-build' ? record.operation.buildSetId : randomUUID(),
+            },
+            operationRegistry: new LocalOperationRegistry(),
+            collectContainmentProof: prover.collectContainmentProof,
+            reapRecordedContainment: reap,
+          },
+          signal,
+        ),
+      );
+      let progressStore!: JobStore;
+      const harness = composeProductionStartup(
+        record,
+        {
+          inheritProviderProxySet: inherit,
+          redeemDiscoveredCapsule: async () => {
+            throw new Error('orphan has no capsule');
+          },
+        },
+        {
+          runtime,
+          createProgressStore: (db) => {
+            progressStore = new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+              db,
+              providers: permissiveProviderLookupPort,
+            });
+            const jobId = record.operation.jobId;
+            seedTestSessionProjection(db, {
+              sessionId: jobId,
+              provider: 'codex',
+              projectRoot: process.cwd(),
+              backendNamespace: 'provider-proxy-startup-integration',
+              activeJobId: jobId,
+            });
+            const launch = startupProgressStore(db, [record]).readLaunchProjection(jobId);
+            if (launch === null) throw new Error('missing orphan launch');
+            progressStore.appendLaunchRequested(jobId, launch);
+            progressStore.appendRuntimeStarted(jobId, {
+              transport: 'app-server',
+              startTime: '2026-08-09T12:34:56.000Z',
+              providerMeta: {
+                provider: 'codex',
+                leaseState: 'acquired',
+                hostRef: {
+                  provider: 'codex',
+                  fingerprint: record.locator.hostFingerprint,
+                  instanceId: record.operation.proxyInstanceId,
+                  leaseMode: 'shared',
+                },
+              },
+            });
+            return progressStore;
+          },
+        },
+      );
+      harness.services.connectProviderOperationRecovery({
+        releaseProviderOperationStartupOwnership: harness.ownershipService.release,
+      } as never);
+      const restore = vi.spyOn(harness.launchCoordinator, 'restoreActiveLaunch');
+      try {
+        expect((await productionStartupOutcome(harness)).kind).toBe('fulfilled');
+        const retry = readProviderOperation(harness.db, record.operation);
+        expect(retry?.retryNotBeforeMs).toBeGreaterThan(time.now());
+        expect(retry?.retryNotBeforeMs).toBeLessThan(time.now() + 60_001);
+        if (refuseBinding) {
+          vi.spyOn(harness.launchCoordinator, 'prepareProviderOperationBinding').mockReturnValueOnce({
+            kind: 'refused',
+            reason: 'startup binding temporarily refused',
+          });
+        }
+        const second = harness.ownershipService.hydrate(harness.ownershipService.snapshot());
+        expect(second.completion.kind).toBe(refuseBinding ? 'held' : 'complete');
+        expect(second.records[0].restoredPermit).toBe(harness.startupOwnership.records[0].restoredPermit);
+        expect(restore).not.toHaveBeenCalled();
+        expect(harness.launchCoordinator.getActiveJobIds('default')).toEqual([record.operation.jobId]);
+        const afterHydration = readProviderOperation(harness.db, record.operation);
+        if (refuseBinding) {
+          expect(afterHydration?.retryNotBeforeMs).toBeGreaterThan(time.now());
+          expect(afterHydration?.retryNotBeforeMs).toBeLessThanOrEqual(time.now() + 60_000);
+          expect(afterHydration?.lastError).toMatchObject({
+            code: 'provider_operation_startup_ownership_refused',
+            message: 'startup binding temporarily refused',
+          });
+        } else {
+          expect(afterHydration?.retryNotBeforeMs).toBe(retry?.retryNotBeforeMs);
+        }
+
+        observation = 'unknown';
+        harness.services.startProviderOperationReconciler();
+        time.tick(25);
+        await vi.waitFor(() => expect(scheduled.mock.calls.at(-1)?.[1]).toBe(2_000));
+        time.tick(2_000);
+        await vi.waitFor(() => expect(inherit.mock.calls.length).toBeGreaterThan(1));
+        await vi.waitFor(() =>
+          expect(readProviderOperation(harness.db, record.operation)?.lastError?.observedAtMs).toBe(time.now()),
+        );
+        const unknown = readProviderOperation(harness.db, record.operation);
+        expect(unknown?.retryNotBeforeMs).toBeGreaterThan(time.now());
+        expect(unknown?.retryNotBeforeMs).toBeLessThan(time.now() + 60_001);
+        expect(progressStore.readStatus(record.operation.jobId)?.phase).toBe('running');
+        expect(
+          progressStore.readJobEvents(record.operation.jobId).filter((event) => event.type === 'terminal'),
+        ).toHaveLength(0);
+        expect(harness.launchCoordinator.getActiveJobIds('default')).toEqual([record.operation.jobId]);
+
+        await vi.waitFor(() => expect(scheduled.mock.calls.at(-1)?.[1]).toBe(2_000));
+        const attemptsBeforeAbsence = inherit.mock.calls.length;
+        observation = 'absent';
+        time.tick(2_000);
+        await vi.waitFor(() => expect(inherit.mock.calls.length).toBeGreaterThan(attemptsBeforeAbsence));
+        await drainMicrotasks(200);
+        await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull(), {
+          timeout: 5_000,
+        });
+        time.tick(2_000);
+        await drainMicrotasks(100);
+        expect(
+          progressStore.readJobEvents(record.operation.jobId).filter((event) => event.type === 'terminal'),
+        ).toEqual([
+          expect.objectContaining({
+            result: expect.objectContaining({ outcome: expect.objectContaining({ kind: 'failed' }) }),
+          }),
+        ]);
+        const terminal = progressStore.readJobEvents(record.operation.jobId).find((event) => event.type === 'terminal');
+        if (terminal?.result.outcome.kind !== 'failed') throw new Error('expected a failed orphan terminal');
+        const cause = harness.db
+          .prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?')
+          .get(terminal.result.outcome.causeRef.seq);
+        if (cause === undefined) throw new Error('missing orphan terminal cause');
+        expect(decodeBody(cause, jobProgressBodySchema, progressStore)).toMatchObject({
+          kind: 'domain',
+          stage: 'provider_operation_failed',
+          detail: { code: 'provider_lost' },
+        });
+        expect(progressStore.readStatus(record.operation.jobId)?.phase).toBe('error');
+        expect(readProviderOperationsDue(harness.db, Number.MAX_SAFE_INTEGER, 10)).toEqual([]);
+        expect(harness.launchCoordinator.reservationFor(record.operation.jobId)).toBeNull();
+        expect(harness.launchCoordinator.settleProviderOperationBinding(record.operation)).toEqual({
+          kind: 'settled-unbound',
+        });
+        expect(harness.ownershipService.release(record.operation)).toEqual({ kind: 'not-owned' });
+        expect(reap).toHaveBeenCalledOnce();
+        expect(kills).not.toHaveBeenCalled();
+        expect(harness.fatals).not.toHaveBeenCalled();
+      } finally {
+        harness.services.stopProviderOperationReconciler();
+        harness.ownershipService.releaseAll();
+        harness.db.close();
+      }
+    },
+  );
+});
+
 describe('production provider proxy startup classification', () => {
+  it('reaches running with durable retry ownership after teardown-latched inheritance', async () => {
+    const cores = createHandoffCoresHarness();
+    try {
+      const booted = await cores.bootCore({
+        instanceId: 'teardown-latched-successor',
+        runStartupRecoveryFn: async (deps) => {
+          const result = await roleRecoveryStartupCase('teardown-latched');
+          expect(result.outcome.kind).toBe('fulfilled');
+          expect(result.fatalCalls).toBe(0);
+          expect(result.dueRows).toHaveLength(1);
+          expect(result.current?.lastError?.code).toBe('provider_proxy_set_recovery_unavailable');
+          expect(result.current?.lastError?.message).toContain('role-control-teardown-latched');
+          return deps.recoverPersistedDiscussFn({
+            knownDiscussSources: deps.knownDiscussSources,
+            getDiscussStoreForSource: deps.getDiscussStoreForSource,
+            getDiscussContext: deps.getDiscussContext,
+            createInvocationContext: deps.createInvocationContext,
+            signal: deps.signal,
+          });
+        },
+      });
+      expect(booted.core.runtimeState.getLifecycle()).toBe('running');
+    } finally {
+      await cores.cleanup();
+    }
+  });
+
   it('classifies terminalization uncertainty only with causal retry safety', async () => {
     const atomic = await terminalizationUncertaintyStartupCase('atomic-unknown');
     const metadata = await terminalizationUncertaintyStartupCase('metadata');

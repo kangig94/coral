@@ -568,6 +568,32 @@ describe('createProviderEventHandler', () => {
     ).rejects.toThrow();
   });
 
+  it('accepts missing-terminal recovery without a stop cause and retains the settlement saga', async () => {
+    const { identity, sessionId } = seedOperation();
+    const handler = createProviderEventHandler(testDeps({ recordedStopCauseFor: () => null }));
+    const result = await handler({
+      operation: identity,
+      providerSeq: 1,
+      event: {
+        kind: 'terminal',
+        terminal: {
+          content: 'Final answer',
+          durationMs: 10_250,
+          outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
+        },
+        diagnostics: {},
+      },
+    });
+    expect(result).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
+    expect(readSession(sessionId)?.activeJobId).toBeUndefined();
+    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
+      phase: 'settlement-pending',
+      terminalProviderSeq: 1,
+      settlementIntent: 'release-after-terminal',
+    });
+    expect(rawEventsByType(sessionId, 'session.interrupted')).toHaveLength(0);
+  });
+
   it('answers a suspended event with the coordinator-recorded stop cause, not a default', async () => {
     const { identity, sessionId } = seedOperation();
     const handler = createProviderEventHandler(testDeps({ recordedStopCauseFor: () => 'restart' }));

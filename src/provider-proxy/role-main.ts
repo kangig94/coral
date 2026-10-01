@@ -1213,13 +1213,11 @@ export function createProxyGuardianContainment(
           }
         },
         async abortAndRelease() {
-          const semanticRelease = semanticStage.abortAndRelease();
-          try {
-            await result;
-          } catch {
-            // Registration ambiguity still requires the idempotent guardian release below.
-          }
-          await semanticRelease;
+          const [, semanticRelease] = await Promise.allSettled([
+            result,
+            Promise.resolve().then(() => semanticStage.abortAndRelease()),
+          ]);
+          if (semanticRelease.status === 'rejected') throw semanticRelease.reason;
           if (!guardianMayHoldMembership || guardianReleased) return;
           const params = guardianProxyOperationReleaseParamsSchema.parse({
             proxy: deps.identity,

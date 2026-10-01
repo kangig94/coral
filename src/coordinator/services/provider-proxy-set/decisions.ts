@@ -95,6 +95,18 @@ export type ProviderProxySetControlReattachmentAwaitAbsenceDecision = Readonly<{
   setIdentity: ProviderProxySetIdentity;
 }>;
 
+export type ProviderProxySetProxyLossStopDecision = Readonly<{
+  action: 'stop-and-reap';
+  reason: 'provider_authority_lost';
+  fault: 'proxy-process-absent';
+  role: 'proxy';
+  method?: never;
+  policy?: never;
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
 export type ProviderProxySetHeartbeatFaultStopDecision = Readonly<{
   action: 'stop-and-reap';
   reason: 'provider_authority_lost';
@@ -289,6 +301,7 @@ export type ProviderProxySetOperatorDecision =
   | ProviderProxySetOperatorAbandonmentDecision;
 
 export type ProviderProxySetAuthorityStopDecision =
+  | ProviderProxySetProxyLossStopDecision
   | ProviderProxySetOperationFaultStopDecision
   | ProviderProxySetHeartbeatFaultStopDecision
   | ProviderProxySetRedemptionTeardownLatchedStopDecision;

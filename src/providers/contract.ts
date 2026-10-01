@@ -248,6 +248,12 @@ export type ProviderTurnTerminalEvidence = Readonly<{
   status: 'interrupted' | 'completed' | 'failed';
 }>;
 
+export type ProviderTurnSettlement = Readonly<{
+  providerTurnId: string;
+  settle(): Promise<ProviderTurnTerminalEvidence | null>;
+  close(): void;
+}>;
+
 export interface AppServerSession extends AppServerTransport {
   interrupt(continuity: ProviderContinuityBlob): Promise<ProviderInterruptRequestOutcome>;
 }
@@ -563,7 +569,9 @@ export type ProviderAppServerRuntime<Plan extends ProviderExecutionPlan = Provid
   ProviderRuntimeCommon<Plan> & {
     readonly transport: 'app-server';
     readonly appServerSession: AppServerSession;
+    onProviderTurnStart?(): void;
     onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
+    onProviderTurnSettlement?(settlement: ProviderTurnSettlement): void;
   };
 
 export type ProviderStandaloneRuntime<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> =

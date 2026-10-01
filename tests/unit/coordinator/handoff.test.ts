@@ -9,6 +9,7 @@ import { createRealTimePort } from '#src/infra/time.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { IncumbentMatchesError, probeIncumbent } from '#src/transport/ipc/handoff.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 vi.mock('#src/transport/ipc/handoff.js', async (loadOriginal) => ({
   ...(await loadOriginal<object>()),
@@ -17,7 +18,9 @@ vi.mock('#src/transport/ipc/handoff.js', async (loadOriginal) => ({
 
 const healthProbe = vi.mocked(probeIncumbent);
 
-beforeEach(() => healthProbe.mockReset());
+beforeEach(() => {
+  healthProbe.mockReset();
+});
 
 function options(bindAttempt: () => Promise<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }>) {
   const kill = vi.fn();
@@ -143,6 +146,77 @@ describe('bindWithHandoff', () => {
       }),
     ).rejects.toBeInstanceOf(UpgradeSupervisorUnavailableError);
   });
+
+  it.each(['release', 'held', 'unknown', 'successor', 'draining', 'capacity'] as const)(
+    'gives a confirmed incumbent exit its own bounded bind window (%s)',
+    async (exit) => {
+      const time = new VirtualTime();
+      const { handoff, kill } = options(async () =>
+        exit === 'release' && time.now() >= startedAt + 1_600
+          ? { kind: 'bound' }
+          : { kind: 'incumbent', reason: 'live-listener' },
+      );
+      const startedAt = time.now();
+      healthProbe.mockImplementation(async () => {
+        if (time.now() < startedAt + 1_600) return null;
+        if (exit === 'capacity')
+          throw new IpcRpcError({
+            code: -32603,
+            message: 'Too many IPC connections',
+            data: { code: 'too_many_ipc_connections' },
+          });
+        if (exit === 'successor' || exit === 'draining') {
+          return {
+            version: '0.10.15',
+            bundleHash: 'successor',
+            flavor: 'prod',
+            namespace: 'successor',
+            status: exit === 'draining' ? 'draining' : 'ok',
+          };
+        }
+        return null;
+      });
+      const result = bindWithHandoff({
+        ...handoff,
+        totalBudgetMs: 600,
+        runtime: {
+          ...handoff.runtime,
+          time,
+          process: {
+            ...handoff.runtime.process,
+            observeLiveness: () => (time.now() < startedAt + 600 ? 'alive' : exit === 'unknown' ? 'unknown' : 'absent'),
+          },
+        },
+        readVerifiedIncumbentFromDiscovery: () => ({ pid: 100, source: 'discovery', instanceId: 'incumbent' }),
+      }).then(
+        (value) => ({ value, settledAt: time.now() }),
+        (error: unknown) => ({ error, settledAt: time.now() }),
+      );
+      for (let elapsed = 0; elapsed <= 6_000; elapsed += 200) {
+        for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+        time.tick(200);
+      }
+      const outcome = await result;
+      if (exit === 'release') {
+        expect(outcome).toMatchObject({ value: { acquiredViaHandoff: true }, settledAt: startedAt + 1_600 });
+      } else if (exit === 'successor') {
+        expect(outcome).toMatchObject({ error: expect.any(IncumbentMatchesError), settledAt: startedAt + 1_600 });
+      } else {
+        expect(outcome).toMatchObject({
+          error: {
+            code:
+              exit === 'draining'
+                ? 'handoff_administrative_drain_timeout'
+                : exit === 'capacity'
+                  ? 'handoff_ipc_capacity_timeout'
+                  : 'handoff_socket_holder_unverified',
+          },
+          settledAt: startedAt + (exit === 'unknown' ? 600 : 5_600),
+        });
+      }
+      expect(kill).not.toHaveBeenCalled();
+    },
+  );
 
   it('waits for an administrative drain to release the socket', async () => {
     healthProbe.mockResolvedValue({

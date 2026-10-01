@@ -118,6 +118,17 @@ rl.on('line', (line) => {
     case 'initialize':
       send({ id: message.id, result: {} });
       break;
+    case 'model/list':
+      send({
+        id: message.id,
+        result: {
+          data: [
+            { model: 'gpt-6-sol', hidden: false, upgrade: null, supportedReasoningEfforts: [{ reasoningEffort: 'high' }] },
+          ],
+          nextCursor: null,
+        },
+      });
+      break;
     case 'config/read':
       const attemptId = providerHostId + ':config/read:' + message.id;
       record('config-read-attempts', { hostId: providerHostId, requestId: message.id, attemptId });

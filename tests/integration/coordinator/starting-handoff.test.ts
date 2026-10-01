@@ -19,7 +19,21 @@ import {
   type SpawnedCoordinator,
 } from './helpers.js';
 
+import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import type { CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
+import type { RunStartupRecoveryOrchestratorFn } from '#src/coordinator/lifecycle.js';
+import { JobStore } from '#src/jobs/store.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { createDeferred } from '#tools/testing/deferred.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
+import { setStoreServicesForTest } from '#tools/testing/store-services.js';
+
 const tempDirs: string[] = [];
+const coordinators: CoordinatorCoreResult[] = [];
 const liveListeners: IpcListener[] = [];
 const liveChildren: ChildProcess[] = [];
 const contenders: SpawnedCoordinator[] = [];
@@ -29,8 +43,8 @@ const shippedStateCases = (
 
 // Shipped v0.10.0-v0.10.8 contenders trust a discovery record only when its `processStartedAt` equals the
 // Linux start time they derive at a fixed 100 clock ticks per second.
-function shippedProcessStartedAtSeconds(pid: number): number {
-  const bootTime = /^btime (\d+)$/mu.exec(readFileSync('/proc/stat', 'utf-8'))?.[1];
+function shippedProcessStartedAtSeconds(pid: number, procStatPath: string): number {
+  const bootTime = /^btime (\d+)$/mu.exec(readFileSync(procStatPath, 'utf-8'))?.[1];
   const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
   const startTicks = stat
     .slice(stat.lastIndexOf(')') + 2)
@@ -129,7 +143,60 @@ function buildPorts(opts: {
   };
 }
 
+function createCoordinator(runStartupRecovery: RunStartupRecoveryOrchestratorFn) {
+  const root = mkdtempSync(join(tmpdir(), 'coral-starting-handoff-'));
+  tempDirs.push(root);
+  const runtime = createRealRuntime('prod', { baseDir: root });
+  const db = openTestStoreDb(runtime, ':memory:');
+  const storeServices = {
+    storeDb: db,
+    progressStore: new JobStore('starting-handoff-test', runtime, createEventBodyCodec(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    }),
+    consumerDriver: null,
+  };
+  const core = createCoordinatorCore(
+    {
+      runtime,
+      storeFormat: currentCoralStoreFormat(),
+      pluginRoot: join(process.cwd(), 'clients'),
+      backendNamespace: 'starting-handoff-test',
+      bootSnapshot: {
+        instanceId: 'starting-handoff-instance',
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        log: () => {},
+      },
+      createStoreServicesFromDbFn: () => storeServices,
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+      getConsumerStuck: () => [],
+      onFatalShutdownError: vi.fn(),
+    },
+    runStartupRecovery,
+  );
+  setStoreServicesForTest(core.storeServicesRef, storeServices);
+  coordinators.push(core);
+  return { core, socketPath: runtime.paths.coral.coordinator.socketPath };
+}
+
+async function requestShutdown({ core }: ReturnType<typeof createCoordinator>): Promise<unknown> {
+  const address = core.server.address();
+  if (address === null || typeof address === 'string') throw new Error('Expected a bound HTTP listener');
+  const response = await fetch(`http://127.0.0.1:${address.port}/admin/shutdown`, {
+    method: 'POST',
+    headers: { 'X-Coral-Shutdown-Token': core.identity.shutdownToken },
+    signal: AbortSignal.timeout(1_000),
+  });
+  expect(response.status).toBe(200);
+  return response.json();
+}
+
 afterEach(async () => {
+  for (const core of coordinators.splice(0)) {
+    if (core.runtimeState.getLifecycle() !== 'stopped') await core.lifecycleController.shutdown('test-teardown');
+  }
   for (const contender of contenders.splice(0)) await stopCoordinator(contender);
   for (const child of liveChildren.splice(0)) await terminateChildProcess(child, 'SIGKILL');
   for (const listener of liveListeners.splice(0)) {
@@ -183,6 +250,18 @@ describe('legacy transport.shutdown at a new incumbent', () => {
       const home = mkdtempSync(join(tmpdir(), 'coral-legacy-arrival-'));
       tempDirs.push(home);
       const paths = coordinatorFilesForHome(home, 'prod');
+      // Historical runtimes cache btime; share one snapshot so host clock adjustments cannot change discovery identity.
+      const procStatPath = join(home, 'proc-stat');
+      const bootTimePreload = join(home, 'pin-boot-time.cjs');
+      writeFileSync(procStatPath, readFileSync('/proc/stat'));
+      writeFileSync(
+        bootTimePreload,
+        `const fs = require('node:fs');
+const readFileSync = fs.readFileSync;
+fs.readFileSync = (path, ...options) => readFileSync(path === '/proc/stat' ? ${JSON.stringify(procStatPath)} : path, ...options);
+`,
+      );
+      const shippedEnv = { NODE_OPTIONS: `--require ${JSON.stringify(bootTimePreload)}` };
       const dummy = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
       liveChildren.push(dummy);
       if (dummy.pid === undefined) throw new Error('incumbent pid was unavailable');
@@ -214,7 +293,7 @@ describe('legacy transport.shutdown at a new incumbent', () => {
         flavor: 'prod',
         namespace,
         startedAt: Date.now(),
-        processStartedAt: shippedProcessStartedAtSeconds(dummy.pid),
+        processStartedAt: shippedProcessStartedAtSeconds(dummy.pid, procStatPath),
         token: 't',
         bootToken: 'boot-token',
         version: '0.11.0',
@@ -226,13 +305,13 @@ describe('legacy transport.shutdown at a new incumbent', () => {
         mode: 0o600,
       });
 
-      const contender = spawnCoordinator({ fixture, home, tempRoots: tempDirs });
+      const contender = spawnCoordinator({ fixture, home, tempRoots: tempDirs, env: shippedEnv });
       contenders.push(contender);
       try {
         await waitForProcessExit(contender, 15_000);
       } catch (error) {
         console.error(
-          `Shipped contender ${tag} output: ${contender.output()}; discovery=${readFileSync(paths.infoFile, 'utf8')}; liveProcessStartedAt=${shippedProcessStartedAtSeconds(dummy.pid)}; health=${JSON.stringify(ports.health.read())}`,
+          `Shipped contender ${tag} output: ${contender.output()}; discovery=${readFileSync(paths.infoFile, 'utf8')}; liveProcessStartedAt=${shippedProcessStartedAtSeconds(dummy.pid, procStatPath)}; health=${JSON.stringify(ports.health.read())}`,
         );
         throw error;
       }
@@ -247,7 +326,7 @@ describe('legacy transport.shutdown at a new incumbent', () => {
       const shutdownsBeforeCli = decideLegacyShutdown.mock.calls.length;
 
       const cli = spawn(process.execPath, [fixture.cliPath, 'jobs', 'detail', 'missing-job'], {
-        env: shippedCliEnvironment({ HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root }),
+        env: shippedCliEnvironment({ HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root, ...shippedEnv }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       liveChildren.push(cli);
@@ -282,4 +361,43 @@ describe('legacy transport.shutdown at a new incumbent', () => {
     },
     40_000,
   );
+});
+
+describe('starting-incumbent shutdown handoff', () => {
+  it('HTTP shutdown stops a coordinator during never-settling Era II', async () => {
+    const recoveryEntered = createDeferred<AbortSignal>();
+    const fixture = createCoordinator(({ signal }) => {
+      recoveryEntered.resolve(signal);
+      return new Promise(() => {});
+    });
+    const { core } = fixture;
+    void core.lifecycleController.start().catch(() => {});
+    const startupSignal = await recoveryEntered.promise;
+    expect(core.runtimeState.getLifecycle()).toBe('kernel-ready');
+    expect(startupSignal.aborted).toBe(false);
+
+    await expect(requestShutdown(fixture)).resolves.toMatchObject({ status: 'draining' });
+
+    expect(startupSignal.aborted).toBe(true);
+    await core.lifecycleController.waitForShutdown();
+    expect(core.runtimeState.getLifecycle()).toBe('stopped');
+  });
+
+  it('HTTP shutdown drains a running coordinator', async () => {
+    const fixture = createCoordinator(async () => []);
+    const { core } = fixture;
+    await core.lifecycleController.start();
+    expect(core.runtimeState.getLifecycle()).toBe('running');
+
+    core.idleTimer.beginRequest();
+    try {
+      await expect(requestShutdown(fixture)).resolves.toMatchObject({ status: 'draining' });
+      expect(core.runtimeState.getLifecycle()).toBe('running');
+    } finally {
+      core.idleTimer.endRequest();
+    }
+
+    await core.lifecycleController.waitForShutdown();
+    expect(core.runtimeState.getLifecycle()).toBe('stopped');
+  });
 });

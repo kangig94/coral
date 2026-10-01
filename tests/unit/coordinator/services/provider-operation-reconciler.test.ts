@@ -1,9 +1,10 @@
 import type { SuccessionOperationRegistrationOutcome } from '#src/coordinator/live/provider-proxy/set-authority.js';
-import { controlExchangeForTest } from '#src/provider-proxy/control-client.js';
+import { controlExchangeForTest, ControlClientError } from '#src/provider-proxy/control-client.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import type { TimePort } from '#src/infra/port-types.js';
+import { createRealTimePort } from '#src/infra/time.js';
 import {
   holdProviderProxyOperationControl,
   type DurableProviderProxyOperationAuthority,
@@ -27,6 +28,7 @@ import {
   acquireProviderOperationMutationAdmission,
   compareAndSwapProviderOperation,
   insertProviderOperation,
+  providerOperationMutationAdmission,
   readProviderOperation,
   readProviderOperationDueSelections,
   readProviderOperations,
@@ -201,6 +203,42 @@ function lifecycleForSchedule(
 }
 
 describe('provider proxy exactly-once containment schedules', () => {
+  it('settles an aborted stop after control closes and the reaper confirms containment absence', async () => {
+    const harness = createHarness({
+      stopOperation: async () => {
+        throw new ControlClientError('control_client_closed', 'The control channel closed.', 'closed');
+      },
+    });
+    const record = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, record);
+    const proof = deferredValue<Awaited<ReturnType<DurableProviderProxyOperationAuthority['stopAndReap']>>>();
+    const emitFault = connectLifecycleAuthority(harness.authority, proof);
+    const lifecycle = lifecycleForSchedule(record, harness.reconciler, harness.authority);
+
+    harness.reconciler.requestStops([record.operation.jobId], 'signal_abort');
+    const stopped = readProviderOperation(harness.db, record.operation);
+    if (stopped === null) throw new Error('expected durable stop');
+    await harness.reconciler.reconcile(stopped);
+    expect(readProviderOperation(harness.db, record.operation)).toMatchObject({
+      lastError: { code: 'control_client_closed' },
+    });
+
+    emitFault(proxyHeartbeatFault(new Error('proxy teardown latched')));
+    expect(lifecycle.authorityFor(providerProxySetIdentityFromRecord(record))).toBeNull();
+    expect(harness.appended).toEqual([]);
+    proof.resolve({ disappearanceReceipt: 'aborted-stop-containment-absent' });
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull());
+
+    expect(harness.appended).toContainEqual(
+      expect.objectContaining({
+        type: 'job.terminal.recorded',
+        body: expect.objectContaining({
+          terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'signal_abort' } }),
+        }),
+      }),
+    );
+  });
+
   it('runs the prepare-pending zero-run schedule exactly once after absence handoff', async () => {
     let localStarts = 0;
     let emitFault = (_fault: ProviderProxyAuthorityFault): void => undefined;
@@ -827,6 +865,171 @@ describe('ProviderOperationReconciler publication', () => {
 
     expect(stopOperation).toHaveBeenCalledOnce();
     expect(stopOperation).toHaveBeenCalledWith('signal_abort');
+  });
+
+  it.each(['acknowledged', 'control-client-closed'] as const)(
+    'drains the due stop retry after %s and records an aborted terminal',
+    async (reply) => {
+      vi.useFakeTimers();
+      let absent = false;
+      const attachOperation = vi.fn<DurableProviderProxyOperationAuthority['attachOperation']>(
+        async (operation, watermark) =>
+          absent
+            ? { state: 'operation-absent', operation }
+            : { state: 'attached', replayFromProviderSeq: watermark + 1 },
+      );
+      const harness = createHarness({
+        attachOperation,
+        stopOperation: async () => {
+          if (reply === 'control-client-closed') {
+            throw new ControlClientError('control_client_closed', 'The control channel closed.', 'closed');
+          }
+        },
+        time: createRealTimePort(),
+      });
+      const record = providerOperationRecord('executing');
+      insertProviderOperation(harness.db, record);
+      harness.reconciler.start();
+      try {
+        harness.reconciler.requestStops([record.operation.jobId], 'signal_abort');
+        const stopped = readProviderOperation(harness.db, record.operation);
+        if (stopped === null) throw new Error('expected durable stop');
+        await harness.reconciler.reconcile(stopped);
+        expect(harness.appended).toEqual([]);
+        expect(readProviderOperationsDue(harness.db, 125, 32)).toHaveLength(1);
+
+        absent = true;
+        harness.advance(25);
+        await vi.advanceTimersByTimeAsync(25);
+
+        expect(attachOperation).toHaveBeenCalledTimes(2);
+        expect(readProviderOperation(harness.db, record.operation)).toBeNull();
+        expect(readProviderOperationsDue(harness.db, Number.MAX_SAFE_INTEGER, 32)).toEqual([]);
+        expect(harness.appended).toContainEqual(
+          expect.objectContaining({
+            type: 'job.terminal.recorded',
+            body: expect.objectContaining({
+              terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'signal_abort' } }),
+            }),
+          }),
+        );
+        expect(harness.fatalErrors).toEqual([]);
+      } finally {
+        harness.reconciler.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('drives an abort that joins the finishing publication drive', async () => {
+    const stopOperation = vi.fn(async () => undefined);
+    const harness = createHarness({ stopOperation });
+    const placement = await harness.begin();
+    expect(placement).toEqual({ kind: 'remote-executing' });
+
+    harness.reconciler.requestStops([harness.record.operation.jobId], 'signal_abort');
+    await vi.waitFor(() => expect(stopOperation).toHaveBeenCalledOnce());
+
+    expect(readProviderOperation(harness.db, harness.record.operation)).toMatchObject({
+      phase: 'executing',
+      controlIntent: { kind: 'stop', cause: 'signal_abort' },
+      lastError: { code: 'provider_stop_pending' },
+    });
+    expect(readProviderOperationsDue(harness.db, Number.MAX_SAFE_INTEGER, 32)).toHaveLength(1);
+    expect(harness.appended).not.toContainEqual(expect.objectContaining({ type: 'job.terminal.recorded' }));
+  });
+
+  it('drives a second abort through an already-carried stop intent', async () => {
+    let absent = false;
+    const stopOperation = vi.fn(async () => undefined);
+    const harness = createHarness({
+      stopOperation,
+      attachOperation: async (operation, watermark) =>
+        absent ? { state: 'operation-absent', operation } : { state: 'attached', replayFromProviderSeq: watermark + 1 },
+    });
+    const record = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, record);
+    harness.reconciler.requestStops([record.operation.jobId], 'signal_abort');
+    const stopped = readProviderOperation(harness.db, record.operation);
+    if (stopped === null) throw new Error('expected durable stop');
+    await harness.reconciler.reconcile(stopped);
+    const firstIntent = readProviderOperation(harness.db, record.operation);
+    expect(firstIntent?.phase).toBe('executing');
+
+    absent = true;
+    expect(harness.reconciler.requestStops([record.operation.jobId], 'signal_abort')).toEqual({
+      kind: 'answered',
+      outcomes: new Map([[record.operation.jobId, { kind: 'recorded' }]]),
+    });
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull());
+
+    expect(stopOperation).toHaveBeenCalledOnce();
+    expect(readProviderOperation(harness.db, record.operation)).toBeNull();
+    expect(harness.appended).toContainEqual(
+      expect.objectContaining({
+        type: 'job.terminal.recorded',
+        body: expect.objectContaining({
+          terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'signal_abort' } }),
+        }),
+      }),
+    );
+  });
+
+  it.each(['prestart-cleanup-pending', 'activation-resolution-pending'] as const)(
+    'drives a second abort through an already-carried %s directive',
+    async (phase) => {
+      const harness = createHarness();
+      const aborted = {
+        kind: 'terminal-aborted',
+        cause: 'signal_abort',
+        requestedAt: '2026-08-09T12:34:56.000Z',
+      } as const;
+      const record = providerOperationRecordSchema.parse({
+        ...providerOperationRecord(phase),
+        ...(phase === 'prestart-cleanup-pending' ? { afterRelease: aborted } : { onNeverStarted: aborted }),
+      });
+      insertProviderOperation(harness.db, record);
+
+      expect(harness.reconciler.requestStops([record.operation.jobId], 'signal_abort')).toEqual({
+        kind: 'answered',
+        outcomes: new Map([[record.operation.jobId, { kind: 'recorded' }]]),
+      });
+      await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull());
+      expect(harness.appended).toContainEqual(
+        expect.objectContaining({
+          type: 'job.terminal.recorded',
+          body: expect.objectContaining({
+            terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'signal_abort' } }),
+          }),
+        }),
+      );
+    },
+  );
+
+  it('automatically drains a past-due settlement without an in-memory settlement notification', async () => {
+    vi.useFakeTimers();
+    const settleOperation = vi.fn<DurableProviderProxyOperationAuthority['settleOperation']>(
+      async (_operation, finalProviderSeq) => ({
+        state: 'released-after-terminal',
+        settledThroughProviderSeq: finalProviderSeq,
+      }),
+    );
+    const harness = createHarness({ settleOperation, time: createRealTimePort() });
+    const record = providerOperationRecord('settlement-pending', { retryNotBeforeMs: 0 });
+    insertProviderOperation(harness.db, record);
+    harness.reconciler.start();
+    try {
+      harness.advance(25);
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(settleOperation).toHaveBeenCalledOnce();
+      expect(readProviderOperation(harness.db, record.operation)).toBeNull();
+      expect(readProviderOperationsDue(harness.db, Number.MAX_SAFE_INTEGER, 32)).toEqual([]);
+      expect(harness.fatalErrors).toEqual([]);
+    } finally {
+      harness.reconciler.stop();
+      vi.useRealTimers();
+    }
   });
 
   it.each([128, 129])(
@@ -1619,6 +1822,62 @@ describe('ProviderOperationReconciler publication', () => {
       operation: selected.operation,
       rawKey: dueSelection.rawKey,
     } satisfies Partial<ProviderOperationReconcilerFatalError>);
+  });
+
+  it('defers selected due work whose proxy set is fenced instead of fail-stopping', async () => {
+    type ControlledTimer = ReturnType<TimePort['setTimeout']> & { callback: () => void };
+    const timers = new Set<ControlledTimer>();
+    const harness = createHarness({
+      terminalize: () => {
+        throw new ProviderOperationAtomicTerminalizationError(
+          selected.operation,
+          new Error('repair-disappearance-reset'),
+        );
+      },
+      time: {
+        setTimeout: (callback) => {
+          const timer: ControlledTimer = { callback, unref: () => undefined };
+          timers.add(timer);
+          return timer;
+        },
+        clearTimeout: (timer) => {
+          if (timer !== null) timers.delete(timer as ControlledTimer);
+        },
+      },
+    });
+    const selected = {
+      ...providerOperationRecord('executing', { retryCount: 1, retryNotBeforeMs: 0 }),
+      lastError: { observedAtMs: 1, code: 'attach_failed', message: 'retry attachment' },
+    } as Extract<ProviderOperationRecord, { phase: 'executing' }>;
+    insertProviderOperation(harness.db, selected);
+    await expect(
+      harness.reconciler.containmentDisappeared({
+        operation: selected.operation,
+        setIdentity: providerProxySetIdentityFromRecord(selected),
+        disappearanceReceipt: 'repair-ready',
+      }),
+    ).resolves.toMatchObject({ kind: 'operational-failure' });
+    await nextEventLoopTurn();
+    harness.advance(51);
+    const dueSelection = readProviderOperationDueSelections(harness.db, 151, 1)[0];
+    if (dueSelection === undefined) throw new Error('expected one selected due row');
+
+    const fence = providerOperationMutationAdmission(harness.db).closeSet(selected.operation);
+    harness.reconciler.start();
+    harness.reconciler.wake();
+    await nextEventLoopTurn();
+    await nextEventLoopTurn();
+
+    expect(harness.fatalErrors).toEqual([]);
+    expect(timers.size).toBe(1);
+    expect(readProviderOperationDueSelections(harness.db, 151, 1).map(({ rawKey }) => rawKey)).toEqual([
+      dueSelection.rawKey,
+    ]);
+
+    fence.release();
+    harness.reconciler.wake();
+    await vi.waitFor(() => expect(readProviderOperationDueSelections(harness.db, 151, 1)).toEqual([]));
+    expect(harness.fatalErrors).toEqual([]);
   });
 
   it('does not convert attachment completion failures into provider retry ownership', async () => {

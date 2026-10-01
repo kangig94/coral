@@ -15,6 +15,7 @@ import { providerOperationMutationAdmission } from '../../../store/provider-oper
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
   ProviderProxyRoleControlUnavailableError,
+  providerProxyRoleControlTeardownIncident,
   type ProviderProxyRoleControlAvailabilityIncident,
 } from '../../live/provider-proxy/role-control.js';
 import {
@@ -27,6 +28,7 @@ import {
   redeemProviderProxyControl,
   type ProviderProxyControlRedemptionRefusal,
   type RedeemedProviderProxyControl,
+  type ProviderProxyGuardianRedemptionAuthority,
 } from '../../live/provider-proxy/control-redemption.js';
 import {
   createProviderProxyOperationAuthority,
@@ -57,6 +59,7 @@ import {
   authorizeProviderProxySetContainmentProof,
   providerProxySetContainmentEvidenceFor,
   releaseProviderProxySetContainmentProofFence,
+  verifyProviderProxySetContainmentProofCurrent,
   type ProviderProxySetFencedContainmentProof,
   type ProviderProxySetContainmentProver,
 } from './containment-proof.js';
@@ -111,7 +114,15 @@ export type ProviderProxySetInheritanceOutcome =
   | Readonly<{ kind: 'not-bequeathed'; reason: string }>
   | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
 
+export type ProviderProxySetProxyUnavailable = Readonly<{
+  kind: 'proxy-unavailable';
+  setIdentity: ProviderProxySetIdentity;
+  guardianAuthority: ProviderProxyGuardianRedemptionAuthority;
+  incident: ProviderProxyRoleControlAvailabilityIncident;
+}>;
+
 export type ProviderProxySetRedemptionOutcome =
+  | ProviderProxySetProxyUnavailable
   | Readonly<{
       kind: 'redeemed';
       set: DurableProviderProxyOperationAuthority;
@@ -137,7 +148,19 @@ async function collectFencedContainmentProof(
     authorizeProviderProxySetContainmentProof(identity, {
       mutationFence,
       closeAdmission: async () => {
-        if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+        signal.throwIfAborted();
+        if (mutationFence.kind !== 'holding') return;
+        let onAbort!: () => void;
+        const aborted = new Promise<void>((resolve) => {
+          onAbort = resolve;
+          signal.addEventListener('abort', onAbort, { once: true });
+        });
+        try {
+          await Promise.race([mutationFence.retryAfter, aborted]);
+          signal.throwIfAborted();
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+        }
       },
     }),
     db,
@@ -151,6 +174,11 @@ export type ProviderProxySetAvailabilityIncident =
   | ProviderProxyRoleControlAvailabilityIncident
   | ProviderProxySetPublicationUnknown
   | Readonly<{ kind: 'transfer-status-unconfirmed' }>
+  | Readonly<{ kind: 'publication-not-attempted'; role: 'guardian' | 'proxy'; reason: string }>
+  | Readonly<{
+      kind: 'recorded-containment-unavailable';
+      reason: 'authorization-missing' | 'authorization-stale' | 'store-unreadable' | 'guardian-containment-unconfirmed';
+    }>
   | Readonly<{ kind: 'recovery-deadline'; timeoutMs: 45_000 }>;
 
 function dispatchProviderProxySetInheritance(
@@ -241,6 +269,8 @@ function heartbeatObservationAvailabilityReason(observation: HeartbeatObservatio
 
 export function providerProxySetAvailabilityReason(incident: ProviderProxySetAvailabilityIncident): string {
   switch (incident.kind) {
+    case 'role-control-teardown-latched':
+      return [incident.kind, incident.role, incident.stage, incident.method ?? 'none'].join(':');
     case 'role-control-unavailable':
       return [
         incident.kind,
@@ -264,7 +294,10 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
     case 'transfer-status-unconfirmed':
       return incident.kind;
     case 'publication-unknown':
+    case 'publication-not-attempted':
       return `${incident.kind}:${incident.role}:${incident.reason}`;
+    case 'recorded-containment-unavailable':
+      return `${incident.kind}:${incident.reason}`;
   }
 }
 
@@ -331,10 +364,13 @@ function capsuleMatchesLocator(
   );
 }
 
-function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal): Error {
+function inheritanceRefusalError(
+  refusal: Exclude<ProviderProxyControlRedemptionRefusal, { kind: 'publication-refused' }>,
+): Error {
   switch (refusal.kind) {
     case 'guardian-role-refused':
     case 'downstream-role-refused':
+    case 'downstream-role-unavailable':
       return refusal.error;
     case 'protocol-incompatible':
       return refusal.error;
@@ -348,8 +384,6 @@ function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal)
         'capsule_identity_disagreement',
         'Provider proxy redemption identities disagree with the handoff capsule.',
       );
-    case 'publication-refused':
-      return new Error(`provider_proxy_set_publication_refused:${refusal.role}:${refusal.reason}`);
   }
 }
 
@@ -496,6 +530,24 @@ async function redeemCapsule(
     return { kind: 'temporarily-unavailable', incident: redemption.incident };
   }
   if (redemption.kind === 'refused') {
+    if (redemption.refusal.kind === 'downstream-role-unavailable') {
+      return {
+        kind: 'proxy-unavailable',
+        setIdentity: providerProxySetIdentityFromCapsule(capsule),
+        guardianAuthority: redemption.refusal.guardianAuthority,
+        incident: redemption.refusal.error.incident,
+      };
+    }
+    if (redemption.refusal.kind === 'publication-refused') {
+      return {
+        kind: 'temporarily-unavailable',
+        incident: {
+          kind: 'publication-not-attempted',
+          role: redemption.refusal.role,
+          reason: redemption.refusal.reason,
+        },
+      };
+    }
     if (redemption.refusal.kind === 'downstream-role-refused') {
       redemption.refusal.guardianAuthority.stopHeartbeats();
       await redemption.refusal.guardianAuthority.initiateControlClose();
@@ -516,6 +568,7 @@ async function redeemCapsule(
 
 async function redeem(
   reference: ProviderProxySetLocator,
+  db: Database,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
@@ -564,6 +617,36 @@ async function redeem(
     signal,
     verdict.via,
   );
+  if (redemption.kind === 'proxy-unavailable') {
+    const identity = providerProxySetIdentityFromRecord(reference);
+    let proof: ProviderProxySetFencedContainmentProof | null = null;
+    try {
+      proof = await collectFencedContainmentProof(identity, db, deps, signal);
+      const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
+      if (evidence.kind !== 'proxy-absent') return { kind: 'temporarily-unavailable', incident: redemption.incident };
+      const currentness = verifyProviderProxySetContainmentProofCurrent(proof, identity);
+      if (currentness.kind !== 'current')
+        return {
+          kind: 'temporarily-unavailable',
+          incident: { kind: 'recorded-containment-unavailable', reason: currentness.kind },
+        };
+      const commit = await redemption.guardianAuthority.commitContainment(signal);
+      if (
+        commit.kind === 'containment-absent' &&
+        verifyProviderProxySetContainmentProofCurrent(proof, identity).kind === 'current'
+      ) {
+        return { kind: 'containment-disappeared', disappearanceReceipt: commit.disappearanceReceipt };
+      }
+      return {
+        kind: 'temporarily-unavailable',
+        incident: { kind: 'recorded-containment-unavailable', reason: 'guardian-containment-unconfirmed' },
+      };
+    } finally {
+      if (proof !== null) releaseProviderProxySetContainmentProofFence(proof);
+      redemption.guardianAuthority.stopHeartbeats();
+      await redemption.guardianAuthority.initiateControlClose();
+    }
+  }
   if (redemption.kind !== 'redeemed') return redemption;
   return {
     kind: 'inherited',
@@ -582,9 +665,13 @@ export async function attemptProviderProxySetInheritance(
   const identity = providerProxySetIdentityFromRecord(locator);
   let outcome: ProviderProxySetInheritanceOutcome;
   try {
-    outcome = await redeem(locator, deps, signal);
+    outcome = await redeem(locator, db, deps, signal);
   } catch (error: unknown) {
-    if (!(error instanceof ProviderProxyRoleControlUnavailableError)) throw error;
+    const incident =
+      error instanceof ProviderProxyRoleControlUnavailableError
+        ? error.incident
+        : providerProxyRoleControlTeardownIncident(error);
+    if (incident === null) throw error;
     try {
       const proof = await collectFencedContainmentProof(identity, db, deps, signal);
       const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
@@ -605,17 +692,21 @@ export async function attemptProviderProxySetInheritance(
         ) {
           return reapResult;
         }
-        throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`, { cause: error });
+        return {
+          kind: 'temporarily-unavailable',
+          incident: { kind: 'recorded-containment-unavailable', reason: reapResult.kind },
+        };
       }
       releaseProviderProxySetContainmentProofFence(proof);
     } catch (proofError: unknown) {
+      if (signal.aborted && proofError === signal.reason) throw proofError;
       throw new AggregateError(
         [error, proofError],
         'Provider proxy role control was unavailable and containment proof failed.',
         { cause: proofError },
       );
     }
-    return { kind: 'temporarily-unavailable', incident: error.incident };
+    return { kind: 'temporarily-unavailable', incident };
   }
   if (outcome.kind !== 'not-bequeathed') return outcome;
   const proof = await collectFencedContainmentProof(identity, db, deps, signal);
@@ -640,7 +731,10 @@ export async function attemptProviderProxySetInheritance(
   ) {
     return reapResult;
   }
-  throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`);
+  return {
+    kind: 'temporarily-unavailable',
+    incident: { kind: 'recorded-containment-unavailable', reason: reapResult.kind },
+  };
 }
 
 function discoveredCapsuleRoute(

@@ -86,6 +86,11 @@ export interface ProviderProxyGuardianRedemptionAuthority extends ProviderProxyC
 }
 
 export type ProviderProxyControlRedemptionRefusal =
+  | Readonly<{
+      kind: 'downstream-role-unavailable';
+      error: ProviderProxyRoleControlUnavailableError;
+      guardianAuthority: ProviderProxyGuardianRedemptionAuthority;
+    }>
   | Readonly<{ kind: 'guardian-role-refused'; error: ProviderProxyRoleControlRemoteError }>
   | Readonly<{
       kind: 'downstream-role-refused';
@@ -456,6 +461,33 @@ export async function redeemProviderProxyControl(
     return { kind: 'redeemed', [redeemedProviderProxyControlBrand]: bundle };
   } catch (error: unknown) {
     if (error instanceof ProviderProxyRoleControlUnavailableError) {
+      if (
+        !signal.aborted &&
+        guardianSession !== null &&
+        'role' in error.incident &&
+        error.incident.role === 'proxy' &&
+        !(
+          error.incident.kind === 'role-heartbeat-indeterminate' &&
+          error.incident.observation.kind === 'reply' &&
+          error.incident.observation.reply.kind === 'method-not-found'
+        )
+      ) {
+        return {
+          kind: 'refused',
+          refusal: {
+            kind: 'downstream-role-unavailable',
+            error,
+            guardianAuthority: guardianRedemptionAuthority(
+              setIdentity,
+              coordinatorIdentity,
+              guardianSession,
+              heartbeatAssembly,
+              opened,
+              faults,
+            ),
+          },
+        };
+      }
       abandonAttempt(heartbeatAssembly, opened);
       signal.throwIfAborted();
       if (

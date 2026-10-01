@@ -118,6 +118,7 @@ function createHarness(): {
           abort: (jobIds: string[]) => ({ aborted: jobIds, notFound: [] }),
         },
       ] as never,
+    isLifecycleRunning: () => true,
     getLifecycleController: () => null,
     getProgressStore: () => store,
     internalJobAbortRegistry: new AbortRegistry(runtime.ids),
