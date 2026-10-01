@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ProviderOperationAtomicTerminalizationError } from '#src/jobs/provider-operation-terminalization.js';
-import { ProviderProxyRoleControlUnavailableError } from '#src/coordinator/live/provider-proxy/role-control.js';
+import {
+  ProviderProxyRoleControlUnavailableError,
+  ProviderProxyRoleControlRemoteError,
+} from '#src/coordinator/live/provider-proxy/role-control.js';
+import { ControlClientError } from '#src/provider-proxy/control-client.js';
 import {
   type ProviderProxyRecoveryConsumerSeam,
   type ProviderProxyRecoveryAnySource,
@@ -623,6 +627,40 @@ describe('provider proxy recovery producer classification', () => {
     }).toEqual({ roleControlCalls: 0, containmentProofCalls: 1 });
     expect(retry).toHaveBeenCalledOnce();
   });
+
+  it.each(['open', 'heartbeat'] as const)(
+    'keeps a typed teardown-latched %s refusal retryable while rejecting message-only matches',
+    async (stage) => {
+      const error = (teardown: boolean) =>
+        new ProviderProxyRoleControlRemoteError(
+          'guardian',
+          stage,
+          stage === 'open' ? 'guardian.handoff-redeem.v1' : 'guardian.heartbeat.v1',
+          new ControlClientError('control_call_failed', 'teardown-latched', 'remote-response', {
+            kind: 'json-rpc-error',
+            jsonRpcCode: -32600,
+            protocolCode: 'invalid_state',
+            admissionReason: teardown && stage === 'open' ? 'teardown-latched' : null,
+            heartbeatRefusal:
+              teardown && stage === 'heartbeat' ? { reason: 'teardown-latched', nextHeartbeatChallenge: null } : null,
+          }),
+        );
+      for (const producerId of ['set-inheritance', 'capsule-redemption'] as const) {
+        expect(await observe(producerId, { kind: 'throw', error: error(true) })).toEqual({
+          evidence: 0,
+          retry: 1,
+          localFatal: 0,
+          globalFatal: 0,
+        });
+        expect(await observe(producerId, { kind: 'throw', error: error(false) })).toEqual({
+          evidence: 0,
+          retry: 0,
+          localFatal: 1,
+          globalFatal: 1,
+        });
+      }
+    },
+  );
 
   it('classifies every closed producer with positive and opposite facts', async () => {
     const record = providerOperationRecord('executing');

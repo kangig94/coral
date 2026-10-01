@@ -15,6 +15,7 @@ import type {
 import {
   ProviderProxyRoleControlRemoteError,
   ProviderProxyRoleControlUnavailableError,
+  providerProxyRoleControlTeardownIncident,
 } from '../live/provider-proxy/role-control.js';
 import type { ProviderProxyControlRedemptionOutcome } from '../live/provider-proxy/control-redemption.js';
 import {
@@ -492,7 +493,10 @@ function classifyRejection(
     return unknown(producerId, error);
   }
   if (error instanceof ProviderProxyRoleControlUnavailableError) return unavailable(producerId, error.incident);
-  if (error instanceof ProviderProxyRoleControlRemoteError) return refused(producerId, error);
+  if (error instanceof ProviderProxyRoleControlRemoteError) {
+    const teardown = providerProxyRoleControlTeardownIncident(error);
+    return teardown === null ? refused(producerId, error) : unavailable(producerId, teardown);
+  }
   if (
     error instanceof ProviderOperationJournalError ||
     (error instanceof Error && error.name === 'ProviderProxySetInheritanceCorruptionError')

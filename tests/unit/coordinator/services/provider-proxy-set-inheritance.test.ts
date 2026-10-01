@@ -57,6 +57,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import {
   attemptProviderProxySetInheritance as attemptProviderProxySetInheritanceWithRequiredContainment,
   createProviderProxySetInheritance,
+  recoverProviderProxySetAtStartup,
   type CreateProviderProxySetInheritanceOptions,
   type ProviderProxySetInheritanceDeps,
   type ProviderProxySetLocator,
@@ -868,6 +869,71 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
+  it.each(['guardian', 'reaper', 'proxy'] as const)(
+    'contains a teardown-latched %s during startup inheritance without a global fatal',
+    async (role) => {
+      const loc = locator();
+      mockedReadCapsule.mockReturnValue(capsuleFor(loc));
+      const methods = {
+        guardian: 'guardian.handoff-redeem.v1',
+        reaper: 'reaper.handoff-rotate.v1',
+        proxy: 'handoff.redeem.v1',
+      };
+      const client = fakeClient(
+        redemptionResponses(loc, matchingOperationSets([]), {
+          [methods[role]]: () => {
+            throw new ControlClientError('control_call_failed', 'opaque refusal', 'remote-response', {
+              kind: 'json-rpc-error',
+              jsonRpcCode: -32600,
+              protocolCode: 'invalid_state',
+              admissionReason: 'teardown-latched',
+              heartbeatRefusal: null,
+            });
+          },
+        }),
+        [],
+      );
+      stubConnect(client);
+      const containmentProver = createProviderProxySetContainmentProver({
+        ...runtime,
+        process: { ...runtime.process, readProcessIncarnation: () => null, observeLiveness: () => 'absent' },
+      });
+      const reapRecordedContainment = vi
+        .fn()
+        .mockResolvedValueOnce({ kind: 'identity-unobservable', signalDelivered: false })
+        .mockResolvedValueOnce({ kind: 'containment-absent', disappearanceReceipt: 'exact-receipt' });
+      const fatal = vi.fn();
+      const dispatcher = createTestProviderProxyRecoveryDispatcher(
+        {
+          'set-inheritance': ({ locator: reference, db, signal }) =>
+            attemptProviderProxySetInheritance(
+              reference,
+              db,
+              {
+                runtime,
+                coordinatorIdentity: COORDINATOR_IDENTITY,
+                operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+                collectContainmentProof: containmentProver.collectContainmentProof,
+                reapRecordedContainment,
+              },
+              signal,
+            ),
+        },
+        fatal,
+      );
+      await expect(recoverProviderProxySetAtStartup(dispatcher, loc, unusedDb, neverAborts)).resolves.toEqual({
+        kind: 'identity-unobservable',
+        signalDelivered: false,
+      });
+      await expect(recoverProviderProxySetAtStartup(dispatcher, loc, unusedDb, neverAborts)).resolves.toEqual({
+        kind: 'containment-disappeared',
+        disappearanceReceipt: 'exact-receipt',
+      });
+      expect(reapRecordedContainment).toHaveBeenCalledTimes(2);
+      expect(fatal).not.toHaveBeenCalled();
+    },
+  );
+
   it('reaps exact containment evidence instead of treating a missing credential as authority to proceed', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
@@ -911,6 +977,67 @@ describe('attemptProviderProxySetInheritance', () => {
     );
     expect(reapRecordedContainment).toHaveBeenCalledOnce();
     expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  it.each(['authorization-missing', 'authorization-stale', 'store-unreadable'] as const)(
+    'retries an inheritance reap declined with %s',
+    async (reason) => {
+      mockedReadCapsule.mockReturnValueOnce(null);
+      const loc = locator();
+      const containmentProver = createProviderProxySetContainmentProver({
+        ...runtime,
+        process: { ...runtime.process, readProcessIncarnation: () => null, observeLiveness: () => 'absent' },
+      });
+      await expect(
+        attemptProviderProxySetInheritance(
+          loc,
+          unusedDb,
+          {
+            runtime,
+            coordinatorIdentity: COORDINATOR_IDENTITY,
+            operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+            collectContainmentProof: containmentProver.collectContainmentProof,
+            reapRecordedContainment: async () => ({ kind: reason }),
+          },
+          neverAborts,
+        ),
+      ).resolves.toEqual({
+        kind: 'temporarily-unavailable',
+        incident: { kind: 'recorded-containment-unavailable', reason },
+      });
+    },
+  );
+
+  it('retries inheritance when guardian publication was not attempted', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const client = fakeClient(
+      redemptionResponses(loc, matchingOperationSets([]), {
+        'guardian.acquisition-publish.v1': {
+          state: 'acquisition-publication-not-attempted',
+          reason: 'control changed',
+        },
+      }),
+      [],
+    );
+    const close = vi.spyOn(client, 'close');
+    stubConnect(client);
+    await expect(
+      attemptProviderProxySetInheritance(
+        loc,
+        unusedDb,
+        {
+          runtime,
+          coordinatorIdentity: COORDINATOR_IDENTITY,
+          operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        },
+        neverAborts,
+      ),
+    ).resolves.toEqual({
+      kind: 'temporarily-unavailable',
+      incident: { kind: 'publication-not-attempted', role: 'guardian', reason: 'control changed' },
+    });
+    expect(close).toHaveBeenCalled();
   });
 
   it('keeps a missing-credential set held when its recorded group is unattributable', async () => {
