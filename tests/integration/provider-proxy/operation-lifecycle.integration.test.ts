@@ -45,7 +45,12 @@ import {
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { compareAndSwapProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import {
+  compareAndSwapProviderOperation,
+  readProviderOperation,
+  readProviderOperationsDue,
+} from '#src/store/provider-operation-journal.js';
+import { terminalizeProviderOperation } from '#src/jobs/provider-operation-terminalization.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
@@ -653,37 +658,49 @@ async function launchThroughRoute(
   if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected immediate permit');
   const preparedBinding = binding.prepareProviderOperationBinding(admission.permit, { jobId, operationId });
   if (preparedBinding.kind !== 'prepared') throw new Error('expected prepared operation binding');
-  const reconciler = new ProviderOperationReconciler({
-    getProgressStore: () => ({
-      getDb: () => db,
-      commit,
-      readStatus: () => ({
-        jobId,
-        owner: { kind: 'provider-session', id: sessionId },
-        sessionId,
-        provider: PREPARED.provider,
-        projectRoot: '/project',
-        workDir: PREPARED.request.cwd,
-        backendNamespace: 'tests',
-        jobKind: 'provider',
-        phase: 'running',
-        updatedAt: new Date(WALL_CLOCK_EPOCH_MS).toISOString(),
-      }),
-      readLaunchProjection: () => ({
-        jobId,
-        owner: { kind: 'provider-session', id: sessionId },
-        sessionId,
-        provider: PREPARED.provider,
-        projectRoot: '/project',
-        backendNamespace: 'tests',
-        pool: 'default',
-        enqueueSequence: 1,
-        createdAt: new Date(WALL_CLOCK_EPOCH_MS).toISOString(),
-        jobKind: 'provider',
-        providerAction: 'exec',
-        request: PREPARED.request,
-      }),
+  const progressStore: Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'> = {
+    getDb: () => db,
+    commit,
+    readStatus: () => ({
+      jobId,
+      owner: { kind: 'provider-session', id: sessionId },
+      sessionId,
+      provider: PREPARED.provider,
+      projectRoot: '/project',
+      workDir: PREPARED.request.cwd,
+      backendNamespace: 'tests',
+      jobKind: 'provider',
+      phase: 'running',
+      updatedAt: new Date(WALL_CLOCK_EPOCH_MS).toISOString(),
     }),
+    readLaunchProjection: () => ({
+      jobId,
+      owner: { kind: 'provider-session', id: sessionId },
+      sessionId,
+      provider: PREPARED.provider,
+      projectRoot: '/project',
+      backendNamespace: 'tests',
+      pool: 'default',
+      enqueueSequence: 1,
+      createdAt: new Date(WALL_CLOCK_EPOCH_MS).toISOString(),
+      jobKind: 'provider',
+      providerAction: 'exec',
+      request: PREPARED.request,
+    }),
+  };
+  const terminalization = {
+    terminalize: (
+      record: Parameters<typeof terminalizeProviderOperation>[1],
+      directive: Parameters<typeof terminalizeProviderOperation>[2],
+    ) => {
+      if (directive.kind !== 'terminal-aborted') {
+        throw new Error('integration publication unexpectedly requested coordinator terminalization');
+      }
+      return terminalizeProviderOperation(progressStore, record, directive, time.now());
+    },
+  };
+  const reconciler = new ProviderOperationReconciler({
+    getProgressStore: () => progressStore,
     authorityFor: () => activeAuthority,
     startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority: activeAuthority }) },
     registry,
@@ -692,12 +709,10 @@ async function launchThroughRoute(
     materializePrepare: () => ({ state: 'prepared', prepared: PREPARED }),
     recoverLocalJob: async () => undefined,
     completeLocalRecovery: () => undefined,
-    terminalization: {
-      terminalize: () => {
-        throw new Error('integration publication unexpectedly requested coordinator terminalization');
-      },
-    },
-    recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({}),
+    terminalization,
+    recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+      'disappearance-terminalization': ({ record, directive }) => terminalization.terminalize(record, directive),
+    }),
     backendNamespace: 'tests',
     onFatal: (error) => {
       throw error;
@@ -961,6 +976,57 @@ describe('provider-proxy operation lifecycle', () => {
     expect(launched.activationCalls).toBe(2);
     expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
     expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
+  });
+
+  it('retries an aborted job after its real proxy control closes and settles only on confirmed containment absence', async () => {
+    const set = await startProxy();
+    const launched = await launchThroughRoute(set);
+    const record = readProviderOperation(launched.db, {
+      jobId: launched.jobId,
+      operationId: launched.operationId,
+      proxyInstanceId: set.shared.proxyInstanceId,
+      buildSetId: set.shared.buildSetId,
+    });
+    if (record === null) throw new Error('expected executing saga');
+    launched.reconciler.requestStops([launched.jobId], 'signal_abort');
+    await vi.waitFor(() =>
+      expect(readProviderOperation(launched.db, record.operation)?.lastError?.code).toBe('provider_stop_pending'),
+    );
+    expect(set.stopped).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, cause: 'signal_abort' }]);
+
+    await set.proxy.close();
+    await vi.waitFor(
+      () => expect(readProviderOperation(launched.db, record.operation)?.lastError?.code).toBe('control_client_closed'),
+      { timeout: 8_000 },
+    );
+    const retried = readProviderOperation(launched.db, record.operation);
+    if (retried === null) throw new Error('unknown containment must retain the saga');
+    expect(retried.retryNotBeforeMs).toBeGreaterThan(retried.lastError?.observedAtMs ?? 0);
+    expect(readProviderOperationsDue(launched.db, Number.MAX_SAFE_INTEGER, 32)).toHaveLength(1);
+    expect(launched.runtimeStarted).not.toContainEqual(expect.objectContaining({ type: 'job.terminal.recorded' }));
+
+    expect(launched.reconciler.requestStops([launched.jobId], 'signal_abort').kind).toBe('answered');
+    await vi.waitFor(() =>
+      expect(readProviderOperation(launched.db, record.operation)?.revision).toBeGreaterThan(retried.revision),
+    );
+
+    const containment = await launched.authority.commitContainment(new AbortController().signal);
+    if (containment.kind !== 'containment-absent') throw new Error('expected confirmed fixture containment absence');
+    await launched.reconciler.containmentDisappeared({
+      operation: record.operation,
+      setIdentity: launched.authority.setIdentity,
+      disappearanceReceipt: containment.disappearanceReceipt,
+    });
+    expect(readProviderOperation(launched.db, record.operation)).toBeNull();
+    expect(readProviderOperationsDue(launched.db, Number.MAX_SAFE_INTEGER, 32)).toEqual([]);
+    expect(launched.runtimeStarted).toContainEqual(
+      expect.objectContaining({
+        type: 'job.terminal.recorded',
+        body: expect.objectContaining({
+          terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'signal_abort' } }),
+        }),
+      }),
+    );
   });
 
   it('reconnects settlement after the activation-time control closed and releases ledger plus membership', async () => {

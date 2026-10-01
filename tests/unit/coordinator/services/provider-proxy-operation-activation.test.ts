@@ -575,11 +575,17 @@ describe('provider proxy operation mutations', () => {
             phase: 'executing',
             committedThroughProviderSeq: record.committedThroughProviderSeq,
             controlIntent: record.controlIntent,
-            retryCount: 0,
-            retryNotBeforeMs: 100,
-            lastError: null,
           }),
         );
+        if (method === 'stop') {
+          expect(converged).toMatchObject({
+            retryCount: 2,
+            retryNotBeforeMs: 150,
+            lastError: { code: 'provider_stop_pending' },
+          });
+        } else {
+          expect(converged).toMatchObject({ retryCount: 0, retryNotBeforeMs: 100, lastError: null });
+        }
         expect(claims.claimFor(record.operation)).not.toBeNull();
         expect(endpoint.attachmentWatermarks).toEqual([
           record.committedThroughProviderSeq,
