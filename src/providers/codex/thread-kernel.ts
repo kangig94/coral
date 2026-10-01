@@ -47,7 +47,6 @@ import { readCodexModelCatalog, type CodexModelCatalog } from './model-catalog.j
 
 type CodexProviderRuntime = Extract<ProviderRuntime<CodexExecutionPlan>, { appServerSession: unknown }>;
 
-const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
 
 // Sentinel exit code surfaced when the Codex app-server reports a turn failure
@@ -71,7 +70,7 @@ type CodexKernelResult =
   | {
       kind: 'completed';
       turn: Turn;
-      source: 'notification' | 'start_response' | 'inferred';
+      source: 'notification' | 'start_response';
       attempt: TurnAttempt;
     }
   | {
@@ -99,13 +98,8 @@ export type TurnAttempt = {
   resolveIdReady: (turnId: string) => void;
   finalTurn: Turn | null;
   completed: boolean;
-  finalAnswerSeen: boolean;
-  awaitingExplicitCompletion: boolean;
   terminalErrors: ErrorNotificationEvidence[];
-  pendingCollaborations: Set<string>;
   subagentThreadIds: Set<string>;
-  activeSubagentTurns: Set<string>;
-  completionTimer: ReturnType<TimePort['setTimeout']> | null;
   interruptRequest: Promise<'accepted' | 'failed'> | null;
 };
 
@@ -164,13 +158,8 @@ function createAttempt(sequence: number): TurnAttempt {
     resolveIdReady,
     finalTurn: null,
     completed: false,
-    finalAnswerSeen: false,
-    awaitingExplicitCompletion: false,
     terminalErrors: [],
-    pendingCollaborations: new Set(),
     subagentThreadIds: new Set(),
-    activeSubagentTurns: new Set(),
-    completionTimer: null,
     interruptRequest: null,
   };
 }
@@ -368,19 +357,10 @@ function admitBufferedNotification(state: CodexTurnState, message: AppServerNoti
   return true;
 }
 
-function clearCompletionTimer(state: CodexTurnState, attempt = state.activeAttempt): void {
-  if (!attempt.completionTimer) {
-    return;
-  }
-  state.time.clearTimeout(attempt.completionTimer);
-  attempt.completionTimer = null;
-}
-
 function settleAttempt(state: CodexTurnState, attempt: TurnAttempt, result: CodexKernelResult): void {
   if (state.finalized || state.activeAttempt !== attempt || attempt.completed) {
     return;
   }
-  clearCompletionTimer(state, attempt);
   attempt.completed = true;
   attempt.lifecycle = 'settled';
   attempt.resolveCompletion(result);
@@ -389,24 +369,21 @@ function settleAttempt(state: CodexTurnState, attempt: TurnAttempt, result: Code
 function completeTurn(
   state: CodexTurnState,
   attempt: TurnAttempt,
-  turn: Turn | null = null,
-  source: 'notification' | 'start_response' | 'inferred' = turn === null ? 'inferred' : 'notification',
+  turn: Turn,
+  source: 'notification' | 'start_response',
 ): void {
   if (state.finalized || state.activeAttempt !== attempt || attempt.completed) {
     return;
   }
-  if (turn) {
-    const turnId = readTurnId(turn);
-    attempt.finalTurn = canonicalTurn(turn, attempt.turnId);
-    if (turnId !== null && attempt.turnId === null) {
-      attempt.turnId = turnId;
-      attempt.resolveIdReady(turnId);
-    }
-  } else {
-    attempt.finalTurn ??= {
-      id: attempt.turnId ?? 'inferred-turn',
-      status: 'completed',
-    };
+  const turnId = readTurnId(turn);
+  attempt.finalTurn = canonicalTurn(turn, attempt.turnId);
+  const finalStatus = codexFinalTurnStatusSchema.safeParse(turn.status);
+  if (turnId !== null && finalStatus.success) {
+    state.onProviderTurnTerminal({ kind: 'provider-turn-terminal', providerTurnId: turnId, status: finalStatus.data });
+  }
+  if (turnId !== null && attempt.turnId === null) {
+    attempt.turnId = turnId;
+    attempt.resolveIdReady(turnId);
   }
   settleAttempt(state, attempt, {
     kind: 'completed',
@@ -414,42 +391,6 @@ function completeTurn(
     source,
     attempt,
   });
-}
-
-function scheduleInferredCompletion(state: CodexTurnState, attempt = state.activeAttempt): void {
-  if (
-    state.activeAttempt !== attempt ||
-    state.finalized ||
-    attempt.completed ||
-    attempt.finalTurn ||
-    !attempt.finalAnswerSeen ||
-    attempt.awaitingExplicitCompletion
-  ) {
-    return;
-  }
-  if (attempt.pendingCollaborations.size > 0 || attempt.activeSubagentTurns.size > 0) {
-    return;
-  }
-
-  clearCompletionTimer(state, attempt);
-  attempt.completionTimer = state.time.setTimeout(() => {
-    attempt.completionTimer = null;
-    if (
-      state.activeAttempt !== attempt ||
-      state.finalized ||
-      attempt.completed ||
-      attempt.finalTurn ||
-      !attempt.finalAnswerSeen ||
-      attempt.awaitingExplicitCompletion
-    ) {
-      return;
-    }
-    if (attempt.pendingCollaborations.size > 0 || attempt.activeSubagentTurns.size > 0) {
-      return;
-    }
-    completeTurn(state, attempt);
-  }, INFERRED_COMPLETION_DELAY_MS);
-  attempt.completionTimer.unref?.();
 }
 
 function belongsToTurn(state: CodexTurnState, message: AppServerNotificationMessage): boolean {
@@ -539,19 +480,9 @@ function recordItem(
   state: CodexTurnState,
   attempt: TurnAttempt,
   item: Record<string, unknown>,
-  lifecycle: 'started' | 'completed',
   threadId: string | null,
 ): void {
   if (item.type === 'collabAgentToolCall') {
-    const itemId = typeof item.id === 'string' ? item.id : null;
-    if (threadId === state.threadId && itemId) {
-      if (lifecycle === 'started' || item.status === 'inProgress') {
-        attempt.pendingCollaborations.add(itemId);
-      } else if (lifecycle === 'completed') {
-        attempt.pendingCollaborations.delete(itemId);
-        scheduleInferredCompletion(state, attempt);
-      }
-    }
     if (Array.isArray(item.receiverThreadIds)) {
       for (const receiverThreadId of item.receiverThreadIds) {
         const receiverId = readString(receiverThreadId) ?? null;
@@ -568,10 +499,6 @@ function recordItem(
     if (threadId === null || threadId === state.threadId) {
       if (typeof item.text === 'string' && item.text.length > 0) {
         state.lastAgentMessage = item.text;
-      }
-      if (lifecycle === 'completed' && item.phase === 'final_answer') {
-        attempt.finalAnswerSeen = true;
-        scheduleInferredCompletion(state, attempt);
       }
     }
   }
@@ -590,7 +517,7 @@ function handleItemNotification(
     return;
   }
 
-  recordItem(state, attempt, params.item, lifecycle, readString(params.threadId) ?? null);
+  recordItem(state, attempt, params.item, readString(params.threadId) ?? null);
   emitProgress(emit, describe(params.item));
 }
 
@@ -619,7 +546,6 @@ function applyNotificationCore(
         claimControllerTurnId(state, attempt, turnId);
       } else if (threadId !== null && turnId !== null && attempt.subagentThreadIds.has(threadId)) {
         state.subagentTurnIds.set(threadId, turnId);
-        attempt.activeSubagentTurns.add(threadId);
       }
       emitProgress(emit, `Turn started (${turnId ?? 'unknown'}).`);
       return;
@@ -650,8 +576,6 @@ function applyNotificationCore(
       ) {
         return;
       }
-      attempt.awaitingExplicitCompletion = true;
-      clearCompletionTimer(state, attempt);
       if (!evidence.willRetry) {
         attempt.terminalErrors.push(evidence);
       }
@@ -666,8 +590,6 @@ function applyNotificationCore(
       const turn = (notification.params as { turn?: Turn } | undefined)?.turn ?? null;
       const completedTurnId = readTurnId(turn);
       if (threadId !== null && threadId !== state.threadId) {
-        attempt.activeSubagentTurns.delete(threadId);
-        scheduleInferredCompletion(state, attempt);
         return;
       }
       if (
@@ -690,11 +612,6 @@ function applyNotificationCore(
         return;
       }
       const validatedTurn = { ...turn, status: finalStatus.data };
-      state.onProviderTurnTerminal({
-        kind: 'provider-turn-terminal',
-        providerTurnId: completedTurnId,
-        status: finalStatus.data,
-      });
       completeTurn(state, attempt, validatedTurn, 'notification');
       return;
     }
@@ -995,7 +912,16 @@ async function startTurn(
   }
 
   if (response.turn?.status && response.turn.status !== 'inProgress') {
-    completeTurn(state, attempt, response.turn, 'start_response');
+    const finalStatus = codexFinalTurnStatusSchema.safeParse(response.turn.status);
+    if (!finalStatus.success) {
+      return {
+        kind: 'failed',
+        message: `Codex turn/start carried an invalid final status: ${response.turn.status}.`,
+        preserveRecoverySnapshot: true,
+        attempt,
+      };
+    }
+    completeTurn(state, attempt, { ...response.turn, status: finalStatus.data }, 'start_response');
     return attempt.completion;
   }
 
@@ -1315,7 +1241,6 @@ async function finishInvocation(
 }
 
 async function retireAttempt(state: CodexTurnState, attempt: TurnAttempt): Promise<void> {
-  clearCompletionTimer(state, attempt);
   attempt.lifecycle = 'settled';
   if (attempt.turnId !== null) {
     state.retiredControllerTurnIds.add(attempt.turnId);
@@ -1437,7 +1362,6 @@ export const codexTurnKernel: Provider<
       );
       if (terminal) emit(terminal);
     } finally {
-      clearCompletionTimer(state, state.activeAttempt);
       clearNotificationBinding();
     }
   });

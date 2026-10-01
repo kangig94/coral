@@ -246,6 +246,12 @@ async function collectProviderProxySetContainmentEvidence(
     readIncarnation: (pid) => runtime.process.readProcessIncarnation(pid, platform),
     observeLiveness: (pid) => runtime.process.observeLiveness(pid),
   });
+  const containment = {
+    pid: identity.proxyPid,
+    incarnation: identity.proxyIncarnation,
+    processGroupId: identity.proxyProcessGroupId,
+  };
+  const proxyObservation = observeEnforcer(containment);
   // These identities were recorded by the enforcers. A different fresh incarnation proves that the pid now
   // belongs to someone else; only an absent observation discounts an enforcer before process-group reaping.
   const observations: ProviderProxySetEnforcerObservations = [
@@ -265,16 +271,20 @@ async function collectProviderProxySetContainmentEvidence(
     },
   ];
   if (observations.some(({ observation }) => observation !== 'absent')) {
+    if (proxyObservation === 'absent') {
+      signal.throwIfAborted();
+      return providerProxySetContainmentEvidenceSchema.parse({
+        kind: 'proxy-absent',
+        observations,
+        containment,
+        recordedRoots: recordedRootsFromScan(identity, operationScan),
+      });
+    }
     return providerProxySetContainmentEvidenceSchema.parse({ kind: 'enforcers-observed', observations });
   }
   signal.throwIfAborted();
 
   const recordedRoots = recordedRootsFromScan(identity, operationScan);
-  const containment = {
-    pid: identity.proxyPid,
-    incarnation: identity.proxyIncarnation,
-    processGroupId: identity.proxyProcessGroupId,
-  };
   signal.throwIfAborted();
   return providerProxySetContainmentEvidenceSchema.parse({ kind: 'reap-required', containment, recordedRoots });
 }
@@ -332,7 +342,7 @@ export function verifyProviderProxySetContainmentProofCurrent(
   if (scanHidesRoot(record.identity, record.currentness.db, operationScan.unreadableKeys)) {
     return { kind: 'store-unreadable' };
   }
-  if (record.evidence.kind === 'reap-required') {
+  if (record.evidence.kind === 'reap-required' || record.evidence.kind === 'proxy-absent') {
     const roots = recordedRootsFromScan(record.identity, operationScan);
     const expectedRoots = new Set(record.evidence.recordedRoots.map((root) => `${root.pid}@${root.incarnation}`));
     if (

@@ -349,7 +349,6 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     );
 
     expect(state.subagentTurnIds.get('subagent-thread')).toBe('subagent-turn-2');
-    expect(state.activeAttempt.activeSubagentTurns.has('subagent-thread')).toBe(true);
   });
 
   it('emits the rollout artifact handle at the first turn-completed notification after storage discovery', async () => {

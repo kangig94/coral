@@ -12,6 +12,7 @@ import {
   type HostRef,
   type ProviderEventBody,
   type ProviderStopCause,
+  type ProviderTurnTerminalEvidence,
 } from '../providers/contract.js';
 import type { AppServerHostAuthority } from '../providers/internal/app-server-host.js';
 import { ProviderHostUnserviceableError } from '../providers/host-admission.js';
@@ -332,7 +333,7 @@ type StagedOperation = {
 
 export type OperationCancellationEvidence =
   | Readonly<{ kind: 'not-started' }>
-  | Readonly<{ kind: 'interrupt-confirmed' }>
+  | Readonly<{ kind: 'provider-turn-terminal'; terminal: ProviderTurnTerminalEvidence }>
   | Readonly<{ kind: 'interrupt-unconfirmed'; reason: string }>
   | Readonly<{ kind: 'isolated-root-closed' }>;
 
@@ -578,11 +579,11 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
       const evidence = entry.cancellationEvidence;
-      if (evidence?.kind !== 'interrupt-confirmed') {
+      if (evidence?.kind !== 'provider-turn-terminal') {
         const unconfirmedReason =
           evidence?.kind === 'interrupt-unconfirmed'
             ? evidence.reason
-            : 'the provider settled without exact interrupt confirmation';
+            : 'the provider settled without exact terminal confirmation';
         throw requireSetRelinquishment(entry, unconfirmedReason);
       }
       closeAndForget(entry);
@@ -813,8 +814,8 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
               entry.startCommitted = true;
               settle({ kind: 'started', hostRef });
             },
-            () => {
-              entry.cancellationEvidence = { kind: 'interrupt-confirmed' };
+            (terminal) => {
+              entry.cancellationEvidence = { kind: 'provider-turn-terminal', terminal };
             },
           );
           const iterable = preparedExecution.execute(executionRuntime);

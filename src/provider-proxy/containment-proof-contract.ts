@@ -76,6 +76,14 @@ export const providerProxySetContainmentEvidenceSchema = z
   .discriminatedUnion('kind', [
     z
       .object({
+        kind: z.literal('proxy-absent'),
+        observations: providerProxySetNonAbsentEnforcerObservationsSchema,
+        containment: recordedContainmentIdentitySchema,
+        recordedRoots: z.array(recordedProcessIdentitySchema).readonly(),
+      })
+      .strict(),
+    z
+      .object({
         kind: z.literal('reap-required'),
         containment: recordedContainmentIdentitySchema,
         recordedRoots: z.array(recordedProcessIdentitySchema).readonly(),

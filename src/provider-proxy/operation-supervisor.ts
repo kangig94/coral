@@ -204,8 +204,8 @@ type SupervisedOperation = {
   releaseIntent: ReleaseIntent | null;
   releaseReceipt: ProxyOperationReleaseReceipt | null;
   releaseInFlight: Promise<ProxyOperationReleaseReceipt> | null;
-  startAbort: Promise<void> | null;
-  stageAbort: Promise<void> | null;
+  startAbort: Promise<PromiseSettledResult<void>> | null;
+  stageAbort: Promise<PromiseSettledResult<void>> | null;
   deadlineTimer: { unref?: () => void } | null;
   releaseRetryTimer: { unref?: () => void } | null;
   ownershipOrdinal: number;
@@ -1159,12 +1159,17 @@ export class OperationSupervisor {
     record.stageAbort ??= this.#startAbort(record.stage);
   }
 
-  #startAbort(handle: Readonly<{ abortAndRelease(): Promise<void> }> | null): Promise<void> | null {
+  #startAbort(
+    handle: Readonly<{ abortAndRelease(): Promise<void> }> | null,
+  ): Promise<PromiseSettledResult<void>> | null {
     if (handle === null) return null;
     try {
-      return handle.abortAndRelease();
+      return handle.abortAndRelease().then(
+        () => ({ status: 'fulfilled' as const, value: undefined }),
+        (reason: unknown) => ({ status: 'rejected' as const, reason }),
+      );
     } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      return Promise.resolve({ status: 'rejected', reason: error });
     }
   }
 
@@ -1200,18 +1205,11 @@ export class OperationSupervisor {
   }
 
   async #finishRelease(record: SupervisedOperation): Promise<ProxyOperationReleaseReceipt> {
-    try {
-      await record.startAbort;
-    } catch (error: unknown) {
-      record.startAbort = null;
-      throw error;
-    }
-    try {
-      await record.stageAbort;
-    } catch (error: unknown) {
-      record.stageAbort = null;
-      throw error;
-    }
+    const [start, stage] = await Promise.all([record.startAbort, record.stageAbort]);
+    if (start?.status === 'rejected') record.startAbort = null;
+    if (stage?.status === 'rejected') record.stageAbort = null;
+    if (start?.status === 'rejected') throw start.reason;
+    if (stage?.status === 'rejected') throw stage.reason;
     const intent = record.releaseIntent;
     if (intent === null) throw new ProxyControlProtocolError('invalid_state', 'Release lost its retained intent.');
     try {

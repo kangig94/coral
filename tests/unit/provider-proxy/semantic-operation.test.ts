@@ -810,6 +810,101 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
     return { authority, forceClose, rootAlive: () => rootAlive };
   }
 
+  it.each(['notification', 'start-response', 'final-answer'] as const)(
+    'releases a normally completed real Codex kernel without cancellation refusal (%s)',
+    async (path) => {
+      const { proxy, ledger, emittedEvents } = createTestProxy();
+      const operation = testKey('normal-completion');
+      const prepared = preparedFixture({
+        provider: 'codex',
+        binding: { provider: 'codex', kind: 'account', binding: {} },
+      });
+      prepareAndActivate(ledger, operation, prepared);
+      const shared = sharedHostAuthority();
+      const hostRef = { ...sharedHostRef(), provider: 'codex' };
+      let notification: ((message: { method: string; params?: Record<string, unknown> }) => void) | null = null;
+      const rpc = vi.fn(async (method: string) => {
+        if (method === 'config/read') return { config: {} };
+        if (method === 'model/list') return { data: [], nextCursor: null };
+        if (method === 'thread/start') return { thread: { id: 'thread-normal' } };
+        if (method === 'turn/start')
+          return { turn: { id: 'turn-normal', status: path === 'start-response' ? 'completed' : 'inProgress' } };
+        throw new Error(`Unexpected Codex RPC: ${method}`);
+      });
+      const lease: AppServerSession = {
+        rpc: rpc as AppServerSession['rpc'],
+        subscribe: (handler) => {
+          notification = handler;
+          return () => {
+            notification = null;
+          };
+        },
+        closed: new Promise(() => {}),
+        interrupt: async () => {
+          throw new Error('A completed turn must not be interrupted');
+        },
+      };
+      providerRegistryDouble.rehydrateBinding.mockReturnValue({
+        ok: true,
+        value: fakeBoundProvider({
+          name: 'codex',
+          supportsInterrupt: true,
+          executionHostRef: hostRef,
+          openReplacement: async () => ({ hostRef, close: vi.fn() }),
+          execute: (execRuntime) =>
+            codexTurnKernel(prepared.request, {
+              ...execRuntime,
+              transport: 'app-server',
+              appServerSession: lease,
+              persistedContinuity: undefined,
+              continuityBridge: { checkpoint: () => {}, transportClosed: () => {} },
+              executionPlan: TEST_CODEX_PLAN,
+            }),
+        }),
+      });
+      const onRelinquish = vi.fn();
+      const semantic = createSemanticOperationRuntime({
+        runtime,
+        hostAuthority: shared.authority,
+        getProxy: () => proxy,
+        onRelinquish,
+      });
+      const stage = semantic.stage(operation, prepared);
+      await stage.result;
+      const start = semantic.host.start({ key: operation, prepared });
+      await start.result;
+      await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+      const emit = (message: { method: string; params?: Record<string, unknown> }) => {
+        if (notification === null) throw new Error('Kernel lost its subscription');
+        notification(message);
+      };
+      if (path === 'final-answer') {
+        emit({
+          method: 'item/completed',
+          params: {
+            threadId: 'thread-normal',
+            turnId: 'turn-normal',
+            item: { type: 'agentMessage', text: 'done', phase: 'final_answer' },
+          },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(emittedEvents.some(({ event }) => event.kind === 'terminal')).toBe(false);
+      }
+      if (path !== 'start-response')
+        emit({
+          method: 'turn/completed',
+          params: { threadId: 'thread-normal', turn: { id: 'turn-normal', status: 'completed' } },
+        });
+      await vi.waitFor(() => expect(emittedEvents.some(({ event }) => event.kind === 'terminal')).toBe(true));
+      await expect(Promise.all([start.abortAndRelease(), stage.abortAndRelease()])).resolves.toEqual([
+        undefined,
+        undefined,
+      ]);
+      expect(onRelinquish).not.toHaveBeenCalled();
+      expect(shared.forceClose).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps a same-host sibling usable after exact interrupt confirmation (C3-M1)', async () => {
     const { proxy, ledger, emittedEvents } = createTestProxy();
     const operationA = testKey('op-a');

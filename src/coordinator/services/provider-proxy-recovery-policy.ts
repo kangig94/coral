@@ -373,23 +373,20 @@ function classifyFulfillment(
       typeof value !== 'object' ||
       value === null ||
       !('kind' in value) ||
-      !['redeemed', 'protocol-incompatible', 'temporarily-unavailable'].includes(String(value.kind))
+      !['redeemed', 'proxy-unavailable', 'protocol-incompatible', 'temporarily-unavailable'].includes(
+        String(value.kind),
+      )
     ) {
       return unknown(producerId, new Error('provider_proxy_capsule_redemption_contract_violation'));
     }
     const outcome = value as ProviderProxySetRedemptionOutcome;
     if (outcome.kind === 'temporarily-unavailable') return unavailable(producerId, outcome.incident);
     if (outcome.kind === 'protocol-incompatible') return evidence(outcome);
-    if (
-      context.capsule !== undefined &&
-      !providerProxySetCapsuleMatchesIdentity(context.capsule, outcome.set.setIdentity)
-    ) {
+    const identity = outcome.kind === 'proxy-unavailable' ? outcome.setIdentity : outcome.set.setIdentity;
+    if (context.capsule !== undefined && !providerProxySetCapsuleMatchesIdentity(context.capsule, identity)) {
       return corrupt(producerId, new Error('provider_proxy_capsule_redemption_identity_mismatch'));
     }
-    if (
-      context.setIdentity !== undefined &&
-      !providerProxySetIdentitiesEqual(context.setIdentity, outcome.set.setIdentity)
-    ) {
+    if (context.setIdentity !== undefined && !providerProxySetIdentitiesEqual(context.setIdentity, identity)) {
       return corrupt(producerId, new Error('provider_proxy_capsule_redemption_identity_mismatch'));
     }
     return evidence(outcome);
@@ -723,6 +720,13 @@ export function createProviderProxyRecoveryDispatcher(
         const redemptionSettled = redemption !== undefined || retiredSources.has('redemption');
         const absenceSettled = absence !== undefined || retiredSources.has('absence');
         if (!redemptionSettled || !absenceSettled) return;
+        if (absence?.kind === 'evidence') {
+          const proof = inspectProviderProxySetContainmentProof(absence.value);
+          if (proof?.authorization === 'fenced' && proof.evidence.kind === 'proxy-absent') {
+            retireReattachment(absence.value, 'absence');
+            return;
+          }
+        }
         if (retiredSources.has('redemption') && retiredSources.has('absence')) {
           retired = true;
           return;

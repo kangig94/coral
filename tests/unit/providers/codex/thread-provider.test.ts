@@ -567,6 +567,63 @@ describe('codexThreadProvider', () => {
     expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome } });
   });
 
+  it.each(['completed', 'interrupted', 'failed'] as const)(
+    'publishes terminal evidence for a validated %s turn/start response',
+    async (status) => {
+      const lease = makeLease(async (method) => {
+        if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+        if (method === 'turn/start') return { turn: { id: 'turn-1', status } };
+        throw new Error(`Unexpected method: ${method}`);
+      });
+      const onProviderTurnTerminal = vi.fn();
+      await collect(codexThreadProvider(makeRequest(), makeRuntime(lease, undefined, { onProviderTurnTerminal })));
+      expect(onProviderTurnTerminal).toHaveBeenCalledExactlyOnceWith({
+        kind: 'provider-turn-terminal',
+        providerTurnId: 'turn-1',
+        status,
+      });
+    },
+  );
+
+  it('keeps observing inferred final-answer completion until exact terminal evidence arrives', async () => {
+    const lease = makeLease(async (method) => {
+      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const onProviderTurnTerminal = vi.fn();
+    let settled = false;
+    const eventsPromise = collect(
+      codexThreadProvider(makeRequest(), makeRuntime(lease, undefined, { onProviderTurnTerminal })),
+    ).then((events) => {
+      settled = true;
+      return events;
+    });
+    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+    lease.emit({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        item: { type: 'agentMessage', text: 'Final answer', phase: 'final_answer' },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(settled).toBe(false);
+    expect(onProviderTurnTerminal).not.toHaveBeenCalled();
+    lease.emit({
+      method: 'turn/completed',
+      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+    });
+    const events = await eventsPromise;
+    expect(onProviderTurnTerminal).toHaveBeenCalledExactlyOnceWith({
+      kind: 'provider-turn-terminal',
+      providerTurnId: 'turn-1',
+      status: 'completed',
+    });
+    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'completed' } } });
+  });
+
   it.each([
     ['missing', undefined],
     ['inProgress', 'inProgress'],

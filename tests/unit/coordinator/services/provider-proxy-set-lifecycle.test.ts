@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createProviderOperationReconcilerHarness } from '#tests/helpers/provider-operation-reconciler-harness.js';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -63,6 +64,7 @@ import {
   providerProxySetContainmentEvidenceFor,
   releaseProviderProxySetContainmentProofFence,
   verifyProviderProxySetContainmentProofCurrent,
+  runProviderProxySetContainmentProofMutation,
   type ProviderProxySetContainmentProof,
   type ProviderProxySetContainmentProofAuthorization,
   type ProviderProxySetFencedContainmentProof,
@@ -108,6 +110,8 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
   insertProviderOperation,
+  readProviderOperations,
+  subscribeProviderOperationMutations,
   providerOperationMutationAdmission,
   ProviderOperationMutationAdmission,
   type ProviderOperationMutationSetFence,
@@ -709,6 +713,7 @@ function insertProviderOperationOutsideAdmission(
 function containmentProofRuntime(
   identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
   observations: Readonly<Record<'guardian' | 'reaper', ProcessLiveness>>,
+  proxyObservation: ProcessLiveness = 'absent',
 ) {
   const base = createRealRuntime('prod');
   const expectedIncarnations = new Map<number, ProcessIncarnation>([
@@ -718,6 +723,7 @@ function containmentProofRuntime(
   const observationFor = (pid: number): ProcessLiveness => {
     if (pid === identity.guardianPid) return observations.guardian;
     if (pid === identity.reaperPid) return observations.reaper;
+    if (pid === identity.proxyPid) return proxyObservation;
     return 'absent';
   };
   const readProcessIncarnation = vi.fn((pid: number) =>
@@ -774,7 +780,8 @@ async function sealedContainmentProof(
   }
   sealedProofDatabases.push(db);
   return createProviderProxySetContainmentProver(
-    containmentProofRuntime(identity, observations).runtime,
+    containmentProofRuntime(identity, observations, evidence.kind === 'enforcers-observed' ? 'unknown' : 'absent')
+      .runtime,
   ).collectContainmentProof(authorization, db, new AbortController().signal);
 }
 
@@ -8890,4 +8897,145 @@ describe('ProviderProxySetLifecycle', () => {
       kill.mockRestore();
     }
   });
+});
+
+describe('identity-proven proxy loss with live enforcers', () => {
+  it.each(['absent', 'reused', 'unknown', 'alive'] as const)(
+    'recovers outstanding claims only for decisive proxy loss (%s)',
+    async (proxyObservation) => {
+      const executing = providerOperationRecord('executing', { job: 1 });
+      const settled = providerOperationRecord('settlement-pending', { job: 9 });
+      const harness = createProviderOperationReconcilerHarness();
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([]);
+      const unsubscribe = subscribeProviderOperationMutations(harness.db, (mutation) => claims.applyMutation(mutation));
+      insertProviderOperation(harness.db, executing);
+      insertProviderOperation(harness.db, settled);
+      const identity = providerProxySetIdentityFromRecord(executing);
+      const base = createRealRuntime('prod');
+      let observed = proxyObservation;
+      const runtime = {
+        ...base,
+        process: {
+          ...base.process,
+          readProcessIncarnation: (pid: number) =>
+            pid === identity.guardianPid
+              ? identity.guardianIncarnation
+              : pid === identity.reaperPid
+                ? identity.reaperIncarnation
+                : observed === 'alive'
+                  ? identity.proxyIncarnation
+                  : observed === 'reused'
+                    ? testIncarnation('reused-proxy')
+                    : null,
+          observeLiveness: (pid: number) =>
+            pid !== identity.proxyPid || observed === 'alive' || observed === 'reused'
+              ? ('alive' as const)
+              : observed === 'unknown'
+                ? ('unknown' as const)
+                : ('absent' as const),
+          kill: () => {
+            throw new Error('Independent reaping is forbidden while enforcers live');
+          },
+        },
+      };
+      const prover = createProviderProxySetContainmentProver(runtime);
+      const dispatcher = createTestProviderProxyRecoveryDispatcher(
+        {
+          'containment-proof': async ({ identity, signal }) => {
+            const mutationFence = providerOperationMutationAdmission(harness.db).closeSet(identity);
+            return prover.collectContainmentProof(
+              authorizeProviderProxySetContainmentProof(identity, {
+                mutationFence,
+                closeAdmission: async () => {
+                  if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+                },
+              }),
+              harness.db,
+              signal,
+            );
+          },
+          'disappearance-consumer': ({ notice, mutationProof }) =>
+            runProviderProxySetContainmentProofMutation(
+              mutationProof!,
+              notice.setIdentity,
+              'test-proxy-loss-delivery',
+              () => harness.reconciler.containmentDisappeared(notice),
+            ),
+        },
+        (error) => harness.fatalErrors.push(error),
+      );
+      const clock = new ManualClock();
+      const faults = createProviderProxyAuthorityFaultLatch();
+      const commit = vi.fn(async () => ({
+        kind: 'containment-absent' as const,
+        disappearanceReceipt: 'guardian-confirmed-proxy-loss',
+      }));
+      const redeem = vi.fn(async () => ({
+        kind: 'unavailable' as const,
+        incident: { kind: 'publication-unknown' as const, role: 'proxy' as const, reason: 'socket closed' },
+      }));
+      const authority = fakeAuthority({
+        record: executing,
+        faults,
+        adoptionWindowMs: 23_000,
+        redeemControl: redeem,
+        commitContainment: commit,
+      });
+      const lifecycle = lifecycleFor({
+        claims,
+        time: clock,
+        controlEstablished: ignoreControlEstablished,
+        recoveryDispatcher: dispatcher,
+        proveContainmentAbsent: noContainmentProof,
+        reapRecordedContainment: async () => {
+          throw new Error('No raw reaping');
+        },
+        disappearanceConsumer: harness.reconciler,
+      });
+      lifecycle.initializeClaimSlots();
+      lifecycle.completeStartupDiscovery();
+      lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+      faults.reportIncident({
+        kind: 'control-channel-fault',
+        role: 'proxy',
+        cause: 'closed',
+        error: new ControlClientError('control_client_closed', 'socket closed', 'closed'),
+      });
+      for (let i = 0; i < 25; i++) {
+        await drainMicrotasks();
+        clock.elapse(1000);
+        clock.runDue();
+      }
+      if (proxyObservation === 'unknown' || proxyObservation === 'alive') {
+        expect(commit).not.toHaveBeenCalled();
+        expect(claims.size).toBe(2);
+        const attempts = redeem.mock.calls.length;
+        clock.elapse(60_000);
+        clock.runDue();
+        await drainMicrotasks();
+        expect(redeem.mock.calls.length).toBeGreaterThan(attempts);
+        expect(commit).not.toHaveBeenCalled();
+        observed = 'absent';
+        clock.elapse(60_000);
+        clock.runDue();
+      }
+      await vi.waitFor(() => expect(claims.size).toBe(0));
+      expect(commit).toHaveBeenCalledOnce();
+      expect(
+        harness.appended.filter((event) => (event as { type: string }).type === 'job.terminal.recorded'),
+      ).toHaveLength(1);
+      expect(
+        harness.appended.filter(
+          (event) =>
+            (event as { type: string; body: { detail?: { code: string } } }).type === 'job.progress.emitted' &&
+            (event as { body: { detail?: { code: string } } }).body.detail?.code === 'provider_lost',
+        ),
+      ).toHaveLength(1);
+      expect(readProviderOperations(harness.db).records).toEqual([]);
+      expect(harness.fatalErrors).toEqual([]);
+      unsubscribe();
+      harness.db.close();
+    },
+  );
 });
