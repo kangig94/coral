@@ -1,4 +1,4 @@
-import { assertNever, formatError } from '../../../infra/error-format.js';
+import { assertNever, errorMessage, formatError } from '../../../infra/error-format.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import type { ProcessLiveness } from '../../../infra/node-process.js';
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
@@ -53,6 +53,11 @@ type StartupPermitOwnership =
       recordKeys: readonly string[];
     }>;
 
+type StartupPermitRestoration =
+  | Readonly<{ kind: 'restored'; permit: LaunchPermit }>
+  | Readonly<{ kind: 'job-absent' | 'not-required'; permit: null }>
+  | Readonly<{ kind: 'refused'; permit: null; reason: string }>;
+
 export type ProviderOperationStartupRelease = LaunchRelease | Readonly<{ kind: 'not-owned' }>;
 
 export type ProviderOperationStartupSnapshot = Readonly<{
@@ -71,7 +76,7 @@ export type SupersededProviderOperationRetirementSummary = Readonly<{
 }>;
 
 type StartupHoldDisposition =
-  | Readonly<{ kind: 'fenced'; record: ProviderOperationRecord }>
+  | Readonly<{ kind: 'retry-scheduled'; record: ProviderOperationRecord }>
   | Readonly<{ kind: 'record-absent' }>
   | Readonly<{
       kind: 'settlement-pending';
@@ -178,7 +183,7 @@ export function createProviderOperationStartupOwnership(
     ownership:
       | Readonly<{ kind: 'operation'; operationId: string }>
       | Readonly<{ kind: 'undecided-provider-operation'; recordKeys: readonly string[] }>,
-  ): LaunchPermit | null => {
+  ): StartupPermitRestoration => {
     const existing = permits.get(jobId);
     if (existing !== undefined) {
       if (
@@ -186,8 +191,9 @@ export function createProviderOperationStartupOwnership(
         ownership.kind === 'operation' &&
         existing.operationId !== ownership.operationId
       ) {
-        log(`Provider operation startup ownership conflict for ${jobId}: more than one operation claims its permit.\n`);
-        return null;
+        const reason = 'More than one provider operation claims the startup permit.';
+        log(`Provider operation startup ownership conflict for ${jobId}: ${reason}\n`);
+        return { kind: 'refused', permit: null, reason };
       }
       if (existing.kind === 'undecided-provider-operation' && ownership.kind === 'operation') {
         permits.set(jobId, {
@@ -200,19 +206,25 @@ export function createProviderOperationStartupOwnership(
           existing.permit.holder.kind === 'undecided-provider-operation' ? existing.permit.holder.recordKeys : [];
         const recordKeys = [...new Set([...existingRecordKeys, ...ownership.recordKeys])];
         const permit = binding.holdUndecidedProviderOperationLaunch(existing.permit, recordKeys);
-        if (permit === null) return null;
+        if (permit === null) {
+          return {
+            kind: 'refused',
+            permit: null,
+            reason: 'The tracked launch reservation no longer accepts undecided ownership.',
+          };
+        }
         permits.set(jobId, {
           kind: 'undecided-provider-operation',
           permit,
           recordKeys,
         });
-        return permit;
+        return { kind: 'restored', permit };
       }
-      return existing.permit;
+      return { kind: 'restored', permit: existing.permit };
     }
 
     const status = progressStore.readStatus(jobId);
-    if (status === null) return null;
+    if (status === null) return { kind: 'job-absent', permit: null };
     try {
       const launch = readProviderOperationJobLaunch(progressStore, jobId);
       const permit = binding.restoreActiveLaunch(
@@ -230,10 +242,11 @@ export function createProviderOperationStartupOwnership(
           ? { kind: 'operation', permit, operationId: ownership.operationId }
           : { kind: 'undecided-provider-operation', permit, recordKeys: ownership.recordKeys },
       );
-      return permit;
+      return { kind: 'restored', permit };
     } catch (error: unknown) {
+      const reason = `Startup permit restoration failed: ${error instanceof Error ? error.name : 'UnknownError'}: ${errorMessage(error)}`;
       log(`Provider operation startup permit restoration failed for ${jobId}: ${formatError(error)}\n`);
-      return null;
+      return { kind: 'refused', permit: null, reason };
     }
   };
 
@@ -265,7 +278,7 @@ export function createProviderOperationStartupOwnership(
       const next = providerOperationRecordSchema.parse({
         ...current,
         revision: current.revision + 1,
-        retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+        retryNotBeforeMs: runtime.time.now() + Math.min(1_000 * 2 ** Math.min(current.retryCount, 6), 60_000),
         retryCount: current.retryCount + 1,
         lastError: {
           observedAtMs: runtime.time.now(),
@@ -274,7 +287,7 @@ export function createProviderOperationStartupOwnership(
         },
       });
       const result = compareAndSwapProviderOperation(progressStore.getDb(), current, next);
-      if (result.kind === 'updated') return { kind: 'fenced', record: next };
+      if (result.kind === 'updated') return { kind: 'retry-scheduled', record: next };
       current = result.current;
     }
     return { kind: 'record-absent' };
@@ -300,8 +313,8 @@ export function createProviderOperationStartupOwnership(
     if (restoredPermit !== null) {
       const disposition = releasePermitThroughSettlement(restoredPermit, record.operation);
       if (disposition.kind === 'refused') {
-        permits.delete(record.operation.jobId);
         const release = binding.releaseLaunch(restoredPermit);
+        permits.delete(record.operation.jobId);
         if (release.kind === 'transferred') transferredHolder = release.holder;
       }
     } else {
@@ -348,7 +361,7 @@ export function createProviderOperationStartupOwnership(
     refusal: Extract<ProviderOperationStartupRecordOwnership['bindingDisposition'], { kind: 'refused' }>,
   ): ProviderOperationStartupRecordOwnership => {
     switch (disposition.kind) {
-      case 'fenced':
+      case 'retry-scheduled':
         return {
           phase: disposition.record.phase,
           operation: disposition.record.operation,
@@ -411,7 +424,7 @@ export function createProviderOperationStartupOwnership(
   ): ProviderOperationStartupRecordOwnership => {
     const disposition = binding.prepareProviderOperationBinding(permit, record.operation);
     if (disposition.kind !== 'refused') {
-      permits.delete(record.operation.jobId);
+      if (disposition.kind !== 'prepared') permits.delete(record.operation.jobId);
       return {
         phase: record.phase,
         operation: record.operation,
@@ -423,7 +436,7 @@ export function createProviderOperationStartupOwnership(
     return resolveHold(record, permit, dispositionHold, {
       kind: 'refused',
       reason: disposition.reason,
-      remedy: { kind: 'restart-coordinator' },
+      remedy: { kind: 'remote-settlement' },
     });
   };
 
@@ -431,8 +444,8 @@ export function createProviderOperationStartupOwnership(
     const snapshotRestoresPermit = phaseRestoresPermit(snapshotRecord.phase);
     let existingPermit = permits.get(snapshotRecord.operation.jobId);
     if (snapshotRecord.phase === 'local-recovery-pending' && existingPermit?.kind === 'undecided-provider-operation') {
-      permits.delete(snapshotRecord.operation.jobId);
       const release = binding.releaseLaunch(existingPermit.permit);
+      permits.delete(snapshotRecord.operation.jobId);
       if (release.kind === 'transferred') {
         return {
           phase: snapshotRecord.phase,
@@ -458,16 +471,25 @@ export function createProviderOperationStartupOwnership(
       existingPermit !== undefined &&
       (existingPermit.kind === 'undecided-provider-operation' ||
         existingPermit.operationId === snapshotRecord.operation.operationId);
-    const restoredPermit = snapshotRestoresPermit
+    const restoration: StartupPermitRestoration = snapshotRestoresPermit
       ? restorePermit(snapshotRecord.operation.jobId, {
           kind: 'operation',
           operationId: snapshotRecord.operation.operationId,
         })
       : reusableExistingPermit && existingPermit !== undefined
-        ? existingPermit.permit
-        : null;
-    const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
+        ? { kind: 'restored', permit: existingPermit.permit }
+        : { kind: 'not-required', permit: null };
+    const restoredPermit = restoration.permit;
+    let current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
     if (current === null) return releaseAbsent(snapshotRecord, restoredPermit);
+    if (
+      current.retryNotBeforeMs === Number.MAX_SAFE_INTEGER &&
+      current.lastError?.code === 'provider_operation_startup_ownership_refused'
+    ) {
+      const retry = hold(current, current.lastError.message);
+      if (retry.kind === 'record-absent') return releaseAbsent(current, restoredPermit);
+      current = retry.record;
+    }
     clearResolvedReadableAmbiguity(current);
 
     if (current.phase === 'settlement-pending') return settleOwnership(current, restoredPermit);
@@ -481,11 +503,16 @@ export function createProviderOperationStartupOwnership(
     }
     if (current.phase === 'prestart-cleanup-pending') {
       if (restoredPermit === null) {
-        const reason = 'The provider prestart cleanup has no restored recovery permit.';
+        const reason =
+          restoration.kind === 'refused'
+            ? restoration.reason
+            : restoration.kind === 'job-absent'
+              ? 'The provider prestart cleanup job is absent.'
+              : 'The provider prestart cleanup has no restored recovery permit.';
         return resolveHold(current, restoredPermit, hold(current, reason), {
           kind: 'refused',
           reason,
-          remedy: { kind: 'restart-coordinator' },
+          remedy: { kind: 'remote-settlement' },
         });
       }
       return {
@@ -496,11 +523,16 @@ export function createProviderOperationStartupOwnership(
       };
     }
     if (restoredPermit === null) {
-      const reason = 'The provider operation has no restored recovery permit.';
+      const reason =
+        restoration.kind === 'refused'
+          ? restoration.reason
+          : restoration.kind === 'job-absent'
+            ? 'The provider operation job is absent.'
+            : 'The provider operation has no restored recovery permit.';
       return resolveHold(current, restoredPermit, hold(current, reason), {
         kind: 'refused',
         reason,
-        remedy: { kind: 'restart-coordinator' },
+        remedy: { kind: 'remote-settlement' },
       });
     }
 
@@ -552,7 +584,7 @@ export function createProviderOperationStartupOwnership(
           restoredPermit,
           bindingDisposition: settleBinding(disposition.record.operation),
         };
-      case 'fenced': {
+      case 'retry-scheduled': {
         const remedy = quarantineAmbiguousReadable(disposition.record);
         return {
           phase: disposition.record.phase,
@@ -650,7 +682,7 @@ export function createProviderOperationStartupOwnership(
       }
       const recordKeys = undecidedRecordKeysByJob.get(jobId);
       if (recordKeys === undefined) throw new Error(`Unreadable provider-operation ownership lost job ${jobId}.`);
-      return restorePermit(jobId, { kind: 'undecided-provider-operation', recordKeys });
+      return restorePermit(jobId, { kind: 'undecided-provider-operation', recordKeys }).permit;
     };
     const unreadable = unreadableSubjects.map(({ recordKey: unreadableRecordKey, revision, jobId }) => ({
       recordKey: unreadableRecordKey,
@@ -777,8 +809,9 @@ export function createProviderOperationStartupOwnership(
   const release = (operation: ProviderOperationRecord['operation']): ProviderOperationStartupRelease => {
     const owned = permits.get(operation.jobId);
     if (owned?.kind !== 'operation' || owned.operationId !== operation.operationId) return { kind: 'not-owned' };
+    const release = binding.releaseLaunch(owned.permit);
     permits.delete(operation.jobId);
-    return binding.releaseLaunch(owned.permit);
+    return release;
   };
 
   const releaseUnreadable = (repairedRecordKey: string): UnreadableProviderOperationStartupResolution => {
@@ -815,8 +848,8 @@ export function createProviderOperationStartupOwnership(
         retainRecordKeys(readableRecordKeys);
         continue;
       }
-      permits.delete(jobId);
       const disposition = binding.releaseLaunch(owned.permit);
+      permits.delete(jobId);
       switch (disposition.kind) {
         case 'released':
           released += 1;
@@ -867,17 +900,17 @@ export function createProviderOperationStartupOwnership(
     completeRecovery: (jobId) => {
       const owned = permits.get(jobId);
       if (owned === undefined) return;
-      permits.delete(jobId);
       const disposition = binding.releaseLaunch(owned.permit);
+      permits.delete(jobId);
       if (disposition.kind === 'transferred') {
         throw new Error(`Launch ownership transferred to ${JSON.stringify(disposition.holder)}.`);
       }
     },
     holdRecoveryFailure: (record, reason) =>
-      resolveHold(record, null, hold(record, reason), {
+      resolveHold(record, permits.get(record.operation.jobId)?.permit ?? null, hold(record, reason), {
         kind: 'refused',
         reason,
-        remedy: { kind: 'restart-coordinator' },
+        remedy: { kind: 'remote-settlement' },
       }),
     releaseAll: () => {
       for (const { permit } of permits.values()) void binding.releaseLaunch(permit);
