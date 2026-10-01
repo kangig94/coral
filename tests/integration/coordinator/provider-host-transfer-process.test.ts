@@ -45,6 +45,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 
 const roots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
@@ -56,24 +57,6 @@ function supervisorLockHeld(runDir: string): boolean {
   const attempt = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
   if (attempt.kind === 'acquired') attempt.lease();
   return attempt.kind === 'contended';
-}
-
-/** Recorded host processes are not this test's children, so only their incarnation disappearing proves an exit. */
-async function killRecordedProcesses(recorded: readonly { pid: number; incarnation: ProcessIncarnation }[]) {
-  const signalled = recorded.filter(
-    ({ pid, incarnation }) => probeProcessIncarnation(pid) === incarnation && observeProcessLiveness(pid) === 'alive',
-  );
-  for (const { pid } of signalled) {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // A process that exited after it was observed is what the wait below confirms.
-    }
-  }
-  await waitForCondition(
-    () => signalled.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
-    30_000,
-  );
 }
 
 /** A probe can race the process it reads, so only an observed incarnation or an absent pid ends the wait. */
@@ -89,20 +72,8 @@ async function observedIncarnation(pid: number): Promise<ProcessIncarnation | nu
 afterEach(async () => {
   await Promise.all(cliChildren.splice(0).map((cli) => terminateChildProcess(cli, 'SIGKILL')));
   for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
-  // A successor shuts down its own children on SIGTERM; waiting for its exit keeps them from outliving the test.
-  const terminated: { pid: number; incarnation: ProcessIncarnation }[] = [];
-  for (const recorded of successors.splice(0)) {
-    const incarnation = recorded.incarnation;
-    if (incarnation !== null && probeProcessIncarnation(recorded.pid) === incarnation) {
-      process.kill(recorded.pid, 'SIGTERM');
-      terminated.push({ pid: recorded.pid, incarnation });
-    }
-  }
-  await waitForCondition(
-    () => terminated.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
-    30_000,
-  );
-  await killRecordedProcesses(hostProcesses.splice(0));
+  await stopRecordedProcesses(successors.splice(0), 'SIGTERM', 30_000);
+  await stopRecordedProcesses(hostProcesses.splice(0), 'SIGKILL', 30_000);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 

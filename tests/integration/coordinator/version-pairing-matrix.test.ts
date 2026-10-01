@@ -59,6 +59,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 
 const roots: string[] = [];
 const homes: string[] = [];
@@ -110,34 +111,18 @@ afterEach(async () => {
     const launch = new SupervisorEvidence(runDir);
     try {
       const state = launch.read();
-      const owner = state.owner?.process;
-      if (owner !== undefined && probeProcessIncarnation(owner.pid) === owner.incarnation) {
-        try {
-          process.kill(owner.pid, 'SIGTERM');
-        } catch {
-          // The supervisor may have released ownership after the observation.
-        }
-      }
-      for (const child of [state.launch?.child, state.attempt?.child]) {
-        if (child === undefined || probeProcessIncarnation(child.pid) !== child.incarnation) continue;
-        try {
-          process.kill(child.pid, 'SIGTERM');
-        } catch {
-          // The child may have retired after the observation.
-        }
-      }
+      await stopRecordedProcesses(
+        [state.owner?.process, state.launch?.child, state.attempt?.child].filter((identity) => identity !== undefined),
+        'SIGTERM',
+        15_000,
+      );
     } finally {
       launch.close();
     }
   }
-  for (const successor of successors.splice(0)) {
-    if (
-      probeProcessIncarnation(successor.pid) === successor.incarnation &&
-      observeProcessLiveness(successor.pid) === 'alive'
-    )
-      process.kill(successor.pid, 'SIGTERM');
-  }
+  await stopRecordedProcesses(successors.splice(0), 'SIGTERM', 15_000);
   for (const coordinator of coordinators.splice(0).reverse()) await stopCoordinator(coordinator);
+  await stopRecordedProcesses(hostProcesses.splice(0), 'SIGKILL', 15_000);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
@@ -1090,26 +1075,6 @@ type HostedWork = Readonly<{
 }>;
 
 const hostProcesses: { pid: number; incarnation: ProcessIncarnation }[] = [];
-
-/** Recorded host processes are not this test's children, so only their incarnation disappearing proves an exit. */
-afterEach(async () => {
-  const signalled = hostProcesses
-    .splice(0)
-    .filter(
-      ({ pid, incarnation }) => probeProcessIncarnation(pid) === incarnation && observeProcessLiveness(pid) === 'alive',
-    );
-  for (const { pid } of signalled) {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // A process that exited after it was observed is what the wait below confirms.
-    }
-  }
-  await waitForCondition(
-    () => signalled.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
-    30_000,
-  );
-});
 
 function installTransferCodex(home: string): string {
   const binDir = join(home, 'bin');

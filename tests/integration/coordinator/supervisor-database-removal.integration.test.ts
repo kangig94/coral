@@ -1,4 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import * as nodeFs from 'node:fs';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +30,9 @@ import { getBackendStatusFull } from '#src/cli/backend-status.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
+
+vi.mock('node:fs', async (importOriginal) => ({ ...(await importOriginal<typeof nodeFs>()) }));
 
 function buildSetId(root: string): string {
   const manifest = JSON.parse(readFileSync(join(root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8')) as {
@@ -37,26 +41,20 @@ function buildSetId(root: string): string {
   return manifest.buildSetId;
 }
 
-async function stopFixtureProcesses(supervisors: ChildProcess[], identities: Map<number, string>): Promise<void> {
+async function stopFixtureProcesses(
+  supervisors: ChildProcess[],
+  identities: Map<number, string>,
+  timeoutMs = 5_000,
+): Promise<void> {
   for (const supervisor of supervisors) supervisor.kill('SIGKILL');
-  for (const [pid, incarnation] of identities) {
-    if (probeProcessIncarnation(pid) !== incarnation) continue;
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      /* empty */
-    }
-  }
-  await Promise.all(
-    supervisors.map((supervisor) =>
-      supervisor.exitCode !== null || supervisor.signalCode !== null
-        ? Promise.resolve()
-        : new Promise<void>((resolve) => supervisor.once('exit', () => resolve())),
-    ),
+  await stopRecordedProcesses(
+    [...identities].map(([pid, incarnation]) => ({ pid, incarnation })),
+    'SIGKILL',
+    timeoutMs,
   );
   await waitForCondition(
-    () => [...identities].every(([pid, incarnation]) => probeProcessIncarnation(pid) !== incarnation),
-    5_000,
+    () => supervisors.every((supervisor) => supervisor.exitCode !== null || supervisor.signalCode !== null),
+    timeoutMs,
   );
 }
 
@@ -77,8 +75,8 @@ it.runIf(process.platform === 'linux')('waits for every recorded fixture writer 
     const incarnation = probeProcessIncarnation(pid);
     if (incarnation === null) throw new Error('Fixture writer identity is unavailable');
     vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
-      if (target !== pid) return kill(target, signal);
-      delayedKill = setTimeout(() => kill(target, signal), 100);
+      if (target !== pid || signal === 0) return kill(target, signal);
+      delayedKill ??= setTimeout(() => kill(target, signal), 100);
       return true;
     });
     await stopFixtureProcesses([supervisor], new Map([[pid, incarnation]]));
@@ -91,6 +89,65 @@ it.runIf(process.platform === 'linux')('waits for every recorded fixture writer 
     await waitForCondition(() => writer.signalCode !== null && supervisor.signalCode !== null, 5_000);
   }
 });
+
+it.runIf(process.platform === 'linux').each(['recovers', 'stays unknown'] as const)(
+  'preserves a writer root while its incarnation probe %s',
+  async (observation) => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-teardown-unknown-'));
+    const writer = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const fs = require('node:fs'); process.on('message', () => { fs.mkdirSync(process.argv[1], { recursive: true }); fs.writeFileSync(process.argv[1] + '/late-write', 'live'); process.send('wrote'); }); process.send('ready'); setInterval(() => {}, 1000);`,
+        root,
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+    );
+    let ready = false;
+    let wrote = false;
+    writer.on('message', (message) => {
+      if (message === 'ready') ready = true;
+      if (message === 'wrote') wrote = true;
+    });
+    const read = nodeFs.readFileSync;
+    try {
+      await waitForCondition(() => ready, 5_000);
+      const pid = writer.pid!;
+      const incarnation = probeProcessIncarnation(pid);
+      if (incarnation === null) throw new Error('Fixture writer identity is unavailable');
+      let failedReads = 0;
+      const fault = vi.spyOn(nodeFs, 'readFileSync').mockImplementation((...args) => {
+        if (String(args[0]) === `/proc/${pid}/stat` && (observation === 'stays unknown' || failedReads < 3)) {
+          failedReads++;
+          throw Object.assign(new Error('Transient proc observation failure'), { code: 'EIO' });
+        }
+        return read(...args);
+      });
+      const timeoutMs = observation === 'recovers' ? 5_000 : 250;
+      const stopped = stopFixtureProcesses([], new Map([[pid, incarnation]]), timeoutMs).then(() => {
+        rmSync(root, { recursive: true, force: true });
+      });
+      if (observation === 'recovers') {
+        await stopped;
+        expect(existsSync(root)).toBe(false);
+      } else {
+        await expect(stopped).rejects.toThrow(`Fixture process departure unproven after 250ms: ${pid}`);
+        expect(existsSync(root)).toBe(true);
+        fault.mockRestore();
+        expect(probeProcessIncarnation(pid)).toBe(incarnation);
+        writer.send('write');
+        await waitForCondition(() => wrote, 5_000);
+        expect(readFileSync(join(root, 'late-write'), 'utf8')).toBe('live');
+      }
+      expect(failedReads).toBeGreaterThanOrEqual(3);
+    } finally {
+      vi.restoreAllMocks();
+      writer.kill('SIGKILL');
+      await waitForCondition(() => writer.signalCode !== null, 5_000);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 describe.runIf(process.platform === 'linux')('supervisor database removal recovery', () => {
   it.each([false, true])(

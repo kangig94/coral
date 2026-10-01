@@ -56,6 +56,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
@@ -69,23 +70,7 @@ afterEach(async () => {
     if (cli.exitCode === null && cli.signalCode === null) cli.kill('SIGKILL');
   }
   for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
-  // A signalled process may still be writing into the home it ran under, so removal waits for its exit.
-  const terminated: { pid: number; incarnation: ProcessIncarnation }[] = [];
-  for (const recorded of [...providerChildren.splice(0), ...successors.splice(0)]) {
-    const incarnation = recorded.incarnation;
-    if (
-      incarnation !== null &&
-      probeProcessIncarnation(recorded.pid) === incarnation &&
-      observeProcessLiveness(recorded.pid) === 'alive'
-    ) {
-      process.kill(recorded.pid, 'SIGTERM');
-      terminated.push({ pid: recorded.pid, incarnation });
-    }
-  }
-  await waitForCondition(
-    () => terminated.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
-    15_000,
-  );
+  await stopRecordedProcesses([...providerChildren.splice(0), ...successors.splice(0)], 'SIGTERM', 15_000);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 

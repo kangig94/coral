@@ -1,5 +1,6 @@
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import * as nodeFs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -19,7 +20,7 @@ import { build } from 'esbuild';
 import { expect, it, vi } from 'vitest';
 
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
-import { probeProcessIncarnation, readPidNamespace } from '#src/infra/node-process.js';
+import { observeProcessLiveness, probeProcessIncarnation, readPidNamespace } from '#src/infra/node-process.js';
 import { currentLaunchStatus, readLaunchStatus, updateLaunchStatus } from '#src/infra/launch-status.js';
 import { tryAcquireDiagnosticDirectoryLock } from '#src/infra/fs-lock.js';
 import { listLaunchAdmissions } from '#src/infra/launch-admission-record.js';
@@ -27,6 +28,7 @@ import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { createPluginFixture, waitForDiscoveryRecord } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 
 vi.mock('node:fs', async (importOriginal) => ({ ...(await importOriginal<typeof nodeFs>()) }));
 
@@ -102,40 +104,19 @@ it.each(['directory read', 'inode observation', 'marker population', 'marker obs
 it.runIf(process.platform === 'linux')('republishes after an old UUID-only reclaimer crashes', async () => {
   const runDir = mkdtempSync(join(tmpdir(), 'coral-status-old-reclaimer-'));
   const lockDir = join(runDir, 'launch-status.v1.lock');
-  const executable = join(runDir, 'old-reclaimer.cjs');
-  const previous = execFileSync('git', ['show', 'c43ff437^:src/infra/fs-lock.ts'], { encoding: 'utf8' });
-  await build({
-    stdin: {
-      contents: `import { tryAcquireDiagnosticDirectoryLock } from '${fileURLToPath(new URL('../../../src/infra/fs-lock.ts', import.meta.url))}'; tryAcquireDiagnosticDirectoryLock(process.argv[2]);`,
-      resolveDir: process.cwd(),
-      loader: 'ts',
-    },
-    outfile: executable,
-    bundle: true,
-    platform: 'node',
-    format: 'cjs',
-    external: ['node:*'],
-    plugins: [
-      {
-        name: 'old-claimant-crash',
-        setup(builder) {
-          builder.onLoad({ filter: /\/infra\/fs-lock\.ts$/ }, () => ({
-            contents: previous.replace(
-              'deps.storage.renameSync(lockDir, quarantinePath);',
-              "process.send?.('claimed'); process.kill(process.pid, 'SIGSTOP'); deps.storage.renameSync(lockDir, quarantinePath);",
-            ),
-            loader: 'ts',
-          }));
-        },
-      },
-    ],
-  });
+  const claimPath = join(lockDir, 'claim-' + randomUUID() + '.lock');
+  const markerContent = JSON.stringify({ pid: 2_147_483_647, pidNamespace: readPidNamespace() });
   mkdirSync(lockDir);
-  writeFileSync(
-    join(lockDir, 'owner-dead.lock'),
-    JSON.stringify({ pid: 2_147_483_647, pidNamespace: readPidNamespace() }),
+  const claimant = spawn(
+    process.execPath,
+    [
+      '-e',
+      "require('node:fs').writeFileSync(process.argv[1], process.argv[2]); process.send('claimed'); setInterval(() => {}, 1000);",
+      claimPath,
+      markerContent,
+    ],
+    { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
   );
-  const claimant = spawn(process.execPath, [executable, lockDir], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
   let claimed = false;
   claimant.on('message', (message) => {
     if (message === 'claimed') claimed = true;
@@ -143,14 +124,20 @@ it.runIf(process.platform === 'linux')('republishes after an old UUID-only recla
   try {
     await waitForCondition(() => claimed, 5_000);
     expect(readdirSync(lockDir)).toEqual([expect.stringMatching(/^claim-[0-9a-f-]{36}\.lock$/u)]);
+    expect(readFileSync(claimPath, 'utf8')).toBe(markerContent);
     claimant.kill('SIGKILL');
     await waitForCondition(() => claimant.signalCode !== null, 5_000);
+    expect(observeProcessLiveness(claimant.pid!)).toBe('absent');
     updateLaunchStatus(runDir, (status) => ({
       ...status,
       admissionHolds: [{ path: '/child', disposition: 'unknown' }],
     }));
     await waitForCondition(() => readLaunchStatus(runDir).kind === 'readable', 3_000);
     expect(currentLaunchStatus(runDir)?.publicationFailure).toBeUndefined();
+    expect(readLaunchStatus(runDir)).toMatchObject({
+      kind: 'readable',
+      status: { admissionHolds: [{ path: '/child', disposition: 'unknown' }] },
+    });
   } finally {
     claimant.kill('SIGKILL');
     await waitForCondition(() => claimant.signalCode !== null, 5_000);
@@ -680,9 +667,9 @@ it.each(['owner', 'claim'])(
       expect(readdirSync(runDir).some((name) => name.includes('fallback'))).toBe(false);
     } finally {
       for (const supervisor of supervisors) supervisor.kill('SIGKILL');
-      for (const child of children) {
-        if (probeProcessIncarnation(child.pid) === child.incarnation) process.kill(child.pid, 'SIGKILL');
-      }
+      await stopRecordedProcesses(
+        children.map((child) => ({ pid: child.pid, incarnation: child.incarnation ?? null })),
+      );
       await Promise.all(
         supervisors.map((supervisor) =>
           supervisor.exitCode !== null || supervisor.signalCode !== null

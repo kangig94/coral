@@ -32,6 +32,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 
 const roots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
@@ -44,14 +45,7 @@ const commitFailures: [string, Record<string, string>][] = [
 
 afterEach(async () => {
   for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
-  for (const successor of successorPids.splice(0)) {
-    if (
-      successor.incarnation !== null &&
-      probeProcessIncarnation(successor.pid) === successor.incarnation &&
-      observeProcessLiveness(successor.pid) === 'alive'
-    )
-      process.kill(successor.pid, 'SIGTERM');
-  }
+  await stopRecordedProcesses(successorPids.splice(0), 'SIGTERM', 15_000);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 

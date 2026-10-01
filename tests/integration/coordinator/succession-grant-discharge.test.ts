@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
-import { observeProcessLiveness, probeProcessIncarnation } from '#src/infra/node-process.js';
+import { observeProcessLiveness } from '#src/infra/node-process.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type AttemptRetry } from '#src/infra/upgrade-intent.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -24,6 +24,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 
 const roots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
@@ -38,14 +39,11 @@ afterEach(async () => {
     const launch = new SupervisorEvidence(runDir);
     try {
       const state = launch.read();
-      for (const identity of [state.owner?.process, state.launch?.child, state.attempt?.child]) {
-        if (identity === undefined || probeProcessIncarnation(identity.pid) !== identity.incarnation) continue;
-        try {
-          process.kill(identity.pid, 'SIGTERM');
-        } catch {
-          // The recorded process may have exited after observation.
-        }
-      }
+      await stopRecordedProcesses(
+        [state.owner?.process, state.launch?.child, state.attempt?.child].filter((identity) => identity !== undefined),
+        'SIGTERM',
+        15_000,
+      );
     } finally {
       launch.close();
     }

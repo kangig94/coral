@@ -50,8 +50,10 @@ import {
   spawnCoordinator as spawnFixtureCoordinator,
   waitForDiscoveryRecord,
   waitForProcessExit,
+  terminateChildProcess,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
 function createPluginFixture(...args: Parameters<typeof createBasePluginFixture>) {
@@ -1033,14 +1035,7 @@ describe('namespace supervisor recovery', () => {
             // The fixture may already have exited.
           }
         }
-        for (const { pid, incarnation } of hosts) {
-          if (probeProcessIncarnation(pid) !== incarnation) continue;
-          try {
-            process.kill(pid, 'SIGKILL');
-          } catch {
-            // The provider host may already have exited.
-          }
-        }
+        await stopRecordedProcesses(hosts);
         for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
       }
     },
@@ -3073,6 +3068,7 @@ describe('namespace supervisor recovery', () => {
       let serviceProbe: ReturnType<typeof setInterval> | undefined;
       const serviceAnswers: Promise<boolean>[] = [];
       let stalledPid: number | undefined;
+      const identities = new Map<number, string | null>();
       try {
         independent = spawn(process.execPath, [harness, join(recovery.root, 'bridge', 'coral-backend.cjs')], {
           env: { ...env, HOME: independentHome, TMPDIR: independentHome, CORAL_SENTINEL_RUN_DIR: independentRunDir },
@@ -3081,7 +3077,9 @@ describe('namespace supervisor recovery', () => {
         const independentRecord = new SupervisorEvidence(independentRunDir);
         try {
           await waitForCondition(() => independentRecord.read().launch?.phase === 'serving', 10_000);
-          independentPid = independentRecord.read().launch?.child?.pid;
+          const child = independentRecord.read().launch?.child;
+          independentPid = child?.pid;
+          if (child !== undefined) identities.set(child.pid, child.incarnation);
         } finally {
           independentRecord.close();
         }
@@ -3097,6 +3095,7 @@ describe('namespace supervisor recovery', () => {
         if (launchId === undefined) throw new Error('Admitted child has no launch ID');
         stalledPid = record.read().launch?.child?.pid;
         if (stalledPid === undefined) throw new Error('Admitted child has no PID');
+        identities.set(stalledPid, record.read().launch?.child.incarnation ?? null);
         expect(readLaunchAdmission(runDir, launchId)).toMatchObject({
           kind: 'readable',
           admission: { admittedAt, child: { pid: stalledPid } },
@@ -3194,36 +3193,21 @@ describe('namespace supervisor recovery', () => {
       } finally {
         vi.restoreAllMocks();
         clearInterval(serviceProbe);
-        const currentPid = record.read().launch?.child?.pid;
+        const current = record.read().launch?.child;
+        if (current !== undefined) identities.set(current.pid, current.incarnation);
         record.close();
-        const replacementProcess = replacement;
-        const parentProcess = parent;
-        const parentExit =
-          parentProcess !== null && parentProcess.exitCode === null && parentProcess.signalCode === null
-            ? new Promise<void>((resolve) => parentProcess.once('exit', () => resolve()))
-            : Promise.resolve();
-        const replacementExit =
-          replacementProcess !== null && replacementProcess.exitCode === null && replacementProcess.signalCode === null
-            ? new Promise<void>((resolve) => replacementProcess.once('exit', () => resolve()))
-            : Promise.resolve();
-        if (parentProcess !== null && parentProcess.exitCode === null && parentProcess.signalCode === null)
-          parentProcess.kill('SIGKILL');
-        independent?.kill('SIGKILL');
-        if (
-          replacementProcess !== null &&
-          replacementProcess.exitCode === null &&
-          replacementProcess.signalCode === null
-        )
-          replacementProcess.kill('SIGKILL');
-        await Promise.all([parentExit, replacementExit]);
-        for (const pid of [stalledPid, currentPid, independentPid]) {
-          if (pid === undefined) continue;
-          try {
-            process.kill(pid, 'SIGKILL');
-          } catch {
-            // The fixture may already have exited.
+        await Promise.all(
+          [parent, replacement, independent]
+            .filter((supervisor) => supervisor !== null)
+            .map((supervisor) => terminateChildProcess(supervisor, 'SIGKILL')),
+        );
+        for (const directory of [runDir, independentRunDir]) {
+          for (const subject of listLaunchSubjects(directory)) {
+            const child = subject.admission?.child;
+            if (child !== undefined) identities.set(child.pid, child.incarnation ?? identities.get(child.pid) ?? null);
           }
         }
+        await stopRecordedProcesses([...identities].map(([pid, incarnation]) => ({ pid, incarnation })));
         for (const root of roots.reverse()) rmSync(root, { recursive: true, force: true });
       }
     },

@@ -33,6 +33,7 @@ import {
 import { currentLaunchStatus, readLaunchStatus } from '#src/infra/launch-status.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
+import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 
 vi.mock('node:fs', async (importOriginal) => ({ ...(await importOriginal<typeof nodeFs>()) }));
 
@@ -376,10 +377,12 @@ describe('child lifetime admission', () => {
       const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-parent-loss-'));
       const running = await launch(runDir, true, true);
       let childPid: number | undefined;
+      let childIncarnation: string | null = null;
       let release: (() => void) | undefined;
       try {
         const window = await running.window;
         childPid = window?.childPid as number;
+        childIncarnation = probeProcessIncarnation(childPid);
         const [subject] = listLaunchSubjects(runDir);
         if (subject?.lifetimePath === undefined || subject.admission === undefined) throw new Error('Missing subject');
         const namespaceInode = statSync(supervisorLockPath(runDir));
@@ -431,8 +434,7 @@ describe('child lifetime admission', () => {
       } finally {
         release?.();
         vi.restoreAllMocks();
-        if (childPid !== undefined && nodeProcess.probeProcessIncarnation(childPid) !== null)
-          process.kill(childPid, 'SIGKILL');
+        if (childPid !== undefined) await stopRecordedProcesses([{ pid: childPid, incarnation: childIncarnation }]);
         await stop(running.child, 'SIGKILL');
         rmSync(runDir, { recursive: true, force: true });
       }
