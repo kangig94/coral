@@ -367,7 +367,187 @@ describe('runStartupRecovery provider-operation ownership', () => {
     await recoveryCoordinator.teardown();
   });
 
-  it('reports an operator hold only after the startup ownership fence is durable', async () => {
+  it.each(['finite', 'legacy-hold'] as const)(
+    'double hydration reuses the exact prepared permit and keeps one reservation and a finite retry (%s)',
+    async (retry) => {
+      const runtime = createRealRuntime('prod');
+      const progressStore = createProgressStore(runtime);
+      const jobId = randomUUID();
+      const fixture = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() });
+      const record =
+        retry === 'finite'
+          ? fixture
+          : providerOperationRecordSchema.parse({
+              ...fixture,
+              retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+              lastError: {
+                observedAtMs: runtime.time.now(),
+                code: 'provider_operation_startup_ownership_refused',
+                message: 'Legacy startup restoration refused.',
+              },
+            });
+      seedRunningAppServerJob(progressStore, {
+        jobId,
+        sessionId: randomUUID(),
+        provider: 'codex',
+        proxyInstanceId: record.operation.proxyInstanceId,
+      });
+      insertProviderOperation(progressStore.getDb(), record);
+      const { launchCoordinator, recoveryCoordinator } = await createHeldRecoveryCoordinator(
+        runtime,
+        progressStore,
+        createFakeService(),
+        'double-startup-hydration',
+      );
+      const restore = vi.spyOn(launchCoordinator, 'restoreActiveLaunch');
+      const prepare = vi.spyOn(launchCoordinator, 'prepareProviderOperationBinding');
+      const hydrate = () =>
+        recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+          recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+        );
+      const first = hydrate();
+      const firstRetry = readProviderOperation(progressStore.getDb(), record.operation)?.retryNotBeforeMs;
+      const second = hydrate();
+
+      expect(second.completion).toEqual({ kind: 'complete' });
+      expect(second.records[0].restoredPermit).toBe(first.records[0].restoredPermit);
+      expect(restore).toHaveBeenCalledOnce();
+      expect(prepare.mock.calls[1][0]).toBe(prepare.mock.calls[0][0]);
+      expect(launchCoordinator.getActiveJobIds('default').length).toBe(1);
+      expect(readProviderOperation(progressStore.getDb(), record.operation)?.retryNotBeforeMs).toBe(firstRetry);
+      expect(firstRetry).toBeLessThan(Number.MAX_SAFE_INTEGER);
+      await recoveryCoordinator.teardown();
+      expect(launchCoordinator.reservationFor(jobId)).toBeNull();
+    },
+  );
+
+  it.each(['bound', 'settled'] as const)(
+    'forgets the prepared permit after verified %s disposition',
+    async (disposition) => {
+      const runtime = createRealRuntime('prod');
+      const progressStore = createProgressStore(runtime);
+      const jobId = randomUUID();
+      const record = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() });
+      seedRunningAppServerJob(progressStore, {
+        jobId,
+        sessionId: randomUUID(),
+        provider: 'codex',
+        proxyInstanceId: record.operation.proxyInstanceId,
+      });
+      insertProviderOperation(progressStore.getDb(), record);
+      const { launchCoordinator, recoveryCoordinator } = await createHeldRecoveryCoordinator(
+        runtime,
+        progressStore,
+        createFakeService(),
+        'startup-ownership-discharge',
+      );
+      const hydrate = () =>
+        recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+          recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+        );
+      hydrate();
+      if (disposition === 'bound')
+        expect(launchCoordinator.commitProviderOperationBinding(record.operation).kind).toBe('bound');
+      else expect(launchCoordinator.settleProviderOperationBinding(record.operation).kind).toBe('settled');
+      expect(hydrate().records[0].bindingDisposition.kind).toBe(disposition === 'bound' ? 'bound' : 'already-settled');
+      expect(recoveryCoordinator.releaseProviderOperationStartupOwnership(record.operation)).toEqual({
+        kind: 'not-owned',
+      });
+      await recoveryCoordinator.teardown();
+      expect(launchCoordinator.getActiveJobIds('default')).toEqual(disposition === 'bound' ? [jobId] : []);
+      launchCoordinator.settleProviderOperationBinding(record.operation);
+      launchCoordinator.retireProviderOperationBinding(record.operation);
+    },
+  );
+
+  it('refuses a conflicting reservation with its restoration reason and a paced retry', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const record = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() });
+    seedRunningAppServerJob(progressStore, {
+      jobId,
+      sessionId,
+      provider: 'codex',
+      proxyInstanceId: record.operation.proxyInstanceId,
+    });
+    insertProviderOperation(progressStore.getDb(), record);
+    const { launchCoordinator, recoveryCoordinator } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      createFakeService(),
+      'conflicting-startup-reservation',
+    );
+    const conflicting = launchCoordinator.restoreActiveLaunch(
+      jobId,
+      'codex',
+      { kind: 'provider-session', id: sessionId },
+      'default',
+    );
+    const prepare = vi.spyOn(launchCoordinator, 'prepareProviderOperationBinding');
+    const before = runtime.time.now();
+    const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+    );
+    expect(ownership.records[0]).toMatchObject({
+      restoredPermit: null,
+      bindingDisposition: { kind: 'refused', reason: expect.stringContaining('DuplicateLaunchReservationError') },
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(launchCoordinator.activeLaunchPermits()).toEqual([
+      expect.objectContaining({ reservationId: conflicting.reservationId }),
+    ]);
+    const current = readProviderOperation(progressStore.getDb(), record.operation);
+    expect(current?.retryNotBeforeMs).toBeGreaterThan(before);
+    expect(current?.retryNotBeforeMs).toBeLessThanOrEqual(runtime.time.now() + 60_000);
+    expect(current?.lastError?.message).toContain('DuplicateLaunchReservationError');
+    await recoveryCoordinator.teardown();
+    expect(launchCoordinator.releaseLaunch(conflicting).kind).toBe('released');
+  });
+
+  it.each(['job-absent', 'launch-unreadable'] as const)(
+    'distinguishes %s from a conflicting startup reservation',
+    async (failure) => {
+      const runtime = createRealRuntime('prod');
+      const progressStore = createProgressStore(runtime);
+      const jobId = randomUUID();
+      const record = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() });
+      seedRunningAppServerJob(progressStore, {
+        jobId,
+        sessionId: randomUUID(),
+        provider: 'codex',
+        proxyInstanceId: record.operation.proxyInstanceId,
+      });
+      insertProviderOperation(progressStore.getDb(), record);
+      const { recoveryCoordinator } = await createHeldRecoveryCoordinator(
+        runtime,
+        progressStore,
+        createFakeService(),
+        'startup-restoration-reasons',
+      );
+      if (failure === 'job-absent') vi.spyOn(progressStore, 'readStatus').mockReturnValue(null);
+      else
+        vi.spyOn(progressStore, 'readLaunchProjection').mockImplementation(() => {
+          throw new Error('launch projection unreadable');
+        });
+      const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+        recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+      );
+      const reason =
+        failure === 'job-absent'
+          ? 'The provider operation job is absent.'
+          : 'Startup permit restoration failed: Error: launch projection unreadable';
+      expect(ownership.records[0]).toMatchObject({
+        restoredPermit: null,
+        bindingDisposition: { kind: 'refused', reason },
+      });
+      expect(readProviderOperation(progressStore.getDb(), record.operation)?.lastError?.message).toBe(reason);
+      await recoveryCoordinator.teardown();
+    },
+  );
+
+  it('reports a paced retry with retained ownership after startup binding refusal', async () => {
     const runtime = createRealRuntime('prod');
     const progressStore = createProgressStore(runtime);
     const jobId = randomUUID();
@@ -401,22 +581,25 @@ describe('runStartupRecovery provider-operation ownership', () => {
         bindingDisposition: {
           kind: 'refused',
           reason: 'startup binding refused',
-          remedy: { kind: 'restart-coordinator' },
+          remedy: { kind: 'remote-settlement' },
         },
       }),
     ]);
     expect(ownership.completion).toMatchObject({
       kind: 'held',
-      holds: [expect.objectContaining({ jobId, remedy: { kind: 'restart-coordinator' } })],
+      holds: [expect.objectContaining({ jobId, remedy: { kind: 'remote-settlement' } })],
     });
     expect(readProviderOperation(progressStore.getDb(), record.operation)).toMatchObject({
-      retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+      retryNotBeforeMs: expect.any(Number),
       lastError: { code: 'provider_operation_startup_ownership_refused' },
     });
     expect(launchCoordinator.reservationFor(jobId)).toMatchObject({
       kind: 'active',
       holder: { kind: 'recovery' },
     });
+    const retry = readProviderOperation(progressStore.getDb(), record.operation)?.retryNotBeforeMs;
+    expect(retry).toBeGreaterThan(runtime.time.now());
+    expect(retry).toBeLessThanOrEqual(runtime.time.now() + 60_000);
     await recoveryCoordinator.teardown();
   });
 
@@ -796,12 +979,12 @@ describe('runStartupRecovery provider-operation ownership', () => {
           jobId,
           operationId: record.operation.operationId,
           reason: expect.stringContaining('recovery acceptance unavailable'),
-          remedy: { kind: 'restart-coordinator' },
+          remedy: { kind: 'remote-settlement' },
         }),
       ],
     });
     expect(readProviderOperation(progressStore.getDb(), record.operation)).toMatchObject({
-      retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+      retryNotBeforeMs: expect.any(Number),
       lastError: {
         code: 'provider_operation_startup_ownership_refused',
         message: expect.stringContaining('recovery acceptance unavailable'),
@@ -846,10 +1029,10 @@ describe('runStartupRecovery provider-operation ownership', () => {
     });
     expect(launchCoordinator.reservationFor(jobId)).toMatchObject({ kind: 'active' });
     expect(readProviderOperation(progressStore.getDb(), first.operation)).toMatchObject({
-      retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+      retryNotBeforeMs: expect.any(Number),
     });
     expect(readProviderOperation(progressStore.getDb(), second.operation)).toMatchObject({
-      retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+      retryNotBeforeMs: expect.any(Number),
     });
 
     const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
