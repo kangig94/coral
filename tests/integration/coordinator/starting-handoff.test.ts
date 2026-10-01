@@ -1,169 +1,127 @@
-// Phase C: when a contender's `transport.shutdown` arrives at a still-`starting`
-// incumbent, lifecycle shutdown must fire IMMEDIATELY via the
-// `onShutdownRequest` callback — not defer until idle-timer drain
-// (`startWatching`) is installed.
-//
-// This is an integration-level concern but does not need a real daemon: the
-// IPC server's contract is "invoke `onShutdownRequest` synchronously when
-// `transport.shutdown` is dispatched, regardless of lifecycle state".
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { closeIpcServer, createIpcServer, listenIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
+import { join } from 'node:path';
+
+import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import type { CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
+import type { RunStartupRecoveryOrchestratorFn } from '#src/coordinator/lifecycle.js';
+import { JobStore } from '#src/jobs/store.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
-import type { HttpHandlerPorts, HealthSnapshot } from '#src/transport/server-ports.js';
-import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { createDeferred } from '#tools/testing/deferred.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
+import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 
 const tempDirs: string[] = [];
-const liveListeners: IpcListener[] = [];
+const coordinators: CoordinatorCoreResult[] = [];
 
-function makeSocketPath(name: string): string {
-  const root = mkdtempSync(join(tmpdir(), 'coral-starting-handoff-test-'));
+function createCoordinator(runStartupRecovery: RunStartupRecoveryOrchestratorFn) {
+  const root = mkdtempSync(join(tmpdir(), 'coral-starting-handoff-'));
   tempDirs.push(root);
-  const path = join(root, `${name}.sock`);
-  mkdirSync(dirname(path), { recursive: true });
-  return path;
+  const runtime = createRealRuntime('prod', { baseDir: root });
+  const db = openTestStoreDb(runtime, ':memory:');
+  const storeServices = {
+    storeDb: db,
+    progressStore: new JobStore('starting-handoff-test', runtime, createEventBodyCodec(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    }),
+    consumerDriver: null,
+  };
+  const core = createCoordinatorCore(
+    {
+      runtime,
+      storeFormat: currentCoralStoreFormat(),
+      pluginRoot: join(process.cwd(), 'clients'),
+      backendNamespace: 'starting-handoff-test',
+      bootSnapshot: {
+        instanceId: 'starting-handoff-instance',
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        log: () => {},
+      },
+      createStoreServicesFromDbFn: () => storeServices,
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+      getConsumerStuck: () => [],
+      onFatalShutdownError: vi.fn(),
+    },
+    runStartupRecovery,
+  );
+  setStoreServicesForTest(core.storeServicesRef, storeServices);
+  coordinators.push(core);
+  return { core, socketPath: runtime.paths.coral.coordinator.socketPath };
 }
 
-function buildPorts(opts: {
-  isLifecycleRunning: () => boolean;
-  isDrainRequested: () => boolean;
-  onRequestDrain: (reason: string) => void;
-}): HttpHandlerPorts {
-  const health: HealthSnapshot = {
-    status: 'starting',
-    kernel: { phase: 'starting', readyAt: null },
-    version: '0.0.0',
-    bundleHash: 'h',
-    flavor: 'prod',
-    namespace: 'ns',
-    instanceId: 'i',
-    pid: 1,
-    uptimeMs: 0,
-    active: 0,
-    activeJobs: 0,
-    liveDiscuss: 0,
-    queueDepth: 0,
-    inflightRequests: 0,
-    textProjectionState: 'idle',
-    env: {},
-    components: [{ id: 'kb', phase: 'offline', reason: 'test' }],
-  };
-  return {
-    identity: {
-      pluginRoot: '/p',
-      token: 't',
-      bootToken: 'boot-token',
-      shutdownToken: 'shutdown-token',
-      version: '0.0.0',
-      bundleHash: 'h',
-      flavor: 'prod',
-      namespace: 'ns',
-      instanceId: 'i',
-      now: () => 0,
-      log: () => undefined,
-    },
-    coralEnvSnapshot: {},
-    systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
-    admin: {
-      isLifecycleRunning: opts.isLifecycleRunning,
-      isDrainRequested: opts.isDrainRequested,
-      isLaunchFenceActive: () => false,
-      beginRequest: vi.fn(),
-      endRequest: vi.fn(),
-      requestDrain: opts.onRequestDrain,
-    },
-    health: { read: () => health },
-    events: {
-      addResponse: vi.fn(),
-      removeResponse: vi.fn(),
-      bus: {
-        on: vi.fn().mockReturnThis(),
-        off: vi.fn().mockReturnThis(),
-      } as unknown as HttpHandlerPorts['events']['bus'],
-      createStreamId: () => 's',
-      nowIsoString: () => '0',
-      subscribe: vi.fn(),
-      unsubscribe: vi.fn(),
-    },
-    sessions: {} as never,
-    jobs: {} as never,
-    workflows: {} as never,
-    kb: {} as never,
-    discuss: {} as never,
-    recoveryQuarantine: {} as never,
-    expansion: {} as never,
-  };
+async function requestShutdown(
+  { core, socketPath }: ReturnType<typeof createCoordinator>,
+  transport: 'http' | 'ipc',
+): Promise<unknown> {
+  if (transport === 'ipc') {
+    const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: core.identity.bootToken });
+    return client.shutdown({ timeoutMs: 1_000 });
+  }
+  const address = core.server.address();
+  if (address === null || typeof address === 'string') throw new Error('Expected a bound HTTP listener');
+  const response = await fetch(`http://127.0.0.1:${address.port}/admin/shutdown`, {
+    method: 'POST',
+    headers: { 'X-Coral-Shutdown-Token': core.identity.shutdownToken },
+    signal: AbortSignal.timeout(1_000),
+  });
+  expect(response.status).toBe(200);
+  return response.json();
 }
 
 afterEach(async () => {
-  for (const listener of liveListeners.splice(0)) {
-    try {
-      await closeIpcServer(listener);
-    } catch {
-      // best-effort
-    }
+  for (const core of coordinators.splice(0)) {
+    if (core.runtimeState.getLifecycle() !== 'stopped') await core.lifecycleController.shutdown('test-teardown');
   }
-  for (const root of tempDirs.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
-  }
+  for (const root of tempDirs.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe('starting-incumbent transport.shutdown handoff', () => {
-  it('invokes onShutdownRequest immediately while lifecycle is still starting', async () => {
-    const socketPath = makeSocketPath('starting');
-    let drainCalled = false;
-    let onShutdownCalled = false;
-    let lifecycle: 'starting' | 'running' | 'draining' = 'starting';
+describe('starting-incumbent shutdown handoff', () => {
+  it.each(['http', 'ipc'] as const)(
+    '%s shutdown stops a coordinator during never-settling Era II',
+    async (transport) => {
+      const recoveryEntered = createDeferred<AbortSignal>();
+      const fixture = createCoordinator(({ signal }) => {
+        recoveryEntered.resolve(signal);
+        return new Promise(() => {});
+      });
+      const { core } = fixture;
+      void core.lifecycleController.start().catch(() => {});
+      const startupSignal = await recoveryEntered.promise;
+      expect(core.runtimeState.getLifecycle()).toBe('kernel-ready');
+      expect(startupSignal.aborted).toBe(false);
 
-    const ports = buildPorts({
-      isLifecycleRunning: () => lifecycle === 'running',
-      isDrainRequested: () => lifecycle === 'draining',
-      onRequestDrain: () => {
-        drainCalled = true;
-      },
-    });
-    const ipcServer = createIpcServer(ports);
-    ipcServer.onShutdownRequest = (reason) => {
-      onShutdownCalled = true;
-      // Composition wires this to `lifecycleController.shutdown(reason)`.
-      // For the assertion we just flip lifecycle to 'draining'.
-      lifecycle = 'draining';
-      void reason;
-    };
-    await listenIpcServer(ipcServer, socketPath);
-    liveListeners.push(ipcServer);
+      await expect(requestShutdown(fixture, transport)).resolves.toMatchObject({ status: 'draining' });
 
-    const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
-    const result = await client.shutdown<{ status: string }>({ timeoutMs: 1_000 });
-    expect(result).toMatchObject({ status: 'draining' });
-    expect(onShutdownCalled).toBe(true);
-    expect(drainCalled).toBe(true);
-    expect(lifecycle).toBe('draining');
-  });
+      expect(startupSignal.aborted).toBe(true);
+      await core.lifecycleController.waitForShutdown();
+      expect(core.runtimeState.getLifecycle()).toBe('stopped');
+    },
+  );
 
-  it('also invokes onShutdownRequest while lifecycle is running', async () => {
-    const socketPath = makeSocketPath('running');
-    let onShutdownCalled = false;
-    let lifecycle: 'running' | 'draining' = 'running';
+  it.each(['http', 'ipc'] as const)('%s shutdown drains a running coordinator', async (transport) => {
+    const fixture = createCoordinator(async () => []);
+    const { core } = fixture;
+    await core.lifecycleController.start();
+    expect(core.runtimeState.getLifecycle()).toBe('running');
 
-    const ports = buildPorts({
-      isLifecycleRunning: () => lifecycle === 'running',
-      isDrainRequested: () => lifecycle === 'draining',
-      onRequestDrain: () => undefined,
-    });
-    const ipcServer = createIpcServer(ports);
-    ipcServer.onShutdownRequest = () => {
-      onShutdownCalled = true;
-      lifecycle = 'draining';
-    };
-    await listenIpcServer(ipcServer, socketPath);
-    liveListeners.push(ipcServer);
+    core.idleTimer.beginRequest();
+    try {
+      await expect(requestShutdown(fixture, transport)).resolves.toMatchObject({ status: 'draining' });
+      expect(core.runtimeState.getLifecycle()).toBe(transport === 'http' ? 'running' : 'draining');
+    } finally {
+      core.idleTimer.endRequest();
+    }
 
-    const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
-    await client.shutdown<{ status: string }>({ timeoutMs: 1_000 });
-    expect(onShutdownCalled).toBe(true);
+    await core.lifecycleController.waitForShutdown();
+    expect(core.runtimeState.getLifecycle()).toBe('stopped');
   });
 });

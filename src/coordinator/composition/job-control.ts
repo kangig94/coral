@@ -20,6 +20,7 @@ type CreateBackendControlDeps = {
   world: CoordinatorWorld;
   listExecutionServices: () => ProjectRequestPort[];
   getLifecycleController: () => LifecycleController | null;
+  isLifecycleRunning: () => boolean;
   getProgressStore: () => JobStore;
   internalJobAbortRegistry: JobAbortRegistryPort;
   requestStops: (jobIds: readonly string[], cause: ProviderStopCause) => ProviderStopDecision;
@@ -29,6 +30,7 @@ export function createCoordinatorControl({
   world,
   listExecutionServices,
   getLifecycleController,
+  isLifecycleRunning,
   getProgressStore,
   internalJobAbortRegistry,
   requestStops,
@@ -188,7 +190,13 @@ export function createCoordinatorControl({
   const isDrainRequested = () => drainRequested;
   const requestDrain = (reason: ShutdownReason) => {
     drainRequested = true;
+    const running = isLifecycleRunning();
     world.idleTimer.requestDrain(reason);
+    if (!running) {
+      void getLifecycleController()
+        ?.shutdown(reason)
+        .catch(() => {});
+    }
   };
 
   return {

@@ -908,6 +908,7 @@ export function createCoordinatorCore(
     world,
     listExecutionServices: services.listExecutionServices,
     getLifecycleController: () => lifecycleController,
+    isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
     getProgressStore,
     internalJobAbortRegistry,
     requestStops: services.requestStops,
@@ -1824,8 +1825,8 @@ export function createCoordinatorCore(
 
   lifecycleController = createLifecycle(lifecycleDeps, runStartupRecovery);
   const resolvedLifecycleController = lifecycleController;
-  // A starting incumbent must accept explicit shutdown before its idle watcher exists.
   ipcServer.onShutdownRequest = (reason) => {
+    if (runtimeState.getLifecycle() !== 'running') return;
     void resolvedLifecycleController.shutdown(reason).catch(() => {});
   };
   ipcServer.onShutdownRecoveryAccepted = () => {

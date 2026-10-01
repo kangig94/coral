@@ -97,12 +97,6 @@ export type IpcListener = {
   readonly compatibilityListeners?: IpcListener[];
   createCompatibilityListener?(): IpcListener;
   socketPath: string | null;
-  /**
-   * Optional callback invoked alongside `transport.shutdown`'s `requestDrain`.
-   * Composition wires this to `coordinator.shutdown(reason)` so a contender
-   * can replace a still-`starting` incumbent (where idle-timer driven drain
-   * has not yet been installed). Setting/clearing is composition's job.
-   */
   onShutdownRequest: ((reason: 'replaced') => void) | null;
   onShutdownRecoveryAccepted?: (() => void) | null;
 };
@@ -765,11 +759,6 @@ async function dispatchFrame(
         'warn',
       );
       rpcPorts.admin.requestDrain(reason);
-      // `requestDrain` only flips the drain flag and notifies the idle timer;
-      // the idle timer is not installed until lifecycle reaches 'running'.
-      // To unblock contenders during a still-`starting` incumbent, lifecycle
-      // composition registers `onShutdownRequest` to drive `coordinator.shutdown`
-      // directly. No-op when lifecycle is already running (drain handles it).
       onShutdownRequest?.(reason);
       await finishUnaryResponse({
         kind: 'response',
