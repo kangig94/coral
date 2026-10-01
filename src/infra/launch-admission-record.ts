@@ -366,14 +366,15 @@ export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDispo
 
 /** Only the namespace lock holder calls this after independently settling the exact subject. */
 export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
-  if (subject.admission === undefined || subject.lifetimePath === undefined) return false;
+  if (subject.admission === undefined) return false;
   if (observeLaunchSubject(subject) !== 'absent') return false;
   const runDir = dirname(dirname(subject.path));
   const published = join(runDir, 'launch-lifetimes.v1', subject.admission.launchId);
   const temporary = launchPreparationPath(runDir, subject.admission);
+  const lifetimePath = subject.lifetimePath ?? launchLifetimePath(runDir, subject.admission);
   try {
     if (existsSync(published)) {
-      const current = listLaunchSubjects(runDir).find((entry) => entry.lifetimePath === subject.lifetimePath);
+      const current = listLaunchSubjects(runDir).find((entry) => entry.lifetimePath === lifetimePath);
       if (
         current?.admission === undefined ||
         !sameEnvelope(current.admission, subject.admission) ||
@@ -383,21 +384,25 @@ export function removeAbsentLaunchSubject(subject: LaunchSubject): boolean {
     }
     let inode: ReturnType<typeof lstatSync> | undefined;
     try {
-      inode = lstatSync(subject.lifetimePath);
+      inode = lstatSync(lifetimePath);
     } catch (error: unknown) {
       if (!isNoEntryError(error)) throw error;
     }
     let release: FileLockLease | undefined;
     if (inode !== undefined) {
-      if (subject.inode !== undefined && (inode.dev !== subject.inode.dev || inode.ino !== subject.inode.ino))
+      const expected = subject.inode ?? subject.admission.lifetime;
+      if (expected !== undefined && (inode.dev !== expected.dev || inode.ino !== expected.ino)) return false;
+      const attempt = attemptExclusiveFileLockSync(lifetimePath);
+      if (attempt.kind === 'acquired') release = attempt.lease;
+      else if (
+        attempt.kind !== 'malformed' ||
+        observeLaunchSubject({ ...subject, lifetimePath: undefined }) !== 'absent'
+      )
         return false;
-      const attempt = attemptExclusiveFileLockSync(subject.lifetimePath);
-      if (attempt.kind !== 'acquired') return false;
-      release = attempt.lease;
     }
     try {
       if (inode !== undefined) {
-        const current = lstatSync(subject.lifetimePath);
+        const current = lstatSync(lifetimePath);
         if (current.dev !== inode.dev || current.ino !== inode.ino) return false;
       }
       let jsonInode: ReturnType<typeof lstatSync> | undefined;

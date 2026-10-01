@@ -1,19 +1,287 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import * as nodeFs from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
-import { readLaunchStatus } from '#src/infra/launch-status.js';
+import { currentLaunchStatus, readLaunchStatus, updateLaunchStatus } from '#src/infra/launch-status.js';
+import { tryAcquireDiagnosticDirectoryLock } from '#src/infra/fs-lock.js';
 import { listLaunchAdmissions } from '#src/infra/launch-admission-record.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { createPluginFixture, waitForDiscoveryRecord } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+
+vi.mock('node:fs', async (importOriginal) => ({ ...(await importOriginal<typeof nodeFs>()) }));
+
+it.each(['owner-foreign.lock', 'claim-foreign.lock'])(
+  'preserves a conflicting %s during diagnostic release and resumes publication after repair',
+  async (marker) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-status-release-conflict-'));
+    const lockDir = join(runDir, 'launch-status.v1.lock');
+    const release = tryAcquireDiagnosticDirectoryLock(lockDir);
+    if (release === null) throw new Error('Missing publisher lease');
+    const inode = statSync(lockDir).ino;
+    const foreign = join(lockDir, marker);
+    writeFileSync(foreign, 'unresolved publisher');
+    try {
+      release();
+      expect(existsSync(foreign)).toBe(true);
+      expect(statSync(lockDir).ino).toBe(inode);
+      updateLaunchStatus(runDir, (status) => ({
+        ...status,
+        admissionHolds: [{ path: '/child', disposition: 'unknown' }],
+      }));
+      expect(currentLaunchStatus(runDir)?.publicationFailure).toBeDefined();
+      unlinkSync(foreign);
+      await waitForCondition(() => readLaunchStatus(runDir).kind === 'readable', 3_000);
+      expect(currentLaunchStatus(runDir)?.publicationFailure).toBeUndefined();
+      expect(readdirSync(runDir).some((name) => name.includes('.publisher-'))).toBe(false);
+    } finally {
+      rmSync(foreign, { force: true });
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  },
+);
+
+it('keeps publisher identity recoverable when status lease release is interrupted', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-release-crash-'));
+  const lockDir = join(runDir, 'launch-status.v1.lock');
+  const removeDirectory = nodeFs.rmdirSync;
+  vi.spyOn(nodeFs, 'rmdirSync').mockImplementation((path, options) => {
+    if (String(path) === lockDir) throw new Error('Interrupted directory release');
+    removeDirectory(path, options);
+  });
+  const release = tryAcquireDiagnosticDirectoryLock(lockDir);
+  if (release === null) throw new Error('Missing publisher lease');
+  try {
+    release();
+    expect(existsSync(lockDir)).toBe(false);
+    const next = tryAcquireDiagnosticDirectoryLock(lockDir);
+    expect(next).not.toBeNull();
+    next?.();
+  } finally {
+    vi.restoreAllMocks();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('retries a refused status directory release while publication reports the closed publisher hold', async () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-release-retry-'));
+  const lockDir = join(runDir, 'launch-status.v1.lock');
+  const rename = nodeFs.renameSync;
+  let blocked = false;
+  vi.spyOn(nodeFs, 'renameSync').mockImplementation((source, destination) => {
+    if (blocked && String(source) === lockDir)
+      throw Object.assign(new Error('Release unavailable'), { code: 'EACCES' });
+    rename(source, destination);
+  });
+  const release = tryAcquireDiagnosticDirectoryLock(lockDir);
+  if (release === null) throw new Error('Missing publisher lease');
+  try {
+    blocked = true;
+    release();
+    expect(readdirSync(lockDir)).toEqual([expect.stringMatching(/^claim-release-/u)]);
+    updateLaunchStatus(runDir, (status) => ({
+      ...status,
+      admissionHolds: [{ path: '/child', disposition: 'unknown' }],
+    }));
+    expect(currentLaunchStatus(runDir)?.publicationFailure).toBeDefined();
+    blocked = false;
+    await waitForCondition(() => readLaunchStatus(runDir).kind === 'readable', 3_000);
+    expect(currentLaunchStatus(runDir)?.publicationFailure).toBeUndefined();
+    expect(readdirSync(runDir).some((name) => name.includes('.publisher-'))).toBe(false);
+  } finally {
+    blocked = false;
+    vi.restoreAllMocks();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('retries private release cleanup without displacing a new status publisher', async () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-private-release-retry-'));
+  const lockDir = join(runDir, 'launch-status.v1.lock');
+  const remove = nodeFs.rmSync;
+  let blocked = false;
+  vi.spyOn(nodeFs, 'rmSync').mockImplementation((path, options) => {
+    if (blocked && String(path).includes('.publisher-'))
+      throw Object.assign(new Error('Cleanup unavailable'), { code: 'EACCES' });
+    remove(path, options);
+  });
+  let next: ReturnType<typeof tryAcquireDiagnosticDirectoryLock> = null;
+  try {
+    const release = tryAcquireDiagnosticDirectoryLock(lockDir);
+    if (release === null) throw new Error('Missing publisher lease');
+    blocked = true;
+    release();
+    expect(existsSync(lockDir)).toBe(false);
+    expect(readdirSync(runDir).some((name) => name.includes('.publisher-'))).toBe(true);
+    next = tryAcquireDiagnosticDirectoryLock(lockDir);
+    if (next === null) throw new Error('New publisher was blocked by private cleanup');
+    const inode = statSync(lockDir).ino;
+    blocked = false;
+    await waitForCondition(() => !readdirSync(runDir).some((name) => name.includes('.publisher-')), 3_000);
+    next.assertOwned();
+    expect(statSync(lockDir).ino).toBe(inode);
+  } finally {
+    blocked = false;
+    next?.();
+    vi.restoreAllMocks();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('syncs the publisher marker and prepared directory before publishing serialization ownership', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-durable-owner-'));
+  const lockDir = join(runDir, 'launch-status.v1.lock');
+  const open = nodeFs.openSync;
+  const sync = nodeFs.fsyncSync;
+  const rename = nodeFs.renameSync;
+  const opened = new Map<number, string>();
+  const synced: string[] = [];
+  vi.spyOn(nodeFs, 'openSync').mockImplementation((path, flags, mode) => {
+    const fd = open(path, flags, mode);
+    opened.set(fd, String(path));
+    return fd;
+  });
+  vi.spyOn(nodeFs, 'fsyncSync').mockImplementation((fd) => {
+    synced.push(opened.get(fd)!);
+    sync(fd);
+  });
+  vi.spyOn(nodeFs, 'renameSync').mockImplementation((source, destination) => {
+    if (String(destination) === lockDir) {
+      expect(synced).toContain(String(source));
+      const marker = readdirSync(source.toString()).find((name) => name.startsWith('owner-'));
+      expect(marker).toBeDefined();
+      expect(synced).toContain(join(String(source), marker!));
+    }
+    rename(source, destination);
+  });
+  let release: ReturnType<typeof tryAcquireDiagnosticDirectoryLock> = null;
+  try {
+    release = tryAcquireDiagnosticDirectoryLock(lockDir);
+    expect(release).not.toBeNull();
+  } finally {
+    release?.();
+    vi.restoreAllMocks();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  'before writing its owner marker',
+  'before publishing its directory',
+  'after publishing its directory',
+] as const)('recovers durable status after a publisher crashes %s', async (boundary) => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-owner-crash-'));
+  const executable = join(runDir, 'publisher.cjs');
+  await build({
+    stdin: {
+      contents: `import { updateLaunchStatus } from '${fileURLToPath(new URL('../../../src/infra/launch-status.ts', import.meta.url))}'; updateLaunchStatus(process.argv[2], status => status);`,
+      resolveDir: process.cwd(),
+      loader: 'ts',
+    },
+    outfile: executable,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    external: ['node:*'],
+    plugins: [
+      {
+        name: 'before-owner-marker',
+        setup(builder) {
+          builder.onLoad({ filter: /\/infra\/fs-lock\.ts$/ }, ({ path }) => ({
+            contents: readFileSync(path, 'utf8').replace(
+              boundary === 'before writing its owner marker'
+                ? 'storage.writeFileSync(lockOwnerMarkerPath(lockDir, ownerToken)'
+                : boundary === 'before publishing its directory'
+                  ? 'deps.storage.renameSync(prepared, lockDir);'
+                  : 'return createDirectoryLockLease(lockDir, ownerToken, markerContent, identity, deps, undefined, prepared);',
+              `process.send?.('publication-boundary'); process.kill(process.pid, 'SIGSTOP'); ` +
+                (boundary === 'before writing its owner marker'
+                  ? 'storage.writeFileSync(lockOwnerMarkerPath(lockDir, ownerToken)'
+                  : boundary === 'before publishing its directory'
+                    ? 'deps.storage.renameSync(prepared, lockDir);'
+                    : 'return createDirectoryLockLease(lockDir, ownerToken, markerContent, identity, deps, undefined, prepared);'),
+            ),
+            loader: 'ts',
+          }));
+        },
+      },
+    ],
+  });
+  const publisher = spawn(process.execPath, [executable, runDir], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Publisher did not reach marker boundary')), 3_000);
+      publisher.once('message', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+    const hold = { path: '/fixture/exact-child', disposition: 'unknown' as const };
+    updateLaunchStatus(runDir, (status) => ({ ...status, admissionHolds: [hold] }));
+    if (boundary === 'after publishing its directory')
+      expect(currentLaunchStatus(runDir)?.publicationFailure).toBeDefined();
+    else {
+      expect(readLaunchStatus(runDir).kind).toBe('readable');
+      expect(readdirSync(runDir).some((name) => name.includes('.publisher-'))).toBe(true);
+    }
+    const exit = new Promise<void>((resolve) => publisher.once('exit', () => resolve()));
+    publisher.kill('SIGKILL');
+    await exit;
+    if (boundary !== 'after publishing its directory') updateLaunchStatus(runDir, (status) => status);
+    await waitForCondition(() => readLaunchStatus(runDir).kind === 'readable', 3_000);
+    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { admissionHolds: [hold] } });
+    expect(currentLaunchStatus(runDir)?.publicationFailure).toBeUndefined();
+    expect(readdirSync(runDir).some((name) => name.includes('.publisher-'))).toBe(false);
+  } finally {
+    publisher.kill('SIGKILL');
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('preserves an anonymous or live status serialization directory regardless of age', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-preserve-owner-'));
+  const lockDir = join(runDir, 'launch-status.v1.lock');
+  try {
+    mkdirSync(lockDir);
+    utimesSync(lockDir, new Date(0), new Date(0));
+    const anonymous = statSync(lockDir);
+    expect(tryAcquireDiagnosticDirectoryLock(lockDir)).toBeNull();
+    expect(statSync(lockDir).ino).toBe(anonymous.ino);
+    rmSync(lockDir, { recursive: true });
+    const owner = tryAcquireDiagnosticDirectoryLock(lockDir);
+    if (owner === null) throw new Error('Missing status publisher lease');
+    const live = statSync(lockDir);
+    try {
+      for (const name of readdirSync(lockDir)) utimesSync(join(lockDir, name), new Date(0), new Date(0));
+      expect(tryAcquireDiagnosticDirectoryLock(lockDir)).toBeNull();
+      expect(statSync(lockDir).ino).toBe(live.ino);
+    } finally {
+      owner();
+    }
+    expect(existsSync(lockDir)).toBe(false);
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
 
 it.each(['owner', 'claim'])(
   'keeps serving through multiple %s status markers and republishes current holds after recovery',

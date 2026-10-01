@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +20,47 @@ function errno(code: string): NodeJS.ErrnoException {
   error.code = code;
   return error;
 }
+
+it('waits for recoverable diagnostic publisher identity before creating a serialization directory', async () => {
+  vi.resetModules();
+  const processObservation = await import('#src/infra/node-process.js');
+  const namespace = vi.spyOn(processObservation, 'readPidNamespace').mockReturnValueOnce(null);
+  const locks = await import('#src/infra/fs-lock.js');
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-diagnostic-owner-identity-'));
+  const path = join(runDir, 'launch-status.v1.lock');
+  let release: ReturnType<typeof locks.tryAcquireDiagnosticDirectoryLock> = null;
+  try {
+    expect(() => locks.tryAcquireDiagnosticDirectoryLock(path)).toThrow('Status publisher identity is unavailable');
+    expect(existsSync(path)).toBe(false);
+    release = locks.tryAcquireDiagnosticDirectoryLock(path);
+    expect(release).not.toBeNull();
+  } finally {
+    release?.();
+    namespace.mockRestore();
+    vi.resetModules();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('publishes diagnostic ownership without an incarnation while preserving the live publisher', async () => {
+  vi.resetModules();
+  const processObservation = await import('#src/infra/node-process.js');
+  const incarnation = vi.spyOn(processObservation, 'probeProcessIncarnation').mockReturnValue(null);
+  const locks = await import('#src/infra/fs-lock.js');
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-diagnostic-unknown-incarnation-'));
+  const path = join(runDir, 'launch-status.v1.lock');
+  let release: ReturnType<typeof locks.tryAcquireDiagnosticDirectoryLock> = null;
+  try {
+    release = locks.tryAcquireDiagnosticDirectoryLock(path);
+    expect(release).not.toBeNull();
+    expect(locks.tryAcquireDiagnosticDirectoryLock(path)).toBeNull();
+  } finally {
+    release?.();
+    incarnation.mockRestore();
+    vi.resetModules();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
 
 function createLockDeps(
   now: () => number,

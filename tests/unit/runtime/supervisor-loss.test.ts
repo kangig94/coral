@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -13,6 +13,7 @@ import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { currentLaunchStatus, readLaunchStatus, updateLaunchStatus } from '#src/infra/launch-status.js';
 import { attemptExclusiveFileLockSync, createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
+import { validatedRunningBuildRoot } from '#src/infra/retained-build-root.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type * as nodeProcessModule from '#src/infra/node-process.js';
 import { resumeLegacyUpgradeObservation, startReplacementSupervisor } from '#src/runtime/supervisor-loss.js';
@@ -24,7 +25,7 @@ vi.mock('#src/infra/backend-discovery.js', () => ({
 vi.mock('#src/infra/upgrade-intent.js', () => ({ readUpgradeIntent: vi.fn(() => ({ kind: 'absent' })) }));
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
-vi.mock('#src/infra/retained-build-root.js', () => ({ validatedRunningBuildRoot: () => '/fixture' }));
+vi.mock('#src/infra/retained-build-root.js', () => ({ validatedRunningBuildRoot: vi.fn(() => '/fixture') }));
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof fsModule>();
   return { ...original, existsSync: (path: string) => path.startsWith('/fixture') || original.existsSync(path) };
@@ -38,6 +39,143 @@ vi.mock('#src/runtime/succession-attempt.js', () => ({ installReplacementSupervi
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  vi.mocked(validatedRunningBuildRoot).mockReturnValue('/fixture');
+});
+
+it('keeps a missing supervisor executable visible until a validated build reappears', async () => {
+  vi.useFakeTimers();
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-root-retry-'));
+  const replacement = Object.assign(new EventEmitter(), {
+    pid: 999_991,
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send: vi.fn(),
+    kill: vi.fn(),
+    unref: vi.fn(),
+  });
+  vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
+  vi.mocked(probeProcessIncarnation).mockReturnValue('source' as ProcessIncarnation);
+  vi.mocked(validatedRunningBuildRoot).mockReturnValue(null);
+  const hold = {
+    kind: 'no-eligible-build',
+    controller: 'build',
+    observation: 'supervisor-executable-unavailable',
+    retry: 'eligible-build-appears',
+  };
+  try {
+    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+    expect(spawn).not.toHaveBeenCalled();
+    expect(currentLaunchStatus(runDir)?.hold).toEqual(hold);
+    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { hold } });
+    vi.mocked(validatedRunningBuildRoot).mockReturnValue('/fixture');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(currentLaunchStatus(runDir)?.hold).toBeUndefined();
+    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable' });
+    const durable = readLaunchStatus(runDir);
+    if (durable.kind === 'readable') expect(durable.status.hold).toBeUndefined();
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('nominates another repair owner after a failed nominee leaves malformed lock evidence', async () => {
+  vi.useFakeTimers();
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-malformed-replacement-retry-'));
+  const replacement = Object.assign(new EventEmitter(), {
+    pid: 999_991,
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send: vi.fn(),
+    kill: vi.fn(),
+    unref: vi.fn(),
+  });
+  vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
+  vi.mocked(probeProcessIncarnation).mockReturnValue('source' as ProcessIncarnation);
+  try {
+    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+    writeFileSync(supervisorLockPath(runDir), 'malformed namespace lock');
+    replacement.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(attemptExclusiveFileLockSync(supervisorLockPath(runDir)).kind).toBe('malformed');
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('reports namespace contention during replacement retries and nominates only after the holder releases', async () => {
+  vi.useFakeTimers();
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-contended-replacement-retry-'));
+  const replacement = Object.assign(new EventEmitter(), {
+    pid: 999_991,
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send: vi.fn(),
+    kill: vi.fn(),
+    unref: vi.fn(),
+  });
+  vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
+  vi.mocked(probeProcessIncarnation).mockReturnValue('source' as ProcessIncarnation);
+  createSharedFileLockSync(supervisorLockPath(runDir))();
+  const lock = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
+  if (lock.kind !== 'acquired') throw new Error('Missing namespace holder');
+  try {
+    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+    replacement.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spawn).toHaveBeenCalledOnce();
+    const hold = {
+      path: supervisorLockPath(runDir),
+      disposition: 'supervisor-lock-unobservable',
+      observation: 'contended',
+    };
+    expect(currentLaunchStatus(runDir)?.lockHold).toEqual(hold);
+    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { lockHold: hold } });
+    lock.lease();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(currentLaunchStatus(runDir)?.lockHold).toBeUndefined();
+    const recovered = readLaunchStatus(runDir);
+    expect(recovered.kind).toBe('readable');
+    if (recovered.kind === 'readable') expect(recovered.status.lockHold).toBeUndefined();
+  } finally {
+    lock.lease();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('publishes a source identity hold before nomination and clears it when observation recovers', async () => {
+  vi.useFakeTimers();
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-source-identity-retry-'));
+  const replacement = Object.assign(new EventEmitter(), {
+    pid: 999_991,
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send: vi.fn(),
+    kill: vi.fn(),
+    unref: vi.fn(),
+  });
+  vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
+  vi.mocked(probeProcessIncarnation).mockReturnValue(null);
+  const hold = { path: join(runDir, 'coordinator.json'), disposition: 'unknown' };
+  try {
+    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+    expect(spawn).not.toHaveBeenCalled();
+    expect(currentLaunchStatus(runDir)?.admissionHolds).toContainEqual(hold);
+    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { admissionHolds: [hold] } });
+    vi.mocked(probeProcessIncarnation).mockReturnValue('source' as ProcessIncarnation);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
+    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { admissionHolds: [] } });
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
 });
 
 it('keeps an unacknowledged observation visible when the next trigger finds an occupied namespace lock', async () => {

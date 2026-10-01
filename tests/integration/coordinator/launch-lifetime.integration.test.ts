@@ -30,7 +30,7 @@ import {
   readLaunchAdmission,
   removeAbsentLaunchSubject,
 } from '#src/infra/launch-admission-record.js';
-import { currentLaunchStatus } from '#src/infra/launch-status.js';
+import { currentLaunchStatus, readLaunchStatus } from '#src/infra/launch-status.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { SupervisorEvidence } from '#tests/support/supervisor-evidence.js';
 
@@ -136,6 +136,104 @@ async function stop(child: ChildProcess, signal?: NodeJS.Signals): Promise<void>
 }
 
 describe('child lifetime admission', () => {
+  it.each(['missing', 'malformed'] as const)(
+    'cleans a proven-dead admission with %s lifetime evidence',
+    async (damage) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-damaged-cleanup-'));
+      const running = await launch(runDir, false);
+      try {
+        await running.admitted;
+        const [subject] = listLaunchSubjects(runDir);
+        if (subject?.lifetimePath === undefined) throw new Error('Missing lifetime subject');
+        if (damage === 'missing') rmSync(join(runDir, 'launch-lifetimes.v1'), { recursive: true });
+        else writeFileSync(subject.lifetimePath, 'malformed lifetime');
+        expect(removeAbsentLaunchSubject(subject)).toBe(false);
+        expect(existsSync(subject.path)).toBe(true);
+        const probe = nodeProcess.probeProcessIncarnation;
+        const unavailable = vi
+          .spyOn(nodeProcess, 'probeProcessIncarnation')
+          .mockImplementation((pid) => (pid === running.child.pid ? null : probe(pid)));
+        expect(removeAbsentLaunchSubject(subject)).toBe(false);
+        expect(existsSync(subject.path)).toBe(true);
+        unavailable.mockRestore();
+        await stop(running.child, 'SIGKILL');
+        const memory = new SupervisorLaunchMemory(
+          runDir,
+          { pid: process.pid, incarnation: running.parentIncarnation },
+          'build-A',
+        );
+        memory.reconcileAdmissions();
+        expect(existsSync(subject.path)).toBe(false);
+        expect(existsSync(subject.lifetimePath)).toBe(false);
+        expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
+        expect(removeAbsentLaunchSubject(subject)).toBe(true);
+        memory.reconcileAdmissions();
+        expect(memory.read().owner.mode).toBe('supervised');
+        expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
+      } finally {
+        vi.restoreAllMocks();
+        await stop(running.child, 'SIGKILL');
+        running.releaseNamespace?.();
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('retains a replaced lifetime inode after exact-child absence', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-replaced-cleanup-'));
+    const running = await launch(runDir, false);
+    try {
+      await running.admitted;
+      const [subject] = listLaunchSubjects(runDir);
+      if (subject?.lifetimePath === undefined) throw new Error('Missing lifetime subject');
+      await stop(running.child, 'SIGKILL');
+      const replacement = `${subject.lifetimePath}.replacement`;
+      writeFileSync(replacement, 'replacement lifetime');
+      nodeFs.renameSync(replacement, subject.lifetimePath);
+      expect(removeAbsentLaunchSubject(subject)).toBe(false);
+      expect(readFileSync(subject.lifetimePath, 'utf8')).toBe('replacement lifetime');
+      expect(existsSync(subject.path)).toBe(true);
+    } finally {
+      await stop(running.child, 'SIGKILL');
+      running.releaseNamespace?.();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes an unknown child identity hold even while its lifetime is occupied, then clears it', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-unknown-held-'));
+    const running = await launch(runDir, false);
+    try {
+      await running.admitted;
+      const [subject] = listLaunchSubjects(runDir);
+      if (subject?.lifetimePath === undefined) throw new Error('Missing lifetime subject');
+      const memory = new SupervisorLaunchMemory(
+        runDir,
+        { pid: process.pid, incarnation: running.parentIncarnation },
+        'build-A',
+      );
+      const probe = nodeProcess.probeProcessIncarnation;
+      const unavailable = vi
+        .spyOn(nodeProcess, 'probeProcessIncarnation')
+        .mockImplementation((pid) => (pid === running.child.pid ? null : probe(pid)));
+      memory.reconcileAdmissions();
+      expect(attemptExclusiveFileLockSync(subject.lifetimePath).kind).toBe('contended');
+      expect(memory.read().owner.mode).toBe('recovering');
+      expect(memory.reserve(memory.read().owner, 'build-B', 'startup')).toBeNull();
+      const hold = { path: subject.path, disposition: 'unknown' };
+      expect(currentLaunchStatus(runDir)?.admissionHolds).toContainEqual(hold);
+      expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { admissionHolds: [hold] } });
+      unavailable.mockRestore();
+      memory.reconcileAdmissions();
+      expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
+      expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { admissionHolds: [] } });
+    } finally {
+      vi.restoreAllMocks();
+      await stop(running.child, 'SIGKILL');
+      running.releaseNamespace?.();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
   it('retains conflicting published prefixes when another publication is attempted', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-lifetime-incomplete-published-'));
     const launchId = randomUUID();

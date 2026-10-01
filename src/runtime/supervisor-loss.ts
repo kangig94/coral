@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
-import { receiveLaunchStatus, updateLaunchStatus } from '../infra/launch-status.js';
+import { currentLaunchStatus, receiveLaunchStatus, updateLaunchStatus } from '../infra/launch-status.js';
 import { readUpgradeIntent } from '../infra/upgrade-intent.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
@@ -58,19 +58,31 @@ function retryReplacementSupervisor(control: ReplacementSupervisorControl, error
     const path = supervisorLockPath(control.runDir);
     if (existsSync(path)) {
       const lock = attemptExclusiveFileLockSync(path);
-      if (lock.kind !== 'acquired') {
+      if (lock.kind === 'contended' || lock.kind === 'unobservable') {
+        updateLaunchStatus(control.runDir, (status) => ({
+          ...status,
+          lockHold: {
+            path,
+            disposition: 'supervisor-lock-unobservable',
+            observation: lock.kind === 'contended' ? 'contended' : String(lock.cause),
+          },
+        }));
         retryReplacementSupervisor(control, error);
         return;
       }
-      lock.lease();
+      if (lock.kind === 'acquired') lock.lease();
     }
+    const hold = currentLaunchStatus(control.runDir)?.lockHold;
+    if (hold?.path === path && hold.disposition === 'supervisor-lock-unobservable')
+      updateLaunchStatus(control.runDir, (status) => ({ ...status, lockHold: undefined }));
     launchReplacementSupervisor(control);
   }, RETRY_MS);
 }
 
-function sourceIdentityHold(attempt: ReplacementSupervisorAttempt, held: boolean): void {
-  const path = join(attempt.control.runDir, 'coordinator.json');
-  updateLaunchStatus(attempt.control.runDir, (status) => ({
+function sourceIdentityHold(control: ReplacementSupervisorControl, held: boolean): void {
+  const path = join(control.runDir, 'coordinator.json');
+  if (!held && !currentLaunchStatus(control.runDir)?.admissionHolds?.some((hold) => hold.path === path)) return;
+  updateLaunchStatus(control.runDir, (status) => ({
     ...status,
     admissionHolds: [
       ...(status.admissionHolds ?? []).filter((hold) => hold.path !== path),
@@ -104,7 +116,7 @@ function repairReplacementSupervisor(attempt: ReplacementSupervisorAttempt): voi
       const unknown = source === null || discovery === 'unknown';
       const settled =
         completed || (source !== null && source !== attempt.sourceIncarnation) || discovery === 'superseded';
-      sourceIdentityHold(attempt, unknown && !settled);
+      sourceIdentityHold(control, unknown && !settled);
       if (settled) return;
       if (source === null) retry();
       else repairReplacementSupervisor(attempt);
@@ -122,7 +134,7 @@ function repairReplacementSupervisor(attempt: ReplacementSupervisorAttempt): voi
 function finishReplacementAttempt(attempt: ReplacementSupervisorAttempt, error: Error | null): void {
   if (attempt.settled) return;
   attempt.settled = true;
-  sourceIdentityHold(attempt, false);
+  sourceIdentityHold(attempt.control, false);
   clearInterval(attempt.retirementPoll);
   clearTimeout(attempt.deadline);
   attempt.supervisor.unref();
@@ -283,14 +295,32 @@ function servingSourceDisposition(
 function launchReplacementSupervisor(control: ReplacementSupervisorControl): void {
   const sourceIncarnation = probeProcessIncarnation(process.pid);
   if (sourceIncarnation === null) {
+    sourceIdentityHold(control, true);
     retryReplacementSupervisor(control, new Error('Coordinator process incarnation is unavailable'));
     return;
   }
+  sourceIdentityHold(control, false);
   const root = validatedRunningBuildRoot(control.runDir, control.pluginRoot, control.manifest);
   if (root === null || !existsSync(join(root, 'bridge', 'coral-sentinel.cjs'))) {
+    updateLaunchStatus(control.runDir, (status) => ({
+      ...status,
+      hold: {
+        kind: 'no-eligible-build',
+        controller: control.manifest.buildSetId,
+        observation: 'supervisor-executable-unavailable',
+        retry: 'eligible-build-appears',
+      },
+    }));
     retryReplacementSupervisor(control, new Error('No validated supervisor executable for the running build'));
     return;
   }
+  const hold = currentLaunchStatus(control.runDir)?.hold;
+  if (
+    hold?.kind === 'no-eligible-build' &&
+    hold.controller === control.manifest.buildSetId &&
+    hold.observation === 'supervisor-executable-unavailable'
+  )
+    updateLaunchStatus(control.runDir, (status) => ({ ...status, hold: undefined }));
   const challenge = randomUUID();
   const supervisor = spawn(
     process.execPath,

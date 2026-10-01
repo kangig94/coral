@@ -153,11 +153,12 @@ async function buildObservedSupervisor(outfile: string): Promise<void> {
 }
 
 type MemoryObservation = {
-  kind: 'memory' | 'reservation' | 'signal' | 'replacement-signal';
+  kind: 'memory' | 'reservation' | 'signal' | 'replacement-signal' | 'parent-signal';
   pid: number;
   at?: number;
   monotonicAt?: number;
   target?: number;
+  parent?: number;
   signal?: string;
   exitCode?: number | null;
   signalCode?: string | null;
@@ -370,6 +371,13 @@ describe('namespace supervisor recovery', () => {
             pid: process.pid, target: this.pid, signal, exitCode: this.exitCode, signalCode: this.signalCode }) + '\\n');
           return kill.call(this, signal);
         };
+        const signalProcess = process.kill.bind(process);
+        process.kill = function(target, signal) {
+          if (signal === 'SIGTERM' || signal === 'SIGKILL')
+            appendFileSync(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'parent-signal',
+              pid: process.pid, parent: process.ppid, target, signal }) + '\\n');
+          return signalProcess(target, signal);
+        };
       `,
       );
       const evidence = new SupervisorEvidence(runDir, log);
@@ -418,10 +426,26 @@ describe('namespace supervisor recovery', () => {
         const started = frozen.at;
         await waitForCondition(() => observeProcessLiveness(frozen.pid) === 'absent', 8_000);
         const retirement = memoryObservations(log).filter(
-          (event) => event.kind === 'replacement-signal' && event.target === frozen.pid,
+          (event) =>
+            (event.kind === 'replacement-signal' || event.kind === 'parent-signal') && event.target === frozen.pid,
         );
-        expect(retirement.map((event) => event.signal)).toEqual(['SIGTERM', 'SIGKILL']);
-        expect(retirement.every((event) => event.exitCode === null && event.signalCode === null)).toBe(true);
+        const term = retirement.findIndex((event) => event.signal === 'SIGTERM');
+        const kill = retirement.findIndex((event) => event.signal === 'SIGKILL');
+        expect(term).toBeGreaterThanOrEqual(0);
+        expect(kill).toBeGreaterThan(term);
+        expect(
+          retirement
+            .filter((event) => event.kind === 'replacement-signal')
+            .every((event) => event.pid === initial.child.pid && event.exitCode === null && event.signalCode === null),
+        ).toBe(true);
+        expect(
+          retirement
+            .filter((event) => event.kind === 'parent-signal')
+            .every(
+              (event) =>
+                event.parent === frozen.pid && survivors.some((admission) => admission.child.pid === event.pid),
+            ),
+        ).toBe(true);
         expect(evidence.lockHolder()?.pid).not.toBe(frozen.pid);
         const restored = await waitForReplacementLockHolder(evidence, frozen.pid, 8_000);
         pids.add(restored);
@@ -600,7 +624,14 @@ describe('namespace supervisor recovery', () => {
       external: ['node:*'],
     });
     const supervisor = spawn(process.execPath, [harness, join(plugin.root, 'bridge', 'coral-backend.cjs')], {
-      env: { ...process.env, HOME: home, TMPDIR: home, CORAL_SENTINEL_RUN_DIR: runDir },
+      env: {
+        ...process.env,
+        HOME: home,
+        TMPDIR: home,
+        CORAL_SENTINEL_RUN_DIR: runDir,
+        CORAL_FIXTURE_REAL_BACKEND: '1',
+        CORAL_FIXTURE_PAUSE_AFTER_ADMISSION: join(home, 'paused-admission'),
+      },
       stdio: 'ignore',
     });
     const record = new SupervisorEvidence(runDir);
@@ -610,21 +641,23 @@ describe('namespace supervisor recovery', () => {
       await waitForCondition(() => record.read().launch?.phase === 'serving', 20_000);
       const incumbent = record.read().launch!;
       pids.add(incumbent.child.pid);
+      expect(await replacementServing(runDir, 'prod', incumbent.child.pid)).toBe(true);
+      const requestedAt = Date.now();
       await record.request(join(target.root, 'bridge', 'coral-backend.cjs'), buildSetId(target.root));
-      await waitForCondition(() => record.read().attempt?.phase === 'admitted', 10_000);
+      await waitForCondition(() => existsSync(join(home, 'paused-admission')), 10_000);
       const attempt = record.read().attempt!;
+      expect(attempt.id).toBe(readFileSync(join(home, 'paused-admission'), 'utf8'));
       pids.add(attempt.child.pid);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      process.kill(attempt.child.pid, 'SIGSTOP');
       const subject = listLaunchSubjects(runDir).find((entry) => entry.admission?.launchId === attempt.id)!;
       const intent = readUpgradeIntent(runDir);
       if (intent.kind !== 'readable') throw new Error('Missing intent');
-      const deadline = new Date(attempt.admittedAt + 25_000).toISOString();
+      const attemptId = intent.intent.attemptId ?? attempt.id;
+      const deadline = intent.intent.attemptDeadline ?? new Date(attempt.admittedAt + 25_000).toISOString();
       const persisted = await compareAndSwapUpgradeIntent(runDir, intent.intent.revision, {
         ...intent.intent,
         disposition: 'attempting',
-        attemptId: 'intent-only-B',
-        attemptChild: { attemptId: 'intent-only-B', pid: attempt.child.pid, incarnation: attempt.child.incarnation },
+        attemptId,
+        attemptChild: { attemptId, pid: attempt.child.pid, incarnation: attempt.child.incarnation },
         attemptDeadline: deadline,
       });
       expect(persisted.kind).toBe('written');
@@ -633,6 +666,7 @@ describe('namespace supervisor recovery', () => {
         incumbent.child.pid,
       );
       const parentExit = new Promise<void>((resolve) => supervisor.once('exit', () => resolve()));
+      expect(Date.now() - requestedAt).toBeLessThan(8_000);
       supervisor.kill('SIGKILL');
       await parentExit;
       expect(probeProcessIncarnation(attempt.child.pid)).toBe(attempt.child.incarnation);
@@ -646,6 +680,8 @@ describe('namespace supervisor recovery', () => {
       const unavailable = vi
         .spyOn(admissionRecords, 'listLaunchSubjects')
         .mockImplementation((dir) => readSubjects(dir).filter((entry) => entry.admission?.launchId !== attempt.id));
+      expect(probeProcessIncarnation(incumbent.child.pid)).toBe(incumbent.child.incarnation);
+      expect(probeProcessIncarnation(attempt.child.pid)).toBe(attempt.child.incarnation);
       const memory = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, buildSetId(target.root));
       expect(memory.read().launch?.child?.pid).toBe(incumbent.child.pid);
       expect(memory.read().attempt).toMatchObject({
@@ -656,7 +692,6 @@ describe('namespace supervisor recovery', () => {
       expect(memory.read().attempt?.admittedAt).toBeUndefined();
       expect(memory.reserve(memory.read().owner, 'another-build', 'succession')).toBeNull();
       expect(memory.supervisionEligible(memory.read().attempt!)).toBe(false);
-      expect(await replacementServing(runDir, 'prod', incumbent.child.pid)).toBe(true);
       process.kill(attempt.child.pid, 'SIGKILL');
       await waitForCondition(() => observeProcessLiveness(attempt.child.pid) === 'absent', 5_000);
       unavailable.mockRestore();
@@ -667,6 +702,7 @@ describe('namespace supervisor recovery', () => {
       expect(existsSync(subject.lifetimePath!)).toBe(false);
       memory.reconcileAdmissions();
       expect(existsSync(subject.path)).toBe(false);
+      expect(probeProcessIncarnation(incumbent.child.pid)).toBe(incumbent.child.incarnation);
     } finally {
       vi.restoreAllMocks();
       release?.();
@@ -764,10 +800,10 @@ describe('namespace supervisor recovery', () => {
           supervisor.send('disconnect-coordinator', (error) => (error ? reject(error) : resolve())),
         );
         process.kill(stoppedPid, 'SIGSTOP');
-        await waitForCondition(
-          () => record.read().launch?.phase === 'serving' && record.read().launch?.child?.pid !== stoppedPid,
-          20_000,
-        );
+        await waitForCondition(() => {
+          const launch = record.read().launch;
+          return launch?.phase === 'serving' && launch.child?.pid !== stoppedPid;
+        }, 20_000);
         expect(record.read().owner?.process.pid).toBe(supervisor.pid);
         expect(probeProcessIncarnation(stoppedPid)).toBeNull();
         expect(supervisor.exitCode).toBeNull();
@@ -1254,10 +1290,10 @@ describe('namespace supervisor recovery', () => {
         renameSync(heldRoot, blockedRoot);
         renameSync(heldRetained, blockedRetained);
         try {
-          await waitForCondition(
-            () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === successorBuildSetId,
-            20_000,
-          );
+          await waitForCondition(() => {
+            const launch = record.read().launch;
+            return launch?.phase === 'serving' && launch.buildSetId === successorBuildSetId;
+          }, 20_000);
         } catch (error: unknown) {
           throw new Error(`Serving successor was not normalized: ${JSON.stringify(record.read())}`, { cause: error });
         }
@@ -1345,11 +1381,10 @@ describe('namespace supervisor recovery', () => {
       if (replacementPid !== undefined) pids.push(replacementPid);
       const next = await record.request(join(second.root, 'bridge', 'coral-backend.cjs'), buildSetId(second.root));
       try {
-        await waitForCondition(
-          () =>
-            record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === buildSetId(second.root),
-          25_000,
-        );
+        await waitForCondition(() => {
+          const launch = record.read().launch;
+          return launch?.phase === 'serving' && launch.buildSetId === buildSetId(second.root);
+        }, 25_000);
       } catch (error) {
         throw new Error(`Later inherited upgrade did not serve: ${JSON.stringify(record.read())}`, { cause: error });
       }
@@ -1361,10 +1396,10 @@ describe('namespace supervisor recovery', () => {
         5_000,
       );
       const last = await record.request(join(third.root, 'bridge', 'coral-backend.cjs'), buildSetId(third.root));
-      await waitForCondition(
-        () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === buildSetId(third.root),
-        25_000,
-      );
+      await waitForCondition(() => {
+        const launch = record.read().launch;
+        return launch?.phase === 'serving' && launch.buildSetId === buildSetId(third.root);
+      }, 25_000);
       const thirdPid = record.read().launch?.child?.pid;
       if (thirdPid !== undefined) pids.push(thirdPid);
       await waitForCondition(
@@ -1418,10 +1453,10 @@ describe('namespace supervisor recovery', () => {
       let recoveredPid: number | undefined;
       if (child.pid === undefined) throw new Error('Fixture child has no PID');
       if (otherChild.pid === undefined) throw new Error('Other fixture child has no PID');
-      await waitForCondition(
-        () => record.read().launch?.child.pid === child.pid && record.read().attempt?.child.pid === otherChild.pid,
-        5_000,
-      );
+      await waitForCondition(() => {
+        const { launch, attempt } = record.read();
+        return launch?.child.pid === child.pid && attempt?.child.pid === otherChild.pid;
+      }, 5_000);
       const server = createServer((socket) => {
         child.kill('SIGKILL');
         rmSync(join(runDir, 'coordinator.json'), { force: true });
@@ -1851,10 +1886,10 @@ describe('namespace supervisor recovery', () => {
           expect(probeProcessIncarnation(stalledPid)).not.toBeNull();
           expect(listLaunchAdmissions(runDir)).toEqual([]);
         } else {
-          await waitForCondition(
-            () => record.read().launch?.phase === observed && record.read().launch?.buildSetId === installedBuildSetId,
-            10_000,
-          );
+          await waitForCondition(() => {
+            const launch = record.read().launch;
+            return launch?.phase === observed && launch.buildSetId === installedBuildSetId;
+          }, 10_000);
           stalledPid = record.read().launch?.child?.pid;
         }
         if (refuseKill) {
@@ -1864,10 +1899,10 @@ describe('namespace supervisor recovery', () => {
           );
         }
         try {
-          await waitForCondition(
-            () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === fallbackBuildSetId,
-            15_000,
-          );
+          await waitForCondition(() => {
+            const launch = record.read().launch;
+            return launch?.phase === 'serving' && launch.buildSetId === fallbackBuildSetId;
+          }, 15_000);
         } catch (error: unknown) {
           throw new Error(
             `Fallback did not serve: ${JSON.stringify(record.read())}; supervisor=${supervisor.pid}/${supervisor.exitCode}/${supervisor.signalCode}; stalled=${stalledPid}/${stalledPid === undefined ? 'none' : probeProcessIncarnation(stalledPid)}; stderr=${supervisorErrors}`,
@@ -2031,10 +2066,10 @@ describe('namespace supervisor recovery', () => {
           },
         );
       }
-      await waitForCondition(
-        () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === targetBuildSetId,
-        15_000,
-      );
+      await waitForCondition(() => {
+        const launch = record.read().launch;
+        return launch?.phase === 'serving' && launch.buildSetId === targetBuildSetId;
+      }, 15_000);
       expect(record.read().launch).toMatchObject({ phase: 'serving', buildSetId: targetBuildSetId });
     } finally {
       const currentPid = record.read().launch?.child?.pid;
@@ -2164,10 +2199,10 @@ describe('namespace supervisor recovery', () => {
       );
       expect(claimant.exitCode).toBeNull();
       expect(record.lockHolder()?.pid).toBe(supervisor.pid);
-      await waitForCondition(
-        () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === targetBuildSetId,
-        20_000,
-      );
+      await waitForCondition(() => {
+        const launch = record.read().launch;
+        return launch?.phase === 'serving' && launch.buildSetId === targetBuildSetId;
+      }, 20_000);
       successorPid = record.read().owner?.process.pid;
       expect(successorPid).toBe(supervisor.pid);
       expect(record.lockHolder()?.pid).toBe(supervisor.pid);
@@ -2357,10 +2392,10 @@ describe('namespace supervisor recovery', () => {
       expect(claimant.exitCode).toBeNull();
       expect(record.lockHolder()?.pid).toBe(incumbent.pid);
       incumbent.kill('SIGCONT');
-      await waitForCondition(
-        () => record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === targetBuildSetId,
-        20_000,
-      );
+      await waitForCondition(() => {
+        const launch = record.read().launch;
+        return launch?.phase === 'serving' && launch.buildSetId === targetBuildSetId;
+      }, 20_000);
       await waitForCondition(
         () => record.read().requests.find((entry) => entry.buildSetId === targetBuildSetId)?.status === 'completed',
         5_000,
@@ -2771,10 +2806,10 @@ describe('namespace supervisor recovery', () => {
       await waitForCondition(() => existsSync(join(runDir, 'coordinator.json')), 20_000);
       firstPid = (JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as { pid: number }).pid;
       supervisor.send({ kind: 'freeze-coordinator' });
-      await waitForCondition(
-        () => record.read().launch?.buildSetId !== manifest.buildSetId && record.read().launch?.phase === 'admitted',
-        10_000,
-      );
+      await waitForCondition(() => {
+        const launch = record.read().launch;
+        return launch?.buildSetId !== manifest.buildSetId && launch?.phase === 'admitted';
+      }, 10_000);
       await new Promise((resolve) => setTimeout(resolve, 15_500));
       expect(supervisor.exitCode).toBeNull();
       expect(record.read().launch).toMatchObject({ phase: 'admitted' });
@@ -2782,8 +2817,8 @@ describe('namespace supervisor recovery', () => {
         if (!existsSync(join(runDir, 'coordinator.json'))) return false;
         const pid = (JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as { pid: number }).pid;
         if (pid === firstPid) return false;
-        if (record.read().launch?.buildSetId !== manifest.buildSetId || record.read().launch?.phase !== 'serving')
-          return false;
+        const launch = record.read().launch;
+        if (launch?.buildSetId !== manifest.buildSetId || launch.phase !== 'serving') return false;
         finalPid = pid;
         return true;
       }, 20_000);
@@ -3111,11 +3146,10 @@ describe('namespace supervisor recovery', () => {
         expect(serviceAnswers.length).toBeGreaterThan(0);
         expect((await Promise.all(serviceAnswers)).every(Boolean)).toBe(true);
         expect(await replacementServing(independentRunDir, 'prod', independentPid)).toBe(true);
-        await waitForCondition(
-          () =>
-            record.read().launch?.phase === 'serving' && record.read().launch?.buildSetId === buildSetId(recovery.root),
-          10_000,
-        );
+        await waitForCondition(() => {
+          const launch = record.read().launch;
+          return launch?.phase === 'serving' && launch.buildSetId === buildSetId(recovery.root);
+        }, 10_000);
         expect(observeProcessLiveness(stalledPid) === 'absent' || childHasExited(stalledPid)).toBe(true);
       } finally {
         vi.restoreAllMocks();

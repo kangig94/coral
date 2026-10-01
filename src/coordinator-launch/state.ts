@@ -547,18 +547,25 @@ export class SupervisorLaunchMemory {
         else this.#retained.push(entry);
       }
     }
+    const holds: NonNullable<LaunchStatus['admissionHolds']> = preparationFailures.map((path) => ({
+      path,
+      disposition: 'cleanup-pending',
+    }));
     for (const slot of this.children()) {
       if (slot.phase === 'exited' || (slot.child === undefined && slot.unidentifiedPid === undefined)) continue;
       const disposition = reservationDisposition(slot);
       if (disposition === 'absent') {
         if (slot.child !== undefined) this.exited(slot, slot.child);
         else this.#set(slot, { ...slot, phase: 'exited' });
-      } else if (disposition === 'unknown') this.#recovering();
+      } else if (disposition === 'unknown') {
+        this.#recovering();
+        const subject = this.#subjects.find((entry) => entry.admission?.launchId === slot.id);
+        const path =
+          subject?.path ??
+          join(this.#runDir, slot.id.startsWith('discovery:') ? 'coordinator.json' : 'upgrade.v1.json');
+        if (!holds.some((hold) => hold.path === path)) holds.push({ path, disposition: 'unknown' });
+      }
     }
-    const holds: NonNullable<LaunchStatus['admissionHolds']> = preparationFailures.map((path) => ({
-      path,
-      disposition: 'cleanup-pending',
-    }));
     if (intent.kind !== 'readable' && intent.kind !== 'absent') {
       this.#recovering();
       holds.push({ path: join(this.#runDir, 'upgrade.v1.json'), disposition: 'unknown' });
@@ -592,7 +599,10 @@ export class SupervisorLaunchMemory {
         }
       } else if (disposition === 'unknown' || disposition === 'acquisition-window') {
         this.#recovering();
-        holds.push({ path: subject.path, disposition });
+        const index = holds.findIndex((hold) => hold.path === subject.path);
+        const hold = { path: subject.path, disposition };
+        if (index < 0) holds.push(hold);
+        else holds[index] = hold;
       }
     }
     this.#status((status) => ({ ...status, admissionHolds: holds }));

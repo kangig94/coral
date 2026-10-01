@@ -46,6 +46,22 @@ SupervisorLaunchMemory.prototype.settleAbsentChild = function (...args) {
   return settled;
 };
 
+const admit = SupervisorLaunchMemory.prototype.admit;
+let pausedAdmission = false;
+SupervisorLaunchMemory.prototype.admit = function (...args) {
+  const admitted = admit.apply(this, args);
+  const marker = process.env.CORAL_FIXTURE_PAUSE_AFTER_ADMISSION;
+  const incumbent = readMemory.call(this).launch?.child;
+  const child = args[2];
+  if (admitted && !pausedAdmission && marker !== undefined && incumbent !== undefined && incumbent.pid !== child.pid) {
+    pausedAdmission = true;
+    process.kill(incumbent.pid, 'SIGSTOP');
+    process.kill(child.pid, 'SIGSTOP');
+    writeFileSync(marker, args[0].id);
+  }
+  return admitted;
+};
+
 const executable = process.argv[2];
 if (executable === '--launch-legacy') {
   const target = process.argv[3];
