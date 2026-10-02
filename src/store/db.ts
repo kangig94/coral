@@ -16,6 +16,7 @@ import {
   type StoreFormatFingerprint,
 } from './format-fingerprint.js';
 import { observeStorePath } from './path-observation.js';
+import { ensureRetentionIndexes } from './retention-indexes.js';
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 
@@ -434,10 +435,12 @@ export function applyBundledStoreSchema(
   beforeOperation?: BeforeDatabaseOperation,
 ): void {
   beforeOperation?.();
+  if (!hasUserTable(db)) db.exec('PRAGMA auto_vacuum = INCREMENTAL');
   db.exec('BEGIN IMMEDIATE');
   try {
     beforeOperation?.();
     db.exec(storeFormat.manifest.ddl);
+    ensureRetentionIndexes(db);
     const existing = stringMetadataValue(
       readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY, beforeOperation),
     );
@@ -528,6 +531,7 @@ function openPhysicalWritableStoreDatabase(
     }
     const classification = classifyStoreFormat(db, options.storeFormat, beforeOperation);
     if (classification.kind === 'compatible') {
+      ensureRetentionIndexes(db, beforeOperation);
       applyJournalPragmas(
         db,
         {
@@ -544,6 +548,8 @@ function openPhysicalWritableStoreDatabase(
       return { kind: 'opened', db };
     }
     if (!reclaim && (classification.kind === 'fresh' || classification.kind === 'absent')) {
+      beforeOperation?.();
+      db.exec('PRAGMA auto_vacuum = INCREMENTAL');
       applyJournalPragmas(
         db,
         {
@@ -647,7 +653,7 @@ function reopenableWritableStoreDatabase(
     parkedUntil = null;
     parked?.resolve();
   });
-  return new Proxy(target as unknown as Database, {
+  const database = new Proxy(target as unknown as Database, {
     get(object, property, receiver) {
       if (property in object) return Reflect.get(object, property, receiver);
       if (active === null) throw unavailable();
@@ -655,6 +661,7 @@ function reopenableWritableStoreDatabase(
       return typeof value === 'function' ? value.bind(active) : value;
     },
   });
+  return database;
 }
 
 export function openWritableStoreDatabase(options: AuthorizedWritableStoreOptions): WritableStoreOpenDecision {

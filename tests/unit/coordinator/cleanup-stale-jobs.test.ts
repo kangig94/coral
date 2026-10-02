@@ -163,7 +163,7 @@ describe('cleanupStaleJobs', () => {
     ).rejects.toMatchObject({ name: 'AbortError' });
 
     expect(rmSync).toHaveBeenCalledTimes(1);
-    expect(rmSync).toHaveBeenCalledWith('/jobs/first', { recursive: true, force: true });
+    expect(rmSync).toHaveBeenCalledWith('/jobs/first', { recursive: true, force: false });
   });
 
   it('warns when pruning a stale job artifact fails', async () => {
@@ -171,15 +171,11 @@ describe('cleanupStaleJobs', () => {
       throw new Error('permission denied');
     });
 
-    const { pruned, purged } = await runCleanup(
-      {
-        old: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(15) }),
-      },
-      rmSync,
-    );
+    await expect(
+      runCleanup({ old: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(15) }) }, rmSync),
+    ).rejects.toThrow('Scratch cleanup failed: old: permission denied');
 
-    expect(pruned).toEqual(['old']);
-    expect(purged).toEqual([]);
+    expect(rmSync).toHaveBeenCalledOnce();
     expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('/jobs/old'));
     expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('permission denied'));
   });

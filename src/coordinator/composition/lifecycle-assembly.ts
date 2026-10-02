@@ -1,3 +1,4 @@
+import { createStorageRetentionScheduler } from './storage-retention-scheduler.js';
 import { dirname } from 'node:path';
 import { knownDiscussSources } from '../../discuss/shell/session-read-service.js';
 import { readOrCreateEpochKey } from '../../store/epoch/index.js';
@@ -61,6 +62,7 @@ async function disposeCoordinatorLifecycleReactor(input: LifecycleAssemblyInput)
 function createCoordinatorLifecycleDeps(
   input: LifecycleAssemblyInput,
   storeEpochSweep: ReturnType<typeof createStoreEpochSweepScheduler>,
+  storageRetention: ReturnType<typeof createStorageRetentionScheduler>,
 ): LifecycleDeps {
   const { core, options, execution, jobView, successionAssembly, transport, hostedKb } = input;
   const {
@@ -117,7 +119,11 @@ function createCoordinatorLifecycleDeps(
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
     scheduleStoreEpochSweepFn: storeEpochSweep.schedule,
-    stopStoreEpochSweepFn: storeEpochSweep.stop,
+    startStorageRetentionFn: storageRetention.start,
+    stopStoreEpochSweepFn: async () => {
+      await storageRetention.stop();
+      await storeEpochSweep.stop();
+    },
     getDiscussStoreForSource: discuss.getDiscussStoreForSource,
     knownDiscussSources: () => knownDiscussSources(discuss.readHelpersDeps),
     getDiscussContext: discuss.getDiscussContext,
@@ -191,7 +197,20 @@ export function createCoordinatorLifecycleAssembly(input: LifecycleAssemblyInput
     closeProxySetForEpochClosure,
   });
 
-  const lifecycleDeps = createCoordinatorLifecycleDeps(input, storeEpochSweep);
+  const storageRetention = createStorageRetentionScheduler({
+    runtime,
+    getProgressStore: () => core.storeServicesRef.tryGet()?.progressStore ?? null,
+    openEpoch: () => state.openedStoreEpoch,
+    activeEpochKey: () => state.selectedJobEpochKey,
+    jobLocations: jobLocationIndex,
+    log: world.log,
+    publish: (status) => {
+      state.retentionStatus = { ...status, outcomes: [...status.outcomes] };
+    },
+    cleanupScratch: (signal, budget) =>
+      input.execution.defaults.cleanupStaleJobsFn(core.identity.bundleHash, signal, budget),
+  });
+  const lifecycleDeps = createCoordinatorLifecycleDeps(input, storeEpochSweep, storageRetention);
   state.lifecycleController = createLifecycle(lifecycleDeps, runStartupRecovery);
   const resolvedLifecycleController = state.lifecycleController;
   ipcServer.onShutdownRecoveryAccepted = () => {

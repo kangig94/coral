@@ -13,6 +13,7 @@ import {
   markJobsAsError,
   resolveJobRetentionMs,
 } from '../lifecycle.js';
+import type { RetentionRunBudget } from '../../store/retention-outcome.js';
 import type { JobStore } from '../../jobs/store.js';
 import * as discussRecovery from '../../discuss/shell/recovery.js';
 import { ExecutionService as DefaultExecutionService } from '../execution-service.js';
@@ -46,7 +47,11 @@ type BackendEagerDefaults = {
 
 type BackendWorldBoundDefaults = {
   readonly listenFn: NonNullable<CoordinatorCoreOptions['listenFn']>;
-  readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
+  readonly cleanupStaleJobsFn: (
+    currentBundleHash: string,
+    signal: AbortSignal,
+    budget?: RetentionRunBudget,
+  ) => void | Promise<void>;
   readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   readonly settlePendingLaunchesFn: NonNullable<CoordinatorCoreOptions['settlePendingLaunchesFn']>;
   readonly terminateRegisteredChildrenFn: NonNullable<CoordinatorCoreOptions['terminateRegisteredChildrenFn']>;
@@ -139,7 +144,7 @@ export function resolveCoordinatorDefaults(
       const jobRetentionMs = resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
       const cleanupStaleJobsFn: BackendWorldBoundDefaults['cleanupStaleJobsFn'] =
         options.cleanupStaleJobsFn ??
-        ((currentBundleHash, signal) => {
+        ((currentBundleHash, signal, budget) => {
           const progressStore = bindings.getProgressStore();
           if (progressStore === null) return;
           return cleanupStaleJobs(
@@ -150,6 +155,7 @@ export function resolveCoordinatorDefaults(
             runtime.time.now(),
             jobRetentionMs,
             signal,
+            budget,
           );
         });
       const markJobsAsErrorFn: BackendWorldBoundDefaults['markJobsAsErrorFn'] =

@@ -13,6 +13,9 @@ import { jobLaunchRequestBodySchema } from './launch.js';
 import { isTerminalPhase, jobPhaseSchema } from './phase.js';
 import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
+import { observeResolvedStoreEpoch } from '../store/epoch/observation.js';
+import { observeStorePath } from '../store/path-observation.js';
+import { protectedStoreEpochRoot } from '../store/epoch/protection.js';
 
 const subjectSchema = z
   .object({
@@ -533,5 +536,30 @@ export class JobLocationIndex {
         return false;
       }
     });
+  }
+
+  exportResultRetention(jobId: string, activeEpochKey: string | null): 'released' | 'required' | 'unknown' {
+    try {
+      const location = this.read(jobId);
+      if (location === null) {
+        if (observeStorePath(this.runtime.storage, this.jobPath(jobId)) !== 'absent') return 'unknown';
+        return 'released';
+      }
+      if (location.epochKey === activeEpochKey) return 'released';
+      const epoch = observeResolvedStoreEpoch(this.runtime, location.epochKey);
+      if (epoch === undefined) return 'unknown';
+      const storeRoot = epoch.canonicalStoreRoot ?? epoch.storeRoot;
+      const paths = [dirname(epoch.path), join(storeRoot, `epoch-${epoch.epoch}`)];
+      if (epoch.lineageKey === undefined) paths.push(protectedStoreEpochRoot(storeRoot));
+      else {
+        if (!/^[0-9a-f-]{36}:[1-9]\d*$/u.test(epoch.lineageKey)) return 'unknown';
+        const lineageRoot = join(protectedStoreEpochRoot(storeRoot), epoch.lineageKey.split(':')[0]);
+        paths.push(join(lineageRoot, `epoch-${epoch.epoch}`), join(lineageRoot, `.reaping-epoch-${epoch.epoch}`));
+      }
+      const observations = paths.map((path) => observeStorePath(this.runtime.storage, path));
+      return observations.every((observation) => observation === 'absent') ? 'released' : 'required';
+    } catch {
+      return 'unknown';
+    }
   }
 }

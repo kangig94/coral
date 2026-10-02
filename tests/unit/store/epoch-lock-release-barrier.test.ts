@@ -132,7 +132,7 @@ describe('store epoch lock-release durability barriers', () => {
     const dbDir = base.paths.coral.store.dbDir;
     const holderPath = join(dbDir, '.epoch-holder-stale.json');
     writeFileSync(holderPath, JSON.stringify({ epoch: '5', pid: process.pid }));
-    const tracked = trackingRootSync(base);
+    const tracked = trackingRootSync({ ...base, process: { ...base.process, observeLiveness: () => 'absent' } });
     lockReleaseFault.paths.add(storeEpochLockPath(dbDir, '5'));
 
     await expect(sweepStoreEpochsPostReady(tracked.runtime, resolvedStoreEpoch(dbDir, '5'))).resolves.toBe(

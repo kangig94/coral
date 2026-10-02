@@ -120,6 +120,7 @@ export function createCoordinatorTransportAssembly(input: {
         options,
         runtimeState,
         lifecycleController: () => state.lifecycleController,
+        retentionStatus: () => state.retentionStatus,
         strictHealthIdentity,
         strictHealthBundleDir,
         readSelfIncarnation,

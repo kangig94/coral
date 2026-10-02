@@ -1,5 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { createRetentionPendingSet, type RetentionRunBudget } from '../store/retention-outcome.js';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
 import { notifyLaunchDiscovery } from '../infra/coordinator-admission.js';
@@ -578,6 +580,7 @@ const crashedJobTerminalizationRetryContexts = new WeakMap<Database, CrashedJobT
 
 function createStaleJobCleanupPolicy(
   context: StaleJobCleanupPolicyContext,
+  budget?: RetentionRunBudget,
 ): RecoveryRetryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> {
   const { progressStore, currentBundleHash, log, storage, nowMs, retentionMs } = context;
   return {
@@ -597,7 +600,15 @@ function createStaleJobCleanupPolicy(
       }
 
       const artifactPath = progressStore.jobDir(item.jobId);
-      storage.rmSync(artifactPath, { recursive: true, force: true });
+      let removed = false;
+      try {
+        storage.rmSync(artifactPath, { recursive: true, force: false });
+        removed = true;
+        budget?.record({ kind: 'deleted', subject: artifactPath, count: 1 });
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        budget?.record({ kind: 'kept', subject: artifactPath, reason: 'scratch-already-absent', pending: false });
+      }
       progressStore.purgeFromCache(item.jobId);
       // The carrier identity captured at launch describes a process, so nothing about the job ending makes it
       // stale — this prune is the only thing that ever removes it. Deleting it here rather than on the
@@ -608,8 +619,8 @@ function createStaleJobCleanupPolicy(
       return {
         kind: 'advanced',
         outcome: 'settled',
-        facts: [recoveryFact(STALE_ARTIFACT_PRUNE_OBLIGATION, 'done', artifactPath)],
-        detail: 'job artifact pruned',
+        facts: [recoveryFact(STALE_ARTIFACT_PRUNE_OBLIGATION, removed ? 'done' : 'not-applicable', artifactPath)],
+        detail: removed ? 'job artifact pruned' : 'job artifact already absent',
       };
     },
     onFault: (fault) => {
@@ -726,18 +737,128 @@ export async function cleanupStaleJobs(
   nowMs: number,
   retentionMs: number,
   signal: AbortSignal,
+  budget?: RetentionRunBudget,
 ): Promise<void> {
+  signal.throwIfAborted();
   const context = { progressStore, currentBundleHash, log, storage, nowMs, retentionMs };
   staleJobCleanupRetryContexts.set(progressStore.getDb(), context);
+  const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs });
+  const db = progressStore.getDb();
+  const pending = createRetentionPendingSet(db, 'storage-retention.scratch.pending.v1', (operation) => operation());
+  const attempted = new Set<string>();
+  let retrying = false;
+  const clearSettlementQuarantine = (id: string): void => {
+    const entry = quarantine.read('stale-job-cleanup', id);
+    const stage = db
+      .prepare<
+        [string],
+        { stage: string }
+      >("SELECT stage FROM recovery_quarantine WHERE boundary_id = 'stale-job-cleanup' AND subject_key = ?")
+      .get(id)?.stage;
+    if (stage === 'settle' && entry?.state === 'active')
+      quarantine.delete({ boundary: entry.boundary, subject: entry.subject });
+  };
+  let interrupted = false;
+  const canContinue = (): boolean => {
+    signal.throwIfAborted();
+    if (interrupted || (retrying && budget?.canRetry?.() === false)) return false;
+    if (budget && !budget.canContinue()) {
+      interrupted = true;
+      budget.record({ kind: 'kept', subject: 'scratch-jobs', reason: 'scan-pending' });
+    }
+    return !interrupted;
+  };
+  const cleanupPolicy = createStaleJobCleanupPolicy(context, budget);
+  const failures: string[] = [];
   const policy: RecoveryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> = {
     signal,
-    quarantine: new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs }),
-    ...createStaleJobCleanupPolicy(context),
+    quarantine,
+    ...cleanupPolicy,
+    settle: async (item) => {
+      if (!canContinue() || attempted.has(item.jobId) || (!retrying && pending.subjects.has(item.jobId)))
+        return {
+          kind: 'deferred',
+          authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
+          detail: 'scratch cleanup budget exhausted; retry next cycle',
+        };
+      attempted.add(item.jobId);
+      const result = await cleanupPolicy.settle(item);
+      if (result.kind === 'advanced') {
+        pending.remove(item.jobId);
+      }
+      return result;
+    },
+    onFault: (fault) => {
+      const disposition = cleanupPolicy.onFault(fault);
+      failures.push(`${fault.subject.key}: ${errorMessage(fault.error)}`);
+      if (fault.stage !== 'settle') return disposition;
+      if (!pending.add(fault.subject.key)) interrupted = true;
+      return {
+        kind: 'deferred',
+        authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
+        detail: 'stale job artifact cleanup failed; retry next cycle',
+      };
+    },
   };
-  await runStartupStaleArtifactPrune({
-    source: staleJobCleanupSource(progressStore.getDb()),
-    policy,
-  });
+  const cursorKey = 'storage-retention.scratch.v1';
+  let afterId =
+    db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(cursorKey)?.value ?? '';
+  retrying = true;
+  for (const id of pending.retryOrder()) {
+    if (!canContinue()) break;
+    pending.advance(id);
+    const candidate = db
+      .prepare<
+        [string],
+        { job_id: string }
+      >("SELECT job_id FROM projection_jobs WHERE job_id = ? AND phase NOT IN ('queued', 'launching', 'running')")
+      .get(id);
+    if (!candidate) {
+      pending.remove(id);
+      continue;
+    }
+    clearSettlementQuarantine(id);
+    await runStartupStaleArtifactPrune({
+      source: staleJobCleanupSource(db, { key: id, revision: { kind: 'until-cleared' } }),
+      policy,
+    });
+    await yieldToEventLoop();
+  }
+  retrying = false;
+  while (canContinue()) {
+    let nextId: string | null = null;
+    await runStartupStaleArtifactPrune({
+      source: staleJobCleanupSource(db, undefined, {
+        afterId,
+        canContinue,
+        scanned: (id) => {
+          nextId = id;
+          clearSettlementQuarantine(id);
+        },
+      }),
+      policy,
+    });
+    if (interrupted) break;
+    if (nextId === null) {
+      db.prepare('DELETE FROM meta WHERE key = ?').run(cursorKey);
+      pending.clearOverflow();
+      break;
+    }
+    afterId = nextId;
+    db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(cursorKey, afterId);
+    await yieldToEventLoop();
+  }
+  for (const id of pending.subjects) budget?.record({ kind: 'kept', subject: id, reason: 'scratch-cleanup-pending' });
+  if (pending.overflow()) budget?.record({ kind: 'kept', subject: 'scratch-jobs', reason: 'scratch-pending-overflow' });
+  const hydrationHolds = db
+    .prepare<
+      [],
+      { subject_key: string; error_message: string }
+    >("SELECT subject_key, error_message FROM recovery_quarantine WHERE boundary_id = 'stale-job-cleanup' AND stage = 'hydrate' AND state = 'active' LIMIT 100")
+    .all();
+  for (const held of hydrationHolds)
+    budget?.record({ kind: 'kept', subject: held.subject_key, reason: `hydration-quarantine: ${held.error_message}` });
+  if (failures.length > 0) throw new Error(`Scratch cleanup failed: ${failures.join('; ')}`);
 }
 
 export async function markJobsAsError(
@@ -882,6 +1003,7 @@ export type LifecycleDeps = {
     incumbentInstanceId: string,
   ) => ValidatedHandoffTarget | null;
   readonly onRetiredEpochOpened?: (epoch: ResolvedStoreEpoch, disposition: RetirementDisposition) => void;
+  readonly startStorageRetentionFn?: () => void;
   readonly stopStoreEpochSweepFn?: () => Promise<void>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
@@ -2265,6 +2387,7 @@ async function runStartupKernel(
     replaceStoreServices,
   });
   const { storeDb, openedStore, storeServices } = registered;
+  signal.throwIfAborted();
   committedState.recovery = registered.committedRecovery;
   const progressStore = storeServices.progressStore;
   const recoveryCoordinator = connectStartupRecoveryCoordinator({
@@ -2382,7 +2505,7 @@ async function runStartupRecoveryAndServe(
   recoveredDiscussResumes = adoption.recoveredDiscussResumes;
   startupRecoveryBarrierPublisher?.publish();
   startProviderOperationReconciler?.();
-  await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
+  if (deps.startStorageRetentionFn === undefined) await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
   signal.throwIfAborted();
   await publishStartupServing({
     deps,
@@ -2404,6 +2527,7 @@ async function runStartupRecoveryAndServe(
     publishLegacyDiscovery,
     legacySupervisedChild,
   });
+  deps.startStorageRetentionFn?.();
   if (runtimeState.getLaunchFenceActive()) {
     runtimeState.setLaunchFenceActive(false);
   }

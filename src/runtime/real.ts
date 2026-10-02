@@ -31,6 +31,7 @@ import {
 import {
   lstat as lstatAsync,
   open as openAsync,
+  opendir as opendirAsync,
   readFile as readFileAsync,
   readdir as readdirAsync,
   rm as rmAsync,
@@ -385,6 +386,10 @@ function createRealStoragePort(platform: NodeJS.Platform): StoragePort {
     },
     readFile: (path, encoding) => readFileAsync(path, encoding),
     readdir: (path) => readdirAsync(path),
+    iterateDirectory: async function* (path) {
+      const directory = await opendirAsync(path, { bufferSize: 64 });
+      for await (const entry of directory) yield entry.name;
+    },
     readFileSync: (path, encoding) => readFileSync(path, encoding),
     writeFileSync: (path, data, options) => writeFileSync(path, data, options),
     renameSync: (oldPath, newPath) => renameSync(oldPath, newPath),

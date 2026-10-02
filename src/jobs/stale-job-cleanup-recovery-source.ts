@@ -19,26 +19,38 @@ export type RawStaleJobCleanupRow = {
   readonly statusEvents: readonly EventsRow[];
 };
 
-function scanStaleJobCleanupRows(db: Database, subjectKey?: string): readonly RawStaleJobCleanupRow[] {
+function scanStaleJobCleanupRows(
+  db: Database,
+  subjectKey?: string,
+  afterId?: string,
+): readonly RawStaleJobCleanupRow[] {
   return withConsistentRead(db, () => {
     const projections =
-      subjectKey === undefined
+      afterId !== undefined
         ? db
-            .prepare<[], ProjectionJobStoredRow>(
-              `SELECT ${PROJECTION_JOB_COLUMNS}
+            .prepare<[string], ProjectionJobStoredRow>(
+              `SELECT ${PROJECTION_JOB_COLUMNS} FROM projection_jobs
+             WHERE phase NOT IN ('queued', 'launching', 'running') AND job_id > ?
+             ORDER BY job_id ASC LIMIT 1`,
+            )
+            .all(afterId)
+        : subjectKey === undefined
+          ? db
+              .prepare<[], ProjectionJobStoredRow>(
+                `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
                 WHERE phase NOT IN ('queued', 'launching', 'running')
                 ORDER BY job_id ASC`,
-            )
-            .all()
-        : db
-            .prepare<[string], ProjectionJobStoredRow>(
-              `SELECT ${PROJECTION_JOB_COLUMNS}
+              )
+              .all()
+          : db
+              .prepare<[string], ProjectionJobStoredRow>(
+                `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
                 WHERE phase NOT IN ('queued', 'launching', 'running')
                   AND job_id = ?`,
-            )
-            .all(subjectKey);
+              )
+              .all(subjectKey);
     const readStatusEvents = db.prepare<[string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
@@ -68,11 +80,20 @@ function staleJobCleanupSubject(raw: RawStaleJobCleanupRow) {
   };
 }
 
-export function staleJobCleanupSource(db: Database, subject?: RecoverySubject): RecoverySource<RawStaleJobCleanupRow> {
+export function staleJobCleanupSource(
+  db: Database,
+  subject?: RecoverySubject,
+  walk?: { afterId: string; canContinue(): boolean; scanned(jobId: string): void },
+): RecoverySource<RawStaleJobCleanupRow> {
   return defineRecoverySource({
     boundary: 'stale-job-cleanup',
     scanSubject: subject ?? { key: 'stale-job-cleanup-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanStaleJobCleanupRows(db, subject?.key),
+    scan: () => {
+      if (walk && !walk.canContinue()) return [];
+      const rows = scanStaleJobCleanupRows(db, subject?.key, walk?.afterId);
+      for (const row of rows) walk?.scanned(row.projection.job_id);
+      return rows;
+    },
     subject: staleJobCleanupSubject,
   });
 }

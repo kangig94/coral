@@ -322,15 +322,16 @@ export function observeProtectedEpoch(
   try {
     for (const directory of [protectedRoot, dirname(protectedPath), protectedPath]) {
       const entry = runtime.storage.lstatSync(directory);
-      if (!entry.isDirectory() || entry.isSymbolicLink()) return null;
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error('Protected epoch address is unobservable.');
     }
     if (
       readEpochKey(runtime, { storeRoot: dirname(protectedPath), epoch, path: join(protectedPath, 'store.db') }) !==
       epochKey
     )
-      return null;
-  } catch {
-    return null;
+      throw new Error('Protected epoch lineage is unobservable.');
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
   }
   const address = addressSchema.parse({
     version: 'v1',

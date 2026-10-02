@@ -1,3 +1,5 @@
+import { statusFromParsedHealth } from '#src/cli/backend-status.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
 import { describe, expect, it } from 'vitest';
 
 import { parseBackendHealth, type BackendHealth } from '#src/transport/http/backend/health.js';
@@ -78,5 +80,35 @@ describe('/health typed shape (AC10a)', () => {
       },
       skippedEntries: [{ entryNumber: 2, label: 'provider host dispose', owner: 'successor-recovery' }],
     });
+  });
+});
+
+describe('storage retention visibility', () => {
+  it('carries the last typed outcome through health decoding and backend status formatting', () => {
+    const retention = {
+      startedAt: 1,
+      finishedAt: 2,
+      phase: 'partial',
+      deleted: 10,
+      kept: 1,
+      failed: 1,
+      outcomes: [
+        { kind: 'failed', subject: 'exports/job', reason: 'unlink denied' },
+        { kind: 'kept', subject: 'legacy', reason: 'owner unknown' },
+      ],
+    };
+    const parsed = parseBackendHealth({ ...HEALTHY_BASE, retention });
+    expect(parsed?.health.retention).toEqual(retention);
+    const status = statusFromParsedHealth(parsed!);
+    const text = formatBackendStatus(status, { kind: 'absent' }, null);
+    expect(text).toContain('Storage retention: partial');
+    expect(text).toContain('exports/job: unlink denied');
+    expect(text).toContain('legacy: owner unknown');
+  });
+
+  it('drops an unsupported retention status without rejecting a serving backend', () => {
+    const parsed = parseBackendHealth({ ...HEALTHY_BASE, retention: { phase: 'from-newer-build' } });
+    expect(parsed?.health.status).toBe('ok');
+    expect(parsed?.health).not.toHaveProperty('retention');
   });
 });
