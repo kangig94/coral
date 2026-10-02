@@ -158,11 +158,6 @@ export function acquireSharedFileLockSync(path: string, busyTimeoutMs = 5_000): 
   return openSharedFileLockSync(path, true, busyTimeoutMs);
 }
 
-/**
- * A nonzero `busyTimeoutMs` blocks the calling thread while it waits. Throughout that wait SQLite holds PENDING,
- * which refuses every new shared locker, so the wait drains the existing holders without starving behind new ones
- * (measured across processes with node:sqlite on Node v26).
- */
 export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): ExclusiveFileLockAttempt {
   let entry: ReturnType<typeof lstatSync>;
   try {

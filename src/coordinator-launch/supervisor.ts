@@ -815,8 +815,7 @@ async function watchChild({
     () => pollWatchedChildServing({ child, manifest, reservation, identity, record, runDir, state }),
     POLL_MS,
   );
-  // A disconnected child can only be handed to a replacement supervisor that takes the released lock; until one does,
-  // this parent reacquires before the disconnect lapse, so a child that wedges after release is still retired.
+
   let handoffReleasedAt: number | null = null;
   const detachedHealthPoll = setInterval(() => {
     if (child.connected || owner.lost) return;
@@ -1863,11 +1862,6 @@ async function superviseAdoptedChild(input: {
   return releaseAfterSettledServedExit(record, runDir, result);
 }
 
-/**
- * A socket bound before its discovery record names nobody, so nothing about it is written down: the request for it
- * waits in this process until the binder publishes an identity, and a supervisor that dies meanwhile loses only a
- * request the next launch makes again.
- */
 type UnidentifiedBinder = { observed: boolean };
 
 async function selectNextCandidate(input: {
@@ -2066,6 +2060,158 @@ async function selectAndSuperviseCandidate(input: {
   return { released, firstLaunch: false };
 }
 
+type NamespaceSupervision = ReconcileInheritedInput & {
+  original: Candidate;
+  tried: Set<string>;
+  firstLaunch: boolean;
+  unidentifiedBinder: UnidentifiedBinder;
+  args: readonly string[];
+  onChild?: (child: ChildProcess) => void;
+};
+
+function isRecoverySourceParent(): boolean {
+  return (
+    process.ppid === Number(process.env.CORAL_RECOVERY_SOURCE_PID) &&
+    probeProcessIncarnation(process.ppid) === process.env.CORAL_RECOVERY_SOURCE_INCARNATION
+  );
+}
+
+function answerRecoveryChallenge(session: NamespaceSupervision, message: unknown): void {
+  const { replacement, owner, record, recoveryChallenge } = session;
+  if (
+    !replacement ||
+    owner.lost ||
+    !record.hasAuthority(owner.current) ||
+    !isRecoverySourceParent() ||
+    typeof message !== 'object' ||
+    message === null ||
+    !('kind' in message) ||
+    message.kind !== 'coral-recovery-challenge' ||
+    !('challenge' in message) ||
+    message.challenge !== recoveryChallenge ||
+    !('id' in message) ||
+    !Number.isSafeInteger(message.id)
+  )
+    return;
+  process.send?.({
+    kind: 'coral-recovery-answer',
+    challenge: recoveryChallenge,
+    id: message.id,
+    normalized: record.read().owner.mode === 'supervised',
+  });
+}
+
+async function awaitOwnedChildrenAfterAuthorityLoss(
+  record: SupervisorLaunchMemory,
+): Promise<Readonly<{ kind: 'owned-children-absent' }>> {
+  while (true) {
+    let ownedChildMayLive = false;
+    for (const slot of [record.read().launch, record.read().attempt]) {
+      if (slot?.parent?.pid !== process.pid || slot.child === undefined) continue;
+      const liveness = incumbentLiveness(slot.child);
+      if (liveness === 'alive' || liveness === 'unknown') ownedChildMayLive = true;
+    }
+    if (!ownedChildMayLive) return { kind: 'owned-children-absent' };
+    await sleep(POLL_MS);
+  }
+}
+
+async function releaseToInheritedSupervision(
+  session: NamespaceSupervision,
+  inherited: readonly LaunchReservation[],
+): Promise<boolean> {
+  const { record, runDir, originalManifest, original, replacement, repairBridge } = session;
+  const executable = original.executable;
+  const observedInherited = record.read().launch;
+  if (
+    observedInherited !== null &&
+    observedInherited.phase === 'serving' &&
+    observedInherited.observedHealthyAt !== undefined &&
+    observedInherited.parent?.pid !== process.pid &&
+    observedInherited.child?.pid !== process.ppid &&
+    repairBridge === null &&
+    publishedNativeSupervision(runDir, observedInherited)
+  ) {
+    const incumbent = observedLaunchIncumbent(runDir, originalManifest.flavor);
+    if (incumbent !== null)
+      await recordLegacyUpgradeIntent({
+        runDir,
+        requestId: randomUUID(),
+        incumbent,
+        target: { build: originalManifest, pluginRootLabel: dirname(dirname(executable)) },
+      });
+    return true;
+  }
+  if (
+    replacement &&
+    inherited.length === 1 &&
+    inherited[0].phase === 'serving' &&
+    inherited[0].child?.pid !== process.ppid &&
+    repairBridge === null &&
+    pendingIntent(runDir) !== null
+  )
+    return true;
+  return false;
+}
+
+async function superviseInheritedLaunch(
+  session: NamespaceSupervision,
+  inherited: readonly LaunchReservation[],
+): Promise<'released' | 'retry' | 'vacant'> {
+  const { record, owner, runDir, incarnation, repairBridge, lastInheritedRequest } = session;
+  record.normalize();
+  const adoptedChild = repairBridge?.child(record.read().launch?.id);
+  if (adoptedChild !== null && adoptedChild !== undefined && repairBridge !== null) {
+    const released = await superviseAdoptedChild({
+      record,
+      owner,
+      runDir,
+      repairBridge,
+      adoptedChild,
+      lastInheritedRequest,
+    });
+    session.repairBridge = null;
+    return released ? 'released' : 'retry';
+  }
+  if (releaseSettledInheritedLaunch(record, incarnation, runDir)) return 'released';
+  if (inherited.length > 0) {
+    await sleep(POLL_MS);
+    return 'retry';
+  }
+  return 'vacant';
+}
+
+async function superviseNamespace(session: NamespaceSupervision): Promise<number> {
+  const { record, owner, runDir } = session;
+  while (true) {
+    if (owner.lost) {
+      session.repairBridge?.close();
+      session.repairBridge = null;
+      await awaitOwnedChildrenAfterAuthorityLoss(record);
+      return 1;
+    }
+    record.reconcileAdmissions();
+    if (process.connected)
+      process.send?.({ kind: 'coral-launch-status', status: currentLaunchStatus(runDir) }, () => undefined);
+    const reconciled = await reconcileInheritedChildren(session);
+    const { inherited } = reconciled;
+    session.repairBridge = reconciled.repairBridge;
+    if (owner.lost || !record.hasAuthority(owner.current)) {
+      owner.lost = true;
+      session.repairBridge?.close();
+      session.repairBridge = null;
+      continue;
+    }
+    if (await releaseToInheritedSupervision(session, inherited)) return 0;
+    const inheritedDisposition = await superviseInheritedLaunch(session, inherited);
+    if (inheritedDisposition === 'released') return 0;
+    if (inheritedDisposition === 'retry') continue;
+    const selection = await selectAndSuperviseCandidate(session);
+    session.firstLaunch = selection.firstLaunch;
+    if (selection.released) return 0;
+  }
+}
+
 export async function runNamespaceSupervisor(
   executable: string,
   args: readonly string[],
@@ -2083,147 +2229,27 @@ export async function runNamespaceSupervisor(
   if (originalManifest === null) return 1;
   const acquisition = await acquireLaunchOwnership(runDir, executable, originalManifest);
   if (acquisition.kind === 'finished') return acquisition.exitCode;
-  const { record, owner, incarnation, replacement, recoveryChallenge } = acquisition;
-  const onRecoveryChallenge = (message: unknown): void => {
-    if (
-      !replacement ||
-      owner.lost ||
-      !record.hasAuthority(owner.current) ||
-      process.ppid !== Number(process.env.CORAL_RECOVERY_SOURCE_PID) ||
-      probeProcessIncarnation(process.ppid) !== process.env.CORAL_RECOVERY_SOURCE_INCARNATION ||
-      typeof message !== 'object' ||
-      message === null ||
-      !('kind' in message) ||
-      message.kind !== 'coral-recovery-challenge' ||
-      !('challenge' in message) ||
-      message.challenge !== recoveryChallenge ||
-      !('id' in message) ||
-      !Number.isSafeInteger(message.id)
-    )
-      return;
-    process.send?.({
-      kind: 'coral-recovery-answer',
-      challenge: recoveryChallenge,
-      id: message.id,
-      normalized: record.read().owner.mode === 'supervised',
-    });
+  const session: NamespaceSupervision = {
+    ...acquisition,
+    runDir,
+    originalManifest,
+    timing,
+    startupBudgetMs,
+    args,
+    onChild: options.onChild,
+    original: { executable, buildSetId: originalManifest.buildSetId },
+    tried: new Set<string>(),
+    lastInheritedRequest: new Map<string, number>(),
+    repairBridge: null,
+    firstLaunch: true,
+    unidentifiedBinder: { observed: false },
   };
-  if (replacement) process.on('message', onRecoveryChallenge);
+  const onRecoveryChallenge = (message: unknown): void => answerRecoveryChallenge(session, message);
+  if (acquisition.replacement) process.on('message', onRecoveryChallenge);
   try {
-    const original = { executable, buildSetId: originalManifest.buildSetId };
-    const tried = new Set<string>();
-    const lastInheritedRequest = new Map<string, number>();
-    let repairBridge: ReturnType<typeof createRepairBridge> | null = null;
-    let firstLaunch = true;
-    const unidentifiedBinder: UnidentifiedBinder = { observed: false };
-    while (true) {
-      if (owner.lost) {
-        repairBridge?.close();
-        repairBridge = null;
-        while (true) {
-          let ownedChildMayLive = false;
-          for (const slot of [record.read().launch, record.read().attempt]) {
-            if (slot?.parent?.pid !== process.pid || slot.child === undefined) continue;
-            const liveness = incumbentLiveness(slot.child);
-            if (liveness === 'alive' || liveness === 'unknown') ownedChildMayLive = true;
-          }
-          if (!ownedChildMayLive) break;
-          await sleep(POLL_MS);
-        }
-        return 1;
-      }
-      record.reconcileAdmissions();
-      if (process.connected)
-        process.send?.({ kind: 'coral-launch-status', status: currentLaunchStatus(runDir) }, () => undefined);
-      const reconciled = await reconcileInheritedChildren({
-        record,
-        owner,
-        runDir,
-        originalManifest,
-        timing,
-        startupBudgetMs,
-        lastInheritedRequest,
-        repairBridge,
-        replacement,
-        recoveryChallenge,
-        incarnation,
-      });
-      const { inherited } = reconciled;
-      repairBridge = reconciled.repairBridge;
-      if (owner.lost || !record.hasAuthority(owner.current)) {
-        owner.lost = true;
-        repairBridge?.close();
-        repairBridge = null;
-        continue;
-      }
-      const observedInherited = record.read().launch;
-      if (
-        observedInherited !== null &&
-        observedInherited.phase === 'serving' &&
-        observedInherited.observedHealthyAt !== undefined &&
-        observedInherited.parent?.pid !== process.pid &&
-        observedInherited.child?.pid !== process.ppid &&
-        repairBridge === null &&
-        publishedNativeSupervision(runDir, observedInherited)
-      ) {
-        const incumbent = observedLaunchIncumbent(runDir, originalManifest.flavor);
-        if (incumbent !== null)
-          await recordLegacyUpgradeIntent({
-            runDir,
-            requestId: randomUUID(),
-            incumbent,
-            target: { build: originalManifest, pluginRootLabel: dirname(dirname(executable)) },
-          });
-        return 0;
-      }
-      if (
-        replacement &&
-        inherited.length === 1 &&
-        inherited[0].phase === 'serving' &&
-        inherited[0].child?.pid !== process.ppid &&
-        repairBridge === null &&
-        pendingIntent(runDir) !== null
-      )
-        return 0;
-      record.normalize();
-      const adoptedChild = repairBridge?.child(record.read().launch?.id);
-      if (adoptedChild !== null && adoptedChild !== undefined && repairBridge !== null) {
-        const released = await superviseAdoptedChild({
-          record,
-          owner,
-          runDir,
-          repairBridge,
-          adoptedChild,
-          lastInheritedRequest,
-        });
-        repairBridge = null;
-        if (released) return 0;
-        continue;
-      }
-      if (releaseSettledInheritedLaunch(record, incarnation, runDir)) return 0;
-      if (inherited.length > 0) {
-        await sleep(POLL_MS);
-        continue;
-      }
-      const selection = await selectAndSuperviseCandidate({
-        record,
-        owner,
-        runDir,
-        original,
-        originalManifest,
-        tried,
-        firstLaunch,
-        unidentifiedBinder,
-        args,
-        timing,
-        startupBudgetMs,
-        onChild: options.onChild,
-      });
-      firstLaunch = selection.firstLaunch;
-      if (selection.released) return 0;
-    }
+    return await superviseNamespace(session);
   } finally {
     process.off('message', onRecoveryChallenge);
-    owner.release();
+    acquisition.owner.release();
   }
 }

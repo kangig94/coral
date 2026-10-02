@@ -16,7 +16,7 @@ import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-tim
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { encodeResolvedStoreEpoch, resolveCurrentStore } from '#src/store/epoch.js';
+import { encodeResolvedStoreEpoch, resolveCurrentStore } from '#src/store/epoch/index.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 
 class FakeStdin extends EventEmitter {

@@ -127,13 +127,12 @@ export type RetiringStoreProtection =
   | Readonly<{ kind: 'protected' }>
   | Readonly<{ kind: 'opener-held'; reason: string }>;
 
-/** The incumbent's own writers, which a commit parks and every failed commit must either reclaim or release. */
 export type IncumbentWriterPorts = Readonly<{
   parkProviderOperationMutations(signal: AbortSignal): Promise<void>;
   adoptProviderOperationAdmission(admission: ProviderOperationMutationAdmission): void;
   protectRetiringStore(epochKey: string, openerDrainMs: number): RetiringStoreProtection;
   reopenRetiringStore(epochKey: string): void;
-  /** Never returns: the process exits once the release settles. */
+
   releaseAuthority(release: SuccessionRelease): Promise<never>;
 }>;
 
@@ -146,7 +145,7 @@ export type SuccessionCommitPorts = Readonly<{
     instanceId: string;
     pluginRoot: string;
     storeFormatFingerprint: string;
-    /** Absent when this build cannot prove its own identity, which forbids relaunching itself. */
+
     build: Readonly<{ manifest: StrictBundleManifest; bundleDir: string }> | null;
   }>;
   reconciler: () => SuccessionReconciler;
@@ -156,10 +155,7 @@ export type SuccessionCommitPorts = Readonly<{
     LaunchCoordinator,
     'admissionRevision' | 'beginSuccessionCommitWindow' | 'beginSuccessionWriterPark' | 'endSuccessionCommitWindow'
   >;
-  /**
-   * Provider hosts that authorized the successor. Control is released only once the incumbent's writers are
-   * parked, and taken back through each host's recovery grant when the attempt fails before it serves.
-   */
+
   providerHosts: Readonly<{
     transfersHosts(preparation: SuccessionPreparation): boolean;
     /** Parked writers wait on it, so it must end by `signal`, which fires at the commit deadline. */
@@ -167,7 +163,7 @@ export type SuccessionCommitPorts = Readonly<{
     reclaimTransferred(): void;
   }>;
   setLaunchFenceActive: (active: boolean) => void;
-  /** Open job waits resubscribe to whichever coordinator serves once their handover signal fires. */
+
   waitHandover: Readonly<{ abort(): void; renew(): void }>;
   liveJobIds: () => readonly string[];
   retiringEpoch: RetiringEpochPorts;
@@ -178,22 +174,20 @@ export type SuccessionCommitPorts = Readonly<{
   interposition: SuccessionInterposition;
 }>;
 
-/** The historical record a format-changing retirement must certify before the incumbent's epoch is retired. */
 export type RetiringEpochPorts = Readonly<{
   certificate(epochKey: string): Readonly<{ revision: number; jobIds: readonly string[] }> | null;
   resultsReleased(epochKey: string): boolean;
   recoverLocations(epochKey: string): void;
-  /** May wait out a recorded process's disappearance, so it runs before the commit window opens. */
+
   certifyCustody(epochKey: string, signal: AbortSignal): Promise<RetiringCustodyCertificate | null>;
-  /** Never waits on a process, so it fits inside the commit window. */
+
   confirmCustody(certificate: RetiringCustodyCertificate, signal: AbortSignal): Promise<boolean>;
 }>;
 
 export type SuccessionShutdownPort = Readonly<{
-  /** True once the active attempt's successor durably serves; shutdown then releases instead of tearing down. */
   committed(): boolean;
   handOverOpenConnections(): Promise<void>;
-  /** Aborts an uncommitted attempt and resolves once the commit has reclaimed, released, or restarted. */
+
   settleUncommittedAttempt(): Promise<void>;
 }>;
 
@@ -204,7 +198,6 @@ export type SuccessionCommitter = Readonly<{
   shutdown: SuccessionShutdownPort;
 }>;
 
-/** An attempt that ended without a serving successor; its writer, when present, is parked and owed a reclaim. */
 export type FailedCommit = Readonly<{
   kind: 'failed';
   attempt: SuccessionAttempt | null;
@@ -224,13 +217,11 @@ export type CommitOutcome =
   | Readonly<{ kind: 'unresolved'; attempt: SuccessionAttempt; reason: string }>
   | FailedCommit;
 
-/** What the intent the attempt was launched for fixes about its commit. */
 export type CommitPlan = Readonly<{
   successorFingerprint: string;
   formatChanging: boolean;
 }>;
 
-/** An open commit window, and the parked state a failure inside it leaves for reclaim. */
 export type CommitWindow = {
   readonly attempt: SuccessionAttempt;
   readonly preparation: SuccessionPreparation;
@@ -251,7 +242,7 @@ export type RecoveryContext = Readonly<{
 export type CommitState = {
   active: SuccessionAttempt | null;
   supervision: Promise<SuccessionLaunchSettlement> | null;
-  /** Aborted by shutdown; every wait of the active attempt that could outlast shutdown's patience observes it. */
+
   attemptAbort: AbortController;
   pausedAttemptId: string | null;
   stopWindowForwarding: (() => void) | null;

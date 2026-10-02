@@ -16,7 +16,7 @@ import {
   SUCCESSION_CAPABILITY_VERSION,
 } from '../src/infra/bundle-manifest-address.ts';
 
-const { storeEpochHookSource } = await import('../dist/store/epoch.js');
+const { storeEpochHookSource } = await import('../dist/store/epoch/index.js');
 writeFileSync('clients/hooks/lib/store-epoch.mjs', storeEpochHookSource());
 
 mkdirSync('clients/build', { recursive: true });

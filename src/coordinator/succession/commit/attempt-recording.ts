@@ -34,17 +34,12 @@ export function createCommitAttemptRecorder(ports: SuccessionCommitPorts) {
     }
   };
 
-  /** A clearing write that fails is owed to the reconciler, which retries it while the intent names the attempt. */
   const clearAttempt = async (
     attemptId: string,
     clear: (intent: UpgradeIntent) => UpgradeIntent,
   ): Promise<SuccessionLaunchSettlement> =>
     (await recordBestEffort(attemptId, clear)) ? { kind: 'settled' } : { kind: 'clear-owed', attemptId, clear };
 
-  /**
-   * Status for a failed attempt whose release is still running. `attempting` must stay until the write that clears
-   * the attempt: startup reads it as the only evidence that something may already have been released.
-   */
   const recordReleasePending = async (
     attemptId: string,
     status: Pick<UpgradeIntent, 'blockers' | 'retryCondition'>,

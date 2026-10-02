@@ -68,7 +68,7 @@ import type { EventsRow } from '#src/store/schema.js';
 import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
+import { readOrCreateEpochKey } from '#src/store/epoch/index.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';

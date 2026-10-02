@@ -75,10 +75,6 @@ export function createCommitWriterPreparation(ports: SuccessionCommitPorts, stat
     });
   }
 
-  /**
-   * A process discharge can outlast the whole admission pause, so custody is certified before the pause opens and
-   * the window only confirms that certificate. Shutdown's abort ends the wait without deciding the target.
-   */
   async function certifyRetiringCustody(epochKey: string): Promise<RetiringCustodyCertificate> {
     let custody: RetiringCustodyCertificate | null = null;
     try {

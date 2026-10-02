@@ -35,9 +35,9 @@ import { retainedBuildRoot } from '#src/infra/retained-build-root.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { bindCustodyIdentity, readCustodyLedger, recordCustodyIntent } from '#src/store/custody-ledger.js';
 import { readControllerRecoveryGrant } from '#src/store/controller-receipt-records.js';
-import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, resolveCurrentStore } from '#src/store/epoch.js';
-import { protectStoreEpoch, protectedStoreEpochRoot, resolveProtectedEpoch } from '#src/store/epoch-protection.js';
-import { observeEpochClosure } from '#src/store/epoch-closure.js';
+import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, resolveCurrentStore } from '#src/store/epoch/index.js';
+import { protectStoreEpoch, protectedStoreEpochRoot, resolveProtectedEpoch } from '#src/store/epoch/index.js';
+import { observeEpochClosure } from '#src/store/epoch/index.js';
 import {
   observeSuccessionServing,
   observeSuccessionWriterGeneration,

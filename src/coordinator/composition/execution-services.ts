@@ -1,6 +1,6 @@
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { join } from 'node:path';
-import { resolveCurrentStoreEpoch } from '../../store/epoch.js';
+import { resolveCurrentStoreEpoch } from '../../store/epoch/index.js';
 import type { ProjectRequestPort, ExecutionServiceDeps } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SettlementRefusalRecorder } from '../../jobs/contracts/admission.js';

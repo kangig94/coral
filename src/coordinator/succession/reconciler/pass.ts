@@ -45,7 +45,6 @@ export function createSuccessionReconciliationPass(context: ReconciliationContex
   return () => reconcilePending(context);
 }
 
-/** A backoff ends by this wake, so it never depends on another wake source arriving. */
 function wakeAt(context: ReconciliationContext, atMs: number): void {
   const { options, state, notifyObligationChange } = context;
   options.runtime.time.clearTimeout(state.backoffWake);
@@ -56,11 +55,6 @@ function wakeAt(context: ReconciliationContext, atMs: number): void {
   state.backoffWake.unref?.();
 }
 
-/**
- * A retirement attempt mints at its incumbent's successor address, so no format-changing attempt can begin while an
- * unserved mint still occupies it; any other target proceeds, because store selection never reads that mint. Each
- * pass retries the discard, and only a discard that leaves nothing of the attempt behind clears the record.
- */
 async function retryUnservedMintDiscard(
   context: ReconciliationContext,
   intent: UpgradeIntent,
@@ -110,7 +104,6 @@ function dischargeUnnamedGrants(context: ReconciliationContext, intent: UpgradeI
   }
 }
 
-/** Lands the clearing write a settled commit owed; its exit is the next pass, until the intent names another attempt. */
 async function landOwedClear(
   context: ReconciliationContext,
   owed: Extract<SuccessionLaunchSettlement, { kind: 'clear-owed' }>,
@@ -165,7 +158,7 @@ async function reconcilePending(context: ReconciliationContext): Promise<Success
       ? adoptNextTarget(intent, queued)
       : { kind: 'deferred', reason: 'upgrade intent has ended' };
   }
-  // Whichever process serves an attempt owes its receipt, and every later request waits on that receipt.
+
   if (intent.attemptId !== null && (options.observeServing?.(intent.attemptId) ?? null) !== null) {
     return commit(intent.attemptId);
   }
@@ -180,7 +173,7 @@ async function reconcileOwnedIntent(
   queued: NonNullable<UpgradeIntent['nextTarget']> | null,
 ): Promise<SuccessionDecision> {
   const { options, state, adoptNextTarget, close } = context;
-  // A target requested while an attempt held the intent supersedes whatever that attempt left behind.
+
   if (intent.attemptId === null && queued !== null && intent.reason !== 'supervision-repair')
     return adoptNextTarget(intent, queued);
   let applies: boolean;

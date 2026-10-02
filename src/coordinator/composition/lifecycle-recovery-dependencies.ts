@@ -8,13 +8,13 @@ import type { JobLocationIndex } from '../../jobs/location-index.js';
 import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../services/startup-retirement.js';
 import { recordControllerOpen, recordControllerServing } from '../succession/controller-open.js';
 import { controllerRecoveryTarget } from '../services/retained-epoch-executor.js';
-import { readOrCreateEpochKey } from '../../store/epoch-key.js';
+import { readOrCreateEpochKey } from '../../store/epoch/index.js';
 import {
   decodeResolvedStoreEpoch,
   encodeResolvedStoreEpoch,
   listStoreEpochs,
   type ResolvedStoreEpoch,
-} from '../../store/epoch.js';
+} from '../../store/epoch/index.js';
 import { observeSuccessionWriterGeneration } from '../../store/succession-writer-generation.js';
 import { currentSuccessionAttemptChild } from '../succession/attempt-child.js';
 import {

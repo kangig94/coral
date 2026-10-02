@@ -1,6 +1,6 @@
 import { formatError } from '../../../infra/error-format.js';
 import type { AttemptRetry } from '../../../infra/upgrade-intent.js';
-import { discardUnservedRetirementMint } from '../../../store/epoch.js';
+import { discardUnservedRetirementMint } from '../../../store/epoch/index.js';
 import type {
   CommitOutcome,
   CommitPlan,
@@ -24,7 +24,7 @@ export function createFailedCommitWindow(
 ) {
   const { runtime } = ports;
   const { successorServesBeforeRefusal, recordReleasePending, abortAndReap } = dependencies;
-  /** Hands the window's parked state to whoever owes its reclaim, unless the successor served meanwhile. */
+
   async function closeFailedWindow(
     window: CommitWindow,
     plan: CommitPlan,
@@ -41,7 +41,7 @@ export function createFailedCommitWindow(
       return { kind: 'unresolved', attempt, reason: 'Failed successor could not be durably refused.' };
     }
     ports.waitHandover.renew();
-    // The admission pause ends on its own clock, which the reap below can outlast while writers stay parked.
+
     const reason = formatError(failure);
     await recordReleasePending(attempt.attemptId, {
       blockers: [{ owner: 'succession-commit', reason }],

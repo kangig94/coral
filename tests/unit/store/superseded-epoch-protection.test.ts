@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { withSupersededEpochClosures, type BackendStatusFull } from '#src/cli/backend-status.js';
-import * as epochProtection from '#src/store/epoch-protection.js';
+import * as epochProtection from '#src/store/epoch/protection.js';
 import {
   discardCurrentStoreEpoch,
   encodeResolvedStoreEpoch,
@@ -28,7 +28,7 @@ import {
   settleStoreEpoch,
   storeEpochLockPath,
   sweepStoreEpochsPostReady,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { joinSuccessionWriterGeneration, refuseSuccessionAttempt } from '#src/store/succession-writer-generation.js';

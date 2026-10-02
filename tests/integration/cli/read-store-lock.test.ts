@@ -23,7 +23,7 @@ vi.mock('#src/runtime/real.js', async (importOriginal) => {
 import { openCliCauseRefRenderer } from '#src/cli/cause-renderer.js';
 import { closeSharedReadCoralStore, getSharedReadCoralStore, openReadCoralStore } from '#src/cli/read-store.js';
 import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
-import { resolvedStoreEpoch, sweepStoreEpochs, sweepStoreEpochsPostReady } from '#src/store/epoch.js';
+import { resolvedStoreEpoch, sweepStoreEpochs, sweepStoreEpochsPostReady } from '#src/store/epoch/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 

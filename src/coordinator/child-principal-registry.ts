@@ -76,11 +76,6 @@ type ChildProofClaim = Readonly<{
   proof: string;
 }>;
 
-/**
- * Issues child credentials and verifies proofs of them. Replay protection lives in challenges this incarnation
- * issued and the connection consumed, so nothing about past authentications needs to survive this process: a
- * successor has a different incarnation and accepts only its own challenges.
- */
 export class ChildPrincipalRegistry {
   private readonly ids: Pick<IdPort, 'randomBytes'>;
   private readonly credentials: ChildPrincipalCredentialStore;
@@ -95,10 +90,7 @@ export class ChildPrincipalRegistry {
     credentials: ChildPrincipalCredentialStore,
     options: {
       namespace: string;
-      /**
-       * The launch namespace of a job that has not reached a terminal phase, or null. A record names the namespace
-       * its job was launched in, which a successor built from another plugin root does not share.
-       */
+
       activeJobOrigin: (jobId: string) => string | null;
       log?: (message: string) => void;
     },
@@ -151,7 +143,6 @@ export class ChildPrincipalRegistry {
     });
   }
 
-  /** Durable before it returns: a child launched with this credential can be verified by any later coordinator. */
   private issue(
     registration: Omit<PersistedChildPrincipalRegistration, 'authorization'> & {
       authorization: ChildPrincipalAuthorization;
@@ -180,10 +171,6 @@ export class ChildPrincipalRegistry {
     };
   }
 
-  /**
-   * `challenge` is the one the requesting connection held, already consumed by that connection; null when it
-   * held none. A proof for any other challenge, incarnation, or request fails verification.
-   */
   authenticate(
     claim: ChildProofClaim,
     challenge: ChildAuthChallenge | null,
@@ -210,7 +197,6 @@ export class ChildPrincipalRegistry {
     try {
       wire = canonicalizePrincipalWire(record.principalWire);
     } catch {
-      // A project root that no longer resolves binds the child to nothing it could be authorized for.
       return { kind: 'refused' };
     }
     return {

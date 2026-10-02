@@ -3,10 +3,7 @@ import { successionTargetKey } from './protocol.js';
 
 export const TRANSIENT_RETRY_BASE_MS = 1_000;
 const TRANSIENT_RETRY_MAX_MS = 30_000;
-/**
- * Transient failures one target may spend in total before its intent closes. A different target or a new request
- * starts a new count; an attempt's one success is completion, so no success can separate two failures of it.
- */
+
 const TRANSIENT_RETRY_LIMIT = 6;
 const OBLIGATION_RETRY_LIMIT = 6;
 
@@ -35,7 +32,6 @@ function backoffMs(failures: number): number {
   return Math.min(TRANSIENT_RETRY_MAX_MS, TRANSIENT_RETRY_BASE_MS * 2 ** (failures - 1));
 }
 
-/** When the intent's target may next launch an attempt; null when no backoff binds it. */
 export function attemptRetryAtMs(intent: UpgradeIntent): number | null {
   const backoffs = [transientRetryOf(intent), obligationRetryOf(intent)].flatMap((retry) =>
     retry === null ? [] : [Date.parse(retry.retryAfter)],
@@ -93,7 +89,6 @@ export function failedAttemptRetry(
   };
 }
 
-/** The failure a same-build recovery stands in for; a grant without one keeps its target decisive. */
 export function recoveryRetryOf(intent: UpgradeIntent): AttemptRetry {
   return intent.recoveryRetry ?? { kind: 'target-change' };
 }

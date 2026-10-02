@@ -32,7 +32,7 @@ import {
   type ActiveStoreTransitionFailureCode,
 } from './active-store-selection.js';
 import type { Database } from './db.js';
-import { settleStoreEpoch, type ResolvedStoreEpoch, type StoreEpochOptions } from './epoch.js';
+import { settleStoreEpoch, type ResolvedStoreEpoch, type StoreEpochOptions } from './epoch/index.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import {
   formatLegacyGenerationIgnoredNotice,

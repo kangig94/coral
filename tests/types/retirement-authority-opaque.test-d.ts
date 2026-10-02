@@ -1,5 +1,5 @@
-import type { EpochClosureCapability } from '#src/store/epoch-closure.js';
-import { retirementMintDisposition, type StoreMintDisposition } from '#src/store/epoch.js';
+import type { EpochClosureCapability } from '#src/store/epoch/index.js';
+import { retirementMintDisposition, type StoreMintDisposition } from '#src/store/epoch/index.js';
 
 const minted: StoreMintDisposition = retirementMintDisposition('unopenable', 'epoch-key');
 void minted;

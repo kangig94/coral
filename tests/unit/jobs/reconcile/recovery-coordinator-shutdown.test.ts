@@ -6,7 +6,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { retirementMintDisposition } from '#src/store/epoch.js';
+import { retirementMintDisposition } from '#src/store/epoch/index.js';
 import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { jobsDir } from '#src/jobs/paths.js';

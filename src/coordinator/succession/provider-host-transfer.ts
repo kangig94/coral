@@ -111,7 +111,6 @@ function completedTransferServed(
   );
 }
 
-/** A served transfer remains controller authority while the old capsule is awaiting completion. */
 export function servedControllerTransferForCapsule(
   runtime: Runtime,
   capsule: RedeemableHandoffCapsule,
@@ -205,10 +204,6 @@ export function acceptedControllerTransferHandsCapsule(
     : 'not-accepted';
 }
 
-/**
- * Whether a provider host receipt of `preparation` still has the recovery grant a failed attempt's recovery
- * redeems: each set's capsule must hold the recorded grant under the incumbent's controller build.
- */
 export function providerHostRecoveryGrantVerifies(
   runtime: Runtime,
   flavor: 'prod' | 'dev',
@@ -242,8 +237,7 @@ async function prepareProviderHostTransfer(
   if (sets.length === 0 && jobIds.length === 0 && scan.unreadableKeys.length === 0) return { kind: 'none' };
   const blocking = (reason: string): HostTransferPreparation => ({ kind: 'blocking', reason, jobIds });
   if (lifecycle === null) return blocking('provider proxy set lifecycle is unavailable');
-  // Idle capacity carries no obligation, so a set the successor cannot take is retired rather than held, and
-  // its retirement is the obligation change that lets a later attempt proceed.
+
   const untransferable = (reason: string): HostTransferPreparation => {
     if (jobIds.length > 0 || scan.unreadableKeys.length > 0) return blocking(reason);
     for (const set of sets) lifecycle.beginGracefulDrain(set.setIdentity);

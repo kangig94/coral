@@ -45,8 +45,7 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
         shouldRender: true,
       };
     }
-    // An event without an epoch comes from a coordinator the vector cursor was withheld from, which replays from its
-    // own start: dedupe restarts there, and a terminal already delivered stays delivered.
+
     const legacy = isWaitCursorV2(cursor) ? legacyRenderCursor(cursor.deliveredJobIds) : cursor;
     if (event.seq <= legacy.afterSeq || (event.type === 'terminal' && legacy.deliveredJobIds?.includes(event.jobId))) {
       return { cursor: legacy, shouldRender: false };

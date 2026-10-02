@@ -5,7 +5,7 @@ import { formatError } from '../../../infra/error-format.js';
 import type { resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
 import { validatedRetainedBuildRoot } from '../../../infra/retained-build-root.js';
 import { requirePipedHandles } from '../../../infra/process-supervision.js';
-import { encodeResolvedStoreEpoch } from '../../../store/epoch.js';
+import { encodeResolvedStoreEpoch } from '../../../store/epoch/index.js';
 import type {
   DaemonProcessLike,
   KbDaemonHealthSnapshot,
@@ -25,7 +25,7 @@ export function prepareKbDaemonStart(runtime: Runtime, state: KbDaemonSupervisor
   state.lastError = undefined;
   state.lastSetupError = undefined;
   state.stderrBuffer = '';
-  // A fresh process repeating what the previous one said is news, not a repeat.
+
   state.lastStderrLine = null;
   state.repeatedStderrLines = 0;
   state.lastHeartbeatAt = undefined;
@@ -84,7 +84,6 @@ export function spawnKbDaemonForStart(
       args: [root === pluginRoot ? entrypoint : join(root, 'bridge', 'coral-backend.cjs')],
       cwd: root,
       envAdditions: {
-        // Daemon-identity vars below override any collision.
         ...forwardedKbDaemonEnv,
         CORAL_KB_DAEMON: '1',
         CORAL_KB_DAEMON_GENERATION: String(state.generation),

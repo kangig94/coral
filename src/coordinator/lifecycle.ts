@@ -107,13 +107,13 @@ import {
   discardUnservedRetirementMint,
   type ResolvedStoreEpoch,
   type StoreEpochOptions,
-} from '../store/epoch.js';
+} from '../store/epoch/index.js';
 import {
   protectStoreEpoch,
   resolveProtectedEpoch,
   restoreProtectedEpoch,
   StoreEpochOpenerHeldError,
-} from '../store/epoch-protection.js';
+} from '../store/epoch/index.js';
 import { asDatabase, openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createRebindableStoreDatabase, type RebindableStoreDatabase } from '../store/rebindable-database.js';
 import {
@@ -196,7 +196,6 @@ export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining
 
 export const STARTUP_STORE_BUSY_TIMEOUT_MS = 750;
 
-/** EX_TEMPFAIL: this incumbent left for the next startup of its own build to serve its recovery grant. */
 const SUCCESSION_RESTART_EXIT_CODE = 75;
 
 export class StartupStoreHandoffError extends Error {
@@ -921,7 +920,7 @@ export type LifecycleDeps = {
   ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: (exitCode: number) => void;
   readonly onSuccessionServing?: (attemptId: string) => Promise<void>;
-  /** A reconciler pass before this process serves can act on nothing, so reaching service owes it one. */
+
   readonly wakeSuccessionReconciler?: () => void;
   readonly verifySuccessionReceipts?: (
     preparation: SuccessionPreparation,
@@ -953,7 +952,7 @@ export type LifecycleController = {
   adoptProviderOperationAdmission(admission: ProviderOperationMutationAdmission): void;
   protectRetiringStore(epochKey: string, openerDrainMs: number): RetiringStoreProtection;
   reopenRetiringStore(epochKey: string): void;
-  /** Never returns: the process exits once the release sequence settles. */
+
   releaseAuthority(release: SuccessionRelease): Promise<never>;
 };
 
@@ -1184,7 +1183,6 @@ async function openOrdinaryStore(
   try {
     routing = await routeStore();
   } catch (error: unknown) {
-    // A withheld mint is decided by this boot: no later spawn is guaranteed on a machine nobody is watching.
     if (!mintWithheld) throw error;
     backendLog.warn(`Store epoch mint withheld under retirement patience; observing again: ${formatError(error)}`);
     await runtime.time.sleep(RETIREMENT_PATIENCE_INTERVAL_MS, { signal });
@@ -1263,18 +1261,11 @@ async function settleFailedLifecycleStartup(
     throw error;
   }
   if (mutationAdmissionDisposition?.kind === 'holding') {
-    // `retryAfter` settles only when every pending mutation returns and every closed-set fence lease is
-    // released by its holder — neither is bounded by anything this cleanup owns, so awaiting it here would
-    // sit ahead of the socket close and discovery withdrawal this cleanup still owes. What this cleanup did
-    // not observe settle stays visible instead of being swallowed.
     backendLog.error(
       `Provider operation mutation admission did not confirm drained during startup-failure cleanup (pending: ${mutationAdmissionDisposition.pendingMutations.join(', ')})`,
     );
   }
   if (error instanceof IncumbentMatchesError) {
-    // Translate to the existing bootstrap-recognized "redundant contender"
-    // signal (info log + exit 0). The socket has not been bound by us, so
-    // there is nothing to clean up.
     runtimeState.setLifecycle('stopped');
     throw new BackendAlreadyRunningError();
   }
@@ -1298,13 +1289,13 @@ async function settleFailedLifecycleStartup(
   try {
     await closeServerFn(server);
   } catch {
-    // best effort
+    // A failed listener close must not prevent discovery withdrawal.
   }
   if (ipcServer && closeIpcServerFn) {
     try {
       await closeIpcServerFn(ipcServer);
     } catch {
-      // best effort
+      // A failed listener close must not prevent discovery withdrawal.
     }
   }
   const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
@@ -1545,8 +1536,6 @@ async function openSelectedStartupStore({
   let recoveryGeneration: SuccessionWriterGeneration | null = null;
   let recoveryIncarnation: ProcessIncarnation | null = null;
   if (preinjectedStoreServices !== null) {
-    // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
-    // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
     if (preinjectedStoreServices.storeDb.location() !== null) {
       throw new Error('Pre-injected lifecycle store must be non-filesystem-backed.');
     }
@@ -1694,10 +1683,6 @@ async function activateRunningLifecycle({
   state.ownershipCheckerTeardown = ownershipChecker.install();
   await hooks.onRecoveryComplete(recoveredDiscussResumes);
 
-  // ===== Era III (components — fire-and-forget) =====
-  // The KB daemon health component is a daemon-health mirror; init is intentionally a no-op
-  // and the daemon supervisor owns actual KB process startup. The registry
-  // surfaces child phase via `runtimeState.components.status('kb')`.
   try {
     runtimeState.components.initAll(signal);
   } catch (error: unknown) {
@@ -1827,7 +1812,7 @@ async function recoverStartupJobs({
     getDiscussContext,
     recoverPersistedDiscussFn,
   } = deps;
-  // ===== Era II (recovery) =====
+
   await yieldPastKernelReadyResponse();
   reconcileCustodyAtStartup?.();
   // This order is load-bearing: a pending publication contains remote facts that the generic job walk
@@ -1848,11 +1833,7 @@ async function recoverStartupJobs({
   }
   signal.throwIfAborted();
   // Per-job isolation: corrupt sessions should not abort recovery.
-  // `bound.runStartupRecovery` registers journal cursors then awaits
-  // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
-  // because its budget is bounded by the daemon-side
-  // `bootFreshnessTimeoutMs` (default 90s), not by either CLI-facing
-  // deadline — the CLI has already returned by now.
+
   const recoveryInputs: StartupRecoveryInputs = {
     identity,
     runtime,
@@ -2098,10 +2079,7 @@ async function registerStartupStoreServices({
     storeDb.close();
     throw error;
   }
-  // clear() then set() so a second startup (test re-init or simulation
-  // pre-injection) cleanly replaces the bundle. The set() guard rejects
-  // double-set without clear, which catches accidental silent replacement
-  // bugs while permitting the legitimate explicit reset pattern.
+
   replaceStoreServices(storeServices);
   if (acceptedSuccessionPreparation !== null && openedStore !== null) {
     if (acceptedSuccessionPreparation.receipts.length > 0 && deps.verifySuccessionReceipts === undefined) {
@@ -2310,7 +2288,7 @@ async function runStartupKernel(
   if (successionAttemptChild === null && committedState.recovery === null && !legacySupervisedChild) publishDiscovery();
   if (committedState.recovery === null && !legacySupervisedChild) runtimeState.setLifecycle('kernel-ready');
   runtimeState.setLaunchFenceActive(true);
-  // An attempt child that has not served may still be abandoned, and its sweep would certify the epoch it retires.
+
   if (
     successionAttemptChild === null &&
     committedState.recovery === null &&
@@ -2483,7 +2461,6 @@ async function runLifecycleStartup({
   });
 
   try {
-    // ===== Era I (kernel) =====
     const kernel = await runStartupKernel(
       { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
       signal,
@@ -2923,12 +2900,6 @@ function createLifecycleShutdown(
     const takeShutdownIncidents = (): readonly ShutdownIncidentOccurrence[] => state.shutdownIncidents.splice(0);
     state.lastShutdownDisposition = null;
 
-    // Calling `abort()` with no reason sets `signal.reason` to the platform
-    // default (a DOMException whose `.name === 'AbortError'`). Downstream
-    // `signal.throwIfAborted()` checks throw that reason value, which
-    // downstream catches detect via `error?.name === 'AbortError'`. A string
-    // reason would propagate as a bare string and lose the `name`
-    // discriminator.
     state.startupAbort?.abort();
 
     const dispositionContext: ShutdownDispositionContext = { deps, state, reason, shutdown };

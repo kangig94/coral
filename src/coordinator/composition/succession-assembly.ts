@@ -7,7 +7,11 @@ import { isTerminalPhase } from '../../jobs/phase.js';
 import { readSuccessionCustodyJobIds, readSuccessionLiveJobIds } from '../../jobs/succession-coverage.js';
 import { createRealSuccessionAttemptPorts } from '../../runtime/succession-attempt.js';
 import { readCustodyLedger } from '../../store/custody-ledger.js';
-import { discardUnservedRetirementMint, encodeResolvedStoreEpoch, inspectCurrentStore } from '../../store/epoch.js';
+import {
+  discardUnservedRetirementMint,
+  encodeResolvedStoreEpoch,
+  inspectCurrentStore,
+} from '../../store/epoch/index.js';
 import { readProviderOperations } from '../../store/provider-operation-journal.js';
 import { observeSuccessionServing } from '../../store/succession-writer-generation.js';
 import type { createIpcServer } from '../../transport/ipc/server.js';

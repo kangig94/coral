@@ -32,11 +32,7 @@ export function createSuccessionIntentAdoption(input: {
   close: (intent: UpgradeIntent) => Promise<SuccessionDecision>;
 }> {
   const { options, notifyObligationChange, writeThen } = input;
-  /**
-   * The serving incumbent owns an intent whose recorded incumbent is proven gone, keeping its disposition, hold, and
-   * retry. An attempt still named belongs to startup. An unproven exit adopts nothing and is recorded as a blocker
-   * the adoption removes; the next pass, or the retry interval, looks again.
-   */
+
   async function adopt(intent: UpgradeIntent): Promise<SuccessionDecision> {
     const recorded = intent.incumbent;
     if (intent.attemptId !== null) {

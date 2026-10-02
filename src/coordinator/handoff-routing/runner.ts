@@ -496,8 +496,7 @@ async function readLiveCoordinatorHealth(
             ? { kind: 'not-observed', reason: 'unresolved', cause: 'unreadable-record' }
             : changedIdentity;
         }
-        // An unobservable pid still has a record, and authenticated health is a stronger statement about whether
-        // an incumbent is serving than a pid probe ever was — so ask it rather than concluding nobody is there.
+
         discovery = probe.record;
         break;
       case 'live':

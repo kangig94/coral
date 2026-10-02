@@ -15,8 +15,8 @@ import { bindCustodyIdentity, recordCustodyIntent } from '#src/store/custody-led
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { deleteDurableCliProcessRuntimeMeta, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
-import type { ResolvedStoreEpoch } from '#src/store/epoch.js';
-import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
+import type { ResolvedStoreEpoch } from '#src/store/epoch/index.js';
+import { readOrCreateEpochKey } from '#src/store/epoch/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { JobStore } from '#src/jobs/store.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';

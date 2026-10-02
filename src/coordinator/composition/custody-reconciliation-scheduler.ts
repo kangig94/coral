@@ -2,7 +2,7 @@ import { join } from 'node:path';
 
 import { formatError } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { resolveCurrentStoreEpoch } from '../../store/epoch.js';
+import { resolveCurrentStoreEpoch } from '../../store/epoch/index.js';
 import { reconcileStartupCustody } from '../services/recovery/custody-reconciliation.js';
 import type { CoordinatorWorld } from './world.js';
 

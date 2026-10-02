@@ -23,7 +23,7 @@ import { CoralStore } from '#src/read-model/coral-store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { resolveCurrentStore } from '#src/store/epoch.js';
+import { resolveCurrentStore } from '#src/store/epoch/index.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { assertLifecycleBundleSetFresh } from '#tests/support/bundle-build-freshness.js';

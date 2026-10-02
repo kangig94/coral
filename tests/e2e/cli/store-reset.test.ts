@@ -21,7 +21,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { serializeStoreResetIncidentManifest, type StoreResetIncidentManifestV2 } from '#src/store/reset-incident.js';
-import { reconcileProtectedEpochs } from '#src/store/epoch-protection.js';
+import { reconcileProtectedEpochs } from '#src/store/epoch/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
 import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';

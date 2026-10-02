@@ -86,10 +86,6 @@ export function supersededHandoffCapsulePaths(
   return superseded;
 }
 
-/**
- * A set's capsule sits at the address of the generation its writer wrote, which need not be this build's own.
- * Every generation this build decodes is a candidate address, and the newest one present speaks for the set.
- */
 export function readAddressedHandoffCapsule(
   identity: ProviderProxyEndpointIdentity,
   pathOptions: ProviderBootstrapCapsulePathOptions | undefined,

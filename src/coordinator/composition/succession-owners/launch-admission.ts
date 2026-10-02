@@ -1,5 +1,5 @@
 import type { JsonValue } from '../../../infra/json-value.js';
-import { inspectCurrentStore, encodeResolvedStoreEpoch } from '../../../store/epoch.js';
+import { inspectCurrentStore, encodeResolvedStoreEpoch } from '../../../store/epoch/index.js';
 import {
   dischargeDurableCliRecoveryGrants,
   prepareDurableCliTransfer,

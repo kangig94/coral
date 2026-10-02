@@ -13,7 +13,7 @@ import type { ProviderServerSpec } from '#src/providers/contract.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
+import { readOrCreateEpochKey } from '#src/store/epoch/index.js';
 
 const durableRoots: string[] = [];
 
@@ -27,7 +27,7 @@ function durableLaunchFixture(): { runtime: SimulationRuntime; launchCoordinator
   const runtime = new SimulationRuntime({ roots: { coralRoot: root } });
   const storeRoot = runtime.paths.coral.store.dbDir;
   const epochPath = join(storeRoot, 'epoch-1');
-  // see readOrCreateEpochKey in src/store/epoch-key.ts
+  // see readOrCreateEpochKey in src/store/epoch/key.ts
   mkdirSync(epochPath, { recursive: true });
   writeFileSync(join(epochPath, '.lock'), '');
   runtime.storage.mkdirSync(epochPath, { recursive: true });

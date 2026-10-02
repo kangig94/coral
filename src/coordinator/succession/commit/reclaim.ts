@@ -46,7 +46,7 @@ type ReclaimDependencies = Pick<ReturnType<typeof createCommitAttemptRecorder>, 
 export function createCommitReclaim(ports: SuccessionCommitPorts, dependencies: ReclaimDependencies) {
   const { runtime } = ports;
   const { closePause, clearAttempt, writersOrThrow, childHoldBlockers, reclaimIncumbentWriter } = dependencies;
-  /** Ends a transient hold: the reconciler holds the next attempt until the recorded backoff has passed. */
+
   function wakeForRetry(retry: AttemptRetry): void {
     if (retry.kind === 'transient') ports.reconciler().notifyObligationChange();
   }
@@ -54,7 +54,6 @@ export function createCommitReclaim(ports: SuccessionCommitPorts, dependencies: 
   const unservedMintOf = (failure: FailedCommit): Partial<UpgradeIntent> =>
     failure.unservedMintDiscard === null ? {} : { unservedMintDiscard: failure.unservedMintDiscard };
 
-  /** Resumes this incumbent in place; null leaves its writers parked for a same-build successor. */
   async function reclaimInPlace(
     failure: FailedCommit,
     recovering: boolean,

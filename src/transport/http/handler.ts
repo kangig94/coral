@@ -890,8 +890,7 @@ async function handleJobsWaitSubscription(
   };
   req.once('close', close);
   runOnResponseDone(res, close);
-  // No shipped client waits over SSE; a handover still ends the stream with a named event that carries the cursor
-  // to resume from, never a close that reads as a stream ending without its terminal.
+
   const handover = deps.jobs.waitHandoverSignal();
   let onHandover = (): void => {};
   const handedOver = new Promise<'handover'>((resolve) => {

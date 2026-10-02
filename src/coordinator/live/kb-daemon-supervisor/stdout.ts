@@ -67,7 +67,7 @@ export function createKbDaemonStdoutReceiver(
           continue;
         }
       } catch {
-        // Non-control stdout is ignored; stderr is retained for diagnostics.
+        // Non-control output must not interrupt later control replies.
       }
     }
   };

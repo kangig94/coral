@@ -569,10 +569,6 @@ function openPhysicalWritableStoreDatabase(
   }
 }
 
-/**
- * A store access refused because a succession commit parked this process's writer. `unparked` settles only when
- * this process reclaims the writer; a committed successor never hands it back, so it stays pending until exit.
- */
 export class SuccessionWriterParkedError extends Error {
   readonly unparked: Promise<void>;
 

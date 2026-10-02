@@ -18,7 +18,7 @@ import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
-import { resolvedStoreEpoch, STORE_EPOCH_METADATA_FILE_NAME } from '#src/store/epoch.js';
+import { resolvedStoreEpoch, STORE_EPOCH_METADATA_FILE_NAME } from '#src/store/epoch/index.js';
 import {
   advanceSuccessionWriterGeneration,
   handbackSuccessionWriterGeneration,

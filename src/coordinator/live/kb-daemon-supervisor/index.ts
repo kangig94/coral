@@ -11,7 +11,7 @@ import { readBundleHash, resolveStrictBundleIdentity } from '../../../infra/bund
 import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { SerializedCoralSetupError } from '../../../runtime/errors.js';
-import type { ResolvedStoreEpoch } from '../../../store/epoch.js';
+import type { ResolvedStoreEpoch } from '../../../store/epoch/index.js';
 import type { SuccessionWriterGeneration } from '../../../store/succession-writer-generation.js';
 import {
   KB_DAEMON_REQUEST_MESSAGE,
@@ -181,18 +181,6 @@ type KbDaemonSupervisorOptions = {
   log?: (message: string) => void;
 };
 
-/**
- * How much of a dead daemon's output may travel as its exit diagnostic.
- *
- * The retained stderr buffer is capped at `MAX_BUFFER`, which is the same ten mebibytes as the transport's
- * `MAX_FRAME_BYTES`. Handing the whole buffer to `lastError` therefore produced a health response that
- * overflowed one IPC frame by exactly the JSON around it — `frame_too_large` at 10,486,912 bytes against a
- * 10,485,760 limit — and every operator command that reads daemon health failed while the diagnostic was
- * needed most. `PROVIDER_HOST_LOG_MAX_BYTES` was the same equality in the provider host log; this is the
- * second place it lived.
- *
- * The tail, not the head: the output that explains an exit is the output nearest to it.
- */
 export const KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS = 64 * 1024;
 
 function daemonExitDiagnostic(stderr: string): string {
@@ -240,31 +228,10 @@ const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_JOB_REQUEST_TIMEOUT_MS = 60 * 60 * 1000;
 
-/**
- * Convention: every CORAL_* env var the KB daemon reads from its own process.env
- * carries the `CORAL_KB_` prefix, so forwarding the whole prefix re-injects all KB
- * config (analyzers, import/marker limits, corpus-scan caps, curate timings, …) in
- * one rule. `composeChildEnv` strips inherited CORAL_* from the spawn env
- * (`infra/env-sanitize.ts`), so without this re-injection the daemon silently loses
- * every CORAL_KB_* knob.
- */
 export const CORAL_KB_ENV_PREFIX = 'CORAL_KB_';
 
-/**
- * Shared knobs whose primary owner is the parent (coordinator) process and that
- * therefore do NOT carry the `CORAL_KB_` prefix. The KB daemon reuses them, so it
- * inherits them through this explicit allowlist rather than the prefix rule. Renaming
- * them would mislabel a parent-owned, cross-cutting var as KB-specific.
- */
 export const PARENT_FORWARDED_KB_ENV = ['CORAL_BOOT_FRESHNESS_TIMEOUT_MS'] as const;
 
-/**
- * Collect the env the KB daemon inherits from its parent: every inherited `CORAL_KB_*`
- * plus the explicitly allowlisted parent-owned knobs. The caller spreads daemon-identity
- * vars (`CORAL_KB_DAEMON_*`) after these, so identity always wins over any collision.
- * The CORAL_KB_ prefix discipline this relies on is enforced by
- * `tests/invariants/kb-daemon-env-prefix.test.ts`.
- */
 function collectForwardedKbDaemonEnv(env: Pick<Runtime['env'], 'get' | 'coralSnapshot'>): Record<string, string> {
   const forwarded: Record<string, string> = {};
   for (const [key, value] of Object.entries(env.coralSnapshot())) {
@@ -320,11 +287,7 @@ export function createDisabledKbDaemonSupervisor(reason = 'disabled'): KbDaemonS
     readyAt: null,
     reason,
   };
-  // A nested/child caller is the normal way this failure is reached (skills and hooks run
-  // `coral-cli kb ...` from inside a job Coral itself launched), and it cannot shut down the
-  // coordinator its own parent job is running on. Phrase the remediation so it stays true and
-  // actionable no matter which caller reads it, instead of pointing everyone at a command that
-  // is refused from a child.
+
   const remediation =
     'Ask the operator to run `coral-cli backend shutdown` from the top-level Coral session once nothing else ' +
     'is running, or wait for the automatic idle restart (CORAL_BACKEND_IDLE_MS, default ~6h). A nested/child ' +

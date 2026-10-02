@@ -88,7 +88,7 @@ function spawnBackend(pluginRoot) {
       stdio: ['ignore', 'ignore', stderr],
       env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID(), CORAL_SENTINEL_RUN_DIR: runDir },
     });
-    // A spawn failure is reported asynchronously as 'error'; unheard, it would throw past every catch here.
+
     child.on('error', () => {});
     child.unref();
   } catch {}

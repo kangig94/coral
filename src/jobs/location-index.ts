@@ -263,7 +263,6 @@ export class JobLocationIndex {
     return revision;
   }
 
-  /** Rewrites spread the stored record so a detail this build cannot decode is preserved, not dropped. */
   private readStored(jobId: string): StoredJobLocation | null {
     return optionalJson(this.runtime, this.jobPath(jobId), locationSchema);
   }

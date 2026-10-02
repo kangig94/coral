@@ -804,7 +804,6 @@ function endedStartupMessage(
         'as coordinator health.'
       );
     case 'unanswered': {
-      // The child stopped without refusing an unverified holder, so nothing here shows the holder cannot answer.
       if (recordedProcessObservation(info) === 'alive') {
         return (
           'The spawned Coral coordinator stopped, and the coordinator at this address did not answer this health ' +

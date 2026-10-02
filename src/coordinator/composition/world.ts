@@ -54,7 +54,7 @@ import { readJobLaunchOriginNamespace } from '../../jobs/succession-coverage.js'
 import { createDefaultStoreReadContext } from '../../read-model/read-context.js';
 import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
 import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
-import { resolveCurrentStoreEpoch } from '../../store/epoch.js';
+import { resolveCurrentStoreEpoch } from '../../store/epoch/index.js';
 import { bindCustodyProcessTicket, recordChildRoleCustodyIntent } from '../../infra/custody-process-ticket.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';

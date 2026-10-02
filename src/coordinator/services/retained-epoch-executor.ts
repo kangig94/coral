@@ -7,8 +7,12 @@ import { retainedBuildRoot } from '../../infra/retained-build-root.js';
 import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, observeResolvedStoreEpoch } from '../../store/epoch.js';
-import { readEpochKey } from '../../store/epoch-key.js';
+import {
+  decodeResolvedStoreEpoch,
+  encodeResolvedStoreEpoch,
+  observeResolvedStoreEpoch,
+} from '../../store/epoch/index.js';
+import { readEpochKey } from '../../store/epoch/index.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import { latestControllerOpen, type ControllerOpen } from '../succession/controller-open.js';

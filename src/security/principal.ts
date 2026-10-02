@@ -12,8 +12,6 @@ export type ResourceBinding =
   | { readonly kind: 'unbound' }
   | { readonly kind: 'project'; readonly root: CanonicalWorkDir };
 
-/** What a request asks to act on. No project owns the KB Corpus, so a `corpus` request is decided by capability
- *  alone and a principal's project binding cannot narrow it; a principal is never bound to `corpus`. */
 export type RequestedBinding = ResourceBinding | { readonly kind: 'corpus' };
 
 export type Principal = {

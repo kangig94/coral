@@ -46,7 +46,6 @@ export function createCommitReadiness(ports: SuccessionCommitPorts) {
     }
   }
 
-  /** Runs before writers park: owners classify from stores that parking closes. */
   async function recertifyObligations(attemptId: string, deadlineAt: number): Promise<void> {
     let timeout: TimerHandle | null = null;
     try {
@@ -88,7 +87,6 @@ export function createCommitReadiness(ports: SuccessionCommitPorts) {
     };
   }
 
-  /** Read-only on both sides: a failure here leaves nothing parked. */
   async function awaitAttemptReadiness(
     attempt: SuccessionAttempt,
     preparation: SuccessionPreparation,

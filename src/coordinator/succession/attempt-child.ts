@@ -43,10 +43,6 @@ type AttemptMessage =
   | { kind: 'connections-released'; attemptId: string }
   | { kind: 'ack'; attemptId: string; acknowledgment: AttemptAcknowledgment };
 
-/**
- * An aborted child returns its parked connections before it exits; the incumbent reaps it right after the abort,
- * so an unresponsive child may delay that reap by no more than this.
- */
 const CONNECTION_RELEASE_TIMEOUT_MS = 2_000;
 
 function isAttemptMessage(value: unknown): value is AttemptMessage {
@@ -629,8 +625,7 @@ function handleAttemptChildMessage(
     state.adoptResolve?.();
     return;
   }
-  // A received connection reaches `park` only through its listener: a handle returned while still reading leaves
-  // the bytes it read in this process, and its request is lost.
+
   if (message.kind === 'connection' && handle !== undefined && state.adopted.has(message.socketPath)) {
     state.adopted.get(message.socketPath)?.acceptSocket?.(handle as Socket, message.pendingFrameBase64);
   }

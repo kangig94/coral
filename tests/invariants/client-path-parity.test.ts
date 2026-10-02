@@ -10,7 +10,7 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { resolveCurrentStoreEpoch, storeEpochHookSource } from '#src/store/epoch.js';
+import { resolveCurrentStoreEpoch, storeEpochHookSource } from '#src/store/epoch/index.js';
 // @ts-expect-error -- ../../clients/hooks/lib/store-epoch.mjs
 import { resolveCurrentStoreDbPath } from '../../clients/hooks/lib/store-epoch.mjs';
 

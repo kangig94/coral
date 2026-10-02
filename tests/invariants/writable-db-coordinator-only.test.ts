@@ -22,8 +22,11 @@ const EXPLICIT_ALLOWLIST = new Set([
   // Store factory internals are the source of truth for opening backend-store DBs.
   'src/store/db.ts:openStoreDatabase',
   'src/store/db.ts:openWritableStoreDatabase',
-  'src/store/epoch.ts:openWritableStoreDatabase',
-  'src/store/epoch.ts:openStoreDatabase',
+  'src/store/epoch/mint.ts:openWritableStoreDatabase',
+  'src/store/epoch/opening.ts:openWritableStoreDatabase',
+  'src/store/epoch/published.ts:openWritableStoreDatabase',
+  'src/store/epoch/opening.ts:openStoreDatabase',
+  'src/store/epoch/published.ts:openStoreDatabase',
   // CLI install path persists the installed-expansion manifest catalog after
   // installer success using the no-reset catalog writer.
   'src/cli/expansion/install.ts:openWritableStoreDbNoReset',

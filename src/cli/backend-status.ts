@@ -23,7 +23,7 @@ import {
   type SetupErrorAuthorIdentity,
 } from '../runtime/errors.js';
 import { createRealRuntime } from '../runtime/real.js';
-import { listStoreEpochs, type StoreEpochListEntry } from '../store/epoch.js';
+import { listStoreEpochs, type StoreEpochListEntry } from '../store/epoch/index.js';
 import type { Runtime } from '../runtime/ports.js';
 import { parseJsonResponse } from '../transport/http/sse.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
@@ -786,7 +786,7 @@ function readRecentFailureDiagnostic(
     const diagnostic = statusFromStartupDiagnostic(value, now, provenSelfIdentity, earliestRecordedAt, expectedPid);
     if (diagnostic !== null) return diagnostic;
   } catch {
-    // A missing or unreadable diagnostic may still have a usable startup sentinel.
+    // An unreadable diagnostic must not suppress a usable startup sentinel.
   }
   try {
     const value: unknown = JSON.parse(

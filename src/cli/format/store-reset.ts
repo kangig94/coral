@@ -1,6 +1,6 @@
 import type { StoreResetPublicReport } from '../../store/reset-incident.js';
 import type { StoreResetReleasePresentation } from '../../store/operator-store-reset.js';
-import type { StoreEpochMetadataDisposition } from '../../store/epoch.js';
+import type { StoreEpochMetadataDisposition } from '../../store/epoch/index.js';
 import type { StoreResetListResult, StoreResetReportResult } from '../store-reset.js';
 import { assertNever } from '../../infra/error-format.js';
 import { formatPendingUpgrade, formatUpgradeRecordProblem } from './backend.js';

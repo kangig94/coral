@@ -1,9 +1,9 @@
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { writeAuditEvent } from '../infra/audit-log.js';
-import { sha256Hex } from '../infra/hash.js';
-import { readCustodyLedgerId } from './custody-ledger.js';
-import type { Runtime } from '../runtime/ports.js';
+import { writeAuditEvent } from '../../infra/audit-log.js';
+import { sha256Hex } from '../../infra/hash.js';
+import { readCustodyLedgerId } from '../custody-ledger.js';
+import type { Runtime } from '../../runtime/ports.js';
 
 const obligationSchema = z
   .object({

@@ -8,12 +8,11 @@ import {
 } from '../../infra/upgrade-intent.js';
 import { createRecordedProcessObserver } from '../../infra/node-process.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { inspectCurrentStore, listStoreEpochHolders } from '../../store/epoch.js';
-import { knownProtectedEpochAddresses } from '../../store/epoch-protection.js';
+import { inspectCurrentStore, listStoreEpochHolders } from '../../store/epoch/index.js';
+import { knownProtectedEpochAddresses } from '../../store/epoch/index.js';
 import { recoverSuccessionWriterGeneration } from '../../store/succession-writer-generation.js';
 import { controllerWriterRecoveryGenerations } from './controller-open.js';
 
-/** Startup owns no writable store yet. An exclusive guard alone only proves write turns drained. */
 export function recoverDamagedStartupWriter(runtime: Runtime): void {
   recoverSuccessionWriterGeneration(runtime, () => {
     const leases: FileLockLease[] = [];

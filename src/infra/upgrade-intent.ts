@@ -132,11 +132,6 @@ const servingReceiptSchema = z
   })
   .passthrough();
 
-/**
- * What ends the hold a failed attempt leaves. A transient failure is retried after a backoff; a decisive one waits
- * for another target, because the same target would fail the same way. A transient failure an obligation change
- * caused is no evidence about the target, so it never counts toward the target's transient bound.
- */
 const attemptRetrySchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -219,9 +214,9 @@ const upgradeIntentFields = z
     obligationRetry: obligationRetrySchema.nullable().optional().catch(undefined),
     recoveryRetry: attemptRetrySchema.nullable().optional(),
     recoveryGrantAttemptId: z.string().min(1).nullable().optional(),
-    // Losing an unreadable next target only waits for its build to contend again.
+
     nextTarget: nextTargetSchema.nullable().optional().catch(undefined),
-    // Losing an unreadable discard leaves the mint in place, where store selection already declines to read it.
+
     unservedMintDiscard: unservedMintDiscardSchema.nullable().optional().catch(undefined),
   })
   .passthrough();
@@ -676,7 +671,6 @@ function writeAtomic(path: string, value: unknown): void {
   }
 }
 
-/** Supply a complete next state before locking; the revision check serializes concurrent writers. */
 export async function compareAndSwapUpgradeIntent(
   runDir: string,
   expectedRevision: number | null,
@@ -756,10 +750,6 @@ export type UpgradeIntentCasOutcome<T> =
   | Readonly<{ kind: 'refused'; problem: UpgradeIntentProblem }>
   | Readonly<{ kind: 'exhausted' }>;
 
-/**
- * A lost revision race re-reads and decides again; a record this build cannot decode refuses rather than being
- * overwritten, and a writer that keeps losing reports exhaustion instead of spinning.
- */
 export async function retryUpgradeIntentCas<T>(
   runDir: string,
   decide: (observed: UpgradeIntentRead) => UpgradeIntentCasStep<T> | Promise<UpgradeIntentCasStep<T>>,

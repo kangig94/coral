@@ -40,8 +40,13 @@ import {
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { encodeResolvedStoreEpoch, epochDirectory, resolvedStoreEpoch, settleStoreEpoch } from '#src/store/epoch.js';
-import { protectStoreEpoch } from '#src/store/epoch-protection.js';
+import {
+  encodeResolvedStoreEpoch,
+  epochDirectory,
+  resolvedStoreEpoch,
+  settleStoreEpoch,
+} from '#src/store/epoch/index.js';
+import { protectStoreEpoch } from '#src/store/epoch/index.js';
 import { createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import * as writerGeneration from '#src/store/succession-writer-generation.js';
 import {

@@ -39,7 +39,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
-import { encodeResolvedStoreEpoch, epochDirectory, settleStoreEpoch } from '#src/store/epoch.js';
+import { encodeResolvedStoreEpoch, epochDirectory, settleStoreEpoch } from '#src/store/epoch/index.js';
 import { createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import type { RetiringCustodyCertificate } from '#src/coordinator/services/recovery/epoch-closure.js';
 import {

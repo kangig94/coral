@@ -241,7 +241,7 @@ function publishPendingStatus(runDir: string, pending: PendingStatus): void {
       try {
         unlinkSync(temporary);
       } catch {
-        /* Renamed or never created. */
+        // Diagnostic cleanup failure must not reject status publication.
       }
     }
     pending.status = next;

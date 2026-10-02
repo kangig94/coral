@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { processIncarnationSchema } from '../infra/node-process.js';
 import { tryAcquireDirectoryLock } from '../infra/fs-lock.js';
 import type { Runtime } from '../runtime/ports.js';
-import { readEpochKey } from './epoch-key.js';
+import { readEpochKey } from './epoch/key.js';
 import { observeStorePath } from './path-observation.js';
 
 const processIdentitySchema = z

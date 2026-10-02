@@ -36,11 +36,6 @@ function nonEmpty(value: string | undefined): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-/**
- * A credential this build's coordinators issued answers a per-connection challenge and never falls back to the
- * bearer protocol. The bearer handle is sent only when the environment carries nothing else, which only a
- * shipped coordinator produces, and only that coordinator can accept it.
- */
 export function childPrincipalAuthFromEnv(
   env: ChildPrincipalEnv = process.env,
   nonce: ChildPrincipalNonceFactory = defaultNonce,

@@ -146,7 +146,7 @@ function proxyOpeningMethods<Scope extends symbol>(context: ProxyMethodContext<S
         handle: (params) => {
           const request = openParamsSchema.parse(params);
           bootstrapNonce.spend(request.bootstrapNonce);
-          // Bootstrap control belongs to the host's own build: only its spawner holds the nonce.
+
           assertNamedCoordinatorBuild(request.coordinator);
           const holder = controlTenancyHolderOf(request.coordinator);
           controllers.admit(holder, controllerBuildOf(request.coordinator));

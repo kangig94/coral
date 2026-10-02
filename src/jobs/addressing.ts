@@ -177,8 +177,7 @@ export class JobAddressing {
       kind: 'answered',
       result: {
         ...active.result,
-        // A terminal job answers as not found in every epoch: a refusal would send the caller retrying an abort
-        // that has nothing left to stop.
+
         notFound: [...active.result.notFound, ...(!preEpochHistory ? unknownIds : []), ...historicalTerminal],
         ...(refused.length === 0 ? {} : { refused }),
         ...(held.length === 0 ? {} : { held }),
@@ -375,7 +374,7 @@ export class JobAddressing {
       .map((jobId) => this.location(jobId))
       .filter((location): location is JobLocation => location !== null);
     const activeEpochKey = this.active.epochKey();
-    // An id with no durable location was never accepted by any epoch, so only the active store can answer it.
+
     if (
       locations.every((location) => location.epochKey === activeEpochKey) &&
       request.supportsWaitV2 !== true &&
@@ -473,7 +472,6 @@ export class JobAddressing {
           };
           if (event.type === 'terminal') return;
         } else {
-          // A caller that did not declare v2 may decode `interrupted` strictly; a cursor key would fail it.
           yield request.supportsWaitV2 === true ? { ...event, cursor: this.snapshotCursor(cursor) } : event;
         }
       }

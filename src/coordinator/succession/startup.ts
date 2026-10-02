@@ -37,7 +37,7 @@ import {
   observeResolvedStoreEpochKey,
   type ResolvedStoreEpoch,
   type UnservedMintDiscard,
-} from '../../store/epoch.js';
+} from '../../store/epoch/index.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import {
   openCommittedBackendStoreAtStartup,
@@ -73,7 +73,6 @@ import {
 } from './protocol.js';
 import { observeRetirementDisposition, type RetirementDisposition } from './retirement-disposition.js';
 
-/** Startups a hold on an incomplete attempt may span before the attempt is abandoned for ordinary startup. */
 const SUCCESSION_STARTUP_PATIENCE = 3;
 
 /**
@@ -107,20 +106,10 @@ export type SuccessionStartupHold =
   | Readonly<{ kind: 'committed-successor-unattributable'; attemptId: string; reason: string }>
   | Readonly<{ kind: 'committed-successor-build-invalid'; attemptId: string }>
   | Readonly<{ kind: 'committed-store-holding'; attemptId: string; reason: string }>
-  /** Committed recovery failed after this startup bound; patience decides when the successor is abandoned. */
   | Readonly<{ kind: 'committed-recovery-failed'; attemptId: string; reason: string }>
   | Readonly<{ kind: 'dead-attempt-generation-unattributable'; attemptId: string; reason: string }>
-  /** A retained controller's preference names no attempt; its epoch is what the patience counts against. */
   | Readonly<{ kind: 'preferred-epoch-unopenable'; attemptId: string | null; epochKey: string; reason: string }>
-  /**
-   * A dead attempt's mint still occupies its successor address, where ordinary selection would read it as the store;
-   * the next startup retries the discard, and only a reader of that mint, which exits on its own, can hold it.
-   */
   | Readonly<{ kind: 'unserved-mint-held'; attemptId: string; reason: string }>
-  /**
-   * Retirement patience withheld the mint on both observations of one startup. Patience counts startups, so the
-   * next startup's observation proceeds; this one refuses rather than wait on a clock it cannot advance.
-   */
   | Readonly<{ kind: 'retirement-mint-withheld'; attemptId: null; reason: string }>;
 
 export function startupHoldError(hold: SuccessionStartupHold): SuccessionAttemptStartupHoldError {
@@ -217,7 +206,6 @@ function startupPatiencePath(runtime: Runtime, subject: string): string {
   );
 }
 
-/** A hold that resolved or was abandoned leaves nothing counted against the next hold on the same subject. */
 function clearStartupPatience(runtime: Runtime, subject: string): void {
   try {
     runtime.storage.rmSync(startupPatiencePath(runtime, subject), { force: true });
@@ -258,11 +246,6 @@ function startupPatienceExhausted(runtime: Runtime, subject: string): boolean {
   return read.kind === 'recorded' && read.record.startups >= SUCCESSION_STARTUP_PATIENCE;
 }
 
-/**
- * Counts the startups a hold has spanned; true once patience is exhausted. A startup repeated within one process,
- * or following another within the patience interval, counts once. A live owner is never counted: its exit is what
- * ends that hold.
- */
 async function exhaustStartupPatience(
   runtime: Runtime,
   startupId: string,
@@ -310,10 +293,6 @@ async function exhaustStartupPatience(
   return exhausted;
 }
 
-/**
- * The hold and its patience are durable status on the intent of the held attempt; abandonment also releases that
- * attempt, except a committed one, whose receipt stays for ordinary startup to act on.
- */
 async function recordStartupHold(
   runtime: Runtime,
   attemptId: string,
@@ -396,10 +375,6 @@ async function recordStartupHold(
   return 'retained';
 }
 
-/**
- * An abandoned attempt may have minted its successor epoch only under a recorded retirement disposition, and ordinary
- * selection would read that mint as the store; it is recorded for the discard every later startup retries.
- */
 function abandonedMintDiscard(runtime: Runtime, attemptId: string | null): UpgradeIntent['unservedMintDiscard'] {
   if (attemptId === null) return null;
   const retirement = observeRetirementDisposition(runtime, attemptId);
@@ -411,7 +386,6 @@ function abandonedMintDiscard(runtime: Runtime, attemptId: string | null): Upgra
     : null;
 }
 
-/** Awaits patience for a hold found after this startup bound: throws while it lasts, returns once it abandons. */
 async function holdUnlessAbandoned(runtime: Runtime, startupId: string, hold: SuccessionStartupHold): Promise<void> {
   if (!(await exhaustStartupPatience(runtime, startupId, hold))) throw startupHoldError(hold);
   backendLog.warn(`Abandoned a succession hold for ordinary store selection: ${describeStartupHold(hold)}`);
@@ -427,7 +401,6 @@ export type DeadAttemptRecovery = Readonly<{
 export type IncompleteSuccessionResolution =
   | Readonly<{ kind: 'none' }>
   | Readonly<{ kind: 'recover'; attempt: DeadAttemptRecovery; preferredEpochKey: string | null }>
-  /** A dead attempt that released or transferred nothing; ordinary startup serves and then discharges it. */
   | Readonly<{ kind: 'retire'; attemptId: string }>
   | Readonly<{ kind: 'handoff'; target: ValidatedHandoffTarget }>
   | Readonly<{ kind: 'hold'; hold: SuccessionStartupHold }>;
@@ -478,11 +451,6 @@ function recoveryGrantsVerify(
   );
 }
 
-/**
- * With no incumbent serving, an incomplete attempt takes precedence over ordinary store selection. Every hold
- * here is bounded: a startup that cannot resolve the attempt holds, and once patience is exhausted the attempt
- * is abandoned so ordinary startup reaches service.
- */
 function unprovenSuccessionDeaths(
   attemptId: string,
   processes: readonly Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>[],
@@ -517,7 +485,6 @@ async function resolveUnservedSuccessionAttempt(
       child !== undefined &&
       ((preparation.success && preparation.data.receipts.length > 0) || retirement.kind === 'unreadable'));
   if ((intent.disposition === 'pending' || intent.disposition === 'deferred') && !transferEvidence) {
-    // With no durable transfer evidence, retiring the dead attempt releases its prepared grants.
     const unproven = unprovenSuccessionDeaths(
       attemptId,
       child !== undefined && child !== null && child.attemptId === attemptId ? [owner, child] : [owner],
@@ -575,11 +542,11 @@ async function resolveUnservedSuccessionAttempt(
     : { kind: 'recover', attempt: recovery, preferredEpochKey };
 }
 
-export async function resolveIncompleteSuccessionAtStartup(
+async function resolveUnreadableStartupIntent(
   options: IncompleteSuccessionOptions,
+  observed: ReturnType<typeof readUpgradeIntent>,
 ): Promise<IncompleteSuccessionResolution> {
   const { runtime } = options;
-  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
   if (observed.kind === 'corrupt') {
     if ((await quarantineCorruptUpgradeIntent(runtime.paths.coral.coordinator.runDir)) === 'quarantined')
       return { kind: 'none' };
@@ -607,39 +574,33 @@ export async function resolveIncompleteSuccessionAtStartup(
         : { kind: 'unreadable-intent', attemptId: null, source: observed.kind, fingerprint };
     return (await exhaustStartupPatience(runtime, options.startupId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
   }
-  if (observed.kind !== 'readable') return { kind: 'none' };
-  const archived = observed.intent.supersededAttempts;
-  const prior = Array.isArray(archived) && archived.length > 0 ? parseUpgradeIntentSnapshot(archived[0]) : null;
-  if (Array.isArray(archived) && archived.length > 0 && prior === null) {
-    const hold = {
-      kind: 'unreadable-intent',
-      attemptId: null,
-      source: 'corrupt',
-      fingerprint: startupIntentFingerprint(runtime),
-    } as const;
-    return (await exhaustStartupPatience(runtime, options.startupId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
+  return { kind: 'none' };
+}
+
+async function retireArchivedStartupAttempt(
+  options: IncompleteSuccessionOptions,
+  incumbent: UpgradeIntent['incumbent'],
+  attemptId: string | null,
+): Promise<IncompleteSuccessionResolution> {
+  const { runtime } = options;
+  await dischargeDeadSuccessionAttempt(runtime, attemptId, incumbent);
+  const next = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  if (
+    next.kind === 'readable' &&
+    Array.isArray(next.intent.supersededAttempts) &&
+    parseUpgradeIntentSnapshot(next.intent.supersededAttempts[0])?.attemptId === attemptId
+  ) {
+    return { kind: 'hold', hold: { kind: 'archive-retirement-unconfirmed', attemptId } };
   }
-  const intent = prior ?? observed.intent;
-  const holdOrAbandon = async (hold: SuccessionStartupHold): Promise<IncompleteSuccessionResolution> => {
-    if (!(await exhaustStartupPatience(runtime, options.startupId, hold))) return { kind: 'hold', hold };
-    backendLog.warn(`Abandoned an incomplete succession attempt for ordinary startup: ${describeStartupHold(hold)}`);
-    return { kind: 'none' };
-  };
-  const retireArchived = async (attemptId: string | null): Promise<IncompleteSuccessionResolution> => {
-    await dischargeDeadSuccessionAttempt(runtime, attemptId, observed.intent.incumbent);
-    const next = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-    if (
-      next.kind === 'readable' &&
-      Array.isArray(next.intent.supersededAttempts) &&
-      parseUpgradeIntentSnapshot(next.intent.supersededAttempts[0])?.attemptId === attemptId
-    ) {
-      return { kind: 'hold', hold: { kind: 'archive-retirement-unconfirmed', attemptId } };
-    }
-    return resolveIncompleteSuccessionAtStartup(options);
-  };
-  if (prior !== null && (prior.disposition === 'completed' || prior.disposition === 'closed')) {
-    return retireArchived(prior.attemptId);
-  }
+  return resolveIncompleteSuccessionAtStartup(options);
+}
+
+async function resolveRecoveryStartupAttempt(
+  options: IncompleteSuccessionOptions,
+  intent: UpgradeIntent,
+  holdOrAbandon: (hold: SuccessionStartupHold) => Promise<IncompleteSuccessionResolution>,
+): Promise<IncompleteSuccessionResolution | null> {
+  const { runtime } = options;
   const recoveryAttemptId = intent.recoveryAttemptId;
   if (
     typeof recoveryAttemptId === 'string' &&
@@ -681,14 +642,42 @@ export async function resolveIncompleteSuccessionAtStartup(
       preferredEpochKey: preparation.data.epochKey,
     };
   }
+  return null;
+}
 
+export async function resolveIncompleteSuccessionAtStartup(
+  options: IncompleteSuccessionOptions,
+): Promise<IncompleteSuccessionResolution> {
+  const { runtime } = options;
+  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  if (observed.kind !== 'readable') return resolveUnreadableStartupIntent(options, observed);
+  const archived = observed.intent.supersededAttempts;
+  const prior = Array.isArray(archived) && archived.length > 0 ? parseUpgradeIntentSnapshot(archived[0]) : null;
+  if (Array.isArray(archived) && archived.length > 0 && prior === null) {
+    const hold = {
+      kind: 'unreadable-intent',
+      attemptId: null,
+      source: 'corrupt',
+      fingerprint: startupIntentFingerprint(runtime),
+    } as const;
+    return (await exhaustStartupPatience(runtime, options.startupId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
+  }
+  const intent = prior ?? observed.intent;
+  const holdOrAbandon = async (hold: SuccessionStartupHold): Promise<IncompleteSuccessionResolution> => {
+    if (!(await exhaustStartupPatience(runtime, options.startupId, hold))) return { kind: 'hold', hold };
+    backendLog.warn(`Abandoned an incomplete succession attempt for ordinary startup: ${describeStartupHold(hold)}`);
+    return { kind: 'none' };
+  };
+  const retireArchived = (attemptId: string | null): Promise<IncompleteSuccessionResolution> =>
+    retireArchivedStartupAttempt(options, observed.intent.incumbent, attemptId);
+  if (prior !== null && (prior.disposition === 'completed' || prior.disposition === 'closed')) {
+    return retireArchived(prior.attemptId);
+  }
+  const recovery = await resolveRecoveryStartupAttempt(options, intent, holdOrAbandon);
+  if (recovery !== null) return recovery;
   return resolveUnservedSuccessionAttempt(options, intent, prior, holdOrAbandon, retireArchived);
 }
 
-/**
- * Returns a dead attempt's unserved writer generation to its epoch. A generation the attempt cannot account for
- * holds under startup patience; `abandoned` leaves it, and the attempt, to ordinary store selection.
- */
 export async function handBackDeadAttemptGeneration(
   runtime: Runtime,
   startupId: string,
@@ -717,10 +706,6 @@ export async function handBackDeadAttemptGeneration(
   return 'settled';
 }
 
-/**
- * Opens the epoch a dead attempt or a retained controller prefers. An epoch that will not open holds under startup
- * patience; null means the preference was abandoned for ordinary store selection.
- */
 export async function openPreferredStoreEpoch(
   context: SuccessionStoreContext,
   startupId: string,
@@ -750,11 +735,6 @@ export async function openPreferredStoreEpoch(
   return null;
 }
 
-/**
- * A startup serving past a dead attempt has consumed or retired it. The attempt is cleared and this process recorded
- * as incumbent, so no later startup acts on its grants again and this process's reconciler owns the target; the
- * target keeps the hold its failed attempt left.
- */
 export async function dischargeDeadSuccessionAttempt(
   runtime: Runtime,
   attemptId: string | null,
@@ -822,11 +802,6 @@ export async function dischargeDeadSuccessionAttempt(
   }
 }
 
-/**
- * Retries a discard an earlier incumbent could not finish. Only a startup that bound with no coordinator answering
- * may call it, so no serving process still reads the mint; a discard still held stays recorded for the reconciler
- * of whichever process serves.
- */
 export async function retryRecordedMintDiscard(runtime: Runtime): Promise<UnservedMintDiscard | null> {
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
   const pending = observed.kind === 'readable' ? (observed.intent.unservedMintDiscard ?? null) : null;
@@ -852,10 +827,6 @@ export async function retryRecordedMintDiscard(runtime: Runtime): Promise<Unserv
   return discarded;
 }
 
-/**
- * A recorded mint whose discard is still held and which ordinary selection would read as the current store holds the
- * startup: served, it would stand in for the history its retiring epoch keeps. Its reader exits on its own.
- */
 export function heldUnservedMint(runtime: Runtime): SuccessionStartupHold | null {
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
   const pending = observed.kind === 'readable' ? (observed.intent.unservedMintDiscard ?? null) : null;
@@ -1120,8 +1091,7 @@ export async function prepareCommittedSuccessorRecovery(
   const intent = observed.intent;
   const receipt = intent.completionReceipt;
   if (receipt === null || startupPatienceExhausted(runtime, receipt.attemptId)) return { kind: 'none' };
-  // A completed intent keeps its receipt: exhausted patience leaves the committed successor's work to ordinary
-  // startup instead of holding every boot on evidence nothing can settle.
+
   const holdOrAbandon = async (hold: SuccessionStartupHold): Promise<CommittedSuccessorRecovery> =>
     (await exhaustStartupPatience(runtime, identity.instanceId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
   const current = inspectCurrentStore(runtime);
@@ -1169,7 +1139,7 @@ export async function prepareCommittedSuccessorRecovery(
     intent.target.build.bundleHash === currentBuild.bundleHash;
   if (!runsTargetBuild && !committedSuccessorMayControlWork(runtime, receipt.epochKey, epochHasLiveJobs))
     return { kind: 'none' };
-  // A committed successor controls live work, so its own retained root stands in for an uninstalled one.
+
   const installed = revalidateUpgradeIntentTarget(intent);
   const targetRoot =
     installed.kind === 'validated'
@@ -1203,10 +1173,6 @@ export async function prepareCommittedSuccessorRecovery(
   return { kind: 'recover', store: prepared.store, intent };
 }
 
-/**
- * A committed recovery that fails after this startup bound holds under startup patience. Once patience is exhausted
- * the committed successor is abandoned, and the next startup selects its store ordinarily.
- */
 export async function holdFailedCommittedRecovery(
   runtime: Runtime,
   startupId: string,
@@ -1221,11 +1187,6 @@ export async function holdFailedCommittedRecovery(
   return 'abandoned';
 }
 
-/**
- * A committed successor that exits with every shutdown obligation discharged leaves no work for committed recovery,
- * so its intent closes under its own identity. Left completed, every later startup of its build would recover it
- * and re-verify receipts whose evidence that successor's own cleanup has since retired.
- */
 export async function closeServedIntentAtCleanExit(
   runtime: Runtime,
   instanceId: string,

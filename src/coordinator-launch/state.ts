@@ -170,7 +170,6 @@ function fromAdmission(admission: LaunchAdmission): LaunchReservation {
   };
 }
 
-/** The lock holder's local knowledge of children; no state in this object is persisted. */
 export class SupervisorLaunchMemory {
   #state: SupervisorState;
   readonly #runDir: string;
@@ -448,7 +447,20 @@ export class SupervisorLaunchMemory {
     const preparationFailures = removeAbandonedLaunchPreparations(this.#runDir);
     const intent = readUpgradeIntent(this.#runDir);
     const recovered = new SupervisorLaunchMemory(this.#runDir, this.#state.owner.process, this.#state.owner.buildSetId);
-    const observed = recovered.#subjects;
+    this.#mergeAdmissionSubjects(recovered.#subjects);
+    for (const entry of recovered.children()) this.#reconcileAdmissionReservation(entry, intent);
+    const holds: NonNullable<LaunchStatus['admissionHolds']> = preparationFailures.map((path) => ({
+      path,
+      disposition: 'cleanup-pending',
+    }));
+    this.#reconcileReservationLiveness(holds);
+    this.#holdUnprovenAdmissions(intent, holds);
+    this.#settleAdmissionSubjects(holds);
+    this.#status((status) => ({ ...status, admissionHolds: holds }));
+    this.#normalizeOwner();
+  }
+
+  #mergeAdmissionSubjects(observed: readonly LaunchSubject[]): void {
     const subjects = new Map(this.#subjects.map((subject) => [subject.path, subject]));
     for (const subject of observed) {
       if (
@@ -483,79 +495,87 @@ export class SupervisorLaunchMemory {
             (entry.lifetimeDirectory?.startsWith(`${subject.path}/`) ?? false),
         ),
     );
-    for (const entry of recovered.children()) {
-      const exact = this.children().find((slot) => refinableReservation(slot, entry));
-      const placeholder = this.children().find((slot) => {
-        if (!/^(incumbent|attempt|discovery):/u.test(slot.id) || entry.child === undefined) return false;
-        if (slot.child !== undefined)
-          return slot.child.pid === entry.child.pid && slot.child.incarnation === entry.child.incarnation;
-        if (slot.unidentifiedPid !== entry.child.pid) return false;
-        if (slot.id.startsWith('discovery:')) {
-          const discovery = readDiscoveryRecordDisposition(
-            createRealRuntime(this.#runDir.endsWith('run-dev') ? 'dev' : 'prod', {
-              baseDir: dirname(dirname(this.#runDir)),
-            }),
-            join(this.#runDir, 'coordinator.json'),
-          );
-          return (
-            discovery.kind === 'record' &&
-            slot.id === `discovery:${discovery.record.bootToken}` &&
-            discovery.record.supervision?.launchId === entry.id &&
-            discovery.record.pid === entry.child.pid &&
-            discovery.record.incarnation === entry.child.incarnation
-          );
-        }
-        if (intent.kind !== 'readable') return false;
-        const identity =
-          slot.id === `attempt:${intent.intent.attemptChild?.attemptId}`
-            ? intent.intent.attemptChild
-            : slot.id.startsWith(`incumbent:${intent.intent.incumbent.instanceId}:`)
-              ? intent.intent.incumbent
-              : null;
-        return identity?.pid === entry.child.pid && identity.incarnation === entry.child.incarnation;
-      });
-      const known = exact ?? placeholder;
-      if (known !== undefined) {
-        if (known.phase === 'exited') continue;
-        const evidence =
-          known === placeholder && known.id !== entry.id
-            ? {
-                ...known,
-                id: entry.id,
-                buildSetId: entry.buildSetId,
-                purpose: entry.purpose,
-                child: entry.child,
-                unidentifiedPid: undefined,
-                recoveryHold: undefined,
-              }
-            : known;
-        this.#set(known, mergeReservationEvidence(evidence, entry));
-        if (known.id !== entry.id) {
-          const watch = this.#childWatches.get(known.id);
-          const retirement = this.#childRetirements.get(known.id);
-          const inherited = this.inheritedWatch.get(known.id);
-          if (watch !== undefined) this.#childWatches.set(entry.id, watch);
-          if (retirement !== undefined) this.#childRetirements.set(entry.id, retirement);
-          if (inherited !== undefined) this.inheritedWatch.set(entry.id, inherited);
-          this.#childWatches.delete(known.id);
-          this.#childRetirements.delete(known.id);
-          this.inheritedWatch.delete(known.id);
-        }
-      } else if (
-        !/^(incumbent|attempt|discovery):/u.test(entry.id) ||
-        !this.children().some(
-          (slot) => slot.child?.pid === entry.child?.pid && slot.child?.incarnation === entry.child?.incarnation,
-        )
-      ) {
-        if (this.#state.launch === null) this.#state = { ...this.#state, launch: entry };
-        else if (this.#state.attempt === null) this.#state = { ...this.#state, attempt: entry };
-        else this.#retained.push(entry);
-      }
+  }
+
+  #matchesAdmissionPlaceholder(
+    slot: LaunchReservation,
+    entry: LaunchReservation,
+    intent: ReturnType<typeof readUpgradeIntent>,
+  ): boolean {
+    if (!/^(incumbent|attempt|discovery):/u.test(slot.id) || entry.child === undefined) return false;
+    if (slot.child !== undefined)
+      return slot.child.pid === entry.child.pid && slot.child.incarnation === entry.child.incarnation;
+    if (slot.unidentifiedPid !== entry.child.pid) return false;
+    if (slot.id.startsWith('discovery:')) {
+      const discovery = readDiscoveryRecordDisposition(
+        createRealRuntime(this.#runDir.endsWith('run-dev') ? 'dev' : 'prod', {
+          baseDir: dirname(dirname(this.#runDir)),
+        }),
+        join(this.#runDir, 'coordinator.json'),
+      );
+      return (
+        discovery.kind === 'record' &&
+        slot.id === `discovery:${discovery.record.bootToken}` &&
+        discovery.record.supervision?.launchId === entry.id &&
+        discovery.record.pid === entry.child.pid &&
+        discovery.record.incarnation === entry.child.incarnation
+      );
     }
-    const holds: NonNullable<LaunchStatus['admissionHolds']> = preparationFailures.map((path) => ({
-      path,
-      disposition: 'cleanup-pending',
-    }));
+    if (intent.kind !== 'readable') return false;
+    const identity =
+      slot.id === `attempt:${intent.intent.attemptChild?.attemptId}`
+        ? intent.intent.attemptChild
+        : slot.id.startsWith(`incumbent:${intent.intent.incumbent.instanceId}:`)
+          ? intent.intent.incumbent
+          : null;
+    return identity?.pid === entry.child.pid && identity.incarnation === entry.child.incarnation;
+  }
+
+  #transferChildWatches(previousId: string, currentId: string): void {
+    const watch = this.#childWatches.get(previousId);
+    const retirement = this.#childRetirements.get(previousId);
+    const inherited = this.inheritedWatch.get(previousId);
+    if (watch !== undefined) this.#childWatches.set(currentId, watch);
+    if (retirement !== undefined) this.#childRetirements.set(currentId, retirement);
+    if (inherited !== undefined) this.inheritedWatch.set(currentId, inherited);
+    this.#childWatches.delete(previousId);
+    this.#childRetirements.delete(previousId);
+    this.inheritedWatch.delete(previousId);
+  }
+
+  #reconcileAdmissionReservation(entry: LaunchReservation, intent: ReturnType<typeof readUpgradeIntent>): void {
+    const exact = this.children().find((slot) => refinableReservation(slot, entry));
+    const placeholder = this.children().find((slot) => this.#matchesAdmissionPlaceholder(slot, entry, intent));
+    const known = exact ?? placeholder;
+    if (known !== undefined) {
+      if (known.phase === 'exited') return;
+      const evidence =
+        known === placeholder && known.id !== entry.id
+          ? {
+              ...known,
+              id: entry.id,
+              buildSetId: entry.buildSetId,
+              purpose: entry.purpose,
+              child: entry.child,
+              unidentifiedPid: undefined,
+              recoveryHold: undefined,
+            }
+          : known;
+      this.#set(known, mergeReservationEvidence(evidence, entry));
+      if (known.id !== entry.id) this.#transferChildWatches(known.id, entry.id);
+    } else if (
+      !/^(incumbent|attempt|discovery):/u.test(entry.id) ||
+      !this.children().some(
+        (slot) => slot.child?.pid === entry.child?.pid && slot.child?.incarnation === entry.child?.incarnation,
+      )
+    ) {
+      if (this.#state.launch === null) this.#state = { ...this.#state, launch: entry };
+      else if (this.#state.attempt === null) this.#state = { ...this.#state, attempt: entry };
+      else this.#retained.push(entry);
+    }
+  }
+
+  #reconcileReservationLiveness(holds: NonNullable<LaunchStatus['admissionHolds']>): void {
     for (const slot of this.children()) {
       if (slot.phase === 'exited' || (slot.child === undefined && slot.unidentifiedPid === undefined)) continue;
       const disposition = reservationDisposition(slot);
@@ -571,6 +591,12 @@ export class SupervisorLaunchMemory {
         if (!holds.some((hold) => hold.path === path)) holds.push({ path, disposition: 'unknown' });
       }
     }
+  }
+
+  #holdUnprovenAdmissions(
+    intent: ReturnType<typeof readUpgradeIntent>,
+    holds: NonNullable<LaunchStatus['admissionHolds']>,
+  ): void {
     if (intent.kind !== 'readable' && intent.kind !== 'absent') {
       this.#recovering();
       holds.push({ path: join(this.#runDir, 'upgrade.v1.json'), disposition: 'unknown' });
@@ -586,6 +612,9 @@ export class SupervisorLaunchMemory {
       )
     )
       holds.push({ path: join(this.#runDir, 'upgrade.v1.json'), disposition: 'unknown' });
+  }
+
+  #settleAdmissionSubjects(holds: NonNullable<LaunchStatus['admissionHolds']>): void {
     for (const subject of this.#subjects) {
       repairDamagedLaunchSubject(subject);
       const disposition = this.#settledSubjects.has(subject.path) ? 'absent' : observeLaunchSubject(subject);
@@ -613,8 +642,6 @@ export class SupervisorLaunchMemory {
         else holds[index] = hold;
       }
     }
-    this.#status((status) => ({ ...status, admissionHolds: holds }));
-    this.#normalizeOwner();
   }
 
   get runDir(): string {

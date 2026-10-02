@@ -41,7 +41,7 @@ export type ProviderProxySetAcquisitionIdentity = Readonly<{
  *  configured to attempt acquisition at all. */
 export type ProviderProxySetAcquisitionConfig = Readonly<{
   pluginRoot: string;
-  /** Resolve the pin at each acquisition: an earlier failure may recover, and a root may stop validating. */
+
   retainedHostRoot?: () => string | null;
   identity: ProviderProxySetAcquisitionIdentity;
   /** Supplies the live provider roots used for stop-and-reap agreement. */

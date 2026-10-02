@@ -11,7 +11,7 @@ import { observeProcessLiveness } from '#src/infra/node-process.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type AttemptRetry } from '#src/infra/upgrade-intent.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { encodeResolvedStoreEpoch, inspectCurrentStore } from '#src/store/epoch.js';
+import { encodeResolvedStoreEpoch, inspectCurrentStore } from '#src/store/epoch/index.js';
 import {
   assertBuildArtifactsAvailable,
   coordinatorFilesForHome,

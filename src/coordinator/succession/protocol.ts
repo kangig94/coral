@@ -32,7 +32,7 @@ export const successionRequestSchema = z
       })
       .passthrough(),
   })
-  // A field added to this wire request needs a new protocol address; v1 means exactly these fields.
+
   .strict();
 
 export const successionPrepareSchema = z.object({ requestId: z.string().min(1) }).strict();
@@ -85,7 +85,6 @@ export const successionPreparationSchema = z
 
 export type SuccessionPreparation = z.infer<typeof successionPreparationSchema>;
 
-/** The identity a preparation, and every retry accounted against it, is bound to. */
 export function successionTargetKey(target: UpgradeIntent['target']): string {
   const { build } = target;
   return JSON.stringify([

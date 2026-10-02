@@ -33,7 +33,7 @@ import {
   settleStoreEpoch,
   type ResolvedStoreEpoch,
   type StoreEpochOptions,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
 import * as handoffRouting from '#src/coordinator/handoff-routing/runner.js';

@@ -52,11 +52,11 @@ import {
   observeEpochClosure,
   recordEpochClosure,
   recordEpochCustodyCoverage,
-} from '#src/store/epoch-closure.js';
+} from '#src/store/epoch/index.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import { compareAndSwapUpgradeIntent } from '#src/infra/upgrade-intent.js';
-import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
+import { readOrCreateEpochKey } from '#src/store/epoch/index.js';
 import {
   knownProtectedEpochAddresses,
   protectStoreEpoch,
@@ -64,7 +64,7 @@ import {
   reconcileProtectedEpochs,
   resolveProtectedEpoch,
   restoreProtectedEpoch,
-} from '#src/store/epoch-protection.js';
+} from '#src/store/epoch/index.js';
 import {
   decodeResolvedStoreEpoch,
   discardCurrentStoreEpoch,
@@ -78,7 +78,7 @@ import {
   settleStoreEpoch,
   storeEpochLockPath,
   sweepStoreEpochsPostReady,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';

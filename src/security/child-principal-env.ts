@@ -1,5 +1,5 @@
 export const CORAL_CHILD_MARKER = 'CORAL_CHILD';
-/** Issued only by shipped coordinators, whose children authenticate with the replayable bearer protocol. */
+
 export const CORAL_CHILD_PRINCIPAL_HANDLE = 'CORAL_CHILD_PRINCIPAL_HANDLE';
 export const CORAL_CHILD_CREDENTIAL_ID = 'CORAL_CHILD_CREDENTIAL_ID';
 export const CORAL_CHILD_CREDENTIAL_KEY = 'CORAL_CHILD_CREDENTIAL_KEY';

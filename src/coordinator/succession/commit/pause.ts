@@ -9,7 +9,6 @@ export function createCommitPause(ports: SuccessionCommitPorts, state: CommitSta
     state.pausedAttemptId = null;
     const pause = ports.launchCoordinator.beginSuccessionCommitWindow(attemptId, admissionRevision);
     if (pause.kind !== 'paused') {
-      // Every paused interval leaves the rolling window once a full window has passed.
       throw new TransientCommitFailure(
         `Succession admission pause was ${pause.reason}.`,
         pause.reason === 'aggregate-budget-exhausted' ? SUCCESSION_PAUSE_ROLLING_WINDOW_MS : TRANSIENT_RETRY_BASE_MS,

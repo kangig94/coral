@@ -22,11 +22,11 @@ const refusalCode = 'handoff_signal_cooldown_active';
 await requestIncumbentShutdown(incumbent);
 // @end
 
-// @mutation store-live-work-enumeration src/store/epoch.ts
+// @mutation store-live-work-enumeration src/store/epoch/observation.ts
 function inspectStoreDirectoryLiveWork() { return 'retained-work'; }
 // @end
 
-// @mutation inspection-computed-store-role src/store/epoch.ts
+// @mutation inspection-computed-store-role src/store/epoch/observation.ts
 type StoreEpochListEntry = {
   role:
     | 'current'

@@ -2,11 +2,6 @@ import { z } from 'zod';
 
 import type { Database } from '../store/db.js';
 
-/**
- * A child's authorization and the public half of its key, kept in the `store.db` that holds its job. Written before
- * the child is launched, so every coordinator that opens that store can verify the child without anything being
- * handed over.
- */
 export type ChildPrincipalCredentialRecord = Readonly<{
   credentialId: string;
   issuer: string;
@@ -30,7 +25,6 @@ export type ChildPrincipalCredentialStore = Readonly<{
   deleteWhere(matches: (record: ChildPrincipalCredentialRecord) => boolean): void;
 }>;
 
-/** An address no shipped build reads, and one this build's readers tolerate additively. */
 const KEY_PREFIX = 'child_principal_credential.v1:';
 const KEY_PREFIX_END = 'child_principal_credential.v1;';
 

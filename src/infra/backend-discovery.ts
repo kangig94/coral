@@ -246,11 +246,6 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
   return probeDiscoveryRead(readDiscoveryRecordDisposition(runtime));
 }
 
-/**
- * The legacy record is evidence only about the address it names. A v0.10.0-v0.10.3 coordinator publishes nothing
- * else, but read for any other question a stale one names a pid nobody still holds: it would skip startup recovery
- * and tell a serving coordinator it had been replaced.
- */
 export function probeCoordinatorAtAddress(runtime: DiscoveryRuntime, socketPath: string): CoordinatorProbe {
   const primary = readDiscoveryRecordDisposition(runtime);
   if (primary.kind === 'record' && primary.record.socketPath === socketPath) return probeDiscoveryRead(primary);
@@ -287,7 +282,7 @@ function probeDiscoveryRead(read: DiscoveryRead): CoordinatorProbe {
 
 export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryWriterRuntime): boolean {
   if (!writeDiscoveryRecord(info, runtime)) return false;
-  // Shipped v0.10.0-v0.10.3 readers of this record never send the shutdown token.
+
   const { shutdownToken: _shutdownToken, ...legacyInfo } = info;
   const legacySocketPath = v0100CoordinatorSocketPathForRunDir(
     runtime.paths.coral.coordinator.legacyRunDir,

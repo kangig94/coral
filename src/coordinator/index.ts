@@ -57,7 +57,7 @@ import { JobStore } from '../jobs/store.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
 import { recoverJobLocations } from '../jobs/location-recovery.js';
 import { deriveLaunchReadiness } from '../jobs/launch-readiness.js';
-import { encodeResolvedStoreEpoch, inspectCurrentStore, type ResolvedStoreEpoch } from '../store/epoch.js';
+import { encodeResolvedStoreEpoch, inspectCurrentStore, type ResolvedStoreEpoch } from '../store/epoch/index.js';
 import { observeSuccessionWriterGeneration } from '../store/succession-writer-generation.js';
 import { createJobsStartupRunner } from '../jobs/startup.js';
 import { TypedEventBus } from './event-bus.js';
@@ -345,9 +345,6 @@ function createJournalCommitObserver(
   jobLocations: JobLocationIndex,
   observeLifecycleCommitted: PostCommitObserver,
 ): PostCommitObserver {
-  // Every commit path that can record a job terminal ends here, so the export is owed by the commit
-  // rather than by the committing site. The render runs before the reactor so a reactor failure cannot
-  // withhold it.
   return (appended) => {
     exportTerminalResults(appended);
     for (const event of appended) {
@@ -571,10 +568,6 @@ function prepareCoordinatorServerRuntime(
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);
 
-  // KB boot gate: CORAL_KB_ENABLE=0 wires a terminal offline KB daemon health component so
-  // the daemon boots without the KB runtime, curate scheduler, or corpus
-  // projection. Only the explicit '0' disables; a malformed value warns once
-  // and leaves KB enabled.
   const rawKbEnabled = runtime.env.get(CORAL_KB_ENABLE_ENV);
   if (rawKbEnabled !== undefined && !['0', '1'].includes(rawKbEnabled)) {
     backendLog.warn(`${CORAL_KB_ENABLE_ENV}="${rawKbEnabled}" is not 1 or 0; leaving KB enabled.`);
@@ -593,17 +586,13 @@ function prepareCoordinatorServerRegistries(
   registerBuiltInProvidersFn: CoordinatorServerOptions['registerBuiltInProvidersFn'],
 ) {
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-  // This coordinator generation's live app-server operations (W2.3) — constructed here, unconditionally, so
-  // both `createCoordinatorJournalAssembly` and `world.ts` (via `CoordinatorCoreOptions.operationRegistry`)
-  // share the exact same instance rather than each defaulting to a registry of its own.
+
   const operationRegistry = new LocalOperationRegistry();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
   (registerBuiltInProvidersFn ?? registerBuiltInProviders)(providerRegistry);
   const storeFormat = sealCoralStoreFormat(providerRegistry);
   const eventBus = options.eventBus ?? new TypedEventBus();
-  // Spec §7.1: every Journal event type can be a causeRef target. Verify
-  // describer coverage at boot so missing describers fail loudly instead of
-  // rendering causeRef chains as bare type names.
+
   assertDescriberCoverage(reducers.describerKeys);
   const bodyCodec = createEventBodyCodec();
   const readCtx = { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec };
@@ -625,7 +614,6 @@ function createCoordinatorLifecycleReactorDisposal(
   };
 }
 
-// Built fresh on every call after a proxy set has established control and the store is open.
 function createCoordinatorProviderEventHandler({
   runtime,
   getStoreDb,
@@ -667,10 +655,7 @@ function createCoordinatorProviderEventHandler({
       exportTerminalResults(appended);
       getStoreServices().progressStore.announceCommitted(appended);
     },
-    // The registry is the one party that knows which cause `activateCommittedProviderLaunch`'s abort action
-    // (`jobs/shell/launch.ts`) most recently sent as `operation.stop.v1` for this operation — see
-    // `LocalOperationRegistry.stop()`. `null` for an operation that was never stopped through it stays a
-    // protocol violation: nothing else in this process may cause a `suspended` event.
+
     recordedStopCauseFor: (identity) => operationRegistry.recordedStopCauseFor(identity),
     operations: {
       settled: (identity) => {

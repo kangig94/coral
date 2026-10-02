@@ -548,10 +548,7 @@ function createSemanticOperationEventPump(
         if (entry.cancellationMode === 'shared-acknowledged-interrupt' && currentTurnTerminalEvidence(entry) === null) {
           entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: errorMessage(error) };
         }
-        // A `stop()` was already in flight when the kernel unwound — trust why we asked it to stop rather
-        // than the shape of what it threw. Interruption causes (restart/handoff) emit nothing: the coordinator
-        // synthesizes `session.interrupted` itself from `operation.stop.v1`'s own `suspended-awaiting-durable-
-        // decision` reply, not from a provider event this proxy would have to invent.
+
         if (cause === 'coordinator_rekey_refused') {
           emitRekeyRefusalTerminal(entry, provider, errorMessage(error));
         } else if (isAbortStopCause(cause)) {
@@ -559,9 +556,7 @@ function createSemanticOperationEventPump(
         }
         return;
       }
-      // Nobody asked this operation to stop; the kernel unwound on its own. A terminal must still reach the
-      // coordinator — synthesize one rather than leaving the ledger entry executing forever with nothing to
-      // end it.
+
       synthesizeAndEmitFailure(key, provider, error);
     } finally {
       if (!entry.startCommitted) {
@@ -685,7 +680,7 @@ function createSemanticOperationCancellation(
         else {
           entry.settlementRefusals += 1;
           const reason = 'the inferred turn has no authoritative cessation evidence';
-          // The supervisor paces release retries; exhaustion enters the existing sibling-safe containment successor.
+
           if (entry.settlementRefusals >= TURN_SETTLEMENT_OBSERVATION_ATTEMPTS)
             throw requireSetRelinquishment(entry, reason);
           throw new SemanticOperationCancellationUnconfirmedError(entry.key, reason);
@@ -1116,7 +1111,6 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       });
     }
     if (relinquishmentSiblings.size > 0) {
-      // Quarantine retains ownership without stopping siblings; their settlement or cancellation ends it.
       relinquishmentTimer = runtime.time.setTimeout(() => {
         relinquishmentTimer = null;
         relinquishmentState = 'quarantined';

@@ -76,10 +76,6 @@ const CHILD_CREDENTIAL_UNREADABLE_RESPONSE = {
     "This nested Coral command's credential cannot be verified because its authorization record is unreadable, so it was refused. Other jobs are unaffected. Retry the parent workflow instead of editing CORAL_* environment variables.",
 };
 
-/**
- * A challenge lives only in the memory of the connection it was issued on, and is taken from there before the
- * request after it is dispatched, so it authenticates at most one request.
- */
 type IpcConnectionChallenge = Readonly<{
   taken: ChildAuthChallenge | null;
   issued: boolean;
@@ -298,7 +294,6 @@ function armShutdownRecoveryContinuation(socket: Socket, continuation: () => voi
   return complete;
 }
 
-/** The bearer `child` protocol is refused outright: this build never issues a credential it could verify. */
 function authenticateIpcRequest(
   request: JsonRpcRequestEnvelope,
   challenge: ChildAuthChallenge | null,
@@ -740,8 +735,6 @@ async function streamSubscription(
     while (true) {
       const next = await Promise.race([iterator.next(), handedOver]);
       if (next === 'handover') {
-        // Every shipped CLI retries this refusal and resubscribes with the cursor it holds, which the successor
-        // now answers; a plain close would read to it as a stream that ended without its terminal.
         await writeEnvelope(
           socket,
           requestErrorResponse(request.id, lifecycleRefusalResult.message, lifecycleRefusalResult),
@@ -1057,7 +1050,7 @@ async function dispatchFrame(
       return;
     }
     const challenge = issuer.issueChallenge();
-    // Armed before the answer is written: the proof frame can arrive as soon as the client reads it.
+
     connection.awaitProof(challenge);
     const answer = { kind: 'response', id: request.id, result: challenge } as const;
     if (!(await writeEnvelope(socket, answer, { drainTimeoutMs: options.writeDrainTimeoutMs }))) {
@@ -1146,11 +1139,6 @@ async function dispatchFrame(
   );
 }
 
-/**
- * Measured on Node 26.3.1: `pause()` leaves a reading handle reading, and the bytes it reads before a handle transfer
- * queued behind another converts are dropped with the parent's socket (19 of 20 burst-forwarded frames lost).
- * Stopped here, they stay in the kernel for the process the socket reaches.
- */
 function stopHandleReads(socket: Socket): boolean {
   const handle = (socket as unknown as { _handle?: { reading?: boolean; readStop?: unknown } | null })._handle;
   if (typeof handle?.readStop !== 'function') return false;
@@ -1159,10 +1147,6 @@ function stopHandleReads(socket: Socket): boolean {
   return true;
 }
 
-/**
- * `read()` on a stopped handle re-arms it through `_read`, so the handle is stopped again before any tick can
- * deliver bytes this process would then drop with its copy of the socket.
- */
 function takeBufferedBytes(socket: Socket): Buffer {
   if (socket.readableLength === 0) return Buffer.alloc(0);
   const chunks: Buffer[] = [];
@@ -1446,7 +1430,7 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
   socket.on('data', onData);
   if (carriedFrame.length > 0) onData(carriedFrame);
   socket.resume();
-  // Succession's readStop() can leave libuv stopped after the stream resumes.
+
   const handle = (socket as unknown as { _handle?: { reading?: boolean; readStart?: () => void } })._handle;
   if (handle?.reading === false && typeof handle.readStart === 'function') {
     handle.readStart();

@@ -180,10 +180,6 @@ export function controllerTransferRecoveryGrantsVerify(
   });
 }
 
-/**
- * Before serving, a missing or moved saga row invalidates the receipt; after serving, the successor may have
- * retired it.
- */
 export function verifyProviderOperationTransfer(
   db: Database,
   operations: ProviderOperationTransfer,

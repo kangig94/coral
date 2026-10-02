@@ -7,7 +7,7 @@ import { Worker } from 'node:worker_threads';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type * as DbMod from '#src/store/db.js';
-import type * as EpochKeyMod from '#src/store/epoch-key.js';
+import type * as EpochKeyMod from '#src/store/epoch/key.js';
 import type * as FsLockMod from '#src/infra/fs-lock.js';
 // @ts-expect-error -- JavaScript hook reader intentionally has no TypeScript declaration.
 import { resolveCurrentStoreDbPath } from '../../../clients/hooks/lib/store-epoch.mjs';
@@ -125,7 +125,7 @@ vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
 });
 
 // An epoch-key read is not an open attempt, so its lock wait is kept out of the open-attempt record.
-vi.mock('#src/store/epoch-key.js', async (importOriginal) => {
+vi.mock('#src/store/epoch/key.js', async (importOriginal) => {
   const actual = await importOriginal<typeof EpochKeyMod>();
   return {
     ...actual,
@@ -197,7 +197,7 @@ import {
   epochDirectory,
   parseStoreEpochMetadata,
   settleStoreEpoch,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { STORE_FORMAT_FINGERPRINT_META_KEY } from '#src/store/format-fingerprint.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import {

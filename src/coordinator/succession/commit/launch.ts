@@ -84,7 +84,6 @@ export function createCommitLaunch(
     return { settled };
   }
 
-  /** The reconciler's cadence retries whatever these attempts leave unsettled, since serving is already final. */
   async function publishServing(attemptId: string, recovery: boolean): Promise<void> {
     for (let attempt = 0; attempt < SERVING_RECEIPT_ATTEMPTS; attempt++) {
       const decision = await ports.reconciler().commit(attemptId);
@@ -103,7 +102,7 @@ export function createCommitLaunch(
       const attempt = state.active;
       if (attempt === null) return;
       state.attemptAbort.abort();
-      // A connection forwarded after the abort would bounce between the attempt returning it and this listener.
+
       state.stopWindowForwarding?.();
       await attempt.abort().catch(() => {});
       await state.supervision;

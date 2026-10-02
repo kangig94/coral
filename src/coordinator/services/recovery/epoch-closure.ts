@@ -27,19 +27,19 @@ import {
   setAsideUnreadableEpochClosure,
   type EpochClosureEvidence,
   type EpochClosureRecording,
-} from '../../../store/epoch-closure.js';
+} from '../../../store/epoch/index.js';
 import {
   knownProtectedEpochAddresses,
   reconcileProtectedEpochs,
   type ProtectedEpochAddress,
-} from '../../../store/epoch-protection.js';
-import { readOrCreateEpochKey } from '../../../store/epoch-key.js';
+} from '../../../store/epoch/index.js';
+import { readOrCreateEpochKey } from '../../../store/epoch/index.js';
 import {
   decodeResolvedStoreEpoch,
   lineageJobEpochKey,
   listStoreEpochs,
   type ResolvedStoreEpoch,
-} from '../../../store/epoch.js';
+} from '../../../store/epoch/index.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { JobLocationIndex } from '../../../jobs/location-index.js';
 import { readUpgradeIntent } from '../../../infra/upgrade-intent.js';
@@ -88,12 +88,6 @@ function currentEpochLineageKey(runtime: Runtime): string | undefined {
   }
 }
 
-/**
- * Epochs no closure may certify: this process's own, the proven current one, which may belong to a successor that is
- * still acquiring effects, and any an unfinished succession names. A closed record never reopens, so certifying an
- * epoch while it can still gain obligations would discharge work that has not happened yet. Null means an unreadable
- * intent may name any epoch, so nothing is certifiable.
- */
 export function uncertifiableEpochKeys(
   runtime: Runtime,
   activeEpochKey: string | undefined,
@@ -278,10 +272,6 @@ function observeShippedDurableCliProcesses(
   }
 }
 
-/**
- * Confirmed absence remains decisive: an exact incarnation never returns, and an emptied group no longer holds
- * its recorded processes.
- */
 type AbsenceProof =
   | Readonly<{ kind: 'reap'; confirmed: Set<string> }>
   | Readonly<{ kind: 'confirmed-only'; confirmed: ReadonlySet<string> }>;

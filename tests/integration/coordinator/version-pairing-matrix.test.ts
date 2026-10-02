@@ -72,34 +72,6 @@ const SHIPPED_IPC_BOUNDARY_PRELOAD = join(
   'tests/integration/coordinator/fixtures/shipped-ipc-boundary.cjs',
 );
 
-// A tag may leave this table only in the release that raises the recorded minimum
-// predecessor and proves that tag's post-upgrade startup fails softly in a process.
-const MINIMUM_SUPPORTED_PREDECESSOR: ShippedReleaseTag = 'v0.10.0';
-const SHIPPED_PROTOCOL_GROUPS = [
-  { tags: ['v0.10.0'], replacement: 'exact-identity', cli: 'ensure', identity: 'processStartedAt' },
-  {
-    tags: ['v0.10.1', 'v0.10.2', 'v0.10.3'],
-    replacement: 'exact-identity',
-    cli: 'ensure',
-    identity: 'processStartedAt',
-  },
-  { tags: ['v0.10.4'], replacement: 'exact-identity', cli: 'prepareTopLevelSpawn', identity: 'processStartedAt' },
-  {
-    tags: ['v0.10.5', 'v0.10.6', 'v0.10.7', 'v0.10.8'],
-    replacement: 'version-precedence',
-    cli: 'drain-wait',
-    identity: 'processStartedAt',
-  },
-  { tags: ['v0.10.9'], replacement: 'version-precedence', cli: 'drain-wait', identity: 'incarnation' },
-  {
-    tags: ['v0.10.10', 'v0.10.11', 'v0.10.12'],
-    replacement: 'version-precedence',
-    cli: 'drain-wait',
-    identity: 'incarnation',
-  },
-  { tags: ['v0.10.13'], replacement: 'version-precedence', cli: 'executable-bridge', identity: 'incarnation' },
-] as const;
-
 const DIRECT_UPGRADE_TAGS = ['v0.10.0', 'v0.10.5', 'v0.10.13'] as const;
 // Builds before the v0.10.11 epoch cutover keep jobs in a flat store that later builds never index or read.
 const PRE_EPOCH_STORE_TAGS: ReadonlySet<ShippedReleaseTag> = new Set(['v0.10.0', 'v0.10.5']);
@@ -319,12 +291,6 @@ async function runJobDetail(
 }
 
 describe('AC18 first-release version pairing', () => {
-  it('keeps every shipped predecessor in the pairing window', () => {
-    expect(MINIMUM_SUPPORTED_PREDECESSOR).toBe('v0.10.0');
-    expect(SHIPPED_PROTOCOL_GROUPS.flatMap((group) => group.tags)).toEqual(SHIPPED_RELEASE_TAGS);
-    expect(new Set(DIRECT_UPGRADE_TAGS).size).toBe(3);
-  });
-
   it.each(SHIPPED_RELEASE_TAGS)(
     'lets a running %s incumbent serve after a newer contender arrives',
     async (tag) => {

@@ -56,7 +56,7 @@ import {
   STORE_EPOCH_OPEN_RETRY_INTERVAL_MS,
   epochDirectory,
   settleStoreEpoch,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { authorizeFixtureStoreMint } from '../../helpers/store-db.js';
 

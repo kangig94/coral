@@ -41,7 +41,7 @@ import {
   epochPath,
   sweepStoreEpochs,
   STORE_EPOCH_METADATA_FILE_NAME,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { routeOrOpenBackendStoreAtStartup } from '#src/store/startup-store-routing.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { authorizeFixtureStoreMint, openTestStoreDatabase } from '#tests/helpers/store-db.js';

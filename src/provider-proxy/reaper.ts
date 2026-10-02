@@ -391,8 +391,7 @@ function reaperRedemptionMethods<Scope extends symbol>(
             operations: request.operations,
             redemptionReceipt: request.redemptionReceipt,
           };
-          // The redeemer's reinstall replaces the grant only where a redemption is recorded; a forward naming a
-          // grant this reaper never installed still authorizes rotation, which is what it exists for.
+
           void grants.recordForwardedRedemption({
             grantId: request.grantId,
             redemptionReceipt: request.redemptionReceipt,
@@ -451,8 +450,7 @@ function reaperRotationMethods<Scope extends symbol>(
         handle: (params) => {
           const request = reaperHandoffRotateParamsSchema.parse(params);
           const successor = controlTenancyHolderOf(request.successor);
-          // The build was authorized by the guardian, which alone verifies the grant; this reaper only
-          // requires the rotating coordinator to be the one the guardian's forward named, build included.
+
           if (
             state.recordedRedemption === null ||
             state.recordedRedemption.grantId !== request.grantId ||
@@ -652,11 +650,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
   const grants = createGrantRegistry(mintReceipt, {
     mayReplaceRedemption: () => !deadlines.controlIsLive(),
   });
-  // What `reaper.record-redemption.v1` records and `reaper.handoff-rotate.v1` checks: the guardian is the
-  // only party that can ever produce this, so its presence alone is what authorizes rotation here — this
-  // reaper never independently verifies the grant's secret. `operations` is the guardian's own
-  // `redemption.grant.operations` (`guardian.ts`), forwarded here — not a value `reaper.handoff-rotate.v1`'s
-  // own caller presents, which is why that method's own request carries none to check it against.
+
   const controllers = createControllerBuildLedger(controllerBuildOf(capsule));
 
   const requireEnforcer = (): ArmedEnforcer => {

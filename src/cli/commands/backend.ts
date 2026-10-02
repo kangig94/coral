@@ -90,7 +90,7 @@ import {
 } from '../../store/generation-mutation-coordination.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 import type { Database } from '../../store/db.js';
-import { inspectCurrentStore } from '../../store/epoch.js';
+import { inspectCurrentStore } from '../../store/epoch/index.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import {
   attributeUnreadableProviderOperations,
@@ -1895,7 +1895,6 @@ function registerBackendLifecycleCommands(
   backendLifecycle: BackendLifecycleCommandOperations,
   backendStatus: BackendStatusCommandOperations,
 ): void {
-  // Written as each part is known, so a read that fails midway still leaves what was already established.
   const reportBackendStatus = async (
     write: Readonly<{ stderr(text: string): void; stdout(text: string): void }>,
   ): Promise<BackendStatusLocalExitContribution> => {
@@ -1945,8 +1944,7 @@ function registerBackendLifecycleCommands(
       emitError(error);
       return;
     }
-    // A confirmed start exits 0 whatever else the backend reports. Its remedies stay behind `backend status`:
-    // printed here, they would read as the next step of a start that already succeeded.
+
     let statusNeedsAttention: boolean;
     try {
       statusNeedsAttention = (await reportBackendStatus({ stderr: () => {}, stdout: () => {} })) !== 0;

@@ -383,7 +383,6 @@ export type HandoffCapsuleV4 = z.output<typeof handoffCapsuleV4Schema>;
 export type HandoffCapsule = HandoffCapsuleV1 | HandoffCapsuleV2 | HandoffCapsuleV3 | HandoffCapsuleV4;
 export type RedeemableHandoffCapsule = HandoffCapsuleV3 | HandoffCapsuleV4;
 
-/** The build whose coordinators a capsule's grant authorizes: its host's own build until a transfer says otherwise. */
 export function handoffCapsuleControllerBuildSetId(capsule: RedeemableHandoffCapsule): string {
   return capsule.version === 4 ? capsule.controllerBuildSetId : capsule.buildSetId;
 }
@@ -412,15 +411,10 @@ export type InstalledGrant = Readonly<{
    * so a grant installed under one orphan timeout must not be redeemable against a set running another.
    */
   orphanTimeoutMs: number;
-  /** The build whose coordinators may redeem this grant: always the build of the controller that installed it. */
+
   controllerBuild: ControllerBuild;
 }>;
 
-/**
- * One successor build the current controller authorized to redeem the installed grant, for one succession
- * attempt. The installed grant keeps authorizing its own controller build beside it, which is what leaves the
- * attempt's recovery path open if the successor fails before it serves.
- */
 export type AuthorizedControllerTransfer = Readonly<{
   grantId: string;
   attemptId: string;
@@ -663,10 +657,7 @@ export function sameOperations(left: readonly OperationIdentity[], right: readon
  */
 export interface GrantRegistry {
   install(grant: InstalledGrant): { state: 'installed-dormant'; grantId: string };
-  /**
-   * The current controller authorizes another build to redeem the grant it installed. The named grant must be
-   * the installed one, so the transfer can only ride on a recovery grant this role already holds.
-   */
+
   authorizeTransfer(transfer: Pick<ControllerTransferParams, 'grantId' | 'attemptId' | 'successor'>): {
     state: 'transfer-authorized';
     grantId: string;
@@ -704,7 +695,6 @@ export interface GrantRegistry {
   verifyInstalledGrant(input: { grantId: string; secret: string; binding: GrantBinding }): boolean;
 }
 
-/** Every field a grant is bound to, including the timeout only an installer names. */
 const sameBinding = (left: InstalledGrant, right: InstalledGrant): boolean =>
   left.grantId === right.grantId &&
   left.generation === right.generation &&
@@ -775,7 +765,6 @@ export function createGrantRegistry(
           digestsMatch(installed.secretSha256, grant.secretSha256) &&
           sameOperations(installed.operations, grant.operations);
         if (identical) {
-          // A reinstall is the controller taking the grant as its own; no earlier attempt may still redeem it.
           transfer = null;
           return { state: 'installed-dormant', grantId: installed.grantId };
         }

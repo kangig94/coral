@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseStoreEpochMetadata } from '#src/store/epoch.js';
+import { parseStoreEpochMetadata } from '#src/store/epoch/index.js';
 
 const build = {
   version: '0.10.10',

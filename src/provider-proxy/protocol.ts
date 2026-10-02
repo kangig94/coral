@@ -413,9 +413,6 @@ export type ProviderEventResult = z.infer<typeof providerEventResultSchema>;
  */
 export const PROVIDER_EVENT_METHOD = 'provider.event.v1' as const;
 
-/** Bootstrap control is build-bound: only a coordinator of the exact build a role's own capsule names holds its
- *  spawner's nonce, so no other build may open control through it. A recovery grant names its controller build
- *  separately and is not checked here. */
 export function assertNamedCoordinatorBuild(
   coordinator: CoordinatorIdentity,
   build: Readonly<{ generation: string; flavor: string; buildSetId: string }>,

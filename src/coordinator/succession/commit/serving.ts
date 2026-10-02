@@ -44,7 +44,6 @@ function createServingObservation(
     await ports.interposition.at('incumbent-release', { recovery: recovering });
   }
 
-  /** Resolves once the successor durably serves the prepared takeover; every other ending throws. */
   async function awaitServing(window: CommitWindow, writer: SuccessionWriterEntitlement): Promise<void> {
     const { attempt, deadlineAt } = window;
     for (;;) {
@@ -75,7 +74,6 @@ export function createCommitServing(
   const { retirementServes, retryAfterFailure } = dependencies;
   const awaitServing = createServingObservation(ports, state, retirementServes);
 
-  /** At its deadline the successor fences itself, so whatever it reports afterwards is that deadline's doing. */
   const retryAfterWindowFailure = (window: CommitWindow, error: unknown): AttemptRetry =>
     error instanceof TransientCommitFailure && error.obligationChange
       ? retryAfterFailure(error)
@@ -83,10 +81,6 @@ export function createCommitServing(
         ? { kind: 'transient', retryAfterMs: TRANSIENT_RETRY_BASE_MS }
         : retryAfterFailure(error);
 
-  /**
-   * Decides a failed window before its successor is reaped: a successor that has not recorded serving by now never
-   * can, whether or not it has taken the writer generation yet.
-   */
   async function successorServesBeforeRefusal(window: CommitWindow): Promise<'serving' | 'refused' | 'unresolved'> {
     if (window.writer === null) return 'refused';
     for (;;) {

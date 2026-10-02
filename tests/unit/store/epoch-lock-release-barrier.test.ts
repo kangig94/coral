@@ -39,7 +39,7 @@ import {
   storeMintLockPath,
   sweepStoreEpochs,
   sweepStoreEpochsPostReady,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 
 const roots: string[] = [];
 const storeFormat = currentCoralStoreFormat();

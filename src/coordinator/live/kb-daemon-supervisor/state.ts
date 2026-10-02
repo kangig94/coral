@@ -1,5 +1,5 @@
 import type { Runtime } from '../../../runtime/ports.js';
-import type { ResolvedStoreEpoch } from '../../../store/epoch.js';
+import type { ResolvedStoreEpoch } from '../../../store/epoch/index.js';
 import type { SerializedCoralSetupError } from '../../../runtime/errors.js';
 import type { KbDaemonWireTypes } from './index.js';
 type KbDaemonKbReadHealth = KbDaemonWireTypes['readHealth'];

@@ -19,15 +19,15 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { bindCustodyIdentity, recordCustodyIntent } from '#src/store/custody-ledger.js';
-import { observeEpochClosure } from '#src/store/epoch-closure.js';
-import { readEpochKey } from '#src/store/epoch-key.js';
+import { observeEpochClosure } from '#src/store/epoch/index.js';
+import { readEpochKey } from '#src/store/epoch/index.js';
 import {
   encodeResolvedStoreEpoch,
   inspectCurrentStore,
   settleStoreEpoch,
   type StoreMintDisposition,
   type StoreMintObservation,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import { assertBuildArtifactsAvailable, createPluginFixture } from '#tests/integration/coordinator/helpers.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';

@@ -3,7 +3,7 @@ import type { TimerHandle } from '../../infra/port-types.js';
 import { retryUnknownHistoricalEpochs } from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { sweepStoreEpochsPostReady, type ResolvedStoreEpoch } from '../../store/epoch.js';
+import { sweepStoreEpochsPostReady, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
 import { settleSupersededEpochClosures } from '../services/recovery/epoch-closure.js';
 import type { CoordinatorWorld } from './world.js';
 

@@ -32,7 +32,7 @@ import { errorMessage } from '../infra/error-format.js';
 import { rehydrateCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
 import { AbortError } from '../runtime/abort.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
-import { decodeResolvedStoreEpoch, type ResolvedStoreEpoch } from '../store/epoch.js';
+import { decodeResolvedStoreEpoch, type ResolvedStoreEpoch } from '../store/epoch/index.js';
 import type { CurateUsageBudgetPort } from '../kb/curate/usage-budget.js';
 import { parsePrincipalWire, principalToWire } from '../security/principal-wire.js';
 import { authorizeCapability, authorizeResourceBinding } from '../security/policy/authorize.js';

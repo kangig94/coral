@@ -7,7 +7,7 @@ import {
   type UpgradeIntentChange,
 } from '../../../infra/upgrade-intent.js';
 import type { SuccessionPreparation, SuccessionReady } from '../protocol.js';
-import type { UnservedMintDiscard } from '../../../store/epoch.js';
+import type { UnservedMintDiscard } from '../../../store/epoch/index.js';
 import type { SuccessionOwner, SuccessionOwnerId } from '../obligations.js';
 import { createSuccessionIntentAdoption } from './adoption.js';
 import { createSuccessionReconcilerState } from './state.js';
@@ -57,7 +57,6 @@ export type SuccessionLaunchSettlement =
   | Readonly<{ kind: 'settled' }>
   | Readonly<{ kind: 'clear-owed'; attemptId: string; clear: (intent: UpgradeIntent) => UpgradeIntent }>;
 
-/** A launched attempt belongs to its commit until `settled`; nothing may prepare over or abort it before then. */
 export type SuccessionLaunch = Readonly<{ settled: Promise<SuccessionLaunchSettlement> }>;
 
 export type SuccessionDecision =

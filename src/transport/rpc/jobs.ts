@@ -35,7 +35,6 @@ export const jobWaitSchema = z
   })
   .strict();
 
-/** A coordinator advertises the `jobs.wait` fields its strict schema accepts on `ping`. */
 export const JOBS_WAIT_EXTENSIONS = ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'] as const;
 
 export type JobsWaitFields = Readonly<{

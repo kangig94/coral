@@ -46,7 +46,6 @@ export type IpcSubscriptionOptions = {
 
 export type IpcAuthProvider = () => IpcAuthMetadata | undefined;
 
-/** Authenticates by answering a challenge the coordinator issues on the request's own connection. */
 export type IpcChallengedAuth = Readonly<{
   kind: 'challenged';
   prove(challenge: ChildAuthChallenge, request: ChildProvenRequest): IpcAuthMetadata;

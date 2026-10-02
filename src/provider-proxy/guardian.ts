@@ -336,7 +336,7 @@ function guardianOpeningMethods<Scope extends symbol>(
             throw new ProxyControlProtocolError('invalid_state', 'This guardian holds no containment yet.');
           }
           bootstrapNonce.spend(request.bootstrapNonce);
-          // Bootstrap control belongs to the host's own build: only its spawner holds the nonce.
+
           assertNamedCoordinatorBuild(request.coordinator, capsule);
           const holder = controlTenancyHolderOf(request.coordinator);
           controllers.admit(holder, controllerBuildOf(request.coordinator));
@@ -967,23 +967,12 @@ function armGuardianContainment<Scope extends symbol>(
   containment: GuardianContainmentIdentity,
 ): boolean {
   if (state.recordedContainment !== null) {
-    // Idempotent for the identical containment, a mismatch otherwise: revising it would silently move
-    // what this guardian is holding, and only one proxy group was ever created for this set.
     if (!sameRecordedContainment(state.recordedContainment, containment)) {
       throw new ProxyControlProtocolError('identity_mismatch', 'This guardian already holds a containment.');
     }
     return false;
   }
-  // Recorded and armed locally FIRST, then forwarded — the reverse of `guardian.register-provider-root.v1`,
-  // and deliberately so: that method's guardian is a *relay* for a root only the proxy actually knows, so
-  // it must not commit ahead of the reaper it is relaying to. Here the guardian is the *origin* — it is
-  // the one party that watched this exact group come into being, so there is no peer for it to disagree
-  // with by recording first. Forwarding before the local commit would instead risk the one failure mode
-  // this ordering exists to close: the forward drops, the reaper is never told and arms nothing, and the
-  // proxy — a live, detached process-group leader — is held by no one and reapable by nothing.
-  //
-  // The window between the proxy spawn returning and this arm is real (a crash inside it is a genuine
-  // gap), but it is irreducible and synchronous: no `await` may land between them, and none does below.
+
   state.recordedContainment = containment;
   state.enforcer = createArmedEnforcer({
     clock: options.clock,
@@ -998,9 +987,7 @@ function armGuardianContainment<Scope extends symbol>(
     onOutcome: options.onOutcome,
     onProgressViolation: options.onProgressViolation,
   });
-  // Armed the moment it knows what to enforce, so a coordinator — or this guardian's own peer, the
-  // reaper, if the forward below never lands — that dies immediately afterwards is already bounded by
-  // this guardian's own deadline.
+
   state.enforcer.arm();
 
   return true;
@@ -1025,10 +1012,6 @@ function createGuardianIdentities<Scope extends symbol>(
     canonicalControlEndpoint: capsule.canonicalControlEndpoint,
   });
 
-  /** The reaper identity a teardown's `reaper` claim is checked against: the pid and incarnation this
-   *  guardian itself observed at spawn time, plus the same capsule-derived fields the reaper's own identity
-   *  uses. The guardian never learns this from the reaper directly — pairing carries no identity, only a
-   *  shared secret — so this is reconstructed from what the guardian itself watched come into being. */
   const reaperSelfIdentity: ReaperIdentity = Object.freeze({
     reaperInstanceId: capsule.reaperInstanceId,
     pid: options.reaperSelf.pid,
@@ -1084,9 +1067,6 @@ function createGuardianStagingGate(
 export function createGuardian<Scope extends symbol>(options: GuardianOptions<Scope>): Guardian {
   const { capsule, deadlines, timer, mintReceipt, holderAuthority } = options;
 
-  // The guardian creates the containment by spawning the proxy — it cannot know what to enforce until
-  // `recordContainment` reports what it watched being created. Until then there is nothing to enforce, so
-  // there is no enforcer, exactly as the reaper holds none before `reaper.record-containment.v1`.
   const state: GuardianState = {
     recordedContainment: null,
     enforcer: null,

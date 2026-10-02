@@ -595,8 +595,6 @@ async function redeem(
     return { kind: 'temporarily-unavailable', incident: { kind: 'transfer-status-unconfirmed' } };
   }
   if (verdict.kind === 'refused') {
-    // Not-bequeathed is the honest outcome rather than an error: there is genuinely nothing here this build may
-    // inherit, and the caller already knows how to settle a set it could not take over.
     return {
       kind: 'not-bequeathed',
       reason:

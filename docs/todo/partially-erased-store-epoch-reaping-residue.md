@@ -2,7 +2,7 @@
 
 **Status**: open, out of scope for store-reset Round 42.
 
-`removeAbandonedStoreDirectory` in `src/store/epoch.ts` can prove that a residue directory is contained
+`removeAbandonedStoreDirectory` in `src/store/epoch/post-ready-sweep.ts` can prove that a residue directory is contained
 while finding its `.lock` absent. A non-recursive `rmdir` safely reclaims the empty pre-lock construction
 case because it fails if any entry appears before removal.
 

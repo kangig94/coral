@@ -11,7 +11,7 @@ import {
   resolveCurrentStoreEpoch,
   sweepStoreEpochs,
   type StoreEpoch,
-} from './epoch.js';
+} from './epoch/index.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import { acquireGenerationAdoptionLock, resolveGenerationBoundaryPaths } from './generation-mutation-coordination.js';
 import { observeStorePath } from './path-observation.js';

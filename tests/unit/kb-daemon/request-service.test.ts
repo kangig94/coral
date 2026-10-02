@@ -29,7 +29,7 @@ vi.mock('#src/kb/ops/search.js', () => ({
 import { createKbDaemonRequestService } from '#src/kb-daemon/request-service.js';
 import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { epochDirectory, epochPath, storeEpochLockPath } from '#src/store/epoch.js';
+import { epochDirectory, epochPath, storeEpochLockPath } from '#src/store/epoch/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { INDEX_FILE } from '#src/kb/corpus/index/store.js';

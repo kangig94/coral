@@ -6,8 +6,8 @@ import type { SqliteDatabasePort, StoragePort } from '../infra/port-types.js';
 import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import type { Runtime } from '../runtime/ports.js';
-import { decodeResolvedStoreEpoch, STORE_LOCK_FILE_NAME, type ResolvedStoreEpoch } from '../store/epoch.js';
-import { observeProtectedEpoch } from '../store/epoch-protection.js';
+import { decodeResolvedStoreEpoch, STORE_LOCK_FILE_NAME, type ResolvedStoreEpoch } from '../store/epoch/index.js';
+import { observeProtectedEpoch } from '../store/epoch/index.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { hasReadableTerminalDetail, type JobLocationIndex, type JobLocationSubject } from './location-index.js';
 import { describeTerminalOutcome } from './outcome.js';
@@ -381,7 +381,6 @@ export function seedHistoricalEpoch(
   }
 }
 
-/** Without a seeded source nothing in this process can observe a later terminal in that epoch. */
 export function hasHistoricalSource(index: JobLocationIndex, epochKey: string): boolean {
   return historicalSources.get(index)?.has(epochKey) === true;
 }

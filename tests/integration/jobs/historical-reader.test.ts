@@ -11,8 +11,8 @@ import {
   retryUnknownHistoricalEpochs,
   seedHistoricalEpoch,
 } from '../../../src/jobs/historical-reader.js';
-import { readOrCreateEpochKey } from '../../../src/store/epoch-key.js';
-import { protectStoreEpoch, protectedStoreEpochRoot } from '../../../src/store/epoch-protection.js';
+import { readOrCreateEpochKey } from '../../../src/store/epoch/index.js';
+import { protectStoreEpoch, protectedStoreEpochRoot } from '../../../src/store/epoch/index.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
 
 const fingerprints = [

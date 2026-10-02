@@ -203,7 +203,7 @@ async function commitAttempt(context: SettlementContext, attemptId: string): Pro
         change: { ...intent, disposition: 'completed', completionReceipt: receipt },
         settle: () => {
           options.onIntentChanged?.();
-          // A target queued behind this attempt is adopted by the pass after its receipt.
+
           notifyObligationChange();
           return { kind: 'committed', receipt };
         },
@@ -232,11 +232,6 @@ async function commitAttempt(context: SettlementContext, attemptId: string): Pro
   return decisionOf(outcome, writeRefusal);
 }
 
-/**
- * A same-build recovery stands in for a failed target, so it earns no completion receipt: the target keeps the hold
- * its failed attempt left, and the recovery that serves becomes the incumbent owning the intent. Only that process
- * records it, because no other observer can write its identity.
- */
 function recoveryServes(
   context: SettlementContext,
   intent: UpgradeIntent,

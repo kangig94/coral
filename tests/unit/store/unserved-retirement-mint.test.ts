@@ -12,8 +12,8 @@ import {
   inspectCurrentStore,
   mintRetiredStoreEpoch,
   settleStoreEpoch,
-} from '#src/store/epoch.js';
-import { protectStoreEpoch } from '#src/store/epoch-protection.js';
+} from '#src/store/epoch/index.js';
+import { protectStoreEpoch } from '#src/store/epoch/index.js';
 import {
   joinSuccessionWriterGeneration,
   observeSuccessionWriterGeneration,

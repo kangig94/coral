@@ -1,9 +1,9 @@
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
-import { acquireSharedFileLockSync } from '../infra/fs-lock.js';
-import type { Runtime } from '../runtime/ports.js';
-import type { ResolvedStoreEpoch } from './epoch.js';
+import { acquireSharedFileLockSync } from '../../infra/fs-lock.js';
+import type { Runtime } from '../../runtime/ports.js';
+import type { ResolvedStoreEpoch } from './types.js';
 
 const lineageSchema = z.object({ version: z.literal('v1'), lineageId: z.string().uuid() }).passthrough();
 const LINEAGE_FILE = '.coral-lineage.v1.json';

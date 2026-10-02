@@ -108,9 +108,6 @@ export function createKbDaemonSupervisorPorts(
     dispose: async (reason = 'dispose', disposeOptions) => {
       state.requestRecoveryEnabled = false;
       return runExclusive(() => {
-        // Re-assert inside the exclusive turn: a start/restart queued ahead of us
-        // re-enables recovery, so disabling only before runExclusive would let a
-        // post-dispose read/mutate revive the daemon. This second write is load-bearing.
         state.requestRecoveryEnabled = false;
         // Terminal supervisor disposal is distinct from a recoverable stop. A
         // start/restart queued after this turn must not flip recovery back on.

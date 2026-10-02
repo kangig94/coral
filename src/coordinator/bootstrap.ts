@@ -159,7 +159,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 
   try {
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-    const { openWritableStoreDbNoReset, resolveProvenStoreEpochAtPath } = await import('../store/epoch.js');
+    const { openWritableStoreDbNoReset, resolveProvenStoreEpochAtPath } = await import('../store/epoch/index.js');
     const smokeStorePathInput = z
       .string()
       .refine((path) => resolve(path) === path, 'path is not a canonical absolute path');
@@ -338,10 +338,6 @@ async function dispatchBackendRole(): Promise<number | null> {
   return null;
 }
 
-/**
- * Linux accepts the residual check-to-signal race after a fresh parent incarnation check. macOS cannot provide
- * signal authority, so a silent parent retains a visible hold until it cooperates or exits.
- */
 async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLoss: () => void): Promise<void> {
   let sentinelArm: Promise<void> | null = null;
   if (process.env.CORAL_SENTINEL_ID !== undefined) {

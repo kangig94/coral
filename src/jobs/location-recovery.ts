@@ -13,10 +13,6 @@ type LaunchIdentityRow = {
   body: Uint8Array;
 };
 
-/**
- * A launch registers its location before its write transaction commits, so a rollback or a crash leaves a location
- * no launch event backs. Deciding that needs the store write lock; without it the answer stays with the next pass.
- */
 function retireUncommittedLaunches(index: JobLocationIndex, epochKey: string, db: Database): void {
   try {
     withImmediate(db, () => {
@@ -33,7 +29,7 @@ function retireUncommittedLaunches(index: JobLocationIndex, epochKey: string, db
       }
     });
   } catch {
-    // The location stays non-terminal and keeps the epoch uncertified; the next recovery pass decides it.
+    // Failed epoch observation must not retire its jobs.
   }
 }
 

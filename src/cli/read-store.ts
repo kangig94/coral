@@ -2,7 +2,7 @@ import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';
 import { openMemoryStoreDatabase, type Database } from '../store/db.js';
-import { resolveCurrentStore } from '../store/epoch.js';
+import { resolveCurrentStore } from '../store/epoch/index.js';
 import { openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 import { resolvePluginRoot } from './plugin-root.js';

@@ -3,7 +3,7 @@ import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infr
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { KbJobRecorder } from '../../jobs/kb/recorder.js';
-import { encodeResolvedStoreEpoch, inspectCurrentStore, type ResolvedStoreEpoch } from '../../store/epoch.js';
+import { encodeResolvedStoreEpoch, inspectCurrentStore, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
 import { createRuntimeState, type LifecycleController } from '../lifecycle.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import { resolveCoordinatorDefaults } from './defaults.js';

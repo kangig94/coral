@@ -201,14 +201,14 @@ function pollReplacementRetirement(attempt: ReplacementSupervisorAttempt): void 
     try {
       sent = supervisor.kill('SIGKILL');
     } catch {
-      /* The exact child may already have exited. */
+      // A failed signal must not be recorded as delivered.
     }
     attempt.killSent = sent;
   } else {
     try {
       sent = supervisor.kill('SIGTERM');
     } catch {
-      /* The exact child may already have exited. */
+      // A failed signal must not be recorded as delivered.
     }
     if (sent) attempt.termDeliveredAt = now;
   }
@@ -410,7 +410,6 @@ export function startReplacementSupervisor(
   launchReplacementSupervisor({ pluginRoot, runDir, manifest, onError, onAccepted, env, failing: false });
 }
 
-/** A reused shipped incumbent still needs its outstanding upgrade observed under the namespace lock. */
 export async function resumeLegacyUpgradeObservation(
   runDir: string,
   installedRoot: string,

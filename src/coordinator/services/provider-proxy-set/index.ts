@@ -717,9 +717,8 @@ type AbsenceDeliveryState =
   | Readonly<{ kind: 'fatal'; error: ProviderProxySetLifecycleFatalError }>;
 
 export type ProviderProxySetLifecycleDeps = Readonly<{
-  /** Dialing a set another build controls is fatal rather than a failed acquisition attempt. */
   buildSetId: string;
-  /** An accepted succession receipt may hand a set another build controls to this one. */
+
   acceptsControllerTransfer?(capsule: RedeemableHandoffCapsule): ControllerTransferAcceptance;
   claims: ProviderProxySetClaimMirror;
   controlEstablished(authority: DurableProviderProxyOperationAuthority): void;

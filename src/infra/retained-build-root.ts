@@ -54,7 +54,6 @@ export function validatedRetainedBuildRoot(runtime: Runtime, buildSetId: string)
   return createForeignTargetValidator()(bundleDir, manifest.data).kind === 'validated' ? root : null;
 }
 
-/** Resolve a running build by its manifest, even after its installed directory has been replaced. */
 export function validatedRunningBuildRoot(
   runDir: string,
   installedRoot: string,

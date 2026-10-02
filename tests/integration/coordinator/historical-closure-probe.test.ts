@@ -7,9 +7,9 @@ import { probeHistoricalJobClosure } from '../../../src/coordinator/composition/
 import { JobAddressing } from '../../../src/jobs/addressing.js';
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
-import { encodeResolvedStoreEpoch } from '../../../src/store/epoch.js';
-import { protectStoreEpoch } from '../../../src/store/epoch-protection.js';
-import { recordEpochClosure } from '../../../src/store/epoch-closure.js';
+import { encodeResolvedStoreEpoch } from '../../../src/store/epoch/index.js';
+import { protectStoreEpoch } from '../../../src/store/epoch/index.js';
+import { recordEpochClosure } from '../../../src/store/epoch/index.js';
 import { newRawDatabase } from '../../helpers/test-db.js';
 
 const roots: string[] = [];

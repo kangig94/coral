@@ -1,5 +1,5 @@
 import { formatError } from '../../../infra/error-format.js';
-import { encodeResolvedStoreEpoch, inspectCurrentStore } from '../../../store/epoch.js';
+import { encodeResolvedStoreEpoch, inspectCurrentStore } from '../../../store/epoch/index.js';
 import {
   joinSuccessionWriterGeneration,
   type SuccessionWriterEntitlement,
@@ -21,7 +21,6 @@ import type { createCommitReadiness } from './readiness.js';
 import type { createCommitWriterPreparation } from './writer-preparation.js';
 import { TransientCommitFailure } from './failure.js';
 
-/** Reserved inside the admission pause so a failed attempt still leaves the incumbent time to reclaim. */
 const RECLAIM_RESERVE_MS = 2_500;
 
 type WindowAdmissionDependencies = Pick<ReturnType<typeof createCommitPause>, 'openPause' | 'closePause'> &
@@ -45,10 +44,7 @@ export function createCommitWindowAdmission(
     recertifyObligations,
     authorizeRetirement,
   } = dependencies;
-  /**
-   * The successor parks connections only once it holds this window's deadline, which ends its parking; before
-   * then it returns every connection it accepts, so this incumbent keeps answering while custody certifies.
-   */
+
   async function openCommitWindow(
     attempt: SuccessionAttempt,
     preparation: SuccessionPreparation,
@@ -86,7 +82,6 @@ export function createCommitWindowAdmission(
     };
   }
 
-  /** Parks this incumbent's writers and lets the successor open; the window records what a failure must reclaim. */
   async function parkAndAuthorize(
     window: CommitWindow,
     plan: CommitPlan,

@@ -58,7 +58,6 @@ export function launchAdmissionPath(runDir: string, launchId: string): string {
   return join(runDir, 'launch-admissions.v2', `${z.string().uuid().parse(launchId)}.json`);
 }
 
-/** Called by the admitted child before it can enter coordinator startup. */
 export function publishLaunchAdmission(runDir: string, admission: LaunchAdmission): void {
   acquireLaunchLifetime(runDir, admission);
   const path = launchAdmissionPath(runDir, admission.launchId);
@@ -92,7 +91,7 @@ export function publishLaunchAdmission(runDir: string, admission: LaunchAdmissio
     try {
       unlinkSync(temporary);
     } catch {
-      /* The temporary file may not exist. */
+      // Cleanup failure must not replace the publication failure.
     }
     throw error;
   }
@@ -152,7 +151,6 @@ function admissionEnvelope(admission: LaunchAdmission): LaunchAdmission {
   return { version, launchId, child, parent, admittedAt, admittedMonotonicMs, build, purpose };
 }
 
-/** The address is immutable; no timestamp from the filesystem can establish admission timing. */
 function launchLifetimePath(runDir: string, admission: LaunchAdmission): string {
   const envelope = admissionEnvelope(admissionSchema.parse(admission));
   const encoded = deflateRawSync(
@@ -175,7 +173,6 @@ function launchLifetimePath(runDir: string, admission: LaunchAdmission): string 
   return join(runDir, 'launch-lifetimes.v1', envelope.launchId, ...(encoded.match(/.{1,180}/g) ?? []), 'lifetime.lock');
 }
 
-/** SQLite descriptors are process-local and close on exec; the kernel releases this lease at exit. */
 function acquireLaunchLifetime(runDir: string, admission: LaunchAdmission): void {
   const path = launchLifetimePath(runDir, admission);
   const key = launchAdmissionPath(runDir, admission.launchId);
@@ -370,7 +367,6 @@ function removeAbsentLifetimeDirectory(subject: LifetimeDirectorySubject): boole
   }
 }
 
-/** Neither damaged JSON nor an acquisition window may erase a possible live subject. */
 export function listLaunchSubjects(runDir: string): LaunchSubject[] {
   const subjects: LaunchSubject[] = [];
   const admissions = listLaunchAdmissions(runDir);
@@ -550,13 +546,12 @@ export function repairDamagedLaunchSubject(subject: LaunchSubject): void {
       else if (attempt.kind === 'malformed') repairMalformedFileLockSync(entry.path);
     }
   } catch {
-    // Unobservable lifetime evidence remains held for the next namespace pass.
+    // Failed repair must not settle the subject's lifetime.
   }
 }
 
 type LaunchSubjectDisposition = 'occupied' | 'acquisition-window' | 'unknown' | 'absent';
 
-/** An exclusive probe before the first shared acquisition is not evidence of lease release. */
 export function observeLaunchSubject(subject: LaunchSubject): LaunchSubjectDisposition {
   if (subject.branches !== undefined) {
     if (pendingLifetimeCleanups.has(subject.lifetimeDirectory)) return 'absent';

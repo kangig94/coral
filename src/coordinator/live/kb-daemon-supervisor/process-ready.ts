@@ -51,10 +51,7 @@ export async function awaitKbDaemonReady(
   const { stdin, stdout, stderr } = pipedHandles;
   stdout.setEncoding('utf-8');
   stderr.setEncoding('utf-8');
-  // A write to a dead child surfaces EPIPE asynchronously as a stdin 'error'
-  // event; with no listener Node re-throws it as an uncaughtException and
-  // crashes the coordinator. Swallow it here — the 'close' handler below owns
-  // real teardown (rejectPendingRequests / phase transition).
+
   stdin.on('error', (error: unknown) => {
     log(`[kb-daemon] stdin error: ${formatError(error)}`);
   });

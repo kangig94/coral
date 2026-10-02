@@ -74,15 +74,11 @@ export type SuccessionOwner = Readonly<{
    * target cannot accept is classified again for the same attempt inside its commit window, before writers park.
    */
   classify: (attemptId: string, capabilities: SuccessionCapabilities) => Promise<OwnerDisposition>;
-  /**
-   * Set when classifying acts outside this process on the attempt's behalf: it records a grant or authorizes a
-   * host. Such an owner is classified only once every other owner completes, so a preparation that blocks anyway
-   * leaves nothing behind for attempts no intent will name.
-   */
+
   recordsGrants?: true;
-  /** Reports a known blocker without recording a grant when another owner already blocks preparation. */
+
   inspectBlocker?: (capabilities: SuccessionCapabilities) => string | null;
-  /** Removes whatever this owner recorded for any attempt outside `retained`. */
+
   dischargeGrants?: (retained: ReadonlySet<string>) => void;
 }>;
 
@@ -103,11 +99,6 @@ export function certifySuccessionJobCoverage(
   return failures;
 }
 
-/**
- * An undeclared owner or contract generation cannot authorize a transfer. Owners that record grants follow every
- * other owner and only inspect known blockers once preparation is blocked. Job coverage is certified only when
- * every owner was classified, since an owner left unclassified claims nothing.
- */
 export async function prepareOwnerObligations(
   owners: readonly SuccessionOwner[],
   attemptId: string,

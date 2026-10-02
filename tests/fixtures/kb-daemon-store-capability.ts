@@ -1,6 +1,6 @@
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { decodeResolvedStoreEpoch } from '#src/store/epoch.js';
+import { decodeResolvedStoreEpoch } from '#src/store/epoch/index.js';
 
 const baseDir = process.env.CORAL_TEST_BASE_DIR;
 if (baseDir === undefined) throw new Error('store capability fixture input is unavailable');

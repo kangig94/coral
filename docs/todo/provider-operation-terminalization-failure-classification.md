@@ -11,7 +11,7 @@ rethrows `ProviderOperationJournalError` and wraps every other throw in
 1. `ProviderOperationJournalError` means the provider-operation journal is corrupt. Keep the existing corrupt
    classification unchanged.
 2. An error object with `'errcode' in error` is the store refusing the transaction. Preserve that object as the
-   store-refusal answer. The repository already uses the same observable SQLite field in `src/store/epoch.ts`,
+   store-refusal answer. The repository already uses the same observable SQLite field in `src/store/epoch/mint.ts`,
    and `HandoffRoutingStoreUnreadableError` in
    `src/store/handoff-routing-status-store/transaction.ts` deliberately carries `errcode` on the error object.
 3. Anything else thrown from the closure means this build composed a terminal that its own synchronous

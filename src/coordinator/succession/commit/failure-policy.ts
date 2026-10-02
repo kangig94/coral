@@ -4,7 +4,6 @@ import type { CommitState } from './index.js';
 import { TransientCommitFailure } from './failure.js';
 
 export function createCommitFailurePolicy(state: CommitState) {
-  /** An incumbent's own shutdown is no evidence against its target, so a failure alongside it decides nothing. */
   const retryAfterFailure = (error: unknown): AttemptRetry =>
     error instanceof TransientCommitFailure
       ? {

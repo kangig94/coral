@@ -89,7 +89,6 @@ export interface HandoffOptions {
   totalBudgetMs: number;
 }
 
-/** An absent or failed capability response still requires a supervisor-owned request. */
 export async function requestUpgradeFromContender(
   options: Readonly<{
     socketPath: string;

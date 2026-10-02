@@ -489,8 +489,6 @@ async function consumeFollowSubscription(
       }
       const event = parseWaitStreamEventValue(raw);
       if (event === null) {
-        // Unrecognized event type: a newer coordinator emitted something this build predates.
-        // Cross-version tolerance means skipping it, not crashing the wait — the stream stays open.
         continue;
       }
 

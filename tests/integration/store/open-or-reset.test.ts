@@ -48,7 +48,7 @@ import {
   STORE_EPOCH_METADATA_FILE_NAME,
   STORE_EPOCH_OPEN_RETRY_BUDGET_MS,
   STORE_EPOCH_OPEN_RETRY_INTERVAL_MS,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import {

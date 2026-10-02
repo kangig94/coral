@@ -6,7 +6,7 @@ import {
   holdStoreEpochLockUntilClose,
   resolveCurrentStore,
   type ResolvedStorePath,
-} from './epoch.js';
+} from './epoch/index.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import type { ReadonlyDatabase } from './read-types.js';
 

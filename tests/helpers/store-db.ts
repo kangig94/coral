@@ -8,7 +8,7 @@ import {
   settleStoreEpoch,
   type StoreMintDisposition,
   type StoreMintObservation,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import type { StoreFormatDescription } from '#src/store/format-fingerprint.js';
 import { assertTestDatabaseLocation } from '#tools/testing/store-db-location.js';
 

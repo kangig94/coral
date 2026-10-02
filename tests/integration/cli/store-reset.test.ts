@@ -24,7 +24,7 @@ import {
   settleStoreEpoch,
   storeEpochHolderPath,
   sweepStoreEpochs,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { releaseStoreReset as releaseStoreResetWithSocketGuard } from '#src/store/operator-store-reset.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { authorizeFixtureStoreMint, openTestStoreDatabase } from '#tests/helpers/store-db.js';

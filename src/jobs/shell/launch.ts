@@ -1292,10 +1292,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
   }
 
-  /**
-   * A writer parked for a succession commit cannot record this job's outcome. The decision waits for this
-   * process to reclaim the writer; a committed successor owns the job instead, and the wait ends with this process.
-   */
   private async handleProviderJobErrorOnceWritable(
     jobId: string,
     sessionId: string,

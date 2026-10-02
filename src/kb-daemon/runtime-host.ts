@@ -65,7 +65,7 @@ import {
   openWritableStoreDbNoReset,
   resolveCurrentStore,
   type ResolvedStoreEpoch,
-} from '../store/epoch.js';
+} from '../store/epoch/index.js';
 import {
   fenceCorpusStorage,
   joinSuccessionWriterGeneration,
@@ -376,9 +376,7 @@ function getExpansionLifecyclePhase(host: KbDaemonWriteHostControl): Coordinator
   if (host.phase === 'disposed') {
     return 'stopped';
   }
-  // The expansion lifecycle speaks coordinator phases. Healthy daemon write
-  // phases, including `ready`, must map to `running` or normal equips are
-  // rejected by the drain fence.
+
   return 'running';
 }
 
@@ -493,8 +491,7 @@ function createDaemonKnowledgeBase({
         persistCorpusState(activeDb as Database, snapshot, {
           now: () => nowDate(runtime.time),
         }),
-      // The parent observes successful daemon mutations from the persisted
-      // corpus-state row; the daemon also wakes its local projection driver.
+
       notifyCorpusMutation: (publication) => {
         notifyDaemonCorpusDeferred(() => boot.daemonConsumerDriver, publication);
         options.onCorpusMutation?.(publication);
@@ -757,10 +754,7 @@ async function recoverKbDaemonProjectionBoot(
   await activeExpansionLifecycleService.recoverOnBoot();
   activeConsumerDriver.notifyCorpus(kb.getCorpusStateSnapshot());
   await repairProjectionArtifactLagOnBoot(kb, activeConsumerDriver, corpusReadinessTimeoutMs);
-  // When CORAL_KB_EXTRA_LANGS declares 'ko', fetch the Kiwi runtime artifacts in the background and
-  // reproject once it lands. Boot does not await this: the text lane serves Intl-segmented
-  // results until the Korean analyzer is ready, so the first note mutation is never blocked
-  // on the ~89MB artifact downloads or a corpus-scale Korean re-tokenization.
+
   const kiwiArtifactBootHandle = startKiwiArtifactFetchOnBoot({
     runtime: guardedRuntime,
     kb,
@@ -1050,8 +1044,6 @@ async function disposeKbDaemonWriteState(
       cleanupError ??= error;
     }
     try {
-      // Queue behind any corpus writer before the owned SQLite handle closes;
-      // the timeout bounds peer directory-lock contention during shutdown.
       await drainCorpusMutationLock(activeState.kbRuntime.kb, { signal });
     } catch (error: unknown) {
       cleanupError ??= error;
@@ -1217,7 +1209,7 @@ async function parkKbDaemonWriterTurn(
   try {
     await drainCorpusMutationLock(activeState.kbRuntime.kb, { signal: options?.signal });
     if (host.active !== activeState) throw new Error('KB daemon writer turn changed during park.');
-    // A job the succession inventory did not see would lose its writer with no owner accepting it.
+
     const activeJobs = activeState.abortRegistry.listActive();
     if (activeJobs.length > 0) {
       throw new Error(`KB daemon writer turn cannot park while ${activeJobs.length} KB job(s) run.`);
@@ -1270,8 +1262,6 @@ function readKbDaemonWriteHealth(host: KbDaemonWriteHostControl): KbDaemonKbRead
 }
 
 export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOptions): KbDaemonWriteRuntimeHost {
-  // Cancels the post-fetch Korean (Kiwi) re-tokenization reproject when the daemon
-  // disposes; an in-flight artifact download runs to completion detached.
   const host: KbDaemonWriteHostControl = {
     options,
     now: options.now ?? Date.now,

@@ -6,7 +6,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { recordCustodyIntent, bindCustodyIdentity, type CustodyIntent } from '../../store/custody-ledger.js';
-import { resolveCurrentStoreEpoch } from '../../store/epoch.js';
+import { resolveCurrentStoreEpoch } from '../../store/epoch/index.js';
 import type { DurableCliRuntimePublicationEvidence } from '../../infra/durable-cli-runtime-evidence.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPermit, LaunchPool, LaunchRelease } from '../../jobs/contracts/admission.js';

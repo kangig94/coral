@@ -1,5 +1,5 @@
 import { createRealRuntime } from '#src/runtime/real.js';
-import { resolvedStoreEpoch, sweepStoreEpochsPostReady } from '#src/store/epoch.js';
+import { resolvedStoreEpoch, sweepStoreEpochsPostReady } from '#src/store/epoch/index.js';
 
 const baseDir = process.argv[2];
 const epoch = process.argv[3];

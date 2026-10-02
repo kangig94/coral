@@ -18,10 +18,10 @@ import {
   type ResolvedStoreEpoch,
   type StoreMintDisposition,
   type StoreMintObservation,
-} from '../../store/epoch.js';
-import { recordEpochClosure } from '../../store/epoch-closure.js';
-import { readEpochKey } from '../../store/epoch-key.js';
-import { observeProtectedEpoch } from '../../store/epoch-protection.js';
+} from '../../store/epoch/index.js';
+import { recordEpochClosure } from '../../store/epoch/index.js';
+import { readEpochKey } from '../../store/epoch/index.js';
+import { observeProtectedEpoch } from '../../store/epoch/index.js';
 import { latestControllerOpen } from '../succession/controller-open.js';
 import { readDurableCliControllerReceipts } from './durable-cli-transfer.js';
 import {
@@ -32,7 +32,6 @@ import {
 
 const UNOPENABLE_STARTUP_ATTEMPTS = 2;
 
-/** A startup that observes the same unopenable epoch again after this long counts that observation as an attempt. */
 export const RETIREMENT_PATIENCE_INTERVAL_MS = 5_000;
 
 const retirementPatienceSchema = z
@@ -386,10 +385,10 @@ function retirementPatienceAllowsMint(
     );
     if (parsed.success) previous = parsed.data;
   } catch {
-    // An unreadable patience record starts a fresh observation count.
+    // Unreadable patience must not authorize retirement.
   }
   const now = runtime.time.now();
-  // Startups racing each other observe the same evidence, so an observation counts once per interval, not per process.
+
   const repeated =
     previous !== null &&
     (previous.countedAt === undefined
@@ -504,7 +503,7 @@ export function createStartupMintAuthorizer(
       return retirementMintDisposition('retired', epochKey);
     }
     if (!retirementPatienceAllowsMint(runtime, index, startupId, epochKey, lineageKey, custodyNamesEpoch)) return null;
-    // An unreadable closure already retains the epoch visibly, so the mint proceeds without overwriting it.
+
     void recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
       version: 'v1',
       epochKey: lineageKey,

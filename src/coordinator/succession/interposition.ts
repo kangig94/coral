@@ -12,7 +12,6 @@ export type SuccessionInterpositionPoint =
 
 export type SuccessionInterpositionContext = Readonly<{ recovery: boolean }>;
 
-/** A point fails the operation it guards by throwing, exactly as that operation's own failure would. */
 export type SuccessionInterposition = Readonly<{
   at(point: SuccessionInterpositionPoint, context: SuccessionInterpositionContext): void | Promise<void>;
 }>;

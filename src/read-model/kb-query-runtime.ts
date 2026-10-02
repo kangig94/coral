@@ -152,7 +152,7 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbReadQuer
  */
 export function readWithKbQueryHost<T>(
   context: KbQueryContext & { runtime: KbQueryRuntime },
-  // The store closes when `read` returns, so a promise it returned would settle against a closed handle.
+
   read: (host: KbQueryHost) => T & { then?: never },
 ): T {
   const readDb = openReadOnlyStoreDatabase(context.runtime, { storeFormat: currentCoralStoreFormat() });

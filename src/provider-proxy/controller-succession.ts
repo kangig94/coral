@@ -12,11 +12,6 @@ import {
 /** A successor build must declare the controller-succession contract generation it can accept. */
 export const PROVIDER_PROXY_CONTROL_GENERATION = 1;
 
-/**
- * The part of a coordinator identity that names the build it runs. A host keeps its own build as immutable
- * provenance; a controller build is the separate, mutable fact of which build's coordinators currently hold
- * the set and may redeem its recovery grant.
- */
 export const controllerBuildSchema = z
   .object({ generation: generationSchema, flavor: flavorSchema, buildSetId: canonicalUuidSchema })
   .strict();
@@ -62,12 +57,6 @@ export function assertCompatibleControlGeneration(controlGeneration: number): vo
   }
 }
 
-/**
- * Which build each admitted control holder runs. A role learns a holder's build only at the moment it admits
- * that holder through a redeemed grant, for the build the grant authorized; every other holder was admitted by
- * the bootstrap nonce only the host's own spawner holds, so it runs the host's build. A later install therefore
- * cannot claim a build its holder was never admitted under.
- */
 export interface ControllerBuildLedger {
   admit(holder: ControlTenancyHolder, build: ControllerBuild): void;
   buildOf(holder: ControlTenancyHolder | null): ControllerBuild;

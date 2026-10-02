@@ -238,9 +238,7 @@ async function createProviderProxyCapsules(
     storage: runtime.storage,
     uid,
   };
-  // Every capsule in a set shares this same identity; only its own bootstrap nonce and endpoint
-  // fields differ per role. Named once here, mirroring `bootstrap-capsule.ts`'s own
-  // `commonBootstrapCapsuleShape` precedent for the identical shape at the schema level.
+
   const capsuleIdentityFields = { ...setIdentity, guardianInstanceId, reaperInstanceId, proxyInstanceId };
   const guardianCapsule: GuardianBootstrapCapsule = {
     role: 'guardian',
@@ -278,8 +276,6 @@ async function createProviderProxyCapsules(
   return {
     label: 'capsules',
     run: () => {
-      // `force: true` tolerates a capsule already claimed by the process that consumed it — cleanup
-      // after any later cut always reaches this point with at least the guardian's capsule already gone.
       runtime.storage.rmSync(guardianCapsulePath, { force: true });
       runtime.storage.rmSync(reaperCapsulePath, { force: true });
       runtime.storage.rmSync(proxyCapsulePath, { force: true });
@@ -450,8 +446,7 @@ async function establishProviderProxyRoleSessions(
   const { coordinatorIdentity } = options;
   const { generation, flavor, buildSetId } = coordinatorIdentity;
   const hostFingerprint = options.hostFingerprint;
-  // The proxy is reached first: only it can report its own pid, incarnation, and process-group id, and
-  // both `guardian.open.v1` and `reaper.open.v1` need that identity as an input.
+
   const proxySession = await establishRoleControl(opened, timer, retry, {
     role: 'proxy',
     endpoint: setMinted.proxyEndpoint,
@@ -481,8 +476,6 @@ async function establishProviderProxyRoleSessions(
     instanceId: setMinted.proxyInstanceId,
   });
 
-  // The one identity this acquisition can verify in full: it spawned the guardian itself and observed
-  // its pid and incarnation directly, rather than trusting a self-report with nothing to check it against.
   const guardianSession = await establishRoleControl(opened, timer, retry, {
     role: 'guardian',
     endpoint: setMinted.guardianEndpoint,
@@ -515,9 +508,7 @@ async function establishProviderProxyRoleSessions(
   });
 
   const proxyIdentity = proxySession.opened.proxy;
-  // Named from the proxy's own self-report, not re-derived: if this disagrees with what the guardian
-  // recorded, `reaper.open.v1` itself refuses — the cross-check this acquisition needs for free, from
-  // the one RPC built to make that exact disagreement visible.
+
   const reaperSession = await establishRoleControl(opened, timer, retry, {
     role: 'reaper',
     endpoint: setMinted.reaperEndpoint,
@@ -713,7 +704,6 @@ async function establishProviderProxyControl(
       registerUndo,
     );
 
-    // No claim authority exists until every publication stage confirms.
     assertPublicationMayBegin();
     const publication = await retryProviderProxyAcquisitionPublication(session);
     if (publication.kind === 'publication-unknown') {

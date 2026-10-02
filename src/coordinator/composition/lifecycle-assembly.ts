@@ -1,7 +1,7 @@
 import { dirname } from 'node:path';
 import { knownDiscussSources } from '../../discuss/shell/session-read-service.js';
-import { readOrCreateEpochKey } from '../../store/epoch-key.js';
-import { encodeResolvedStoreEpoch, type ResolvedStoreEpoch } from '../../store/epoch.js';
+import { readOrCreateEpochKey } from '../../store/epoch/index.js';
+import { encodeResolvedStoreEpoch, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
 import { closeIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import { createLifecycle, type LifecycleDeps, type RunStartupRecoveryOrchestratorFn } from '../lifecycle.js';
 import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';

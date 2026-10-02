@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { protectStoreEpoch, protectedStoreEpochRoot, reconcileProtectedEpochs } from '#src/store/epoch-protection.js';
-import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
+import { protectStoreEpoch, protectedStoreEpochRoot, reconcileProtectedEpochs } from '#src/store/epoch/index.js';
+import { readOrCreateEpochKey } from '#src/store/epoch/index.js';
 import {
   encodeResolvedStoreEpoch,
   epochDirectory,
@@ -16,7 +16,7 @@ import {
   observeResolvedStoreEpoch,
   resolvedStoreEpoch,
   storeEpochLockPath,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import {
   SHIPPED_RELEASE_TAGS,
   createShippedPluginFixture,

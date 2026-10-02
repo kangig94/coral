@@ -382,7 +382,7 @@ describe('architecture layering invariants', () => {
   });
 
   it.each([
-    ['src/store/epoch.ts', '../store/epoch.js'],
+    ['src/store/epoch/index.ts', '../store/epoch/index.js'],
     ['src/coordinator/lifecycle.ts', '../coordinator/lifecycle.js'],
     ['src/transport/ipc/server.ts', '../transport/ipc/server.js'],
   ] as const)('rejects a namespace supervisor import of %s', (target, specifier) => {

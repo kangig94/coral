@@ -1,4 +1,4 @@
-// Generated from src/store/epoch.ts by scripts/build-server.mjs. Do not edit directly.
+// Generated from src/store/epoch/hook-source.ts by scripts/build-server.mjs. Do not edit directly.
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';

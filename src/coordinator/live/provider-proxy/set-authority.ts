@@ -130,10 +130,7 @@ export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAutho
   readonly autonomousDeadline: ProviderProxyAutonomousDeadline;
   readonly controlReattachment: ProviderProxySetControlReattachment;
   installRecoveryCredential(signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome>;
-  /**
-   * Authorizes `successor` to redeem this set's recovery grant for one succession attempt. The grant keeps
-   * authorizing this controller's own build, so a successor that fails before it serves can be reclaimed.
-   */
+
   authorizeControllerTransfer(
     transfer: Readonly<{ attemptId: string; successor: ControllerBuild }>,
     signal: AbortSignal,
@@ -559,8 +556,6 @@ async function performRecoveryCredentialInstall(
     });
   }
   if (inherited !== undefined && handoffCapsuleControllerBuildSetId(inherited) !== coordinatorIdentity.buildSetId) {
-    // The roles now authorize only this controller's build, so the durable half must say the same before
-    // a later coordinator of this build decides whether it may dial the set.
     const currentCapsulePath = currentHandoffCapsulePathBeside(handoffCapsulePath, inherited.version);
     writeHandoffCapsuleFile(
       currentCapsulePath,

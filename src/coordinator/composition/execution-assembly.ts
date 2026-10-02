@@ -12,7 +12,7 @@ type CoreContext = ReturnType<typeof createCoordinatorCoreContext>;
 
 export function prepareCoordinatorExecutionAssembly(core: CoreContext, options: CoordinatorCoreOptions) {
   const { world, state, defaultsPlan, storeServicesRef } = core;
-  // Eager defaults resolve from `runtime` alone.
+
   const defaults = defaultsPlan.finalizeWithWorld({
     bindHost: world.bindHost,
     advertiseHost: world.advertiseHost,

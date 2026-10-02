@@ -61,9 +61,6 @@ export function createKbDaemonRpc(
     request: KbDaemonKbReadRequest,
     options: { signal?: AbortSignal } = {},
   ): Promise<KbDaemonKbReadResult> =>
-    // The JSONL daemon protocol has no per-request cancel frame yet. The signal
-    // still cancels the parent-side wait promptly; daemon-side search
-    // cancellation needs a protocol-level follow-up.
     sendTypedRequest(
       'kb.read',
       request,

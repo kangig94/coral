@@ -6,8 +6,8 @@ import type { JobStore } from '../../jobs/store.js';
 import { durableCliProcessRuntimeMetaSchema } from '../../jobs/runtime-meta.js';
 import { readDurableCliProcessRuntimeEvidence } from '../../jobs/runtime-meta-store.js';
 import { readCustodyLedger } from '../../store/custody-ledger.js';
-import { epochPath, type ResolvedStoreEpoch } from '../../store/epoch.js';
-import { readOrCreateEpochKey } from '../../store/epoch-key.js';
+import { epochPath, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
+import { readOrCreateEpochKey } from '../../store/epoch/index.js';
 import {
   appendControllerReceipt,
   appendControllerRecoveryGrant,
@@ -151,7 +151,6 @@ export function prepareDurableCliTransfer(
   return collectDurableCliTransfer(runtime, db, progressStore, runDir, epoch, [...jobIds].sort());
 }
 
-/** A settled job has nothing left to transfer; a dead committed successor may have retired its runtime record. */
 export function verifyUnsettledDurableCliTransfer(
   runtime: Runtime,
   payload: unknown,

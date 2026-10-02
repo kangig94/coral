@@ -13,7 +13,7 @@ import {
   type ExactStoreEpochOpen,
   type ResolvedStoreEpoch,
   type StoreEpochOptions,
-} from './epoch.js';
+} from './epoch/index.js';
 
 type OpenedStartupBackendStore = Readonly<{
   db: Database;

@@ -66,7 +66,7 @@ export interface SuccessionWriterEntitlement {
 const GUARD_FILE = 'succession-writer.lock';
 const RECORD_FILE = 'succession-writer-generation.v1.json';
 const GUARD_WAIT_MS = 5_000;
-/** Covers every attempt one commit supervision can fail, its same-build recoveries included. */
+
 const REFUSED_ATTEMPT_MEMORY = 8;
 type LocalParkState = {
   generation: SuccessionWriterGeneration;
@@ -238,16 +238,83 @@ function readGeneration(runtime: Runtime, record: string): SuccessionWriterGener
   return { kind: 'recorded', record: value as SuccessionWriterRecord };
 }
 
-/** Runs evidence collection only while all writer turns are excluded. */
-export function recoverSuccessionWriterGeneration(
+type WriterRecoveryEvidence = Readonly<{
+  store: Readonly<{ storeRoot: string; epoch: string }>;
+  generations: readonly number[];
+  servings: readonly SuccessionServingRecord[];
+  release(): void;
+}>;
+
+function recoveredWriterGeneration(
   runtime: Runtime,
-  proveRecovery: () => Readonly<{
-    store: Readonly<{ storeRoot: string; epoch: string }>;
-    generations: readonly number[];
-    servings: readonly SuccessionServingRecord[];
-    release(): void;
-  }>,
-): void {
+  record: string,
+  raw: string,
+  evidence: WriterRecoveryEvidence,
+): SuccessionWriterGeneration {
+  const local = [...localParkStates].filter(([key]) => key.startsWith(`${record}\0`));
+  const generations = [...evidence.generations, ...local.map(([, state]) => state.generation.generation)];
+  for (const match of raw.matchAll(/"(?:generation|controlGeneration)"\s*:\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/gu)) {
+    const value = Number(match[1]);
+    if (Number.isSafeInteger(value)) generations.push(value);
+  }
+  const generation = generations.reduce((highest, value) => Math.max(highest, value), runtime.time.now()) + 1;
+  if (!Number.isSafeInteger(generation))
+    throw new Error('Succession writer generation recovery exhausted its counter.');
+  return { generation, ...evidence.store };
+}
+
+function retainedWriterFields(raw: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))
+      return parsed as Record<string, unknown>;
+  } catch {
+    // Unparseable additive fields must not prevent evidence-backed reconstruction.
+  }
+  return {};
+}
+
+function reconstructWriterRecord(
+  raw: string,
+  current: SuccessionWriterGeneration,
+  evidence: WriterRecoveryEvidence,
+): SuccessionWriterRecord {
+  const priorServings = evidence.servings.filter((serving) => validPriorServing(serving, current));
+  const retained = retainedWriterFields(raw);
+  if (
+    validServing(retained.serving, retained as SuccessionWriterGeneration) &&
+    validPriorServing(retained.serving, current)
+  )
+    priorServings.push(retained.serving);
+  if (Array.isArray(retained.priorServings)) {
+    priorServings.push(
+      ...retained.priorServings.filter((serving): serving is SuccessionServingRecord =>
+        validPriorServing(serving, current),
+      ),
+    );
+  }
+  delete retained.serving;
+  if (!Array.isArray(retained.refusedAttemptIds) || !retained.refusedAttemptIds.every((id) => typeof id === 'string'))
+    delete retained.refusedAttemptIds;
+  return { ...retained, ...current, priorServings, reconstructedGeneration: current.generation };
+}
+
+function quarantineWriterRecord(runtime: Runtime, location: ReturnType<typeof paths>): void {
+  const quarantine = `${location.record}.corrupt-${runtime.ids.uuid()}`;
+  runtime.storage.linkSync(location.record, quarantine);
+  const fd = runtime.storage.openSync(quarantine, 'r');
+  try {
+    runtime.storage.fdatasyncSync(fd);
+  } finally {
+    runtime.storage.closeSync(fd);
+  }
+  if (!runtime.storage.syncDirectoryDurableSync(location.root)) {
+    throw new Error('Could not quarantine corrupt succession writer generation.');
+  }
+}
+
+/** Runs evidence collection only while all writer turns are excluded. */
+export function recoverSuccessionWriterGeneration(runtime: Runtime, proveRecovery: () => WriterRecoveryEvidence): void {
   const location = paths(runtime);
   if (readGeneration(runtime, location.record).kind !== 'corrupt') return;
   ensureGuard(runtime);
@@ -257,69 +324,10 @@ export function recoverSuccessionWriterGeneration(
     if (damaged.kind !== 'corrupt') return;
     const evidence = proveRecovery();
     try {
-      const local = [...localParkStates].filter(([key]) => key.startsWith(`${location.record}\0`));
-      const generations = [...evidence.generations, ...local.map(([, state]) => state.generation.generation)];
-      // A partially damaged record can still expose a higher counter than the surviving receipts.
-      for (const match of damaged.raw.matchAll(
-        /"(?:generation|controlGeneration)"\s*:\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/gu,
-      )) {
-        const value = Number(match[1]);
-        if (Number.isSafeInteger(value)) generations.push(value);
-      }
-      // External writers are proven absent by the recovery evidence. Local entitlements remain observable.
-      // This counter exceeds them, surviving receipts, and any counter exposed by the damaged bytes; the
-      // wall-clock floor avoids recycling an unobservable historical counter without pretending to prove it.
-      const generation = generations.reduce((highest, value) => Math.max(highest, value), runtime.time.now()) + 1;
-      if (!Number.isSafeInteger(generation))
-        throw new Error('Succession writer generation recovery exhausted its counter.');
-      const priorServings = evidence.servings.filter((serving) =>
-        validPriorServing(serving, { generation, ...evidence.store }),
-      );
-      let retained: Record<string, unknown> = {};
-      try {
-        const parsed: unknown = JSON.parse(damaged.raw);
-        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))
-          retained = parsed as Record<string, unknown>;
-      } catch {
-        // Truncated JSON has no additive fields whose values can be retained.
-      }
-      if (
-        validServing(retained.serving, retained as SuccessionWriterGeneration) &&
-        validPriorServing(retained.serving, { generation, ...evidence.store })
-      )
-        priorServings.push(retained.serving);
-      if (Array.isArray(retained.priorServings)) {
-        priorServings.push(
-          ...retained.priorServings.filter((serving): serving is SuccessionServingRecord =>
-            validPriorServing(serving, { generation, ...evidence.store }),
-          ),
-        );
-      }
-      delete retained.serving;
-      if (
-        !Array.isArray(retained.refusedAttemptIds) ||
-        !retained.refusedAttemptIds.every((id) => typeof id === 'string')
-      )
-        delete retained.refusedAttemptIds;
-      const quarantine = `${location.record}.corrupt-${runtime.ids.uuid()}`;
-      // Retain the inode before atomic replacement, including bytes that are not valid UTF-8.
-      runtime.storage.linkSync(location.record, quarantine);
-      const fd = runtime.storage.openSync(quarantine, 'r');
-      try {
-        runtime.storage.fdatasyncSync(fd);
-      } finally {
-        runtime.storage.closeSync(fd);
-      }
-      if (!runtime.storage.syncDirectoryDurableSync(location.root)) {
-        throw new Error('Could not quarantine corrupt succession writer generation.');
-      }
-      writeGeneration(runtime, location.record, {
-        ...retained,
-        generation,
-        ...evidence.store,
-        priorServings,
-        reconstructedGeneration: generation,
-      });
+      const current = recoveredWriterGeneration(runtime, location.record, damaged.raw, evidence);
+      const record = reconstructWriterRecord(damaged.raw, current, evidence);
+      quarantineWriterRecord(runtime, location);
+      writeGeneration(runtime, location.record, record);
     } finally {
       evidence.release();
     }
@@ -638,10 +646,6 @@ export function recordSuccessionServing(
   }
 }
 
-/**
- * Decides a failed attempt under the guard its successor serves under: the successor either already serves, or
- * can neither advance a writer generation nor record serving for that attempt afterwards.
- */
 export function refuseSuccessionAttempt(
   runtime: Runtime,
   attemptId: string,
@@ -680,7 +684,6 @@ export function observeCurrentSuccessionServing(runtime: Runtime): SuccessionSer
   return requireGeneration(runtime, location.record)?.serving ?? null;
 }
 
-/** A supervised legacy successor may take a fresh same-epoch turn after its incumbent retires. */
 export function generationForLegacySuccessor(
   runtime: Runtime,
   expected: SuccessionWriterGeneration,

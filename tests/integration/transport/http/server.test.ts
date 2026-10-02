@@ -44,7 +44,7 @@ import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.j
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openSettledTestStoreDb, openTestStoreDb } from '#tests/helpers/store-db.js';
-import { resolveCurrentStore } from '#src/store/epoch.js';
+import { resolveCurrentStore } from '#src/store/epoch/index.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';

@@ -1,11 +1,11 @@
 import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
 
-import { acquireSharedFileLockSync, attemptExclusiveFileLockSync } from '../infra/fs-lock.js';
-import { inspectEpochKey, readEpochKey, readOrCreateEpochKey } from './epoch-key.js';
-import { observeStorePath } from './path-observation.js';
-import type { ResolvedStoreEpoch } from './epoch.js';
-import type { Runtime } from '../runtime/ports.js';
+import { acquireSharedFileLockSync, attemptExclusiveFileLockSync } from '../../infra/fs-lock.js';
+import { inspectEpochKey, readEpochKey, readOrCreateEpochKey } from './key.js';
+import { observeStorePath } from '../path-observation.js';
+import type { ResolvedStoreEpoch } from './types.js';
+import type { Runtime } from '../../runtime/ports.js';
 
 const PROTECTED_EPOCH_KEY_PATTERN = /^[0-9a-f-]{36}:[1-9]\d*$/;
 const addressSchema = z
@@ -65,13 +65,8 @@ function observedAddress(
   }
 }
 
-/**
- * A restore holds the protected epoch's lock across unlinking its address and moving it home; a restore waits this
- * long for readers that hold it.
- */
 const RESTORE_LOCK_WAIT_MS = 5_000;
 
-/** A protected directory is authoritative before its address record is published. */
 export function reconcileProtectedEpochs(
   runtime: StorePathRuntime,
   storeRoot: string,
@@ -91,7 +86,6 @@ export function observeProtectedEpochAddresses(
   try {
     scanned = scanProtectedEpochs(runtime, storeRoot, null);
   } catch {
-    // see unrecognizedProtectedEpochs in src/store/epoch-protection.ts
     return [];
   }
   const directory = join(protectedStoreEpochRoot(storeRoot), 'addresses');
@@ -151,8 +145,7 @@ function scanProtectedEpochs(
       if (match === null) continue;
       const epoch = match[1];
       const protectedPath = join(lineageRoot, name);
-      // Publishing holds the epoch's lock from observing the directory to writing its address, so a restore
-      // that moves the epoch home cannot leave an address naming a directory that is gone.
+
       let release: (() => void) | null = null;
       try {
         if (publish !== null) release = acquireSharedFileLockSync(join(protectedPath, '.lock'));
@@ -172,7 +165,6 @@ function scanProtectedEpochs(
   return addresses;
 }
 
-/** Null when the directory is not a protected epoch this lineage names, or its published address disagrees. */
 function observeProtectedCandidate(
   runtime: Pick<Runtime, 'storage'>,
   storeRoot: string,
@@ -365,7 +357,6 @@ function deletionTombstone(address: ProtectedEpochAddress): string {
   return join(dirname(address.protectedPath), `.reaping-epoch-${epoch}`);
 }
 
-/** Removed means both the directory and its deletion tombstone are observed absent; unobservable is not removed. */
 export function protectedEpochRemoved(runtime: Pick<Runtime, 'storage'>, address: ProtectedEpochAddress): boolean {
   try {
     return (
@@ -442,7 +433,6 @@ export function protectedDeletionResidues(
   return addresses;
 }
 
-/** An opener still held the epoch after the protector's drain: a later protection may find it released. */
 export class StoreEpochOpenerHeldError extends Error {
   constructor(epochKey: string) {
     super(`Epoch ${epochKey} cannot be protected while its opener is contended.`);

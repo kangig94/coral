@@ -797,9 +797,6 @@ function createKbBootReconciler(
   path: string,
   ipcAuth: ReturnType<typeof childPrincipalAuthFromEnv>,
 ): () => Promise<void> {
-  // A KB command probes once so a KB-disabled incumbent follows the same live
-  // authority rule as every other invocation. A later idle restart may inherit
-  // this process's KB setting without interrupting current coordinator work.
   let kbReconcileDone = false;
   const reconcileKbBoot = async (): Promise<void> => {
     if (kbReconcileDone || !path.startsWith('kb ')) return;
@@ -816,9 +813,6 @@ function createKbBootReconciler(
         (s) => s.id === 'kb' && s.phase === 'offline' && s.reason === KB_DISABLED_REASON,
       );
       if (kbDisabled) {
-        // Condition only, no remediation: the command's own `kb_disabled` error carries the one
-        // authoritative recovery instruction (see createDisabledKbDaemonSupervisor). Repeating it here
-        // would print the same advice twice, back to back, for a single failure.
         process.stderr.write(
           'KB is disabled on the running Coral coordinator; this command will fail. Continuing without a ' +
             'restart so in-flight work is not interrupted.\n',
@@ -826,7 +820,7 @@ function createKbBootReconciler(
         return;
       }
     } catch {
-      // Best-effort: fall through and let the command run against the daemon.
+      // An optional health observation must not prevent command dispatch.
     }
   };
 

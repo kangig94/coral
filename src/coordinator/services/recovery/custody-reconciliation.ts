@@ -11,7 +11,7 @@ import {
   type CustodyObservation,
 } from '../../../store/custody-ledger.js';
 import { readProviderOperations } from '../../../store/provider-operation-journal.js';
-import { acquireStoreEpochReadLock } from '../../../store/epoch.js';
+import { acquireStoreEpochReadLock } from '../../../store/epoch/index.js';
 import type { Database } from '../../../store/db.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { closureCandidates } from './epoch-closure.js';
