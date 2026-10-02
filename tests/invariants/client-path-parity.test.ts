@@ -108,7 +108,12 @@ const mirroredCoordinatorInfoPath = loadMirrorFunction<(homeDir: string, flavor:
 
 describe('self-contained client path parity', () => {
   it('keeps the hook selector generated from the backend owner', () => {
-    expect(readFileSync(join(REPO_ROOT, 'clients/hooks/lib/store-epoch.mjs'), 'utf8')).toBe(storeEpochHookSource());
+    const source = readFileSync(join(REPO_ROOT, 'clients/hooks/lib/store-epoch.mjs'), 'utf8');
+    expect(source).toBe(storeEpochHookSource());
+    expect(source).not.toContain('child_process');
+    expect(source).not.toContain('execFileSync');
+    expect(source).not.toMatch(/\brename(?:Sync)?\b/u);
+    expect(source).not.toContain('malformedLockRepairProbe');
   });
 
   it.each(FLAVORS)('matches authoritative %s paths', (flavor) => {

@@ -1078,7 +1078,10 @@ function hasCommittedSuccessionReceipt(
     observed.intent.completionReceipt !== null
       ? [{ incumbent: observed.intent.incumbent, receipt: observed.intent.completionReceipt }]
       : [];
-  return [...current, ...readCompletedSuccessionReceipts(runDir)].some(
+  const history = readCompletedSuccessionReceipts(runDir);
+  // Only positively decoded receipts can prove a transition; unreadable history grants no authority.
+  const retained = history.kind === 'readable' ? history.receipts : [];
+  return [...current, ...retained].some(
     ({ incumbent: prior, receipt }) =>
       prior.instanceId === incumbent.instanceId &&
       prior.version === incumbent.version &&

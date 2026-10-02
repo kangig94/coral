@@ -1024,9 +1024,9 @@ describe('ipc ensure', () => {
         await vi.advanceTimersByTimeAsync(800);
         await transitioned;
         expect((await result).instanceId).toBe('committed-successor');
-        expect(readCompletedSuccessionReceipts(coordinatorPaths('prod').runDir)).toHaveLength(
-          replaceCompletedIntent ? 1 : 0,
-        );
+        const history = readCompletedSuccessionReceipts(coordinatorPaths('prod').runDir);
+        expect(history.kind).toBe(replaceCompletedIntent ? 'readable' : 'absent');
+        if (history.kind === 'readable') expect(history.receipts).toHaveLength(1);
         expect(mockState.spawn).not.toHaveBeenCalled();
         expect(mockState.shutdown).not.toHaveBeenCalled();
       },

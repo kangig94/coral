@@ -16,6 +16,8 @@ import {
   observeSuccessionServing,
   observeSuccessionWriterGeneration,
   recordSuccessionServing,
+  readSuccessionWriterGeneration,
+  recoverSuccessionWriterGeneration,
   refuseSuccessionAttempt,
 } from '#src/store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -48,6 +50,112 @@ afterEach(() => {
 });
 
 describe('succession writer generation', () => {
+  it.each(['garbage', JSON.stringify({ generation: 'damaged' })])(
+    'classifies corrupt generation bytes without replacing them (%s)',
+    (damage) => {
+      const { runtime, store } = fixture();
+      joinSuccessionWriterGeneration(runtime, store);
+      const path = join(
+        resolveGenerationBoundaryPaths(runtime).coordinationRoot,
+        'succession-writer-generation.v1.json',
+      );
+      writeFileSync(path, damage);
+      expect(readSuccessionWriterGeneration(runtime)).toEqual({ kind: 'corrupt', raw: damage });
+      expect(readFileSync(path, 'utf8')).toBe(damage);
+    },
+  );
+
+  it('recovers above all observable generations and fences stale Journal and Corpus writers', () => {
+    const { root, runtime, store, open } = fixture();
+    const writer = joinSuccessionWriterGeneration(runtime, store);
+    const corpus = fenceCorpusStorage(runtime.storage, writer);
+    const db = open();
+    db.exec('CREATE TABLE recovered_writer (value TEXT)');
+    const path = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-generation.v1.json');
+    const higherGeneration = runtime.time.now() + 100_000;
+    writeFileSync(path, `{"generation":${higherGeneration},`);
+    expect(() => writer.withWriteTurn(() => undefined)).toThrow(/Corrupt/u);
+    expect(() => joinSuccessionWriterGeneration(runtime, store)).toThrow(/Corrupt/u);
+    expect(readFileSync(path, 'utf8')).toContain(String(higherGeneration));
+    const serving = {
+      attemptId: 'proven-served',
+      epochKey: JSON.stringify({ ...store, path: join(root, 'store.db') }),
+      successorInstanceId: 'previous-successor',
+      controlGeneration: higherGeneration - 1,
+      recordedAt: new Date(runtime.time.now()).toISOString(),
+    };
+    recoverSuccessionWriterGeneration(runtime, () => ({
+      store,
+      generations: [higherGeneration - 1],
+      servings: [serving],
+      release() {},
+    }));
+    const recovered = joinSuccessionWriterGeneration(runtime, store);
+    expect(recovered.generation.generation).toBe(higherGeneration + 1);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ priorServings: [serving] });
+    expect(() => db.prepare('INSERT INTO recovered_writer VALUES (?)').run('stale')).toThrow(/lost its entitlement/u);
+    expect(() => corpus.writeFileSync(join(root, 'stale.txt'), 'stale')).toThrow(/lost its entitlement/u);
+    expect(existsSync(join(root, 'stale.txt'))).toBe(false);
+    expect(recovered.withWriteTurn(() => 'current')).toBe('current');
+    expect(advanceSuccessionWriterGeneration(runtime, recovered.generation, store).generation).toBe(
+      higherGeneration + 2,
+    );
+    db.close();
+  });
+
+  it('retains valid serving receipts and additive fields from a record with damaged owned fields', () => {
+    const { root, runtime, store } = fixture();
+    const writer = joinSuccessionWriterGeneration(runtime, store);
+    const path = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-generation.v1.json');
+    const serving = {
+      attemptId: 'served-before-damage',
+      epochKey: JSON.stringify({ ...store, path: join(root, 'store.db') }),
+      successorInstanceId: 'successor',
+      controlGeneration: 1e15,
+      recordedAt: new Date(runtime.time.now()).toISOString(),
+    };
+    const raw = JSON.stringify({
+      generation: 1e15,
+      ...store,
+      serving,
+      refusedAttemptIds: [1],
+      futureField: 'keep',
+    }).replace('"generation":1000000000000000', '"generation":1e15');
+    writeFileSync(path, raw);
+    expect(readSuccessionWriterGeneration(runtime).kind).toBe('corrupt');
+    recoverSuccessionWriterGeneration(runtime, () => ({ store, generations: [], servings: [], release() {} }));
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
+      generation: 1e15 + 1,
+      priorServings: [serving],
+      futureField: 'keep',
+    });
+    expect(observeSuccessionServing(runtime, serving.attemptId)).toEqual(serving);
+    expect(() => writer.assertCurrent()).toThrow(/lost its entitlement/u);
+  });
+
+  it('leaves corruption untouched during an active writer turn and after refused evidence', () => {
+    const { runtime, store } = fixture();
+    const writer = joinSuccessionWriterGeneration(runtime, store);
+    const release = writer.beginWriteTurn();
+    const path = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-generation.v1.json');
+    writeFileSync(path, 'garbage');
+    let probed = false;
+    const refused = () => {
+      probed = true;
+      throw new Error('writers unobservable');
+    };
+    try {
+      expect(() => recoverSuccessionWriterGeneration(runtime, refused)).toThrow(/guard timed out/u);
+      expect(probed).toBe(false);
+      expect(readFileSync(path, 'utf8')).toBe('garbage');
+    } finally {
+      release();
+    }
+    expect(() => recoverSuccessionWriterGeneration(runtime, refused)).toThrow('writers unobservable');
+    expect(probed).toBe(true);
+    expect(readFileSync(path, 'utf8')).toBe('garbage');
+  });
+
   it('preserves additive generation fields when advancing the writer', () => {
     const { runtime, store } = fixture();
     const writer = joinSuccessionWriterGeneration(runtime, store);

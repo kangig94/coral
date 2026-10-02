@@ -415,8 +415,11 @@ describe('upgrade intent', () => {
     };
     expect(record.futureEnvelope).toBe('keep');
     expect(record.receipts[0]).toMatchObject({ futureEntry: 'keep' });
-    expect(readCompletedSuccessionReceipts(dir)).toHaveLength(2);
-    expect(readCompletedSuccessionReceipts(dir)[0]).toMatchObject({ futureEntry: 'keep' });
+    const history = readCompletedSuccessionReceipts(dir);
+    expect(history.kind).toBe('readable');
+    if (history.kind !== 'readable') throw new Error('Expected readable receipt history');
+    expect(history.receipts).toHaveLength(2);
+    expect(history.receipts[0]).toMatchObject({ futureEntry: 'keep' });
   });
 
   it.each(['{', JSON.stringify({ version: 1, receipts: 'damaged' })])(
@@ -447,7 +450,10 @@ describe('upgrade intent', () => {
       writeFileSync(history, damage);
       const next = await compareAndSwapUpgradeIntent(dir, completed.intent.revision, pendingIntent('next'));
       expect(next.kind).toBe('written');
-      expect(readCompletedSuccessionReceipts(dir)).toMatchObject([{ receipt: completionReceipt }]);
+      expect(readCompletedSuccessionReceipts(dir)).toMatchObject({
+        kind: 'readable',
+        receipts: [{ receipt: completionReceipt }],
+      });
       const quarantine = readdirSync(dir).find((name) => name.startsWith('upgrade-receipts.v1.json.damaged.'));
       expect(quarantine).toBeDefined();
       expect(readFileSync(join(dir, quarantine!), 'utf8')).toBe(damage);

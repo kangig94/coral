@@ -178,6 +178,7 @@ import {
   type SuccessionStartupHold,
 } from './succession/startup.js';
 import { type SuccessionWriterGeneration } from '../store/succession-writer-generation.js';
+import { recoverDamagedStartupWriter } from './succession/writer-recovery.js';
 import { type SuccessionPreparation } from './succession/protocol.js';
 import { type RetirementDisposition } from './succession/retirement-disposition.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
@@ -2203,6 +2204,7 @@ async function prepareStartupAuthority(
   signal: AbortSignal,
 ) {
   const { runtime } = deps;
+  if (deps.storeServicesRef.tryGet() === null) recoverDamagedStartupWriter(runtime);
   const prepared = await prepareStartupBuild(deps);
   const { successionAttemptChild, currentBuild, successionStoreContext, currentSelection, preinjectedStoreServices } =
     prepared;

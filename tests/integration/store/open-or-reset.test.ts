@@ -281,6 +281,24 @@ afterEach(() => {
 });
 
 describe('write-once store epochs', () => {
+  it('repairs unheld epoch lock damage in the store owner without replacing the store', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    const path = storeEpochLockPath(dbDir, '1');
+    const inode = statSync(path).ino;
+    const database = readFileSync(epochPath(dbDir, '1'));
+    writeFileSync(path, 'garbage');
+    const db = openWritableStoreDbNoReset(runtime, { storeFormat });
+    expect(db.prepare<[], { value: string }>('SELECT value FROM rollback_sentinel').get()?.value).toBe(
+      'concurrent-winner',
+    );
+    db.close();
+    expect(statSync(path).ino).not.toBe(inode);
+    expect(readFileSync(epochPath(dbDir, '1'))).toEqual(database);
+    expect(resolveCurrentStoreEpoch(runtime.storage, dbDir)).toBe('1');
+  });
+
   it('reopens the same epoch and reclaims residue through a cross-device symlinked store root', async () => {
     const baseDir = mkdtempSync('/tmp/coral-store-epoch-symlink-base-');
     roots.push(baseDir);

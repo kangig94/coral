@@ -324,14 +324,25 @@ const completedSuccessionReceiptsSchema = z
   })
   .passthrough();
 
-export function readCompletedSuccessionReceipts(
-  runDir: string,
-): readonly z.infer<typeof completedSuccessionReceiptSchema>[] {
+export type CompletedSuccessionReceiptsRead =
+  | Readonly<{ kind: 'readable'; receipts: readonly z.infer<typeof completedSuccessionReceiptSchema>[] }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'corrupt' }>
+  | Readonly<{ kind: 'unreadable'; cause: unknown }>;
+
+export function readCompletedSuccessionReceipts(runDir: string): CompletedSuccessionReceiptsRead {
+  let raw: string;
   try {
-    const value = JSON.parse(readFileSync(join(runDir, 'upgrade-receipts.v1.json'), 'utf8')) as unknown;
-    return completedSuccessionReceiptsSchema.parse(value).receipts;
+    raw = readFileSync(join(runDir, 'upgrade-receipts.v1.json'), 'utf8');
+  } catch (cause: unknown) {
+    if (cause instanceof Error && 'code' in cause && cause.code === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'unreadable', cause };
+  }
+  try {
+    const parsed = completedSuccessionReceiptsSchema.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success ? { kind: 'readable', receipts: parsed.data.receipts } : { kind: 'corrupt' };
   } catch {
-    return [];
+    return { kind: 'corrupt' };
   }
 }
 

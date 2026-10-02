@@ -38,6 +38,7 @@ type SuccessionWriterRecord = SuccessionWriterGeneration &
     serving?: SuccessionServingRecord;
     priorServings?: readonly SuccessionServingRecord[];
     refusedAttemptIds?: readonly string[];
+    reconstructedGeneration?: number;
   }>;
 
 export class SuccessionAttemptRefusedError extends Error {
@@ -163,15 +164,35 @@ function validPriorServing(value: unknown, current: SuccessionWriterGeneration):
   }
 }
 
-function readGeneration(runtime: Runtime, record: string): SuccessionWriterRecord | null {
+export type SuccessionWriterGenerationRead =
+  | Readonly<{ kind: 'recorded'; record: SuccessionWriterRecord }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'corrupt'; raw: string }>;
+
+export function readSuccessionWriterGeneration(runtime: Runtime): SuccessionWriterGenerationRead {
+  return readGeneration(runtime, paths(runtime).record);
+}
+
+function requireGeneration(runtime: Runtime, record: string): SuccessionWriterRecord | null {
+  const read = readGeneration(runtime, record);
+  if (read.kind === 'corrupt') throw new Error(`Corrupt succession writer generation record: ${record}`);
+  return read.kind === 'recorded' ? read.record : null;
+}
+
+function readGeneration(runtime: Runtime, record: string): SuccessionWriterGenerationRead {
   let raw: string;
   try {
     raw = runtime.storage.readFileSync(record, 'utf-8');
   } catch (error: unknown) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { kind: 'absent' };
     throw error;
   }
-  const value: unknown = JSON.parse(raw);
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return { kind: 'corrupt', raw };
+  }
   if (
     typeof value !== 'object' ||
     value === null ||
@@ -184,11 +205,11 @@ function readGeneration(runtime: Runtime, record: string): SuccessionWriterRecor
     !('epoch' in value) ||
     typeof value.epoch !== 'string'
   ) {
-    throw new Error(`Invalid succession writer generation record: ${record}`);
+    return { kind: 'corrupt', raw };
   }
   if ('serving' in value) {
     if (!validServing(value.serving, value as SuccessionWriterGeneration)) {
-      throw new Error(`Invalid succession serving record: ${record}`);
+      return { kind: 'corrupt', raw };
     }
   }
   if (
@@ -196,16 +217,115 @@ function readGeneration(runtime: Runtime, record: string): SuccessionWriterRecor
     (!Array.isArray(value.priorServings) ||
       !value.priorServings.every((serving) => validPriorServing(serving, value as SuccessionWriterGeneration)))
   ) {
-    throw new Error(`Invalid prior succession serving records: ${record}`);
+    return { kind: 'corrupt', raw };
   }
   if (
     'refusedAttemptIds' in value &&
     (!Array.isArray(value.refusedAttemptIds) ||
       !value.refusedAttemptIds.every((attemptId) => typeof attemptId === 'string'))
   ) {
-    throw new Error(`Invalid succession attempt refusals: ${record}`);
+    return { kind: 'corrupt', raw };
   }
-  return value as SuccessionWriterRecord;
+  if (
+    'reconstructedGeneration' in value &&
+    (typeof value.reconstructedGeneration !== 'number' ||
+      !Number.isSafeInteger(value.reconstructedGeneration) ||
+      value.reconstructedGeneration < 1 ||
+      value.reconstructedGeneration > value.generation)
+  ) {
+    return { kind: 'corrupt', raw };
+  }
+  return { kind: 'recorded', record: value as SuccessionWriterRecord };
+}
+
+/** Runs evidence collection only while all writer turns are excluded. */
+export function recoverSuccessionWriterGeneration(
+  runtime: Runtime,
+  proveRecovery: () => Readonly<{
+    store: Readonly<{ storeRoot: string; epoch: string }>;
+    generations: readonly number[];
+    servings: readonly SuccessionServingRecord[];
+    release(): void;
+  }>,
+): void {
+  const location = paths(runtime);
+  if (readGeneration(runtime, location.record).kind !== 'corrupt') return;
+  ensureGuard(runtime);
+  const release = exclusiveGuard(runtime, location.guard);
+  try {
+    const damaged = readGeneration(runtime, location.record);
+    if (damaged.kind !== 'corrupt') return;
+    const evidence = proveRecovery();
+    try {
+      const local = [...localParkStates].filter(([key]) => key.startsWith(`${location.record}\0`));
+      const generations = [...evidence.generations, ...local.map(([, state]) => state.generation.generation)];
+      // A partially damaged record can still expose a higher counter than the surviving receipts.
+      for (const match of damaged.raw.matchAll(
+        /"(?:generation|controlGeneration)"\s*:\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/gu,
+      )) {
+        const value = Number(match[1]);
+        if (Number.isSafeInteger(value)) generations.push(value);
+      }
+      // External writers are proven absent by the recovery evidence. Local entitlements remain observable.
+      // This counter exceeds them, surviving receipts, and any counter exposed by the damaged bytes; the
+      // wall-clock floor avoids recycling an unobservable historical counter without pretending to prove it.
+      const generation = generations.reduce((highest, value) => Math.max(highest, value), runtime.time.now()) + 1;
+      if (!Number.isSafeInteger(generation))
+        throw new Error('Succession writer generation recovery exhausted its counter.');
+      const priorServings = evidence.servings.filter((serving) =>
+        validPriorServing(serving, { generation, ...evidence.store }),
+      );
+      let retained: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = JSON.parse(damaged.raw);
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))
+          retained = parsed as Record<string, unknown>;
+      } catch {
+        // Truncated JSON has no additive fields whose values can be retained.
+      }
+      if (
+        validServing(retained.serving, retained as SuccessionWriterGeneration) &&
+        validPriorServing(retained.serving, { generation, ...evidence.store })
+      )
+        priorServings.push(retained.serving);
+      if (Array.isArray(retained.priorServings)) {
+        priorServings.push(
+          ...retained.priorServings.filter((serving): serving is SuccessionServingRecord =>
+            validPriorServing(serving, { generation, ...evidence.store }),
+          ),
+        );
+      }
+      delete retained.serving;
+      if (
+        !Array.isArray(retained.refusedAttemptIds) ||
+        !retained.refusedAttemptIds.every((id) => typeof id === 'string')
+      )
+        delete retained.refusedAttemptIds;
+      const quarantine = `${location.record}.corrupt-${runtime.ids.uuid()}`;
+      // Retain the inode before atomic replacement, including bytes that are not valid UTF-8.
+      runtime.storage.linkSync(location.record, quarantine);
+      const fd = runtime.storage.openSync(quarantine, 'r');
+      try {
+        runtime.storage.fdatasyncSync(fd);
+      } finally {
+        runtime.storage.closeSync(fd);
+      }
+      if (!runtime.storage.syncDirectoryDurableSync(location.root)) {
+        throw new Error('Could not quarantine corrupt succession writer generation.');
+      }
+      writeGeneration(runtime, location.record, {
+        ...retained,
+        generation,
+        ...evidence.store,
+        priorServings,
+        reconstructedGeneration: generation,
+      });
+    } finally {
+      evidence.release();
+    }
+  } finally {
+    release();
+  }
 }
 
 function assertNotRefused(current: SuccessionWriterRecord, attemptId: string): void {
@@ -224,10 +344,16 @@ function exclusiveGuard(runtime: Runtime, guard: string, deadlineAtMs?: number):
       ? GUARD_WAIT_MS
       : Math.min(GUARD_WAIT_MS, Math.max(0, deadlineAtMs - runtime.time.now()));
   const deadline = runtime.time.monotonicNow() + BigInt(Math.ceil(waitMs));
+  let cause: unknown;
   for (;;) {
-    const release = tryAcquireExclusiveFileLockSync(guard);
-    if (release !== null) return release;
-    if (runtime.time.monotonicNow() >= deadline) throw new Error(`Succession writer guard timed out: ${guard}`);
+    try {
+      const release = tryAcquireExclusiveFileLockSync(guard);
+      if (release !== null) return release;
+    } catch (error: unknown) {
+      cause = error;
+    }
+    if (runtime.time.monotonicNow() >= deadline)
+      throw new Error(`Succession writer guard timed out: ${guard}`, { cause });
     waitSync(10);
   }
 }
@@ -269,7 +395,7 @@ function rebindSuccessionWriterGeneration(
   if (!state.parked) throw new Error('A live succession writer cannot rebind its generation.');
   const release = createSharedFileLockSync(location.guard);
   try {
-    const observed = readGeneration(runtime, location.record);
+    const observed = requireGeneration(runtime, location.record);
     if (
       observed?.generation !== next.generation ||
       observed.storeRoot !== next.storeRoot ||
@@ -302,7 +428,7 @@ function unparkSuccessionWriterGeneration(
   const release = createSharedFileLockSync(location.guard);
   try {
     const generation = state.generation;
-    const observed = readGeneration(runtime, location.record);
+    const observed = requireGeneration(runtime, location.record);
     if (
       observed?.generation !== generation.generation ||
       observed.storeRoot !== generation.storeRoot ||
@@ -335,11 +461,11 @@ export function joinSuccessionWriterGeneration(
   store: Readonly<{ storeRoot: string; epoch: string }>,
 ): SuccessionWriterEntitlement {
   const location = ensureGuard(runtime);
-  let current = readGeneration(runtime, location.record);
+  let current = requireGeneration(runtime, location.record);
   if (current === null) {
     const release = exclusiveGuard(runtime, location.guard);
     try {
-      current = readGeneration(runtime, location.record);
+      current = requireGeneration(runtime, location.record);
       if (current === null) {
         current = { generation: 1, storeRoot: store.storeRoot, epoch: store.epoch };
         writeGeneration(runtime, location.record, current);
@@ -366,7 +492,7 @@ export function joinSuccessionWriterGeneration(
   const assertCurrent = () => {
     const generation = state.generation;
     if (state.parked) throw new Error(`Succession writer generation ${generation.generation} is parked.`);
-    const observed = readGeneration(runtime, location.record);
+    const observed = requireGeneration(runtime, location.record);
     if (
       observed?.generation !== generation.generation ||
       observed.storeRoot !== generation.storeRoot ||
@@ -420,7 +546,7 @@ export function advanceSuccessionWriterGeneration(
   const location = ensureGuard(runtime);
   const release = exclusiveGuard(runtime, location.guard);
   try {
-    const current = readGeneration(runtime, location.record);
+    const current = requireGeneration(runtime, location.record);
     if (
       current?.generation !== expected.generation ||
       current.storeRoot !== expected.storeRoot ||
@@ -449,7 +575,7 @@ export function withSuccessionAttemptMayAdvance<T>(
   const location = ensureGuard(runtime);
   const release = exclusiveGuard(runtime, location.guard);
   try {
-    const current = readGeneration(runtime, location.record);
+    const current = requireGeneration(runtime, location.record);
     if (
       current?.generation !== expected.generation ||
       current.storeRoot !== expected.storeRoot ||
@@ -480,7 +606,7 @@ export function recordSuccessionServing(
   const location = ensureGuard(runtime);
   const release = exclusiveGuard(runtime, location.guard);
   try {
-    const current = readGeneration(runtime, location.record);
+    const current = requireGeneration(runtime, location.record);
     if (
       current?.generation !== generation.generation ||
       current.storeRoot !== generation.storeRoot ||
@@ -524,7 +650,7 @@ export function refuseSuccessionAttempt(
   const location = ensureGuard(runtime);
   const release = exclusiveGuard(runtime, location.guard, deadlineAtMs);
   try {
-    const current = readGeneration(runtime, location.record);
+    const current = requireGeneration(runtime, location.record);
     if (current === null) throw new Error('Succession cannot refuse an attempt without a writer generation.');
     if (current.serving?.attemptId === attemptId) {
       return { kind: 'serving', serving: current.serving as CommittedSuccessionServing };
@@ -542,13 +668,16 @@ export function refuseSuccessionAttempt(
 
 export function observeSuccessionServing(runtime: Runtime, attemptId: string): SuccessionServingRecord | null {
   const location = paths(runtime);
-  const current = readGeneration(runtime, location.record);
-  return current?.serving?.attemptId === attemptId ? current.serving : null;
+  const current = requireGeneration(runtime, location.record);
+  if (current?.serving?.attemptId === attemptId) return current.serving;
+  return current !== null && current.reconstructedGeneration === current.generation
+    ? (current.priorServings?.find((serving) => serving.attemptId === attemptId) ?? null)
+    : null;
 }
 
 export function observeCurrentSuccessionServing(runtime: Runtime): SuccessionServingRecord | null {
   const location = paths(runtime);
-  return readGeneration(runtime, location.record)?.serving ?? null;
+  return requireGeneration(runtime, location.record)?.serving ?? null;
 }
 
 /** A supervised legacy successor may take a fresh same-epoch turn after its incumbent retires. */
@@ -561,7 +690,7 @@ export function generationForLegacySuccessor(
   const location = ensureGuard(runtime);
   const release = exclusiveGuard(runtime, location.guard);
   try {
-    const current = readGeneration(runtime, location.record);
+    const current = requireGeneration(runtime, location.record);
     if (
       current?.generation !== expected.generation ||
       current.storeRoot !== expected.storeRoot ||
@@ -589,7 +718,7 @@ export function generationForLegacySuccessor(
 
 export function observeSuccessionWriterGeneration(runtime: Runtime): SuccessionWriterGeneration | null {
   const location = paths(runtime);
-  const current = readGeneration(runtime, location.record);
+  const current = requireGeneration(runtime, location.record);
   return current === null
     ? null
     : { generation: current.generation, storeRoot: current.storeRoot, epoch: current.epoch };
@@ -603,7 +732,7 @@ export function handbackSuccessionWriterGeneration(
   const location = ensureGuard(runtime);
   const release = exclusiveGuard(runtime, location.guard);
   try {
-    const current = readGeneration(runtime, location.record);
+    const current = requireGeneration(runtime, location.record);
     if (
       current?.generation !== failed.generation ||
       current.storeRoot !== failed.storeRoot ||

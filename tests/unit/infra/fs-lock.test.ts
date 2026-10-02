@@ -7,9 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   acquireDirectoryLock,
   acquireDirectoryLockSync,
+  acquireSharedFileLockSync,
   attemptExclusiveFileLockSync,
   createSharedFileLockSync,
   repairMalformedFileLockSync,
+  tryAcquireExclusiveFileLockSync,
   type DirectoryLockDeps,
   type DirectoryLockOwner,
 } from '#src/infra/fs-lock.js';
@@ -682,6 +684,41 @@ describe('malformed file lock repair', () => {
     return attempt.kind === 'acquired';
   }
 
+  it.each(['create-shared', 'read-shared', 'exclusive'] as const)(
+    'repairs an unheld malformed inode before %s acquisition',
+    (mode) => {
+      const path = lockPath();
+      writeFileSync(path, 'garbage');
+      const inode = statSync(path).ino;
+      const release =
+        mode === 'exclusive'
+          ? tryAcquireExclusiveFileLockSync(path)
+          : mode === 'read-shared'
+            ? acquireSharedFileLockSync(path)
+            : createSharedFileLockSync(path);
+      expect(release).not.toBeNull();
+      release?.();
+      expect(statSync(path).ino).not.toBe(inode);
+      expect(recreatedAndAcquired(path)).toBe(true);
+    },
+  );
+
+  it('preserves a malformed inode when repair authority is unavailable', () => {
+    const path = lockPath();
+    writeFileSync(path, 'garbage');
+    const inode = statSync(path).ino;
+    const release = acquireDirectoryLockSync(`${path}.repair`);
+    try {
+      expect(() => acquireSharedFileLockSync(path, 0)).toThrow(/repair withheld/u);
+      expect(statSync(path).ino).toBe(inode);
+      expect(readFileSync(path, 'utf8')).toBe('garbage');
+    } finally {
+      release();
+    }
+    acquireSharedFileLockSync(path, 0)();
+    expect(statSync(path).ino).not.toBe(inode);
+  });
+
   it('should move aside a lock file whose bytes no process can lock, and let the address be locked again', () => {
     const path = lockPath();
     writeFileSync(path, 'not a sqlite database, and long enough to have a header to reject');
@@ -749,6 +786,7 @@ describe('malformed file lock repair', () => {
     linkSync(path, `${path}.alias`);
 
     expect(repairMalformedFileLockSync(path)).toEqual({ kind: 'held' });
+    expect(tryAcquireExclusiveFileLockSync(path)).toBeNull();
     expect(statSync(path).ino).toBe(inode);
   });
 

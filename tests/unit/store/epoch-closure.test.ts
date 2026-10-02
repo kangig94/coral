@@ -289,7 +289,7 @@ describe('epoch closure and protected addressing', () => {
     expect(settled.store.epoch).toBe('1');
   });
 
-  it('returns unobservable metadata when an old epoch lock is malformed', async () => {
+  it('repairs an unheld malformed old epoch lock and completes its certified sweep', async () => {
     const runtime = harness();
     const root = runtime.paths.coral.store.dbDir;
     for (const epoch of ['1', '2', '3']) publish(runtime, epoch);
@@ -313,8 +313,13 @@ describe('epoch closure and protected addressing', () => {
       sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
         resultsReleased: (epochKey) => index.resultsReleased(epochKey),
       }),
-    ).resolves.toBe('unobservable-metadata');
-    expect(existsSync(epochDirectory(root, '1'))).toBe(true);
+    ).resolves.toBe('complete');
+    expect(existsSync(epochDirectory(root, '1'))).toBe(false);
+    expect(existsSync(epochDirectory(root, '3'))).toBe(true);
+    expect(observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, closureKey)).toMatchObject({
+      kind: 'recorded',
+      evidence: { disposition: 'closed', executionDischarge: 'certified' },
+    });
   });
 
   it('retains an unprovable earlier epoch while publishing a successor', () => {

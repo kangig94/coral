@@ -51,6 +51,7 @@ import {
   observeSuccessionServing,
   observeCurrentSuccessionServing,
   observeSuccessionWriterGeneration,
+  readSuccessionWriterGeneration,
   recordSuccessionServing,
   type SuccessionWriterGeneration,
 } from '../../store/succession-writer-generation.js';
@@ -225,15 +226,26 @@ function clearStartupPatience(runtime: Runtime, subject: string): void {
   }
 }
 
-function readStartupPatience(runtime: Runtime, subject: string): z.infer<typeof startupPatienceSchema> | null {
+type StartupPatienceRead =
+  | Readonly<{ kind: 'recorded'; record: z.infer<typeof startupPatienceSchema> }>
+  | Readonly<{ kind: 'absent' | 'corrupt' | 'unreadable' }>;
+
+function readStartupPatience(runtime: Runtime, subject: string): StartupPatienceRead {
+  let raw: string;
   try {
-    const parsed = startupPatienceSchema.safeParse(
-      JSON.parse(runtime.storage.readFileSync(startupPatiencePath(runtime, subject), 'utf-8')) as unknown,
-    );
-    return parsed.success && parsed.data.attemptId === subject ? parsed.data : null;
+    raw = runtime.storage.readFileSync(startupPatiencePath(runtime, subject), 'utf-8');
+  } catch (error: unknown) {
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT'
+      ? { kind: 'absent' }
+      : { kind: 'unreadable' };
+  }
+  try {
+    const parsed = startupPatienceSchema.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success && parsed.data.attemptId === subject
+      ? { kind: 'recorded', record: parsed.data }
+      : { kind: 'corrupt' };
   } catch {
-    // An absent or unreadable record starts the count; it can only delay abandonment, never cause it.
-    return null;
+    return { kind: 'corrupt' };
   }
 }
 
@@ -242,7 +254,8 @@ function readStartupPatience(runtime: Runtime, subject: string): z.infer<typeof 
  * abandoned: cleared, the same unchanged evidence would hold the next startups all over again.
  */
 function startupPatienceExhausted(runtime: Runtime, subject: string): boolean {
-  return (readStartupPatience(runtime, subject)?.startups ?? 0) >= SUCCESSION_STARTUP_PATIENCE;
+  const read = readStartupPatience(runtime, subject);
+  return read.kind === 'recorded' && read.record.startups >= SUCCESSION_STARTUP_PATIENCE;
 }
 
 /**
@@ -258,7 +271,9 @@ async function exhaustStartupPatience(
   if (hold.kind === 'deaths-unproven' && hold.alive) return false;
   const subject = patienceSubject(hold);
   const path = startupPatiencePath(runtime, subject);
-  const previous = readStartupPatience(runtime, subject);
+  const read = readStartupPatience(runtime, subject);
+  // Damaged counters restart the bounded count; uncertainty may delay abandonment, never authorize it.
+  const previous = read.kind === 'recorded' ? read.record : null;
   if (previous !== null && previous.startups >= SUCCESSION_STARTUP_PATIENCE) {
     const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
     if (
@@ -1441,8 +1456,21 @@ export async function openCommittedRecoveryStore(
   if (priorReceipt === null || priorGeneration.generation < priorReceipt.controlGeneration) {
     throw new SuccessionAttemptStartupHoldError('committed successor generation changed before recovery');
   }
+  const read = readSuccessionWriterGeneration(runtime);
+  const reconstructed =
+    read.kind === 'recorded' &&
+    read.record.reconstructedGeneration === priorGeneration.generation &&
+    read.record.priorServings?.some(
+      (serving) =>
+        serving.attemptId === priorReceipt.attemptId &&
+        serving.epochKey === priorReceipt.epochKey &&
+        serving.successorInstanceId === priorReceipt.successor.instanceId &&
+        serving.controlGeneration === priorReceipt.controlGeneration &&
+        serving.recordedAt === priorReceipt.recordedAt,
+    ) === true;
   if (
     priorGeneration.generation > priorReceipt.controlGeneration &&
+    !reconstructed &&
     (recovery.intent.attemptChild?.pid === priorReceipt.successor.pid ||
       recovery.intent.attemptChild === null ||
       recovery.intent.attemptChild === undefined)

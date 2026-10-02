@@ -88,6 +88,28 @@ function parseJson(raw: string): unknown {
   }
 }
 
+export function controllerWriterRecoveryGenerations(runtime: Runtime): readonly number[] {
+  let directories: string[];
+  try {
+    directories = runtime.storage.readdirSync(controllerRoot(runtime));
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [];
+    throw error;
+  }
+  const generations: number[] = [];
+  for (const directory of directories) {
+    const root = join(controllerRoot(runtime), directory);
+    for (const name of runtime.storage.readdirSync(root)) {
+      if (!name.endsWith('.json')) continue;
+      const value = parseJson(runtime.storage.readFileSync(join(root, name), 'utf-8'));
+      const parsed = directory === 'served' ? servingSchema.safeParse(value) : openSchema.safeParse(value);
+      if (!parsed.success) throw new Error(`Controller writer evidence is corrupt: ${join(root, name)}`);
+      generations.push(parsed.data.controlGeneration);
+    }
+  }
+  return generations;
+}
+
 export function recordControllerServing(
   runtime: Runtime,
   attemptId: string,

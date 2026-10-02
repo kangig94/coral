@@ -87,9 +87,9 @@ async function launch(
                   mkdirSync(dirname($1), { recursive: true, mode: 0o700 });`,
                       )
                     : readFileSync(path, 'utf8').replace(
-                        "db.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');",
-                        `if (path.includes('launch-lifetimes.v1')) { process.send?.({ kind: 'window' }); process.kill(process.pid, 'SIGSTOP'); }
-           db.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');`,
+                        'db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN; SELECT count(*) FROM sqlite_schema`);',
+                        `if (path.includes('launch-lifetimes.v1')) { process.send?.({ kind: 'window' }); process.kill(process.pid, 'SIGSTOP'); }\n` +
+                          'db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN; SELECT count(*) FROM sqlite_schema`);',
                       ),
                 loader: 'ts',
               }));

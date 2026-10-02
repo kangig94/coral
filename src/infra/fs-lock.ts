@@ -106,27 +106,56 @@ function sqliteErrorCode(error: unknown): string | null {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : null;
 }
 
-export function createSharedFileLockSync(path: string): FileLockLease {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const db = new DatabaseSync(path, { timeout: 5_000 });
-  try {
-    db.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');
-    return sqliteLockLease(db);
-  } catch (error: unknown) {
-    db.close();
-    throw error;
+function malformedSqliteLockError(error: unknown): boolean {
+  return (
+    sqliteErrorCode(error) === 'ERR_SQLITE_ERROR' &&
+    /file is not a database|database disk image is malformed|attempt to write a readonly database/u.test(String(error))
+  );
+}
+
+function withFileLockRepairSync<T>(path: string, open: () => T, timeoutMs: number): T {
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    try {
+      return open();
+    } catch (error: unknown) {
+      if (!malformedSqliteLockError(error)) throw error;
+      const repair = repairMalformedFileLockSync(path);
+      if (repair.kind === 'moved-aside') {
+        new DatabaseSync(path).close();
+        continue;
+      }
+      if (performance.now() >= deadline)
+        throw new Error(`File lock repair withheld: ${path} (${repair.kind})`, { cause: error });
+      waitSync(LOCK_RETRY_INTERVAL_MS);
+    }
   }
 }
 
+function openSharedFileLockSync(path: string, readOnly: boolean, busyTimeoutMs: number): FileLockLease {
+  return withFileLockRepairSync(
+    path,
+    () => {
+      const db = new DatabaseSync(path, { readOnly, timeout: busyTimeoutMs });
+      try {
+        db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN; SELECT count(*) FROM sqlite_schema`);
+        return sqliteLockLease(db);
+      } catch (error: unknown) {
+        db.close();
+        throw error;
+      }
+    },
+    busyTimeoutMs,
+  );
+}
+
+export function createSharedFileLockSync(path: string): FileLockLease {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  return openSharedFileLockSync(path, false, 5_000);
+}
+
 export function acquireSharedFileLockSync(path: string, busyTimeoutMs = 5_000): FileLockLease {
-  const db = new DatabaseSync(path, { readOnly: true, timeout: busyTimeoutMs });
-  try {
-    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN; SELECT count(*) FROM sqlite_schema`);
-    return sqliteLockLease(db);
-  } catch (error: unknown) {
-    db.close();
-    throw error;
-  }
+  return openSharedFileLockSync(path, true, busyTimeoutMs);
 }
 
 /**
@@ -266,7 +295,15 @@ export function tryAcquireExclusiveFileLockSync(path: string): FileLockLease | n
   const attempt = attemptExclusiveFileLockSync(path);
   if (attempt.kind === 'acquired') return attempt.lease;
   if (attempt.kind === 'contended') return null;
-  if (attempt.kind === 'malformed') throw new Error(`File lock is malformed: ${path}`);
+  if (attempt.kind === 'malformed') {
+    const repair = repairMalformedFileLockSync(path);
+    if (repair.kind === 'moved-aside') {
+      createSharedFileLockSync(path)();
+      return tryAcquireExclusiveFileLockSync(path);
+    }
+    if (repair.kind === 'unobservable') throw repair.cause;
+    return null;
+  }
   throw attempt.cause;
 }
 

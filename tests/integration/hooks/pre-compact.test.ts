@@ -260,6 +260,39 @@ describe('pre-compact.mjs', () => {
     });
   });
 
+  it('fails open on a malformed epoch lock without repairing coordinator state', () => {
+    const fixture = createFixture();
+    const fingerprint = 'sha256:9999999999999999999999999999999999999999999999999999999999999999';
+    const hook = seedPluginManifest(fixture.pluginRoot, fingerprint);
+    seedStore(fixture.root, fixture.projectRoot, fingerprint);
+    const epochDir = join(fixture.root, '.coral', 'gen2', 'data', 'store', 'epoch-1');
+    const lockPath = join(epochDir, '.lock');
+    writeFileSync(lockPath, 'garbage');
+    const before = statSync(lockPath);
+    const entries = readdirSync(epochDir);
+    const database = readFileSync(join(epochDir, 'store.db'));
+
+    const result = runHook(
+      hook,
+      { cwd: fixture.projectRoot },
+      { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot, HOME: fixture.root },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(JSON.parse(result.stderr.trim())).toMatchObject({
+      hook: 'pre-compact',
+      message: 'fail-open',
+      error: 'file is not a database',
+    });
+    expect(existsSync(join(fixture.snapshotDir, 'hooks'))).toBe(false);
+    expect(readFileSync(lockPath, 'utf8')).toBe('garbage');
+    expect(statSync(lockPath).ino).toBe(before.ino);
+    expect(statSync(lockPath).mtimeMs).toBe(before.mtimeMs);
+    expect(readdirSync(epochDir)).toEqual(entries);
+    expect(readFileSync(join(epochDir, 'store.db'))).toEqual(database);
+  });
+
   // @flaky — process scheduling can consume part of the hook's three-second host budget.
   it('shares one bounded SQLite wait budget across the epoch lock and store reads', { retry: 2 }, async () => {
     const fixture = createFixture();

@@ -19,6 +19,7 @@ import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnatio
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { observeSuccessionWriterGeneration } from '#src/store/succession-writer-generation.js';
+import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
 import {
   assertBuildArtifactsAvailable,
   coordinatorFilesForHome,
@@ -232,54 +233,66 @@ describe('real-process succession commit', () => {
     await assertAddressClaimed(initial.socketPath);
   });
 
-  it('recovers a crashed committed successor on its own build and exact epoch', async () => {
-    assertBuildArtifactsAvailable();
-    const home = mkdtempSync(join(tmpdir(), 'coral-committed-successor-recovery-'));
-    roots.push(home);
-    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
-    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, supervised: true });
-    coordinators.push(old);
-    const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
-    coordinators.push(contender);
-    await waitForProcessExit(contender, 30_000);
-    await waitForCondition(() => {
-      const discovery = readDiscoveryRecordForHome(home, 'prod');
-      return discovery !== null && discovery.pid !== initial.pid;
-    }, 60_000);
-    await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
-    const committed = readDiscoveryRecordForHome(home, 'prod');
-    if (committed === null) throw new Error('Committed successor discovery was not published.');
-    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
-    await waitForCondition(() => {
-      const intent = readUpgradeIntent(runDir);
-      return intent.kind === 'readable' && intent.intent.disposition === 'completed';
-    }, 30_000);
-    const first = readUpgradeIntent(runDir);
-    if (first.kind !== 'readable' || first.intent.completionReceipt === null) {
-      throw new Error('Committed successor has no durable serving receipt.');
-    }
-    const epochKey = first.intent.completionReceipt.epochKey;
-    const committedIncarnation = probeProcessIncarnation(committed.pid);
-    if (committedIncarnation === null) throw new Error('Committed successor incarnation is unavailable.');
-    process.kill(committed.pid, 'SIGKILL');
-    await waitForCondition(() => observeProcessLiveness(committed.pid) === 'absent', 15_000);
+  it.each([false, true])(
+    'recovers a crashed committed successor on its own build and exact epoch (generation damaged: %s)',
+    async (damaged) => {
+      assertBuildArtifactsAvailable();
+      const home = mkdtempSync(join(tmpdir(), 'coral-committed-successor-recovery-'));
+      roots.push(home);
+      const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+      const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots, supervised: true });
+      coordinators.push(old);
+      const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
+      const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots, supervised: true });
+      coordinators.push(contender);
+      await waitForProcessExit(contender, 30_000);
+      await waitForCondition(() => {
+        const discovery = readDiscoveryRecordForHome(home, 'prod');
+        return discovery !== null && discovery.pid !== initial.pid;
+      }, 60_000);
+      await waitForCondition(() => observeProcessLiveness(initial.pid) === 'absent', 30_000);
+      const committed = readDiscoveryRecordForHome(home, 'prod');
+      if (committed === null) throw new Error('Committed successor discovery was not published.');
+      const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+      await waitForCondition(() => {
+        const intent = readUpgradeIntent(runDir);
+        return intent.kind === 'readable' && intent.intent.disposition === 'completed';
+      }, 30_000);
+      const first = readUpgradeIntent(runDir);
+      if (first.kind !== 'readable' || first.intent.completionReceipt === null) {
+        throw new Error('Committed successor has no durable serving receipt.');
+      }
+      const epochKey = first.intent.completionReceipt.epochKey;
+      const committedIncarnation = probeProcessIncarnation(committed.pid);
+      if (committedIncarnation === null) throw new Error('Committed successor incarnation is unavailable.');
+      if (damaged) {
+        const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+        writeFileSync(
+          join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-generation.v1.json'),
+          'garbage',
+        );
+      }
+      process.kill(committed.pid, 'SIGKILL');
+      await waitForCondition(() => observeProcessLiveness(committed.pid) === 'absent', 15_000);
 
-    await waitForCondition(() => {
-      const discovery = readDiscoveryRecordForHome(home, 'prod');
-      return discovery !== null && discovery.pid !== committed.pid && discovery.bundleHash === newerFixture.bundleHash;
-    }, 60_000);
-    const recovered = readDiscoveryRecordForHome(home, 'prod');
-    if (recovered === null) throw new Error('Committed recovery discovery was not published.');
-    expect(recovered.pid).not.toBe(initial.pid);
-    expect(observeProcessLiveness(initial.pid)).toBe('absent');
-    expect(observeProcessLiveness(recovered.pid)).toBe('alive');
-    expect(existsSync(storeDbPathForHome(home, 'prod', '2'))).toBe(false);
-    const final = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
-    expect(final.kind === 'readable' ? final.intent.completionReceipt?.epochKey : null).toBe(epochKey);
-    await assertAddressClaimed(recovered.socketPath);
-  });
+      await waitForCondition(() => {
+        const discovery = readDiscoveryRecordForHome(home, 'prod');
+        return (
+          discovery !== null && discovery.pid !== committed.pid && discovery.bundleHash === newerFixture.bundleHash
+        );
+      }, 60_000);
+      const recovered = readDiscoveryRecordForHome(home, 'prod');
+      if (recovered === null) throw new Error('Committed recovery discovery was not published.');
+      expect(recovered.pid).not.toBe(initial.pid);
+      expect(observeProcessLiveness(initial.pid)).toBe('absent');
+      expect(observeProcessLiveness(recovered.pid)).toBe('alive');
+      expect(existsSync(storeDbPathForHome(home, 'prod', '2'))).toBe(false);
+      const final = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
+      expect(final.kind === 'readable' ? final.intent.completionReceipt?.epochKey : null).toBe(epochKey);
+      await assertAddressClaimed(recovered.socketPath);
+    },
+  );
 
   it('reclaims in place when the same-build recovery child dies after generation advance', async () => {
     assertBuildArtifactsAvailable();
