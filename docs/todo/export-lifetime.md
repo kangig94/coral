@@ -2,7 +2,7 @@
 
 **Status**: retention decided; restore design remains open.
 
-`CORAL_JOBS_RETENTION_DAYS` (default 14) governs terminal scratch, whole export directories including `provider-artifacts/`, and journal progress retention. The coordinator schedules retention after startup serves and every 24 h. Live and unknown jobs stay. A directory unknown to the current journal expires only when every descendant is older than the cutoff. A superseded epoch's independent result proof stays until that epoch is gone. Progress fault diagnostics and causal evidence remain for projection replay and shipped readers. Unknown deletion evidence keeps the subject for a later retry; backend status reports the last outcome.
+`CORAL_JOBS_RETENTION_DAYS` (default 14) governs terminal scratch, whole export directories including `provider-artifacts/`, and journal progress retention. The coordinator schedules retention after startup serves and every 24 h. Live and unknown jobs stay. A directory unknown to the current journal expires only when the newest mtime of the directory and its top-level entries is older than the cutoff (R4); eligibility does not walk descendants. A superseded epoch's independent result proof stays until that epoch is gone. Progress fault diagnostics and causal evidence remain for projection replay and shipped readers. Unknown deletion evidence keeps the subject for a later retry; backend status reports the last outcome.
 
 Expired exports lose their preserved provider originals, so sessions older than the retention period cannot be resumed. Coral preserves these originals before removing the native copy from the provider's interactive resume picker.
 

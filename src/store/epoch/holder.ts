@@ -356,7 +356,12 @@ export async function pruneStoreEpochHolders(
         try {
           const holder = entry.endsWith('.json') ? await inspectStoreEpochHolderAsync(runtime, root, entry) : null;
           if (holder?.state !== 'stale' || !holder.removable) {
-            budget.record({ kind: 'kept', subject, reason: 'holder-alive-or-unknown' });
+            budget.record({
+              kind: 'kept',
+              subject,
+              reason: 'holder-alive-or-unknown',
+              pending: holder?.state !== 'live',
+            });
           } else {
             try {
               if (!budget.canContinue()) return entry;

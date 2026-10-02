@@ -124,7 +124,7 @@ export async function pruneJobExports(input: {
         else if (state.kind === 'regression')
           outcome = { kind: 'kept', subject: path, reason: 'terminal-clock-regression' };
         else if (state.kind === 'unknown' || state.kind === 'nonterminal')
-          outcome = { kind: 'kept', subject: path, reason: state.kind };
+          outcome = { kind: 'kept', subject: path, reason: state.kind, pending: state.kind === 'unknown' };
         else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))
           outcome = { kind: 'kept', subject: path, reason: 'terminal-not-expired-or-unknown' };
         else if (state.kind === 'absent' && !(await exportTreeExpired(runtime, path, cutoff, budget)))

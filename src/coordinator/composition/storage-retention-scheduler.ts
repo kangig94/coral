@@ -49,28 +49,11 @@ export function createStorageRetentionScheduler(input: {
     const record = (outcome: RetentionOutcome): void => {
       status[outcome.kind === 'deleted' ? 'deleted' : outcome.kind === 'kept' ? 'kept' : 'failed'] +=
         outcome.kind === 'deleted' ? outcome.count : 1;
-      if (
-        outcome.kind === 'kept' &&
-        [
-          'scan-pending',
-          'wall-clock-age-unknown',
-          'terminal-not-expired-or-unknown',
-          'terminal-clock-regression',
-          'residue-recent-or-unobservable',
-          'epoch-result-proof-required-or-unknown',
-          'legacy-not-expired-or-unknown',
-        ].includes(outcome.reason)
-      )
-        partial = true;
+      if (outcome.kind === 'kept' && outcome.pending !== false) partial = true;
       if (status.outcomes.length < 100) status.outcomes.push(outcome);
-      else if (
-        outcome.kind === 'failed' ||
-        (outcome.kind === 'kept' && !['nonterminal', 'no-free-pages', 'legacy-absent'].includes(outcome.reason))
-      ) {
+      else if (outcome.kind === 'failed' || (outcome.kind === 'kept' && outcome.pending !== false)) {
         let replace = status.outcomes.findIndex(
-          (entry) =>
-            entry.kind === 'deleted' ||
-            (entry.kind === 'kept' && ['nonterminal', 'no-free-pages', 'legacy-absent'].includes(entry.reason)),
+          (entry) => entry.kind === 'deleted' || (entry.kind === 'kept' && entry.pending === false),
         );
         if (replace < 0)
           replace = status.outcomes.findIndex(

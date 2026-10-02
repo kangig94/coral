@@ -50,6 +50,7 @@ describe('retention vacuum', () => {
       kind: 'kept',
       subject: 'journal-vacuum',
       reason: 'free-pages-reusable-until-next-epoch',
+      pending: false,
     });
     expect(f.db.prepare('PRAGMA auto_vacuum').get()).toEqual({ auto_vacuum: 0 });
     expect(f.db.prepare('PRAGMA freelist_count').get()).toEqual(free);

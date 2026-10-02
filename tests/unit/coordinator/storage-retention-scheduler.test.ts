@@ -7,8 +7,8 @@ import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
 const owners = vi.hoisted(() => ({
   exports: vi.fn(async () => ''),
   progress: vi.fn(async (_input: { budget: RetentionRunBudget }) => 0),
-  vacuum: vi.fn(async () => ({ kind: 'kept', subject: 'vacuum', reason: 'no-free-pages' })),
-  legacy: vi.fn(() => ({ kind: 'kept', subject: 'legacy', reason: 'legacy-absent' })),
+  vacuum: vi.fn(async () => ({ kind: 'kept', subject: 'vacuum', reason: 'no-free-pages', pending: false })),
+  legacy: vi.fn(() => ({ kind: 'kept', subject: 'legacy', reason: 'legacy-absent', pending: false })),
   holders: vi.fn(async () => {}),
   parked: false,
 }));
@@ -241,5 +241,37 @@ describe('storage retention schedule', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(owners.exports).not.toHaveBeenCalled();
     expect(statuses.at(-1)?.phase).toBe('partial');
+  });
+
+  it('reports a new unknown reason as partial without registering its text', async () => {
+    owners.progress.mockImplementationOnce(async ({ budget }) => {
+      budget.record({ kind: 'kept', subject: 'future-owner', reason: 'future-evidence-refusal' });
+      return 0;
+    });
+    const { scheduler, statuses } = fixture();
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses.at(-1)?.phase).toBe('partial');
+    expect(statuses.at(-1)?.outcomes).toContainEqual({
+      kind: 'kept',
+      subject: 'future-owner',
+      reason: 'future-evidence-refusal',
+    });
+  });
+
+  it('reports completed when an owner proves a kept subject has no eligible work', async () => {
+    owners.progress.mockImplementationOnce(async ({ budget }) => {
+      budget.record({
+        kind: 'kept',
+        subject: 'protected-evidence',
+        reason: 'future-protected-evidence',
+        pending: false,
+      });
+      return 0;
+    });
+    const { scheduler, statuses } = fixture();
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses.at(-1)?.phase).toBe('completed');
   });
 });

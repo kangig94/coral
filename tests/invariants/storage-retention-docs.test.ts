@@ -15,6 +15,8 @@ describe('storage retention documentation', () => {
     expect(todo).toContain('retention decided; restore design remains open');
     expect(todo).toContain('Expired exports');
     expect(todo).toContain('collision rule');
+    expect(todo).toContain('directory and its top-level entries');
+    expect(todo).not.toContain('every descendant');
   });
 
   it('records domain owners and coordinator scheduling in both architecture guides', () => {
@@ -30,5 +32,10 @@ describe('storage retention documentation', () => {
         expect(document).toContain(owner);
       expect(document).not.toContain('this build never deletes');
     }
+  });
+
+  it('states the filesystem mtime dependency of legacy retirement', () => {
+    const architecture = readFileSync(new URL('../../docs/architecture.md', import.meta.url), 'utf-8');
+    expect(architecture).toContain('R1 depends on the filesystem updating mtime on writes');
   });
 });

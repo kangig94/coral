@@ -17,9 +17,9 @@ export async function vacuumRetainedJournal(
     if (free === undefined || mode === undefined) {
       return { kind: 'kept', subject, reason: 'vacuum-metadata-unknown' };
     }
-    if (free === 0) return { kind: 'kept', subject, reason: 'no-free-pages' };
+    if (free === 0) return { kind: 'kept', subject, reason: 'no-free-pages', pending: false };
     if (db.isTransaction) return { kind: 'kept', subject, reason: 'writer-transaction-active' };
-    if (mode !== 2) return { kind: 'kept', subject, reason: 'free-pages-reusable-until-next-epoch' };
+    if (mode !== 2) return { kind: 'kept', subject, reason: 'free-pages-reusable-until-next-epoch', pending: false };
     const timeout = db.prepare<[], { timeout: number }>('PRAGMA busy_timeout').get()?.timeout;
     if (timeout === undefined) return { kind: 'kept', subject, reason: 'busy-timeout-unknown' };
     let remaining = free;

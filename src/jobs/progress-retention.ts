@@ -76,6 +76,7 @@ export async function pruneJobProgress(input: {
       const subject = `progress:${terminal.stream_id}`;
       let deleted = 0;
       let kept = 0;
+      let unknownEvidence = false;
       try {
         decodeBody(terminal, jobTerminalRecordedBodySchema, readCtx);
         const latest = db
@@ -115,6 +116,7 @@ export async function pruneJobProgress(input: {
                   `SELECT seq FROM events INDEXED BY events_retention_unknown_cause WHERE ${unknownRetentionCause} LIMIT 1`,
                 )
                 .get();
+              unknownEvidence ||= unknown !== undefined;
               const referenceQueries = [
                 db.prepare<[number]>(
                   'SELECT seq FROM events INDEXED BY events_retention_causation WHERE causation_seq = ? LIMIT 1',
@@ -142,7 +144,13 @@ export async function pruneJobProgress(input: {
             await setImmediate();
           }
           if (deleted > 0) budget.record({ kind: 'deleted', subject, count: deleted });
-          if (kept > 0) budget.record({ kind: 'kept', subject, reason: 'diagnostics-or-causal-evidence' });
+          if (kept > 0)
+            budget.record({
+              kind: 'kept',
+              subject,
+              reason: 'diagnostics-or-causal-evidence',
+              pending: unknownEvidence,
+            });
           if (!budget.canContinue()) {
             budget.record({ kind: 'kept', subject, reason: 'scan-pending' });
             return cursor.afterSeq || terminal.seq;
