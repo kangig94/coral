@@ -21,6 +21,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { serializeStoreResetIncidentManifest, type StoreResetIncidentManifestV2 } from '#src/store/reset-incident.js';
+import { reconcileProtectedEpochs } from '#src/store/epoch/index.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
 import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
@@ -429,15 +431,13 @@ describe('bundled store-reset CLI', () => {
     expect(list.status, list.stderr).toBe(0);
     expect(list.stderr).toBe('');
     expect(list.stdout).toContain(
-      'Epoch | Role | Bytes | Publication reason | Superseded store Coral version | Epoch metadata\n',
+      'Epoch key | Epoch | Address | Role | Closure | Custody | Result retention | Data outcome | Next automatic action or hold | Bytes | Publication reason | Superseded store Coral version | Epoch metadata\n',
     );
     expect(list.stdout).toContain('Legacy incident ID | State | Reset at | Reason | Files | Bytes\n');
     expect(list.stdout).toContain(`${INCIDENT_ID} | ready | 2026-07-23T01:02:03.004Z | mismatch | 1 |`);
     expect(list.stdout).toContain('Legacy ready incidents remain reportable.\n');
     expect(list.stdout).toContain('command=coral-cli backend store-reset report --target gen2 <ready-incident-id>\n');
-    expect(list.stdout).toContain(
-      'command=coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <epoch>\n',
-    );
+    expect(list.stdout).toContain('Closed epochs are reclaimed after their historical results are retained.\n');
 
     const report = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID, '--target', 'gen2']);
     expect(report.status, report.stderr).toBe(0);
@@ -453,6 +453,7 @@ describe('bundled store-reset CLI', () => {
   it('publishes epochs for automatic replacement, discard, and release without changing the flat store', async () => {
     const build = readBuildManifest();
     const home = temporaryHomes.create('coral-store-reset-e2e-running-', build.flavor);
+    const runtime = createRealRuntime(build.flavor, { baseDir: join(home, '.coral') });
     const temp = join(home, 'tmp');
     mkdirSync(temp);
     const storePath = activeStorePath(home, build);
@@ -477,7 +478,7 @@ describe('bundled store-reset CLI', () => {
 
     const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
     expect(list.status, list.stderr).toBe(0);
-    expect(list.stdout).toMatch(/^1 \| current \|/m);
+    expect(list.stdout).toMatch(/\| 1 \| epoch-1 \| current \|/m);
     expect(list.stdout).not.toMatch(/^0 \|/m);
     expect(list.stdout).not.toContain('Legacy incident ID');
 
@@ -503,7 +504,10 @@ describe('bundled store-reset CLI', () => {
     expect(discard.status, discard.stderr).toBe(0);
     expect(discard.stdout).toContain('Discarded store epoch 1; initialized epoch 2');
     expect(discard.stdout).not.toContain(home);
-    expect(storeHasTable(epochOnePath, 'private_pre_reset')).toBe(true);
+    const protectedAddress = reconcileProtectedEpochs(runtime, dirname(dirname(epochOnePath)))[0];
+    expect(protectedAddress).toBeDefined();
+    if (protectedAddress === undefined) throw new Error('Expected protected epoch address.');
+    expect(storeHasTable(join(protectedAddress.protectedPath, 'store.db'), 'private_pre_reset')).toBe(true);
     expect(storeHasTable(epochStorePath(home, build, 2), 'private_pre_reset')).toBe(false);
     expect(existsSync(epochStorePath(home, build, 0))).toBe(true);
 
@@ -517,14 +521,16 @@ describe('bundled store-reset CLI', () => {
       '--flavor',
       build.flavor,
     ]);
-    expect(release.status, release.stderr).toBe(0);
-    expect(release.stdout).toContain('Released store epoch 1');
+    expect(release.status, release.stderr).toBe(1);
+    expect(release.stderr).toContain('Store epoch 1 is absent');
     expect(existsSync(epochOnePath)).toBe(false);
+    expect(existsSync(join(protectedAddress.protectedPath, 'store.db'))).toBe(true);
   });
 
   it('sweeps after discovery publication across clean reset cycles', async () => {
     const build = readBuildManifest();
     const home = temporaryHomes.create('coral-store-reset-e2e-cycles-', build.flavor);
+    const runtime = createRealRuntime(build.flavor, { baseDir: join(home, '.coral') });
     mkdirSync(join(home, 'tmp'));
     const storePath = activeStorePath(home, build);
     mkdirSync(dirname(storePath), { recursive: true });
@@ -553,7 +559,8 @@ describe('bundled store-reset CLI', () => {
     const epochEntries = readdirSync(dirname(storePath))
       .filter((name) => /^epoch-\d+$/u.test(name))
       .sort();
-    expect(epochEntries).toEqual(['epoch-3', 'epoch-4']);
+    expect(epochEntries).toEqual(['epoch-4']);
+    expect(reconcileProtectedEpochs(runtime, dirname(storePath))).toHaveLength(3);
   });
 
   it('uses fixed envelopes for invalid IDs, malformed incidents, and wrong-build incidents', () => {
@@ -570,8 +577,8 @@ describe('bundled store-reset CLI', () => {
     expect(invalid).toEqual({
       stdout: '',
       stderr:
-        'Report target must be a positive numeric epoch or canonical lowercase legacy incident UUID. [code=invalid_store_reset_incident_id]\n' +
-        'remediation: Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.\n',
+        'Report target must be a full epoch key, an unambiguous positive epoch number, or a canonical lowercase legacy incident UUID. [code=invalid_store_reset_incident_id]\n' +
+        'remediation: Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch key or the ID of a legacy incident in the `ready` state.\n',
       status: 2,
     });
     expect(`${invalid.stdout}${invalid.stderr}`).not.toContain('PRIVATE_ARGUMENT_SENTINEL');
@@ -620,8 +627,8 @@ describe('bundled store-reset CLI', () => {
     expect(result).toEqual({
       stdout: '',
       stderr:
-        'Report target must be a positive numeric epoch or canonical lowercase legacy incident UUID. [code=invalid_store_reset_incident_id]\n' +
-        'remediation: Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.\n',
+        'Report target must be a full epoch key, an unambiguous positive epoch number, or a canonical lowercase legacy incident UUID. [code=invalid_store_reset_incident_id]\n' +
+        'remediation: Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch key or the ID of a legacy incident in the `ready` state.\n',
       status: 2,
     });
   });

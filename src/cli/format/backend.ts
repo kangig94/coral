@@ -1,4 +1,6 @@
 import { assertNever } from '../../infra/error-format.js';
+import type { AbandonedRequestStatusRead } from '../../infra/abandoned-request-status.js';
+import type { UpgradeIntentProblem, UpgradeIntentVisibility } from '../../infra/upgrade-intent.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing/policy.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
@@ -18,7 +20,12 @@ import {
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth, ProviderProxySetRowSkip } from '../../transport/http/backend/health.js';
-import type { BackendStatusFull, OperatorFacingShutdownEntryView, ShutdownRemainderReport } from '../backend-status.js';
+import type {
+  BackendStatusFull,
+  OperatorFacingShutdownEntryView,
+  ShutdownRemainderReport,
+  SupersededEpochClosures,
+} from '../backend-status.js';
 import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
@@ -49,6 +56,7 @@ type BackendOperatorCommand =
   | Readonly<{ kind: 'abort-job'; jobId: string }>
   | Readonly<{ kind: 'backend-start' }>
   | Readonly<{ kind: 'backend-status' }>
+  | Readonly<{ kind: 'backend-status-request'; recordId: string }>
   | Readonly<{ kind: 'backend-shutdown' }>
   | Readonly<{ kind: 'jobs-detail'; jobId: string }>
   | Readonly<{ kind: 'kb-reindex' }>
@@ -70,6 +78,9 @@ function renderBackendOperatorCommand(command: BackendOperatorCommand): string {
       break;
     case 'backend-status':
       commandArguments = 'backend status';
+      break;
+    case 'backend-status-request':
+      commandArguments = `backend status --request ${command.recordId}`;
       break;
     case 'backend-shutdown':
       commandArguments = 'backend shutdown';
@@ -137,6 +148,37 @@ export function formatBackendStartResult(statusNeedsAttention: boolean): string 
 
 export function formatBackendStatusCommand(): string {
   return formatBackendOperatorCommand({ kind: 'backend-status' });
+}
+
+export function formatAbandonedRequestStatus(recordId: string, result: AbandonedRequestStatusRead): string {
+  if (result.kind !== 'found') {
+    if (result.kind === 'invalid-id')
+      return 'Invalid request record ID. Use the exact recordId from the timeout response.';
+    return [
+      `Request record ${recordId} is ${result.kind}; its outcome is unverified. A blind mutation retry is not safe.`,
+      'Read the operation state and backend status before deciding what happened.',
+      formatBackendOperatorCommand({ kind: 'backend-status' }),
+    ].join('\n');
+  }
+  const { status } = result;
+  if (status.outcome === 'continuing')
+    return [
+      `Request ${recordId} is continuing. It settles automatically when the request completes, fails, is cancelled, or its owner exits.`,
+      'Recheck this record without repeating the mutation.',
+      formatBackendOperatorCommand({ kind: 'backend-status-request', recordId }),
+    ].join('\n');
+  const meaning = {
+    completed: 'The request completed; read the operation state to confirm its effect.',
+    failed: 'The request failed; read the operation state before deciding whether another mutation is needed.',
+    cancelled:
+      'The request was cancelled; read the operation state before deciding whether another mutation is needed.',
+    owner_exited:
+      'The request owner exited; its effect remains unverified. Read the operation state before another mutation.',
+  }[status.outcome];
+  return [
+    `Request ${recordId}: ${status.outcome}. ${meaning}`,
+    formatBackendOperatorCommand({ kind: 'backend-status' }),
+  ].join('\n');
 }
 
 export function formatRecoveryQuarantineCommand(
@@ -625,8 +667,7 @@ function formatUnusableIncumbent(basis: Extract<HandoffRoutingBasis, { kind: 'in
     case 'identity-mismatch':
       return [
         'Handoff: continuing current build — the authenticated coordinator identity does not match its discovery record.',
-        'Handoff hold: run the shutdown command below, wait for shutdown to finish, then retry.',
-        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+        'Handoff hold: retry after coordinator discovery catches up with the answering coordinator.',
       ].join('\n');
     default:
       return assertNever(basis.cause);
@@ -710,6 +751,103 @@ export function formatBackendStatus(
       ? formatLiveShutdownGuidance(daemonStatus.health)
       : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
   const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
+  if (daemonStatus.launchStatusProblem === 'unreadable')
+    sections.push(
+      'Coordinator launch status is unreadable. This diagnostic cannot authorize a signal or prevent startup.',
+    );
+  if (daemonStatus.launchStatusProblem === 'previous-status-unavailable')
+    sections.push(
+      'Previous coordinator launch status is unavailable. Live owners re-publish current holds; these diagnostics cannot authorize a signal or prevent startup.',
+    );
+  for (const hold of daemonStatus.launchSignalHolds ?? []) {
+    if (hold.launchId.startsWith('replacement:'))
+      sections.push(
+        `Replacement supervisor ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because a retirement signal was refused. Last observation: ${hold.observation ?? 'signal-delivery-refused'}. The coordinator retries this exact process; once it exits, recovery launches the next replacement. Fresh cooperation can clear a refused-only commitment before any signal is delivered.`,
+      );
+    else if (hold.launchId.startsWith('parent:'))
+      sections.push(
+        `Parent supervisor ${hold.pid} (incarnation ${hold.incarnation}): ${hold.disposition ?? 'parent-silent'}, last observation ${hold.observation ?? 'unknown'}. The child sentinel retries heartbeat and identity against the admission tuple. Linux retries retirement only with unchanged parenthood and a fresh matching incarnation. macOS waits for cooperation or proven exit; coordinator service continues while upgrades and launches wait.`,
+      );
+    else
+      sections.push(
+        `Coordinator launch ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because TERM or SIGKILL delivery could not be confirmed. Last observation: ${hold.observation ?? 'signal-delivery-refused'}. The owning supervisor retries exact identity; refused-only retirement can clear on authenticated cooperation, or the subject settles on proven absence.`,
+      );
+  }
+  if (daemonStatus.launchStatusPublicationFailure !== undefined)
+    sections.push(
+      `Coordinator launch status publication is unavailable: ${daemonStatus.launchStatusPublicationFailure.detail}. Current holds remain in memory; publication retries automatically.`,
+    );
+  if (daemonStatus.launchLockHold !== undefined)
+    sections.push(
+      `Supervisor lock ${daemonStatus.launchLockHold.path}: ${daemonStatus.launchLockHold.disposition}, last observation ${daemonStatus.launchLockHold.observation}. The acquisition loop retries automatically; launches in this namespace wait while existing service and independent namespaces continue.`,
+    );
+  for (const hold of daemonStatus.launchAdmissionHolds ?? [])
+    sections.push(
+      `Coordinator admission ${hold.path}: ${hold.disposition}. The namespace supervisor retries authenticated identity and completed first-acquisition evidence, or independent exact absence. Cleanup-pending affects residue only; unknown occupancy holds conflicting launches in this namespace.`,
+    );
+  const launchHold = daemonStatus.launchHold;
+  for (const hold of daemonStatus.launchInheritedHolds ?? [])
+    sections.push(
+      `Coordinator launch ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation ?? 'unavailable'}, last observation ${hold.observation ?? 'unknown'}) is held by an unresponsive inherited child. The supervisor retries on exact-child cooperation before any delivered termination signal, or proven absence. macOS permanent wedging holds this child's repair.`,
+    );
+  if (launchHold !== undefined) {
+    switch (launchHold.kind) {
+      case 'custody-unreadable':
+        sections.push(
+          `Coordinator launch is held by unreadable custody at ${launchHold.path}. The supervisor retries selection; coordinator composition reconciles custody from existing authenticated owner evidence. Irreversible history loss remains unrecoverable-retained. Only affected custody-dependent selection waits.`,
+        );
+        break;
+      case 'no-eligible-build':
+        sections.push(
+          launchHold.controller === 'unknown'
+            ? 'Coordinator launch is quarantined by indeterminate controller evidence. The supervisor retries when custody, transfer, or process evidence changes.'
+            : `Coordinator launch requires build ${launchHold.controller}${launchHold.requestId === undefined ? '' : ` for request ${launchHold.requestId}`}. Last observation: ${launchHold.observation ?? 'no eligible build'}. The supervisor revalidates installed and retained builds or a change in required controller evidence.`,
+        );
+        break;
+      case 'observation-unavailable':
+        sections.push(
+          `Legacy upgrade observation for request ${launchHold.requestId} is unavailable: ${launchHold.observation}. The next CLI or hook invocation retries; the serving coordinator remains available.`,
+        );
+        break;
+      case 'target-indeterminate':
+        sections.push(
+          `Coordinator launch request ${launchHold.requestId} has an indeterminate target. The supervisor retries when target executable evidence becomes conclusive or the target disappears.`,
+        );
+        break;
+      case 'admission-unreadable':
+        sections.push(
+          `Coordinator admission identity at ${launchHold.path} is unreadable. The supervisor holds exact-child recovery and checks discovery; this file cannot veto startup or authorize a signal.`,
+        );
+        break;
+      case 'inherited-child-unresponsive':
+        sections.push(
+          `Coordinator launch ${launchHold.launchId} (PID ${launchHold.pid}) is held by an unresponsive inherited child. The supervisor retries on cooperation or confirmed absence.`,
+        );
+        break;
+      default:
+        assertNever(launchHold);
+    }
+  }
+  const upgrade =
+    daemonStatus.status === 'ok' ? (daemonStatus.health.succession ?? daemonStatus.upgrade) : daemonStatus.upgrade;
+  if (upgrade !== undefined) sections.push(formatPendingUpgrade(upgrade));
+  const upgradeProblem =
+    daemonStatus.status === 'ok'
+      ? (daemonStatus.health.successionProblem ?? daemonStatus.upgradeProblem)
+      : daemonStatus.upgradeProblem;
+  if (upgradeProblem !== undefined) sections.push(formatUpgradeRecordProblem(upgradeProblem));
+  if (daemonStatus.upgradeQuarantined)
+    sections.push(
+      'A corrupt upgrade intent was durably quarantined. A fresh recorded upgrade request can now proceed automatically.',
+    );
+  if (daemonStatus.supersededEpochs !== undefined) {
+    sections.push(formatSupersededEpochClosures(daemonStatus.supersededEpochs));
+  }
+  if (upgrade === undefined && daemonStatus.legacyContenderDeferred) {
+    sections.push(
+      'An older contender was refused while this incumbent continues serving. Its attempted upgrade is deferred.',
+    );
+  }
   const draining = daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining';
   const routingStatusText = formatHandoffRoutingStatus(routingStatus, liveShutdownGuidance.routingCommandAvailability);
   if (routingStatusText !== null) sections.push(routingStatusText);
@@ -718,6 +856,87 @@ export function formatBackendStatus(
     if (liveHandoffText !== null) sections.push(liveHandoffText);
   }
   return sections.join('\n');
+}
+
+function formatSupersededEpochClosures(closures: SupersededEpochClosures): string {
+  if (closures.kind === 'unobservable') {
+    return `Superseded store epoch observation is quarantined (${closures.reason}); no epoch is released. When the store root becomes readable, the coordinator re-inspects closure and retention.`;
+  }
+  return [
+    'Superseded store epochs:',
+    ...closures.epochs.map((epoch) => {
+      const disposition =
+        epoch.role === 'unobservable'
+          ? 'terminal quarantine; retained without release until its address is readable and re-inspected'
+          : epoch.closure === 'unrecoverable-retained'
+            ? 'terminal unrecoverable retention; retained without release'
+            : epoch.closure === 'closed'
+              ? 'closed; result retention and sweep eligibility govern reclamation'
+              : 'pending; the coordinator retries when custody settles or evidence changes';
+      return (
+        `  ${epoch.epochKey ?? 'unobservable'} (epoch ${epoch.epoch}, ${epoch.role}): ${epoch.closure}` +
+        (epoch.reason === null ? '' : `; ${epoch.reason}`) +
+        (epoch.protectionUnreadable ? '; pending protection marker unreadable; retained for retry' : '') +
+        `; ${disposition}`
+      );
+    }),
+  ].join('\n');
+}
+
+const UPGRADE_INTENT_RECORD = 'the upgrade intent record (upgrade.v1.json in the coordinator run directory)';
+
+export function formatUpgradeRecordProblem(problem: UpgradeIntentProblem): string {
+  switch (problem) {
+    case 'unreadable':
+      return `Upgrade intent record is unreadable. Automatic succession is held until ${UPGRADE_INTENT_RECORD} can be read again.`;
+    case 'unsupported':
+      return `Upgrade intent record is unsupported: a newer Coral build wrote it. Automatic succession is held until a build that reads ${UPGRADE_INTENT_RECORD} is serving.`;
+    case 'corrupt':
+      return `Upgrade intent record is corrupt. Automatic succession waits while the coordinator durably quarantines ${UPGRADE_INTENT_RECORD} after any active attempt exits; the next recorded upgrade request can then proceed.`;
+  }
+}
+
+export function formatPendingUpgrade(upgrade: UpgradeIntentVisibility): string {
+  let next: string;
+  if (upgrade.phase === 'committing') {
+    next = 'The incumbent finishes or recovers the bounded commit, then verifies that the successor is serving.';
+  } else if (upgrade.phase === 'ready') {
+    next = 'The incumbent starts the bounded commit after verifying the ready successor.';
+  } else if (upgrade.phase === 'prepared') {
+    next = 'The incumbent launches the prepared successor for read-only readiness verification.';
+  } else {
+    switch (upgrade.retryCondition?.kind) {
+      case 'incumbent-retirement':
+        next =
+          'The legacy incumbent retires after its idle timeout (normally at least 6 hours after its last activity); each CLI reuse resets that timer. The supervisor holds the upgrade request and starts the target after retirement.';
+        break;
+      case 'obligation-change':
+        next = 'The incumbent retries when the held obligations change or settle.';
+        break;
+      case 'target-change':
+        next = 'The incumbent retries when target evidence changes.';
+        break;
+      case 'attempt-expiry':
+        next = 'The incumbent retries after the current attempt expires and recovers.';
+        break;
+      default:
+        next = 'The incumbent reconciles the pending request automatically.';
+    }
+  }
+  return [
+    'Pending upgrade:',
+    `  Request: ${upgrade.requestId}`,
+    `  Status: ${upgrade.disposition}`,
+    `  Phase: ${upgrade.phase}`,
+    `  Target: ${upgrade.target.version} (${upgrade.target.flavor}, build set ${upgrade.target.buildSetId}, store format ${upgrade.target.storeFormatFingerprint})`,
+    `  Target bundles: backend=${upgrade.target.bundleHash}, cli=${upgrade.target.cliBundleHash}, appserver=${upgrade.target.claudeAppserverBundleHash}, durable wrapper=${upgrade.target.durableWrapperBundleHash}`,
+    `  Installed root: ${JSON.stringify(upgrade.target.pluginRootLabel)}`,
+    `  Since: ${upgrade.since ?? 'unknown'}`,
+    `  Reason: ${JSON.stringify(upgrade.reason)}`,
+    `  Blockers: ${upgrade.blockers.length}`,
+    ...upgrade.blockers.map((blocker) => `    ${JSON.stringify(blocker.owner)}: ${JSON.stringify(blocker.reason)}`),
+    `  Next automatic action: ${next}`,
+  ].join('\n');
 }
 
 function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownRemainderReport | undefined): string {
@@ -734,18 +953,26 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
-        [
-          'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
-          formatBackendOperatorCommand({ kind: 'backend-start' }),
-        ].join('\n'),
+        result.launchStatusProblem !== undefined
+          ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch status problem is reported below.'
+          : result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
+            ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch status reports the hold below.'
+            : [
+                'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
+                formatBackendOperatorCommand({ kind: 'backend-start' }),
+              ].join('\n'),
         result.shutdownRemainder,
       );
     case 'recorded_process_absent':
       return withShutdownRemainderSection(
-        [
-          `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
-          formatBackendOperatorCommand({ kind: 'backend-start' }),
-        ].join('\n'),
+        result.launchStatusProblem !== undefined
+          ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch status problem is reported below.`
+          : result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
+            ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch status reports the hold below.`
+            : [
+                `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
+                formatBackendOperatorCommand({ kind: 'backend-start' }),
+              ].join('\n'),
         result.shutdownRemainder,
       );
     case 'undecodable_record':
@@ -756,6 +983,11 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
       return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
+    case 'deferred_upgrade':
+      return withShutdownRemainderSection(
+        'An older contender was refused while the incumbent continues serving. Upgrade deferred; Coral will retry automatically when its recorded conditions change.',
+        result.shutdownRemainder,
+      );
     case 'unauthorized':
       return withShutdownRemainderSection(
         [

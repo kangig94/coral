@@ -2,6 +2,14 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { JobLocationIndex } from '../jobs/location-index.js';
+import {
+  readUpgradeIntent,
+  upgradeIntentProblem,
+  visibleUpgradeIntent,
+  type UpgradeIntentProblem,
+  type UpgradeIntentVisibility,
+} from '../infra/upgrade-intent.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import {
   discardStoreReset,
@@ -23,10 +31,12 @@ import {
   listStoreEpochHolders,
   listStoreEpochResidues,
   listStoreEpochs,
+  inspectResolvedStoreEpochKey,
+  lineageJobEpochKey,
   type StoreEpochHolderListEntry,
   type StoreEpochListEntry,
   type StoreEpochResidueListEntry,
-} from '../store/epoch.js';
+} from '../store/epoch/index.js';
 import { isCanonicalStoreResetIncidentId, type StoreResetPublicReport } from '../store/reset-incident.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import { StoreResetCliError } from './errors.js';
@@ -40,7 +50,9 @@ export interface StoreResetCliDependencies {
 }
 
 export type StoreResetListResult = Readonly<{
-  epochs: readonly StoreEpochListEntry[];
+  epochs: readonly (StoreEpochListEntry & { resultRetention?: 'retained' | 'held' | 'unreadable' | 'unobservable' })[];
+  upgrade?: UpgradeIntentVisibility;
+  upgradeProblem?: UpgradeIntentProblem;
   holders: readonly StoreEpochHolderListEntry[];
   residues: readonly StoreEpochResidueListEntry[];
   legacyIncidents: readonly LegacyStoreResetIncidentListEntry[];
@@ -149,8 +161,33 @@ export function listStoreResetIncidentsLocal(
       expectedBuild: manifest,
     });
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const upgradeRead = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    const upgrade = upgradeRead.kind === 'readable' ? visibleUpgradeIntent(upgradeRead.intent) : null;
+    const upgradeProblem = upgradeIntentProblem(upgradeRead);
     return {
-      epochs: target === 'legacy' ? [] : listStoreEpochs(runtime),
+      epochs:
+        target === 'legacy'
+          ? []
+          : listStoreEpochs(runtime).map((epoch) => {
+              const epochKey =
+                epoch.role === 'removed' && typeof epoch.epochKey === 'string'
+                  ? lineageJobEpochKey(runtime.storage.realpathSync(runtime.paths.coral.store.dbDir), epoch.epochKey)
+                  : epoch.resolved === null
+                    ? null
+                    : inspectResolvedStoreEpochKey(runtime, epoch.resolved);
+              if (epochKey === null) return { ...epoch, resultRetention: 'unobservable' as const };
+              try {
+                return {
+                  ...epoch,
+                  resultRetention: index.resultsReleased(epochKey) ? ('retained' as const) : ('held' as const),
+                };
+              } catch {
+                return { ...epoch, resultRetention: 'unreadable' as const };
+              }
+            }),
+      ...(upgrade === null ? {} : { upgrade }),
+      ...(upgradeProblem === null ? {} : { upgradeProblem }),
       holders: target === 'legacy' ? [] : listStoreEpochHolders(runtime),
       residues: target === 'legacy' ? [] : listStoreEpochResidues(runtime),
       legacyIncidents: legacy.incidents,
@@ -191,18 +228,25 @@ export async function reportStoreResetLocal(
   reference: string,
   dependencies: StoreResetCliDependencies = defaultDependencies(),
 ): Promise<StoreResetReportResult> {
-  if (target === 'gen2' && isCanonicalEpoch(reference)) {
+  if (target === 'gen2') {
     const manifest = requireCurrentBuild(dependencies);
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
     const epochs = listStoreEpochs(runtime);
-    const epoch = epochs.find((candidate) => candidate.epoch === reference);
+    const matches = epochs.filter(
+      (candidate) => candidate.epochKey === reference || (isCanonicalEpoch(reference) && candidate.epoch === reference),
+    );
+    if (matches.length > 1) throw new StoreResetCliError('store_reset_epoch_ambiguous');
+    const epoch = matches[0];
     if (epoch === undefined) {
-      if (epochs.some((candidate) => candidate.role === 'unobservable')) {
+      if (isCanonicalEpoch(reference) && epochs.some((candidate) => candidate.role === 'unobservable')) {
         throw new StoreResetCliError('store_reset_reporting_failed');
       }
-      throw new StoreResetCliError('store_reset_incident_not_found');
+      if (isCanonicalEpoch(reference) || reference.includes(':')) {
+        throw new StoreResetCliError('store_reset_incident_not_found');
+      }
+    } else {
+      return { kind: 'epoch', epoch };
     }
-    return { kind: 'epoch', epoch };
   }
   if (!isCanonicalStoreResetIncidentId(reference)) {
     throw new StoreResetCliError('invalid_store_reset_incident_id');

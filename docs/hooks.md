@@ -155,7 +155,7 @@ Evidence whose filename and decoded target do not agree is moved to `~/.coral/st
 
 ## Backend Warm-start
 
-`clients/hooks/session-start.mjs` unconditionally spawns `bridge/coral-backend.cjs` near the top of its body (logic absorbed from the former `backend-warm-start.mjs`). The daemon's `bindWithHandoff` / `requestIncumbentShutdown` contention layer is the single source of truth for staleness: a healthy same-bundle peer makes the new daemon throw `BackendAlreadyRunningError` and exit; a mismatching peer triggers IPC `transport.shutdown` and the new daemon takes over the bound socket. The hook stays free of bundle/flavor comparison so the contention contract has one canonical home. Failures are ignored and the CLI can start the backend lazily later.
+`clients/hooks/session-start.mjs` launches a detached bundled namespace supervisor attempt on every valid SessionStart invocation. The supervisor tries the kernel released `run/namespace-supervisor.v1.lock` and may exit without starting a child. When it admits a child, it keeps that exact child under heartbeat supervision and stays alive while an upgrade request waits for a shipped incumbent to retire. Later invocations may start a fresh supervisor after clean release. The hook does not decide upgrade policy or signal an incumbent; startup failures remain nonfatal to session start.
 
 ## Compact Recovery
 

@@ -1,4 +1,4 @@
-import type { HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
+import type { RedeemableHandoffCapsule } from '../../../provider-proxy/handoff-capsule.js';
 import type { ControlClient } from '../../../provider-proxy/control-client.js';
 import type { GuardianIdentity, ProxyIdentity, ReaperIdentity } from '../../../provider-proxy/protocol.js';
 import type {
@@ -47,7 +47,7 @@ export type ProviderProxyAcquisitionControlSessionBundle = ProviderProxyControlS
   Readonly<{
     base: ProviderProxySetRecoveryAuthority;
     capsulePath: string;
-    capsuleBinding: HandoffCapsuleV3;
+    capsuleBinding: RedeemableHandoffCapsule;
     mutationRpcTimeoutMs: number;
   }>;
 
@@ -87,7 +87,7 @@ export type ProviderProxyAcquisitionSessionDisposition<Owner extends ProviderPro
 export type ProviderProxyAcquisitionSessionDescriptor = Readonly<{
   setIdentity: ProviderProxySetIdentity;
   capsulePath: string;
-  capsuleBinding: HandoffCapsuleV3;
+  capsuleBinding: RedeemableHandoffCapsule;
 }>;
 
 function ownedCell<Owner extends ProviderProxyControlSessionOwner>(

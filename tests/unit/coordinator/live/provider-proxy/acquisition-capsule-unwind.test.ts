@@ -21,7 +21,7 @@ import {
 } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { providerProxyDisappearanceReceipt } from '#src/provider-proxy/protocol.js';
-import { handoffCapsuleV3Schema } from '#src/provider-proxy/handoff-capsule.js';
+import { handoffCapsuleV4Schema } from '#src/provider-proxy/handoff-capsule.js';
 import type {
   CoordinatorIdentity,
   GuardianIdentity,
@@ -112,7 +112,7 @@ function acquisitionSteps(
 ): Readonly<{ steps: ProviderProxyAcquisitionSteps; capsulePath: string; confirmGuardianAbsent(): void }> {
   const root = mkdtempSync(join(tmpdir(), 'coral-acquisition-capsule-'));
   tempRoots.push(root);
-  const capsulePath = join(root, 'provider.handoff.v3.json');
+  const capsulePath = join(root, 'provider.handoff.v4.json');
   const realRuntime = createRealRuntime('prod', { baseDir: root });
   const runtime: Runtime = cleanupFails
     ? {
@@ -183,7 +183,7 @@ function acquisitionSteps(
       const authority = createProviderProxySetAuthority(deps);
       const installation = await authority.installRecoveryCredential(new AbortController().signal);
       if (installation.kind !== 'installed') throw new Error(`unexpected installation outcome: ${installation.kind}`);
-      const capsule = handoffCapsuleV3Schema.parse(JSON.parse(readFileSync(capsulePath, 'utf8')));
+      const capsule = handoffCapsuleV4Schema.parse(JSON.parse(readFileSync(capsulePath, 'utf8')));
       const session = createOwnedProviderProxyAcquisitionControlSession(
         providerProxyControlSessionOwner.controlEstablishment,
         {

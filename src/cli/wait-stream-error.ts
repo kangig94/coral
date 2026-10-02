@@ -8,7 +8,10 @@ function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
     case 'scope_mismatch':
       return 403;
     case 'jobs_not_found':
+    case 'job_pre_epoch_history':
       return 404;
+    case 'job_outcome_unrecoverable':
+      return 409;
     case 'backend_recovering':
     case 'backend_shutting_down':
       return 503;

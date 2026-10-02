@@ -4,6 +4,7 @@ import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js'
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { openSettledTestStoreDb } from '../../../helpers/store-db.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
@@ -57,7 +58,7 @@ import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { hydrateJobRecoveryProjection, JobStore } from '#src/jobs/store.js';
@@ -66,6 +67,8 @@ import { EVENT_COLUMNS } from '#src/recovery/row-revision-fields.js';
 import type { EventsRow } from '#src/store/schema.js';
 import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { Runtime } from '#src/runtime/ports.js';
+import { readOrCreateEpochKey } from '#src/store/epoch/index.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
@@ -74,6 +77,7 @@ import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { decodeStoredBody, encodeEventBody, StoreCodecError } from '#src/store/body-codec.js';
+import { SuccessionWriterParkedError } from '#src/store/db.js';
 import type { CommitEventsFn } from '#src/store/append.js';
 import {
   toProviderDefinition,
@@ -322,7 +326,7 @@ function createService(
     }
   };
   return new ExecutionService(ctx, {
-    childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+    childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
@@ -351,7 +355,7 @@ function createServiceThroughProductionComposition(
   if (provider !== undefined) providerRegistry.register(provider);
   const operationRegistry = new LocalOperationRegistry();
   const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
-  const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids);
+  const childPrincipalRegistry = testChildPrincipalRegistry(runtime.ids);
   const services = createExecutionServices({
     world: {
       identity: {
@@ -759,6 +763,12 @@ function _makeTerminalReplay(
   };
 }
 
+function prepareDurableStore(runtime: Runtime): void {
+  openSettledTestStoreDb(runtime).close();
+  const storeRoot = runtime.paths.coral.store.dbDir;
+  readOrCreateEpochKey(runtime, { storeRoot, epoch: '1', path: join(storeRoot, 'epoch-1', 'store.db') });
+}
+
 describe('ExecutionService launch', () => {
   let ctx: InvocationContext;
 
@@ -777,7 +787,7 @@ describe('ExecutionService launch', () => {
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
-    runtime = createRealRuntime('prod');
+    runtime = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
     JOBS_DIR = jobsDir(runtime.env);
     launchCoordinator = new LaunchCoordinator({ runtime });
     mockState.getNewProvider.mockReset();
@@ -890,6 +900,48 @@ describe('ExecutionService launch', () => {
     expect(abortRegistry.has(jobId)).toBe(false);
     expect(launchCoordinator.getActiveJobIds()).not.toContain(jobId);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('defers a provider failure seen through a parked succession writer until the writer is reclaimed', async () => {
+    let rejectProvider!: (error: Error) => void;
+    const providerResult = new Promise<TestProviderTurnResult>((_resolve, reject) => {
+      rejectProvider = reject;
+    });
+    const { provider } = makeProvider({ execute: () => providerResult });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const progressStore = createCompositionProgressStore();
+    const service = createService(ctx, { progressStore });
+    const { abortRegistry } = getInternals(service);
+    const decision = await service.start('codex', { prompt: 'parked writer failure' }, ctx);
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    let reclaim!: () => void;
+    const unparked = new Promise<void>((resolve) => {
+      reclaim = resolve;
+    });
+    const readStatus = progressStore.readStatus.bind(progressStore);
+    const parkedRead = vi.spyOn(progressStore, 'readStatus').mockImplementationOnce(() => {
+      throw new SuccessionWriterParkedError(unparked);
+    });
+
+    rejectProvider(new Error('provider failed while the writer was parked'));
+    await vi.waitFor(() => expect(parkedRead).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(abortRegistry.has(decision.jobId)).toBe(true);
+    expect(readStatus(decision.jobId)?.phase).not.toBe('error');
+
+    reclaim();
+    await vi.waitFor(() => expect(readStatus(decision.jobId)?.phase).toBe('error'));
+    expect(readStatus(decision.jobId)).toMatchObject({
+      result: {
+        outcome: {
+          kind: 'job_fault',
+          fault: { kind: 'wrapper_crashed', cause: { message: 'provider failed while the writer was parked' } },
+        },
+      },
+    });
+    await vi.waitFor(() => expect(abortRegistry.has(decision.jobId)).toBe(false));
   });
 
   it('durably releases malformed-status launch ownership through production execution-service composition', async () => {
@@ -1280,6 +1332,7 @@ describe('ExecutionService launch', () => {
   });
 
   it('runs provider CLI jobs through the durable runner and persists runtime artifacts', async () => {
+    prepareDurableStore(runtime);
     const provider: Provider = {
       name: 'codex',
       execute: (request, runtime) =>
@@ -1330,7 +1383,7 @@ describe('ExecutionService launch', () => {
     const runtimeRecord = progressStore.readRuntimeProjection(decision.jobId) as _DurableCliRuntimeRecord | null;
     const history = progressStore.readJobEvents(decision.jobId);
 
-    expect(terminal.result.content).toContain('final output');
+    expect(terminal.result.content, JSON.stringify(terminal)).toContain('final output');
     expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
     expect(existsSync(join(jobDir, 'exit.json'))).toBe(false);
     expect(runtimeRecord?.pid).toBeGreaterThan(0);
@@ -1340,7 +1393,8 @@ describe('ExecutionService launch', () => {
   });
 
   it('keeps durable abandonment committed when its progress diagnostic fails', async () => {
-    const base = createRealRuntime('prod');
+    const base = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
+    prepareDurableStore(base);
     const retryHandle = {};
     let retryActive = false;
     const clearInterval = vi.fn(() => {
@@ -1457,7 +1511,8 @@ describe('ExecutionService launch', () => {
   });
 
   it('keeps the abandonment control when durable publication is temporarily unwritable', async () => {
-    const base = createRealRuntime('prod');
+    const base = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
+    prepareDurableStore(base);
     const retryHandle = {};
     const clearInterval = vi.fn();
     const exitRecord = { exitCode: 0, signal: null, endTime: new Date(1).toISOString() } as const;
@@ -1594,11 +1649,11 @@ describe('ExecutionService launch', () => {
   });
 
   it('keeps the abort hold when deleting the durable containment row fails', async () => {
-    const base = createRealRuntime('prod');
-    const retryHandle = {};
-    let retryCleanup!: () => void;
+    const base = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
+    prepareDurableStore(base);
+    const intervals = new Map<object, () => void>();
     let processAbsent = false;
-    const clearInterval = vi.fn();
+    const clearInterval = vi.fn((handle: object) => intervals.delete(handle));
     const exitRecord = { exitCode: 0, signal: null, endTime: new Date(1).toISOString() } as const;
     let resolveExit!: (record: typeof exitRecord) => void;
     const exit = new Promise<typeof exitRecord>((resolve) => {
@@ -1617,8 +1672,9 @@ describe('ExecutionService launch', () => {
       time: {
         ...base.time,
         setInterval: (callback) => {
-          retryCleanup = callback;
-          return retryHandle;
+          const handle = { unref: vi.fn() };
+          intervals.set(handle, callback);
+          return handle;
         },
         clearInterval,
       },
@@ -1709,6 +1765,10 @@ describe('ExecutionService launch', () => {
       END
     `);
 
+    expect(intervals.size).toBe(1);
+    const retry = [...intervals.entries()][0];
+    if (retry === undefined) throw new Error('Expected active containment retry');
+    const [retryHandle, retryCleanup] = retry;
     processAbsent = true;
     retryCleanup();
     await retainedCleanup();
@@ -1719,7 +1779,8 @@ describe('ExecutionService launch', () => {
       kind: 'valid',
       status: { disposition: { kind: 'held' } },
     });
-    expect(clearInterval).not.toHaveBeenCalled();
+    expect(clearInterval).not.toHaveBeenCalledWith(retryHandle);
+    expect(intervals.has(retryHandle)).toBe(true);
     expect(progressStore.readStatus(decision.jobId)?.phase).toBe('running');
 
     progressStore.getDb().exec('DROP TRIGGER fail_containment_delete');
@@ -1836,6 +1897,30 @@ describe('ExecutionService launch', () => {
     expect(execute).not.toHaveBeenCalled();
     expect(prepareSession).not.toHaveBeenCalled();
     expect(sessionManager.list('codex')).toEqual([]);
+    expect(progressStore.listJobIds()).toEqual([]);
+  });
+
+  it('does not launch a session when its request expires during provider preflight', async () => {
+    let finishPreflight!: (value: ProviderPreflightOutcome) => void;
+    const { provider, execute } = makeProvider({
+      preflight: () =>
+        new Promise<ProviderPreflightOutcome>((resolve) => {
+          finishPreflight = resolve;
+        }),
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { progressStore, sessionManager } = getInternals(service);
+    const prepareSession = vi.spyOn(sessionManager, 'prepare');
+    const controller = new AbortController();
+    const pending = service.start('codex', { prompt: 'hello' }, ctx, controller.signal);
+    await vi.waitFor(() => expect(finishPreflight).toBeTypeOf('function'));
+
+    controller.abort();
+    finishPreflight({ kind: 'satisfied' });
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(prepareSession).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
     expect(progressStore.listJobIds()).toEqual([]);
   });
 
@@ -2230,7 +2315,7 @@ describe('ExecutionService launch', () => {
     terminateAll();
     const previousMaxQueueSize = process.env.CORAL_MAX_QUEUE_SIZE;
     process.env.CORAL_MAX_QUEUE_SIZE = '1';
-    runtime = createRealRuntime('prod');
+    runtime = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
     if (previousMaxQueueSize === undefined) {
       delete process.env.CORAL_MAX_QUEUE_SIZE;
     } else {

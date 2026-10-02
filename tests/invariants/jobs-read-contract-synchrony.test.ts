@@ -13,6 +13,7 @@ import ts from 'typescript';
 const REPO_ROOT = join(__dirname, '..', '..');
 const PORTS_FILE = join(REPO_ROOT, 'src/transport/rpc/ports.ts');
 const CORAL_STORE_FILE = join(REPO_ROOT, 'src/read-model/coral-store.ts');
+const ADDRESSING_FILE = join(REPO_ROOT, 'src/jobs/contracts/addressing.ts');
 
 function parse(filePath: string): ts.SourceFile {
   return ts.createSourceFile(filePath, readFileSync(filePath, 'utf-8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -82,6 +83,7 @@ function expectSynchronousJobsRead(type: ts.TypeNode | undefined, signature: str
 describe('jobs read contracts stay synchronous and carrier-free', () => {
   const ports = parse(PORTS_FILE);
   const coralStore = parse(CORAL_STORE_FILE);
+  const addressing = parse(ADDRESSING_FILE);
   const jobs = classProperty(coralStore, 'CoralStore', 'jobs');
 
   it('pins JobsRequestPort.list as a synchronous jobs read', () => {
@@ -96,7 +98,15 @@ describe('jobs read contracts stay synchronous and carrier-free', () => {
     expectSynchronousJobsRead(
       interfaceMethod(ports, 'JobsRequestPort', 'detail')?.type,
       'JobsRequestPort.detail',
-      'JobDetailResponse | null',
+      'JobDetailLookup',
+    );
+    const lookup = addressing.statements.find(
+      (statement): statement is ts.TypeAliasDeclaration =>
+        ts.isTypeAliasDeclaration(statement) && statement.name.text === 'JobDetailLookup',
+    );
+    expect(lookup).toBeDefined();
+    expect(normalizedType(lookup!.type)).toBe(
+      "| JobDetailResponse | Readonly<{ kind: 'unresolved'; jobId: string; epochKey: string; }> | Readonly<{ kind: 'outcome-unrecoverable'; jobId: string; epochKey: string; }> | Readonly<{ kind: 'detail-unreadable'; jobId: string; epochKey: string; }> | Readonly<{ kind: 'pre-epoch-history'; jobId: string; }> | null",
     );
   });
 

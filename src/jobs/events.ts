@@ -118,7 +118,6 @@ const validateLaunchOwner: DomainAppendValidator = (ctx, inputs) => {
       providerSessionProvider(session) !== launch.provider ||
       session.activeJobId !== input.stream.id ||
       session.projectRoot !== launch.projectRoot ||
-      session.backendNamespace !== launch.backendNamespace ||
       !ownerMatches ||
       !descriptorMatchesOwner
     ) {
@@ -134,8 +133,6 @@ const validateLaunchOwner: DomainAppendValidator = (ctx, inputs) => {
           sessionActiveJobId: session.activeJobId,
           sessionProjectRoot: session.projectRoot,
           launchProjectRoot: launch.projectRoot,
-          sessionBackendNamespace: session.backendNamespace,
-          launchBackendNamespace: launch.backendNamespace,
           owner: launch.owner,
           ownerMatches,
           descriptorMatchesOwner,

@@ -3,11 +3,15 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, posix, relative, resolve } from 'node:path';
 import { z } from 'zod';
 
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
+import {
+  CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+  SUCCESSION_CAPABILITIES_FILE,
+} from '#src/infra/bundle-manifest-address.js';
 
 const STALE_BUILD_DIAGNOSTIC = 'clients/build is stale; run npm run build:dev';
 const FULL_SHA256 = /^[a-f0-9]{64}$/;
 const CURRENT_STRICT_BUNDLE_MANIFEST_OUTPUT = `clients/build/${CURRENT_STRICT_BUNDLE_MANIFEST_FILE}` as const;
+const SUCCESSION_CAPABILITIES_OUTPUT = `clients/build/${SUCCESSION_CAPABILITIES_FILE}` as const;
 const REQUIRED_INPUTS = [
   'package.json',
   'scripts/build-server.mjs',
@@ -33,11 +37,13 @@ const bundleFreshnessReceiptSchema = z
     outputs: z
       .object({
         backend: outputSchema('clients/build/coral-backend.cjs'),
+        sentinel: outputSchema('clients/build/coral-sentinel.cjs'),
         cli: outputSchema('clients/build/coral-cli'),
         claudeAppserver: outputSchema('clients/build/coral-claude-appserver.cjs'),
         durableWrapper: outputSchema('clients/build/coral-durable-wrapper.cjs'),
         legacyManifest: outputSchema('clients/build/manifest.json'),
         strictManifest: outputSchema(CURRENT_STRICT_BUNDLE_MANIFEST_OUTPUT),
+        successionCapabilities: outputSchema(SUCCESSION_CAPABILITIES_OUTPUT),
       })
       .strict(),
   })
@@ -51,11 +57,13 @@ export type BundleFreshnessReceiptV1 = Readonly<{
   inputs: readonly string[];
   outputs: Readonly<{
     backend: Readonly<{ path: 'clients/build/coral-backend.cjs'; sha256: string }>;
+    sentinel: Readonly<{ path: 'clients/build/coral-sentinel.cjs'; sha256: string }>;
     cli: Readonly<{ path: 'clients/build/coral-cli'; sha256: string }>;
     claudeAppserver: Readonly<{ path: 'clients/build/coral-claude-appserver.cjs'; sha256: string }>;
     durableWrapper: Readonly<{ path: 'clients/build/coral-durable-wrapper.cjs'; sha256: string }>;
     legacyManifest: Readonly<{ path: 'clients/build/manifest.json'; sha256: string }>;
     strictManifest: Readonly<{ path: typeof CURRENT_STRICT_BUNDLE_MANIFEST_OUTPUT; sha256: string }>;
+    successionCapabilities: Readonly<{ path: typeof SUCCESSION_CAPABILITIES_OUTPUT; sha256: string }>;
   }>;
 }>;
 

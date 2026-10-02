@@ -1,0 +1,767 @@
+import { randomUUID } from 'node:crypto';
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
+import { z } from 'zod';
+
+import { acquireDirectoryLock } from './fs-lock.js';
+import { writeAuditEvent } from './audit-log.js';
+import { createForeignTargetValidator, type ForeignTargetValidationResult } from './handoff-target.js';
+import { processIncarnationSchema } from './node-process.js';
+import { upgradeIntentPath } from './path/index.js';
+import { listLaunchSubjects, observeLaunchSubject } from './launch-admission-record.js';
+import { observeProcessLiveness, probeProcessIncarnation } from './node-process.js';
+
+const buildIdentitySchema = z
+  .object({
+    version: z.string().min(1),
+    buildSetId: z.string().min(1),
+    flavor: z.enum(['dev', 'prod']),
+    storeFormatFingerprint: z.string().min(1),
+    bundleHash: z.string().min(1),
+    cliBundleHash: z.string().min(1),
+    claudeAppserverBundleHash: z.string().min(1),
+    durableWrapperBundleHash: z.string().min(1),
+  })
+  .passthrough();
+
+const processIdentitySchema = z
+  .object({
+    instanceId: z.string().min(1),
+    pid: z.number().int().positive(),
+    incarnation: processIncarnationSchema.nullable(),
+    build: buildIdentitySchema,
+  })
+  .passthrough();
+
+const incumbentIdentitySchema = z
+  .object({
+    instanceId: z.string().min(1),
+    pid: z.number().int().positive(),
+    incarnation: processIncarnationSchema.nullable(),
+    version: z.string().min(1),
+    bundleHash: z.string().min(1),
+    flavor: z.enum(['dev', 'prod']),
+  })
+  .passthrough();
+
+const ATTEMPT_OWNER_KINDS = ['incumbent'] as const;
+
+const attemptOwnerSchema = z
+  .object({
+    kind: z.enum(ATTEMPT_OWNER_KINDS),
+    instanceId: z.string().min(1),
+    pid: z.number().int().positive(),
+    incarnation: processIncarnationSchema.nullable(),
+  })
+  .passthrough();
+
+const blockerSchema = z
+  .object({
+    owner: z.string().min(1),
+    reason: z.string().min(1),
+  })
+  .passthrough();
+
+const knownBlockerOwners = new Set([
+  'launch-admission',
+  'durable-cli',
+  'provider-operations',
+  'provider-proxy-sets',
+  'provider-hosts',
+  'recovery',
+  'workflow',
+  'kb-daemon',
+  'discuss',
+  'session-continuation',
+  'child-principals',
+  'jobs',
+  'target',
+  'protocol',
+  'preparation',
+  'legacy-incumbent',
+  'upgrade-contender',
+  'succession-adoption',
+  'succession-attempt-child',
+  'succession-commit',
+  'succession-prepare',
+  'succession-startup',
+]);
+
+function blockerNeedsNewerBuild(blocker: Readonly<{ owner: string; reason: string }>): boolean {
+  return (
+    !knownBlockerOwners.has(blocker.owner) || Object.keys(blocker).some((key) => key !== 'owner' && key !== 'reason')
+  );
+}
+
+const RETRY_CONDITION_KINDS = ['obligation-change', 'incumbent-retirement', 'target-change', 'attempt-expiry'] as const;
+
+const retryConditionSchema = z
+  .object({
+    kind: z.enum(RETRY_CONDITION_KINDS),
+    evidence: z.string().min(1),
+  })
+  .passthrough();
+
+const acceptedObligationSchema = z
+  .object({
+    owner: z.string().min(1),
+    receiptId: z.string().min(1),
+    controlGeneration: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
+const servingReceiptSchema = z
+  .object({
+    kind: z.literal('serving'),
+    attemptId: z.string().min(1),
+    successor: processIdentitySchema,
+    epochKey: z.string().min(1),
+    controlGeneration: z.number().int().nonnegative(),
+    acceptedObligations: z.array(acceptedObligationSchema),
+    recordedAt: z.string().datetime(),
+  })
+  .passthrough();
+
+const attemptRetrySchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('transient'),
+      retryAfterMs: z.number().int().nonnegative(),
+      obligationChange: z.boolean().optional(),
+    })
+    .passthrough(),
+  z.object({ kind: z.literal('target-change') }).passthrough(),
+]);
+
+export type AttemptRetry = z.infer<typeof attemptRetrySchema>;
+
+const transientRetrySchema = z
+  .object({
+    targetKey: z.string().min(1),
+    failures: z.number().int().positive(),
+    retryAfter: z.string().datetime(),
+  })
+  .passthrough();
+
+const obligationRetrySchema = z
+  .object({
+    targetKey: z.string().min(1),
+    changes: z.number().int().positive(),
+    retryAfter: z.string().datetime(),
+  })
+  .passthrough();
+
+const targetSchema = z
+  .object({
+    build: buildIdentitySchema,
+    pluginRootLabel: z.string().min(1),
+  })
+  .passthrough();
+
+const nextTargetSchema = z
+  .object({
+    requestId: z.string().min(1),
+    target: targetSchema,
+  })
+  .passthrough();
+
+const unservedMintDiscardSchema = z
+  .object({
+    attemptId: z.string().min(1),
+    incumbentEpochKey: z.string().min(1),
+  })
+  .passthrough();
+
+const UPGRADE_INTENT_DISPOSITIONS = ['pending', 'deferred', 'attempting', 'completed', 'closed'] as const;
+
+const upgradeIntentFields = z
+  .object({
+    version: z.literal('v1'),
+    requestId: z.string().min(1),
+    reason: z.enum(['upgrade', 'supervision-repair']).optional(),
+    legacyRetirement: z.boolean().optional(),
+    requestedAt: z.string().datetime().optional(),
+    revision: z.number().int().nonnegative(),
+    incumbent: incumbentIdentitySchema,
+    target: targetSchema,
+    attemptId: z.string().min(1).nullable(),
+    attemptChild: z
+      .object({
+        attemptId: z.string().min(1),
+        pid: z.number().int().positive(),
+        incarnation: processIncarnationSchema.nullable(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+    attemptOwner: attemptOwnerSchema.nullable(),
+    disposition: z.enum(UPGRADE_INTENT_DISPOSITIONS),
+    blockers: z.array(blockerSchema),
+    retryCondition: retryConditionSchema.nullable(),
+    attemptDeadline: z.string().datetime().nullable(),
+    completionReceipt: servingReceiptSchema.nullable(),
+    transientRetry: transientRetrySchema.optional().catch(undefined),
+    obligationRetry: obligationRetrySchema.nullable().optional().catch(undefined),
+    recoveryRetry: attemptRetrySchema.nullable().optional(),
+    recoveryGrantAttemptId: z.string().min(1).nullable().optional(),
+
+    nextTarget: nextTargetSchema.nullable().optional().catch(undefined),
+
+    unservedMintDiscard: unservedMintDiscardSchema.nullable().optional().catch(undefined),
+  })
+  .passthrough();
+
+/** Unknown decision values belong to a newer build and must not be treated as corrupt or overwritten. */
+const newerVocabularySchema = upgradeIntentFields.extend({
+  disposition: z.string().min(1),
+  attemptOwner: attemptOwnerSchema.extend({ kind: z.string().min(1) }).nullable(),
+  retryCondition: retryConditionSchema.extend({ kind: z.string().min(1) }).nullable(),
+  recoveryRetry: z
+    .object({ kind: z.string().min(1) })
+    .passthrough()
+    .nullable()
+    .optional(),
+});
+
+function namesNewerVocabulary(value: unknown): boolean {
+  const parsed = newerVocabularySchema.safeParse(value);
+  if (!parsed.success) return false;
+  const { disposition, attemptOwner, retryCondition, recoveryRetry } = parsed.data;
+  return (
+    !(UPGRADE_INTENT_DISPOSITIONS as readonly string[]).includes(disposition) ||
+    (attemptOwner !== null && !(ATTEMPT_OWNER_KINDS as readonly string[]).includes(attemptOwner.kind)) ||
+    (retryCondition !== null && !(RETRY_CONDITION_KINDS as readonly string[]).includes(retryCondition.kind)) ||
+    (recoveryRetry !== null &&
+      recoveryRetry !== undefined &&
+      !['transient', 'target-change'].includes(recoveryRetry.kind))
+  );
+}
+
+const upgradeIntentSchema = upgradeIntentFields.superRefine((intent, context) => {
+  if (intent.disposition === 'completed') {
+    if (
+      intent.completionReceipt === null ||
+      intent.attemptOwner === null ||
+      intent.completionReceipt.attemptId !== intent.attemptId
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completionReceipt'],
+        message: 'Completion requires a serving receipt for the current attempt',
+      });
+    } else if (
+      intent.completionReceipt.successor.build.buildSetId !== intent.target.build.buildSetId ||
+      intent.completionReceipt.successor.build.version !== intent.target.build.version ||
+      intent.completionReceipt.successor.build.flavor !== intent.target.build.flavor ||
+      intent.completionReceipt.successor.build.storeFormatFingerprint !== intent.target.build.storeFormatFingerprint ||
+      intent.completionReceipt.successor.build.bundleHash !== intent.target.build.bundleHash ||
+      intent.completionReceipt.successor.build.cliBundleHash !== intent.target.build.cliBundleHash ||
+      intent.completionReceipt.successor.build.claudeAppserverBundleHash !==
+        intent.target.build.claudeAppserverBundleHash ||
+      intent.completionReceipt.successor.build.durableWrapperBundleHash !== intent.target.build.durableWrapperBundleHash
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completionReceipt', 'successor', 'build'],
+        message: 'The serving successor must match the requested build',
+      });
+    } else if (
+      intent.completionReceipt.acceptedObligations.some(
+        (obligation) => obligation.controlGeneration !== intent.completionReceipt?.controlGeneration,
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completionReceipt', 'acceptedObligations'],
+        message: 'Accepted obligations must be controlled by the serving generation',
+      });
+    } else if (
+      intent.attemptDeadline !== null &&
+      Date.parse(intent.completionReceipt.recordedAt) > Date.parse(intent.attemptDeadline)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completionReceipt', 'recordedAt'],
+        message: 'Serving must precede the attempt deadline',
+      });
+    }
+  } else if (intent.completionReceipt !== null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['completionReceipt'],
+      message: 'Only a completed intent may hold a serving receipt',
+    });
+  }
+});
+
+export type UpgradeIntent = z.infer<typeof upgradeIntentSchema>;
+
+const completedSuccessionReceiptSchema = z
+  .object({
+    incumbent: incumbentIdentitySchema,
+    receipt: servingReceiptSchema,
+  })
+  .passthrough();
+const completedSuccessionReceiptsSchema = z
+  .object({
+    version: z.literal(1),
+    receipts: z.array(completedSuccessionReceiptSchema).max(16),
+  })
+  .passthrough();
+
+export type CompletedSuccessionReceiptsRead =
+  | Readonly<{ kind: 'readable'; receipts: readonly z.infer<typeof completedSuccessionReceiptSchema>[] }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'corrupt' }>
+  | Readonly<{ kind: 'unreadable'; cause: unknown }>;
+
+export function readCompletedSuccessionReceipts(runDir: string): CompletedSuccessionReceiptsRead {
+  let raw: string;
+  try {
+    raw = readFileSync(join(runDir, 'upgrade-receipts.v1.json'), 'utf8');
+  } catch (cause: unknown) {
+    if (cause instanceof Error && 'code' in cause && cause.code === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'unreadable', cause };
+  }
+  try {
+    const parsed = completedSuccessionReceiptsSchema.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success ? { kind: 'readable', receipts: parsed.data.receipts } : { kind: 'corrupt' };
+  } catch {
+    return { kind: 'corrupt' };
+  }
+}
+
+function retainCompletedSuccessionReceipt(runDir: string, intent: UpgradeIntent): void {
+  if (intent.completionReceipt === null) return;
+  const path = join(runDir, 'upgrade-receipts.v1.json');
+  let previous: z.infer<typeof completedSuccessionReceiptsSchema> = { version: 1, receipts: [] };
+  try {
+    previous = completedSuccessionReceiptsSchema.parse(JSON.parse(readFileSync(path, 'utf8')) as unknown);
+  } catch (error: unknown) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      renameSync(path, `${path}.damaged.${randomUUID()}`);
+    } else if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
+  const existing = previous.receipts.find((entry) => entry.receipt.attemptId === intent.completionReceipt?.attemptId);
+  const receipt = completedSuccessionReceiptSchema.parse(
+    mergeUnknownKeys(existing, { incumbent: intent.incumbent, receipt: intent.completionReceipt }),
+  );
+  writeAtomic(path, {
+    ...previous,
+    receipts: [
+      ...previous.receipts.filter((entry) => entry.receipt.attemptId !== receipt.receipt.attemptId),
+      receipt,
+    ].slice(-16),
+  });
+}
+
+export function parseUpgradeIntentSnapshot(value: unknown): UpgradeIntent | null {
+  const parsed = upgradeIntentSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+export type UpgradeIntentChange = Pick<
+  UpgradeIntent,
+  | 'requestId'
+  | 'requestedAt'
+  | 'incumbent'
+  | 'target'
+  | 'attemptId'
+  | 'attemptChild'
+  | 'attemptOwner'
+  | 'disposition'
+  | 'blockers'
+  | 'retryCondition'
+  | 'attemptDeadline'
+  | 'completionReceipt'
+> &
+  Record<string, unknown>;
+export type UpgradeIntentVisibility = Readonly<{
+  requestId: string;
+  disposition: UpgradeIntent['disposition'];
+  phase: 'pending' | 'prepared' | 'ready' | 'committing';
+  target: Readonly<{
+    version: string;
+    buildSetId: string;
+    flavor: 'dev' | 'prod';
+    storeFormatFingerprint: string;
+    bundleHash: string;
+    cliBundleHash: string;
+    claudeAppserverBundleHash: string;
+    durableWrapperBundleHash: string;
+    pluginRootLabel: string;
+  }>;
+  blockers: readonly Readonly<{ owner: string; reason: string }>[];
+  reason: string;
+  since: string | null;
+  retryCondition: UpgradeIntent['retryCondition'];
+}>;
+
+const upgradeIntentVisibilitySchema = z.object({
+  requestId: z.string().min(1),
+  disposition: z.enum(UPGRADE_INTENT_DISPOSITIONS),
+  phase: z.enum(['pending', 'prepared', 'ready', 'committing']),
+  target: z.object({
+    version: z.string().min(1),
+    buildSetId: z.string().min(1),
+    flavor: z.enum(['dev', 'prod']),
+    storeFormatFingerprint: z.string().min(1),
+    bundleHash: z.string().min(1),
+    cliBundleHash: z.string().min(1),
+    claudeAppserverBundleHash: z.string().min(1),
+    durableWrapperBundleHash: z.string().min(1),
+    pluginRootLabel: z.string().min(1),
+  }),
+  blockers: z.array(blockerSchema.pick({ owner: true, reason: true })),
+  reason: z.string().min(1),
+  since: z.string().datetime().nullable(),
+  retryCondition: retryConditionSchema.nullable(),
+});
+
+export function parseVisibleUpgradeIntent(value: unknown): UpgradeIntentVisibility | null {
+  const parsed = upgradeIntentVisibilitySchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+export function visibleUpgradeIntent(intent: UpgradeIntent): UpgradeIntentVisibility | null {
+  if (intent.disposition === 'closed' || intent.disposition === 'completed') return null;
+  const preparation = intent.successionPreparation;
+  const stage =
+    typeof preparation === 'object' && preparation !== null && 'stage' in preparation ? preparation.stage : null;
+  const phase =
+    intent.disposition === 'attempting'
+      ? 'committing'
+      : intent.disposition === 'deferred'
+        ? 'pending'
+        : stage === 'prepared' || stage === 'ready' || stage === 'committing'
+          ? stage
+          : 'pending';
+  return {
+    requestId: intent.requestId,
+    disposition: intent.disposition,
+    phase,
+    target: {
+      version: intent.target.build.version,
+      buildSetId: intent.target.build.buildSetId,
+      flavor: intent.target.build.flavor,
+      storeFormatFingerprint: intent.target.build.storeFormatFingerprint,
+      bundleHash: intent.target.build.bundleHash,
+      cliBundleHash: intent.target.build.cliBundleHash,
+      claudeAppserverBundleHash: intent.target.build.claudeAppserverBundleHash,
+      durableWrapperBundleHash: intent.target.build.durableWrapperBundleHash,
+      pluginRootLabel: intent.target.pluginRootLabel,
+    },
+    blockers: intent.blockers.map(({ owner, reason }) => ({ owner, reason })),
+    reason: intent.retryCondition?.evidence ?? intent.blockers[0]?.reason ?? 'awaiting succession reconciliation',
+    since: intent.requestedAt ?? null,
+    retryCondition: intent.retryCondition,
+  };
+}
+
+export type UpgradeIntentRead =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unreadable'; cause: unknown }>
+  | Readonly<{ kind: 'corrupt' }>
+  | Readonly<{ kind: 'unsupported'; version: unknown }>
+  | Readonly<{ kind: 'readable'; intent: UpgradeIntent }>;
+
+export type UpgradeIntentProblem = Extract<UpgradeIntentRead['kind'], 'unreadable' | 'corrupt' | 'unsupported'>;
+
+export function upgradeIntentProblem(read: UpgradeIntentRead): UpgradeIntentProblem | null {
+  return read.kind === 'unreadable' || read.kind === 'corrupt' || read.kind === 'unsupported' ? read.kind : null;
+}
+
+export type UpgradeIntentWrite =
+  | Readonly<{ kind: 'written'; intent: UpgradeIntent }>
+  | Readonly<{ kind: 'conflict'; current: UpgradeIntent | null }>
+  | Readonly<{ kind: 'unreadable' | 'corrupt' | 'unsupported' }>;
+
+function readUpgradeIntentAtPath(path: string): UpgradeIntentRead {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch (cause: unknown) {
+    if (cause instanceof Error && 'code' in cause && cause.code === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'unreadable', cause };
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return { kind: 'corrupt' };
+  }
+  if (typeof value !== 'object' || value === null || !('version' in value) || value.version !== 'v1') {
+    const version = typeof value === 'object' && value !== null && 'version' in value ? value.version : undefined;
+    return { kind: 'unsupported', version };
+  }
+  const parsed = upgradeIntentSchema.safeParse(value);
+  if (parsed.success) return { kind: 'readable', intent: parsed.data };
+  return namesNewerVocabulary(value) ? { kind: 'unsupported', version: value.version } : { kind: 'corrupt' };
+}
+
+/** Unknown generations and malformed records never authorize an overwrite. */
+export function readUpgradeIntent(runDir: string): UpgradeIntentRead {
+  return readUpgradeIntentAtPath(upgradeIntentPath(runDir));
+}
+
+export async function quarantineCorruptUpgradeIntent(runDir: string): Promise<'quarantined' | 'held' | 'unchanged'> {
+  const lease = await acquireDirectoryLock(join(runDir, 'upgrade.v1.lock'));
+  try {
+    if (readUpgradeIntentAtPath(upgradeIntentPath(runDir)).kind !== 'corrupt') return 'unchanged';
+    if (
+      listLaunchSubjects(runDir).some((subject) => {
+        if (observeLaunchSubject(subject) === 'absent') return false;
+        const purpose = subject.admission?.purpose;
+        return purpose === undefined || purpose === 'succession' || purpose === 'contender';
+      })
+    )
+      return 'held';
+    try {
+      const discovery = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as {
+        pid?: number;
+        incarnation?: string;
+        supervision?: { purpose?: string };
+      };
+      if (
+        (discovery.supervision?.purpose === 'succession' || discovery.supervision?.purpose === 'contender') &&
+        discovery.pid !== undefined &&
+        discovery.incarnation !== undefined &&
+        (probeProcessIncarnation(discovery.pid) === discovery.incarnation ||
+          (probeProcessIncarnation(discovery.pid) === null && observeProcessLiveness(discovery.pid) !== 'absent'))
+      )
+        return 'held';
+    } catch {
+      /* Absent or unreadable discovery supplies no active-attempt proof. */
+    }
+    lease.assertOwned();
+    renameSync(upgradeIntentPath(runDir), join(runDir, `upgrade.v1.corrupt-${randomUUID()}.json`));
+    const directoryFd = openSync(runDir, 'r');
+    try {
+      fsyncSync(directoryFd);
+    } finally {
+      closeSync(directoryFd);
+    }
+    return 'quarantined';
+  } finally {
+    lease();
+  }
+}
+
+export function hasQuarantinedUpgradeIntent(runDir: string): boolean {
+  try {
+    return readdirSync(runDir).some((name) => /^upgrade\.v1\.corrupt-[0-9a-f-]+\.json$/.test(name));
+  } catch {
+    return false;
+  }
+}
+
+/** A persisted root label is never a launch capability; validate its current manifest at launch. */
+export function revalidateUpgradeIntentTarget(
+  intent: UpgradeIntent,
+  pluginRoot: string = intent.target.pluginRootLabel,
+): ForeignTargetValidationResult {
+  const {
+    version,
+    buildSetId,
+    flavor,
+    storeFormatFingerprint,
+    bundleHash,
+    cliBundleHash,
+    claudeAppserverBundleHash,
+    durableWrapperBundleHash,
+  } = intent.target.build;
+  const manifest = {
+    version,
+    buildSetId,
+    flavor,
+    storeFormatFingerprint,
+    bundleHash,
+    cliBundleHash,
+    claudeAppserverBundleHash,
+    durableWrapperBundleHash,
+  };
+  return createForeignTargetValidator()(join(pluginRoot, 'bridge'), manifest);
+}
+
+function mergeUnknownKeys(oldValue: unknown, newValue: unknown, key?: string): unknown {
+  if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+    const merged = newValue.map((entry) => {
+      if (typeof entry !== 'object' || entry === null || !('owner' in entry)) return entry;
+      const previous = oldValue.find(
+        (candidate) =>
+          typeof candidate === 'object' &&
+          candidate !== null &&
+          'owner' in candidate &&
+          candidate.owner === entry.owner &&
+          (!('receiptId' in entry) || ('receiptId' in candidate && candidate.receiptId === entry.receiptId)),
+      );
+      return mergeUnknownKeys(previous, entry);
+    });
+    if (key !== 'blockers') return merged;
+    return [
+      ...merged,
+      ...oldValue.filter(
+        (entry) =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          'owner' in entry &&
+          typeof entry.owner === 'string' &&
+          'reason' in entry &&
+          typeof entry.reason === 'string' &&
+          blockerNeedsNewerBuild(entry as { owner: string; reason: string }) &&
+          !newValue.some(
+            (replacement) =>
+              typeof replacement === 'object' &&
+              replacement !== null &&
+              'owner' in replacement &&
+              'reason' in replacement &&
+              replacement.owner === entry.owner &&
+              replacement.reason === ('reason' in entry ? entry.reason : undefined),
+          ),
+      ),
+    ];
+  }
+  if (
+    typeof oldValue !== 'object' ||
+    oldValue === null ||
+    Array.isArray(oldValue) ||
+    typeof newValue !== 'object' ||
+    newValue === null ||
+    Array.isArray(newValue)
+  ) {
+    return newValue;
+  }
+  const merged: Record<string, unknown> = { ...oldValue };
+  for (const [entryKey, value] of Object.entries(newValue))
+    merged[entryKey] = mergeUnknownKeys(merged[entryKey], value, entryKey);
+  return merged;
+}
+
+function writeAtomic(path: string, value: unknown): void {
+  const parent = dirname(path);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const stage = `${path}.stage.${process.pid}.${randomUUID()}`;
+  let fd: number | null = null;
+  try {
+    fd = openSync(stage, 'wx', 0o600);
+    writeFileSync(fd, `${JSON.stringify(value)}\n`);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    renameSync(stage, path);
+    const directoryFd = openSync(parent, 'r');
+    try {
+      fsyncSync(directoryFd);
+    } finally {
+      closeSync(directoryFd);
+    }
+  } finally {
+    if (fd !== null) closeSync(fd);
+    rmSync(stage, { force: true });
+  }
+}
+
+export async function compareAndSwapUpgradeIntent(
+  runDir: string,
+  expectedRevision: number | null,
+  change: UpgradeIntentChange,
+): Promise<UpgradeIntentWrite> {
+  const path = upgradeIntentPath(runDir);
+  mkdirSync(runDir, { recursive: true, mode: 0o700 });
+  const lease = await acquireDirectoryLock(join(runDir, 'upgrade.v1.lock'));
+  try {
+    const observed = readUpgradeIntentAtPath(path);
+    if (observed.kind === 'unreadable' || observed.kind === 'corrupt' || observed.kind === 'unsupported') {
+      return { kind: observed.kind };
+    }
+    const current = observed.kind === 'readable' ? observed.intent : null;
+    if (current?.revision !== (expectedRevision ?? undefined)) return { kind: 'conflict', current };
+    if (
+      current?.blockers.some(blockerNeedsNewerBuild) &&
+      (change.attemptId !== null || change.disposition === 'completed' || change.disposition === 'closed')
+    ) {
+      return { kind: 'unsupported' };
+    }
+    const next = upgradeIntentSchema.parse(
+      mergeUnknownKeys(current, {
+        ...change,
+        requestedAt:
+          current !== null && current.requestId === change.requestId
+            ? (current.requestedAt ?? new Date().toISOString())
+            : new Date().toISOString(),
+        version: 'v1',
+        revision: (current?.revision ?? -1) + 1,
+      }),
+    );
+    lease.assertOwned();
+    if (
+      current?.completionReceipt !== null &&
+      current?.completionReceipt !== undefined &&
+      next.completionReceipt === null
+    )
+      retainCompletedSuccessionReceipt(runDir, current);
+    writeAtomic(path, next);
+    if (
+      current === null ||
+      current.requestId !== next.requestId ||
+      current.disposition !== next.disposition ||
+      JSON.stringify(visibleUpgradeIntent(current)) !== JSON.stringify(visibleUpgradeIntent(next))
+    ) {
+      writeAuditEvent('upgrade_intent_status_changed', {
+        requestId: next.requestId,
+        revision: next.revision,
+        previous: current?.disposition ?? 'absent',
+        disposition: next.disposition,
+        targetBuildSetId: next.target.build.buildSetId,
+        blockers: next.blockers,
+        retryCondition: next.retryCondition,
+      });
+    }
+    return { kind: 'written', intent: next };
+  } finally {
+    lease();
+  }
+}
+
+const UPGRADE_INTENT_CAS_ATTEMPTS = 8;
+
+export type UpgradeIntentCasStep<T> =
+  | Readonly<{ kind: 'settle'; value: T }>
+  | Readonly<{ kind: 'retry' }>
+  | Readonly<{
+      kind: 'write';
+      expectedRevision: number | null;
+      change: UpgradeIntentChange;
+      settle: (written: UpgradeIntent) => T;
+    }>;
+
+export type UpgradeIntentCasOutcome<T> =
+  | Readonly<{ kind: 'settled'; value: T }>
+  | Readonly<{ kind: 'refused'; problem: UpgradeIntentProblem }>
+  | Readonly<{ kind: 'exhausted' }>;
+
+export async function retryUpgradeIntentCas<T>(
+  runDir: string,
+  decide: (observed: UpgradeIntentRead) => UpgradeIntentCasStep<T> | Promise<UpgradeIntentCasStep<T>>,
+): Promise<UpgradeIntentCasOutcome<T>> {
+  for (let attempt = 0; attempt < UPGRADE_INTENT_CAS_ATTEMPTS; attempt++) {
+    const step = await decide(readUpgradeIntent(runDir));
+    if (step.kind === 'settle') return { kind: 'settled', value: step.value };
+    if (step.kind === 'retry') continue;
+    const written = await compareAndSwapUpgradeIntent(runDir, step.expectedRevision, step.change);
+    if (written.kind === 'conflict') continue;
+    if (written.kind !== 'written') return { kind: 'refused', problem: written.kind };
+    return { kind: 'settled', value: step.settle(written.intent) };
+  }
+  return { kind: 'exhausted' };
+}

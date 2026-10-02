@@ -18,6 +18,7 @@ export type StoreResetCliErrorCode =
   | 'invalid_store_reset_incident_id'
   | 'invalid_store_reset_release_incident_id'
   | 'store_reset_incident_not_found'
+  | 'store_reset_epoch_ambiguous'
   | 'store_reset_build_mismatch'
   | 'store_reset_incident_build_mismatch'
   | 'store_reset_reporting_failed'
@@ -25,9 +26,10 @@ export type StoreResetCliErrorCode =
 
 const STORE_RESET_ERRORS = {
   invalid_store_reset_incident_id: {
-    message: 'Report target must be a positive numeric epoch or canonical lowercase legacy incident UUID.',
+    message:
+      'Report target must be a full epoch key, an unambiguous positive epoch number, or a canonical lowercase legacy incident UUID.',
     remediation:
-      'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.',
+      'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch key or the ID of a legacy incident in the `ready` state.',
     exitCode: 2,
   },
   invalid_store_reset_release_incident_id: {
@@ -41,6 +43,12 @@ const STORE_RESET_ERRORS = {
     remediation:
       'Run `coral-cli backend store-reset list --target <legacy|gen2>` and retry with a listed epoch or legacy incident.',
     exitCode: 1,
+  },
+  store_reset_epoch_ambiguous: {
+    message: 'Store-reset report target names an epoch number that more than one store lineage uses.',
+    remediation:
+      'Run `coral-cli backend store-reset list --target gen2` and retry with the full epoch key shown there. An epoch listed with an unobservable key has no facts to report beyond its list row.',
+    exitCode: 2,
   },
   store_reset_build_mismatch: {
     message: 'Store-reset reporting is unavailable because the installed build artifacts do not match.',
@@ -173,7 +181,11 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'backend_unreachable') {
     return 69;
   }
-  if (code === 'missing_capability' || code === 'child_credentials_incomplete') {
+  if (
+    code === 'missing_capability' ||
+    code === 'child_credentials_incomplete' ||
+    code === 'child_credential_unavailable'
+  ) {
     return 77;
   }
   if (code === 'internal' || code === 'internal_error' || httpStatus === 500) {

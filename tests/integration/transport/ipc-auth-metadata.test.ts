@@ -87,7 +87,7 @@ function healthSnapshot(): HealthSnapshot {
   };
 }
 
-function createPorts(): HttpHandlerPorts {
+function createPorts(succession?: (method: string, params: unknown) => Promise<unknown>): HttpHandlerPorts {
   let drainRequested = false;
   return {
     identity: {
@@ -106,6 +106,7 @@ function createPorts(): HttpHandlerPorts {
     coralEnvSnapshot: {},
     systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
     admin: {
+      ...(succession === undefined ? {} : { succession }),
       getLifecycleState: () => (drainRequested ? 'draining' : 'running'),
       isLifecycleRunning: () => !drainRequested,
       isDrainRequested: () => drainRequested,
@@ -130,9 +131,13 @@ function createPorts(): HttpHandlerPorts {
     jobs: {
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),
       abort: vi.fn(),
+      validateWait: vi.fn(() => null),
+      waitHandoverSignal: vi.fn(() => new AbortController().signal),
       waitStream: vi.fn(),
       list: vi.fn(() => []),
       detail: vi.fn(() => null),
+      unknownJobDisposition: vi.fn(() => 'not-found' as const),
+      outcomeUnrecoverable: vi.fn(() => []),
     },
     workflows: { execute: vi.fn() },
     kb: {
@@ -191,10 +196,13 @@ function createPorts(): HttpHandlerPorts {
   };
 }
 
-async function withRealIpcServer(run: (socketPath: string, ports: HttpHandlerPorts) => Promise<void>): Promise<void> {
+async function withRealIpcServer(
+  run: (socketPath: string, ports: HttpHandlerPorts) => Promise<void>,
+  succession?: (method: string, params: unknown) => Promise<unknown>,
+): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'coral-ipc-auth-server-'));
   const socketPath = join(dir, 'daemon.sock');
-  const ports = createPorts();
+  const ports = createPorts(succession);
   const listener = createIpcServer(ports);
   await listenIpcServer(listener, socketPath);
 
@@ -296,12 +304,34 @@ describe('IPC auth metadata invariant', () => {
       });
 
       await expect(requestIpcMethod(socketPath, 'transport.shutdown')).rejects.toMatchObject({
-        message: 'Manual shutdown required: shutdown capability missing or invalid',
+        message:
+          'Shutdown refused: the shutdown capability is missing or invalid. The incumbent keeps serving, and any upgrade is deferred.',
       });
       await expect(
         requestIpcMethod(socketPath, 'transport.shutdown', undefined, { auth: { kind: 'boot', token: 'boot-token' } }),
-      ).resolves.toEqual({ status: 'draining', instanceId: 'test-instance' });
-      expect(ports.admin.requestDrain).toHaveBeenCalledWith('replaced');
+      ).rejects.toMatchObject({
+        message:
+          'Shutdown refused: the shutdown capability is missing or invalid. The incumbent keeps serving, and any upgrade is deferred.',
+      });
+      expect(ports.admin.requestDrain).not.toHaveBeenCalled();
     });
+  });
+
+  it('carries authenticated succession requests to the coordinator port', async () => {
+    const succession = vi.fn(async (method: string, params: unknown) => ({ kind: 'registered', method, params }));
+    await withRealIpcServer(async (socketPath) => {
+      await expect(
+        requestIpcMethod(socketPath, 'coordinator.succession.v1.request', { requestId: 'one' }),
+      ).rejects.toMatchObject({
+        message: 'IPC boot token or child principal required',
+      });
+      for (const operation of ['request', 'prepare', 'commit', 'abort', 'status']) {
+        const method = `coordinator.succession.v1.${operation}`;
+        await expect(
+          requestIpcMethod(socketPath, method, { requestId: 'one' }, { auth: { kind: 'boot', token: 'boot-token' } }),
+        ).resolves.toEqual({ kind: 'registered', method, params: { requestId: 'one' } });
+      }
+    }, succession);
+    expect(succession).toHaveBeenCalledTimes(5);
   });
 });

@@ -17,11 +17,13 @@
   "files": [
     "dist/",
     "clients/bridge/coral-backend.cjs",
+    "clients/bridge/coral-sentinel.cjs",
     "clients/bridge/coral-cli",
     "clients/bridge/coral-cli.cjs",
     "clients/bridge/package.json",
     "clients/bridge/coral-claude-appserver.cjs",
     "clients/bridge/coral-durable-wrapper.cjs",
+    "clients/bridge/succession-capabilities.v1.json",
     "clients/bridge/manifest.json",
     "clients/bridge/manifest.v*.json"
   ],

@@ -1,7 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
+  closeSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  readFileSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -10,8 +15,19 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { z } from 'zod';
+import {
+  createRecordedProcessObserver,
+  observeProcessLiveness,
+  probeProcessIncarnation,
+  readPidNamespace,
+  type ProcessIncarnation,
+  type ProcessLiveness,
+  type RecordedProcessObserver,
+} from './node-process.js';
+import { persistedProcessIncarnationSchema } from './persisted-scalar-contracts.js';
 import type { StoragePort, TimePort, TimerHandle } from './port-types.js';
 import type { StorageActuator } from './storage-actuator.js';
 
@@ -19,12 +35,25 @@ const LOCK_RETRY_INTERVAL_MS = 50;
 const STALE_LOCK_MS = 30_000;
 const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
 
+export type DirectoryLockOwner = Readonly<{
+  pid: number;
+  incarnation: ProcessIncarnation | null;
+  pidNamespace: string | null;
+}>;
+
+export type DirectoryLockOwnerProbe = Readonly<{
+  self: DirectoryLockOwner;
+  observe: RecordedProcessObserver;
+}>;
+
 export type DirectoryLockDeps = {
   storage: StoragePort;
   time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep' | 'setInterval' | 'clearInterval'>;
   staleMs?: number;
+  reclaim?: 'absent-only';
   heartbeatMs?: number;
   signal?: AbortSignal;
+  owner?: DirectoryLockOwnerProbe;
 };
 
 export class DirectoryLockTimeoutError extends Error {
@@ -77,30 +106,59 @@ function sqliteErrorCode(error: unknown): string | null {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : null;
 }
 
+function malformedSqliteLockError(error: unknown): boolean {
+  return (
+    sqliteErrorCode(error) === 'ERR_SQLITE_ERROR' &&
+    /file is not a database|database disk image is malformed|attempt to write a readonly database/u.test(String(error))
+  );
+}
+
+function withFileLockRepairSync<T>(path: string, open: () => T, timeoutMs: number): T {
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    try {
+      return open();
+    } catch (error: unknown) {
+      if (!malformedSqliteLockError(error)) throw error;
+      const repair = repairMalformedFileLockSync(path);
+      if (repair.kind === 'moved-aside') {
+        new DatabaseSync(path).close();
+        continue;
+      }
+      if (performance.now() >= deadline)
+        throw new Error(`File lock repair withheld: ${path} (${repair.kind})`, { cause: error });
+      waitSync(LOCK_RETRY_INTERVAL_MS);
+    }
+  }
+}
+
+function openSharedFileLockSync(path: string, readOnly: boolean, busyTimeoutMs: number): FileLockLease {
+  return withFileLockRepairSync(
+    path,
+    () => {
+      const db = new DatabaseSync(path, { readOnly, timeout: busyTimeoutMs });
+      try {
+        db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN; SELECT count(*) FROM sqlite_schema`);
+        return sqliteLockLease(db);
+      } catch (error: unknown) {
+        db.close();
+        throw error;
+      }
+    },
+    busyTimeoutMs,
+  );
+}
+
 export function createSharedFileLockSync(path: string): FileLockLease {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const db = new DatabaseSync(path, { timeout: 5_000 });
-  try {
-    db.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');
-    return sqliteLockLease(db);
-  } catch (error: unknown) {
-    db.close();
-    throw error;
-  }
+  return openSharedFileLockSync(path, false, 5_000);
 }
 
 export function acquireSharedFileLockSync(path: string, busyTimeoutMs = 5_000): FileLockLease {
-  const db = new DatabaseSync(path, { readOnly: true, timeout: busyTimeoutMs });
-  try {
-    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN; SELECT count(*) FROM sqlite_schema`);
-    return sqliteLockLease(db);
-  } catch (error: unknown) {
-    db.close();
-    throw error;
-  }
+  return openSharedFileLockSync(path, true, busyTimeoutMs);
 }
 
-export function attemptExclusiveFileLockSync(path: string): ExclusiveFileLockAttempt {
+export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): ExclusiveFileLockAttempt {
   let entry: ReturnType<typeof lstatSync>;
   try {
     entry = lstatSync(path);
@@ -111,12 +169,12 @@ export function attemptExclusiveFileLockSync(path: string): ExclusiveFileLockAtt
 
   let db: DatabaseSync;
   try {
-    db = new DatabaseSync(path, { timeout: 0 });
+    db = new DatabaseSync(path, { timeout: busyTimeoutMs });
   } catch (cause: unknown) {
     return { kind: 'unobservable', cause };
   }
   try {
-    db.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE');
+    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN EXCLUSIVE`);
     return { kind: 'acquired', lease: sqliteLockLease(db) };
   } catch (error: unknown) {
     try {
@@ -126,9 +184,105 @@ export function attemptExclusiveFileLockSync(path: string): ExclusiveFileLockAtt
     }
     if (sqliteErrorCode(error) === 'ERR_SQLITE_ERROR') {
       if (/database is locked/u.test(String(error))) return { kind: 'contended' };
-      if (/file is not a database/u.test(String(error))) return { kind: 'malformed' };
+      if (
+        /file is not a database|database disk image is malformed|attempt to write a readonly database/u.test(
+          String(error),
+        )
+      )
+        return { kind: 'malformed' };
     }
     return { kind: 'unobservable', cause: error };
+  }
+}
+
+export type MalformedFileLockRepair =
+  | Readonly<{ kind: 'moved-aside'; quarantinePath: string }>
+  | Readonly<{ kind: 'not-malformed' }>
+  | Readonly<{ kind: 'held' }>
+  | Readonly<{ kind: 'repair-in-progress' }>
+  | Readonly<{ kind: 'unobservable'; cause: unknown }>;
+
+/**
+ * The repair child uses SQLite's unix-excl VFS: its first read takes a kernel write lock before parsing the
+ * header, retained until close even if parsing fails. A separate process avoids SQLite's in-process inode
+ * lock sharing. The child checks the exact inode and keeps that lock across the rename. See unixFileLock in
+ * https://sqlite.org/src/doc/trunk/src/os_unix.c.
+ */
+const malformedLockRepairProbe = `
+(() => {
+  const { DatabaseSync } = require('node:sqlite');
+  const { lstatSync, renameSync } = require('node:fs');
+  const { pathToFileURL } = require('node:url');
+  const [path, dev, ino, quarantinePath] = process.argv.slice(1);
+  const unchanged = () => {
+    const entry = lstatSync(path);
+    return entry.isFile() && !entry.isSymbolicLink() && String(entry.dev) === dev && String(entry.ino) === ino;
+  };
+  if (!unchanged()) throw new Error('Lock inode changed before repair');
+  const uri = pathToFileURL(path);
+  uri.search = 'mode=rw&vfs=unix-excl';
+  const db = new DatabaseSync(uri.href, { timeout: 0 });
+  try {
+    let malformed = false;
+    try {
+      db.exec('PRAGMA busy_timeout = 0; PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE');
+    } catch (error) {
+      if (error.code !== 'ERR_SQLITE_ERROR') throw error;
+      if (/database is locked/u.test(error.message)) {
+        process.stdout.write('held');
+        return;
+      }
+      if (!/file is not a database|database disk image is malformed|attempt to write a readonly database/u.test(error.message)) throw error;
+      malformed = true;
+    }
+    if (!unchanged()) throw new Error('Lock inode changed during repair');
+    if (malformed || lstatSync(path).nlink !== 1) {
+      renameSync(path, quarantinePath);
+      process.stdout.write('moved-aside');
+    } else process.stdout.write('not-malformed');
+  } finally {
+    db.close();
+  }
+})();
+`;
+
+export function repairMalformedFileLockSync(path: string): MalformedFileLockRepair {
+  let repair: DirectoryLockLease | null;
+  try {
+    repair = tryAcquireDirectoryLock(`${path}.repair`);
+  } catch (cause: unknown) {
+    return { kind: 'unobservable', cause };
+  }
+  if (repair === null) return { kind: 'repair-in-progress' };
+  try {
+    let entry: ReturnType<typeof lstatSync>;
+    try {
+      entry = lstatSync(path);
+    } catch (cause: unknown) {
+      return (cause as NodeJS.ErrnoException).code === 'ENOENT'
+        ? { kind: 'not-malformed' }
+        : { kind: 'unobservable', cause };
+    }
+    const quarantinePath = `${path}.malformed-${Date.now()}-${randomUUID()}`;
+    const moveAside = (): MalformedFileLockRepair => {
+      renameSync(path, quarantinePath);
+      return { kind: 'moved-aside', quarantinePath };
+    };
+    if (!entry.isFile() || entry.isSymbolicLink()) return moveAside();
+
+    const result = execFileSync(
+      process.execPath,
+      ['-e', malformedLockRepairProbe, path, String(entry.dev), String(entry.ino), quarantinePath],
+      { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    if (result === 'moved-aside') return { kind: 'moved-aside', quarantinePath };
+    if (result === 'held') return { kind: 'held' };
+    if (result === 'not-malformed') return { kind: 'not-malformed' };
+    return { kind: 'unobservable', cause: new Error(`Unexpected lock repair result: ${result}`) };
+  } catch (cause: unknown) {
+    return { kind: 'unobservable', cause };
+  } finally {
+    repair();
   }
 }
 
@@ -136,7 +290,15 @@ export function tryAcquireExclusiveFileLockSync(path: string): FileLockLease | n
   const attempt = attemptExclusiveFileLockSync(path);
   if (attempt.kind === 'acquired') return attempt.lease;
   if (attempt.kind === 'contended') return null;
-  if (attempt.kind === 'malformed') throw new Error(`File lock is malformed: ${path}`);
+  if (attempt.kind === 'malformed') {
+    const repair = repairMalformedFileLockSync(path);
+    if (repair.kind === 'moved-aside') {
+      createSharedFileLockSync(path)();
+      return tryAcquireExclusiveFileLockSync(path);
+    }
+    if (repair.kind === 'unobservable') throw repair.cause;
+    return null;
+  }
   throw attempt.cause;
 }
 
@@ -248,6 +410,7 @@ function resolveDirectoryLockDeps(deps?: DirectoryLockDeps): DirectoryLockDeps {
   return {
     storage: {
       mkdirSync,
+      readFileSync,
       readdirSync,
       renameSync,
       rmSync,
@@ -290,8 +453,65 @@ function lockOwnerMarkerPath(lockDir: string, ownerToken: string): string {
   return join(lockDir, `owner-${ownerToken}.lock`);
 }
 
-function writeLockOwnerMarker(lockDir: string, ownerToken: string, storage: DirectoryLockDeps['storage']): void {
-  storage.writeFileSync(lockOwnerMarkerPath(lockDir, ownerToken), ownerToken, { encoding: 'utf-8', mode: 0o600 });
+let processOwnerProbe: DirectoryLockOwnerProbe | undefined;
+
+function ownerProbe(deps: DirectoryLockDeps): DirectoryLockOwnerProbe {
+  if (deps.owner !== undefined) return deps.owner;
+  if (
+    processOwnerProbe === undefined ||
+    processOwnerProbe.self.incarnation === null ||
+    processOwnerProbe.self.pidNamespace === null
+  ) {
+    processOwnerProbe = {
+      self: { pid: process.pid, incarnation: probeProcessIncarnation(process.pid), pidNamespace: readPidNamespace() },
+      observe: createRecordedProcessObserver({
+        readIncarnation: (pid) => probeProcessIncarnation(pid),
+        observeLiveness: observeProcessLiveness,
+      }),
+    };
+  }
+  return processOwnerProbe;
+}
+
+const lockOwnerRecordSchema = z.object({
+  pid: z.number().int().positive(),
+  incarnation: persistedProcessIncarnationSchema.optional(),
+  pidNamespace: z.string().min(1),
+});
+
+function lockOwnerMarkerContent(ownerToken: string, deps: DirectoryLockDeps): string {
+  const { pid, incarnation, pidNamespace } = ownerProbe(deps).self;
+  return JSON.stringify({
+    token: ownerToken,
+    pid,
+    ...(incarnation === null ? {} : { incarnation }),
+    ...(pidNamespace === null ? {} : { pidNamespace }),
+  });
+}
+
+function writeLockOwnerMarker(
+  lockDir: string,
+  ownerToken: string,
+  markerContent: string,
+  storage: DirectoryLockDeps['storage'],
+): void {
+  storage.writeFileSync(lockOwnerMarkerPath(lockDir, ownerToken), markerContent, { encoding: 'utf-8', mode: 0o600 });
+}
+
+/** A marker this build cannot read and an owner recorded in another pid namespace are both unobserved. */
+function observeMarkerOwner(markerPath: string, deps: DirectoryLockDeps): ProcessLiveness {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(deps.storage.readFileSync(markerPath, 'utf-8'));
+  } catch {
+    return 'unknown';
+  }
+  const recorded = lockOwnerRecordSchema.safeParse(raw);
+  if (!recorded.success) return 'unknown';
+  const probe = ownerProbe(deps);
+  if (probe.self.pidNamespace === null || recorded.data.pidNamespace !== probe.self.pidNamespace) return 'unknown';
+  const { pid, incarnation } = recorded.data;
+  return probe.observe(incarnation === undefined ? { pid } : { pid, incarnation });
 }
 
 type LockDirectoryIdentity = {
@@ -375,12 +595,22 @@ function ownsLockDirectory(
  * exactly one wins, and no open descriptor can refresh an already-checked
  * claim after the claimant has decided to quarantine it.
  */
-function refreshLockOwnerMarker(
-  lockDir: string,
-  ownerToken: string,
-  expectedIdentity: LockDirectoryIdentity,
-  deps: DirectoryLockDeps,
-): void {
+type HeldLockDirectory = Readonly<{
+  lockDir: string;
+  ownerToken: string;
+  markerContent: string;
+  expectedIdentity: LockDirectoryIdentity;
+  deps: DirectoryLockDeps;
+  diagnosticPreparation?: string;
+}>;
+
+function refreshLockOwnerMarker({
+  lockDir,
+  ownerToken,
+  markerContent,
+  expectedIdentity,
+  deps,
+}: HeldLockDirectory): void {
   if (!lockDirectoryIdentityMatches(lockDir, expectedIdentity, deps.storage)) {
     throw new DirectoryLockOwnershipLostError(lockDir);
   }
@@ -388,7 +618,7 @@ function refreshLockOwnerMarker(
   const refreshPath = join(lockDir, `claim-refresh-${ownerToken}.lock`);
   deps.storage.renameSync(ownerPath, refreshPath);
   try {
-    deps.storage.writeFileSync(refreshPath, ownerToken, { encoding: 'utf-8', mode: 0o600, flag: 'r+' });
+    deps.storage.writeFileSync(refreshPath, markerContent, { encoding: 'utf-8', mode: 0o600, flag: 'r+' });
     if (!lockDirectoryIdentityMatches(lockDir, expectedIdentity, deps.storage)) {
       throw new DirectoryLockOwnershipLostError(lockDir);
     }
@@ -408,18 +638,13 @@ function refreshLockOwnerMarker(
   }
 }
 
-function startDirectoryLockHeartbeat(
-  lockDir: string,
-  ownerToken: string,
-  expectedIdentity: LockDirectoryIdentity,
-  deps: DirectoryLockDeps,
-  loseOwnership: () => void,
-): TimerHandle {
+function startDirectoryLockHeartbeat(held: HeldLockDirectory, loseOwnership: () => void): TimerHandle {
+  const { deps } = held;
   const staleMs = deps.staleMs ?? STALE_LOCK_MS;
   const heartbeatMs = deps.heartbeatMs ?? Math.max(10, Math.floor(staleMs / 3));
   return deps.time.setInterval(() => {
     try {
-      refreshLockOwnerMarker(lockDir, ownerToken, expectedIdentity, deps);
+      refreshLockOwnerMarker(held);
     } catch {
       loseOwnership();
     }
@@ -427,27 +652,27 @@ function startDirectoryLockHeartbeat(
 }
 
 function releaseDirectoryLock(
-  lockDir: string,
-  deps: DirectoryLockDeps,
-  ownerToken: string,
-  expectedIdentity: LockDirectoryIdentity,
+  held: HeldLockDirectory,
   heartbeat: TimerHandle,
   isOwned: () => boolean,
   loseOwnership: () => void,
 ): DirectoryLockLease {
+  const { lockDir, ownerToken, expectedIdentity, deps } = held;
   const heartbeatMs = deps.heartbeatMs ?? Math.max(10, Math.floor((deps.staleMs ?? STALE_LOCK_MS) / 3));
   let refreshedAt: number | undefined;
   const release = (() => {
     loseOwnership();
     deps.time.clearInterval(heartbeat);
-    tryRemoveOwnedLockDirectory(lockDir, ownerToken, expectedIdentity, deps.storage);
+    if (held.diagnosticPreparation === undefined)
+      tryRemoveOwnedLockDirectory(lockDir, ownerToken, expectedIdentity, deps.storage);
+    else releaseDiagnosticDirectoryLock(held, held.diagnosticPreparation);
   }) as DirectoryLockLease;
   const refresh = (): void => {
     if (!isOwned()) {
       throw new DirectoryLockOwnershipLostError(lockDir);
     }
     try {
-      refreshLockOwnerMarker(lockDir, ownerToken, expectedIdentity, deps);
+      refreshLockOwnerMarker(held);
     } catch {
       loseOwnership();
       throw new DirectoryLockOwnershipLostError(lockDir);
@@ -479,6 +704,18 @@ function markerIsStale(markerPath: string, deps: DirectoryLockDeps): boolean {
   }
 }
 
+type OwnerMarkerDisposition = 'window-expired' | 'owner-absent' | 'owner-alive' | 'owner-unobserved';
+
+/** Only an expired window or an owner proven absent may be reclaimed; an unobserved owner waits out the window. */
+const RECLAIMABLE_OWNER_MARKERS: ReadonlySet<OwnerMarkerDisposition> = new Set(['window-expired', 'owner-absent']);
+
+function ownerMarkerDisposition(markerPath: string, deps: DirectoryLockDeps): OwnerMarkerDisposition {
+  if (deps.reclaim !== 'absent-only' && markerIsStale(markerPath, deps)) return 'window-expired';
+  const liveness = observeMarkerOwner(markerPath, deps);
+  if (liveness === 'absent') return 'owner-absent';
+  return liveness === 'alive' ? 'owner-alive' : 'owner-unobserved';
+}
+
 function directoryIsStale(lockDir: string, deps: DirectoryLockDeps): boolean {
   try {
     return deps.time.now() - deps.storage.statSync(lockDir).mtimeMs > (deps.staleMs ?? STALE_LOCK_MS);
@@ -494,9 +731,12 @@ function isMissingPathError(error: unknown): boolean {
 function quarantineClaimedLock(
   lockDir: string,
   claimPath: string,
-  restorePath: string,
+  expectedIdentity: LockDirectoryIdentity,
   deps: DirectoryLockDeps,
 ): boolean {
+  if (!lockDirectoryIdentityMatches(lockDir, expectedIdentity, deps.storage)) return false;
+  const entries = deps.storage.readdirSync(lockDir);
+  if (entries.length !== 1 || entries[0] !== basename(claimPath)) return false;
   const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
   try {
     deps.storage.renameSync(lockDir, quarantinePath);
@@ -504,16 +744,45 @@ function quarantineClaimedLock(
     if (isMissingPathError(error)) {
       return false;
     }
-    try {
-      deps.storage.renameSync(claimPath, restorePath);
-    } catch {
-      // A later contender can recover the stale claim if restoration loses a
-      // race or the claimant crashes during this error path.
-    }
     throw error;
   }
   tryRemoveLockDirectory(quarantinePath, deps.storage);
   return true;
+}
+
+type ReclamationAttempt = {
+  readonly identity: LockDirectoryIdentity;
+  readonly restorePath: string;
+};
+
+const abandonedReclamations = new Map<string, ReclamationAttempt>();
+
+function completeReclamationAttempt(
+  lockDir: string,
+  claimPath: string,
+  attempt: ReclamationAttempt,
+  deps: DirectoryLockDeps,
+): boolean {
+  let quarantined = false;
+  try {
+    if (!RECLAIMABLE_OWNER_MARKERS.has(ownerMarkerDisposition(claimPath, deps))) return false;
+    quarantined = quarantineClaimedLock(lockDir, claimPath, attempt.identity, deps);
+    return quarantined;
+  } finally {
+    abandonedReclamations.delete(claimPath);
+    if (!quarantined) {
+      const identity = readLockDirectoryIdentity(lockDir, deps.storage);
+      if (identity === null) {
+        abandonedReclamations.set(claimPath, attempt);
+      } else if (identity.dev === attempt.identity.dev && identity.ino === attempt.identity.ino) {
+        try {
+          deps.storage.renameSync(claimPath, attempt.restorePath);
+        } catch (error) {
+          if (!isMissingPathError(error)) abandonedReclamations.set(claimPath, attempt);
+        }
+      }
+    }
+  }
 }
 
 function tryClaimAndQuarantineStaleMarker(
@@ -522,9 +791,22 @@ function tryClaimAndQuarantineStaleMarker(
   restorePath: string,
   deps: DirectoryLockDeps,
 ): boolean {
-  if (!markerIsStale(markerPath, deps)) return false;
+  const identity = readLockDirectoryIdentity(lockDir, deps.storage);
+  if (identity === null) return false;
+  if (!RECLAIMABLE_OWNER_MARKERS.has(ownerMarkerDisposition(markerPath, deps))) return false;
 
-  const claimPath = join(lockDir, `claim-${randomUUID()}.lock`);
+  const claimant = ownerProbe(deps).self;
+  if (deps.reclaim === 'absent-only' && claimant.pidNamespace === null)
+    throw new Error('Status reclaimer identity is unavailable');
+  const claimantName = Buffer.from(
+    JSON.stringify([claimant.pid, claimant.incarnation, claimant.pidNamespace]),
+  ).toString('base64url');
+  const claimPath = join(
+    lockDir,
+    deps.reclaim === 'absent-only'
+      ? `claim-reclaim-${claimantName}-${randomUUID()}.lock`
+      : `claim-${randomUUID()}.lock`,
+  );
   try {
     deps.storage.renameSync(markerPath, claimPath);
   } catch (error) {
@@ -532,70 +814,95 @@ function tryClaimAndQuarantineStaleMarker(
     throw error;
   }
 
-  if (!markerIsStale(claimPath, deps)) {
-    try {
-      deps.storage.renameSync(claimPath, restorePath);
-    } catch {
-      /* recoverable after the marker becomes stale */
-    }
-    return false;
-  }
-  return quarantineClaimedLock(lockDir, claimPath, restorePath, deps);
+  return completeReclamationAttempt(lockDir, claimPath, { identity, restorePath }, deps);
 }
 
-/**
- * Claims a stale owner marker with an atomic rename before deleting anything.
- * Heartbeats rename that same marker through a claim-prefixed refresh path, so
- * a refresh and a stale claimant cannot both win. Other contenders cannot
- * claim the marker after it has moved.
- */
-function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
-  const ownerEntries = ownerMarkerEntries(lockDir, deps);
-  const [ownerEntry] = ownerEntries;
-  if (ownerEntry === undefined) {
-    const claimEntries = claimMarkerEntries(lockDir, deps);
-    if (claimEntries.length === 1) {
-      const staleClaimPath = join(lockDir, claimEntries[0]);
-      return tryClaimAndQuarantineStaleMarker(lockDir, staleClaimPath, staleClaimPath, deps);
-    }
-    if (claimEntries.length > 1) {
-      return false;
-    }
-    if (!directoryIsStale(lockDir, deps)) {
-      return false;
-    }
-    const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
-    try {
-      deps.storage.renameSync(lockDir, quarantinePath);
-    } catch (error) {
-      if (isMissingPathError(error)) {
-        return false;
-      }
-      throw error;
-    }
-    tryRemoveLockDirectory(quarantinePath, deps.storage);
-    return true;
+function reclamationClaimantDisposition(claimPath: string, deps: DirectoryLockDeps): OwnerMarkerDisposition {
+  const name = basename(claimPath);
+  if (name.startsWith('claim-release-') || name.startsWith('claim-refresh-'))
+    return ownerMarkerDisposition(claimPath, deps);
+  if (/^claim-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.lock$/u.test(name))
+    return ownerMarkerDisposition(claimPath, deps);
+  if (!name.startsWith('claim-reclaim-')) return 'owner-unobserved';
+  let tuple: unknown;
+  try {
+    tuple = JSON.parse(Buffer.from(name.slice('claim-reclaim-'.length, -42), 'base64url').toString('utf8'));
+  } catch {
+    return 'owner-unobserved';
   }
-  if (ownerEntries.length !== 1) {
+  if (!Array.isArray(tuple) || tuple.length !== 3) return 'owner-unobserved';
+  const claimant = lockOwnerRecordSchema.safeParse({
+    pid: tuple[0],
+    incarnation: tuple[1] ?? undefined,
+    pidNamespace: tuple[2],
+  });
+  const probe = ownerProbe(deps);
+  if (!claimant.success || probe.self.pidNamespace === null || claimant.data.pidNamespace !== probe.self.pidNamespace)
+    return 'owner-unobserved';
+  const liveness = probe.observe(claimant.data);
+  if (liveness === 'absent') return 'owner-absent';
+  return liveness === 'alive' ? 'owner-alive' : 'owner-unobserved';
+}
+
+function tryReclaimClaim(lockDir: string, claimPath: string, deps: DirectoryLockDeps): boolean {
+  const abandoned = abandonedReclamations.get(claimPath);
+  if (abandoned !== undefined) return completeReclamationAttempt(lockDir, claimPath, abandoned, deps);
+  if (deps.reclaim === 'absent-only' && reclamationClaimantDisposition(claimPath, deps) !== 'owner-absent')
     return false;
+  return tryClaimAndQuarantineStaleMarker(lockDir, claimPath, claimPath, deps);
+}
+
+function tryQuarantineEmptyLock(lockDir: string, deps: DirectoryLockDeps): boolean {
+  if (!directoryIsStale(lockDir, deps)) return false;
+  const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
+  try {
+    deps.storage.renameSync(lockDir, quarantinePath);
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
   }
-  const ownerPath = join(lockDir, ownerEntry);
-  return tryClaimAndQuarantineStaleMarker(lockDir, ownerPath, ownerPath, deps);
+  tryRemoveLockDirectory(quarantinePath, deps.storage);
+  return true;
+}
+
+function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
+  const owners = ownerMarkerEntries(lockDir, deps);
+  const claims = claimMarkerEntries(lockDir, deps);
+  if (deps.reclaim === 'absent-only' && owners.length + claims.length !== 1) return false;
+  if (owners.length > 1 || claims.length > 1) return false;
+  const [owner] = owners;
+  if (owner !== undefined) {
+    const ownerPath = join(lockDir, owner);
+    return tryClaimAndQuarantineStaleMarker(lockDir, ownerPath, ownerPath, deps);
+  }
+  const [claim] = claims;
+  if (claim !== undefined) return tryReclaimClaim(lockDir, join(lockDir, claim), deps);
+  return tryQuarantineEmptyLock(lockDir, deps);
 }
 
 function createDirectoryLockLease(
   lockDir: string,
   ownerToken: string,
+  markerContent: string,
   identity: LockDirectoryIdentity,
   deps: DirectoryLockDeps,
   actuatorStorage?: StoragePort,
+  diagnosticPreparation?: string,
 ): DirectoryLockLease | ActuatedDirectoryLockLease {
   let owned = true;
   const loseOwnership = () => {
     owned = false;
   };
-  const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, identity, deps, loseOwnership);
-  const lease = releaseDirectoryLock(lockDir, deps, ownerToken, identity, heartbeat, () => owned, loseOwnership);
+  const held: HeldLockDirectory = {
+    lockDir,
+    ownerToken,
+    markerContent,
+    expectedIdentity: identity,
+    deps,
+    diagnosticPreparation,
+  };
+  const heartbeat = startDirectoryLockHeartbeat(held, loseOwnership);
+  const lease = releaseDirectoryLock(held, heartbeat, () => owned, loseOwnership);
   if (actuatorStorage !== undefined) {
     Object.defineProperty(lease, 'actuator', {
       value: createStorageActuator(actuatorStorage, () => {
@@ -623,6 +930,7 @@ function tryCreateDirectoryLock(
   actuatorStorage?: StoragePort,
 ): DirectoryLockLease | ActuatedDirectoryLockLease | null {
   const ownerToken = randomUUID();
+  const markerContent = lockOwnerMarkerContent(ownerToken, deps);
   try {
     deps.storage.mkdirSync(lockDir);
   } catch (error) {
@@ -638,13 +946,13 @@ function tryCreateDirectoryLock(
   }
   // If this write fails, leave the markerless publication for stale recovery.
   // Deleting by pathname could race with another process replacing the directory.
-  writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
+  writeLockOwnerMarker(lockDir, ownerToken, markerContent, deps.storage);
 
   if (!ownsLockDirectory(lockDir, ownerToken, identity, deps)) {
     tryRemoveOwnedLockDirectory(lockDir, ownerToken, identity, deps.storage);
     throw new DirectoryLockOwnershipLostError(lockDir);
   }
-  return createDirectoryLockLease(lockDir, ownerToken, identity, deps, actuatorStorage);
+  return createDirectoryLockLease(lockDir, ownerToken, markerContent, identity, deps, actuatorStorage);
 }
 
 function throwIfDirectoryLockAborted(deps: DirectoryLockDeps): void {
@@ -667,6 +975,125 @@ export function tryAcquireDirectoryLock(
   if (!tryQuarantineStaleLock(lockDir, deps)) return null;
   throwIfDirectoryLockAborted(deps);
   return tryCreateDirectoryLock(lockDir, deps, providedDeps?.storage);
+}
+
+/** Diagnostic publication cannot reclaim a directory on silence or age. */
+export function tryAcquireDiagnosticDirectoryLock(lockDir: string): DirectoryLockLease | null {
+  const deps = { ...resolveDirectoryLockDeps(), reclaim: 'absent-only' as const };
+  const lease = tryPublishDiagnosticDirectoryLock(lockDir, deps);
+  if (lease !== null) return lease;
+  if (!tryQuarantineStaleLock(lockDir, deps)) return null;
+  return tryPublishDiagnosticDirectoryLock(lockDir, deps);
+}
+
+function tryPublishDiagnosticDirectoryLock(lockDir: string, deps: DirectoryLockDeps): DirectoryLockLease | null {
+  const probe = ownerProbe(deps);
+  if (probe.self.pidNamespace === null) throw new Error('Status publisher identity is unavailable');
+  const prefix = `${basename(lockDir)}.publisher-`;
+  for (const name of deps.storage.readdirSync(dirname(lockDir))) {
+    if (!name.startsWith(prefix)) continue;
+    let tuple: unknown;
+    try {
+      tuple = JSON.parse(Buffer.from(name.slice(prefix.length, -37), 'base64url').toString('utf8'));
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(tuple) || tuple.length !== 3) continue;
+    const owner = lockOwnerRecordSchema.safeParse({
+      pid: tuple[0],
+      incarnation: tuple[1] ?? undefined,
+      pidNamespace: tuple[2],
+    });
+    if (!owner.success || owner.data.pidNamespace !== probe.self.pidNamespace) continue;
+    if (probe.observe(owner.data) === 'absent')
+      deps.storage.rmSync(join(dirname(lockDir), name), { recursive: true, force: true });
+  }
+  // Canonical publication must be nonempty; a rename cannot replace a concurrent publisher.
+  // Existing anonymous directories must also remain untouched.
+  if (!diagnosticLockPathAbsent(lockDir)) return null;
+  const ownerToken = randomUUID();
+  const markerContent = lockOwnerMarkerContent(ownerToken, deps);
+  const ownerName = Buffer.from(
+    JSON.stringify([probe.self.pid, probe.self.incarnation, probe.self.pidNamespace]),
+  ).toString('base64url');
+  const prepared = join(dirname(lockDir), `${prefix}${ownerName}-${ownerToken}`);
+  deps.storage.mkdirSync(prepared);
+  let published = false;
+  try {
+    writeLockOwnerMarker(prepared, ownerToken, markerContent, deps.storage);
+    for (const path of [lockOwnerMarkerPath(prepared, ownerToken), prepared]) {
+      const fd = openSync(path, 'r');
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    }
+    const identity = readLockDirectoryIdentity(prepared, deps.storage);
+    if (identity === null) throw new DirectoryLockOwnershipLostError(prepared);
+    if (!diagnosticLockPathAbsent(lockDir)) return null;
+    try {
+      deps.storage.renameSync(prepared, lockDir);
+      published = true;
+    } catch (error: unknown) {
+      if (isAlreadyExistsError(error) || (error instanceof Error && 'code' in error && error.code === 'ENOTEMPTY'))
+        return null;
+      throw error;
+    }
+    return createDirectoryLockLease(lockDir, ownerToken, markerContent, identity, deps, undefined, prepared);
+  } finally {
+    if (!published) deps.storage.rmSync(prepared, { recursive: true, force: true });
+  }
+}
+
+function releaseDiagnosticDirectoryLock(held: HeldLockDirectory, prepared: string): void {
+  const { lockDir, ownerToken, markerContent, expectedIdentity, deps } = held;
+  let retry: TimerHandle | null = null;
+  const cleanup = (): void => {
+    try {
+      if (!diagnosticLockPathAbsent(prepared)) {
+        const current = deps.storage.statSync(prepared, { bigint: true });
+        if (current.dev !== expectedIdentity.dev || current.ino !== expectedIdentity.ino)
+          throw new DirectoryLockOwnershipLostError(prepared);
+        deps.storage.rmSync(prepared, { recursive: true, force: true });
+      } else if (!diagnosticLockPathAbsent(lockDir)) {
+        const current = deps.storage.statSync(lockDir, { bigint: true });
+        if (current.dev === expectedIdentity.dev && current.ino === expectedIdentity.ino) {
+          const claim = join(lockDir, `claim-release-${ownerToken}.lock`);
+          try {
+            deps.storage.renameSync(lockOwnerMarkerPath(lockDir, ownerToken), claim);
+          } catch (error: unknown) {
+            if (!isMissingPathError(error)) throw error;
+          }
+          if (deps.storage.readFileSync(claim, 'utf-8') !== markerContent)
+            throw new DirectoryLockOwnershipLostError(lockDir);
+          const entries = deps.storage.readdirSync(lockDir);
+          if (entries.length !== 1 || entries[0] !== basename(claim))
+            throw new DirectoryLockOwnershipLostError(lockDir);
+          const checked = deps.storage.statSync(lockDir, { bigint: true });
+          if (checked.dev !== current.dev || checked.ino !== current.ino)
+            throw new DirectoryLockOwnershipLostError(lockDir);
+          deps.storage.renameSync(lockDir, prepared);
+          deps.storage.rmSync(prepared, { recursive: true, force: true });
+        }
+      }
+      if (retry !== null) deps.time.clearInterval(retry);
+      retry = null;
+    } catch {
+      retry ??= deps.time.setInterval(cleanup, LOCK_RETRY_INTERVAL_MS);
+    }
+  };
+  cleanup();
+}
+
+function diagnosticLockPathAbsent(path: string): boolean {
+  try {
+    lstatSync(path);
+    return false;
+  } catch (error: unknown) {
+    if (isMissingPathError(error)) return true;
+    throw error;
+  }
 }
 
 async function waitForDirectoryLockRetry(deps: DirectoryLockDeps): Promise<void> {

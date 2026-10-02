@@ -2,6 +2,7 @@ import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { ProviderOperationBindingPort } from '../../jobs/contracts/provider-operation-lifecycle.js';
@@ -29,6 +30,7 @@ import {
   deleteProviderOperation,
   finishProviderOperationDueSelection,
   insertProviderOperation,
+  insertProviderOperationWithCustody,
   ProviderOperationMutationSetClosedError,
   providerOperationMutationAdmission,
   readProviderOperation,
@@ -334,6 +336,7 @@ function isTemporarilyUnavailableAcquisition(
 
 type ProviderOperationReconcilerDeps = Readonly<{
   getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'>;
+  custody?: () => Readonly<{ runtime: Runtime; runDir: string; epoch: string; nowMs: number; bindWithinMs: number }>;
   authorityFor: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
   acquireAuthority?: (
     record: ProviderOperationRecord,
@@ -358,6 +361,8 @@ type ProviderOperationReconcilerDeps = Readonly<{
   batchSize?: number;
   onFatal(error: ProviderOperationReconcilerFatalError): void;
   onError?: (message: string) => void;
+
+  onRecordRemoved?: () => void;
 }>;
 
 export type BeginProviderOperationPublication = Readonly<{
@@ -820,7 +825,10 @@ export class ProviderOperationReconciler
       });
       if (input.signal.aborted) onAbort();
       try {
-        insertProviderOperation(this.#deps.getProgressStore().getDb(), input.record);
+        const db = this.#deps.getProgressStore().getDb();
+        const custody = this.#deps.custody?.();
+        if (custody === undefined) insertProviderOperation(db, input.record);
+        else insertProviderOperationWithCustody(db, input.record, custody);
       } catch (error: unknown) {
         this.#failPublication(
           input.record.operation,
@@ -1120,8 +1128,12 @@ export class ProviderOperationReconciler
     return created;
   }
 
+  // A reclaimed writer registers a new admission for the same database; until this reconciler is stopped, it
+  // must mutate through whichever admission is registered now, never one a succession park already closed.
   #admission(): ProviderOperationMutationAdmission {
-    this.#mutationAdmission ??= providerOperationMutationAdmission(this.#deps.getProgressStore().getDb());
+    if (this.#mutationAdmission === null || !this.#admissionClosed) {
+      this.#mutationAdmission = providerOperationMutationAdmission(this.#deps.getProgressStore().getDb());
+    }
     return this.#mutationAdmission;
   }
 
@@ -1281,7 +1293,7 @@ export class ProviderOperationReconciler
       let deleted: ReturnType<typeof deleteProviderOperation>;
       try {
         this.#assertActiveDrive();
-        deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+        deleted = this.#deleteRecord(record);
       } catch (error: unknown) {
         const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
         if (current === null) {
@@ -1310,7 +1322,7 @@ export class ProviderOperationReconciler
     let deleted: ReturnType<typeof deleteProviderOperation>;
     try {
       this.#assertActiveDrive();
-      deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+      deleted = this.#deleteRecord(record);
     } catch (error: unknown) {
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current === null) {
@@ -2507,13 +2519,19 @@ export class ProviderOperationReconciler
     return result.current;
   }
 
+  #deleteRecord(record: ProviderOperationRecord): ReturnType<typeof deleteProviderOperation> {
+    const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+    if (deleted.kind === 'deleted') this.#deps.onRecordRemoved?.();
+    return deleted;
+  }
+
   #deleteSettledOperation(
     record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
   ): ReturnType<typeof deleteProviderOperation> {
     this.#assertActiveDrive();
     this.#settleBindingOrThrow(record.operation);
     this.#releaseStartupAndRetireBindingOrThrow(record);
-    return deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+    return this.#deleteRecord(record);
   }
 
   #releaseStartupAndRetireBindingOrThrow(record: ProviderOperationRecord): void {
@@ -2630,7 +2648,10 @@ export class ProviderOperationReconciler
   }
 
   #poll(preferredAuthority?: DurableProviderProxyOperationAuthority): Promise<void> {
-    if (!this.#canMutate()) return Promise.resolve();
+    if (!this.#canMutate()) {
+      if (!this.#admissionClosed) this.#schedule(TIMER_MAX_MS);
+      return Promise.resolve();
+    }
     return this.#admission().run('provider-operation-due-poll', async () => {
       if (this.#fatal) return;
       if (this.#polling) {

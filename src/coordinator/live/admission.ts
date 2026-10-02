@@ -21,22 +21,23 @@ import {
 } from '../../providers/app-server-transport.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
-import type {
-  AdmissionResult,
-  LaunchCoordinatorPort,
-  LaunchPermit,
-  LaunchPermitDiagnostic,
-  LaunchPermitReclamationDiagnostic,
-  LaunchPermitReclamationEvidence,
-  LaunchReclamationProbeResult,
-  LaunchPool,
-  LaunchRelease,
-  LaunchReleaseDiagnostic,
-  LaunchReservationView,
-  PermitHolder,
-  QueueCancellation,
-  QueuedHandle,
-  ReclaimablePermitHolderKind,
+import {
+  SuccessionAdmissionPausedError,
+  type AdmissionResult,
+  type LaunchCoordinatorPort,
+  type LaunchPermit,
+  type LaunchPermitDiagnostic,
+  type LaunchPermitReclamationDiagnostic,
+  type LaunchPermitReclamationEvidence,
+  type LaunchReclamationProbeResult,
+  type LaunchPool,
+  type LaunchRelease,
+  type LaunchReleaseDiagnostic,
+  type LaunchReservationView,
+  type PermitHolder,
+  type QueueCancellation,
+  type QueuedHandle,
+  type ReclaimablePermitHolderKind,
 } from '../../jobs/contracts/admission.js';
 import type {
   ProviderOperationCancellationResult,
@@ -102,6 +103,9 @@ const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
 const SHUTDOWN_LAUNCH_REJECTED_MESSAGE = 'Launch rejected because shutdown has begun';
 const TERMINATION_RETRY_INTERVAL_MS = 50;
+export const SUCCESSION_PAUSE_ATTEMPT_MS = 5_000;
+export const SUCCESSION_PAUSE_TOTAL_MS = 15_000;
+export const SUCCESSION_PAUSE_ROLLING_WINDOW_MS = 60_000;
 export const MAX_LAUNCH_RELEASE_DIAGNOSTICS = 100;
 export const MAX_LAUNCH_RECLAMATION_DIAGNOSTICS = 100;
 // Admission precedes the first job journal append, so journal absence cannot authorize release inside this window.
@@ -130,6 +134,17 @@ export type PendingLaunchSettlementDisposition =
       retainedLaunches: readonly PendingDurableLaunchIdentity[];
       owner: 'launch-coordinator';
     }>;
+
+export type SuccessionPauseDecision =
+  | Readonly<{ kind: 'paused'; attemptId: string; deadlineAtMs: number }>
+  | Readonly<{ kind: 'refused'; reason: 'stale-preparation' | 'pause-active' | 'aggregate-budget-exhausted' }>;
+
+type PauseInterval = Readonly<{ startedAtMs: number; endedAtMs: number }>;
+type ActiveSuccessionPause = Readonly<{
+  attemptId: string;
+  startedAtMs: number;
+  timer: TimerHandle;
+}>;
 
 export type ChildTerminationDisposition =
   | Readonly<{ kind: 'all-children-observed-absent' }>
@@ -174,15 +189,29 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly launchReclamationOracles = new Map<ReclaimablePermitHolderKind, LaunchReclamationOracle>();
   private readonly internalAbortRegistry: AbortRegistry;
   private shutdownRequested = false;
+  private successionAdmissionRevision = 0;
+  private readonly successionObligationListeners = new Set<() => void>();
+  private successionPause: ActiveSuccessionPause | null = null;
+  private successionWriterParkAttemptId: string | null = null;
+  private readonly successionPauseIntervals: PauseInterval[] = [];
   private providerOperationJournalProbe:
     | ((identity: ProviderOperationBindingIdentity) => ProviderOperationJournalProbeResult)
     | null = null;
   private settledUnboundStatus: SettledUnboundStatusPort | null = null;
   private readonly runtime: Runtime;
+  private activeEpochPath: string | null = null;
 
   constructor(options: { runtime: Runtime }) {
     this.runtime = options.runtime;
     this.internalAbortRegistry = new AbortRegistry(options.runtime.ids);
+  }
+
+  bindActiveEpochPath(path: string): void {
+    this.activeEpochPath = path;
+  }
+
+  activeStoreEpochDirectory(): string | null {
+    return this.activeEpochPath;
   }
 
   getInternalAbortRegistry(): AbortRegistry {
@@ -218,8 +247,95 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return total;
   }
 
-  requestLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): AdmissionResult {
+  admissionRevision(): number {
+    return this.successionAdmissionRevision;
+  }
+
+  subscribeSuccessionObligationChanges(listener: () => void): () => void {
+    this.successionObligationListeners.add(listener);
+    return () => this.successionObligationListeners.delete(listener);
+  }
+
+  private notifySuccessionObligationChange(): void {
+    for (const listener of this.successionObligationListeners) listener();
+  }
+
+  beginSuccessionCommitWindow(attemptId: string, expectedRevision: number): SuccessionPauseDecision {
+    if (this.successionAdmissionRevision !== expectedRevision) {
+      return { kind: 'refused', reason: 'stale-preparation' };
+    }
+    if (this.successionPause !== null || this.successionWriterParkAttemptId !== null) {
+      return { kind: 'refused', reason: 'pause-active' };
+    }
+
+    const now = this.successionClockMs();
+    const windowStart = now - SUCCESSION_PAUSE_ROLLING_WINDOW_MS;
+    let spentMs = 0;
+    for (const interval of this.successionPauseIntervals) {
+      spentMs += Math.max(0, interval.endedAtMs - Math.max(interval.startedAtMs, windowStart));
+    }
+    if (spentMs + SUCCESSION_PAUSE_ATTEMPT_MS > SUCCESSION_PAUSE_TOTAL_MS) {
+      return { kind: 'refused', reason: 'aggregate-budget-exhausted' };
+    }
+
+    const deadlineAtMs = this.runtime.time.now() + SUCCESSION_PAUSE_ATTEMPT_MS;
+    const timer = this.runtime.time.setTimeout(() => {
+      this.finishSuccessionPause(attemptId);
+    }, SUCCESSION_PAUSE_ATTEMPT_MS);
+    this.successionPause = { attemptId, startedAtMs: now, timer };
+    return { kind: 'paused', attemptId, deadlineAtMs };
+  }
+
+  endSuccessionCommitWindow(attemptId: string): boolean {
+    if (this.successionWriterParkAttemptId === attemptId) this.successionWriterParkAttemptId = null;
+    return this.finishSuccessionPause(attemptId);
+  }
+
+  private finishSuccessionPause(attemptId: string): boolean {
+    const pause = this.successionPause;
+    if (pause === null || pause.attemptId !== attemptId) return false;
+    this.runtime.time.clearTimeout(pause.timer);
+    this.successionPause = null;
+    const now = this.successionClockMs();
+    this.successionPauseIntervals.push({ startedAtMs: pause.startedAtMs, endedAtMs: now });
+    const windowStart = now - SUCCESSION_PAUSE_ROLLING_WINDOW_MS;
+    while (this.successionPauseIntervals[0]?.endedAtMs <= windowStart) {
+      this.successionPauseIntervals.shift();
+    }
+    return true;
+  }
+
+  successionAdmissionPaused(): boolean {
+    return this.successionPause !== null || this.successionWriterParkAttemptId !== null;
+  }
+
+  beginSuccessionWriterPark(attemptId: string): void {
+    if (this.successionPause?.attemptId !== attemptId) throw new Error('Succession commit window is not active.');
+    this.successionWriterParkAttemptId = attemptId;
+  }
+
+  admitTopLevelLaunch(): boolean {
+    if (this.successionAdmissionPaused()) return false;
+    this.successionAdmissionRevision++;
+    return true;
+  }
+
+  private successionClockMs(): number {
+    return Number(this.runtime.time.monotonicNow());
+  }
+
+  requestLaunch(
+    jobId: string,
+    provider: string,
+    executionOwner: ExecutionOwner,
+    pool: LaunchPool,
+    acceptedWork = false,
+  ): AdmissionResult {
     if (this.shutdownRequested) throw new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE);
+    if (this.successionPause !== null || this.successionWriterParkAttemptId !== null) {
+      if (!acceptedWork) throw new SuccessionAdmissionPausedError();
+      this.successionAdmissionRevision++;
+    }
     const activeLaunches = this.getActiveMap(pool);
     const queuedLaunches = this.getQueue(pool);
     this.rejectDuplicateReservation(jobId);
@@ -260,6 +376,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       cancellation: null,
     };
     queuedLaunches.push(entry);
+    this.successionAdmissionRevision++;
     return this.queuedHandle(entry, pool);
   }
 
@@ -277,7 +394,9 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       });
     }
     activeLaunches.delete(permit.jobId);
+    this.successionAdmissionRevision++;
     this.cancelPreparedBindingsForPermit(permit);
+    this.notifySuccessionObligationChange();
     return { kind: 'released', pool: permit.pool, admittedNext: this.admitQueueHead(permit.pool) };
   }
 
@@ -307,6 +426,31 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
         heldForMs: Math.max(0, now - permit.acquiredAt),
       })),
     );
+  }
+
+  pendingLaunchJobIds(): readonly string[] {
+    return [
+      ...new Set([
+        ...Object.values(this.pools).flatMap((state) => state.queued.map((entry) => entry.jobId)),
+        ...[...this.pendingDurableLaunches]
+          .map((launch) => launch.retainedIdentity().jobId)
+          .filter((jobId): jobId is string => jobId !== undefined),
+      ]),
+    ];
+  }
+
+  queuedLaunchJobIds(): readonly string[] {
+    return Object.values(this.pools).flatMap((state) => state.queued.map((entry) => entry.jobId));
+  }
+
+  pendingDurableJobIds(): readonly string[] {
+    return [...this.pendingDurableLaunches]
+      .map((launch) => launch.retainedIdentity().jobId)
+      .filter((jobId): jobId is string => jobId !== undefined);
+  }
+
+  pendingDurableLaunchCount(): number {
+    return this.pendingDurableLaunches.size;
   }
 
   launchReleaseDiagnostics(): LaunchReleaseDiagnostic[] {
@@ -402,10 +546,18 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     const transport = {
       runtime: this.runtime,
       options,
+      ...(this.activeEpochPath === null ? {} : { epochPath: this.activeEpochPath }),
       pool,
       cleanupHandles: this.cleanupHandles,
       cleanupRetentions: this.cleanupRetentions,
-      pendingLaunches: this.pendingDurableLaunches,
+      pendingLaunches: {
+        add: (launch: PendingDurableLaunch) => {
+          this.pendingDurableLaunches.add(launch);
+        },
+        delete: (launch: PendingDurableLaunch) => {
+          if (this.pendingDurableLaunches.delete(launch)) this.notifySuccessionObligationChange();
+        },
+      },
       releaseLaunch: (permit: LaunchPermit) => this.releaseLaunch(permit),
     };
     if (internalPermit !== null) {
@@ -495,6 +647,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       reclaimedAtMs,
     });
     this.admitQueueHead(permit.pool);
+    this.notifySuccessionObligationChange();
     return true;
   }
 
@@ -577,6 +730,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       cancellation: null,
     };
     queuedLaunches.push(entry);
+    this.successionAdmissionRevision++;
 
     return this.queuedHandle(entry, pool);
   }
@@ -1189,6 +1343,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     const index = queuedLaunches.indexOf(entry);
     if (index !== -1) {
       queuedLaunches.splice(index, 1);
+      this.successionAdmissionRevision++;
       entry.cancellation = { kind: 'cancelled' };
       entry.reject(new Error(QUEUE_CANCELED_MESSAGE));
       this.admitQueueHead(pool);
@@ -1262,6 +1417,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }
 
   private createPermit(input: Omit<LaunchPermit, 'acquiredAt'>): LaunchPermit {
+    this.successionAdmissionRevision++;
     return { ...input, acquiredAt: this.runtime.time.now() };
   }
 

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { none } from '#src/providers/capability.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import { JobLaunchService } from '#src/coordinator/services/job-launch.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
@@ -396,7 +396,7 @@ describe('bound-provider execution architecture', () => {
       pluginRegistry: { discoverPluginRoot: () => null },
       progressStore: progressStore as never,
       launchOrchestrator: orchestrator,
-      childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+      childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
     });
 
     expect(Object.keys(definition)).toEqual(['name']);

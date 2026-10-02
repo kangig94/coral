@@ -172,6 +172,10 @@ export class LocalOperationRegistry {
     return key === undefined ? null : (this.entries.get(key)?.state ?? null);
   }
 
+  liveJobIds(): readonly string[] {
+    return [...this.liveJobIndex.keys()];
+  }
+
   /**
    * Every operation this coordinator currently tracks against one proxy set. This is a live-runtime view;
    * durable handoff membership comes from the provider-operation journal because publication can precede

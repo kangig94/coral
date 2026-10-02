@@ -23,6 +23,7 @@ import {
 import type { SessionAllocateOptions } from '../../sessions/contracts.js';
 import { describeSessionInterrupted, type SessionInterruptedFault } from '../../sessions/fault.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
+import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
 import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../sessions/entry.js';
@@ -275,6 +276,7 @@ function runPreflightWithTimeout(
   provider: BoundProvider,
   runtime: Omit<ProviderPreflightInput, 'access'>,
   deadline: bigint,
+  signal?: AbortSignal,
 ): Promise<PreflightDecision> {
   const remaining = deadline - runtime.time.monotonicNow();
   if (remaining <= 0n) {
@@ -283,11 +285,22 @@ function runPreflightWithTimeout(
 
   return new Promise<PreflightDecision>((resolve, reject) => {
     let settled = false;
+    const abort = (): void => {
+      if (settled) return;
+      settled = true;
+      runtime.time.clearTimeout(timeout);
+      try {
+        throwIfRequestAborted(signal);
+      } catch (error: unknown) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
     const timeout = runtime.time.setTimeout(() => {
       if (settled) {
         return;
       }
       settled = true;
+      signal?.removeEventListener('abort', abort);
       resolve(deadlinePreflightDecision(provider));
     }, Number(remaining));
     timeout.unref?.();
@@ -295,6 +308,7 @@ function runPreflightWithTimeout(
     const rejectWith = (error: unknown): void => {
       settled = true;
       runtime.time.clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
       reject(
         documentedCoralSetupError('provider_preflight_faulted', {
           provider: provider.name,
@@ -304,7 +318,10 @@ function runPreflightWithTimeout(
     };
 
     Promise.resolve()
-      .then(() => provider.preflight(runtime))
+      .then(() => {
+        throwIfRequestAborted(signal);
+        return provider.preflight(runtime);
+      })
       .then(
         (outcome) => {
           if (settled) {
@@ -324,6 +341,7 @@ function runPreflightWithTimeout(
           }
           settled = true;
           runtime.time.clearTimeout(timeout);
+          signal?.removeEventListener('abort', abort);
           resolve(decision);
         },
         (error: unknown) => {
@@ -333,17 +351,22 @@ function runPreflightWithTimeout(
           rejectWith(error);
         },
       );
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
   });
 }
 
 export async function runProviderPreflight(
   provider: BoundProvider,
   runtime: Omit<ProviderPreflightInput, 'access'>,
+  signal?: AbortSignal,
 ): Promise<PreflightDecision> {
   const deadline = runtime.time.monotonicNow() + BigInt(PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS);
   let isFinalProbe = false;
   while (true) {
-    const decision = await runPreflightWithTimeout(provider, runtime, deadline);
+    throwIfRequestAborted(signal);
+    const decision = await runPreflightWithTimeout(provider, runtime, deadline, signal);
+    throwIfRequestAborted(signal);
     // Only a returned provider non-answer may authorize another probe: a deadline may leave the
     // prior probe in flight.
     if (decision.kind !== 'undetermined' || decision.cause !== 'provider') {
@@ -364,5 +387,6 @@ export async function runProviderPreflight(
     }
 
     await runtime.time.sleep(PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS);
+    throwIfRequestAborted(signal);
   }
 }

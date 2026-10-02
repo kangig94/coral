@@ -12,12 +12,15 @@ import {
   CLI_BUNDLE_FILE,
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   LEGACY_CLI_BUNDLE_FILE,
+  SUCCESSION_CAPABILITIES_FILE,
+  SUCCESSION_CAPABILITY_VERSION,
 } from '../src/infra/bundle-manifest-address.ts';
 
-const { storeEpochHookSource } = await import('../dist/store/epoch.js');
+const { storeEpochHookSource } = await import('../dist/store/epoch/index.js');
 writeFileSync('clients/hooks/lib/store-epoch.mjs', storeEpochHookSource());
 
 mkdirSync('clients/build', { recursive: true });
+rmSync('clients/build/coral-upgrade-waiter.cjs', { force: true });
 
 function parseArgs(argv) {
   let flavor = 'prod';
@@ -131,7 +134,7 @@ let sharedOpts = createProductionServerEsbuildOptions({
 
 await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/coordinator/bootstrap.ts'],
+  entryPoints: ['src/coordinator/admission-main.ts'],
   outfile: 'clients/build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
@@ -152,9 +155,16 @@ sharedOpts = createProductionServerEsbuildOptions({
 });
 const backendBuild = await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/coordinator/bootstrap.ts'],
+  entryPoints: ['src/coordinator/admission-main.ts'],
   outfile: 'clients/build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
+  metafile: true,
+});
+
+const sentinelBuild = await esbuild.build({
+  ...sharedOpts,
+  entryPoints: ['src/coordinator-launch/main.ts'],
+  outfile: 'clients/build/coral-sentinel.cjs',
   metafile: true,
 });
 
@@ -236,6 +246,22 @@ writeFileSync(
   }) + '\n',
 );
 renameSync(`${strictManifestPath}.tmp`, strictManifestPath);
+const successionCapabilitiesPath = join('clients/build', SUCCESSION_CAPABILITIES_FILE);
+writeFileSync(
+  `${successionCapabilitiesPath}.tmp`,
+  JSON.stringify({
+    version: SUCCESSION_CAPABILITY_VERSION,
+    buildSetId,
+    bundleHash: backendHash,
+    protocols: ['prepare', 'commit'],
+    accepts: [
+      { owner: 'durable-cli', generation: 1 },
+      { owner: 'provider-operations', generation: 1 },
+      { owner: 'provider-proxy-sets', generation: 1 },
+    ],
+  }) + '\n',
+);
+renameSync(`${successionCapabilitiesPath}.tmp`, successionCapabilitiesPath);
 execFileSync(process.execPath, ['scripts/verify-kiwi-runtime-build-contract.mjs', 'clients/build'], {
   stdio: 'inherit',
 });
@@ -282,6 +308,7 @@ const receiptInputs = [
   ...new Set(
     [
       ...Object.keys(backendBuild.metafile.inputs),
+      ...Object.keys(sentinelBuild.metafile.inputs),
       ...Object.keys(cliBuild.metafile.inputs),
       ...Object.keys(claudeAppserverBuild.metafile.inputs),
       ...Object.keys(durableWrapperBuild.metafile.inputs),
@@ -291,11 +318,13 @@ const receiptInputs = [
 ].sort();
 const receiptOutputs = {
   backend: { path: 'clients/build/coral-backend.cjs' },
+  sentinel: { path: 'clients/build/coral-sentinel.cjs' },
   cli: { path: `clients/build/${CLI_BUNDLE_FILE}` },
   claudeAppserver: { path: 'clients/build/coral-claude-appserver.cjs' },
   durableWrapper: { path: 'clients/build/coral-durable-wrapper.cjs' },
   legacyManifest: { path: legacyManifestPath },
   strictManifest: { path: strictManifestPath },
+  successionCapabilities: { path: successionCapabilitiesPath },
 };
 for (const output of Object.values(receiptOutputs)) {
   output.sha256 = createHash('sha256').update(readFileSync(output.path)).digest('hex');
@@ -324,6 +353,7 @@ if (release) {
   mkdirSync(bridgeDir, { recursive: true });
   const bridgeFiles = [
     'coral-backend.cjs',
+    'coral-sentinel.cjs',
     CLI_BUNDLE_FILE,
     LEGACY_CLI_BUNDLE_FILE,
     'coral-claude-appserver.cjs',
@@ -331,6 +361,7 @@ if (release) {
     'package.json',
     'manifest.json',
     CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+    SUCCESSION_CAPABILITIES_FILE,
   ];
   // Sweep stale leftovers from prior releases so bridge contains only the current bundle surface.
   const expected = new Set(bridgeFiles);

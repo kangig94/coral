@@ -16,7 +16,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { installExpansion } from '#src/cli/expansion/install.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { epochPath } from '#src/store/epoch.js';
+import { epochPath } from '#src/store/epoch/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 

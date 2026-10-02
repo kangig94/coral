@@ -186,8 +186,8 @@ describe('cli errors', () => {
     it.each([
       [
         'invalid_store_reset_incident_id',
-        'Report target must be a positive numeric epoch or canonical lowercase legacy incident UUID.',
-        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.',
+        'Report target must be a full epoch key, an unambiguous positive epoch number, or a canonical lowercase legacy incident UUID.',
+        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch key or the ID of a legacy incident in the `ready` state.',
         2,
       ],
       [
@@ -195,6 +195,12 @@ describe('cli errors', () => {
         'Store-reset report target not found.',
         'Run `coral-cli backend store-reset list --target <legacy|gen2>` and retry with a listed epoch or legacy incident.',
         1,
+      ],
+      [
+        'store_reset_epoch_ambiguous',
+        'Store-reset report target names an epoch number that more than one store lineage uses.',
+        'Run `coral-cli backend store-reset list --target gen2` and retry with the full epoch key shown there. An epoch listed with an unobservable key has no facts to report beyond its list row.',
+        2,
       ],
       [
         'store_reset_build_mismatch',
@@ -474,8 +480,11 @@ describe('cli errors', () => {
       const EXPECTED_LAUNCH_AND_DOMAIN_RETRY_LATER_CODES = [
         'backend_recovering',
         'busy',
+        'job_unresolved',
         'kb_disabled',
         'provider_preflight_undetermined',
+        'succession_admission_paused',
+        'succession_writer_parked',
       ];
       const { DOCUMENTED_CORAL_SETUP_ERROR_CODES, LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES } =
         await import('#src/runtime/errors.js');
@@ -500,12 +509,8 @@ describe('cli errors', () => {
         'coordinator_record_unreadable',
         'coordinator_socket_dir_unverified',
         'legacy_source_writer_observation_unknown',
-        'handoff_fresh_discovery_unavailable',
-        'handoff_legacy_signal_attempt_indeterminate',
-        'handoff_process_identity_unavailable',
-        'handoff_process_liveness_unknown',
-        'handoff_signal_anchor_missing',
         'handoff_socket_holder_unverified',
+        'coordinator_recovering',
       ];
       const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
       const { expansionExitCode } = await import('#src/cli/commands/expansion.js');

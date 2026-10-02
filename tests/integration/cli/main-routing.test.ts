@@ -117,6 +117,7 @@ vi.mock('#src/transport/http/backend/shutdown.js', () => ({
 // keeps the real implementation under test and lets a test that moves `HOME` actually get a new graph.
 vi.mock('#src/cli/follow.js', () => ({
   launchAndFollow: mockState.launchAndFollow,
+  ABORT_REFUSED_EXIT_CODE: 3,
   followJobs: async (...args: Parameters<typeof FollowMod.followJobs>) => {
     const actual = await vi.importActual<typeof FollowMod>('#src/cli/follow.js');
     return actual.followJobs(...args);
@@ -168,6 +169,13 @@ vi.mock('#src/cli/dispatch.js', async () => {
       kbReindex: mockState.kbReindex,
       subscribe: async (method: string, request: unknown) => {
         const iterator = await mockState.streamWait(method, request);
+        return {
+          close: vi.fn().mockResolvedValue(undefined),
+          [Symbol.asyncIterator]: () => iterator[Symbol.asyncIterator](),
+        };
+      },
+      subscribeJobsWait: async (fields: unknown) => {
+        const iterator = await mockState.streamWait('jobs.wait', fields);
         return {
           close: vi.fn().mockResolvedValue(undefined),
           [Symbol.asyncIterator]: () => iterator[Symbol.asyncIterator](),
@@ -813,6 +821,7 @@ describe('cli main routing', () => {
       ['recorded_process_absent', 0],
       ['unauthorized', 0],
       ['recent_failure', 0],
+      ['deferred_upgrade', 0],
       ['undecodable_record', 75],
       ['unreachable', 75],
       ['no_record_socket_present', 75],
@@ -1586,6 +1595,30 @@ describe('cli main routing', () => {
     expect(mockState.abortJobs).toHaveBeenCalledWith(['job-live', 'job-terminal']);
     expect(stdout).toBe(`${formatAbortResult(result)}\n`);
     expect(stderr).toBe('');
+  });
+
+  it('renders a mixed pre-epoch abort and exits with refusal status', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const result = {
+      aborted: ['job-live'],
+      notFound: [],
+      refused: [
+        {
+          jobId: 'possible-flat',
+          reason: 'job_pre_epoch_history',
+          nextStep: 'A job that ran before store epochs has no details this build can read. Do not retry.',
+        },
+      ],
+    };
+    mockState.abortJobs.mockResolvedValueOnce(result);
+
+    await program.parseAsync(['node', 'coral-cli', 'abort', 'jobs', 'job-live', 'possible-flat']);
+
+    expect(stdout).toContain('Aborted jobs: job-live\nPre-epoch history may contain possible-flat');
+    expect(stdout).not.toContain('Not found:');
+    expect(stderr).toBe('');
+    expect(process.exitCode).toBe(3);
   });
 
   it('uses flattened provider commands with unified flags and workflow start-prompt help', async () => {

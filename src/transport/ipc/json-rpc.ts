@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { JsonRpcErrorObject } from '../../infra/json-rpc.js';
+import type { ChildAuthChallenge } from '../../security/child-credential.js';
 
 // Coral's internal IPC speaks a *tagged* dialect of JSON-RPC: every envelope
 // carries an explicit `kind` discriminator so the inbound parser can route
@@ -27,7 +28,22 @@ export type IpcAuthMetadata =
       readonly token: string;
       readonly jobId: string;
       readonly sessionId: string;
+    }
+  | {
+      readonly kind: 'child-proof';
+      readonly credentialId: string;
+      readonly jobId: string;
+      readonly sessionId: string;
+      readonly proof: string;
     };
+
+export const ipcAuthChallengeSchema: z.ZodType<ChildAuthChallenge> = z
+  .object({
+    challenge: z.string().min(1),
+    incarnation: z.string().min(1),
+    namespace: z.string().min(1),
+  })
+  .passthrough();
 
 export interface JsonRpcRequestEnvelope<TParams = unknown> {
   readonly kind: 'request';
@@ -77,6 +93,15 @@ const ipcAuthMetadataSchema = z.discriminatedUnion('kind', [
       token: z.string().min(1),
       jobId: z.string().min(1),
       sessionId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('child-proof'),
+      credentialId: z.string().min(1),
+      jobId: z.string().min(1),
+      sessionId: z.string().min(1),
+      proof: z.string().min(1),
     })
     .strict(),
 ]);
@@ -138,4 +163,22 @@ export function encode(env: JsonRpcEnvelope): string {
 
 export function decode(wire: string): JsonRpcEnvelope {
   return parseEnvelope(JSON.parse(wire));
+}
+
+const SHIPPED_TRANSIENT_ALIASED_CODES: ReadonlySet<string> = new Set([
+  'job_unresolved',
+  'succession_admission_paused',
+  'succession_writer_parked',
+]);
+
+export function encodeIpcErrorData(data: unknown): unknown {
+  if (typeof data !== 'object' || data === null || !('code' in data) || typeof data.code !== 'string') return data;
+  if (!SHIPPED_TRANSIENT_ALIASED_CODES.has(data.code)) return data;
+  return { ...data, code: 'transient', specificCode: data.code };
+}
+
+export function decodeIpcErrorData(data: unknown): unknown {
+  if (typeof data !== 'object' || data === null || !('specificCode' in data)) return data;
+  const { specificCode, ...rest } = data as Record<string, unknown>;
+  return typeof specificCode === 'string' ? { ...rest, code: specificCode } : data;
 }

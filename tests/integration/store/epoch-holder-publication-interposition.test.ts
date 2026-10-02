@@ -56,8 +56,9 @@ import {
   STORE_EPOCH_OPEN_RETRY_INTERVAL_MS,
   epochDirectory,
   settleStoreEpoch,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { authorizeFixtureStoreMint } from '../../helpers/store-db.js';
 
 const roots: string[] = [];
 const storeFormat = currentCoralStoreFormat();
@@ -119,7 +120,11 @@ it('settles when a sweep unlinks the first holder publication', async () => {
   publicationRace.fixturePath = fixturePath;
   publicationRace.armed = true;
 
-  const settled = settleStoreEpoch(runtime, { storeFormat, build: buildManifest });
+  const settled = settleStoreEpoch(runtime, {
+    storeFormat,
+    build: buildManifest,
+    authorizeMint: authorizeFixtureStoreMint,
+  });
 
   expect(publicationRace.sweepStatus, publicationRace.sweepStderr).toBe(0);
   expect(publicationRace.sweepResult).toBe('complete');
@@ -138,7 +143,11 @@ it('retries a transient holder publication failure without replacing the current
   const baseDir = mkdtempSync(join(tmpdir(), 'coral-holder-publication-failure-'));
   roots.push(baseDir);
   const runtime = createRealRuntime('prod', { baseDir });
-  const initial = settleStoreEpoch(runtime, { storeFormat, build: buildManifest });
+  const initial = settleStoreEpoch(runtime, {
+    storeFormat,
+    build: buildManifest,
+    authorizeMint: authorizeFixtureStoreMint,
+  });
   initial.db
     .prepare(
       `INSERT INTO projection_jobs (
@@ -178,7 +187,10 @@ it('retries a transient holder publication failure without replacing the current
     },
   });
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build: buildManifest });
+  const settled = settleStoreEpoch(
+    { ...clock.runtime, storage },
+    { storeFormat, build: buildManifest, authorizeMint: authorizeFixtureStoreMint },
+  );
 
   expect(failedWrites).toBe(2);
   expect(clock.sleptMs()).toBeGreaterThan(0);
@@ -193,7 +205,11 @@ it('records a placeholder cause when a holder failure cannot be inspected', () =
   const baseDir = mkdtempSync(join(tmpdir(), 'coral-holder-uninspectable-failure-'));
   roots.push(baseDir);
   const runtime = createRealRuntime('prod', { baseDir });
-  const initial = settleStoreEpoch(runtime, { storeFormat, build: buildManifest });
+  const initial = settleStoreEpoch(runtime, {
+    storeFormat,
+    build: buildManifest,
+    authorizeMint: authorizeFixtureStoreMint,
+  });
   initial.db.close();
   const clock = withVirtualRetryClock(runtime);
   const hostileError = new Error('hidden');
@@ -222,7 +238,10 @@ it('records a placeholder cause when a holder failure cannot be inspected', () =
     },
   });
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build: buildManifest });
+  const settled = settleStoreEpoch(
+    { ...clock.runtime, storage },
+    { storeFormat, build: buildManifest, authorizeMint: authorizeFixtureStoreMint },
+  );
   const metadata = JSON.parse(
     readFileSync(join(epochDirectory(settled.store.storeRoot, '2'), STORE_EPOCH_METADATA_FILE_NAME), 'utf-8'),
   ) as { classification: unknown };

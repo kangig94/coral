@@ -41,10 +41,10 @@ import {
   epochPath,
   sweepStoreEpochs,
   STORE_EPOCH_METADATA_FILE_NAME,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { routeOrOpenBackendStoreAtStartup } from '#src/store/startup-store-routing.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
+import { authorizeFixtureStoreMint, openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
 const storeFormat = currentCoralStoreFormat();
@@ -173,6 +173,7 @@ async function route(runtime: Runtime, current: ActiveStoreSelection) {
     options: {
       storeFormat: { ...storeFormat, productVersion: current.manifest.version },
       currentSelection: current,
+      authorizeMint: authorizeFixtureStoreMint,
     },
   });
 }
@@ -252,7 +253,7 @@ describe('startup store routing', () => {
     symlinkSync(newRoot, configuredRoot);
     const daemon = await runStoreCapabilityFixture(
       root,
-      encodeResolvedStoreEpoch(result.store),
+      encodeResolvedStoreEpoch(runtime, result.store),
       current.manifest.version,
     );
     const daemonMarker = result.db.prepare<[], { value: string }>('SELECT value FROM daemon_marker').get()?.value;

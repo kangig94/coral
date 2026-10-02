@@ -14,7 +14,7 @@ import {
   writeDurableCliContainmentStatus,
   writeDurableCliProcessRuntimeMeta,
 } from '#src/jobs/runtime-meta-store.js';
-import { decodeDurableCliProcessRuntimeMetaV1 } from '#src/jobs/runtime-meta.js';
+import { decodeDurableCliProcessRuntimeMetaV1, durableCliProcessRuntimeMetaKey } from '#src/jobs/runtime-meta.js';
 
 const JOB_ID = '00000000-0000-4000-8000-000000000001';
 
@@ -47,6 +47,17 @@ describe('durable CLI process runtime meta store', () => {
     writeDurableCliProcessRuntimeMeta(db, meta);
 
     expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toEqual(meta);
+  });
+
+  it('reads a record a newer writer extended with a field this build does not know', () => {
+    const db = createDb();
+    const meta = runtimeMeta(4242, 1_000);
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+      durableCliProcessRuntimeMetaKey(JOB_ID),
+      JSON.stringify({ ...meta, laterField: 'added' }),
+    );
+
+    expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toMatchObject(meta);
   });
 
   it('does not select a predecessor generation stored under the v1 key', () => {

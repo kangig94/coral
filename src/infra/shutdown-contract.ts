@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { durableCliRuntimePublicationEvidenceSchema } from './durable-cli-runtime-evidence.js';
 import { serializedThrownIdentifierSchema, serializedThrownSchema } from './error-format.js';
 
+export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
+
 export const SHUTDOWN_REASONS = [
   'replaced',
   'sigterm',

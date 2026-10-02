@@ -9,9 +9,12 @@ import { basename, join } from 'node:path';
 import type { BuildFlavor } from '../build-flavor.js';
 import {
   type CoordinatorPaths,
+  supervisorLockPath,
   coordinatorPaths,
   handoffRoutingStatusPathForRunDir,
   socketPathForRunDir,
+  upgradeIntentPath,
+  v0100CoordinatorSocketPathForRunDir,
   v0109CoordinatorSocketGuardSetForRunDir,
 } from './coordinator.js';
 import { coralStateRoot, generationRoot, generationStateRoot, kbVaultRoot } from './root.js';
@@ -55,6 +58,10 @@ export interface GenerationPaths {
   readonly adoptionLock: string;
 }
 
+export function generationAdmissionLockPath(generation: Pick<GenerationPaths, 'root' | 'dataRoot'>): string {
+  return join(generation.root, `.mutation-${basename(generation.dataRoot)}`, 'admission.lock');
+}
+
 export type CoralPaths = {
   readonly generation: GenerationPaths;
   readonly store: StorePaths;
@@ -72,7 +79,14 @@ export type CoralPaths = {
 // provider endpoint and capsule paths are dynamic and therefore publish their constructors here.
 export type { CoordinatorPaths } from './coordinator.js';
 export type { V0109CoordinatorSocketGuardSet } from './coordinator.js';
-export { handoffRoutingStatusPathForRunDir, socketPathForRunDir, v0109CoordinatorSocketGuardSetForRunDir };
+export {
+  supervisorLockPath,
+  handoffRoutingStatusPathForRunDir,
+  socketPathForRunDir,
+  upgradeIntentPath,
+  v0100CoordinatorSocketPathForRunDir,
+  v0109CoordinatorSocketGuardSetForRunDir,
+};
 export { isRelocatedSocket } from './unix-socket.js';
 export type {
   ProviderBootstrapCapsulePathOptions,

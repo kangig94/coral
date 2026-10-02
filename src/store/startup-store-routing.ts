@@ -4,8 +4,16 @@ import {
   coordinateActiveStoreSelection,
   type ActiveStoreSelectionProtocolOptions,
 } from './active-store-selection-coordination.js';
-import type { Database } from './db.js';
-import type { ResolvedStoreEpoch } from './epoch.js';
+import { classifyStoreFile, type Database } from './db.js';
+import {
+  observeResolvedStoreEpoch,
+  observeResolvedStoreEpochKey,
+  openExactStoreEpoch,
+  resolveProvenStoreEpochAtPath,
+  type ExactStoreEpochOpen,
+  type ResolvedStoreEpoch,
+  type StoreEpochOptions,
+} from './epoch/index.js';
 
 type OpenedStartupBackendStore = Readonly<{
   db: Database;
@@ -26,6 +34,53 @@ export type RouteOrOpenBackendStoreAtStartupInput = Readonly<{
   options: StartupActiveStoreSelectionOptions;
   validateForeignTarget: ForeignTargetValidator;
 }>;
+
+export type CommittedBackendStorePreparation =
+  | Readonly<{ kind: 'prepared'; store: ResolvedStoreEpoch }>
+  | Readonly<{ kind: 'holding'; reason: 'epoch-unproven' | 'format-incompatible' | 'probe-failed' }>;
+
+export function prepareCommittedBackendStoreAtStartup(
+  runtime: Runtime,
+  options: Omit<StoreEpochOptions, 'path'> & { readonly path?: never },
+  epochKey: string,
+): CommittedBackendStorePreparation {
+  const expected = observeResolvedStoreEpoch(runtime, epochKey);
+  if (expected === undefined) return { kind: 'holding', reason: 'epoch-unproven' };
+  try {
+    if (
+      runtime.storage.realpathSync(runtime.paths.coral.store.dbDir) !==
+      (expected.canonicalStoreRoot ?? expected.storeRoot)
+    ) {
+      return { kind: 'holding', reason: 'epoch-unproven' };
+    }
+    const proven = resolveProvenStoreEpochAtPath(runtime.storage, expected.storeRoot, expected.path);
+    const addressed =
+      proven === null
+        ? null
+        : {
+            ...proven,
+            ...(expected.lineageKey === undefined ? {} : { lineageKey: expected.lineageKey }),
+            ...(expected.canonicalStoreRoot === undefined ? {} : { canonicalStoreRoot: expected.canonicalStoreRoot }),
+          };
+    if (addressed === null || observeResolvedStoreEpochKey(runtime, addressed) !== epochKey) {
+      return { kind: 'holding', reason: 'epoch-unproven' };
+    }
+    const classification = classifyStoreFile(addressed.path, runtime.storage, options.storeFormat);
+    return classification.kind === 'compatible'
+      ? { kind: 'prepared', store: addressed }
+      : { kind: 'holding', reason: 'format-incompatible' };
+  } catch {
+    return { kind: 'holding', reason: 'probe-failed' };
+  }
+}
+
+export function openCommittedBackendStoreAtStartup(
+  runtime: Runtime,
+  options: Omit<StoreEpochOptions, 'path'> & { readonly path?: never },
+  expected: ResolvedStoreEpoch,
+): ExactStoreEpochOpen {
+  return openExactStoreEpoch(runtime, options, expected);
+}
 
 export async function routeOrOpenBackendStoreAtStartup(
   input: RouteOrOpenBackendStoreAtStartupInput,

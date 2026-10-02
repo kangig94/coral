@@ -202,18 +202,8 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       abortJobs: async (ids) => client.abortJobs([...ids]),
       connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal }) => ({
         kind: 'subscription',
-        subscription: await client.subscribe<unknown>(
-          'jobs.wait',
-          {
-            jobIds: [...activeJobIds],
-            timeoutSeconds,
-            projectRoot,
-            // Declared by every subscriber in this build that can render the event. A coordinator withholds
-            // `interrupted` from anyone who does not say this, which is how an already-installed CLI — whose
-            // wait switch has no arm for an unknown type — keeps working against a newer backend.
-            supportsInterrupted: true,
-            ...(cursor ? { cursor } : {}),
-          },
+        subscription: await client.subscribeJobsWait(
+          { jobIds: activeJobIds, timeoutSeconds, projectRoot, ...(cursor ? { cursor } : {}) },
           { signal },
         ),
       }),

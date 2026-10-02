@@ -353,6 +353,10 @@ type ActiveControlAuthorizationRecord = Readonly<{
 
 const activeControlAuthorizationRecords = new WeakMap<object, ActiveControlAuthorizationRecord>();
 
+export function activeControlHolder(authorization: ActiveControlAuthorization): ControlTenancyHolder | null {
+  return activeControlAuthorizationRecords.get(authorization)?.holder ?? null;
+}
+
 function mintActiveControlAuthorization(
   socket: Socket,
   controlEpoch: ControlEpoch,

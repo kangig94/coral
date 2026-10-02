@@ -175,7 +175,9 @@ async function runHandoff(
 function createBundle(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-handoff-runner-'));
   roots.push(root);
+  process.argv[1] = join(root, 'coral-backend.cjs');
   writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf8');
+  writeFileSync(join(root, 'coral-sentinel.cjs'), 'handoff runner supervisor fixture', 'utf8');
   writeFileSync(join(root, 'coral-cli'), cliBundle, 'utf8');
   writeFileSync(join(root, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf8');
   writeFileSync(join(root, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
@@ -287,7 +289,10 @@ beforeEach(() => {
   }) as typeof process.stdout.write);
 });
 
+const invokingExecutable = process.argv[1];
+
 afterEach(() => {
+  process.argv[1] = invokingExecutable;
   if (originalGuard === undefined) {
     delete process.env[GUARD_ENV];
   } else {
@@ -874,7 +879,10 @@ describe('handoff-routing/runner', () => {
 
   it('keeps backend-startup delegation pending past the former liveness point until authenticated readiness', async () => {
     process.env[GUARD_ENV] = 'not-a-cli-guard';
-    const bundleDir = roots[0];
+    const currentBundleDir = roots[0];
+    const bundleDir = createBundle();
+    process.argv[1] = join(currentBundleDir, 'coral-backend.cjs');
+    rmSync(join(bundleDir, 'coral-sentinel.cjs'));
     const target = validatedTarget(bundleDir);
     let child: ChildProcess | undefined;
     let releasePoll: (() => void) | undefined;
@@ -909,12 +917,21 @@ describe('handoff-routing/runner', () => {
 
     expect(mockState.probeCoordinator).toHaveBeenCalled();
     expect(mockState.health).not.toHaveBeenCalled();
-    expect(mockState.spawn).toHaveBeenCalledWith(process.execPath, [join(bundleDir, 'coral-backend.cjs')], {
-      cwd: '/handoff/cwd',
-      env: { CORAL_BASE_ENV: 'preserved', [GUARD_ENV]: '1', CORAL_STARTUP_ATTEMPT_ID: 'delegation-attempt' },
-      stdio: 'inherit',
-      detached: true,
-    });
+    expect(mockState.spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [join(currentBundleDir, 'coral-sentinel.cjs'), join(bundleDir, 'coral-backend.cjs')],
+      {
+        cwd: '/handoff/cwd',
+        env: {
+          CORAL_BASE_ENV: 'preserved',
+          [GUARD_ENV]: '1',
+          CORAL_STARTUP_ATTEMPT_ID: 'delegation-attempt',
+          CORAL_SENTINEL_RUN_DIR: '/handoff/run',
+        },
+        stdio: 'inherit',
+        detached: true,
+      },
+    );
     expect(pollDelays).toHaveLength(1);
     expect(pollDelays[0]).toBe(100);
 
@@ -1637,6 +1654,70 @@ describe('handoff-routing/runner', () => {
     expect(warnSpy, 'must not reuse the draining wording for a mismatched-identity reply').not.toHaveBeenCalledWith(
       expect.stringContaining('draining'),
     );
+    expect(mockState.probeCoordinator).toHaveBeenCalledTimes(2);
+    expect(mockState.health).toHaveBeenCalledTimes(2);
+  });
+
+  it('should reread discovery and authenticated health after a succession changes the answering identity', async () => {
+    const record = {
+      socketPath,
+      pid: 4242,
+      bundleHash: manifest.bundleHash,
+      flavor: manifest.flavor,
+      namespace: 'handoff-runner',
+      bootToken: 'boot-token',
+    };
+    mockState.probeCoordinator
+      .mockReturnValueOnce({ kind: 'live', record })
+      .mockReturnValueOnce({ kind: 'live', record: { ...record, pid: 9999 } });
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: manifest.version,
+      bundleHash: manifest.bundleHash,
+      flavor: manifest.flavor,
+      namespace: 'handoff-runner',
+      instanceId: 'successor-1',
+      pid: 9999,
+    });
+
+    const result = await runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' });
+
+    expect(result).not.toMatchObject({
+      reason: { kind: 'routing', basis: { kind: 'incumbent-unusable', cause: 'identity-mismatch' } },
+    });
+    expect(mockState.probeCoordinator).toHaveBeenCalledTimes(2);
+    expect(mockState.health).toHaveBeenCalledTimes(2);
+  });
+
+  it('should preserve the answered coordinator when discovery disappears during the identity retry', async () => {
+    mockState.probeCoordinator
+      .mockReturnValueOnce({
+        kind: 'live',
+        record: {
+          socketPath,
+          pid: 4242,
+          bundleHash: manifest.bundleHash,
+          flavor: manifest.flavor,
+          namespace: 'handoff-runner',
+          bootToken: 'boot-token',
+        },
+      })
+      .mockReturnValueOnce({ kind: 'absent' });
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: manifest.version,
+      bundleHash: manifest.bundleHash,
+      flavor: manifest.flavor,
+      namespace: 'handoff-runner',
+      instanceId: 'successor-1',
+      pid: 9999,
+    });
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-unusable', cause: 'identity-mismatch' } },
+    });
+    expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
   it.each([{ childExitCode: 0 }, { childExitCode: 23 }])(

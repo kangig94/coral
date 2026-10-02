@@ -1,6 +1,6 @@
 import { lstatSync, realpathSync } from 'node:fs';
 import { CLI_BUNDLE_FILE } from './bundle-manifest-address.js';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import {
   hashStableAdjacentBundle,
@@ -115,6 +115,14 @@ function resolveCanonicalBundleDir(
 export const STRICT_MANIFEST_FIELDS = Object.keys(strictBundleManifestSchema.shape) as ReadonlyArray<
   keyof StrictBundleManifest
 >;
+
+export function supervisorExecutableReady(pluginRoot: string): boolean {
+  const bridge = join(pluginRoot, 'bridge');
+  return (
+    hashStableAdjacentBundle(bridge, 'coral-sentinel.cjs') !== null &&
+    hashStableAdjacentBundle(bridge, 'coral-backend.cjs') !== null
+  );
+}
 
 export function manifestsMatch(left: StrictBundleManifest, right: StrictBundleManifest): boolean {
   return STRICT_MANIFEST_FIELDS.every((field) => left[field] === right[field]);

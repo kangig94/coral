@@ -26,7 +26,7 @@ import {
 } from '#src/cli/commands/backend.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { resolveCurrentStore } from '#src/store/epoch.js';
+import { resolveCurrentStore } from '#src/store/epoch/index.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
@@ -40,6 +40,7 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
+const SOURCE_SUPERVISOR_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-sentinel.cjs');
 const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli');
 const SOURCE_CLAUDE_APPSERVER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-claude-appserver.cjs');
 const SOURCE_DURABLE_WRAPPER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-durable-wrapper.cjs');
@@ -209,6 +210,7 @@ function createFixture(): Fixture {
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(binDir, { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
+  copyFileSync(SOURCE_SUPERVISOR_BUNDLE, join(root, 'bridge', 'coral-sentinel.cjs'));
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli'));
   // The fixture bridge must carry a complete lifecycle build set.
   copyFileSync(SOURCE_CLAUDE_APPSERVER_BUNDLE, join(root, 'bridge', 'coral-claude-appserver.cjs'));
@@ -254,6 +256,8 @@ function startCli(fixture: Fixture, promptPath: string, watchdogMs: number): Cli
   const {
     CORAL_CHILD: _coralChild,
     CORAL_CHILD_PRINCIPAL_HANDLE: _childPrincipal,
+    CORAL_CHILD_CREDENTIAL_ID: _childCredentialId,
+    CORAL_CHILD_CREDENTIAL_KEY: _childCredentialKey,
     CORAL_JOB_ID: _coralJobId,
     CORAL_SESSION_ID: _coralSessionId,
     ...topLevelEnv

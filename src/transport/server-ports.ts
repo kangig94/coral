@@ -1,4 +1,6 @@
+import type { LaunchStatus } from '../infra/launch-status.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
+import type { UpgradeIntentProblem, UpgradeIntentVisibility } from '../infra/upgrade-intent.js';
 import type { ServerResponse } from 'node:http';
 import { z } from 'zod';
 
@@ -10,7 +12,11 @@ import type { JobTerminal } from '../jobs/records.js';
 import type { JobCreatedEvent } from '../jobs/contracts/event-stream.js';
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import type { RpcPorts } from './rpc/ports.js';
-import type { Principal } from '../security/principal.js';
+import type {
+  ChildAuthChallenge,
+  ChildPrincipalAuthentication,
+  ChildProvenRequest,
+} from '../security/child-credential.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
 import type {
@@ -19,15 +25,26 @@ import type {
 } from '../provider-proxy/operator-disposition-vocabulary.js';
 
 interface AdminControlPort {
+  succession?(method: string, params: unknown): Promise<unknown>;
+  decideLegacyShutdown?(): { code: 'shutdown_unauthorized'; message: string };
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
   isLifecycleRunning(): boolean;
   isDrainRequested(): boolean;
   isLaunchFenceActive(): boolean;
+  isSuccessionAdmissionPaused?(): boolean;
+  admitTopLevelLaunch?(): boolean;
   beginRequest(): void;
   endRequest(): void;
+  beginRequestLease?(
+    method: string,
+    requestId: string,
+    identity?: { jobId?: string; operationId?: string },
+  ): {
+    run<T>(execute: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  };
   requestDrain(reason: 'replaced'): void;
   probeKbDaemon?(): Promise<TransportKbDaemonHealthSnapshot>;
-  restartKbDaemon?(reason: string): Promise<TransportKbDaemonHealthSnapshot>;
+  restartKbDaemon?(reason: string, signal?: AbortSignal): Promise<TransportKbDaemonHealthSnapshot>;
 }
 
 /**
@@ -310,6 +327,9 @@ export type HealthSnapshot = {
    * replacing a healthy incumbent.
    */
   status: 'starting' | 'ok' | 'draining';
+  succession?: UpgradeIntentVisibility;
+  successionProblem?: UpgradeIntentProblem;
+  launchStatus?: LaunchStatus;
   /**
    * Authoritative kernel lifecycle. `readyAt` is the wall-clock ms when the
    * kernel started (set on the first non-`'starting'` transition) or `null`
@@ -330,6 +350,7 @@ export type HealthSnapshot = {
   flavor: 'prod' | 'dev';
   namespace: string;
   instanceId: string;
+  sentinel?: { version: 1; id: string };
   /**
    * Serving process pid. Required for handoff to revalidate the signal
    * target via `probeProcessIncarnation(pid)` before SIGTERM/SIGKILL.
@@ -451,7 +472,13 @@ type HandlerIdentity = {
 };
 
 interface ChildPrincipalRegistryPort {
-  authenticate(auth: Extract<IpcAuthMetadata, { kind: 'child' }>, namespace: string, nowMs: number): Principal | null;
+  issueChallenge(): ChildAuthChallenge;
+  authenticate(
+    claim: Extract<IpcAuthMetadata, { kind: 'child-proof' }>,
+    challenge: ChildAuthChallenge | null,
+    request: ChildProvenRequest,
+    nowMs: number,
+  ): ChildPrincipalAuthentication;
 }
 
 export interface HttpHandlerPorts extends RpcPorts {

@@ -6,11 +6,20 @@ import {
   successionOperationRegisterParamsSchema,
   successionOperationRegisterResultSchema,
   CURRENT_HANDOFF_CAPSULE_VERSION,
+  currentHandoffCapsulePathBeside,
+  handoffCapsuleControllerBuildSetId,
   writeHandoffCapsuleFile,
-  type HandoffCapsuleV3,
+  type HandoffCapsuleV4,
+  type RedeemableHandoffCapsule,
   proxyHandoffInstallParamsSchema,
   canonicalHandoffOperationSet,
 } from '../../../provider-proxy/handoff-capsule.js';
+import {
+  PROVIDER_PROXY_CONTROL_GENERATION,
+  controllerTransferParamsSchema,
+  controllerTransferResultSchema,
+  type ControllerBuild,
+} from '../../../provider-proxy/controller-succession.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import { ProviderHostOwnerTornDown } from '../../services/provider-host-administration.js';
 import {
@@ -40,6 +49,7 @@ import {
 import type { ControlClient, ControlExchange, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
+import { retireProviderHandoffCapsule } from '../../services/provider-proxy-capsule-discovery.js';
 import {
   closeRedeemedProviderProxyControl,
   providerProxyControlRedemptionBundle,
@@ -100,10 +110,31 @@ export type SuccessionOperationRegistrationOutcome =
   | Readonly<{ kind: 'registered' }>
   | Exclude<RecoveryCredentialInstallOutcome, { kind: 'installed' }>;
 
+type ControllerTransferRole = 'guardian' | 'proxy';
+
+export type ControllerTransferIncident = Readonly<{
+  role: ControllerTransferRole | RecoveryCredentialInstallRole;
+  method: 'guardian.controller-transfer.v1' | 'controller-transfer.v1' | RecoveryCredentialInstallIncident['method'];
+  exchange: ControlInstallIncidentExchange;
+}>;
+
+/** `legacy-host` cannot change on retry: a role without controller transfer cannot accept a successor. */
+export type ControllerTransferOutcome =
+  | Readonly<{ kind: 'authorized'; recoveryGrantId: string }>
+  | Readonly<{ kind: 'legacy-host'; role: ControllerTransferRole }>
+  | Readonly<{ kind: 'retryable'; incident: ControllerTransferIncident }>
+  | Readonly<{ kind: 'refused'; incident: ControllerTransferIncident }>
+  | Readonly<{ kind: 'cancelled' }>;
+
 export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAuthority {
   readonly autonomousDeadline: ProviderProxyAutonomousDeadline;
   readonly controlReattachment: ProviderProxySetControlReattachment;
   installRecoveryCredential(signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome>;
+
+  authorizeControllerTransfer(
+    transfer: Readonly<{ attemptId: string; successor: ControllerBuild }>,
+    signal: AbortSignal,
+  ): Promise<ControllerTransferOutcome>;
   registerSuccessionOperation(
     operation: OperationIdentity,
     signal?: AbortSignal,
@@ -171,8 +202,7 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
   reaperIdentity: ReaperIdentity;
   proxyIdentityFields: ProxyIdentity;
   heartbeats: ProviderProxyRoleHeartbeats;
-  /** This coordinator's own identity — named on every install call so a peer that checks it (build match
-   *  only; see `assertNamedCoordinatorBuild`) can report a disagreement instead of installing blind. */
+  /** Every install must name this coordinator’s own identity so a peer can reject a grant for another build. */
   coordinatorIdentity: CoordinatorIdentity;
   /** Where fresh acquisition writes this set's recovery capsule. Precomputed by the caller
    *  (`establishControl`), which already resolves `baseDir`/generation/flavor the same way every other
@@ -189,7 +219,7 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
 export type ProviderProxySetAuthorityDependencies = ProviderProxySetAuthorityCommonDependencies &
   (
     | Readonly<{ recoveryCapsule?: never; recoveryOperations?: never }>
-    | Readonly<{ recoveryCapsule: HandoffCapsuleV3; recoveryOperations: readonly OperationIdentity[] }>
+    | Readonly<{ recoveryCapsule: RedeemableHandoffCapsule; recoveryOperations: readonly OperationIdentity[] }>
   );
 
 /**
@@ -197,218 +227,82 @@ export type ProviderProxySetAuthorityDependencies = ProviderProxySetAuthorityCom
  * out from `establishControl` so tests can exercise recovery installation and containment without a
  * real socket handshake.
  */
-export function createProviderProxySetAuthority(
-  deps: ProviderProxySetAuthorityDependencies,
-): ProviderProxySetRecoveryAuthority {
-  const {
-    proxyInstanceId,
-    guardianClient,
-    proxyClient,
-    reaperClient,
-    guardianIdentity,
-    reaperIdentity,
-    proxyIdentityFields,
-    heartbeats,
-    coordinatorIdentity,
-    handoffCapsulePath,
-    runtime,
-    operationRegistry,
-  } = deps;
+function createProviderProxyHostControl(proxyClient: ControlClient): {
+  providerHosts: ProviderProxySetRecoveryAuthority['providerHosts'];
+  release: () => void;
+} {
+  /** Only an unsent call proves the owner was never asked: every answer, refusal, timeout, and lost reply
+   *  reached a control that existed at send time and must keep its own failure. */
+  const controlState = { released: false };
 
-  const deadlineConfiguration = deps.recoveryCapsule ?? resolveProviderProxyDeadlineConfiguration(runtime.env);
-  const autonomousDeadline: ProviderProxyAutonomousDeadline = Object.freeze({
-    orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
-    adoptionWindowMs: providerProxyAdoptionWindowMs(deadlineConfiguration),
-    heartbeatHoldBound: providerProxyHeartbeatHoldBound(deadlineConfiguration),
+  const sendOrRefuse = (method: string, params: unknown, timeoutMs: number): Promise<ControlExchange> => {
+    if (controlState.released) throw new ProviderHostOwnerTornDown();
+    return proxyClient.exchange(method, params, timeoutMs);
+  };
+
+  const providerHosts: ProviderProxySetRecoveryAuthority['providerHosts'] = Object.freeze({
+    list: async () => {
+      const params = providerHostListParamsSchema.parse({});
+      const current = controlMethodAvailability(
+        await sendOrRefuse('provider-host.list.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
+      );
+      if (current.kind === 'answered') {
+        return providerHostListResultV2Schema.parse(requireControlResult('provider-host.list.v2', current.exchange))
+          .hosts;
+      }
+      const legacy = await sendOrRefuse('provider-host.list.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
+      return providerHostListResultV1Schema.parse(requireControlResult('provider-host.list.v1', legacy)).hosts;
+    },
+    inspect: async (hostRef) => {
+      const params = providerHostInspectParamsSchema.parse({ hostRef });
+      const current = controlMethodAvailability(
+        await sendOrRefuse('provider-host.inspect.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
+      );
+      if (current.kind === 'answered') {
+        const result = providerHostInspectResultV2Schema.parse(
+          requireControlResult('provider-host.inspect.v2', current.exchange),
+        );
+        return result.state === 'matched' ? result.host : null;
+      }
+      const legacy = await sendOrRefuse('provider-host.inspect.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
+      const result = providerHostInspectResultV1Schema.parse(requireControlResult('provider-host.inspect.v1', legacy));
+      return result.state === 'matched' ? result.host : null;
+    },
+    terminalEviction: async (hostRef) => {
+      const params = providerHostEvictParamsSchema.parse({ hostRef });
+      const current = controlMethodAvailability(
+        await sendOrRefuse('provider-host.terminal-eviction.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
+      );
+      if (current.kind === 'method-absent') return null;
+      const result = providerHostTerminalEvictionResultV2Schema.parse(
+        requireControlResult('provider-host.terminal-eviction.v2', current.exchange),
+      );
+      return result.state === 'matched' ? result.disposition : null;
+    },
+    evict: async (hostRef) => {
+      const params = providerHostEvictParamsSchema.parse({ hostRef });
+      return providerHostEvictResultV2Schema.parse(
+        requireControlResult(
+          'provider-host.evict.v2',
+          await sendOrRefuse('provider-host.evict.v2', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        ),
+      );
+    },
   });
-
-  // Distinct from `deps.recoveryCapsule` on purpose: this one is *this* build's, and the writer accepts only
-  // V3. Conflating them let a redeemed V1 reach a write that must never emit a shape this build cannot verify.
-  let mintedRecoveryCapsule: HandoffCapsuleV3 | null = null;
-  const mintRecoveryCapsule = (): HandoffCapsuleV3 => {
-    if (mintedRecoveryCapsule !== null) return mintedRecoveryCapsule;
-    mintedRecoveryCapsule = {
-      version: CURRENT_HANDOFF_CAPSULE_VERSION,
-      grantId: runtime.ids.uuid(),
-      secret: runtime.ids.randomBytes(32).toString('hex'),
-      generation: guardianIdentity.generation,
-      flavor: guardianIdentity.flavor,
-      buildSetId: guardianIdentity.buildSetId,
-      hostFingerprint: guardianIdentity.hostFingerprint,
-      guardianInstanceId: guardianIdentity.guardianInstanceId,
-      reaperInstanceId: reaperIdentity.reaperInstanceId,
-      proxyInstanceId: proxyIdentityFields.proxyInstanceId,
-      guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
-      reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
-      proxyEndpoint: proxyIdentityFields.canonicalEndpoint,
-      orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
-      teardownReserveMs: deadlineConfiguration.teardownReserveMs,
-      guardianPid: guardianIdentity.pid,
-      guardianIncarnation: guardianIdentity.incarnation,
-      proxyPid: proxyIdentityFields.pid,
-      reaperPid: reaperIdentity.pid,
-      reaperIncarnation: reaperIdentity.incarnation,
-      containmentKind: reaperIdentity.containmentKind,
-      proxyIncarnation: proxyIdentityFields.incarnation,
-      proxyProcessGroupId: proxyIdentityFields.processGroupId,
-    };
-    return mintedRecoveryCapsule;
+  return {
+    providerHosts,
+    release: () => {
+      controlState.released = true;
+    },
   };
-  let recoveryCredentialInstallState: RecoveryCredentialInstallState = { kind: 'idle' };
+}
 
-  const performRecoveryCredentialInstall = async (): Promise<RecoveryCredentialInstallOutcome> => {
-    const capsule = deps.recoveryCapsule ?? mintRecoveryCapsule();
-    const operations = deps.recoveryCapsule === undefined ? [] : canonicalHandoffOperationSet(deps.recoveryOperations);
-    const secretSha256 = handoffSecretDigest(capsule.secret);
-    const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
-      grantId: capsule.grantId,
-      secretSha256,
-      successor: coordinatorIdentity,
-      operations,
-      orphanTimeoutMs: capsule.orphanTimeoutMs,
-      teardownReserveMs: capsule.teardownReserveMs,
-    });
-    const proxyInstall = () =>
-      proxyClient.exchange(
-        'handoff.install.v1',
-        proxyHandoffInstallParamsSchema.parse({
-          grantId: capsule.grantId,
-          secretSha256,
-          generation: capsule.generation,
-          hostFingerprint: capsule.hostFingerprint,
-          buildSetId: capsule.buildSetId,
-          proxyInstanceId: capsule.proxyInstanceId,
-          operations,
-          orphanTimeoutMs: capsule.orphanTimeoutMs,
-        }),
-        PROXY_CONTROL_RPC_TIMEOUT_MS,
-      );
-    let guardianExchange: ControlExchange;
-    let reaperExchange: ControlExchange;
-    let proxyExchange: ControlExchange;
-    if (deps.recoveryCapsule === undefined) {
-      [guardianExchange, reaperExchange, proxyExchange] = await Promise.all([
-        guardianClient.exchange(
-          'guardian.handoff-install.v1',
-          guardianReaperInstallPayload,
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        ),
-        reaperClient.exchange('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
-        proxyInstall(),
-      ]);
-    } else {
-      [guardianExchange, reaperExchange] = await Promise.all([
-        guardianClient.exchange(
-          'guardian.handoff-install.v1',
-          guardianReaperInstallPayload,
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        ),
-        reaperClient.exchange('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
-      ]);
-      const guardianOutcome = installExchangeOutcome(
-        'guardian',
-        'guardian.handoff-install.v1',
-        guardianExchange,
-        capsule.grantId,
-      );
-      const reaperOutcome = installExchangeOutcome(
-        'reaper',
-        'reaper.handoff-install.v1',
-        reaperExchange,
-        capsule.grantId,
-      );
-      if (guardianOutcome?.kind === 'refused') return guardianOutcome;
-      if (reaperOutcome?.kind === 'refused') return reaperOutcome;
-      if (guardianOutcome !== null) return guardianOutcome;
-      if (reaperOutcome !== null) return reaperOutcome;
-      proxyExchange = await proxyInstall();
-    }
-    const outcomes = [
-      installExchangeOutcome('guardian', 'guardian.handoff-install.v1', guardianExchange, capsule.grantId),
-      installExchangeOutcome('reaper', 'reaper.handoff-install.v1', reaperExchange, capsule.grantId),
-      installExchangeOutcome('proxy', 'handoff.install.v1', proxyExchange, capsule.grantId),
-    ];
-    const refusal = outcomes.find((outcome) => outcome?.kind === 'refused');
-    if (refusal !== undefined && refusal !== null) return refusal;
-    const retryable = outcomes.find((outcome) => outcome?.kind === 'retryable');
-    if (retryable !== undefined && retryable !== null) return retryable;
-    if (deps.recoveryCapsule === undefined) {
-      writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
-        storage: runtime.storage,
-        uid: process.getuid?.() ?? 0,
-      });
-      deps.registerAcquisitionUndo?.({
-        kind: 'recovery-capability',
-        label: 'handoff capsule',
-        run: () => runtime.storage.rmSync(handoffCapsulePath, { force: true }),
-      });
-    }
-    const receipt = Object.freeze({
-      kind: 'installed-recovery-credential',
-      grantId: capsule.grantId,
-    }) as InstalledRecoveryCredential;
-    return { kind: 'installed', receipt };
-  };
-
-  const installRecoveryCredential = async (signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome> => {
-    if (signal.aborted) return { kind: 'cancelled' };
-    if (recoveryCredentialInstallState.kind === 'installed') {
-      return { kind: 'installed', receipt: recoveryCredentialInstallState.receipt };
-    }
-    if (recoveryCredentialInstallState.kind === 'idle') {
-      const completion = (async (): Promise<RecoveryCredentialInstallOutcome> => {
-        try {
-          const outcome = await performRecoveryCredentialInstall();
-          recoveryCredentialInstallState =
-            outcome.kind === 'installed' ? { kind: 'installed', receipt: outcome.receipt } : { kind: 'idle' };
-          return outcome;
-        } catch (error: unknown) {
-          recoveryCredentialInstallState = { kind: 'idle' };
-          throw error;
-        }
-      })();
-      recoveryCredentialInstallState = { kind: 'installing', completion };
-    }
-    const completion = recoveryCredentialInstallState.completion;
-    const outcome = await completion;
-    return signal.aborted ? { kind: 'cancelled' } : outcome;
-  };
-
-  const registerInstalledSuccessionOperation = async (
-    _credential: InstalledRecoveryCredential,
-    operation: OperationIdentity,
-    signal: AbortSignal,
-  ): Promise<Extract<SuccessionOperationRegistrationOutcome, { kind: 'registered' | 'cancelled' }>> => {
-    if (operation.proxyInstanceId !== proxyInstanceId || operation.buildSetId !== guardianIdentity.buildSetId) {
-      throw new Error('Succession registration named an operation from another proxy set.');
-    }
-    const params = successionOperationRegisterParamsSchema.parse({ operation });
-    const [guardianExchange, reaperExchange, proxyExchange] = await Promise.all([
-      guardianClient.exchange('guardian.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
-      reaperClient.exchange('reaper.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
-      proxyClient.exchange('succession.register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
-    ]);
-    const guardianResult = requireControlResult('guardian.succession-register-operation.v1', guardianExchange);
-    const reaperResult = requireControlResult('reaper.succession-register-operation.v1', reaperExchange);
-    const proxyResult = requireControlResult('succession.register-operation.v1', proxyExchange);
-    successionOperationRegisterResultSchema.parse(guardianResult);
-    successionOperationRegisterResultSchema.parse(reaperResult);
-    successionOperationRegisterResultSchema.parse(proxyResult);
-    if (signal.aborted) return { kind: 'cancelled' };
-    return { kind: 'registered' };
-  };
-
-  const registerSuccessionOperation = async (
-    operation: OperationIdentity,
-    signal: AbortSignal = new AbortController().signal,
-  ): Promise<SuccessionOperationRegistrationOutcome> => {
-    const installation = await installRecoveryCredential(signal);
-    if (installation.kind !== 'installed') return installation;
-    if (signal.aborted) return { kind: 'cancelled' };
-    return registerInstalledSuccessionOperation(installation.receipt, operation, signal);
-  };
-
-  const controlReattachment: ProviderProxySetControlReattachment = {
+function createProviderProxyControlReattachment(
+  deps: ProviderProxySetAuthorityDependencies,
+  mintRecoveryCapsule: () => HandoffCapsuleV4,
+): ProviderProxySetControlReattachment {
+  const { runtime, coordinatorIdentity, handoffCapsulePath, operationRegistry } = deps;
+  return {
     redeem: (setIdentity, signal) =>
       redeemProviderProxyControl(
         deps.recoveryCapsule ?? mintRecoveryCapsule(),
@@ -452,15 +346,334 @@ export function createProviderProxySetAuthority(
       }
     },
   };
+}
 
-  /** Only an unsent call proves the owner was never asked: every answer, refusal, timeout, and lost reply
-   *  reached a control that existed at send time and must keep its own failure. */
-  let controlReleased = false;
+const untilAbort = <T>(pending: Promise<T>, signal: AbortSignal): Promise<T | null> =>
+  new Promise((resolve, reject) => {
+    if (signal.aborted) return resolve(null);
+    const abort = () => resolve(null);
+    signal.addEventListener('abort', abort, { once: true });
+    pending.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error instanceof Error ? error : new Error(String(error), { cause: error }));
+      },
+    );
+  });
 
-  const sendOrRefuse = (method: string, params: unknown, timeoutMs: number): Promise<ControlExchange> => {
-    if (controlReleased) throw new ProviderHostOwnerTornDown();
-    return proxyClient.exchange(method, params, timeoutMs);
+function transferExchangeOutcome(
+  role: ControllerTransferRole,
+  method: 'guardian.controller-transfer.v1' | 'controller-transfer.v1',
+  exchange: ControlExchange,
+  expected: Readonly<{ grantId: string; attemptId: string }>,
+): Exclude<ControllerTransferOutcome, { kind: 'authorized' | 'cancelled' }> | null {
+  if (controlMethodAvailability(exchange).kind === 'method-absent') return { kind: 'legacy-host', role };
+  if (exchange.kind !== 'response') return { kind: 'retryable', incident: { role, method, exchange } };
+  if (exchange.response.kind === 'refusal') {
+    return {
+      kind: 'refused',
+      incident: { role, method, exchange: { kind: 'response', response: exchange.response } },
+    };
+  }
+  const acknowledged = controllerTransferResultSchema.parse(exchange.response.value);
+  if (acknowledged.grantId !== expected.grantId || acknowledged.attemptId !== expected.attemptId) {
+    throw new Error('provider_proxy_controller_transfer_ack_mismatch');
+  }
+  return null;
+}
+
+function createProviderProxySuccessionMethods(
+  deps: ProviderProxySetAuthorityDependencies,
+  installRecoveryCredential: ProviderProxySetRecoveryAuthority['installRecoveryCredential'],
+): Pick<ProviderProxySetRecoveryAuthority, 'authorizeControllerTransfer' | 'registerSuccessionOperation'> {
+  const { guardianClient, proxyClient, reaperClient, proxyInstanceId, guardianIdentity } = deps;
+  const authorizeControllerTransfer = async (
+    transfer: Readonly<{ attemptId: string; successor: ControllerBuild }>,
+    signal: AbortSignal,
+  ): Promise<ControllerTransferOutcome> => {
+    const installation = await installRecoveryCredential(signal);
+    if (installation.kind === 'cancelled') return installation;
+    if (installation.kind !== 'installed') return installation;
+    if (signal.aborted) return { kind: 'cancelled' };
+    const params = controllerTransferParamsSchema.parse({
+      grantId: installation.receipt.grantId,
+      attemptId: transfer.attemptId,
+      successor: transfer.successor,
+      controlGeneration: PROVIDER_PROXY_CONTROL_GENERATION,
+    });
+    const exchanges = await untilAbort(
+      Promise.all([
+        guardianClient.exchange('guardian.controller-transfer.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        proxyClient.exchange('controller-transfer.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      ]),
+      signal,
+    );
+    if (exchanges === null) return { kind: 'cancelled' };
+    const [guardianExchange, proxyExchange] = exchanges;
+    const outcomes = [
+      transferExchangeOutcome('guardian', 'guardian.controller-transfer.v1', guardianExchange, params),
+      transferExchangeOutcome('proxy', 'controller-transfer.v1', proxyExchange, params),
+    ];
+    const decisive =
+      outcomes.find((outcome) => outcome?.kind === 'legacy-host') ??
+      outcomes.find((outcome) => outcome?.kind === 'refused') ??
+      outcomes.find((outcome) => outcome?.kind === 'retryable');
+    if (decisive !== undefined && decisive !== null) return decisive;
+    return { kind: 'authorized', recoveryGrantId: installation.receipt.grantId };
   };
+
+  const registerInstalledSuccessionOperation = async (
+    _credential: InstalledRecoveryCredential,
+    operation: OperationIdentity,
+    signal: AbortSignal,
+  ): Promise<Extract<SuccessionOperationRegistrationOutcome, { kind: 'registered' | 'cancelled' }>> => {
+    if (operation.proxyInstanceId !== proxyInstanceId || operation.buildSetId !== guardianIdentity.buildSetId) {
+      throw new Error('Succession registration named an operation from another proxy set.');
+    }
+    const params = successionOperationRegisterParamsSchema.parse({ operation });
+    const [guardianExchange, reaperExchange, proxyExchange] = await Promise.all([
+      guardianClient.exchange('guardian.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      reaperClient.exchange('reaper.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      proxyClient.exchange('succession.register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+    ]);
+    const guardianResult = requireControlResult('guardian.succession-register-operation.v1', guardianExchange);
+    const reaperResult = requireControlResult('reaper.succession-register-operation.v1', reaperExchange);
+    const proxyResult = requireControlResult('succession.register-operation.v1', proxyExchange);
+    successionOperationRegisterResultSchema.parse(guardianResult);
+    successionOperationRegisterResultSchema.parse(reaperResult);
+    successionOperationRegisterResultSchema.parse(proxyResult);
+    if (signal.aborted) return { kind: 'cancelled' };
+    return { kind: 'registered' };
+  };
+
+  const registerSuccessionOperation = async (
+    operation: OperationIdentity,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<SuccessionOperationRegistrationOutcome> => {
+    const installation = await installRecoveryCredential(signal);
+    if (installation.kind !== 'installed') return installation;
+    if (signal.aborted) return { kind: 'cancelled' };
+    return registerInstalledSuccessionOperation(installation.receipt, operation, signal);
+  };
+
+  return { authorizeControllerTransfer, registerSuccessionOperation };
+}
+
+async function performRecoveryCredentialInstall(
+  deps: ProviderProxySetAuthorityDependencies,
+  mintRecoveryCapsule: () => HandoffCapsuleV4,
+): Promise<RecoveryCredentialInstallOutcome> {
+  const { coordinatorIdentity, guardianClient, reaperClient, proxyClient, handoffCapsulePath, runtime } = deps;
+  const inherited = deps.recoveryCapsule;
+  const capsule = inherited ?? mintRecoveryCapsule();
+  const operations = inherited === undefined ? [] : canonicalHandoffOperationSet(deps.recoveryOperations);
+  const secretSha256 = handoffSecretDigest(capsule.secret);
+  const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
+    grantId: capsule.grantId,
+    secretSha256,
+    successor: coordinatorIdentity,
+    operations,
+    orphanTimeoutMs: capsule.orphanTimeoutMs,
+    teardownReserveMs: capsule.teardownReserveMs,
+  });
+  const proxyInstall = () =>
+    proxyClient.exchange(
+      'handoff.install.v1',
+      proxyHandoffInstallParamsSchema.parse({
+        grantId: capsule.grantId,
+        secretSha256,
+        generation: capsule.generation,
+        hostFingerprint: capsule.hostFingerprint,
+        buildSetId: capsule.buildSetId,
+        proxyInstanceId: capsule.proxyInstanceId,
+        operations,
+        orphanTimeoutMs: capsule.orphanTimeoutMs,
+      }),
+      PROXY_CONTROL_RPC_TIMEOUT_MS,
+    );
+  let guardianExchange: ControlExchange;
+  let reaperExchange: ControlExchange;
+  let proxyExchange: ControlExchange;
+  if (deps.recoveryCapsule === undefined) {
+    [guardianExchange, reaperExchange, proxyExchange] = await Promise.all([
+      guardianClient.exchange(
+        'guardian.handoff-install.v1',
+        guardianReaperInstallPayload,
+        PROXY_CONTROL_RPC_TIMEOUT_MS,
+      ),
+      reaperClient.exchange('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      proxyInstall(),
+    ]);
+  } else {
+    [guardianExchange, reaperExchange] = await Promise.all([
+      guardianClient.exchange(
+        'guardian.handoff-install.v1',
+        guardianReaperInstallPayload,
+        PROXY_CONTROL_RPC_TIMEOUT_MS,
+      ),
+      reaperClient.exchange('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+    ]);
+    const guardianOutcome = installExchangeOutcome(
+      'guardian',
+      'guardian.handoff-install.v1',
+      guardianExchange,
+      capsule.grantId,
+    );
+    const reaperOutcome = installExchangeOutcome(
+      'reaper',
+      'reaper.handoff-install.v1',
+      reaperExchange,
+      capsule.grantId,
+    );
+    if (guardianOutcome?.kind === 'refused') return guardianOutcome;
+    if (reaperOutcome?.kind === 'refused') return reaperOutcome;
+    if (guardianOutcome !== null) return guardianOutcome;
+    if (reaperOutcome !== null) return reaperOutcome;
+    proxyExchange = await proxyInstall();
+  }
+  const outcomes = [
+    installExchangeOutcome('guardian', 'guardian.handoff-install.v1', guardianExchange, capsule.grantId),
+    installExchangeOutcome('reaper', 'reaper.handoff-install.v1', reaperExchange, capsule.grantId),
+    installExchangeOutcome('proxy', 'handoff.install.v1', proxyExchange, capsule.grantId),
+  ];
+  const refusal = outcomes.find((outcome) => outcome?.kind === 'refused');
+  if (refusal !== undefined && refusal !== null) return refusal;
+  const retryable = outcomes.find((outcome) => outcome?.kind === 'retryable');
+  if (retryable !== undefined && retryable !== null) return retryable;
+  if (inherited === undefined) {
+    writeHandoffCapsuleFile(handoffCapsulePath, mintRecoveryCapsule(), {
+      storage: runtime.storage,
+      uid: process.getuid?.() ?? 0,
+    });
+    deps.registerAcquisitionUndo?.({
+      kind: 'recovery-capability',
+      label: 'handoff capsule',
+      run: () => runtime.storage.rmSync(handoffCapsulePath, { force: true }),
+    });
+  }
+  if (inherited !== undefined && handoffCapsuleControllerBuildSetId(inherited) !== coordinatorIdentity.buildSetId) {
+    const currentCapsulePath = currentHandoffCapsulePathBeside(handoffCapsulePath, inherited.version);
+    writeHandoffCapsuleFile(
+      currentCapsulePath,
+      {
+        ...inherited,
+        version: CURRENT_HANDOFF_CAPSULE_VERSION,
+        controllerBuildSetId: coordinatorIdentity.buildSetId,
+      },
+      { storage: runtime.storage, uid: process.getuid?.() ?? 0 },
+    );
+    if (currentCapsulePath !== handoffCapsulePath) {
+      const retirement = retireProviderHandoffCapsule(runtime.storage, handoffCapsulePath);
+      if (retirement.kind !== 'retired') throw new Error('provider_proxy_capsule_migration_retirement_unavailable');
+    }
+  }
+  const receipt = Object.freeze({
+    kind: 'installed-recovery-credential',
+    grantId: capsule.grantId,
+  }) as InstalledRecoveryCredential;
+  return { kind: 'installed', receipt };
+}
+
+function createRecoveryCapsuleMint(
+  deps: ProviderProxySetAuthorityDependencies,
+  deadlineConfiguration: Readonly<{ orphanTimeoutMs: number; teardownReserveMs: number }>,
+): () => HandoffCapsuleV4 {
+  const { coordinatorIdentity, runtime, guardianIdentity, reaperIdentity, proxyIdentityFields } = deps;
+  // The writer must emit only a V4 shape this build can verify.
+  const state: { mintedRecoveryCapsule: HandoffCapsuleV4 | null } = { mintedRecoveryCapsule: null };
+  return (): HandoffCapsuleV4 => {
+    if (state.mintedRecoveryCapsule !== null) return state.mintedRecoveryCapsule;
+    state.mintedRecoveryCapsule = {
+      version: CURRENT_HANDOFF_CAPSULE_VERSION,
+      controllerBuildSetId: coordinatorIdentity.buildSetId,
+      grantId: runtime.ids.uuid(),
+      secret: runtime.ids.randomBytes(32).toString('hex'),
+      generation: guardianIdentity.generation,
+      flavor: guardianIdentity.flavor,
+      buildSetId: guardianIdentity.buildSetId,
+      hostFingerprint: guardianIdentity.hostFingerprint,
+      guardianInstanceId: guardianIdentity.guardianInstanceId,
+      reaperInstanceId: reaperIdentity.reaperInstanceId,
+      proxyInstanceId: proxyIdentityFields.proxyInstanceId,
+      guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
+      reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
+      proxyEndpoint: proxyIdentityFields.canonicalEndpoint,
+      orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
+      teardownReserveMs: deadlineConfiguration.teardownReserveMs,
+      guardianPid: guardianIdentity.pid,
+      guardianIncarnation: guardianIdentity.incarnation,
+      proxyPid: proxyIdentityFields.pid,
+      reaperPid: reaperIdentity.pid,
+      reaperIncarnation: reaperIdentity.incarnation,
+      containmentKind: reaperIdentity.containmentKind,
+      proxyIncarnation: proxyIdentityFields.incarnation,
+      proxyProcessGroupId: proxyIdentityFields.processGroupId,
+    };
+    return state.mintedRecoveryCapsule;
+  };
+}
+
+export function createProviderProxySetAuthority(
+  deps: ProviderProxySetAuthorityDependencies,
+): ProviderProxySetRecoveryAuthority {
+  const {
+    proxyInstanceId,
+    guardianClient,
+    proxyClient,
+    reaperClient,
+    guardianIdentity,
+    reaperIdentity,
+    proxyIdentityFields,
+    heartbeats,
+    runtime,
+  } = deps;
+
+  const deadlineConfiguration = deps.recoveryCapsule ?? resolveProviderProxyDeadlineConfiguration(runtime.env);
+  const autonomousDeadline: ProviderProxyAutonomousDeadline = Object.freeze({
+    orphanTimeoutMs: deadlineConfiguration.orphanTimeoutMs,
+    adoptionWindowMs: providerProxyAdoptionWindowMs(deadlineConfiguration),
+    heartbeatHoldBound: providerProxyHeartbeatHoldBound(deadlineConfiguration),
+  });
+
+  const mintRecoveryCapsule = createRecoveryCapsuleMint(deps, deadlineConfiguration);
+  let recoveryCredentialInstallState: RecoveryCredentialInstallState = { kind: 'idle' };
+
+  const installRecoveryCredential = async (signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome> => {
+    if (signal.aborted) return { kind: 'cancelled' };
+    if (recoveryCredentialInstallState.kind === 'installed') {
+      return { kind: 'installed', receipt: recoveryCredentialInstallState.receipt };
+    }
+    if (recoveryCredentialInstallState.kind === 'idle') {
+      const completion = (async (): Promise<RecoveryCredentialInstallOutcome> => {
+        try {
+          const outcome = await performRecoveryCredentialInstall(deps, mintRecoveryCapsule);
+          recoveryCredentialInstallState =
+            outcome.kind === 'installed' ? { kind: 'installed', receipt: outcome.receipt } : { kind: 'idle' };
+          return outcome;
+        } catch (error: unknown) {
+          recoveryCredentialInstallState = { kind: 'idle' };
+          throw error;
+        }
+      })();
+      recoveryCredentialInstallState = { kind: 'installing', completion };
+    }
+    const completion = recoveryCredentialInstallState.completion;
+    const outcome = await untilAbort(completion, signal);
+    return outcome ?? { kind: 'cancelled' };
+  };
+
+  const { authorizeControllerTransfer, registerSuccessionOperation } = createProviderProxySuccessionMethods(
+    deps,
+    installRecoveryCredential,
+  );
+
+  const controlReattachment = createProviderProxyControlReattachment(deps, mintRecoveryCapsule);
+
+  const { providerHosts, release: releaseHostControl } = createProviderProxyHostControl(proxyClient);
 
   const commitContainment = (signal: AbortSignal): Promise<ContainmentCommitOutcome> => {
     // Containment roots must come from the guardian's cumulative enforcer state, never coordinator claims.
@@ -481,58 +694,9 @@ export function createProviderProxySetAuthority(
       return autonomousDeadline;
     },
     controlReattachment,
-    providerHosts: Object.freeze({
-      list: async () => {
-        const params = providerHostListParamsSchema.parse({});
-        const current = controlMethodAvailability(
-          await sendOrRefuse('provider-host.list.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
-        );
-        if (current.kind === 'answered') {
-          return providerHostListResultV2Schema.parse(requireControlResult('provider-host.list.v2', current.exchange))
-            .hosts;
-        }
-        const legacy = await sendOrRefuse('provider-host.list.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
-        return providerHostListResultV1Schema.parse(requireControlResult('provider-host.list.v1', legacy)).hosts;
-      },
-      inspect: async (hostRef) => {
-        const params = providerHostInspectParamsSchema.parse({ hostRef });
-        const current = controlMethodAvailability(
-          await sendOrRefuse('provider-host.inspect.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
-        );
-        if (current.kind === 'answered') {
-          const result = providerHostInspectResultV2Schema.parse(
-            requireControlResult('provider-host.inspect.v2', current.exchange),
-          );
-          return result.state === 'matched' ? result.host : null;
-        }
-        const legacy = await sendOrRefuse('provider-host.inspect.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
-        const result = providerHostInspectResultV1Schema.parse(
-          requireControlResult('provider-host.inspect.v1', legacy),
-        );
-        return result.state === 'matched' ? result.host : null;
-      },
-      terminalEviction: async (hostRef) => {
-        const params = providerHostEvictParamsSchema.parse({ hostRef });
-        const current = controlMethodAvailability(
-          await sendOrRefuse('provider-host.terminal-eviction.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
-        );
-        if (current.kind === 'method-absent') return null;
-        const result = providerHostTerminalEvictionResultV2Schema.parse(
-          requireControlResult('provider-host.terminal-eviction.v2', current.exchange),
-        );
-        return result.state === 'matched' ? result.disposition : null;
-      },
-      evict: async (hostRef) => {
-        const params = providerHostEvictParamsSchema.parse({ hostRef });
-        return providerHostEvictResultV2Schema.parse(
-          requireControlResult(
-            'provider-host.evict.v2',
-            await sendOrRefuse('provider-host.evict.v2', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
-          ),
-        );
-      },
-    }),
+    providerHosts,
     installRecoveryCredential,
+    authorizeControllerTransfer,
     registerSuccessionOperation,
     commitContainment,
     // The coarse compatibility result must not translate either unresolved outcome into completion.
@@ -548,7 +712,7 @@ export function createProviderProxySetAuthority(
       heartbeats.reaper.stop();
     },
     initiateControlClose: async () => {
-      controlReleased = true;
+      releaseHostControl();
       proxyClient.close();
       guardianClient.close();
       reaperClient.close();

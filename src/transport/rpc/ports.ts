@@ -1,7 +1,7 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
-import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
+import type { JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
@@ -26,10 +26,11 @@ import type {
 } from '../../recovery/unreadable-provider-operation.js';
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
+import type { JobDetailLookup, WaitCursorError } from '../../jobs/contracts/addressing.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
-  'prompt' | 'agent' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'retention'
+  'prompt' | 'agent' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'retention' | 'jobId'
 >;
 
 export type WorkflowPortInput = {
@@ -46,19 +47,29 @@ type WorkflowPortResult =
   | { kind: 'invalid_request'; message: string; detail?: unknown };
 
 interface SessionRequestPort {
-  start(providerName: string, input: SessionStartInput, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
+  start(
+    providerName: string,
+    input: SessionStartInput,
+    ctx: InvocationContext,
+    signal?: AbortSignal,
+  ): Promise<ProviderSessionLaunchDecision>;
 }
 
 interface JobsRequestPort {
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
+  validateWait(req: WaitStreamRequest): WaitCursorError | null;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
+
+  waitHandoverSignal(): AbortSignal;
   list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
-  detail(jobId: string): JobDetailResponse | null;
+  detail(jobId: string): JobDetailLookup;
+  unknownJobDisposition(): 'pre-epoch-history' | 'not-found';
+  outcomeUnrecoverable(jobIds: readonly string[]): string[];
 }
 
 interface WorkflowRequestPort {
-  execute(request: WorkflowPortInput, ctx: InvocationContext): Promise<WorkflowPortResult>;
+  execute(request: WorkflowPortInput, ctx: InvocationContext, signal?: AbortSignal): Promise<WorkflowPortResult>;
 }
 
 export interface RecoveryQuarantineRequestPort {
@@ -75,6 +86,7 @@ export interface ProviderHostRequestPort {
   ): Promise<ProviderHostInspectResponse>;
   evict(
     selector: Readonly<{ hostRef: HostRef }> | Readonly<{ workDir: CanonicalWorkDir }>,
+    signal?: AbortSignal,
   ): Promise<ProviderHostEvictResponse>;
 }
 
@@ -96,7 +108,11 @@ export interface KbRequestPort {
   readCommunity(slug: string, principal: Principal): MaybePromise<KbToolResult>;
   listStaleCommunities(principal: Principal): MaybePromise<KbToolResult>;
   readCommunitySummaryInput(slug: string, principal: Principal): MaybePromise<KbToolResult>;
-  setCommunitySummary(args: Record<string, unknown>, ctx?: InvocationContext): Promise<KbToolResult>;
+  setCommunitySummary(
+    args: Record<string, unknown>,
+    ctx?: InvocationContext,
+    signal?: AbortSignal,
+  ): Promise<KbToolResult>;
   readWiki(slug: string, principal: Principal): MaybePromise<KbToolResult>;
   readMemo(slug: string, ctx: InvocationContext): MaybePromise<KbToolResult>;
   readPrinciple(slug: string, principal: Principal): MaybePromise<KbToolResult>;
@@ -104,27 +120,27 @@ export interface KbRequestPort {
   listWikis(principal: Principal): Promise<KbToolResult>;
   listMemos(args: Record<string, unknown>, ctx: InvocationContext): MaybePromise<KbToolResult>;
   listPrinciples(args: Record<string, unknown>, principal: Principal): Promise<KbToolResult>;
-  createNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  updateNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  deleteNote(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
-  createWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  rewriteWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  linkWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  unlinkWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  citeWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  adoptWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  deleteWiki(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
-  wakeUp(args: Record<string, unknown>, principal: Principal): Promise<KbToolResult>;
-  createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
-  deleteSource(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
-  createMemo(args: Record<string, unknown>, ctx: InvocationContext): MaybePromise<KbToolResult>;
-  deleteMemos(args: Record<string, unknown>, ctx: InvocationContext): MaybePromise<KbToolResult>;
-  reindex(request: Record<string, unknown>, ctx?: InvocationContext): Promise<KbToolResult>;
+  createNote(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  updateNote(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  deleteNote(slug: string, ctx?: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  createWiki(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  rewriteWiki(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  linkWiki(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  unlinkWiki(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  citeWiki(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  adoptWiki(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  deleteWiki(slug: string, ctx?: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  wakeUp(args: Record<string, unknown>, principal: Principal, signal?: AbortSignal): Promise<KbToolResult>;
+  createSource(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  deleteSource(slug: string, ctx?: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
+  createMemo(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): MaybePromise<KbToolResult>;
+  deleteMemos(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): MaybePromise<KbToolResult>;
+  reindex(request: Record<string, unknown>, ctx?: InvocationContext, signal?: AbortSignal): Promise<KbToolResult>;
 }
 
 interface DiscussRequestPort {
   seed(args: unknown): DiscussToolResult;
-  start(args: Record<string, unknown>, ctx: InvocationContext): Promise<DiscussToolResult>;
+  start(args: Record<string, unknown>, ctx: InvocationContext, signal?: AbortSignal): Promise<DiscussToolResult>;
   listSessions(): DiscussSummaryDto[];
   loadDetail(
     projectRoot: string,

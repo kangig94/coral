@@ -6,7 +6,7 @@ import {
   holdStoreEpochLockUntilClose,
   resolveCurrentStore,
   type ResolvedStorePath,
-} from './epoch.js';
+} from './epoch/index.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import type { ReadonlyDatabase } from './read-types.js';
 
@@ -27,6 +27,11 @@ type OpenReadOnlyStoreOptions = {
 
 export function asReadonlyDatabase(db: Database): ReadonlyDatabase {
   return db as unknown as ReadonlyDatabase;
+}
+
+/** A read-only connection must refuse writes even when rebound to a full `Database` handle. */
+export function asDatabase(db: ReadonlyDatabase): Database {
+  return db as unknown as Database;
 }
 
 export function openReadOnlyStoreDatabase(

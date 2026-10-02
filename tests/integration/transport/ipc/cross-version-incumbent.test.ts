@@ -22,12 +22,12 @@ import { createRealTimePort } from '#src/infra/time.js';
 import type { ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import { lifecycleRefusalResult } from '#src/transport/lifecycle-refusal.js';
 import { IpcLifecycleRefusal } from '#src/transport/ipc/client.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS } from '#src/infra/shutdown-contract.js';
 import {
   ensure,
   issueWithSuccessorAfterLifecycleRefusal,
   mayInvocationBeServedByIncumbent,
   mayProcessReplaceIncumbent,
-  HANDOFF_DRAIN_TIMEOUT_MS,
   type RawCoordinatorHealth,
 } from '#src/transport/ipc/ensure.js';
 import {

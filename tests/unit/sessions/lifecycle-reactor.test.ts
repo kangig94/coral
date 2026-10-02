@@ -12,7 +12,7 @@ import type { TerminalWriteOptions } from '#src/jobs/contracts/job-store.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
@@ -2023,7 +2023,7 @@ describe('LifecycleReactor retention enforcement', () => {
     const launchCoordinator = new LaunchCoordinator({ runtime: harness.runtime });
     const recoveryService = new RecoveryService({
       runtime: harness.runtime,
-      childPrincipalRegistry: new ChildPrincipalRegistry(harness.runtime.ids),
+      childPrincipalRegistry: testChildPrincipalRegistry(harness.runtime.ids),
       parentPrincipal: testProjectPrincipal(harness.projectRoot),
       sessionManager: harness.sessionManager,
       abortRegistry: {

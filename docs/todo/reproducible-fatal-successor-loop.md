@@ -10,7 +10,7 @@ A successor coordinator discovers the previous coordinator's handoff capsule and
 `#recoverExactCapsule` (`src/coordinator/services/provider-proxy-set/index.ts`). If the guardian answers out
 of contract — the same corrupt, refused, or unknown evidence that made the previous coordinator declare its
 judgement void — `retireFatal` (`src/coordinator/services/provider-proxy-recovery-policy.ts`) reaches
-`onProviderProxyLifecycleFatal` (`src/coordinator/composition/index.ts`), which starts a
+`onProviderProxyLifecycleFatal` (`src/coordinator/composition/execution-assembly.ts`), which starts a
 `provider-proxy-lifecycle-fatal` shutdown. That shutdown is handoff: it leaves the capsule where the next
 coordinator will find it. The next CLI command spawns a successor, which reads the same capsule, asks the same
 guardian, and gets the same answer.

@@ -78,6 +78,77 @@ function formatBackendStatus(status: BackendStatusFull): string {
   return formatComposedBackendStatus(status, { kind: 'absent' }, null);
 }
 
+it('shows lost launch diagnostics and the platform limit on parent retirement', () => {
+  const status = formatBackendStatus({
+    status: 'no_record_no_socket',
+    launchStatusProblem: 'previous-status-unavailable',
+    launchSignalHolds: [{ launchId: 'parent:321', pid: 321, incarnation: 'unavailable' }],
+  });
+  expect(status).toContain('Previous coordinator launch status is unavailable');
+  expect(status).toContain('Parent supervisor 321');
+  expect(status).toContain('macOS');
+  expect(status).toContain('cooperation or proven exit');
+});
+
+it('shows the custody quarantine path and retry action in backend status', () => {
+  expect(
+    formatBackendStatus({
+      status: 'no_record_no_socket',
+      launchHold: { kind: 'custody-unreadable', path: '/run/custody/entry', retry: 'restore-readable-custody-record' },
+    }),
+  ).toContain('unreadable custody at /run/custody/entry');
+  expect(
+    formatBackendStatus({
+      status: 'no_record_no_socket',
+      launchHold: { kind: 'no-eligible-build', controller: 'unknown', retry: 'controller-evidence-change' },
+    }),
+  ).toContain('retries when custody, transfer, or process evidence changes');
+});
+
+it('renders every launch hold with its identity and exit condition', () => {
+  const statuses: BackendStatusFull['launchHold'][] = [
+    { kind: 'target-indeterminate', requestId: 'request-1' },
+    { kind: 'inherited-child-unresponsive', launchId: 'launch-1', pid: 321 },
+  ];
+  const target = formatBackendStatus({ status: 'no_record_no_socket', launchHold: statuses[0] });
+  expect(target).toContain('request-1');
+  expect(target).toContain('retries');
+  const inherited = formatBackendStatus({ status: 'no_record_no_socket', launchHold: statuses[1] });
+  expect(inherited).toContain('launch-1');
+  expect(inherited).toContain('PID 321');
+  expect(inherited).toContain('cooperation or confirmed absence');
+  expect(inherited).not.toContain('command=');
+});
+
+it('reports failed observer restoration with a next-trigger retry while service continues', () => {
+  const status = formatBackendStatus({
+    status: 'no_record_no_socket',
+    launchHold: {
+      kind: 'observation-unavailable',
+      requestId: 'request-1',
+      observation: 'observer-acknowledgement-timed-out',
+      retry: 'next-trigger',
+    },
+  });
+  expect(status).toContain('request-1');
+  expect(status).toContain('observer-acknowledgement-timed-out');
+  expect(status).toContain('next CLI or hook invocation retries');
+  expect(status).toContain('serving coordinator remains available');
+});
+
+it('reports inherited child holds without suggesting a second startup', () => {
+  const status = formatBackendStatus({
+    status: 'no_record_no_socket',
+    launchInheritedHolds: [
+      { launchId: 'launch-1', pid: 321 },
+      { launchId: 'attempt-2', pid: 322 },
+    ],
+  });
+  expect(status).toContain('launch-1');
+  expect(status).toContain('attempt-2');
+  expect(status).not.toContain('Run the start command below');
+});
+
 const runningDecision = {
   kind: 'provider-session',
   launchState: 'running',
@@ -320,6 +391,26 @@ describe('cli format', () => {
 
     it('formats a result with both aborted and missing jobs', () => {
       expect(formatAbortResult(mixedAbortResult)).toBe('Aborted jobs: job-1\nNot found: job-9');
+    });
+
+    it('formats a mixed abort with a possible pre-epoch job as a final refusal', () => {
+      expect(
+        formatAbortResult({
+          aborted: ['job-1'],
+          notFound: [],
+          refused: [
+            {
+              jobId: 'possible-flat',
+              reason: 'job_pre_epoch_history',
+              nextStep: 'A job that ran in the flat store has no details here. Do not retry.',
+            },
+          ],
+        }),
+      ).toBe(
+        'Aborted jobs: job-1\n' +
+          'Pre-epoch history may contain possible-flat; this build cannot read it.\n' +
+          'Next step: A job that ran in the flat store has no details here. Do not retry.',
+      );
     });
 
     it('formats a held abort with its reason and next step', () => {

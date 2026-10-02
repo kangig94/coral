@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { hashToken } from '#src/infra/hash.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { DiscoveryWriterRuntime } from '#src/infra/backend-discovery.js';
 
@@ -27,6 +28,7 @@ const tempRoots: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
+  vi.unstubAllEnvs();
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -365,11 +367,165 @@ describe('coordinator discovery', () => {
       kind: 'record',
       record: { namespace: 'ns-d', token: 'token-d', storeEpoch: '7' },
     });
+
+    writeFileSync(infoPath, JSON.stringify({ ...written, sentinel: { version: 2, id: 'future' } }), 'utf-8');
+    expect(readDiscoveryRecordDisposition(runtime)).toMatchObject({
+      kind: 'record',
+      record: { namespace: 'ns-d', token: 'token-d', sentinel: undefined },
+    });
   });
 
   // The most common state of all, and it had no test: nothing had ever read a discovery file that simply is
   // not there. Every `missing` in this suite came from a mocked disposition, so the `ENOENT` guard could be
   // deleted — turning "no coordinator has recorded itself" into a throw — with the suite green.
+  function writeLegacyOnlyRecord(overrides: Record<string, unknown> = {}): void {
+    const paths = coordinatorPaths('prod');
+    mkdirSync(dirname(paths.legacyInfoFile), { recursive: true });
+    writeFileSync(
+      paths.legacyInfoFile,
+      JSON.stringify({
+        pid: process.pid,
+        port: 4312,
+        socketPath: paths.legacySocketPath,
+        bundleHash: 'bundle-legacy',
+        flavor: 'prod',
+        namespace: 'ns-legacy',
+        startedAt: 1_713_456_789_000,
+        token: 'token-legacy',
+        bootToken: 'boot-token-legacy',
+        version: '0.10.3',
+        instanceId: 'legacy-instance',
+        ...overrides,
+      }),
+      'utf-8',
+    );
+  }
+
+  // A legacy record says nothing trustworthy beyond the address it names: a stale one outlives its writer, and its
+  // pid is reused. Read as the coordinator, it skips startup recovery and tells a serving coordinator it was
+  // replaced.
+  it('does not read a legacy-only record as the coordinator', async () => {
+    makeHome();
+    writeLegacyOnlyRecord();
+    const { probeCoordinator, readBackendInfo } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    expect(probeCoordinator(runtime)).toEqual({ kind: 'absent' });
+    expect(readBackendInfo(runtime)).toBeNull();
+  });
+
+  it('reads a legacy-only record as the holder of the legacy address it names', async () => {
+    makeHome();
+    writeLegacyOnlyRecord();
+    const { probeCoordinatorAtAddress } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    expect(probeCoordinatorAtAddress(runtime, coordinatorPaths('prod').legacySocketPath)).toMatchObject({
+      kind: 'live',
+      record: { instanceId: 'legacy-instance', bootToken: 'boot-token-legacy' },
+    });
+    expect(probeCoordinatorAtAddress(runtime, coordinatorPaths('prod').socketPath)).toEqual({ kind: 'absent' });
+  });
+
+  it('reads a live legacy holder despite a stale primary record for another address', async () => {
+    makeHome();
+    writeLegacyOnlyRecord();
+    const { probeCoordinatorAtAddress, writeDiscoveryRecord } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+    writeDiscoveryRecord(
+      {
+        pid: process.pid,
+        port: 4313,
+        socketPath: coordinatorPaths('prod').socketPath,
+        bundleHash: 'stale-bundle',
+        flavor: 'prod',
+        namespace: 'stale-namespace',
+        startedAt: 1_713_456_789_001,
+        token: 'stale-token',
+        bootToken: 'stale-boot-token',
+      },
+      runtime,
+    );
+
+    expect(probeCoordinatorAtAddress(runtime, coordinatorPaths('prod').legacySocketPath)).toMatchObject({
+      kind: 'live',
+      record: { instanceId: 'legacy-instance', bootToken: 'boot-token-legacy' },
+    });
+  });
+
+  // Shipped v0.10.0-v0.10.3 readers of the legacy record never send the shutdown token, so the mirror has no reason
+  // to carry a credential beyond what those readers use.
+  it('mirrors the legacy record without the shutdown token', async () => {
+    makeHome();
+    const { writeBackendInfo } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    writeBackendInfo(
+      {
+        pid: process.pid,
+        port: 4312,
+        socketPath: coordinatorPaths('prod').socketPath,
+        host: '127.0.0.1',
+        bundleHash: 'bundle-a',
+        flavor: 'prod',
+        namespace: 'ns-a',
+        startedAt: 1_713_456_789_000,
+        token: 'token-a',
+        bootToken: 'boot-token-a',
+        shutdownToken: 'shutdown-token-a',
+        version: '1.2.3',
+        instanceId: 'instance-a',
+      },
+      runtime,
+    );
+
+    const legacy = JSON.parse(readFileSync(coordinatorPaths('prod').legacyInfoFile, 'utf-8')) as Record<
+      string,
+      unknown
+    >;
+    expect(legacy).toMatchObject({ socketPath: coordinatorPaths('prod').legacySocketPath, bootToken: 'boot-token-a' });
+    expect(legacy).not.toHaveProperty('shutdownToken');
+  });
+
+  it.each(['configured', 'system'] as const)(
+    'publishes the v0.10.0 fallback socket for a long state root using the %s temp directory',
+    async (tempSource) => {
+      const home = makeHome();
+      mockState.home = join(home, 'long'.repeat(30));
+      const configuredTemp = join(home, 'configured-temp');
+      vi.stubEnv('TMPDIR', tempSource === 'configured' ? configuredTemp : undefined);
+      const { writeBackendInfo } = await importDiscovery();
+      const runtime = makeDiscoveryRuntime('prod');
+      const paths = coordinatorPaths('prod');
+      const candidate = paths.legacySocketPath;
+      expect(Buffer.byteLength(candidate, 'utf8')).toBeGreaterThanOrEqual(108);
+
+      expect(
+        writeBackendInfo(
+          {
+            pid: process.pid,
+            port: 4312,
+            socketPath: paths.socketPath,
+            host: '127.0.0.1',
+            bundleHash: 'bundle-a',
+            flavor: 'prod',
+            namespace: 'ns-a',
+            startedAt: 1_713_456_789_000,
+            token: 'token-a',
+            bootToken: 'boot-token-a',
+            version: '1.2.3',
+            instanceId: 'instance-a',
+          },
+          runtime,
+        ),
+      ).toBe(true);
+
+      const legacy = JSON.parse(readFileSync(paths.legacyInfoFile, 'utf-8')) as { socketPath: string };
+      const temp = tempSource === 'configured' ? configuredTemp : tmpdir();
+      expect(legacy.socketPath).toBe(join(temp, `coral-prod-${hashToken(candidate, 8)}.sock`));
+    },
+  );
+
   it('reads an absent discovery file as missing, not as a failure', async () => {
     makeHome();
     const { readDiscoveryRecordDisposition } = await importDiscovery();

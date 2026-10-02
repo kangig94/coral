@@ -13,19 +13,21 @@ import {
 import { formatStoreEpochReport, formatStoreResetList } from '#src/cli/format/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import { compareAndSwapUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   discardCurrentStoreEpoch,
   epochPath,
+  listStoreEpochs,
   listStoreEpochHolders,
   settleStoreEpoch,
   storeEpochHolderPath,
   sweepStoreEpochs,
-} from '#src/store/epoch.js';
+} from '#src/store/epoch/index.js';
 import { releaseStoreReset as releaseStoreResetWithSocketGuard } from '#src/store/operator-store-reset.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
+import { authorizeFixtureStoreMint, openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
 const storeFormat = currentCoralStoreFormat();
@@ -153,7 +155,7 @@ describe('store-reset operator epochs', () => {
 
   it('refuses only the current epoch', async () => {
     const runtime = harness();
-    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
     opened.db.close();
 
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: opened.store.epoch })).resolves.toMatchObject({
@@ -162,20 +164,169 @@ describe('store-reset operator epochs', () => {
     });
   });
 
-  it('releases a preserved epoch and reports an absent epoch', async () => {
+  it('keeps a protected epoch outside numeric release selection', async () => {
     const runtime = harness();
-    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
     opened.db.close();
-    const discarded = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+    const discarded = discardCurrentStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
     discarded.db.close();
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
-      kind: 'released',
+      kind: 'absent',
       epoch: '1',
     });
+    expect(listStoreEpochs(runtime).find((entry) => entry.epoch === '1')?.role).toBe('protected');
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '99' })).resolves.toMatchObject({
       kind: 'absent',
       epoch: '99',
     });
+  });
+
+  it('lists distinct protected and legacy-root lineages with the same epoch number and their holds', async () => {
+    const runtime = harness();
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
+    opened.db.close();
+    const successor = discardCurrentStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
+    successor.db.close();
+    publishEpoch(runtime.paths.coral.store.dbDir, '1');
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      quarantineRoot: () => join(runtime.paths.coral.store.dbDir, 'store-reset-quarantine'),
+      runtime: () => runtime,
+    };
+
+    const listed = listStoreResetIncidentsLocal('gen2', dependencies);
+    const twins = listed.epochs.filter((epoch) => epoch.epoch === '1');
+    expect(twins).toHaveLength(2);
+    expect(new Set(twins.map((epoch) => epoch.epochKey)).size).toBe(2);
+    expect(twins.map((epoch) => epoch.role).sort()).toEqual(['preserved', 'protected']);
+    const rendered = formatStoreResetList(listed, 'gen2');
+    for (const epoch of twins) {
+      expect(rendered).toContain(epoch.epochKey);
+    }
+    expect(rendered).toContain('Result retention');
+    expect(rendered).toContain('the coordinator retries when custody settles or its evidence changes');
+    expect(rendered).not.toContain('store-reset release');
+    await expect(reportStoreResetLocal('gen2', '1', dependencies)).rejects.toMatchObject({
+      code: 'store_reset_epoch_ambiguous',
+    });
+    for (const epoch of twins.filter((twin) => typeof twin.epochKey === 'string')) {
+      await expect(reportStoreResetLocal('gen2', String(epoch.epochKey), dependencies)).resolves.toMatchObject({
+        kind: 'epoch',
+        epoch: { epochKey: epoch.epochKey },
+      });
+    }
+  });
+
+  it('keeps mapped protected epochs visible when the legacy root is absent', () => {
+    const runtime = harness();
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
+    opened.db.close();
+    const successor = discardCurrentStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
+    successor.db.close();
+    rmSync(runtime.paths.coral.store.dbDir, { recursive: true });
+
+    const protectedEpoch = listStoreEpochs(runtime).find((entry) => entry.role === 'protected');
+    expect(protectedEpoch).toMatchObject({ epoch: '1', closureDisposition: 'pending' });
+    expect(protectedEpoch?.epochKey).toMatch(/^[0-9a-f-]{36}:1$/);
+  });
+
+  it('retains an unreadable mapped epoch under its full key', () => {
+    const runtime = harness();
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
+    opened.db.close();
+    const successor = discardCurrentStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
+    successor.db.close();
+    const protectedEpoch = listStoreEpochs(runtime).find((entry) => entry.role === 'protected');
+    expect(protectedEpoch?.resolved).not.toBeNull();
+    const key = protectedEpoch!.epochKey;
+    rmSync(dirname(protectedEpoch!.resolved!.path), { recursive: true });
+
+    expect(listStoreEpochs(runtime).find((entry) => entry.epochKey === key)).toMatchObject({
+      role: 'unobservable',
+      closureDisposition: 'unrecoverable-retained',
+      custodyState: 'undecidable',
+    });
+    const rendered = formatStoreResetList(
+      {
+        epochs: listStoreEpochs(runtime),
+        holders: [],
+        residues: [],
+        legacyIncidents: [],
+        truncated: false,
+      },
+      'gen2',
+    );
+    expect(rendered).toContain('terminal quarantine: epoch address cannot be verified');
+    expect(rendered).toContain('the coordinator re-inspects it for closure or unrecoverable retention');
+  });
+
+  it('shows the durable pending upgrade in the store listing without offering a release', async () => {
+    const runtime = harness();
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'upgrade-1',
+      incumbent: {
+        instanceId: 'legacy-1',
+        pid: 4242,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'legacy-hash',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: '/installed/new' },
+      attemptId: null,
+      attemptOwner: null,
+      disposition: 'deferred',
+      blockers: [{ owner: 'jobs', reason: 'job-1 is still running' }],
+      retryCondition: { kind: 'incumbent-retirement', evidence: 'legacy idle exit' },
+      attemptDeadline: null,
+      completionReceipt: null,
+    });
+    expect(written.kind).toBe('written');
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      quarantineRoot: () => join(runtime.paths.coral.store.dbDir, 'store-reset-quarantine'),
+      runtime: () => runtime,
+    };
+    const rendered = formatStoreResetList(listStoreResetIncidentsLocal('gen2', dependencies), 'gen2');
+    expect(rendered).toContain('Pending upgrade:');
+    expect(rendered).toContain('Target:');
+    expect(rendered).toContain('job-1 is still running');
+    expect(rendered).toContain('normally at least 6 hours');
+    expect(rendered).not.toContain('store-reset release');
+  });
+
+  it('shows an unreadable upgrade intent as a hold', () => {
+    const runtime = harness();
+    mkdirSync(runtime.paths.coral.coordinator.runDir, { recursive: true });
+    writeFileSync(join(runtime.paths.coral.coordinator.runDir, 'upgrade.v1.json'), '{invalid');
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      quarantineRoot: () => join(runtime.paths.coral.store.dbDir, 'store-reset-quarantine'),
+      runtime: () => runtime,
+    };
+    const rendered = formatStoreResetList(listStoreResetIncidentsLocal('gen2', dependencies), 'gen2');
+    expect(rendered).toContain('Upgrade intent record is corrupt');
+    expect(rendered).toContain('the coordinator durably quarantines the upgrade intent record');
+    expect(rendered).toContain('the next recorded upgrade request can then proceed');
   });
 
   it('reports current, preserved, garbage, and malformed epochs without opening SQLite', async () => {
@@ -332,7 +483,7 @@ describe('store-reset operator epochs', () => {
     expect(sweepStoreEpochs(reusedRuntime, dbDir, '5')).toBe('complete');
     expect(observations).toBe(0);
     expect(existsSync(holderPath)).toBe(false);
-    expect(existsSync(epochPath(dbDir, '1'))).toBe(false);
+    expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
   });
 
   it('clears a malformed holder through release and succeeds on retry', async () => {
@@ -348,7 +499,7 @@ describe('store-reset operator epochs', () => {
     });
     expect(existsSync(holderPath)).toBe(false);
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
-      kind: 'released',
+      kind: 'release-closure-required',
     });
   });
 });

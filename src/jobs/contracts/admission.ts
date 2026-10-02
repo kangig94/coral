@@ -56,6 +56,13 @@ type AdmittedHandle = {
 export type AdmissionResult = AdmittedHandle | QueuedHandle | 'queue_full';
 export type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
 
+export class SuccessionAdmissionPausedError extends Error {
+  constructor() {
+    super('Launch admission is paused during succession. Retry shortly.');
+    this.name = 'SuccessionAdmissionPausedError';
+  }
+}
+
 export type LaunchReservationView =
   | Readonly<{
       kind: 'queued';
@@ -159,7 +166,13 @@ export interface SettlementRefusalRecorder {
 }
 
 export interface JobAdmissionPort {
-  requestLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): AdmissionResult;
+  requestLaunch(
+    jobId: string,
+    provider: string,
+    executionOwner: ExecutionOwner,
+    pool: LaunchPool,
+    acceptedWork?: boolean,
+  ): AdmissionResult;
   releaseLaunch(permit: LaunchPermit): LaunchRelease;
 }
 

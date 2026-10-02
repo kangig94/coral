@@ -91,10 +91,14 @@ export interface RpcMethodSpec<Req, _Res> {
   };
 }
 
-export type RequestBindingRule = {
-  readonly kind: 'projectRoot';
-  readonly projectRoot: 'required' | 'optional-all-projects';
-};
+export type RequestBindingRule =
+  | {
+      readonly kind: 'projectRoot';
+      readonly projectRoot: 'required' | 'optional-all-projects';
+    }
+  | { readonly kind: 'corpus' };
+
+const CORPUS_READ = { kind: 'corpus' } as const satisfies RequestBindingRule;
 
 export const recoveryQuarantineClearRequestSchema = z
   .object({
@@ -794,6 +798,7 @@ export const rpcCatalog = [
     name: 'kb.entries.search',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbEntriesRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -803,6 +808,7 @@ export const rpcCatalog = [
     name: 'kb.diagnose',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbDiagnoseRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -812,6 +818,7 @@ export const rpcCatalog = [
     name: 'kb.note.read',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbNoteReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -848,6 +855,7 @@ export const rpcCatalog = [
     name: 'kb.source.list',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbSourceListRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -857,6 +865,7 @@ export const rpcCatalog = [
     name: 'kb.source.read',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbSourceReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -884,6 +893,7 @@ export const rpcCatalog = [
     name: 'kb.wiki.list',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbWikiListRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -893,6 +903,7 @@ export const rpcCatalog = [
     name: 'kb.wiki.read',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbWikiReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -974,6 +985,7 @@ export const rpcCatalog = [
     name: 'kb.community.read',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbCommunityReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -983,6 +995,7 @@ export const rpcCatalog = [
     name: 'kb.community.list-stale',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbCommunityListStaleRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -992,6 +1005,7 @@ export const rpcCatalog = [
     name: 'kb.community.summary-input',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbCommunitySummaryInputRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -1046,6 +1060,7 @@ export const rpcCatalog = [
     name: 'kb.principles.list',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbPrinciplesListRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -1055,6 +1070,7 @@ export const rpcCatalog = [
     name: 'kb.principle.read',
     kind: 'unary',
     requires: 'kb:read',
+    requestBinding: CORPUS_READ,
     requestSchema: kbPrincipleReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',

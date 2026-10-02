@@ -22,7 +22,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ACTIVE_STORE_SELECTION_VERSION } from '#src/store/active-store-selection.js';
 import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
-import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
+import { authorizeFixtureStoreMint, openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import {
   formatLegacyGenerationIgnoredNotice,
   generationMutationCoordinationSeam,
@@ -59,6 +59,7 @@ async function openGeneratedStore(runtime: Runtime): Promise<void> {
   roots.push(bundleDir);
   const result = await coordinateActiveStoreSelection(runtime, {
     storeFormat: STORE_FORMAT,
+    authorizeMint: authorizeFixtureStoreMint,
     currentSelection: {
       version: ACTIVE_STORE_SELECTION_VERSION,
       manifest: build,

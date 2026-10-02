@@ -16,6 +16,7 @@ import { buildErrorEnvelope } from '#src/cli/errors.js';
 import { formatAbortResult, formatLaunch } from '#src/cli/format/jobs.js';
 import { formatWaitProgress, formatWaitQueued, formatWaitTerminal } from '#src/cli/format/wait.js';
 import { BackendUnreachableError } from '#src/infra/http-errors.js';
+import { BackendToolHttpError } from '#src/transport/http/errors.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
@@ -50,6 +51,7 @@ function makeBackend(instanceId = 'backend-1') {
     port: 4100,
     token: 'backend-token',
     version: '0.5.2',
+    jobsWaitExtensions: ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'],
     request: vi.fn(),
     subscribe: mockState.subscribe,
     health: vi.fn(),
@@ -372,6 +374,8 @@ describe('cli follow', () => {
         timeoutSeconds: 590,
         projectRoot: '/project/root',
         supportsInterrupted: true,
+        supportsWaitV2: true,
+        supportsHandover: true,
       },
       {
         timeoutMs: 3_000,
@@ -666,6 +670,48 @@ describe('cli follow', () => {
     });
   });
 
+  it('resubscribes with the current cursor after a handover notice, without spending a retry', async () => {
+    const { followJobs } = await loadFollowModule();
+    const progressEvent = makeProgressEvent('Before handover');
+    const terminalEvent = makeTerminalEvent({}, { seq: 2 });
+    const emitError = vi.fn();
+    const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+    const handedOver = {
+      close: vi.fn().mockResolvedValue(undefined),
+      [Symbol.asyncIterator]: async function* (): AsyncGenerator<unknown> {
+        yield progressEvent;
+        yield { type: 'handover' };
+      },
+    };
+    const connect = vi
+      .fn()
+      .mockResolvedValueOnce({ kind: 'subscription', subscription: handedOver })
+      .mockResolvedValueOnce({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          yield terminalEvent;
+        }),
+      });
+
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1'] },
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project/root',
+      emitError,
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect,
+      backoffScheduler,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(emitError).not.toHaveBeenCalled();
+    expect(backoffScheduler).not.toHaveBeenCalled();
+    expect(handedOver.close).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(connect.mock.calls[1]?.[0]).toMatchObject({ jobIds: ['job-1'], cursor: { afterSeq: 1 } });
+  });
+
   it('retries transient stream failures with a 1s backoff and resumes from the current cursor', async () => {
     const { launchAndFollow } = await loadFollowModule();
     const options = makeOptions();
@@ -702,6 +748,93 @@ describe('cli follow', () => {
     expect(backoffScheduler).toHaveBeenCalledWith(1_000);
     expect(mockState.ensure).toHaveBeenCalledTimes(2);
     expect(mockState.subscribe).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves the other epoch position when reconnecting a mixed wait', async () => {
+    const { followJobs } = await loadFollowModule();
+    const locations = { 'job-1': 'lineage-old:7', 'job-2': 'lineage-new:8' };
+    const progressCursor = {
+      version: 'jobs.wait.v2' as const,
+      locations,
+      positions: { 'lineage-old:7': 4, 'lineage-new:8': 2 },
+      deliveredJobIds: [],
+    };
+    const terminalCursor = {
+      ...progressCursor,
+      positions: { 'lineage-old:7': 4, 'lineage-new:8': 3 },
+      deliveredJobIds: ['job-2'],
+    };
+    const progress = { ...makeProgressEvent(), seq: 4, epochKey: 'lineage-old:7', cursor: progressCursor };
+    const terminal = makeTerminalEvent(
+      {},
+      {
+        jobId: 'job-2',
+        seq: 3,
+        epochKey: 'lineage-new:8',
+        cursor: terminalCursor,
+        remainingJobIds: ['job-1'],
+      },
+    );
+    const connect = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          yield progress;
+          throw new TypeError('terminated');
+        }),
+      })
+      .mockResolvedValueOnce({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          yield terminal;
+        }),
+      });
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project/root',
+      emitError: vi.fn(),
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect,
+      backoffScheduler: async () => undefined,
+    });
+    expect(exitCode).toBe(75);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(connect.mock.calls[1]?.[0].cursor).toEqual(progressCursor);
+    expect(stdout).toContain('Job job-2 completed');
+  });
+
+  it('retries a shipped bare cursor without a cursor after an epoch-required error', async () => {
+    const { followJobs } = await loadFollowModule();
+    const terminal = makeTerminalEvent({}, { jobId: 'job-1', remainingJobIds: [] });
+    const connect = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new BackendToolHttpError('Retry without a cursor', 400, {
+          code: 'wait_cursor_epoch_required',
+          message: 'Retry without a cursor',
+        }),
+      )
+      .mockResolvedValueOnce({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          yield terminal;
+        }),
+      });
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1'], serializedCursor: serializeWaitCursor({ afterSeq: 7 }) },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project/root',
+      emitError: vi.fn(),
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect,
+    });
+    expect(exitCode).toBe(0);
+    expect(connect.mock.calls[0]?.[0].cursor).toEqual({ afterSeq: 7 });
+    expect(connect.mock.calls[1]?.[0].cursor).toBeUndefined();
   });
 
   it('retries a malformed recognized wait event twice, then emits authored upgrade and resume guidance', async () => {

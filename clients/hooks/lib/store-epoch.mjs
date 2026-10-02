@@ -1,4 +1,4 @@
-// Generated from src/store/epoch.ts by scripts/build-server.mjs. Do not edit directly.
+// Generated from src/store/epoch/hook-source.ts by scripts/build-server.mjs. Do not edit directly.
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -73,6 +73,16 @@ function isRegularFile(path, device) {
   }
 }
 
+function hasRetirementAttempt(root, entry) {
+  const marker = join(root.path, entry, '.retirement-attempt.v1.json');
+  try {
+    const observed = lstatSync(marker, { bigint: true });
+    return observed.isFile() && observed.nlink === 1n && observed.dev === root.device;
+  } catch (error) {
+    return errorCode(error) !== 'ENOENT';
+  }
+}
+
 function resolveStoreRoot(dbDir) {
   const path = realpathSync(dbDir);
   const entry = lstatSync(path, { bigint: true });
@@ -116,7 +126,6 @@ function isPublishedEpoch(root, name) {
 }
 
 export function resolveCurrentStoreDbPath(dbDir) {
-  let current = null;
   try {
     lstatSync(dbDir);
   } catch (error) {
@@ -125,15 +134,16 @@ export function resolveCurrentStoreDbPath(dbDir) {
   }
   const root = resolveStoreRoot(dbDir);
   const entries = readdirSync(root.path);
-  for (const entry of entries) {
+  const published = entries.filter((entry) => epochNumber(entry) !== null && isPublishedEpoch(root, entry));
+  const epochs = new Set(published.map((entry) => epochNumber(entry)));
+  let current = null;
+  for (const entry of published) {
     const epoch = epochNumber(entry);
     if (
-      epoch !== null &&
-      (current === null || BigInt(epoch) > BigInt(current)) &&
-      isPublishedEpoch(root, entry)
-    ) {
-      current = epoch;
-    }
+      hasRetirementAttempt(root, entry) &&
+      epochs.has((BigInt(epoch) - 1n).toString())
+    ) continue;
+    if (current === null || BigInt(epoch) > BigInt(current)) current = epoch;
   }
   if (current === null) return null;
   return join(root.path, 'epoch-' + current, 'store.db');

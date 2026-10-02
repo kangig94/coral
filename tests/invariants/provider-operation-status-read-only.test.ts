@@ -184,18 +184,43 @@ function parsedStatusResultObject(handler: StatusMethodEntry['handler']): ts.Obj
 
 describe('operation.status.v1 is structurally read-only', () => {
   it('keeps the cancellation hold getter inside a read-only call allowlist', () => {
+    const source = parse(SEMANTIC_RUNNER_FILE);
+    const factory = source.statements.find(
+      (statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === 'createSemanticOperationHost',
+    );
+    expect(factory).toBeDefined();
+    if (factory === undefined) return;
+    expect(factory.parameters.at(-1)?.name.getText()).toBe('cancellationHold');
+
+    let forwardedGetter: ts.ObjectLiteralElementLike | undefined;
+    const findForwardedGetter = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText() === 'host' &&
+        node.initializer !== undefined &&
+        ts.isObjectLiteralExpression(node.initializer)
+      ) {
+        forwardedGetter = node.initializer.properties.find((property) => propertyName(property) === 'cancellationHold');
+      }
+      ts.forEachChild(node, findForwardedGetter);
+    };
+    findForwardedGetter(factory);
+    expect(forwardedGetter?.getText()).toBe('cancellationHold');
+
     let getter: ts.ArrowFunction | undefined;
     const visit = (node: ts.Node): void => {
       if (
-        ts.isPropertyAssignment(node) &&
-        propertyName(node) === 'cancellationHold' &&
-        ts.isArrowFunction(node.initializer)
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'createSemanticOperationHost'
       ) {
-        getter = node.initializer;
+        const argument = node.arguments[factory.parameters.length - 1];
+        if (argument !== undefined && ts.isArrowFunction(argument)) getter = argument;
       }
       ts.forEachChild(node, visit);
     };
-    visit(parse(SEMANTIC_RUNNER_FILE));
+    visit(source);
     expect(getter).toBeDefined();
     if (getter === undefined) return;
     expect(readOnlyViolations(getter, new Set(['operationKeyString']), new Set(['operationKeyString']))).toEqual([]);

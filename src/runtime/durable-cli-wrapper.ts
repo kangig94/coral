@@ -4,6 +4,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { observeProcessLiveness, probeProcessIncarnation } from '../infra/node-process.js';
+import {
+  bindCustodyProcessTicket,
+  CUSTODY_PROCESS_TICKET_ENV,
+  custodyProcessArgument,
+  parseCustodyProcessTicket,
+} from '../infra/custody-process-ticket.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
 import {
   gracefulKill,
@@ -11,8 +17,10 @@ import {
   type GracefulKillPendingDisposition,
 } from '../infra/process-supervision.js';
 import { createRealTimePort } from '../infra/time.js';
+import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
 
 const GROUP_FINALIZER_MODE = '--finalize-group';
+const PROVIDER_HOST_MODE = '--provider-host';
 const GROUP_OBSERVATION_INTERVAL_MS = 50;
 const GROUP_OBSERVATION_TIMEOUT_MS = 1_000;
 const GROUP_FINALIZER_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
@@ -574,6 +582,33 @@ function createContainedGroupSettlement(
   return { begin, requestTermination };
 }
 
+function bindDurableWrapperCustodyTicket(): void {
+  const custodyTicket = process.env[CUSTODY_PROCESS_TICKET_ENV];
+  if (custodyTicket !== undefined) {
+    const ticket = parseCustodyProcessTicket(custodyTicket);
+    if (process.argv.at(-1) !== custodyProcessArgument(ticket.processToken)) {
+      throw new Error('Durable wrapper process token does not match its ticket.');
+    }
+    const incarnation = probeProcessIncarnation(process.pid, process.platform);
+    if (incarnation === null) throw new Error('Durable wrapper could not bind its custody incarnation.');
+    bindCustodyProcessTicket(ticket, { pid: process.pid, incarnation }, Date.now());
+    delete process.env[CUSTODY_PROCESS_TICKET_ENV];
+  }
+}
+
+function closeDurableWrapperOutputFiles(stdoutFd: number, stderrFd: number): void {
+  try {
+    closeSync(stdoutFd);
+  } catch {
+    // Output-close failure must not prevent process-group settlement.
+  }
+  try {
+    closeSync(stderrFd);
+  } catch {
+    // Output-close failure must not prevent process-group settlement.
+  }
+}
+
 async function runWrapper(payloadPath: string | undefined): Promise<void> {
   if (process.platform === 'win32') {
     throw new Error(
@@ -581,6 +616,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     );
   }
   if (payloadPath === undefined) throw new Error('Durable wrapper requires a launch payload path.');
+  bindDurableWrapperCustodyTicket();
   const launch = parseLaunchPayload(payloadPath);
   const jobDir = dirname(payloadPath);
   const env = JSON.parse(readFileSync(join(jobDir, 'env.json'), 'utf8')) as NodeJS.ProcessEnv;
@@ -595,18 +631,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   const publicationGateTermination = new AbortController();
   let terminationStarted = false;
 
-  const closeOutputFiles = (): void => {
-    try {
-      closeSync(stdoutFd);
-    } catch {
-      // Output-close failure must not prevent process-group settlement.
-    }
-    try {
-      closeSync(stderrFd);
-    } catch {
-      // Output-close failure must not prevent process-group settlement.
-    }
-  };
+  const closeOutputFiles = (): void => closeDurableWrapperOutputFiles(stdoutFd, stderrFd);
 
   const groupSettlement = createContainedGroupSettlement(time, closeOutputFiles, () => terminationRequested);
 
@@ -690,10 +715,44 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   childStdin.end();
 }
 
+function runProviderHost(command: string | undefined, args: string[]): void {
+  if (command === undefined) throw new Error('Provider host wrapper requires a command.');
+  const value = process.env[CUSTODY_PROCESS_TICKET_ENV];
+  if (value === undefined) throw new Error('Provider host wrapper requires a custody ticket.');
+  const ticket = parseCustodyProcessTicket(value);
+  if (args.at(-1) !== custodyProcessArgument(ticket.processToken)) {
+    throw new Error('Provider host wrapper process token does not match its ticket.');
+  }
+  const incarnation = probeProcessIncarnation(process.pid, process.platform);
+  if (incarnation === null) throw new Error('Provider host wrapper could not bind its custody incarnation.');
+  bindCustodyProcessTicket(ticket, { pid: process.pid, incarnation }, Date.now());
+  delete process.env[CUSTODY_PROCESS_TICKET_ENV];
+  delete process.env.CORAL_CUSTODY_EPOCH;
+  let child: ReturnType<typeof spawn> | null = null;
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
+    process.on(signal, () => {
+      child?.kill(signal);
+    });
+  }
+  child = spawn(command, args.slice(0, -1), {
+    stdio: 'inherit',
+    env: process.env,
+    shell: shouldUseWindowsCommandShell(command, process.platform),
+  });
+  child.once('error', () => {
+    process.exitCode = 1;
+  });
+  child.once('exit', (code, signal) => {
+    process.exitCode = code ?? (signal === null ? 1 : 128);
+  });
+}
+
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [modeOrPayloadPath, processGroupIdArgument, exitArgument] = process.argv.slice(2);
   if (modeOrPayloadPath === GROUP_FINALIZER_MODE) {
     runGroupFinalizer(processGroupIdArgument, exitArgument);
+  } else if (modeOrPayloadPath === PROVIDER_HOST_MODE) {
+    runProviderHost(processGroupIdArgument, process.argv.slice(4));
   } else {
     void runWrapper(modeOrPayloadPath);
   }

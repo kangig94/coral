@@ -1189,6 +1189,20 @@ describe('ProviderOperationReconciler publication', () => {
     expect(harness.startupOwnership.binding.reservationFor(settlement.operation.jobId)).toBeNull();
   });
 
+  it('reports a removed settled row only after the row is gone', async () => {
+    const settlement = providerOperationRecord('settlement-pending');
+    const rowsAtRemoval: unknown[] = [];
+    const harness = createHarness({
+      onRecordRemoved: () => rowsAtRemoval.push(readProviderOperation(harness.db, settlement.operation)),
+    });
+    insertProviderOperation(harness.db, settlement);
+
+    await harness.reconciler.reconcile(settlement, harness.authority);
+
+    expect(readProviderOperation(harness.db, settlement.operation)).toBeNull();
+    expect(rowsAtRemoval).toEqual([null]);
+  });
+
   it('retains a settled durable row when binding settlement is refused', async () => {
     const harness = createHarness({
       binding: (source) => ({
@@ -2355,6 +2369,7 @@ describe('ProviderOperationReconciler publication', () => {
       proxyInstanceId: capsule.proxyInstanceId,
       operations: [],
       orphanTimeoutMs: capsule.orphanTimeoutMs,
+      controllerBuild: { generation: capsule.generation, flavor: capsule.flavor, buildSetId: capsule.buildSetId },
     });
 
     // This is the only remote effect left by the dead coordinator: the full tuple landed, then its
@@ -2384,6 +2399,7 @@ describe('ProviderOperationReconciler publication', () => {
           pid: 999,
           incarnation: testIncarnation(999),
         },
+        successorBuild: { generation: capsule.generation, flavor: capsule.flavor, buildSetId: capsule.buildSetId },
         binding: {
           generation: capsule.generation,
           flavor: capsule.flavor,
@@ -3727,5 +3743,44 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
       expect(releaseEffects, `release/${fault}: remote prestart release effect was applied more than once`).toBe(1);
     }
     expectFaultInvariant(harness, state, 'release', fault);
+  });
+});
+
+describe('provider operation poll across succession park', () => {
+  it('keeps parked polls paced and stops permanently on shutdown', async () => {
+    const timers = new Set<{ callback: () => void; delayMs: number; unref: () => void }>();
+    const h = createHarness({
+      time: {
+        setTimeout: (callback, delayMs) => {
+          const timer = { callback, delayMs, unref() {} };
+          timers.add(timer);
+          return timer;
+        },
+        clearTimeout: (timer) => {
+          timers.delete(timer as { callback: () => void; delayMs: number; unref: () => void });
+        },
+      },
+    });
+    try {
+      h.reconciler.start();
+      expect(providerOperationMutationAdmission(h.db).close().kind).toBe('drained');
+      for (let turn = 0; turn < 3; turn++) {
+        expect(timers.size).toBe(1);
+        const [timer] = timers;
+        timers.delete(timer);
+        timer.callback();
+        const [next] = timers;
+        expect(next.delayMs).toBeGreaterThan(0);
+      }
+      h.reconciler.stop();
+      expect(timers.size).toBe(0);
+      acquireProviderOperationMutationAdmission(h.db, 'reclaimed-writer');
+      h.reconciler.wake();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(timers.size).toBe(0);
+    } finally {
+      h.reconciler.stop();
+      h.db.close();
+    }
   });
 });

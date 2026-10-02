@@ -29,26 +29,9 @@ import {
 import { fitAdditionalContext, truncateUtf8 } from './lib/additional-context.mjs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
-import {
-  projectIgnoreOutcomeNotice,
-  renderProjectIgnoreResultNotices,
-} from './lib/project-ignore/notices.mjs';
+import { projectIgnoreOutcomeNotice, renderProjectIgnoreResultNotices } from './lib/project-ignore/notices.mjs';
 import { isProjectIgnoreResult } from './lib/project-ignore/result.mjs';
-import {
-  LOCK_CONFLICT_EXIT_CODE,
-  LOCK_UNAVAILABLE_EXIT_CODE,
-  SPAWN_TIMEOUT_MS,
-} from './lib/project-ignore/arena.mjs';
-
-// Unconditionally spawn coral-backend on session start. The daemon's own
-// socket-as-lock contention is the single source of truth for staleness:
-//   - matching incumbent (same bundle/flavor/namespace) -> new daemon throws
-//     BackendAlreadyRunningError and exits without touching the live process
-//   - mismatching bundle -> bindWithHandoff sends transport.shutdown and the
-//     new daemon takes over the bound socket
-// Letting the daemon's contention layer decide keeps the hook free of
-// bundle/flavor comparison logic that would otherwise drift from the daemon's
-// `requestIncumbentShutdown` decision.
+import { LOCK_CONFLICT_EXIT_CODE, LOCK_UNAVAILABLE_EXIT_CODE, SPAWN_TIMEOUT_MS } from './lib/project-ignore/arena.mjs';
 
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
@@ -78,11 +61,6 @@ function coordinatorRunDir(flavor = buildFlavor(), stateRoot = coralStateRoot())
 }
 
 function spawnBackend(pluginRoot) {
-  // Match `src/infra/path/coordinator.ts:coordinatorPaths(...)`: the daemon
-  // reads/writes coordinator.json here, so its stderr log belongs alongside
-  // the same runDir. Sharing the path with `src/transport/ipc/ensure.ts`'s
-  // CLI-side spawn keeps logs unified across both spawn entry points and
-  // benefits from the same rotation discipline.
   const runDir = coordinatorRunDir();
 
   const backendBin = join(pluginRoot, 'bridge', 'coral-backend.cjs');
@@ -98,11 +76,15 @@ function spawnBackend(pluginRoot) {
     // to this spawn. Every minter of this variable draws from one namespace in which no two attempts may
     // collide, so it has to be unique across processes without coordination — `randomUUID` is CSPRNG-backed
     // and satisfies that. See `spawnCoordinator` in `src/transport/ipc/ensure.ts`.
-    const child = spawn(process.execPath, [backendBin], {
+    const sentinel = join(pluginRoot, 'bridge', 'coral-sentinel.cjs');
+    if (!existsSync(sentinel)) return;
+    const child = spawn(process.execPath, [sentinel, backendBin], {
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
-      env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID() },
+      env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID(), CORAL_SENTINEL_RUN_DIR: runDir },
     });
+
+    child.on('error', () => {});
     child.unref();
   } catch {}
 }
@@ -127,27 +109,10 @@ function recordsCauseAndNextStep(error) {
   );
 }
 
-// The spawn above is detached, so this hook never learns whether it worked, and a
-// failure has until now been invisible: the daemon writes a diagnostic and exits,
-// the hook fails open, and the session proceeds as if Coral were healthy.
-//
-// The notice deliberately does not claim the backend is currently down. It cannot
-// know: the spawn issued moments ago has not had time to bind, so no daemon is
-// answering yet on every session start, and nothing ever deletes the diagnostic.
-// Predicting from those signals is wrong exactly on the recovery path — someone
-// who just fixed the cause would be told it is still broken.
-//
-// The recency and liveness filters remain, as noise control rather than proof: an
-// answering daemon or an old diagnostic means the report is not worth making.
-//
-// The notice may point only at what this hook itself observed: the diagnostic file, and the fields it
-// read out of that file. Naming a command instead promises an answer that depends on evidence this hook
-// does not have. The same rule bounds the pointer's own claim — the file is said to hold a cause and a
-// next step only because both were observed in it, and a record missing either is not reported at all.
 function readRecentStartupFailureNotice(runDir) {
   const diagnosticFile = join(runDir, 'startup-diagnostic.json');
   try {
-    if (isCoordinatorAlive(runDir) !== false) return null;
+    const coordinatorAlive = isCoordinatorAlive(runDir);
     const diagnostic = JSON.parse(readFileSync(diagnosticFile, 'utf-8'));
     if (diagnostic?.schemaVersion !== 1) return null;
     if (diagnostic.state !== 'stopped_with_diagnostic' || diagnostic.retryable !== false) return null;
@@ -165,6 +130,12 @@ function readRecentStartupFailureNotice(runDir) {
       !STARTUP_FAILURE_CODE_PATTERN.test(code)
     ) {
       return null;
+    }
+    const deferredUpgrade =
+      code === 'handoff_shutdown_capability_rejected' || code === 'handoff_shutdown_credential_unavailable';
+    if (coordinatorAlive !== false && !deferredUpgrade) return null;
+    if (deferredUpgrade) {
+      return 'Coral backend: an older contender deferred its upgrade while the incumbent continues serving. Coral will retry the upgrade automatically when its recorded conditions change.';
     }
     if (!recordsCauseAndNextStep(error)) return null;
     return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. It may already be resolved.\nError code: ${code}\nThe failed attempt recorded the cause and the next step at ${diagnosticFile}.`;
@@ -220,8 +191,7 @@ try {
 
   const host = hostKind();
 
-  const scopedDiscarded =
-    ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction?.state === 'removed';
+  const scopedDiscarded = ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction?.state === 'removed';
   const migrationPublished = [
     ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction,
     ignoreOutcome.maintenance?.artifacts.rootIgnoreRetraction,
@@ -250,12 +220,9 @@ try {
         : null;
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
   const fixedContent = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
-  const variableContent = [
-    startupFailureNotice,
-    migrationNotice,
-    legacySweepNotice,
-    ignoreNotice,
-  ].filter(Boolean).join('\n\n');
+  const variableContent = [startupFailureNotice, migrationNotice, legacySweepNotice, ignoreNotice]
+    .filter(Boolean)
+    .join('\n\n');
   const additionalContext = fitAdditionalContext({
     fixedContent,
     variableContent,
@@ -296,10 +263,7 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
     if (result.status === LOCK_CONFLICT_EXIT_CODE) {
       return { outcome: 'maintenance-busy', maintenance: null };
     }
-    if (
-      !result.stdout &&
-      [LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)
-    ) {
+    if (!result.stdout && [LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)) {
       return { outcome: 'maintenance-lock-unavailable', maintenance: null };
     }
     if (!result.stdout) return { outcome: 'no-output', maintenance: null };

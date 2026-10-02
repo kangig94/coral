@@ -42,11 +42,38 @@ export type ShutdownRetainedAuthorityContribution = Readonly<{
   cleanupObligations?: readonly string[];
 }>;
 
-export type ShutdownObligation = SettlementObligation<
+export type ShutdownObligationLabel =
+  | 'inflight drain'
+  | 'server connection close'
+  | `stream response close ${number}`
+  | 'server close'
+  | 'recovery coordinator teardown'
+  | 'ownership checker teardown'
+  | 'kb child shutdown'
+  | 'provider operation mutation drain'
+  | 'store services availability check'
+  | 'provider host shutdown'
+  | 'pending launch settlement'
+  | 'child termination'
+  | 'crashed job terminalization'
+  | 'app-server handoff quiesce'
+  | 'provider host drain for handoff'
+  | 'components disposeAll'
+  | 'hooks.onShutdown'
+  | 'discuss store dispose'
+  | 'process incarnation probe shutdown'
+  | 'lifecycle reactor dispose'
+  | 'store epoch sweep cancellation'
+  | 'succession attempt settlement'
+  | 'succession connection handover'
+  | `provider proxy lifecycle fatal incident${'' | ` ${number}`}`;
+
+export type ShutdownObligation<Label extends string = ShutdownObligationLabel> = SettlementObligation<
   UndischargedRemainder,
   ShutdownRetainedAuthorityContribution,
   ShutdownRemainderSubject
->;
+> &
+  Readonly<{ label: Label }>;
 
 export type ShutdownAuthorityReleaseBoundary = SettlementAuthorityReleaseBoundary<
   ShutdownRetainedAuthorityContribution,
@@ -54,7 +81,7 @@ export type ShutdownAuthorityReleaseBoundary = SettlementAuthorityReleaseBoundar
   ShutdownHoldExit
 >;
 
-export type ShutdownSettlementLedger = SettlementLedger<
+type BaseShutdownSettlementLedger = SettlementLedger<
   UndischargedRemainder,
   ShutdownRetainedAuthorityContribution,
   ShutdownRetainedAuthority,
@@ -64,6 +91,14 @@ export type ShutdownSettlementLedger = SettlementLedger<
   ShutdownUndischarged,
   ShutdownRemainderSubject
 >;
+
+export type ShutdownSettlementLedger<Label extends string = ShutdownObligationLabel> = Omit<
+  BaseShutdownSettlementLedger,
+  'run'
+> &
+  Readonly<{
+    run: (obligation: ShutdownObligation<Label>) => ReturnType<BaseShutdownSettlementLedger['run']>;
+  }>;
 
 export type ShutdownSettlementLedgerOptions = Readonly<{
   budgetMs: number;
@@ -124,7 +159,9 @@ function acceptProcessExitRemainder(
   return null;
 }
 
-export function createShutdownSettlementLedger(options: ShutdownSettlementLedgerOptions): ShutdownSettlementLedger {
+export function createShutdownSettlementLedger<Label extends string = ShutdownObligationLabel>(
+  options: ShutdownSettlementLedgerOptions,
+): ShutdownSettlementLedger<Label> {
   const accept = options.acceptProcessExitRemainder;
   return new SettlementLedger<
     UndischargedRemainder,

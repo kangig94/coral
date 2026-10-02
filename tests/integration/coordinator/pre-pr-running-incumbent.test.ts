@@ -15,9 +15,8 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from '#src/transport/ipc/json-rpc.js';
-import { probeProcessIncarnation } from '#src/infra/node-process.js';
+import { createRealTimePort } from '#src/infra/time.js';
 import { bindWithHandoff } from '#src/coordinator/handoff.js';
-import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { IncumbentMatchesError, type IncumbentHealth, type IncumbentIdentity } from '#src/transport/ipc/handoff.js';
 import { backendLog } from '#src/infra/backend-log.js';
@@ -69,206 +68,48 @@ afterEach(async () => {
 });
 
 describe('pre-PR running incumbent (R6)', () => {
-  it('HAPPY: contender reads verified discovery, sends transport.shutdown, incumbent exits, contender binds', async () => {
-    const socketPath = makeSocketPath('happy');
-    let shutdownReceived = false;
-    let server: NetServer | null = null;
-    server = await startScriptedIncumbent(socketPath, async (req) => {
-      if (req.method === 'transport.ping') {
-        return {
-          kind: 'response',
-          id: req.id,
-          result: {
-            bundleHash: 'old',
-            version: '0.8.7',
-            flavor: 'prod',
-            namespace: 'ns',
-            status: 'ok',
-            pid: 9999,
-            incarnation: testIncarnation(1_111_111),
-          } satisfies IncumbentHealth,
-        };
-      }
-      if (req.method === 'transport.shutdown') {
-        shutdownReceived = true;
-        expect(req.auth).toEqual({ kind: 'boot', token: 'boot-token' });
-        expect(req.params).toEqual({});
-        queueMicrotask(() => {
-          server?.close();
-        });
-        return { kind: 'response', id: req.id, result: { status: 'draining' } };
-      }
-      return { kind: 'response', id: req.id, result: null };
+  it('a newer contender concedes to a serving older incumbent without sending shutdown', async () => {
+    const socketPath = makeSocketPath('serving');
+    const methods: string[] = [];
+    const server = await startScriptedIncumbent(socketPath, async (req) => {
+      methods.push(req.method);
+      return {
+        kind: 'response',
+        id: req.id,
+        result: {
+          bundleHash: 'old',
+          version: '0.8.7',
+          flavor: 'prod',
+          namespace: 'ns',
+          status: 'ok',
+          pid: 9999,
+          incarnation: testIncarnation(1_111_111),
+        } satisfies IncumbentHealth,
+      };
     });
-
-    const time = new VirtualTime();
-    let bindCallCount = 0;
-    let socketReleased = false;
-    server.on('close', () => {
-      socketReleased = true;
-    });
-
+    const kill = vi.fn();
     const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
-      time,
-      process: {
-        kill: () => undefined,
-        observeLiveness: () => 'alive' as const,
-        readProcessIncarnation: probeProcessIncarnation,
-      } as unknown as Runtime['process'],
-      env: { platform: () => 'linux' } as unknown as Runtime['env'],
-    };
-
-    const handoffPromise = bindWithHandoff({
-      socketPath,
-      desired: { version: '0.9.1', bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
-      bindAttempt: async () => {
-        bindCallCount += 1;
-        return socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' };
-      },
-      runStartupRecovery: async () => [],
-      runtime,
-      readVerifiedIncumbentFromDiscovery: () => ({
-        pid: 9999,
-        incarnation: testIncarnation(1_111_111),
-        source: 'discovery',
-        instanceId: 'incumbent',
-        token: 'token',
-        bootToken: 'boot-token',
-        shutdownToken: 'shutdown-token',
-      }),
-      totalBudgetMs: 5_000,
-    });
-
-    for (let i = 0; i < 30; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      time.tick(200);
-    }
-
-    const result = await handoffPromise;
-    expect(result.acquiredViaHandoff).toBe(true);
-    expect(shutdownReceived).toBe(true);
-    expect(bindCallCount).toBeGreaterThan(1);
-  }, 15_000);
-
-  it('HAPPY: same version+bundle → IncumbentMatchesError (treat as redundant, not handoff)', async () => {
-    const socketPath = makeSocketPath('compat');
-    await startScriptedIncumbent(socketPath, async (req) => {
-      if (req.method === 'transport.ping') {
-        return {
-          kind: 'response',
-          id: req.id,
-          result: {
-            bundleHash: 'h1',
-            version: '0.9.1',
-            flavor: 'prod',
-            namespace: 'ns',
-            status: 'ok',
-            pid: 1,
-            incarnation: testIncarnation(1),
-          } satisfies IncumbentHealth,
-        };
-      }
-      return { kind: 'response', id: req.id, result: null };
-    });
-
-    const time = new VirtualTime();
-    const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
-      time,
-      process: {
-        kill: () => undefined,
-        observeLiveness: () => 'alive' as const,
-        readProcessIncarnation: probeProcessIncarnation,
-      } as unknown as Runtime['process'],
+      time: createRealTimePort(),
+      process: { kill, observeLiveness: () => 'alive' } as unknown as Runtime['process'],
       env: { platform: () => 'linux' } as unknown as Runtime['env'],
     };
 
     await expect(
       bindWithHandoff({
         socketPath,
-        desired: { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
-        bindAttempt: async () => ({ kind: 'incumbent' as const, reason: 'live-listener' }),
+        desired: { version: '0.9.1', bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
+        bindAttempt: async () => ({ kind: 'incumbent', reason: 'live-listener' }),
         runStartupRecovery: async () => [],
         runtime,
         readVerifiedIncumbentFromDiscovery: () => null,
-        totalBudgetMs: 1_000,
+        totalBudgetMs: 5_000,
       }),
     ).rejects.toBeInstanceOf(IncumbentMatchesError);
-  }, 15_000);
 
-  it('HAPPY: same bundle but older version → shutdown RPC and contender binds', async () => {
-    const socketPath = makeSocketPath('same-bundle-old-version');
-    let shutdownReceived = false;
-    let server: NetServer | null = null;
-    server = await startScriptedIncumbent(socketPath, async (req) => {
-      if (req.method === 'transport.ping') {
-        return {
-          kind: 'response',
-          id: req.id,
-          result: {
-            bundleHash: 'h1',
-            version: '0.8.7',
-            flavor: 'prod',
-            namespace: 'ns',
-            status: 'ok',
-            pid: 2,
-            incarnation: testIncarnation(2),
-          } satisfies IncumbentHealth,
-        };
-      }
-      if (req.method === 'transport.shutdown') {
-        shutdownReceived = true;
-        expect(req.auth).toEqual({ kind: 'boot', token: 'boot-token' });
-        queueMicrotask(() => {
-          server?.close();
-        });
-        return { kind: 'response', id: req.id, result: { status: 'draining' } };
-      }
-      return { kind: 'response', id: req.id, result: null };
-    });
-
-    const time = new VirtualTime();
-    let socketReleased = false;
-    server.on('close', () => {
-      socketReleased = true;
-    });
-
-    const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
-      time,
-      process: {
-        kill: () => undefined,
-        observeLiveness: () => 'alive' as const,
-        readProcessIncarnation: probeProcessIncarnation,
-      } as unknown as Runtime['process'],
-      env: { platform: () => 'linux' } as unknown as Runtime['env'],
-    };
-
-    const handoffPromise = bindWithHandoff({
-      socketPath,
-      desired: { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
-      bindAttempt: async () =>
-        socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' },
-      runStartupRecovery: async () => [],
-      runtime,
-      readVerifiedIncumbentFromDiscovery: () => ({
-        pid: 2,
-        incarnation: testIncarnation(2),
-        source: 'discovery',
-        instanceId: 'old-version-incumbent',
-        token: 'token',
-        bootToken: 'boot-token',
-      }),
-      totalBudgetMs: 5_000,
-    });
-
-    for (let i = 0; i < 30; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      time.tick(200);
-    }
-
-    const result = await handoffPromise;
-    expect(result.acquiredViaHandoff).toBe(true);
-    expect(shutdownReceived).toBe(true);
-  }, 15_000);
+    expect(methods).toEqual(['transport.ping']);
+    expect(server.listening).toBe(true);
+    expect(kill).not.toHaveBeenCalled();
+  });
 
   it('DEGRADED: finalizeInterruptedAppServerJob early-returns with warn when phase is already terminal', async () => {
     // We don't need a full RecoveryService instance — the warn behavior is

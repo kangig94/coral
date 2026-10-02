@@ -782,7 +782,7 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
     expect(harness.renewHolderCheck).toHaveBeenCalled();
   });
 
-  it('reaper-mode: an accelerated check may consume a decisive absence result', async () => {
+  it('reaper-mode: coordinator EOF does not let an accelerated check consume absence', async () => {
     const alive = new Set([CONTAINMENT.pid]);
     const harness = createHarness({
       adoptionInMs: 5_000,
@@ -791,6 +791,28 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
       alive,
       observeHolder: () => Promise.resolve('absent'),
       acceleratedCheckMayAuthorizeAbsence: true,
+      pairingLossObserved: () => false,
+    });
+
+    harness.enforcer.arm();
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 20);
+
+    expect(harness.outcomes).toHaveLength(0);
+    expect(harness.renewHolderCheck).toHaveBeenCalledWith(harness.holderCheckAt);
+    expect(harness.latchTeardown).not.toHaveBeenCalled();
+    expect(alive.has(CONTAINMENT.pid)).toBe(true);
+  });
+
+  it('reaper-mode: pairing loss lets an accelerated check consume a decisive absence result', async () => {
+    const alive = new Set([CONTAINMENT.pid]);
+    const harness = createHarness({
+      adoptionInMs: 5_000,
+      published: true,
+      accelerated: true,
+      alive,
+      observeHolder: () => Promise.resolve('absent'),
+      acceleratedCheckMayAuthorizeAbsence: true,
+      pairingLossObserved: () => true,
     });
 
     harness.enforcer.arm();

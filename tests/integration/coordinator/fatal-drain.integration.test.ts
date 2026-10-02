@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +28,7 @@ import {
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
+import { topLevelCliEnvironment } from '#tests/support/top-level-cli-environment.js';
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
@@ -35,20 +36,10 @@ const FATAL_DRAIN_ACTIONS_FILE = 'fatal-drain-actions.log';
 let successorPid: number | null = null;
 
 function topLevelEnvironment(home: string): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = {
-    ...process.env,
-    HOME: home,
-    TMPDIR: home,
+  return topLevelCliEnvironment(home, {
     CORAL_KB_ENABLE: '0',
     CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000',
-  };
-  delete environment.CORAL_CHILD;
-  delete environment.CORAL_CHILD_PRINCIPAL_HANDLE;
-  delete environment.CORAL_JOB_ID;
-  delete environment.CORAL_SESSION_ID;
-  delete environment.CORAL_CLI_HANDOFF_DELEGATED;
-  delete environment.CORAL_BACKEND_DISABLE_AUTOSTART;
-  return environment;
+  });
 }
 
 /**
@@ -84,9 +75,11 @@ async function buildFatalDrainBackend(fixture: PluginFixture): Promise<string> {
   }
 
   const backendPath = join(bundleDir, 'coral-backend.cjs');
+  // A differently built backend is a different build set; sharing the bridge's id would make both claim one retained root.
+  const buildSetId = randomUUID();
   const embeddedIdentity = {
     version: manifest.version,
-    buildSetId: manifest.buildSetId,
+    buildSetId,
     flavor: manifest.flavor,
     storeFormatFingerprint: manifest.storeFormatFingerprint,
   };
@@ -109,7 +102,7 @@ async function buildFatalDrainBackend(fixture: PluginFixture): Promise<string> {
     },
     define: {
       __VERSION__: JSON.stringify(manifest.version),
-      __BUILD_SET_ID__: JSON.stringify(manifest.buildSetId),
+      __BUILD_SET_ID__: JSON.stringify(buildSetId),
       __BUILD_FLAVOR__: JSON.stringify(manifest.flavor),
       __STORE_FORMAT_FINGERPRINT__: JSON.stringify(manifest.storeFormatFingerprint),
       __IS_CORAL_BACKEND_MAIN__: 'false',
@@ -119,6 +112,7 @@ async function buildFatalDrainBackend(fixture: PluginFixture): Promise<string> {
 
   const testManifest: StrictBundleManifest = {
     ...manifest,
+    buildSetId,
     bundleHash: createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16),
   };
   writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), `${JSON.stringify(testManifest)}\n`, 'utf-8');

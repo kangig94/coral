@@ -1,28 +1,11 @@
-import { isProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
-// Transport-owned IPC handoff helper.
-// Carries no coordinator vocabulary: any caller that wants to ask a peer
-// daemon to step down uses this helper. Lives in transport because the
-// shutdown contract is exactly two IPC methods (`transport.ping`
-// and `transport.shutdown`); there is no coordinator policy here.
-
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { createRealTimePort } from '../../infra/time.js';
 import { compareProductVersions } from '../../infra/product-version.js';
-import { createIpcClient } from './client.js';
+import { createIpcClient, IpcRpcError } from './client.js';
 import type { TimePort } from '../../infra/port-types.js';
 
-/**
- * Identity tuple proving "this incumbent is who it claims to be" — used to
- * gate signal escalation. `pid` alone is insufficient because pids wrap;
- * `incarnation` is an opaque token for one run of one process, compared only
- * for equality (probed via `probeProcessIncarnation`).
- */
 export type IncumbentIdentity = {
   pid: number;
-  /** Absent when the incumbent predates the token. Required to *signal*, and only to signal: it is the one
-   *  piece of identity evidence that predates this contender, so without it a pid recycled before the
-   *  contender ever looked cannot be told from the incumbent. Shutdown over IPC needs no such proof — the
-   *  socket and the boot token are the authority there — so a pre-token incumbent still steps down
-   *  gracefully; it is escalation that stops. */
   incarnation?: ProcessIncarnation;
   source: 'health' | 'discovery';
   instanceId?: string;
@@ -54,13 +37,6 @@ export type IncumbentHealth = {
   instanceId?: string;
 };
 
-/**
- * Raised when the contender concludes the existing incumbent already
- * outranks it — matching flavor/namespace, same-or-newer product version,
- * not draining — and exiting the contender is the correct action.
- * Lifecycle translates this back into the existing `BackendAlreadyRunningError`
- * so bootstrap's "info log + exit 0" path stays unchanged.
- */
 export class IncumbentMatchesError extends Error {
   public readonly identity: DesiredIncumbentIdentity;
   constructor(identity: DesiredIncumbentIdentity) {
@@ -71,28 +47,7 @@ export class IncumbentMatchesError extends Error {
 }
 
 /**
- * Raised when an absolute IPC deadline fires across connect+request+response.
- * Distinct from per-step timeout errors so callers can recognize "the helper
- * gave up because the budget is gone" rather than "the daemon answered but
- * with an error".
- */
-export class IpcDeadlineExceededError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'IpcDeadlineExceededError';
-  }
-}
-
-/**
- * Bundle hashes do not order builds: same-version contenders must not evict the incumbent, and older contenders
- * must not evict a healthy newer incumbent. Namespace does not exempt a pair from that ordering: it differs
- * between any two installed versions, so gating on it would switch this guard off for exactly the pairs it
- * exists to order.
- *
- * Of two contenders racing for one incumbent, at most one may conclude the other side is upgradeable. At equal
- * version neither may, so both defer: an equal-version rebuild with a different bundle hash converges on
- * whichever build bound the socket first instead of alternating SIGTERM/SIGKILL evictions that reset the store
- * on every lap.
+ * Bundle hashes and plugin namespaces do not order versions. Equal versions cannot schedule an upgrade intent.
  */
 export function incumbentOutranksContender(health: IncumbentHealth, desired: DesiredIncumbentIdentity): boolean {
   if (health.version === undefined || health.flavor !== desired.flavor) {
@@ -101,94 +56,18 @@ export function incumbentOutranksContender(health: IncumbentHealth, desired: Des
   return compareProductVersions(desired.version, health.version) <= 0;
 }
 
-function remainingBudget(deadlineMs: number, timePort: TimePort): number {
-  return Math.max(0, deadlineMs - timePort.now());
-}
-
-function isShutdownUnauthorizedError(error: unknown): boolean {
-  if (!(error instanceof Error) || error.cause === null || typeof error.cause !== 'object') {
-    return false;
-  }
-  return (error.cause as Record<string, unknown>).code === 'shutdown_unauthorized';
-}
-
-/**
- * One round-trip with the incumbent over its IPC socket: read `transport.ping`,
- * then if the incumbent is mismatched (or unreachable) request `transport.shutdown`.
- * The whole call is bounded by a single absolute deadline; a connect that
- * succeeds just before the deadline does NOT receive a fresh full timeout.
- *
- * Returns:
- *   - `health`: last non-null health snapshot, or null if never reachable.
- *   - `verifiedIdentity`: pid+incarnation sourced from health, or null.
- *
- * Throws `IncumbentMatchesError` when the incumbent outranks the contender
- * (`incumbentOutranksContender`: matching flavor/namespace, same-or-newer
- * version) and is not draining; the contender treats this as "we are
- * redundant" rather than handoff.
- */
-export async function requestIncumbentShutdown(opts: {
+export async function probeIncumbent(opts: {
   socketPath: string;
-  desired: DesiredIncumbentIdentity;
-  bootToken?: string;
   timeoutMs: number;
   timePort?: TimePort;
-}): Promise<{
-  health: IncumbentHealth | null;
-  verifiedIdentity: IncumbentIdentity | null;
-  shutdownAttempted: boolean;
-  shutdownUnauthorized: boolean;
-}> {
+}): Promise<IncumbentHealth | null> {
   const timePort = opts.timePort ?? createRealTimePort();
-  const client = createIpcClient(
-    opts.socketPath,
-    timePort,
-    typeof opts.bootToken === 'string' && opts.bootToken.length > 0
-      ? { kind: 'boot', token: opts.bootToken }
-      : undefined,
-  );
-  const deadlineMs = timePort.now() + opts.timeoutMs;
-  let health: IncumbentHealth | null = null;
-  let shutdownAttempted = false;
-  let shutdownUnauthorized = false;
-
-  if (remainingBudget(deadlineMs, timePort) > 0) {
-    try {
-      health = await client.ping<IncumbentHealth | null>({
-        timeoutMs: remainingBudget(deadlineMs, timePort),
-      });
-    } catch {
-      // incumbent unresponsive on IPC but socket bound; daemon escalation handles this
-    }
+  const client = createIpcClient(opts.socketPath, timePort);
+  if (opts.timeoutMs <= 0) return null;
+  try {
+    return await client.ping<IncumbentHealth | null>({ timeoutMs: opts.timeoutMs });
+  } catch (error: unknown) {
+    if (error instanceof IpcRpcError && error.code === 'too_many_ipc_connections') throw error;
+    return null;
   }
-
-  if (health && incumbentOutranksContender(health, opts.desired) && health.status !== 'draining') {
-    throw new IncumbentMatchesError(opts.desired);
-  }
-
-  if (typeof opts.bootToken === 'string' && opts.bootToken.length > 0 && remainingBudget(deadlineMs, timePort) > 0) {
-    shutdownAttempted = true;
-    try {
-      await client.shutdown<unknown>({ timeoutMs: remainingBudget(deadlineMs, timePort) });
-    } catch (error: unknown) {
-      if (isShutdownUnauthorizedError(error)) {
-        shutdownUnauthorized = true;
-      }
-      // ignore; incumbent may already be draining or unresponsive
-    }
-  }
-
-  const verifiedIdentity: IncumbentIdentity | null =
-    health && typeof health.pid === 'number' && isProcessIncarnation(health.incarnation)
-      ? {
-          pid: health.pid,
-          incarnation: health.incarnation,
-          source: 'health',
-          ...(typeof health.instanceId === 'string' && health.instanceId.length > 0
-            ? { instanceId: health.instanceId }
-            : {}),
-        }
-      : null;
-
-  return { health, verifiedIdentity, shutdownAttempted, shutdownUnauthorized };
 }

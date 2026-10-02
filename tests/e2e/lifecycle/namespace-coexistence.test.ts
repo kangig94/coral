@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BuildFlavor } from '#src/infra/build-flavor.js';
+import { BUILD_FLAVOR_ENV_KEY, type BuildFlavor } from '#src/infra/build-flavor.js';
 import type { BackendHealth } from '#src/transport/http/backend/health.js';
 import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
@@ -36,6 +36,7 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const sourceBuildDir = join(process.cwd(), 'clients', 'build');
 const sourceBackendBundle = join(sourceBuildDir, 'coral-backend.cjs');
+const sourceSupervisorBundle = join(sourceBuildDir, 'coral-sentinel.cjs');
 const sourceCliBundle = join(sourceBuildDir, 'coral-cli');
 const sourceClaudeAppserverBundle = join(sourceBuildDir, 'coral-claude-appserver.cjs');
 const sourceDurableWrapperBundle = join(sourceBuildDir, 'coral-durable-wrapper.cjs');
@@ -74,6 +75,7 @@ function createPluginFixture(): {
   tempRoots.push(root);
   mkdirSync(join(root, 'bridge'), { recursive: true });
   copyFileSync(sourceBackendBundle, join(root, 'bridge', 'coral-backend.cjs'));
+  copyFileSync(sourceSupervisorBundle, join(root, 'bridge', 'coral-sentinel.cjs'));
   copyFileSync(sourceCliBundle, join(root, 'bridge', 'coral-cli'));
   copyFileSync(sourceClaudeAppserverBundle, join(root, 'bridge', 'coral-claude-appserver.cjs'));
   copyFileSync(sourceDurableWrapperBundle, join(root, 'bridge', 'coral-durable-wrapper.cjs'));
@@ -120,7 +122,7 @@ function createPluginFixture(): {
     {
       cwd: scratchCwd,
       encoding: 'utf-8',
-      env: { ...process.env, ...temporaryHomes.environment(smokeHome) },
+      env: { ...process.env, ...temporaryHomes.environment(smokeHome), [BUILD_FLAVOR_ENV_KEY]: sourceManifest.flavor },
     },
   );
   if (smokeOut.trim() !== 'ok') {

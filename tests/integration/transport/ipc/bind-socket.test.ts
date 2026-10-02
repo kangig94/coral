@@ -270,7 +270,6 @@ describe('closeIpcServer ownership-safe close', () => {
       server: oldServer,
       sockets: new Set(),
       socketPath,
-      onShutdownRequest: null,
     };
     await new Promise<void>((resolve, reject) => {
       oldServer.once('error', reject);
@@ -302,7 +301,6 @@ describe('closeIpcServer ownership-safe close', () => {
       server: oldServer,
       sockets: new Set(),
       socketPath,
-      onShutdownRequest: null,
     });
     expect(newServer.listening).toBe(true);
     const probe = createServer();

@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
@@ -10,6 +13,29 @@ import type { ProviderServerSpec } from '#src/providers/contract.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { readOrCreateEpochKey } from '#src/store/epoch/index.js';
+
+const durableRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of durableRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function durableLaunchFixture(): { runtime: SimulationRuntime; launchCoordinator: LaunchCoordinator } {
+  const root = mkdtempSync(join(tmpdir(), 'coral-provider-transport-'));
+  durableRoots.push(root);
+  const runtime = new SimulationRuntime({ roots: { coralRoot: root } });
+  const storeRoot = runtime.paths.coral.store.dbDir;
+  const epochPath = join(storeRoot, 'epoch-1');
+  // see readOrCreateEpochKey in src/store/epoch/key.ts
+  mkdirSync(epochPath, { recursive: true });
+  writeFileSync(join(epochPath, '.lock'), '');
+  runtime.storage.mkdirSync(epochPath, { recursive: true });
+  readOrCreateEpochKey(runtime, { storeRoot, epoch: '1', path: join(epochPath, 'store.db') });
+  const launchCoordinator = new LaunchCoordinator({ runtime });
+  launchCoordinator.bindActiveEpochPath(epochPath);
+  return { runtime, launchCoordinator };
+}
 
 type ExclusiveProviderServerSpec = Extract<ProviderServerSpec, { leaseMode: 'job-exclusive' }>;
 
@@ -219,15 +245,13 @@ describe('provider transport concurrency hardening', () => {
   });
 
   it('joins a launch in flight and confirms its eventual observed absence', async () => {
-    const runtime = new SimulationRuntime();
+    const { runtime, launchCoordinator } = durableLaunchFixture();
     vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(null);
     runtime.spawner.enqueueDurable({
       pid: 30_001,
       runtimeDelayMs: 5,
       exit: { delayMs: 20, exitCode: 0, signal: null },
     });
-    const launchCoordinator = new LaunchCoordinator({ runtime });
-
     const observed = observePromise(
       launchCoordinator.spawnDurableJob({
         provider: 'codex',
@@ -265,9 +289,8 @@ describe('provider transport concurrency hardening', () => {
   });
 
   it('cleans up through the child root when process-group SIGTERM delivery fails', async () => {
-    const runtime = new SimulationRuntime();
+    const { runtime, launchCoordinator } = durableLaunchFixture();
     runtime.spawner.enqueueDurable({ pid: 30_002, runtimeDelayMs: 0, exit: null });
-    const launchCoordinator = new LaunchCoordinator({ runtime });
     const observed = observePromise(
       launchCoordinator.spawnDurableJob({
         provider: 'codex',

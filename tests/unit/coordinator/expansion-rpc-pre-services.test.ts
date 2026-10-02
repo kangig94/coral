@@ -23,6 +23,7 @@ function makeRuntime(): Runtime {
       existsSync: () => false,
       mkdirSync: () => {},
       readFileSync: () => '',
+      readdirSync: () => [],
       rmSync: () => {},
       writeAtomicDurableSync: () => true,
       writeAtomicSync: () => {},
@@ -51,6 +52,12 @@ function makeRuntime(): Runtime {
     paths: {
       projectSource: (projectRoot: string) => projectRoot,
       coral: {
+        generation: {
+          root: '/tmp/coral-expansion-pre-services',
+          dataRoot: '/tmp/coral-expansion-pre-services/data',
+          legacyDataRoot: '/tmp/coral-expansion-pre-services/legacy',
+          adoptionLock: '/tmp/coral-expansion-pre-services/adoption.lock',
+        },
         coordinator: {
           socketPath: '/tmp/coral-expansion-pre-services.sock',
           runDir: '/tmp',
@@ -171,16 +178,19 @@ describe('expansion RPC before store services exist', () => {
         status: 'equipped',
       },
     });
-    expect(expansionRpc).toHaveBeenCalledWith({
-      method: 'equipExpansion',
-      args: { name: 'vector' },
-      ctx: expect.objectContaining({
-        principal: expect.objectContaining({
-          subject: 'operator',
-          binding: { kind: 'unbound' },
+    expect(expansionRpc).toHaveBeenCalledWith(
+      {
+        method: 'equipExpansion',
+        args: { name: 'vector' },
+        ctx: expect.objectContaining({
+          principal: expect.objectContaining({
+            subject: 'operator',
+            binding: { kind: 'unbound' },
+          }),
         }),
-      }),
-    });
+      },
+      expect.any(AbortSignal),
+    );
   });
 
   it.each([

@@ -77,6 +77,20 @@ describe('readIdentityCheckedAuthenticatedHealth', () => {
     expect(decode).toHaveBeenCalledWith(reply);
   });
 
+  it('clips an authenticated health probe to the caller remaining budget', async () => {
+    mockState.health.mockResolvedValue({});
+    const { readIdentityCheckedAuthenticatedHealth } = await import('#src/transport/ipc/health.js');
+    await readIdentityCheckedAuthenticatedHealth(
+      discovery(),
+      '/tmp/coral.sock',
+      identity(),
+      timePort,
+      () => ({ health: {}, identity: identity() }),
+      17,
+    );
+    expect(mockState.health).toHaveBeenCalledWith({ timeoutMs: 17 });
+  });
+
   it('accepts later health incarnation when the production discovery writer could not publish one', async () => {
     let published = '';
     expect(

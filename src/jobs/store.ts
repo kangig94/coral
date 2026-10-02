@@ -68,6 +68,7 @@ export type JobStoreOptions = {
    */
   providers: ProviderLookupPort;
   observer?: PostCommitObserver;
+  beforeAppend?: (input: ResolvableCoralEventInput<unknown, unknown>) => void;
 };
 
 export type RawJobRecoveryProjection = {
@@ -433,6 +434,7 @@ export class JobStore implements JobProgressStore {
       reducers,
       bodyCodec: this.bodyCodec,
       providers: options.providers,
+      beforeAppend: options.beforeAppend,
     };
     this.commitEvents = (cb) => commitJournalEvents(this.db, cb, appendContext);
     this.commitUnreadableStatusRecoveryEvents = (jobId, cb) =>
@@ -831,6 +833,11 @@ export class JobStore implements JobProgressStore {
       return undefined;
     });
     return appended[0]?.seq ?? 0;
+  }
+
+  /** Only durable job-stream events may be announced to in-process listeners and waiters. */
+  announceCommitted(appended: readonly AppendedEvent[]): void {
+    this.publishAppendedEvents(appended, new Map());
   }
 
   commitUnreadableStatusRecovery(

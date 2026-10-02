@@ -122,6 +122,19 @@ describe('/health typed shape (AC10a)', () => {
     expect(parseBackendHealth(HEALTHY_BASE)?.health).not.toHaveProperty('shutdown');
   });
 
+  it('should drop an undecodable succession field without rejecting the health payload', () => {
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      succession: { requestId: 'request-1', disposition: 'a-later-disposition', phase: 'pending' },
+      successionProblem: 'a-later-problem',
+    });
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.health).not.toHaveProperty('succession');
+    expect(parsed?.health).not.toHaveProperty('successionProblem');
+    expect(parsed?.health.instanceId).toBe(HEALTHY_BASE.instanceId);
+  });
+
   it('keeps the health payload readable when the shutdown envelope is unsupported', () => {
     const parsed = parseBackendHealth({
       ...HEALTHY_BASE,

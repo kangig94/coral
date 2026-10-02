@@ -1,8 +1,14 @@
 import { backendLog } from '../infra/backend-log.js';
+import {
+  CUSTODY_PROCESS_TICKET_ENV,
+  custodyProcessArgument,
+  parseCustodyProcessTicket,
+} from '../infra/custody-process-ticket.js';
+import { durableWrapperEntrypoint } from '../runtime/wrapper-entrypoint.js';
+import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
 import { errorMessage } from '../infra/error-format.js';
 import { buildJsonRpcError } from '../infra/json-rpc.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -212,6 +218,8 @@ export type SpawnProviderServerOptions = {
   cwd?: string;
   extraEnv?: Record<string, string>;
   exactEnv?: Record<string, string>;
+  custodyTicket?: string;
+  onCustodyIdentified?: (pid: number, incarnation: ProcessIncarnation) => void;
   signal?: AbortSignal;
   initializeRequest?: {
     method: string;
@@ -582,14 +590,36 @@ async function spawnProviderServerProcess(
   }
 
   const command = options.command;
-  const child = runtime.process.spawn({
-    command,
-    args: options.args,
-    cwd: options.cwd === '' ? undefined : options.cwd,
-    shell: shouldUseWindowsCommandShell(command, runtime.env.platform()),
-    ...(options.exactEnv ? { env: options.exactEnv } : { envAdditions: options.extraEnv }),
-    ...(params.detached === undefined ? {} : { detached: params.detached }),
-  });
+  const custody =
+    options.custodyTicket === undefined
+      ? null
+      : { ticket: options.custodyTicket, processToken: parseCustodyProcessTicket(options.custodyTicket).processToken };
+  const child = runtime.process.spawn(
+    custody === null
+      ? {
+          command,
+          args: options.args,
+          cwd: options.cwd === '' ? undefined : options.cwd,
+          shell: shouldUseWindowsCommandShell(command, runtime.env.platform()),
+          ...(options.exactEnv ? { env: options.exactEnv } : { envAdditions: options.extraEnv }),
+          ...(params.detached === undefined ? {} : { detached: params.detached }),
+        }
+      : {
+          command: process.execPath,
+          args: [
+            durableWrapperEntrypoint(),
+            '--provider-host',
+            command,
+            ...options.args,
+            custodyProcessArgument(custody.processToken),
+          ],
+          cwd: options.cwd === '' ? undefined : options.cwd,
+          ...(options.exactEnv
+            ? { env: { ...options.exactEnv, [CUSTODY_PROCESS_TICKET_ENV]: custody.ticket } }
+            : { envAdditions: { ...options.extraEnv, [CUSTODY_PROCESS_TICKET_ENV]: custody.ticket } }),
+          ...(params.detached === undefined ? {} : { detached: params.detached }),
+        },
+  );
   const processGroupCleanup =
     params.detached === true && typeof child.pid === 'number' ? retainSpawnedProcessGroupCleanup(child) : null;
   const processSettlement = createProviderProcessSettlement(
@@ -616,6 +646,25 @@ async function spawnProviderServerProcess(
     );
   }
   const pid = child.pid;
+  let incarnation: ProcessIncarnation | null = null;
+  if (options.onCustodyIdentified !== undefined) {
+    try {
+      incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+    } catch {
+      incarnation = null;
+    }
+  }
+  if (options.onCustodyIdentified !== undefined && incarnation !== null) {
+    try {
+      options.onCustodyIdentified(pid, incarnation);
+    } catch (error: unknown) {
+      return settleFailedProviderServerSpawn(
+        processSettlement,
+        runtime,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
+  }
   pipes.stdout.setEncoding('utf8');
   pipes.stderr.setEncoding('utf8');
 

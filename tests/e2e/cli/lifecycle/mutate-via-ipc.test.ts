@@ -23,7 +23,7 @@ import { CoralStore } from '#src/read-model/coral-store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { resolveCurrentStore } from '#src/store/epoch.js';
+import { resolveCurrentStore } from '#src/store/epoch/index.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { assertLifecycleBundleSetFresh } from '#tests/support/bundle-build-freshness.js';
@@ -33,6 +33,7 @@ import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js'
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
+const SOURCE_SUPERVISOR_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-sentinel.cjs');
 const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli');
 const SOURCE_CLAUDE_APPSERVER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-claude-appserver.cjs');
 const SOURCE_DURABLE_WRAPPER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-durable-wrapper.cjs');
@@ -224,6 +225,7 @@ function createFixture(): Fixture {
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(binDir, { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
+  copyFileSync(SOURCE_SUPERVISOR_BUNDLE, join(root, 'bridge', 'coral-sentinel.cjs'));
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli'));
   // The coordinator validates its whole adjacent build set at startup, so the
   // Claude appserver bundle must be present or boot aborts on build identity.
@@ -275,6 +277,8 @@ function startCliCommand(fixture: Fixture, args: readonly string[]): CliRun {
   const {
     CORAL_CHILD: _coralChild,
     CORAL_CHILD_PRINCIPAL_HANDLE: _childPrincipal,
+    CORAL_CHILD_CREDENTIAL_ID: _childCredentialId,
+    CORAL_CHILD_CREDENTIAL_KEY: _childCredentialKey,
     CORAL_JOB_ID: _coralJobId,
     CORAL_SESSION_ID: _coralSessionId,
     ...topLevelEnv

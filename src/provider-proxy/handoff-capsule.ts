@@ -6,12 +6,14 @@ import { z } from 'zod';
 
 import { readBoundedFileAtIdentity } from '../infra/bounded-file-read.js';
 import {
+  providerHandoffCapsuleFileSuffix,
   providerHandoffCapsulePath,
   type ProviderBootstrapCapsulePathOptions,
   type ProviderProxyEndpointIdentity,
 } from '../infra/path/index.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { sameControlTenancyHolder, type ControlTenancyHolder } from './control-endpoint.js';
+import { sameControllerBuild, type ControllerBuild, type ControllerTransferParams } from './controller-succession.js';
 import {
   PERMISSION_BITS_MASK,
   ProxyControlProtocolError,
@@ -264,21 +266,8 @@ function durableProcessIncarnation() {
 }
 
 /**
- * Shipped in v0.10.6 through v0.10.8, and read-only from here on: nothing writes a V2 again.
- *
- * Its three process fields are **seconds**, derived as `/proc/stat` btime plus the process's start ticks.
- * That derivation was unsound — btime is recomputed on every read, so the value is an identity plus a
- * probe-time noise sample — which is why V3 exists. The numbers are kept in the schema exactly as they
- * shipped rather than renamed in place, because a build that renames a field while keeping its version
- * number leaves two incompatible shapes claiming to be the same thing, and the reader that then rejects
- * one of them cannot boot at all.
- *
- * A decoded V2 yields **address only**. Its seconds must never be carried into a `ProcessIncarnation`:
- * `assertProcessIdentity` (`infra/process-containment.ts`) accepts any non-empty string, so `String(secs)`
- * would pass, and `observeProcessIdentity` would then compare it against a real token, take the
- * "read something, and it differs" branch, and report a **live** process as absent — minting a
- * disappearance receipt for a running set. `providerProxySetIdentityFromCapsule` therefore accepts V3
- * alone, and the compiler is what keeps that true.
+ * V2 process fields are seconds, not incarnation tokens; carrying them into `ProcessIncarnation` could report a
+ * live process as absent.
  */
 export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   .omit({ version: true })
@@ -295,7 +284,7 @@ export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
   })
   .strict();
 
-/** V2's field set with the process identity carried as opaque incarnation tokens. The only shape written now. */
+/** V3 capsules are read-only; writers must emit V4. */
 export const handoffCapsuleV3Schema = handoffCapsuleV1Schema
   .omit({ version: true })
   .extend({
@@ -311,10 +300,23 @@ export const handoffCapsuleV3Schema = handoffCapsuleV1Schema
   })
   .strict();
 
+/**
+ * After transfer, a capsule must name the build whose coordinators its grant authorizes; host provenance alone
+ * cannot establish controller authority.
+ */
+export const handoffCapsuleV4Schema = handoffCapsuleV3Schema
+  .omit({ version: true })
+  .extend({
+    version: z.literal(4),
+    controllerBuildSetId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+  })
+  .passthrough();
+
 export const handoffCapsuleSchema = z.discriminatedUnion('version', [
   handoffCapsuleV1Schema,
   handoffCapsuleV2Schema,
   handoffCapsuleV3Schema,
+  handoffCapsuleV4Schema,
 ]);
 
 /**
@@ -337,7 +339,7 @@ export const SUPPORTED_HANDOFF_CAPSULE_VERSIONS = handoffCapsuleSchema.options.m
  * aborting startup. Taking the value from the schema makes that mismatch a compile error instead: the writer
  * is typed on the same schema, so the two move together or neither moves.
  */
-export const CURRENT_HANDOFF_CAPSULE_VERSION = handoffCapsuleV3Schema.shape.version.value;
+export const CURRENT_HANDOFF_CAPSULE_VERSION = handoffCapsuleV4Schema.shape.version.value;
 
 /**
  * Where a capsule this build writes goes — and the only address a writer is offered.
@@ -355,10 +357,35 @@ export function currentHandoffCapsulePath(
   return providerHandoffCapsulePath(identity, CURRENT_HANDOFF_CAPSULE_VERSION, options);
 }
 
+/**
+ * A rewrite must use the current-generation address; older builds cannot parse current-generation bytes at an
+ * older address.
+ */
+export function currentHandoffCapsulePathBeside(
+  path: string,
+  readVersion: RedeemableHandoffCapsule['version'],
+): string {
+  if (readVersion === CURRENT_HANDOFF_CAPSULE_VERSION) return path;
+  const readName = `.${providerHandoffCapsuleFileSuffix(readVersion)}`;
+  if (!path.endsWith(readName)) {
+    throw new HandoffCapsuleError(
+      'handoff_capsule_non_canonical_path',
+      `Handoff capsule ${path} is not named for its generation.`,
+    );
+  }
+  return `${path.slice(0, -readName.length)}.${providerHandoffCapsuleFileSuffix(CURRENT_HANDOFF_CAPSULE_VERSION)}`;
+}
+
 export type HandoffCapsuleV1 = z.output<typeof handoffCapsuleV1Schema>;
 export type HandoffCapsuleV2 = z.output<typeof handoffCapsuleV2Schema>;
 export type HandoffCapsuleV3 = z.output<typeof handoffCapsuleV3Schema>;
-export type HandoffCapsule = HandoffCapsuleV1 | HandoffCapsuleV2 | HandoffCapsuleV3;
+export type HandoffCapsuleV4 = z.output<typeof handoffCapsuleV4Schema>;
+export type HandoffCapsule = HandoffCapsuleV1 | HandoffCapsuleV2 | HandoffCapsuleV3 | HandoffCapsuleV4;
+export type RedeemableHandoffCapsule = HandoffCapsuleV3 | HandoffCapsuleV4;
+
+export function handoffCapsuleControllerBuildSetId(capsule: RedeemableHandoffCapsule): string {
+  return capsule.version === 4 ? capsule.controllerBuildSetId : capsule.buildSetId;
+}
 
 /**
  * What the three authorities retain. The secret itself is never stored beside the digest, and the identity
@@ -384,6 +411,14 @@ export type InstalledGrant = Readonly<{
    * so a grant installed under one orphan timeout must not be redeemable against a set running another.
    */
   orphanTimeoutMs: number;
+
+  controllerBuild: ControllerBuild;
+}>;
+
+export type AuthorizedControllerTransfer = Readonly<{
+  grantId: string;
+  attemptId: string;
+  successor: ControllerBuild;
 }>;
 
 /**
@@ -482,24 +517,16 @@ function assertPrivateHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEn
 }
 
 /**
- * Writes the successor half of a grant durably: one strict mode-0600, at-most-64-KiB capsule per proxy,
- * atomically renamed into place and fsynced (`StoragePort.writeAtomicDurableSync`). A grant with no durable
- * capsule is unredeemable no matter how many authorities acknowledge it, so this is the one write in the
- * install sequence that must survive a
- * `SIGKILL` landing the instant after it returns.
- *
- * V3 only, at the type and again at runtime. The union stays readable so older capsules can be recognised
- * and refused, but "V2 is read-only" is a property of this boundary rather than of a comment — a writer that
- * accepts the whole readable union is one edit away from emitting a shape it cannot itself verify. Legacy
- * shapes belong in test fixtures written as literal bytes, never in what production can produce.
+ * An installed grant must have a durable capsule before it can be redeemed. Writers must emit V4 only; legacy
+ * generations remain read-only.
  */
 export function writeHandoffCapsuleFile(
   path: string,
-  capsule: HandoffCapsuleV3,
+  capsule: HandoffCapsuleV4,
   env: HandoffCapsuleFileEnvironment,
 ): void {
   assertCanonicalHandoffCapsulePath(path);
-  const parsed = handoffCapsuleV3Schema.parse(capsule);
+  const parsed = handoffCapsuleV4Schema.parse(capsule);
   const encoded = JSON.stringify(parsed);
   const encodedBytes = Buffer.byteLength(encoded, 'utf8');
   if (encodedBytes > MAX_HANDOFF_CAPSULE_BYTES) {
@@ -569,6 +596,7 @@ export type GrantRedemption = Readonly<{
   grant: InstalledGrant;
   redemptionReceipt: string;
   successor: ControlTenancyHolder;
+  successorBuild: ControllerBuild;
 }>;
 
 /**
@@ -629,6 +657,12 @@ export function sameOperations(left: readonly OperationIdentity[], right: readon
  */
 export interface GrantRegistry {
   install(grant: InstalledGrant): { state: 'installed-dormant'; grantId: string };
+
+  authorizeTransfer(transfer: Pick<ControllerTransferParams, 'grantId' | 'attemptId' | 'successor'>): {
+    state: 'transfer-authorized';
+    grantId: string;
+    attemptId: string;
+  };
   register(operation: OperationIdentity): { state: 'succession-registered'; operation: OperationIdentity };
   /**
    * A successor whose reply was lost must get back the epoch it already earned. A different successor may
@@ -643,11 +677,76 @@ export interface GrantRegistry {
     /** Identifies same-epoch retries; a different complete identity requires the replacement policy to
      *  admit it — the same instance id under a different pid or incarnation is a different process. */
     successor: ControlTenancyHolder;
+    /** Refused unless it is the installer's build or the build an authorized transfer named. */
+    successorBuild: ControllerBuild;
     binding: GrantBinding;
   }): GrantRedemption;
   redemption(): GrantRedemption | null;
+  /** Only a role that never sees the secret may record another role’s verified redemption. */
+  recordForwardedRedemption(
+    redemption: Readonly<{
+      grantId: string;
+      redemptionReceipt: string;
+      successor: ControlTenancyHolder;
+      successorBuild: ControllerBuild;
+    }>,
+  ): 'recorded' | 'not-installed';
   /** Holder-status verification must not spend or mutate the installed grant. */
   verifyInstalledGrant(input: { grantId: string; secret: string; binding: GrantBinding }): boolean;
+}
+
+const sameBinding = (left: InstalledGrant, right: InstalledGrant): boolean =>
+  left.grantId === right.grantId &&
+  left.generation === right.generation &&
+  left.flavor === right.flavor &&
+  left.buildSetId === right.buildSetId &&
+  left.hostFingerprint === right.hostFingerprint &&
+  left.guardianInstanceId === right.guardianInstanceId &&
+  left.reaperInstanceId === right.reaperInstanceId &&
+  left.proxyInstanceId === right.proxyInstanceId &&
+  left.orphanTimeoutMs === right.orphanTimeoutMs &&
+  sameControllerBuild(left.controllerBuild, right.controllerBuild);
+
+const sameRedeemedSet = (left: InstalledGrant, right: GrantBinding): boolean =>
+  left.generation === right.generation &&
+  left.flavor === right.flavor &&
+  left.buildSetId === right.buildSetId &&
+  left.hostFingerprint === right.hostFingerprint &&
+  left.guardianInstanceId === right.guardianInstanceId &&
+  left.reaperInstanceId === right.reaperInstanceId &&
+  left.proxyInstanceId === right.proxyInstanceId;
+
+function registerGrantOperation(
+  installed: InstalledGrant,
+  operation: OperationIdentity,
+): {
+  grant: InstalledGrant;
+  operation: OperationIdentity;
+  added: boolean;
+} {
+  if (operation.proxyInstanceId !== installed.proxyInstanceId || operation.buildSetId !== installed.buildSetId) {
+    throw new ProxyControlProtocolError('identity_mismatch', 'The operation belongs to a different proxy set.');
+  }
+  const existing = installed.operations.find((candidate) => candidate.operationId === operation.operationId);
+  if (existing !== undefined) {
+    if (
+      existing.jobId !== operation.jobId ||
+      existing.proxyInstanceId !== operation.proxyInstanceId ||
+      existing.buildSetId !== operation.buildSetId
+    ) {
+      throw new ProxyControlProtocolError(
+        'identity_mismatch',
+        'The operation id is already registered to a different full identity.',
+      );
+    }
+    return { grant: installed, operation: existing, added: false };
+  }
+  const operations = handoffOperationSetSchema.parse(
+    [...installed.operations, operation].sort((left, right) =>
+      left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
+    ),
+  );
+  return { grant: Object.freeze({ ...installed, operations }), operation, added: true };
 }
 
 export function createGrantRegistry(
@@ -656,18 +755,7 @@ export function createGrantRegistry(
 ): GrantRegistry {
   let installed: InstalledGrant | null = null;
   let redemption: GrantRedemption | null = null;
-
-  /** Every field a grant is bound to, including the timeout only an installer names. */
-  const sameBinding = (left: InstalledGrant, right: InstalledGrant): boolean =>
-    left.grantId === right.grantId &&
-    left.generation === right.generation &&
-    left.flavor === right.flavor &&
-    left.buildSetId === right.buildSetId &&
-    left.hostFingerprint === right.hostFingerprint &&
-    left.guardianInstanceId === right.guardianInstanceId &&
-    left.reaperInstanceId === right.reaperInstanceId &&
-    left.proxyInstanceId === right.proxyInstanceId &&
-    left.orphanTimeoutMs === right.orphanTimeoutMs;
+  let transfer: AuthorizedControllerTransfer | null = null;
 
   return {
     install(grant): { state: 'installed-dormant'; grantId: string } {
@@ -677,6 +765,7 @@ export function createGrantRegistry(
           digestsMatch(installed.secretSha256, grant.secretSha256) &&
           sameOperations(installed.operations, grant.operations);
         if (identical) {
+          transfer = null;
           return { state: 'installed-dormant', grantId: installed.grantId };
         }
         if (redemption === null) {
@@ -687,57 +776,67 @@ export function createGrantRegistry(
         redemption = null;
       }
       installed = grant;
+      transfer = null;
       return { state: 'installed-dormant', grantId: grant.grantId };
+    },
+
+    recordForwardedRedemption({ grantId, redemptionReceipt, successor, successorBuild }) {
+      if (installed === null || installed.grantId !== grantId) return 'not-installed';
+      redemption = Object.freeze({ grant: installed, redemptionReceipt, successor, successorBuild });
+      return 'recorded';
+    },
+
+    authorizeTransfer({ grantId, attemptId, successor }) {
+      if (installed === null || installed.grantId !== grantId) {
+        throw new ProxyControlProtocolError(
+          'grant_invalid',
+          'A transfer must name the recovery grant already installed for this set.',
+        );
+      }
+      transfer = Object.freeze({ grantId, attemptId, successor });
+      return { state: 'transfer-authorized', grantId, attemptId };
     },
 
     register(operation): { state: 'succession-registered'; operation: OperationIdentity } {
       if (installed === null) {
         throw new ProxyControlProtocolError('grant_invalid', 'No recovery credential is installed for this set.');
       }
-      if (operation.proxyInstanceId !== installed.proxyInstanceId || operation.buildSetId !== installed.buildSetId) {
-        throw new ProxyControlProtocolError('identity_mismatch', 'The operation belongs to a different proxy set.');
-      }
-      const existing = installed.operations.find((candidate) => candidate.operationId === operation.operationId);
-      if (existing !== undefined) {
-        if (
-          existing.jobId !== operation.jobId ||
-          existing.proxyInstanceId !== operation.proxyInstanceId ||
-          existing.buildSetId !== operation.buildSetId
-        ) {
-          throw new ProxyControlProtocolError(
-            'identity_mismatch',
-            'The operation id is already registered to a different full identity.',
-          );
-        }
-        return { state: 'succession-registered', operation: existing };
-      }
-      const operations = handoffOperationSetSchema.parse(
-        [...installed.operations, operation].sort((left, right) =>
-          left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
-        ),
-      );
-      installed = Object.freeze({ ...installed, operations });
+      const registration = registerGrantOperation(installed, operation);
+      if (!registration.added) return { state: 'succession-registered', operation: registration.operation };
+      installed = registration.grant;
       if (redemption !== null) {
         redemption = Object.freeze({ ...redemption, grant: installed });
       }
       return { state: 'succession-registered', operation };
     },
 
-    redeem({ grantId, secret, successor, binding }): GrantRedemption {
+    redeem({ grantId, secret, successor, successorBuild, binding }): GrantRedemption {
       if (installed === null)
         throw new ProxyControlProtocolError('grant_invalid', 'No grant is installed for this set.');
       if (installed.grantId !== grantId || !digestsMatch(installed.secretSha256, handoffSecretDigest(secret))) {
         throw new ProxyControlProtocolError('grant_invalid', 'Redemption did not present the installed grant.');
       }
-      if (!sameBinding(installed, { ...installed, ...binding })) {
+      if (!sameRedeemedSet(installed, binding)) {
         // A capsule from another set is a replay of a grant that was never for this one.
         throw new ProxyControlProtocolError(
           'grant_replayed',
           'Redemption named a different guardian/reaper/proxy set.',
         );
       }
+      const authorized =
+        sameControllerBuild(installed.controllerBuild, successorBuild) ||
+        (transfer !== null && sameControllerBuild(transfer.successor, successorBuild));
+      if (!authorized) {
+        throw new ProxyControlProtocolError(
+          'identity_mismatch',
+          'The named coordinator belongs to a build this grant does not authorize.',
+        );
+      }
       if (redemption !== null) {
-        if (!sameControlTenancyHolder(redemption.successor, successor)) {
+        if (
+          !sameControlTenancyHolder(redemption.successor, successor) ||
+          !sameControllerBuild(redemption.successorBuild, successorBuild)
+        ) {
           if (policy.mayReplaceRedemption?.() !== true) {
             throw new ProxyControlProtocolError(
               'grant_replayed',
@@ -748,11 +847,12 @@ export function createGrantRegistry(
             grant: installed,
             redemptionReceipt: mintReceipt(),
             successor,
+            successorBuild,
           });
         }
         return redemption;
       }
-      redemption = Object.freeze({ grant: installed, redemptionReceipt: mintReceipt(), successor });
+      redemption = Object.freeze({ grant: installed, redemptionReceipt: mintReceipt(), successor, successorBuild });
       return redemption;
     },
 
@@ -765,7 +865,7 @@ export function createGrantRegistry(
       if (installed.grantId !== grantId || !digestsMatch(installed.secretSha256, handoffSecretDigest(secret))) {
         return false;
       }
-      return sameBinding(installed, { ...installed, ...binding });
+      return sameRedeemedSet(installed, binding);
     },
   };
 }

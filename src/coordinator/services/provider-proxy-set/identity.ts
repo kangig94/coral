@@ -6,7 +6,7 @@ import {
   canonicalUuidSchema,
   hostFingerprintSchema,
 } from '../../../provider-proxy/protocol.js';
-import type { HandoffCapsule, HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
+import type { HandoffCapsule, RedeemableHandoffCapsule } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { providerProxySetAddressSchema, type ProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 
@@ -115,7 +115,7 @@ export function providerProxySetIdentityFromRecord(
   });
 }
 
-export function providerProxySetIdentityFromCapsule(capsule: HandoffCapsuleV3): ProviderProxySetIdentity {
+export function providerProxySetIdentityFromCapsule(capsule: RedeemableHandoffCapsule): ProviderProxySetIdentity {
   return providerProxySetIdentitySchema.parse({
     buildSetId: capsule.buildSetId,
     hostFingerprint: capsule.hostFingerprint,
@@ -136,16 +136,11 @@ export function providerProxySetIdentityFromCapsule(capsule: HandoffCapsuleV3): 
   });
 }
 
-/**
- * V3 alone carries a comparable process identity, so only it is compared in full. V1 has none, and V2's is
- * seconds from a retired derivation — comparing those against a token would manufacture a disagreement
- * rather than find one, so both are held to the fields that mean the same thing in every version.
- */
 export function providerProxySetCapsuleMatchesIdentity(
   capsule: HandoffCapsule,
   identity: ProviderProxySetIdentity,
 ): boolean {
-  if (capsule.version === 3) {
+  if (capsule.version === 3 || capsule.version === 4) {
     return providerProxySetIdentitiesEqual(providerProxySetIdentityFromCapsule(capsule), identity);
   }
   return (

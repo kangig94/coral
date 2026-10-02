@@ -9,6 +9,7 @@ import { backendLog } from './backend-log.js';
 import { serializeThrown, type SerializedThrown } from './error-format.js';
 import { isNoEntryError } from './fs-errors.js';
 import { sha256Hex } from './hash.js';
+import { v0100CoordinatorSocketPathForRunDir } from './path/index.js';
 import type { Runtime } from '../runtime/ports.js';
 
 /** Connection and authentication evidence only; executable identity comes from authenticated health. */
@@ -24,10 +25,21 @@ export interface CoordinatorDiscoveryRecord {
   bootToken: string;
   shutdownToken?: string;
   host?: string;
+  bindHost?: string;
   version?: string;
   instanceId?: string;
+  processStartedAt?: number;
   incarnation?: ProcessIncarnation;
   storeEpoch?: string;
+  sentinel?: { version: 1; id: string };
+  supervision?: {
+    version: 1;
+    launchId: string;
+    admittedAt: number;
+    buildSetId: string;
+    purpose: 'startup' | 'contender' | 'succession' | 'recovery' | 'legacy-retirement';
+    parent: { pid: number; incarnation: ProcessIncarnation };
+  };
 }
 
 export interface BackendInfo extends CoordinatorDiscoveryRecord {
@@ -47,6 +59,7 @@ export type DiscoveryRuntime = {
   paths: { readonly coral: CoralPaths };
 };
 export type DiscoveryWriterRuntime = DiscoveryRuntime & {
+  env: DiscoveryEnv & Pick<EnvPort, 'get' | 'tmpdir'>;
   process: Pick<Runtime['process'], 'readProcessIncarnation'>;
 };
 
@@ -72,13 +85,31 @@ const coordinatorDiscoveryRecordSchema = z
     bootToken: nonEmptyStringSchema,
     shutdownToken: nonEmptyStringSchema.optional(),
     host: nonEmptyStringSchema.optional(),
+    bindHost: nonEmptyStringSchema.optional(),
     version: nonEmptyStringSchema.optional(),
     instanceId: nonEmptyStringSchema.optional(),
+    processStartedAt: positiveIntegerSchema.optional(),
     incarnation: durableProcessIncarnationSchema.optional(),
     storeEpoch: z
       .string()
       .regex(/^[1-9]\d*$/u)
       .optional(),
+    sentinel: z
+      .object({ version: z.literal(1), id: nonEmptyStringSchema })
+      .optional()
+      .catch(undefined),
+    supervision: z
+      .object({
+        version: z.literal(1),
+        launchId: z.string().uuid(),
+        admittedAt: positiveIntegerSchema,
+        buildSetId: nonEmptyStringSchema,
+        purpose: z.enum(['startup', 'contender', 'succession', 'recovery', 'legacy-retirement']),
+        parent: z.object({ pid: positiveIntegerSchema, incarnation: durableProcessIncarnationSchema }).passthrough(),
+      })
+      .passthrough()
+      .optional()
+      .catch(undefined),
   })
   // A build older than a future field must still read this record — `.strict()` would make that build's
   // `probeCoordinator` reject it outright the day a newer writer adds one, when every field it already
@@ -95,7 +126,14 @@ function discoveryFilePath(runtime: DiscoveryRuntime): string {
 }
 
 export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime: DiscoveryWriterRuntime): boolean {
-  const infoPath = discoveryFilePath(runtime);
+  return writeDiscoveryRecordAtPath(record, runtime, discoveryFilePath(runtime));
+}
+
+function writeDiscoveryRecordAtPath(
+  record: CoordinatorDiscoveryRecord,
+  runtime: DiscoveryWriterRuntime,
+  infoPath: string,
+): boolean {
   const incarnation =
     record.incarnation ??
     runtime.process.readProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform) ??
@@ -143,10 +181,13 @@ export type DiscoveryRead =
   | Readonly<{ kind: 'missing' }>
   | Readonly<{ kind: 'undecodable'; reason: 'corrupt-json' | 'shape-rejected' }>;
 
-export function readDiscoveryRecordDisposition(runtime: DiscoveryRuntime): DiscoveryRead {
+export function readDiscoveryRecordDisposition(
+  runtime: DiscoveryRuntime,
+  infoPath = discoveryFilePath(runtime),
+): DiscoveryRead {
   let raw: string;
   try {
-    raw = runtime.storage.readFileSync(discoveryFilePath(runtime), 'utf-8');
+    raw = runtime.storage.readFileSync(infoPath, 'utf-8');
   } catch (error: unknown) {
     if (isNoEntryError(error)) return { kind: 'missing' };
     throw error;
@@ -202,7 +243,21 @@ export type CoordinatorProbe =
  * subprocesses to derive a token this function discards.
  */
 export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
-  const read = readDiscoveryRecordDisposition(runtime);
+  return probeDiscoveryRead(readDiscoveryRecordDisposition(runtime));
+}
+
+export function probeCoordinatorAtAddress(runtime: DiscoveryRuntime, socketPath: string): CoordinatorProbe {
+  const primary = readDiscoveryRecordDisposition(runtime);
+  if (primary.kind === 'record' && primary.record.socketPath === socketPath) return probeDiscoveryRead(primary);
+  if (primary.kind === 'undecodable' && socketPath === runtime.paths.coral.coordinator.socketPath)
+    return probeDiscoveryRead(primary);
+  const legacy = readDiscoveryRecordDisposition(runtime, runtime.paths.coral.coordinator.legacyInfoFile);
+  return legacy.kind === 'record' && legacy.record.socketPath === socketPath
+    ? probeDiscoveryRead(legacy)
+    : { kind: 'absent' };
+}
+
+function probeDiscoveryRead(read: DiscoveryRead): CoordinatorProbe {
   if (read.kind === 'missing') return { kind: 'absent' };
   if (read.kind === 'undecodable') {
     // Said out loud because it is otherwise invisible and its consequence arrives elsewhere: a contender that
@@ -226,7 +281,23 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
 }
 
 export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryWriterRuntime): boolean {
-  return writeDiscoveryRecord(info, runtime);
+  if (!writeDiscoveryRecord(info, runtime)) return false;
+
+  const { shutdownToken: _shutdownToken, ...legacyInfo } = info;
+  const legacySocketPath = v0100CoordinatorSocketPathForRunDir(
+    runtime.paths.coral.coordinator.legacyRunDir,
+    info.flavor,
+    {
+      platform: runtime.env.platform(),
+      configuredTempDirectory: runtime.env.get('TMPDIR'),
+      systemTempDirectory: runtime.env.tmpdir(),
+    },
+  );
+  return writeDiscoveryRecordAtPath(
+    { ...legacyInfo, socketPath: legacySocketPath },
+    runtime,
+    runtime.paths.coral.coordinator.legacyInfoFile,
+  );
 }
 
 export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
@@ -276,9 +347,21 @@ function backendInfoRemovalRefusal(
  * remain in place. Operational failures are returned because shutdown must still release its other authority.
  */
 export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): BackendInfoRemovalResult {
+  const primary = removeBackendInfoAtPathIfOwner(owner, runtime, discoveryFilePath(runtime));
+  const legacy = removeBackendInfoAtPathIfOwner(owner, runtime, runtime.paths.coral.coordinator.legacyInfoFile);
+  if (primary.kind === 'refused') return primary;
+  if (legacy.kind === 'refused') return legacy;
+  return primary.kind === 'removed' || legacy.kind === 'removed' ? { kind: 'removed' } : { kind: 'unchanged' };
+}
+
+function removeBackendInfoAtPathIfOwner(
+  owner: string,
+  runtime: DiscoveryRuntime,
+  infoPath: string,
+): BackendInfoRemovalResult {
   let read: DiscoveryRead;
   try {
-    read = readDiscoveryRecordDisposition(runtime);
+    read = readDiscoveryRecordDisposition(runtime, infoPath);
   } catch (error: unknown) {
     return backendInfoRemovalRefusal('read', 'filesystem-operation-failed', error);
   }
@@ -298,7 +381,7 @@ export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntim
   }
 
   try {
-    runtime.storage.unlinkSync(discoveryFilePath(runtime));
+    runtime.storage.unlinkSync(infoPath);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return { kind: 'unchanged' };

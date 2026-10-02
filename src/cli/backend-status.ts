@@ -1,4 +1,15 @@
 import { observeCoordinator, type CoordinatorObservation } from '../transport/http/backend/coordinator-observation.js';
+import { dirname, join } from 'node:path';
+import { listLaunchAdmissions } from '../infra/launch-admission-record.js';
+import { readLaunchStatus, type LaunchStatus } from '../infra/launch-status.js';
+import {
+  hasQuarantinedUpgradeIntent,
+  readUpgradeIntent,
+  upgradeIntentProblem,
+  visibleUpgradeIntent,
+  type UpgradeIntentProblem,
+  type UpgradeIntentVisibility,
+} from '../infra/upgrade-intent.js';
 import { readBuildFlavor, resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { errorMessage, isSystemErrorCode, thrownErrnoCode, type SystemErrorCode } from '../infra/error-format.js';
@@ -12,6 +23,7 @@ import {
   type SetupErrorAuthorIdentity,
 } from '../runtime/errors.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { listStoreEpochs, type StoreEpochListEntry } from '../store/epoch/index.js';
 import type { Runtime } from '../runtime/ports.js';
 import { parseJsonResponse } from '../transport/http/sse.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
@@ -148,9 +160,13 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'SemanticOperationShutdownError',
   'SessionClaimError',
   'SocketDirectoryError',
+  'SuccessionAdmissionPausedError',
+  'SuccessionAttemptStartupHoldError',
+  'SuccessionWriterParkedError',
   'StartupStoreHandoffError',
   'StoreCodecError',
   'StoreDecodeError',
+  'StoreEpochOpenerHeldError',
   'StoreFormatChangedDuringAdoptionError',
   'StoreResetCliError',
   'StoreResetIncidentReadError',
@@ -158,6 +174,7 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'SyntaxError',
   'SystemError',
   'TerminalWriteError',
+  'TransientCommitFailure',
   'TransientHttpError',
   'TypeError',
   'UnconfirmedClaudeOneShotCancellationError',
@@ -167,6 +184,7 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'UnknownWorkflowRecoveryOutcome',
   'UsageError',
   'UserInputError',
+  'UpgradeSupervisorUnavailableError',
   'WaitResumeError',
   'WorkDirectoryError',
   'WorkflowExecutionError',
@@ -216,6 +234,8 @@ const OPERATOR_FACING_SHUTDOWN_LABELS = [
   'server connection close',
   'store epoch sweep cancellation',
   'store services availability check',
+  'succession attempt settlement',
+  'succession connection handover',
 ] as const;
 type OperatorFacingShutdownLabel = (typeof OPERATOR_FACING_SHUTDOWN_LABELS)[number];
 type OperatorFacingShutdownObligation =
@@ -307,6 +327,9 @@ type BackendStatus = {
   systemProviderScope?: BackendHealth['systemProviderScope'];
   diagnostics?: BackendHealth['diagnostics'];
   shutdown?: OperatorFacingLiveShutdown;
+  succession?: BackendHealth['succession'];
+  successionProblem?: BackendHealth['successionProblem'];
+  launchStatus?: LaunchStatus;
   skippedProviderProxySetRows: number;
   skippedProviderProxySetTokens: readonly string[];
 };
@@ -343,7 +366,7 @@ export type ShutdownRemainderReport =
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }>;
 
-export type BackendStatusFull =
+type BackendStatusFullBase =
   | { status: 'ok'; health: BackendStatus; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'unauthorized'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'no_record_no_socket'; shutdownRemainder?: ShutdownRemainderReport }
@@ -405,6 +428,7 @@ export type BackendStatusFull =
    * be a stale leftover.
    */
   | { status: 'no_record_socket_present'; socketPath: string; shutdownRemainder?: ShutdownRemainderReport }
+  | { status: 'deferred_upgrade'; shutdownRemainder?: ShutdownRemainderReport }
   | {
       status: 'recent_failure';
       phase: PublicDiagnosticPhase;
@@ -417,6 +441,34 @@ export type BackendStatusFull =
       setupError?: OperatorFacingCoralSetupError;
       shutdownRemainder?: ShutdownRemainderReport;
     };
+
+export type SupersededEpochClosure = Readonly<{
+  epoch: string;
+  epochKey: string | null;
+  role: StoreEpochListEntry['role'];
+  closure: NonNullable<StoreEpochListEntry['closureDisposition']>;
+  reason: string | null;
+  protectionUnreadable?: boolean;
+}>;
+
+export type SupersededEpochClosures =
+  | Readonly<{ kind: 'observed'; epochs: readonly SupersededEpochClosure[] }>
+  | Readonly<{ kind: 'unobservable'; reason: string }>;
+
+export type BackendStatusFull = BackendStatusFullBase & {
+  launchStatusProblem?: 'unreadable' | 'previous-status-unavailable' | 'publication-unavailable';
+  launchStatusPublicationFailure?: LaunchStatus['publicationFailure'];
+  launchAdmissionHolds?: LaunchStatus['admissionHolds'];
+  launchHold?: NonNullable<LaunchStatus['hold']>;
+  launchInheritedHolds?: LaunchStatus['inheritedHolds'];
+  launchSignalHolds?: LaunchStatus['signalHolds'];
+  launchLockHold?: LaunchStatus['lockHold'];
+  upgrade?: UpgradeIntentVisibility;
+  upgradeProblem?: UpgradeIntentProblem;
+  upgradeQuarantined?: boolean;
+  legacyContenderDeferred?: boolean;
+  supersededEpochs?: SupersededEpochClosures;
+};
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
 type AddressedAmbiguityStatus = Extract<BackendStatusFull, { status: 'unreachable' | 'unauthorized' }>;
@@ -606,13 +658,17 @@ function recordedAuthorIdentity(value: Record<string, unknown>): SetupErrorAutho
  * `provenSelfIdentity` is deferred because proving this build's own identity hashes bundle artifacts; a status
  * probe that finds no setup-error diagnostic must not pay for an attribution it never makes.
  */
+function isDeferredUpgradeRefusal(code: unknown): boolean {
+  return code === 'handoff_shutdown_capability_rejected' || code === 'handoff_shutdown_credential_unavailable';
+}
+
 export function statusFromStartupDiagnostic(
   value: unknown,
   now: number,
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   earliestRecordedAt = Number.NEGATIVE_INFINITY,
   expectedPid?: number,
-): RecentFailureStatus | null {
+): RecentFailureStatus | Extract<BackendStatusFull, { status: 'deferred_upgrade' }> | null {
   if (
     !isRecord(value) ||
     value.schemaVersion !== 1 ||
@@ -641,6 +697,7 @@ export function statusFromStartupDiagnostic(
   }
 
   const error = value.error;
+  if (isDeferredUpgradeRefusal(error.code)) return { status: 'deferred_upgrade' };
   const setupError: OperatorFacingCoralSetupError | null =
     error.kind === 'coral_setup_error'
       ? readOperatorFacingCoralSetupError(
@@ -723,13 +780,41 @@ function readRecentFailureDiagnostic(
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   earliestRecordedAt?: number,
   expectedPid?: number,
-): RecentFailureStatus | null {
+): RecentFailureStatus | Extract<BackendStatusFull, { status: 'deferred_upgrade' }> | null {
   try {
     const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
-    return statusFromStartupDiagnostic(value, now, provenSelfIdentity, earliestRecordedAt, expectedPid);
+    const diagnostic = statusFromStartupDiagnostic(value, now, provenSelfIdentity, earliestRecordedAt, expectedPid);
+    if (diagnostic !== null) return diagnostic;
+  } catch {
+    // An unreadable diagnostic must not suppress a usable startup sentinel.
+  }
+  try {
+    const value: unknown = JSON.parse(
+      storage.readFileSync(join(dirname(diagnosticFile), 'startup-error.json'), 'utf-8'),
+    );
+    return statusFromStartupSentinel(value, now);
   } catch {
     return null;
   }
+}
+
+export function statusFromStartupSentinel(
+  value: unknown,
+  now: number,
+): Extract<BackendStatusFull, { status: 'deferred_upgrade' }> | null {
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    value.state !== 'stopped_with_diagnostic' ||
+    !isRecord(value.error) ||
+    value.error.kind !== 'coral_setup_error' ||
+    !isDeferredUpgradeRefusal(value.error.code) ||
+    typeof value.recordedAt !== 'number' ||
+    value.recordedAt > now ||
+    now - value.recordedAt > RECENT_COORDINATOR_RECORD_MS
+  )
+    return null;
+  return { status: 'deferred_upgrade' };
 }
 
 function statusWithRecentCoordinatorEvidence(
@@ -771,8 +856,22 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
   scope: ShutdownRemainderEvidenceScope,
 ): Status {
   const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, scope);
+  const intent = readUpgradeIntent(runDir);
+  const upgrade = intent.kind === 'readable' ? visibleUpgradeIntent(intent.intent) : null;
+  const upgradeProblem = upgradeIntentProblem(intent);
+  const legacyContenderDeferred =
+    fallback.status === 'ok' &&
+    readRecentFailureDiagnostic(storage, join(runDir, 'startup-diagnostic.json'), now, () => null)?.status ===
+      'deferred_upgrade';
   // A shutdown remainder must never replace the independently observed coordinator lifecycle status.
-  return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
+  return Object.assign(
+    {},
+    fallback,
+    shutdownRemainder === null ? {} : { shutdownRemainder },
+    upgrade === null ? {} : { upgrade },
+    upgradeProblem === null ? {} : { upgradeProblem },
+    legacyContenderDeferred ? { legacyContenderDeferred: true } : {},
+  ) as Status;
 }
 
 type PingProbeObservation = Readonly<{
@@ -978,7 +1077,37 @@ async function probeAddressedCoordinatorStatus(
   );
 }
 
-export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
+function readSupersededEpochClosures(
+  runtime: Pick<Runtime, 'paths' | 'storage' | 'ids' | 'env'>,
+): SupersededEpochClosures | null {
+  let entries: readonly StoreEpochListEntry[];
+  try {
+    entries = listStoreEpochs(runtime);
+  } catch (error: unknown) {
+    return { kind: 'unobservable', reason: errorMessage(error) };
+  }
+  const epochs = entries
+    .filter((entry) => entry.role !== 'current' && entry.role !== 'removed')
+    .map((entry) => ({
+      epoch: entry.epoch,
+      epochKey: entry.epochKey ?? null,
+      role: entry.role,
+      closure: entry.closureDisposition ?? 'pending',
+      reason: entry.closureReason ?? null,
+      ...(entry.protectionUnreadable ? { protectionUnreadable: true } : {}),
+    }));
+  return epochs.length === 0 ? null : { kind: 'observed', epochs };
+}
+
+export function withSupersededEpochClosures(
+  runtime: Pick<Runtime, 'paths' | 'storage' | 'ids' | 'env'>,
+  status: BackendStatusFull,
+): BackendStatusFull {
+  const supersededEpochs = readSupersededEpochClosures(runtime);
+  return supersededEpochs === null ? status : { ...status, supersededEpochs };
+}
+
+async function getBackendStatusBase(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
   const observed = observeCoordinator({
     storage: runtime.storage,
@@ -1035,4 +1164,37 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     case 'addressed':
       return probeAddressedCoordinatorStatus(runtime, observed, provenSelfIdentity);
   }
+}
+
+export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
+  const status = await getBackendStatusBase(pluginRoot);
+  const runDir = createRealRuntime(readBuildFlavor(pluginRoot)).paths.coral.coordinator.runDir;
+  const quarantined = hasQuarantinedUpgradeIntent(runDir);
+  const upgradeQuarantineStatus = quarantined ? { upgradeQuarantined: true } : {};
+  const disposition = readLaunchStatus(runDir);
+  const unreadableAdmission = listLaunchAdmissions(runDir).find((entry) => entry.kind === 'unreadable');
+  const state =
+    (status.status === 'ok' ? status.health.launchStatus : undefined) ??
+    (disposition.kind === 'readable' ? disposition.status : null);
+  return {
+    ...status,
+    ...(state?.hold !== undefined
+      ? { launchHold: state.hold }
+      : unreadableAdmission?.kind === 'unreadable'
+        ? { launchHold: { kind: 'admission-unreadable' as const, path: unreadableAdmission.path } }
+        : {}),
+    ...(state?.inheritedHolds.length ? { launchInheritedHolds: state.inheritedHolds } : {}),
+    ...(state?.signalHolds.length ? { launchSignalHolds: state.signalHolds } : {}),
+    launchStatusPublicationFailure: state?.publicationFailure,
+    launchAdmissionHolds: state?.admissionHolds,
+    launchLockHold: state?.lockHold,
+    ...(state?.publicationFailure !== undefined
+      ? { launchStatusProblem: 'publication-unavailable' as const }
+      : disposition.kind === 'unreadable'
+        ? { launchStatusProblem: 'unreadable' as const }
+        : state?.previousStatus === 'unavailable'
+          ? { launchStatusProblem: 'previous-status-unavailable' as const }
+          : {}),
+    ...upgradeQuarantineStatus,
+  };
 }

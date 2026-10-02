@@ -116,6 +116,7 @@ export async function* subscribeJobEvents(options: {
 
   subscribers.add(subscriber);
   options.abortSignal?.addEventListener('abort', onAbort, { once: true });
+  if (options.abortSignal?.aborted) onAbort();
 
   try {
     while (!closed) {

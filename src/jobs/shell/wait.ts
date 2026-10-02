@@ -499,7 +499,7 @@ export class WaitCoordinator {
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
     const deadlineMs = startMs + timeoutMs;
-    const afterSeq = cursor?.afterSeq ?? 0;
+    const afterSeq = cursor && 'afterSeq' in cursor ? cursor.afterSeq : 0;
     const pending = new Set(jobIds);
     const emittedQueued = new Set<string>();
     const currentMaxSeq = getCurrentJournalSeq();

@@ -753,6 +753,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[providerProxyRoleControlTeardownIncident, collectFencedContainmentProof, providerProxySetContainmentEvidenceFor, deps.reapRecordedContainment, releaseProviderProxySetContainmentProofFence, releaseProviderProxySetContainmentProofFence] assignments=[reapResult]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: buildInheritedAuthority :: catch#1 :: calls=[closeRedeemedProviderProxyControl] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: completeServedTransfer :: catch#1 :: calls=[] assignments=[installed]',
   'src/jobs/provider-operation-terminalization.ts :: readProviderHostUnserviceableEvidence :: catch#1 :: calls=[] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: terminalizeProviderOperation :: catch#1 :: calls=[] assignments=[]',
 ] as const;

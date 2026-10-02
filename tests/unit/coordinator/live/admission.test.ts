@@ -2,9 +2,11 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
-import { createRealRuntime } from '#src/runtime/real.js';
+import { createDurableTestRuntime } from '#tests/helpers/durable-runtime.js';
 import {
   LaunchCoordinator,
+  SUCCESSION_PAUSE_ATTEMPT_MS,
+  SUCCESSION_PAUSE_ROLLING_WINDOW_MS,
   LAUNCH_RECLAMATION_AGE_FLOOR_MS,
   MAX_LAUNCH_RELEASE_DIAGNOSTICS,
   MAX_SETTLED_UNBOUND_BINDINGS,
@@ -15,7 +17,12 @@ import {
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import type { DurableContainmentOperatorControl } from '#src/providers/cli-runner.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import type { LaunchPermit, LaunchPool, LaunchReclamationProbeResult } from '#src/jobs/contracts/admission.js';
+import {
+  SuccessionAdmissionPausedError,
+  type LaunchPermit,
+  type LaunchPool,
+  type LaunchReclamationProbeResult,
+} from '#src/jobs/contracts/admission.js';
 import type {
   ProviderOperationBindingIdentity,
   SettledUnboundStatusOwnership,
@@ -45,6 +52,215 @@ const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_WORKERS;
 const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_WORKERS;
 const TEST_PROVIDER_PID = 20_000;
 const TEST_PROVIDER_INCARNATION = testIncarnation(1_700_000_000);
+
+describe('succession admission pause', () => {
+  let now: number;
+  let coordinator: LaunchCoordinator;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    now = 0;
+    const runtime = createDurableTestRuntime();
+    coordinator = new LaunchCoordinator({
+      runtime: {
+        ...runtime,
+        time: { ...runtime.time, now: () => now, monotonicNow: () => BigInt(now) },
+      },
+    });
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  function advance(ms: number): void {
+    now += ms;
+    vi.advanceTimersByTime(ms);
+  }
+
+  it('notifies succession when a launch permit settles', () => {
+    const notify = vi.fn();
+    const unsubscribe = coordinator.subscribeSuccessionObligationChanges(notify);
+    const admitted = coordinator.requestLaunch(
+      'settled-job',
+      'claude',
+      { kind: 'provider-session', id: 'session-1' },
+      'default',
+    );
+    expect(admitted).toMatchObject({ type: 'immediate' });
+    if (typeof admitted !== 'object' || admitted.type !== 'immediate') throw new Error('launch was not admitted');
+
+    expect(coordinator.releaseLaunch(admitted.permit).kind).toBe('released');
+    expect(notify).toHaveBeenCalledOnce();
+    unsubscribe();
+    expect(coordinator.releaseLaunch(admitted.permit).kind).toBe('already-released');
+    expect(notify).toHaveBeenCalledOnce();
+  });
+
+  it('should total failed commit windows across attempt restarts and target churn', () => {
+    for (const attemptId of ['target-a', 'target-b', 'target-a-retry']) {
+      const revision = coordinator.admissionRevision();
+      expect(coordinator.beginSuccessionCommitWindow(attemptId, revision)).toEqual({
+        kind: 'paused',
+        attemptId,
+        deadlineAtMs: now + SUCCESSION_PAUSE_ATTEMPT_MS,
+      });
+      expect(() =>
+        coordinator.requestLaunch(
+          `ordinary-${attemptId}`,
+          'claude',
+          { kind: 'provider-session', id: attemptId },
+          'default',
+        ),
+      ).toThrow(SuccessionAdmissionPausedError);
+      advance(SUCCESSION_PAUSE_ATTEMPT_MS);
+      expect(coordinator.successionAdmissionPaused()).toBe(false);
+      const admitted = coordinator.requestLaunch(
+        `after-${attemptId}`,
+        'claude',
+        { kind: 'provider-session', id: attemptId },
+        'default',
+      );
+      expect(admitted).toMatchObject({ type: 'immediate' });
+      if (typeof admitted === 'object' && admitted.type === 'immediate') {
+        expect(coordinator.releaseLaunch(admitted.permit).kind).toBe('released');
+      }
+    }
+
+    expect(coordinator.beginSuccessionCommitWindow('target-c', coordinator.admissionRevision())).toEqual({
+      kind: 'refused',
+      reason: 'aggregate-budget-exhausted',
+    });
+    expect(coordinator.successionAdmissionPaused()).toBe(false);
+    advance(SUCCESSION_PAUSE_ROLLING_WINDOW_MS);
+    expect(coordinator.beginSuccessionCommitWindow('target-c', coordinator.admissionRevision()).kind).toBe('paused');
+    expect(coordinator.endSuccessionCommitWindow('target-c')).toBe(true);
+  });
+
+  it('should admit accepted descendants and invalidate a prepared attempt', () => {
+    const revision = coordinator.admissionRevision();
+    const child = coordinator.requestLaunch('child', 'claude', { kind: 'workflow', id: 'parent' }, 'default', true);
+    expect(child).toMatchObject({ type: 'immediate' });
+    expect(coordinator.admissionRevision()).toBeGreaterThan(revision);
+    expect(coordinator.beginSuccessionCommitWindow('stale', revision)).toEqual({
+      kind: 'refused',
+      reason: 'stale-preparation',
+    });
+
+    const currentRevision = coordinator.admissionRevision();
+    expect(coordinator.beginSuccessionCommitWindow('attempt', currentRevision).kind).toBe('paused');
+    expect(coordinator.admitTopLevelLaunch()).toBe(false);
+    const round = coordinator.requestLaunch('round', 'claude', { kind: 'discussion', id: 'accepted' }, 'discuss', true);
+    expect(round).toMatchObject({ type: 'immediate' });
+    expect(coordinator.successionAdmissionPaused()).toBe(true);
+    expect(coordinator.admissionRevision()).toBeGreaterThan(currentRevision);
+    expect(coordinator.endSuccessionCommitWindow('attempt')).toBe(true);
+    expect(coordinator.beginSuccessionCommitWindow('stale', currentRevision)).toEqual({
+      kind: 'refused',
+      reason: 'stale-preparation',
+    });
+  });
+
+  it('keeps accepted descendants and refuses new launches while writer park is settling', () => {
+    expect(coordinator.beginSuccessionCommitWindow('attempt', coordinator.admissionRevision()).kind).toBe('paused');
+    const accepted = coordinator.requestLaunch(
+      'before-park',
+      'claude',
+      { kind: 'workflow', id: 'parent' },
+      'default',
+      true,
+    );
+    expect(accepted).toMatchObject({ type: 'immediate' });
+
+    coordinator.beginSuccessionWriterPark('attempt');
+    expect(
+      coordinator.requestLaunch('after-park', 'claude', { kind: 'workflow', id: 'parent' }, 'default', true),
+    ).toMatchObject({ type: 'immediate' });
+    advance(SUCCESSION_PAUSE_ATTEMPT_MS);
+    expect(coordinator.successionAdmissionPaused()).toBe(true);
+    expect(coordinator.admitTopLevelLaunch()).toBe(false);
+    expect(() =>
+      coordinator.requestLaunch('overrun', 'claude', { kind: 'provider-session', id: 'new' }, 'default'),
+    ).toThrow(SuccessionAdmissionPausedError);
+    expect(coordinator.endSuccessionCommitWindow('attempt')).toBe(false);
+    expect(
+      coordinator.requestLaunch('after-window', 'claude', { kind: 'workflow', id: 'parent' }, 'default', true),
+    ).toMatchObject({
+      type: 'immediate',
+    });
+  });
+
+  it('should count partially used windows toward the rolling budget', () => {
+    for (const [attemptId, durationMs] of [
+      ['first', 4_000],
+      ['second', 4_000],
+      ['third', 4_000],
+    ] as const) {
+      expect(coordinator.beginSuccessionCommitWindow(attemptId, coordinator.admissionRevision()).kind).toBe('paused');
+      advance(durationMs);
+      expect(coordinator.endSuccessionCommitWindow(attemptId)).toBe(true);
+    }
+    expect(coordinator.beginSuccessionCommitWindow('fourth', coordinator.admissionRevision())).toEqual({
+      kind: 'refused',
+      reason: 'aggregate-budget-exhausted',
+    });
+  });
+
+  it('should restore admission when a failed attempt ends the commit window', () => {
+    const revision = coordinator.admissionRevision();
+    expect(coordinator.beginSuccessionCommitWindow('failed-child', revision).kind).toBe('paused');
+    advance(1_000);
+    expect(coordinator.endSuccessionCommitWindow('failed-child')).toBe(true);
+    const admitted = coordinator.requestLaunch(
+      'ordinary',
+      'claude',
+      { kind: 'provider-session', id: 'new' },
+      'default',
+    );
+    expect(admitted).toMatchObject({ type: 'immediate' });
+    expect(coordinator.beginSuccessionCommitWindow('next-attempt', coordinator.admissionRevision()).kind).toBe(
+      'paused',
+    );
+    expect(coordinator.endSuccessionCommitWindow('next-attempt')).toBe(true);
+  });
+
+  it('should settle cancellation of an accepted queued launch during a commit window', async () => {
+    const runtime = createDurableTestRuntime();
+    coordinator = new LaunchCoordinator({
+      runtime: {
+        ...runtime,
+        env: {
+          ...runtime.env,
+          get: (key) => (key === 'CORAL_MAX_WORKERS' ? '1' : runtime.env.get(key)),
+        },
+        time: { ...runtime.time, now: () => now, monotonicNow: () => BigInt(now) },
+      },
+    });
+    const first = coordinator.requestLaunch(
+      'active',
+      'claude',
+      { kind: 'provider-session', id: 'session-active' },
+      'default',
+    );
+    if (typeof first !== 'object' || first.type !== 'immediate') throw new Error('active launch was not admitted');
+    const queued = coordinator.requestLaunch(
+      'queued',
+      'claude',
+      { kind: 'provider-session', id: 'session-queued' },
+      'default',
+    );
+    if (typeof queued !== 'object' || queued.type !== 'queued') throw new Error('launch was not queued');
+
+    expect(coordinator.beginSuccessionCommitWindow('attempt', coordinator.admissionRevision()).kind).toBe('paused');
+    const rejected = queued.waitForPermit().then(
+      () => null,
+      (error: unknown) => error as Error,
+    );
+    expect(queued.cancel()).toEqual({ kind: 'cancelled' });
+    expect((await rejected)?.message).toBe('Launch canceled while queued');
+    expect(coordinator.successionAdmissionPaused()).toBe(true);
+    expect(coordinator.endSuccessionCommitWindow('attempt')).toBe(true);
+    expect(coordinator.releaseLaunch(first.permit).kind).toBe('released');
+  });
+});
 
 const PLATFORM_CAPABILITIES = {
   aix: { canProbeStartTime: false, canSignalProcessGroup: true },
@@ -86,7 +302,7 @@ function testSignalAuthority(pid: number, hasExited: () => boolean, requestTermi
 }
 
 function createCoordinator(): LaunchCoordinator {
-  return new LaunchCoordinator({ runtime: createRealRuntime('prod') });
+  return new LaunchCoordinator({ runtime: createDurableTestRuntime() });
 }
 
 function createProviderProcessRuntime(
@@ -133,7 +349,7 @@ function createProviderProcessRuntime(
     on: events.on.bind(events),
     kill: childKill,
   } as unknown as ChildProcessLike;
-  const base = createRealRuntime('prod');
+  const base = createDurableTestRuntime();
   const spawn = vi.fn<ProcessPort['spawn']>((_options: RuntimeSpawnOptions) => child);
   const processKill = vi.fn<ProcessPort['kill']>((_pid, signal) => {
     if (signal === 0) return _pid < 0 ? groupAlive : processAlive;
@@ -747,7 +963,7 @@ describe('launch admission', () => {
 
   it('reclaims a terminal proxy permit only with exact operation absence evidence', async () => {
     let now = 10_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -805,7 +1021,7 @@ describe('launch admission', () => {
 
   it('does not reclaim a young permit during the reserve-before-journal window', () => {
     let now = 20_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -844,7 +1060,7 @@ describe('launch admission', () => {
 
   it('retains queue-handoff permits after the reclamation age floor', () => {
     let now = 22_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -879,7 +1095,7 @@ describe('launch admission', () => {
 
   it('retains undecided provider-operation ownership until every named record is absent', async () => {
     let now = 25_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -946,7 +1162,7 @@ describe('launch admission', () => {
 
   it('retains permits when an oracle throws or a holder kind has no registered oracle', () => {
     let now = 30_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -985,7 +1201,7 @@ describe('launch admission', () => {
 
   it('never reclaims a permit for a live job', () => {
     let now = 40_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -1024,7 +1240,7 @@ describe('launch admission', () => {
   });
 
   it('rejects a synthetic durable reservation that collides across pools', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const uuid = vi.fn().mockReturnValueOnce('existing-reservation').mockReturnValueOnce('collision');
     const localCoordinator = new LaunchCoordinator({ runtime: { ...base, ids: { ...base.ids, uuid } } });
     const existing = localCoordinator.requestLaunch(
@@ -1605,7 +1821,7 @@ describe('launch admission', () => {
   });
 
   it('bounds a pending wrapper join and reports the retained launch identity', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const runtime: Runtime = {
       ...base,
       process: {
@@ -1638,8 +1854,55 @@ describe('launch admission', () => {
     });
   });
 
+  it('notifies succession when a pending durable launch settles after its wrapper joins', async () => {
+    const base = createDurableTestRuntime();
+    let settleWrapper!: () => void;
+    const wrapperSettlement = new Promise<void>((resolve) => {
+      settleWrapper = resolve;
+    });
+    const launch = vi.fn((options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
+      options.onWrapperSpawned?.({
+        pid: TEST_PROVIDER_PID,
+        settled: wrapperSettlement,
+        requestTermination: () => ({
+          kind: 'signal-failed' as const,
+          pid: TEST_PROVIDER_PID,
+          signal: 'SIGTERM' as const,
+          reason: 'kill-port-returned-false' as const,
+        }),
+      });
+      return new Promise<never>(() => undefined);
+    });
+    const runtime: Runtime = {
+      ...base,
+      process: {
+        ...base.process,
+        durable: { ...base.process.durable, launch },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    const notify = vi.fn();
+    const unsubscribe = localCoordinator.subscribeSuccessionObligationChanges(notify);
+    void localCoordinator.spawnDurableJob({
+      provider: 'codex',
+      command: 'codex',
+      args: ['exec'],
+      jobDir: '/tmp/joined-pending-wrapper',
+      jobId: 'joined-pending-wrapper',
+    });
+    await vi.waitFor(() => expect(launch).toHaveBeenCalledOnce());
+    expect(localCoordinator.pendingDurableJobIds()).toEqual(['joined-pending-wrapper']);
+    notify.mockClear();
+
+    settleWrapper();
+
+    await vi.waitFor(() => expect(localCoordinator.pendingDurableLaunchCount()).toBe(0));
+    expect(notify).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
   it('closes the pending launch snapshot at the synchronous registration boundary', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const controller = new AbortController();
     // eslint-disable-next-line prefer-const -- circular: the launch stub closes over localCoordinator, but localCoordinator is constructed from a runtime that carries that stub
     let localCoordinator!: LaunchCoordinator;
@@ -1691,7 +1954,7 @@ describe('launch admission', () => {
   });
 
   it('retains a held durable launch until its join settles before propagating failure', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     let observeLaunch!: () => void;
     const launchObserved = new Promise<void>((resolve) => {
       observeLaunch = resolve;
@@ -1746,7 +2009,7 @@ describe('launch admission', () => {
 
   it('keeps a caller-owned launch slot while an aborted wrapper remains unsettled', async () => {
     process.env.CORAL_MAX_WORKERS = '1';
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const requestTermination = vi.fn(() => ({
       kind: 'signal-failed' as const,
       pid: TEST_PROVIDER_PID,
@@ -1871,7 +2134,7 @@ describe('launch admission', () => {
   });
 
   it('keeps the launch slot while an aborted pending wrapper termination has not settled', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     let acceptWrapper!: () => void;
     const wrapperAccepted = new Promise<void>((resolve) => {
       acceptWrapper = resolve;
@@ -1940,7 +2203,7 @@ describe('launch admission', () => {
   });
 
   it('reaps a live Darwin wrapper before propagating a readiness rejection', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_001);
     let elapsedMs = 0n;
     let exited = false;
@@ -2017,7 +2280,7 @@ describe('launch admission', () => {
   });
 
   it('publishes and abandons an incarnation-bound wrapper hold after readiness rejects', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_002);
     let elapsedMs = 0n;
     const requestTermination = vi.fn();
@@ -2110,7 +2373,7 @@ describe('launch admission', () => {
   });
 
   it('does not mint absence from an abruptly dead wrapper while its recorded child remains alive', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     let rejectLaunch!: (error: Error) => void;
     const incarnation = testIncarnation(7_001);
     const childPid = TEST_PROVIDER_PID + 1;
@@ -2205,7 +2468,7 @@ describe('launch admission', () => {
   });
 
   it('releases cleanup ownership before propagating a wrapper crash', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_002);
     const childRoot = { pid: TEST_PROVIDER_PID + 1, incarnation };
     const runtimeRecord = {
@@ -2270,7 +2533,7 @@ describe('launch admission', () => {
   });
 
   it('lets the reported synthetic holder abort a stuck containment and release its exact permit', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_002);
     const childRoot = { pid: TEST_PROVIDER_PID + 1, incarnation };
     const runtimeRecord = {
@@ -2374,7 +2637,7 @@ describe('launch admission', () => {
   });
 
   it('retains cleanup ownership and settlement when absence publication fails', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_003);
     const childRoot = { pid: TEST_PROVIDER_PID + 1, incarnation };
     const runtimeRecord = {
@@ -2385,9 +2648,8 @@ describe('launch admission', () => {
       startTime: new Date(0).toISOString(),
     };
     let processAbsent = false;
-    let retryCleanup!: () => void;
-    const retryHandle = {};
-    const clearInterval = vi.fn();
+    const intervals = new Map<object, () => void>();
+    const clearInterval = vi.fn((handle: object) => intervals.delete(handle));
     const exitRecord = { exitCode: 0, signal: null, endTime: new Date(1).toISOString() } as const;
     let resolveExit!: (record: typeof exitRecord) => void;
     const exit = new Promise<typeof exitRecord>((resolve) => {
@@ -2399,8 +2661,9 @@ describe('launch admission', () => {
       time: {
         ...base.time,
         setInterval: (callback) => {
-          retryCleanup = callback;
-          return retryHandle;
+          const handle = { unref: vi.fn() };
+          intervals.set(handle, callback);
+          return handle;
         },
         clearInterval,
       },
@@ -2475,6 +2738,10 @@ describe('launch admission', () => {
     const retainedCleanup = [...cleanupOwnership.cleanupHandles.values()][0];
     if (retainedCleanup === undefined) throw new Error('Expected retained durable cleanup ownership');
     await retainedCleanup();
+    expect(intervals.size).toBe(1);
+    const retry = [...intervals.entries()][0];
+    if (retry === undefined) throw new Error('Expected active containment retry');
+    const [retryHandle, retryCleanup] = retry;
     processAbsent = true;
     retryCleanup();
     expect(holdControl?.abandon()).toEqual({
@@ -2488,7 +2755,8 @@ describe('launch admission', () => {
     expect(absencePublicationAttempts).toBe(1);
     expect(cleanupOwnership.cleanupHandles.size).toBe(1);
     expect(cleanupOwnership.cleanupRetentions.size).toBe(1);
-    expect(clearInterval).not.toHaveBeenCalled();
+    expect(clearInterval).not.toHaveBeenCalledWith(retryHandle);
+    expect(intervals.has(retryHandle)).toBe(true);
     expect(settled).toBe(false);
 
     expect(holdControl?.abandon()).toEqual({

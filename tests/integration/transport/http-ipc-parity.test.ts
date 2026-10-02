@@ -7,6 +7,7 @@ import { createHttpHandler } from '#src/transport/http/handler.js';
 import { closeIpcServer, createIpcServer, ipcAdapter, listenIpcServer } from '#src/transport/ipc/server.js';
 import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
+import { durableRequestIdentity } from '#src/runtime/request-lease-identity.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { kbSourceCreateRequestSchema } from '#src/kb/tool-contracts.js';
 import { testPrincipal } from '../../helpers/principal.js';
@@ -92,9 +93,13 @@ function createPorts(): HttpHandlerPorts {
     jobs: {
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),
       abort: vi.fn(),
+      validateWait: vi.fn(() => null),
+      waitHandoverSignal: vi.fn(() => new AbortController().signal),
       waitStream: vi.fn(),
       list: vi.fn(() => []),
       detail: vi.fn(() => null),
+      unknownJobDisposition: vi.fn(() => 'not-found' as const),
+      outcomeUnrecoverable: vi.fn(() => []),
     },
     workflows: {
       execute: vi.fn(),
@@ -191,6 +196,32 @@ afterEach(async () => {
 });
 
 describe('http/ipc parity', () => {
+  it('binds a session launch to the request signal and a durable job ID', async () => {
+    const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
+    if (!spec) throw new Error('sessions.create spec not found');
+    const ports = createPorts();
+    const controller = new AbortController();
+    const projectRoot = makeProjectRoot();
+    const start = vi.fn(async (_provider: string, input: { jobId?: string }, _ctx: unknown, signal?: AbortSignal) => {
+      expect(signal).toBe(controller.signal);
+      expect(input.jobId).toBe(durableRequestIdentity(controller.signal)?.jobId);
+      return {
+        kind: 'provider-session' as const,
+        status: 'running' as const,
+        jobId: input.jobId!,
+        sessionId: 'session-1',
+      };
+    });
+    ports.sessions.start = start;
+
+    await ipcAdapter(spec, ports).dispatch(
+      { provider: 'claude', prompt: 'hello', projectRoot, providerScope: TEST_PROVIDER_SCOPE },
+      testPrincipal({ transport: 'ipc' }),
+      controller.signal,
+    );
+    expect(start).toHaveBeenCalledOnce();
+    expect(durableRequestIdentity(controller.signal)?.jobId).toEqual(expect.any(String));
+  });
   it('preserves the explicit IPC caller scope independently of the configured system scope', async () => {
     const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
     if (!spec) throw new Error('sessions.create spec not found');
@@ -495,6 +526,7 @@ describe('http/ipc parity', () => {
         }),
         projectRoot,
       }),
+      undefined,
     );
   });
 

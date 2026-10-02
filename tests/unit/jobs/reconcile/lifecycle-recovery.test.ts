@@ -20,6 +20,7 @@ import type { JobStore } from '#src/jobs/store.js';
 import type { SessionOpenedBody } from '#src/sessions/event-bodies.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { retirementMintDisposition } from '#src/store/epoch/index.js';
 import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
 import {
   KB_COMPONENT_ID,
@@ -46,7 +47,7 @@ import type { RunJobsStartupFn } from '#src/jobs/startup.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { none } from '#src/providers/capability.js';
@@ -786,6 +787,10 @@ function createLifecycleHarness(
   const controller = modules.lifecycleModule.createLifecycle(
     {
       storeFormat: currentCoralStoreFormat(),
+      authorizeStartupMint: (observation) =>
+        observation.incumbent === null && observation.observedEpochCount === 0
+          ? retirementMintDisposition('initial', null)
+          : null,
       identity: {
         pluginRoot: options.pluginRoot,
         namespace,
@@ -838,6 +843,14 @@ function createLifecycleHarness(
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: options.cleanupStaleJobsFn ?? (() => {}),
       readSelfIncarnationFn: () => null,
+      successionIncumbent: () => ({
+        instanceId: 'test-coordinator',
+        pid: process.pid,
+        incarnation: null,
+        version: '0.0.0',
+        bundleHash: 'test-bundle',
+        flavor: 'prod',
+      }),
       markJobsAsErrorFn: options.markJobsAsErrorFn ?? (() => {}),
       settlePendingLaunchesFn: options.settlePendingLaunchesFn ?? (() => ({ kind: 'all-pending-launches-settled' })),
       terminateRegisteredChildrenFn:
@@ -925,7 +938,7 @@ function createActualRecoveryService(
     },
     {
       runtime,
-      childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+      childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
       progressStore: options.progressStore,
       bundleHash: '1111111111111111',
       backendNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),

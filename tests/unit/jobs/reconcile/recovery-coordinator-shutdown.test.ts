@@ -6,6 +6,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
+import { retirementMintDisposition } from '#src/store/epoch/index.js';
 import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { jobsDir } from '#src/jobs/paths.js';
@@ -478,6 +479,10 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const controller = modules.lifecycleModule.createLifecycle(
     {
       storeFormat: currentCoralStoreFormat(),
+      authorizeStartupMint: (observation) =>
+        observation.incumbent === null && observation.observedEpochCount === 0
+          ? retirementMintDisposition('initial', null)
+          : null,
       identity: {
         pluginRoot,
         namespace,
@@ -522,6 +527,14 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: () => {},
       readSelfIncarnationFn: () => null,
+      successionIncumbent: () => ({
+        instanceId: 'test-coordinator',
+        pid: process.pid,
+        incarnation: null,
+        version: '0.0.0',
+        bundleHash: 'test-bundle',
+        flavor: 'prod',
+      }),
       markJobsAsErrorFn: () => {},
       settlePendingLaunchesFn: () => ({ kind: 'all-pending-launches-settled' }),
       terminateRegisteredChildrenFn: () => ({ kind: 'all-children-observed-absent' }),

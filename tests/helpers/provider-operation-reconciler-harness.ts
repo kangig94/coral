@@ -22,7 +22,10 @@ import { readProviderOperation } from '#src/store/provider-operation-journal.js'
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import {
   asJointActivationReceipt,
@@ -105,6 +108,7 @@ export type ProviderOperationReconcilerHarnessOverrides = {
   disappearanceTerminalization?: ProviderProxyRecoveryProducerPorts['disappearance-terminalization'];
   time?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
   onError?: (message: string) => void;
+  onRecordRemoved?: () => void;
   beforeCommitOnce?: () => void;
   failCommitOnce?: boolean;
   binding?: (source: ProviderOperationBindingPort) => ProviderOperationBindingPort;
@@ -187,6 +191,7 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
     providerHosts: unexercisedProviderHostControls,
+    ...unexercisedControllerSuccessionControls,
     autonomousDeadline: {
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       adoptionWindowMs: Number.MAX_SAFE_INTEGER,
@@ -353,6 +358,7 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
       fatalErrors.push(error);
     },
     ...(overrides.onError === undefined ? {} : { onError: overrides.onError }),
+    ...(overrides.onRecordRemoved === undefined ? {} : { onRecordRemoved: overrides.onRecordRemoved }),
     time: {
       now: () => now,
       setTimeout: overrides.time?.setTimeout ?? (() => ({ unref: () => undefined })),

@@ -10,7 +10,7 @@ decision and the successor's process custody there.
 
 When a coordinator acknowledges an abort of a saga-owned job, the saga row carries that stop. When it cannot make that true, it answers before any effect and names the successor as owner.
 
-A direct `jobs.abort` already meets the refusal half. `ProviderOperationReconciler.requestStops` and `createCoordinatorControl.abortJobs` (`src/coordinator/composition/job-control.ts`) never acknowledge a stop they could not record, and once provider-operation mutation admission has closed they refuse before any effect so a successor records it. What they do not yet do everywhere is **answer from the row**: member 2 is reachable through a direct request, and members 1 and 3 are reachable elsewhere.
+A direct `jobs.abort` already meets the refusal half. `ProviderOperationReconciler.requestStops` and `abortCoordinatorJobs` (`src/coordinator/composition/job-abort.ts`) never acknowledge a stop they could not record, and once provider-operation mutation admission has closed they refuse before any effect so a successor records it. What they do not yet do everywhere is **answer from the row**: member 2 is reachable through a direct request, and members 1 and 3 are reachable elsewhere.
 
 ## Members
 

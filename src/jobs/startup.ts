@@ -132,6 +132,8 @@ export type JobsStartupContext = {
    * the durable session interruption trigger.
    */
   interruptedAppServerReason?: InterruptedAppServerReason;
+  /** Jobs handed over with a live execution host must never be finalized or reaped by interrupted-job recovery. */
+  transferredJobIds?: ReadonlySet<string>;
 };
 
 export type JobsStartupRecoveryDisposition =

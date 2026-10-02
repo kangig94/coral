@@ -11,6 +11,7 @@ import {
   type ProviderHostInventoryRecordWire,
 } from '../../providers/host-inventory-schema.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 
 export type ProviderHostInventoryRecord = ProviderHostInventoryRecordWire;
 
@@ -125,7 +126,11 @@ export class ProviderHostAdministrationService {
     return freezeRow(selected.owner.ownerId, inspected);
   }
 
-  async evict(selector: ProviderHostSelector): Promise<Readonly<{ ownerId: string; hostRef: HostRef }>> {
+  async evict(
+    selector: ProviderHostSelector,
+    signal?: AbortSignal,
+  ): Promise<Readonly<{ ownerId: string; hostRef: HostRef }>> {
+    throwIfRequestAborted(signal);
     if ('workDir' in selector) {
       throw new ProviderHostAdministrationError('provider_host_eviction_requires_exact_ref');
     }
@@ -134,6 +139,7 @@ export class ProviderHostAdministrationService {
       retainedOwnerId === undefined
         ? await this.selectInitialEvictionOwner(selector.hostRef)
         : this.retainedEvictionOwner(this.captureOwners(), selector.hostRef);
+    throwIfRequestAborted(signal);
     this.retainEvictionOwner(selected.owner.ownerId, selected.hostRef);
     let disposition: ProviderHostEvictionDisposition;
     try {

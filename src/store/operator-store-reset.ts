@@ -11,7 +11,7 @@ import {
   resolveCurrentStoreEpoch,
   sweepStoreEpochs,
   type StoreEpoch,
-} from './epoch.js';
+} from './epoch/index.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import { acquireGenerationAdoptionLock, resolveGenerationBoundaryPaths } from './generation-mutation-coordination.js';
 import { observeStorePath } from './path-observation.js';
@@ -66,7 +66,8 @@ export type StoreResetReleasePresentation =
         | 'release-lock-release-failed'
         | 'release-pre-deletion-durability-sync-failed'
         | 'release-absent-durability-sync-failed'
-        | 'release-durability-sync-failed';
+        | 'release-durability-sync-failed'
+        | 'release-closure-required';
       readonly epoch: StoreEpoch;
       readonly target: 'gen2';
       readonly flavor: BuildFlavor;
@@ -199,6 +200,7 @@ export async function releaseStoreReset(options: {
       if (result === 'unobservable-holder') return { kind: 'release-holder-unobservable', ...base };
       if (result === 'holder-cleanup-failed') return { kind: 'release-holder-cleanup-failed', ...base };
       if (result === 'deletion-failed') return { kind: 'release-deletion-failed', ...base };
+      if (result === 'closure-required') return { kind: 'release-closure-required', ...base };
       if (result === 'lock-release-failed') return { kind: 'release-lock-release-failed', ...base };
       if (result === 'pre-deletion-durability-sync-failed') {
         return { kind: 'release-pre-deletion-durability-sync-failed', ...base };

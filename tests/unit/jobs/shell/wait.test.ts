@@ -41,7 +41,7 @@ import {
   type AgentRef,
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle } from '#src/providers/app-server-transport.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
@@ -222,7 +222,7 @@ function createService(
     }
   };
   return new ExecutionService(ctx, {
-    childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+    childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
     runtime,
     progressStore,
     bundleHash: options.bundleHash,

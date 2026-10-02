@@ -133,8 +133,8 @@ function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<s
  * `CORAL_*` keys the daemon owns and a caller may never set through the
  * per-request `coralEnv` forwarding channel (see `filterForwardableCoralEnv`).
  *
- * - Identity / auth / lineage. `CORAL_CHILD_PRINCIPAL_HANDLE` is minted per
- *   child by the daemon, `CORAL_JOB_ID` / `CORAL_SESSION_ID` are set from the
+ * - Identity / auth / lineage. `CORAL_CHILD_CREDENTIAL_ID` / `CORAL_CHILD_CREDENTIAL_KEY`
+ *   (and a shipped daemon's `CORAL_CHILD_PRINCIPAL_HANDLE`) are minted per child by the daemon, `CORAL_JOB_ID` / `CORAL_SESSION_ID` are set from the
  *   validated jobId/sessionId body fields, and `CORAL_CHILD` marks the child
  *   boundary. Taking any of these from untrusted wire input would let a caller
  *   forge child credentials or misattribute work to another job/session.
@@ -150,6 +150,8 @@ function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<s
 export const DAEMON_OWNED_CORAL_ENV_KEYS: ReadonlySet<string> = new Set([
   'CORAL_CHILD',
   'CORAL_CHILD_PRINCIPAL_HANDLE',
+  'CORAL_CHILD_CREDENTIAL_ID',
+  'CORAL_CHILD_CREDENTIAL_KEY',
   'CORAL_JOB_ID',
   'CORAL_SESSION_ID',
   BUILD_FLAVOR_ENV_KEY,

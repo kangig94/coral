@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
+import {
+  CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+  SUCCESSION_CAPABILITIES_FILE,
+} from '#src/infra/bundle-manifest-address.js';
 import {
   assertLifecycleBundleSetFresh,
   lifecycleBundleSourceSha256,
@@ -21,11 +24,13 @@ const INPUTS = [
 ] as const;
 const OUTPUTS = {
   backend: 'clients/build/coral-backend.cjs',
+  sentinel: 'clients/build/coral-sentinel.cjs',
   cli: 'clients/build/coral-cli',
   claudeAppserver: 'clients/build/coral-claude-appserver.cjs',
   durableWrapper: 'clients/build/coral-durable-wrapper.cjs',
   legacyManifest: 'clients/build/manifest.json',
   strictManifest: `clients/build/${CURRENT_STRICT_BUNDLE_MANIFEST_FILE}`,
+  successionCapabilities: `clients/build/${SUCCESSION_CAPABILITIES_FILE}`,
 } as const;
 
 function sha256(content: string): string {
@@ -54,6 +59,7 @@ function createFreshBuildFixture(): string {
     inputs: [...INPUTS],
     outputs: {
       backend: { path: OUTPUTS.backend, sha256: sha256(`output:${OUTPUTS.backend}`) },
+      sentinel: { path: OUTPUTS.sentinel, sha256: sha256(`output:${OUTPUTS.sentinel}`) },
       cli: { path: OUTPUTS.cli, sha256: sha256(`output:${OUTPUTS.cli}`) },
       claudeAppserver: {
         path: OUTPUTS.claudeAppserver,
@@ -70,6 +76,10 @@ function createFreshBuildFixture(): string {
       strictManifest: {
         path: OUTPUTS.strictManifest,
         sha256: sha256(`output:${OUTPUTS.strictManifest}`),
+      },
+      successionCapabilities: {
+        path: OUTPUTS.successionCapabilities,
+        sha256: sha256(`output:${OUTPUTS.successionCapabilities}`),
       },
     },
   };
@@ -91,6 +101,12 @@ describe('lifecycle bundle build freshness', () => {
     const root = createFreshBuildFixture();
 
     expect(() => assertLifecycleBundleSetFresh(root)).not.toThrow();
+  });
+
+  it('rejects a changed capability declaration', () => {
+    const root = createFreshBuildFixture();
+    writeFixtureFile(root, OUTPUTS.successionCapabilities, 'changed declaration');
+    expect(captureFreshnessResult(root)).toBe(STALE_BUILD_DIAGNOSTIC);
   });
 
   it('rejects stale lifecycle build inputs and outputs', () => {

@@ -1,6 +1,12 @@
+import { parseLaunchStatus, type LaunchStatus } from '../../../infra/launch-status.js';
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { assertNever, serializedThrownIdentifierSchema } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
+import {
+  parseVisibleUpgradeIntent,
+  type UpgradeIntentProblem,
+  type UpgradeIntentVisibility,
+} from '../../../infra/upgrade-intent.js';
 import {
   shutdownRemainderEntrySchema,
   shutdownRemainderProjectionEnvelopeSchema,
@@ -144,6 +150,9 @@ export interface BackendHealth {
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
   shutdown?: BackendShutdownRemainderProjection;
+  succession?: UpgradeIntentVisibility;
+  successionProblem?: UpgradeIntentProblem;
+  launchStatus?: LaunchStatus;
   diagnostics?: LaunchPermitDiagnostics & {
     carriers?: {
       coverage: 'complete' | 'unknown';
@@ -875,12 +884,29 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     return null;
   }
   const shutdown = value.shutdown === undefined ? null : parseShutdownRemainderProjection(value.shutdown);
+  // Succession fields are optional additions: one this build cannot decode is dropped, never a rejected health.
+  const {
+    succession: rawSuccession,
+    successionProblem: rawSuccessionProblem,
+    launchStatus: rawLaunchStatus,
+    ...reported
+  } = value;
+  const succession = rawSuccession === undefined ? null : parseVisibleUpgradeIntent(rawSuccession);
+  const successionProblem =
+    rawSuccessionProblem === 'unreadable' ||
+    rawSuccessionProblem === 'corrupt' ||
+    rawSuccessionProblem === 'unsupported'
+      ? rawSuccessionProblem
+      : null;
 
   return {
     health: {
-      ...value,
+      ...reported,
+      launchStatus: parseLaunchStatus(rawLaunchStatus),
       ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
       ...(shutdown === null ? {} : { shutdown }),
+      ...(succession === null ? {} : { succession }),
+      ...(successionProblem === null ? {} : { successionProblem }),
     } as BackendHealth,
     skippedProviderProxySetRows: diagnostics?.skippedProviderProxySetRows ?? 0,
     skippedProviderProxySetTokens: diagnostics?.skippedProviderProxySetTokens ?? [],

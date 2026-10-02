@@ -51,7 +51,7 @@ import {
   guardianAcquisitionPublishResultSchema,
   proxyAcquisitionPublishResultSchema,
 } from '#src/provider-proxy/protocol.js';
-import { readHandoffCapsuleFile, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
+import { readHandoffCapsuleFile, type HandoffCapsuleV4 } from '#src/provider-proxy/handoff-capsule.js';
 import {
   isProviderProxyOperationAuthority,
   notifyProviderProxyControlEstablished,
@@ -89,7 +89,10 @@ import {
   createTestProviderProxyRecoveryDispatcher,
 } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -137,13 +140,14 @@ const containmentProofDb = newRawDatabase(':memory:');
 applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
 afterAll(() => containmentProofDb.close());
 
-const publicationUnknownCapsule: HandoffCapsuleV3 = {
-  version: 3,
+const publicationUnknownCapsule: HandoffCapsuleV4 = {
+  version: 4,
   grantId: '77777777-7777-4777-8777-777777777777',
   secret: 'c'.repeat(64),
   generation: 'gen2',
   flavor: 'prod',
   buildSetId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.buildSetId,
+  controllerBuildSetId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.buildSetId,
   hostFingerprint: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.hostFingerprint,
   guardianInstanceId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.guardianInstanceId,
   reaperInstanceId: ACQUISITION_PUBLISH_REAPER_IDENTITY.reaperInstanceId,
@@ -600,6 +604,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     mockedCreateSetAuthority.mockImplementation((options) => ({
       proxyInstanceId: options.proxyInstanceId,
       providerHosts: unexercisedProviderHostControls,
+      ...unexercisedControllerSuccessionControls,
       autonomousDeadline: {
         orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
         adoptionWindowMs: Number.MAX_SAFE_INTEGER,
@@ -721,6 +726,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     mockedCreateSetAuthority.mockImplementation((options) => ({
       proxyInstanceId: options.proxyInstanceId,
       providerHosts: unexercisedProviderHostControls,
+      ...unexercisedControllerSuccessionControls,
       autonomousDeadline: {
         orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
         adoptionWindowMs: Number.MAX_SAFE_INTEGER,
@@ -777,7 +783,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     // capsule handed to the authority under the wrong name is that build refusing to boot. Asserting the
     // suffix that v0.10.8's own discovery pattern cannot match is the whole property.
     expect(mockedCreateSetAuthority.mock.calls[0]?.[0]?.handoffCapsulePath).toMatch(
-      /\/provider-1[0-9a-f]{23}\.handoff\.v3\.json$/u,
+      /\/provider-1[0-9a-f]{23}\.handoff\.v4\.json$/u,
     );
     const set = established.set;
     const claims = new ProviderProxySetClaimMirror();
@@ -869,6 +875,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     mockedCreateSetAuthority.mockImplementation((options) => ({
       proxyInstanceId: options.proxyInstanceId,
       providerHosts: unexercisedProviderHostControls,
+      ...unexercisedControllerSuccessionControls,
       autonomousDeadline: {
         orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
         adoptionWindowMs: Number.MAX_SAFE_INTEGER,
@@ -920,7 +927,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
       throw new Error(`expected publication handoff, received ${disposition.kind}`);
     }
     expect(providerProxyAcquisitionSessionDescriptor(disposition.session)).toMatchObject({
-      capsulePath: expect.stringMatching(/\.handoff\.v3\.json$/u),
+      capsulePath: expect.stringMatching(/\.handoff\.v4\.json$/u),
       capsuleBinding: publicationUnknownCapsule,
     });
     expect(guardianClosed.value).toBe(false);

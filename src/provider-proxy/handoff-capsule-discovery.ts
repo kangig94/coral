@@ -1,9 +1,15 @@
 import { dirname, join } from 'node:path';
 
-import { providerHandoffCapsuleFileSuffix, providerHandoffCapsulePath } from '../infra/path/index.js';
+import {
+  providerHandoffCapsuleFileSuffix,
+  providerHandoffCapsulePath,
+  type ProviderBootstrapCapsulePathOptions,
+  type ProviderProxyEndpointIdentity,
+} from '../infra/path/index.js';
 import type { StoragePort } from '../infra/port-types.js';
 import {
   SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
+  currentHandoffCapsulePathBeside,
   readHandoffCapsuleFile,
   type HandoffCapsule,
   type HandoffCapsuleFileEnvironment,
@@ -57,4 +63,39 @@ export function readProviderHandoffCapsuleCandidate(
     return { kind: 'invalid', path, reason: 'provider_proxy_handoff_capsule_path_mismatch' };
   }
   return { kind: 'readable', path, capsule };
+}
+
+/** Only a v4 capsule preserving every v3 grant and host field may supersede the old address. */
+export function supersededHandoffCapsulePaths(
+  candidates: readonly Readonly<{ path: string; capsule: HandoffCapsule }>[],
+): ReadonlySet<string> {
+  const byPath = new Map(candidates.map((candidate) => [candidate.path, candidate.capsule]));
+  const superseded = new Set<string>();
+  for (const { path, capsule } of candidates) {
+    if (capsule.version !== 3) continue;
+    const current = byPath.get(currentHandoffCapsulePathBeside(path, capsule.version));
+    if (current?.version !== 4) continue;
+    if (
+      Object.entries(capsule).every(
+        ([key, value]) => key === 'version' || current[key as keyof typeof current] === value,
+      )
+    ) {
+      superseded.add(path);
+    }
+  }
+  return superseded;
+}
+
+export function readAddressedHandoffCapsule(
+  identity: ProviderProxyEndpointIdentity,
+  pathOptions: ProviderBootstrapCapsulePathOptions | undefined,
+  environment: HandoffCapsuleFileEnvironment,
+): Readonly<{ path: string; capsule: HandoffCapsule }> | null {
+  const newestFirst = [...SUPPORTED_HANDOFF_CAPSULE_VERSIONS].sort((left, right) => right - left);
+  const paths = [...new Set(newestFirst.map((version) => providerHandoffCapsulePath(identity, version, pathOptions)))];
+  for (const path of paths) {
+    const capsule = readHandoffCapsuleFile(path, environment);
+    if (capsule !== null) return { path, capsule };
+  }
+  return null;
 }

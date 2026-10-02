@@ -1,4 +1,6 @@
 import type { Capability } from '../../security/capability.js';
+import { SUCCESSION_METHODS } from '../../infra/succession-address.js';
+import { CHILD_AUTH_CHALLENGE_METHOD } from '../../security/child-credential.js';
 import {
   jobsAbortRpcSpec,
   providerHostEvictRpcSpec,
@@ -13,7 +15,15 @@ import {
 
 const [healthPath, shutdownPath, kbRestartPath, eventsStreamPath] = transportOperationalCarveouts;
 
-type OperationalDispatchKind = 'ping' | 'health' | 'event-stream' | 'shutdown' | 'kb-restart' | 'catalog';
+type OperationalDispatchKind =
+  | 'ping'
+  | 'challenge'
+  | 'health'
+  | 'event-stream'
+  | 'shutdown'
+  | 'kb-restart'
+  | 'succession'
+  | 'catalog';
 type OperationalAuthentication = 'none' | 'principal';
 
 /** What a refused answer means for the caller. Declared per route, beside the route. */
@@ -46,9 +56,11 @@ export type IpcOperationalSpec = OperationalBaseSpec & {
   readonly ipc: {
     readonly method:
       | 'transport.ping'
+      | typeof CHILD_AUTH_CHALLENGE_METHOD
       | 'transport.health'
       | 'transport.shutdown'
       | 'transport.kb.restart'
+      | (typeof SUCCESSION_METHODS)[keyof typeof SUCCESSION_METHODS]
       | typeof jobsAbortRpcSpec.name
       | typeof providerProxySetContainBooleanRpcSpec.name
       | typeof providerProxySetContainRpcSpec.name
@@ -118,6 +130,15 @@ export const operationalRouteSpecs: readonly OperationalRouteSpec[] = [
     authentication: 'none',
   },
   {
+    id: 'ipc.transport.challenge',
+    transport: 'ipc',
+    ipc: { method: CHILD_AUTH_CHALLENGE_METHOD },
+    requires: 'liveness',
+    requiresRunningLifecycle: false,
+    dispatch: { kind: 'challenge' },
+    authentication: 'none',
+  },
+  {
     id: 'ipc.transport.health',
     transport: 'ipc',
     ipc: { method: 'transport.health' },
@@ -144,6 +165,15 @@ export const operationalRouteSpecs: readonly OperationalRouteSpec[] = [
     dispatch: { kind: 'kb-restart' },
     authentication: 'principal',
   },
+  ...Object.values(SUCCESSION_METHODS).map((method) => ({
+    id: `ipc.${method}`,
+    transport: 'ipc' as const,
+    ipc: { method },
+    requires: 'system:shutdown' as const,
+    requiresRunningLifecycle: false,
+    dispatch: { kind: 'succession' as const },
+    authentication: 'principal' as const,
+  })),
   {
     id: 'ipc.jobs.abort.drain-recovery',
     transport: 'ipc',

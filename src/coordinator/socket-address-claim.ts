@@ -2,7 +2,7 @@ import { posix, win32 } from 'node:path';
 
 import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
 import { formatError } from '../infra/error-format.js';
-import { v0109CoordinatorSocketGuardSetForRunDir } from '../infra/path/index.js';
+import { v0100CoordinatorSocketPathForRunDir, v0109CoordinatorSocketGuardSetForRunDir } from '../infra/path/index.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { PublishedIpcSocketAddress } from '../transport/ipc/server.js';
@@ -48,42 +48,75 @@ export function createCoordinatorSocketAddressClaim(
     );
   }
 
-  const computedSocketPaths = new Set(v0109SocketGuards.paths);
+  const legacySocketGuards = v0109CoordinatorSocketGuardSetForRunDir(
+    runtime.paths.coral.coordinator.legacyRunDir,
+    runtime.flavor,
+    {
+      platform,
+      configuredTempDirectory: runtime.env.get('TMPDIR'),
+      systemTempDirectory: runtime.env.tmpdir(),
+    },
+  );
+  if (legacySocketGuards.kind === 'address-unenumerable') {
+    throw new Error(
+      `Cannot enumerate the shipped v0.10.0 coordinator socket from ${legacySocketGuards.source}=${JSON.stringify(legacySocketGuards.value)}.`,
+    );
+  }
+
+  const computedSocketPaths = new Set([
+    ...v0109SocketGuards.paths,
+    ...legacySocketGuards.paths,
+    v0100CoordinatorSocketPathForRunDir(runtime.paths.coral.coordinator.legacyRunDir, runtime.flavor, {
+      platform,
+      configuredTempDirectory: runtime.env.get('TMPDIR'),
+      systemTempDirectory: runtime.env.tmpdir(),
+    }),
+  ]);
   const publishedSocketAddresses = new Map<string, PublishedIpcSocketAddress>();
-  const asPublishedSocketAddress = (socketPath: string): PublishedIpcSocketAddress => {
+  const asPublishedSocketAddress = (
+    socketPath: string,
+    runDir: string,
+    primaryPath: string,
+    infoFile: string,
+  ): PublishedIpcSocketAddress => {
     const path = platform === 'win32' ? win32 : posix;
     const publishedParent = path.dirname(socketPath);
-    const publishedGuards = v0109CoordinatorSocketGuardSetForRunDir(
-      runtime.paths.coral.coordinator.runDir,
-      runtime.flavor,
-      {
-        platform,
-        configuredTempDirectory: publishedParent,
-        systemTempDirectory: publishedParent,
-      },
-    );
-    if (publishedGuards.kind !== 'guarded-addresses' || !publishedGuards.paths.includes(socketPath)) {
+    const publishedGuards = v0109CoordinatorSocketGuardSetForRunDir(runDir, runtime.flavor, {
+      platform,
+      configuredTempDirectory: publishedParent,
+      systemTempDirectory: publishedParent,
+    });
+    if (
+      socketPath !== primaryPath &&
+      (publishedGuards.kind !== 'guarded-addresses' || !publishedGuards.paths.includes(socketPath))
+    ) {
       throw documentedCoralSetupError({
         code: 'coordinator_record_unreadable',
         subject,
-        path: runtime.paths.coral.coordinator.infoFile,
+        path: infoFile,
         detail: `published socket path is outside Coral's coordinator namespace: ${JSON.stringify(socketPath)}`,
       });
     }
     return { socketPath, ownedSocketName: path.basename(socketPath) };
   };
-  const rememberPublishedSocket = (): PublishedCoordinatorSocketRead => {
-    const observation = readPublishedCoordinatorSocket(runtime, subject, platform);
-    if (
-      observation.kind === 'published' &&
-      observation.socketPath !== primarySocketPath &&
-      !computedSocketPaths.has(observation.socketPath)
-    ) {
-      publishedSocketAddresses.set(observation.socketPath, asPublishedSocketAddress(observation.socketPath));
+  const rememberPublishedSockets = (): PublishedCoordinatorSocketRead => {
+    const coordinator = runtime.paths.coral.coordinator;
+    const current = readPublishedCoordinatorSocket(runtime, subject, platform, coordinator.infoFile);
+    const legacy = readPublishedCoordinatorSocket(runtime, subject, platform, coordinator.legacyInfoFile);
+    for (const [observation, runDir, primaryPath, infoFile] of [
+      [current, coordinator.runDir, primarySocketPath, coordinator.infoFile],
+      [legacy, coordinator.legacyRunDir, coordinator.legacySocketPath, coordinator.legacyInfoFile],
+    ] as const) {
+      if (observation.kind !== 'published') continue;
+      if (observation.socketPath === primarySocketPath && infoFile === coordinator.infoFile) continue;
+      const address = asPublishedSocketAddress(observation.socketPath, runDir, primaryPath, infoFile);
+      if (observation.socketPath !== primarySocketPath && !computedSocketPaths.has(observation.socketPath)) {
+        publishedSocketAddresses.set(observation.socketPath, address);
+      }
     }
-    return observation;
+    return current.kind === 'published' ? current : legacy;
   };
-  const initial = rememberPublishedSocket();
+  const initial = rememberPublishedSockets();
   let acquireStarted = false;
   const additionalSocketPaths = (): readonly string[] =>
     [...computedSocketPaths].filter((socketPath) => socketPath !== primarySocketPath);
@@ -94,7 +127,7 @@ export function createCoordinatorSocketAddressClaim(
   return {
     initialIncumbentSocketPath: initial.kind === 'published' ? initial.socketPath : primarySocketPath,
     acquire: async (bindAtomicallyWithPrimary) => {
-      if (acquireStarted) void rememberPublishedSocket();
+      if (acquireStarted) void rememberPublishedSockets();
       acquireStarted = true;
       while (true) {
         const attemptedSocketPaths = additionalSocketPaths();
@@ -107,7 +140,7 @@ export function createCoordinatorSocketAddressClaim(
         if (binding.kind === 'incumbent') return binding;
 
         try {
-          void rememberPublishedSocket();
+          void rememberPublishedSockets();
         } catch (error: unknown) {
           await binding.release();
           throw error;
@@ -126,15 +159,19 @@ function readPublishedCoordinatorSocket(
   runtime: CoordinatorSocketAddressRuntime,
   subject: string,
   platform: string,
+  infoFile: string,
 ): PublishedCoordinatorSocketRead {
   let read: ReturnType<typeof readDiscoveryRecordDisposition>;
   try {
-    read = readDiscoveryRecordDisposition({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
+    read = readDiscoveryRecordDisposition(
+      { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
+      infoFile,
+    );
   } catch (error: unknown) {
     throw documentedCoralSetupError({
       code: 'coordinator_record_unreadable',
       subject,
-      path: runtime.paths.coral.coordinator.infoFile,
+      path: infoFile,
       detail: formatError(error),
     });
   }
@@ -144,7 +181,7 @@ function readPublishedCoordinatorSocket(
         throw documentedCoralSetupError({
           code: 'coordinator_record_unreadable',
           subject,
-          path: runtime.paths.coral.coordinator.infoFile,
+          path: infoFile,
           detail: `published socket path is not absolute: ${JSON.stringify(read.record.socketPath)}`,
         });
       }
@@ -155,7 +192,7 @@ function readPublishedCoordinatorSocket(
       throw documentedCoralSetupError({
         code: 'coordinator_record_unreadable',
         subject,
-        path: runtime.paths.coral.coordinator.infoFile,
+        path: infoFile,
         detail: read.reason,
       });
   }

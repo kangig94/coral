@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  EPOCH_CLOSURE_BOUNDARY,
   SETTLED_UNBOUND_STATUS_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 } from '#src/recovery/source-registry.js';
@@ -17,6 +21,11 @@ import { sessionContinuationLeaseRecoverySource } from '#src/sessions/continuati
 import { sessionProjectionRecoverySource } from '#src/sessions/projection-recovery-source.js';
 import { terminalRetentionOutcomeRecoverySource } from '#src/sessions/terminal-retention-outcome-recovery-source.js';
 import { workflowRecoverySource } from '#src/workflow/recovery-source.js';
+import { createEpochClosureRetryPlan } from '#src/coordinator/services/recovery/epoch-closure-retry-plan.js';
+import { createJobLocationRecoveryRetryPlan } from '#src/jobs/location-recovery.js';
+import { JobLocationIndex } from '#src/jobs/location-index.js';
+import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import {
   createSettledUnboundStatusRetryPlan,
   createUnreadableProviderOperationRetryPlan,
@@ -88,8 +97,8 @@ function activeWrite(retrySubject: RecoverySubject = subject()) {
   };
 }
 
-function createRegistry(behavior: RetryBehavior): RecoverySourceRegistry {
-  const registry = createRecoverySourceRegistry();
+function createRegistry(behavior: RetryBehavior, retryDeadlineMs?: number): RecoverySourceRegistry {
+  const registry = createRecoverySourceRegistry(retryDeadlineMs);
   registry.register<Envelope, string>(boundary, (retrySubject) => ({
     source: defineRecoverySource({
       boundary,
@@ -135,6 +144,7 @@ describe('recovery quarantine retry service', () => {
   let db: Database;
   let quarantine: RecoveryQuarantineStore;
   let envelope: Envelope | null;
+  let boundaryRoot: string | null = null;
 
   beforeEach(() => {
     db = newRawDatabase(':memory:');
@@ -146,6 +156,8 @@ describe('recovery quarantine retry service', () => {
 
   afterEach(() => {
     db.close();
+    if (boundaryRoot !== null) rmSync(boundaryRoot, { recursive: true, force: true });
+    boundaryRoot = null;
   });
 
   function service(
@@ -167,7 +179,18 @@ describe('recovery quarantine retry service', () => {
     revision: 'revision-1',
   } as const;
 
+  it('bounds a recovery source that ignores cancellation', async () => {
+    const registry = createRegistry({ readEnvelope: () => envelope, settle: () => new Promise<never>(() => {}) }, 20);
+    await expect(service('coordinator-1', registry).clear(request)).rejects.toThrow(
+      'Recovery source retry deadline exceeded',
+    );
+  });
+
   it('should keep the runtime registry equal to every manifest boundary', () => {
+    boundaryRoot = mkdtempSync(join(tmpdir(), 'coral-recovery-boundaries-'));
+    const runtime = createRealRuntime('prod', { baseDir: boundaryRoot });
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const signal = new AbortController().signal;
     expect(repeatableRecoveryBoundaryIds).toEqual([
       'coordinator-job-recovery',
       'discussion-source',
@@ -180,6 +203,8 @@ describe('recovery quarantine retry service', () => {
       'workflow-recovery',
       'stale-job-cleanup',
       'crashed-job-terminalization',
+      'job-location-write-through',
+      EPOCH_CLOSURE_BOUNDARY,
       'provider-operation-settled-unbound',
       'provider-operation-unreadable',
     ]);
@@ -195,6 +220,8 @@ describe('recovery quarantine retry service', () => {
       workflowRecoverySource(db).boundary,
       staleJobCleanupSource(db).boundary,
       crashedJobTerminalizationSource(db).boundary,
+      createJobLocationRecoveryRetryPlan(index, 'epoch-key', {} as JobProgressStore, subject()).source.boundary,
+      createEpochClosureRetryPlan(runtime, index, subject(), signal, null).source.boundary,
       createSettledUnboundStatusRetryPlan(db, subject(), quarantine, () => true).source.boundary,
       createUnreadableProviderOperationRetryPlan(
         db,
@@ -258,6 +285,12 @@ describe('recovery quarantine retry service', () => {
       source: crashedJobTerminalizationSource(db, retrySubject),
       policy: passThroughPolicy(),
     }));
+    runtimeRegistry.register('job-location-write-through', (retrySubject) =>
+      createJobLocationRecoveryRetryPlan(index, 'epoch-key', {} as JobProgressStore, retrySubject),
+    );
+    runtimeRegistry.register(EPOCH_CLOSURE_BOUNDARY, (retrySubject) =>
+      createEpochClosureRetryPlan(runtime, index, retrySubject, signal, null),
+    );
     runtimeRegistry.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (retrySubject) =>
       createSettledUnboundStatusRetryPlan(db, retrySubject, quarantine, () => true),
     );

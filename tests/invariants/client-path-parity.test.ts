@@ -10,7 +10,7 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { resolveCurrentStoreEpoch, storeEpochHookSource } from '#src/store/epoch.js';
+import { resolveCurrentStoreEpoch, storeEpochHookSource } from '#src/store/epoch/index.js';
 // @ts-expect-error -- ../../clients/hooks/lib/store-epoch.mjs
 import { resolveCurrentStoreDbPath } from '../../clients/hooks/lib/store-epoch.mjs';
 
@@ -108,7 +108,12 @@ const mirroredCoordinatorInfoPath = loadMirrorFunction<(homeDir: string, flavor:
 
 describe('self-contained client path parity', () => {
   it('keeps the hook selector generated from the backend owner', () => {
-    expect(readFileSync(join(REPO_ROOT, 'clients/hooks/lib/store-epoch.mjs'), 'utf8')).toBe(storeEpochHookSource());
+    const source = readFileSync(join(REPO_ROOT, 'clients/hooks/lib/store-epoch.mjs'), 'utf8');
+    expect(source).toBe(storeEpochHookSource());
+    expect(source).not.toContain('child_process');
+    expect(source).not.toContain('execFileSync');
+    expect(source).not.toMatch(/\brename(?:Sync)?\b/u);
+    expect(source).not.toContain('malformedLockRepairProbe');
   });
 
   it.each(FLAVORS)('matches authoritative %s paths', (flavor) => {

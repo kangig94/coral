@@ -20,8 +20,10 @@ vi.mock('#src/runtime/real.js', async (importOriginal) => {
   };
 });
 
+import { openCliCauseRefRenderer } from '#src/cli/cause-renderer.js';
 import { closeSharedReadCoralStore, getSharedReadCoralStore, openReadCoralStore } from '#src/cli/read-store.js';
-import { resolvedStoreEpoch, sweepStoreEpochs, sweepStoreEpochsPostReady } from '#src/store/epoch.js';
+import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
+import { resolvedStoreEpoch, sweepStoreEpochs, sweepStoreEpochsPostReady } from '#src/store/epoch/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
@@ -72,10 +74,11 @@ it('keeps the cached CLI reader shared lock until its cached SQLite handle close
   publishEpoch(runtime, '3');
   publishEpoch(runtime, '5');
 
-  expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('live-holder');
+  expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('complete');
   expect(existsSync(join(dbDir, 'epoch-1'))).toBe(true);
 
-  expect(sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' })).toBe('live-holder');
+  expect(attemptExclusiveFileLockSync(join(dbDir, 'epoch-1', '.lock')).kind).toBe('contended');
+  expect(sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' })).toBe('closure-required');
   expect(existsSync(join(dbDir, 'epoch-1'))).toBe(true);
 });
 
@@ -107,4 +110,23 @@ it('does not fall back to memory when the selected epoch is swept before its lea
   expect(() => openReadCoralStore(process.cwd())).toThrow();
   expect(interposed).toBe(true);
   expect(existsSync(join(dbDir, 'epoch-3'))).toBe(true);
+});
+
+it('holds no epoch lock between cause renderings, so a command awaiting a coordinator pins no epoch', async () => {
+  const realRuntime = await vi.importActual<typeof RealRuntimeMod>('#src/runtime/real.js');
+  root = mkdtempSync(join(tmpdir(), 'coral-cause-render-lock-'));
+  const runtime = realRuntime.createRealRuntime('prod', { baseDir: root });
+  injected.runtime = runtime;
+  publishEpoch(runtime, '1');
+  const lock = join(runtime.paths.coral.store.dbDir, 'epoch-1', '.lock');
+  const expectLockFree = (): void => {
+    const attempt = attemptExclusiveFileLockSync(lock);
+    expect(attempt.kind).toBe('acquired');
+    if (attempt.kind === 'acquired') attempt.lease();
+  };
+
+  const renderer = openCliCauseRefRenderer(process.cwd());
+  expectLockFree();
+  expect(renderer.render?.({ stream: { kind: 'job', id: 'missing-job' }, seq: 1 })).toContain('missing-job');
+  expectLockFree();
 });

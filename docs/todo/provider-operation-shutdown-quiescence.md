@@ -1,30 +1,11 @@
-# TODO — cover disappearance delivery across provider-operation shutdown drain
+# TODO — prove disappearance delivery stays owned through shutdown
 
-**Status**: implementation landed; one regression proof remains.
+**Status**: implementation landed; regression coverage and one ordering audit remain.
 
-`ProviderOperationMutationAdmission.run` and `close` in `src/store/provider-operation-journal.ts`
-now share one mutation gate. `createProviderEventHandler` in
-`src/coordinator/services/provider-event-application.ts` enters it for provider-event writes.
-`ProviderOperationReconciler.requestStops` and `containmentDisappeared` in
-`src/coordinator/services/provider-operation-reconciler.ts` use the same admission, and `stop`
-closes it. `buildProviderOperationMutationDrainObligation` in `src/coordinator/shutdown.ts`
-waits for that close and names a retained hold when it does not drain. The old `withBudget` skip
-and reconciler-private drain design are gone.
+`ProviderOperationMutationAdmission` in `src/store/provider-operation-journal.ts` is shared by provider-event writes and `ProviderOperationReconciler.containmentDisappeared`. `buildProviderOperationMutationDrainObligation` in `src/coordinator/shutdown.ts` waits for that admission to close. If provider recovery remains held, the obligation defers closure and returns a hold.
 
-The shutdown obligation first waits for provider recovery to discharge; while that obligation is held,
-it returns a hold without closing mutation admission. The remaining proof must show that this ordering
-retains a live owner and does not let exit pass a still-open gate.
+The existing shutdown-budget and reconciler tests exercise other open mutations. They do not hold a disappearance delivery open across `stop()`, including when the shutdown budget is exhausted before mutation drain begins.
 
-The shutdown-budget test holds a mutation open across drain, and the reconciler test holds an
-activation open while `stop()` closes admission. Neither demonstrates a disappearance delivery
-held open across `stop()` and then settled or expired. That path was the original un-signalled
-mutation: a separate delivery join could outlive the old drain. The shared admission now covers
-it in source, but a regression should prove the ordering and the already-exhausted shutdown-budget
-case through the actual disappearance consumer.
+## Remaining proof
 
-## Start condition
-
-Hold `ProviderOperationReconciler.containmentDisappeared` open, start shutdown, and assert that the
-mutation drain remains held until delivery settles or its owner retains an explicit hold. Include a
-budget already exhausted before drain starts, and the provider-recovery-held branch that defers gate
-closure. This is coverage and an ordering audit for the shipped boundary.
+Drive the actual disappearance consumer through shutdown. Show that its mutation either settles before exit or remains under an explicit owner when the budget expires. Cover the provider-recovery-held branch where gate closure is deferred, so that ordering cannot let the coordinator exit with an open mutation admission.

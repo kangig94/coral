@@ -67,6 +67,7 @@ const CONTRACT_TARGETS = new Set([
   'src/providers/registry.ts',
   'src/provider-proxy/bootstrap-capsule.ts',
   'src/provider-proxy/control-client.ts',
+  'src/provider-proxy/controller-succession.ts',
   'src/provider-proxy/guardian.ts',
   'src/provider-proxy/handoff-capsule.ts',
   'src/provider-proxy/heartbeat-observation.ts',
@@ -94,7 +95,7 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/startup-recovery.ts',
   'src/coordinator/live/admission.ts',
   'src/coordinator/live/durable-transport.ts',
-  'src/coordinator/live/kb-daemon-supervisor.ts',
+  'src/coordinator/live/kb-daemon-supervisor/index.ts',
 ]);
 
 // `src/coordinator/runtime-components/` is deliberately not here: every one of its files imports only

@@ -75,6 +75,11 @@ describe('composeCoralPaths', () => {
   it('coordinatorPaths accepts an explicit baseDir', () => {
     expect(coordinatorPaths('prod', { baseDir: '/tmp/coral-root' })).toEqual({
       runDir: join('/tmp/coral-root', 'gen2', 'run'),
+      legacyRunDir: join('/tmp/coral-root', 'run'),
+      legacySocketPath: join('/tmp/coral-root', 'run', 'coordinator.sock'),
+      legacyInfoFile: join('/tmp/coral-root', 'run', 'coordinator.json'),
+      upgradeIntentFile: join('/tmp/coral-root', 'gen2', 'run', 'upgrade.v1.json'),
+      supervisorLockFile: join('/tmp/coral-root', 'gen2', 'run', 'namespace-supervisor.v1.lock'),
       socketPath: join('/tmp/coral-root', 'gen2', 'run', 'coordinator.sock'),
       infoFile: join('/tmp/coral-root', 'gen2', 'run', 'coordinator.json'),
       startupErrorFile: join('/tmp/coral-root', 'gen2', 'run', 'startup-error.json'),

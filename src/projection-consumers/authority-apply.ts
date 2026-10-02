@@ -6,7 +6,7 @@ import {
 } from '../kb/curate/community/generated-projection-store.js';
 import { isSnapshotFresherForInterest } from '../kb/state/corpus-state.js';
 import { backendLog } from '../infra/backend-log.js';
-import type { Database } from '../store/db.js';
+import { SuccessionWriterParkedError, type Database } from '../store/db.js';
 import type {
   ConsumerApplyError,
   CorpusAuthoritativeFreshness,
@@ -61,11 +61,8 @@ export function scheduleJournalApply(state: ConsumerState, target: number, deps:
   if (state.stopped || state.kind !== 'journal') {
     return;
   }
-  if (target <= deps.repository.readJournalCursor(state.reg.id)) {
-    return;
-  }
-
   if (state.reg.kind === 'cursor') {
+    if (target <= deps.repository.readJournalCursor(state.reg.id)) return;
     deps.repository.advanceJournalCursor(state.reg, target);
     state.lastApplyError = null;
     deps.resolveWaiters(state, target);
@@ -108,12 +105,6 @@ export function scheduleCorpusApply(state: ConsumerState, snapshot: KbCorpusSnap
   if (state.stopped || state.kind !== 'corpus') {
     return;
   }
-  if (
-    !isSnapshotFresherForInterest(snapshot, deps.repository.readCorpusCursor(state.reg.id), state.reg.corpusInterest)
-  ) {
-    return;
-  }
-
   const reg = state.reg;
 
   if (state.inFlight) {
@@ -208,6 +199,8 @@ async function runJournalApply(
   target: number,
   deps: AuthorityApplyDeps,
 ): Promise<boolean> {
+  const controller = new AbortController();
+  if (state.kind === 'journal') state.activeController = controller;
   try {
     const fromSeq = deps.repository.readJournalCursor(reg.id);
     const upToSeq = Math.max(fromSeq, target);
@@ -216,10 +209,6 @@ async function runJournalApply(
       return true;
     }
 
-    const controller = new AbortController();
-    if (state.kind === 'journal') {
-      state.activeController = controller;
-    }
     await reg.apply({ fromSeq, upToSeq, db: deps.db, signal: controller.signal });
     deps.repository.advanceJournalCursor(reg, upToSeq);
     if (state.kind === 'journal') {
@@ -228,6 +217,10 @@ async function runJournalApply(
     deps.resolveWaiters(state, upToSeq);
     return true;
   } catch (err) {
+    if (err instanceof SuccessionWriterParkedError) {
+      await waitForConsumerWriterReclaim(err, controller.signal);
+      return state.stopped ? false : runJournalApply(state, reg, target, deps);
+    }
     const applyError = toConsumerApplyError(err, deps.now().toISOString());
     if (state.kind === 'journal') {
       state.lastApplyError = applyError;
@@ -249,16 +242,14 @@ async function runCorpusApply(
     readonly generatedCommunityFreshness?: GeneratedCommunityFreshness;
   } = {},
 ): Promise<boolean> {
+  const controller = new AbortController();
+  if (state.kind === 'corpus') state.activeController = controller;
   try {
     const current = deps.repository.readCorpusCursor(reg.id);
     if (options.forceGeneration === undefined && !isSnapshotFresherForInterest(snapshot, current, reg.corpusInterest)) {
       return true;
     }
 
-    const controller = new AbortController();
-    if (state.kind === 'corpus') {
-      state.activeController = controller;
-    }
     const projectionInput = await prepareCorpusProjectionInput(
       controller.signal,
       deps,
@@ -325,6 +316,10 @@ async function runCorpusApply(
       }
     }
   } catch (err) {
+    if (err instanceof SuccessionWriterParkedError) {
+      await waitForConsumerWriterReclaim(err, controller.signal);
+      return state.stopped ? false : runCorpusApply(state, reg, snapshot, deps, options);
+    }
     const applyError = toConsumerApplyError(err, deps.now().toISOString());
     // The failure callback exists so a consumer can ask for the repair that would let the next attempt
     // succeed. An identical failure twice in a row means the previous repair changed nothing, so asking for
@@ -437,5 +432,19 @@ function invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerAp
     onApplyFailure(applyError);
   } catch (callbackErr) {
     backendLog.error(`ConsumerDriver onApplyFailure failed (${state.reg.id})`, callbackErr);
+  }
+}
+
+async function waitForConsumerWriterReclaim(error: SuccessionWriterParkedError, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  let onAbort!: () => void;
+  const stopped = new Promise<void>((resolve) => {
+    onAbort = resolve;
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    await Promise.race([error.unparked, stopped]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
   }
 }

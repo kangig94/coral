@@ -2,13 +2,14 @@ import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '../
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
 import type { ProcessIncarnation, RecordedProcessObserver } from '../../../infra/node-process.js';
 import { assertNever, errorMessage } from '../../../infra/error-format.js';
+import { ControlClientError } from '../../../provider-proxy/control-client.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
   applyAnswer,
   applyNoResponse,
   type HeartbeatEvidenceWindow,
 } from '../../../provider-proxy/heartbeat-observation.js';
-import { type HandoffCapsule, type HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
+import { type HandoffCapsule, type RedeemableHandoffCapsule } from '../../../provider-proxy/handoff-capsule.js';
 import {
   providerProxySetEnforcerVerdict,
   type ProviderProxySetEnforcerObservations,
@@ -52,7 +53,11 @@ import {
 } from '../../live/provider-proxy/control-redemption.js';
 import type { ProviderProxyRoleControlRemoteError } from '../../live/provider-proxy/role-control.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
-import { classifyProviderProxySetInheritance, type ProviderProxySetRedemptionOutcome } from './inheritance.js';
+import {
+  classifyProviderProxySetInheritance,
+  type ControllerTransferAcceptance,
+  type ProviderProxySetRedemptionOutcome,
+} from './inheritance.js';
 import {
   authorizeProviderProxySetContainmentProof,
   handbackProviderProxySetContainmentProofFence,
@@ -280,6 +285,8 @@ type EstablishedSlot = {
   operatorExitGeneration: number;
   protection: ProviderProxySetProtection;
   containmentCommitStatus: 'not-sent' | 'outcome-unknown' | null;
+  /** While control is released, the slot must route nothing and answer no incident until reclaimed or released. */
+  controllerTransfer: Readonly<{ attemptId: string }> | null;
 };
 
 type PendingReleaseSlot = {
@@ -331,7 +338,7 @@ type ProviderProxySetSlot =
       key: ProviderProxySetKey;
       identity: ProviderProxySetIdentity;
       capsulePath: string;
-      capsuleBinding: HandoffCapsuleV3;
+      capsuleBinding: RedeemableHandoffCapsule;
       address: ProviderProxySetAddress;
       capacityClass: CapacityClass;
       completedAttempts: number;
@@ -374,7 +381,7 @@ type ProviderProxySetSlot =
       address: ProviderProxySetAddress;
       capacityClass: CapacityClass;
       capsulePath: string;
-      capsuleBinding: HandoffCapsuleV3;
+      capsuleBinding: RedeemableHandoffCapsule;
       routeKey: string;
       session: OwnedProviderProxyAcquisitionControlSession<'provider-proxy-set-lifecycle'>;
       acquisitionCleanupHold: ProviderProxySetAcquisitionCleanupHold | null;
@@ -460,7 +467,7 @@ function renderForeignRetirementAbandonment(abandonment: ForeignCapsuleRetiremen
  * then unreachable for any generation this build cannot name a set from, by type rather than by discipline.
  */
 type CapsuleInheritance =
-  | Readonly<{ kind: 'inheritable'; capsule: HandoffCapsuleV3 }>
+  | Readonly<{ kind: 'inheritable'; capsule: RedeemableHandoffCapsule }>
   | Readonly<{ kind: 'uninheritable'; reason: 'other-build' | 'unreadable-identity' }>;
 
 type ContainmentAbsenceCommit =
@@ -710,12 +717,9 @@ type AbsenceDeliveryState =
   | Readonly<{ kind: 'fatal'; error: ProviderProxySetLifecycleFatalError }>;
 
 export type ProviderProxySetLifecycleDeps = Readonly<{
-  /**
-   * This coordinator's own build set. Discovery needs it to tell a capsule it may redeem from one it may
-   * only represent: redemption is build-bound at the role (`assertNamedCoordinatorBuild`), so dialing a
-   * foreign set is not a failed attempt but a fatal one.
-   */
   buildSetId: string;
+
+  acceptsControllerTransfer?(capsule: RedeemableHandoffCapsule): ControllerTransferAcceptance;
   claims: ProviderProxySetClaimMirror;
   controlEstablished(authority: DurableProviderProxyOperationAuthority): void;
   /**
@@ -815,7 +819,7 @@ function refusedDecisionSubjectKey(refused: ProviderProxySetNonAuthorizingContai
 function recordedProcessesAllAbsent(capsule: HandoffCapsule, observe: RecordedProcessObserver): boolean {
   if (capsule.version === 1) return false;
   const recorded: readonly Readonly<{ pid: number; incarnation?: ProcessIncarnation }>[] =
-    capsule.version === 3
+    capsule.version === 3 || capsule.version === 4
       ? [
           { pid: capsule.guardianPid, incarnation: capsule.guardianIncarnation },
           { pid: capsule.reaperPid, incarnation: capsule.reaperIncarnation },
@@ -2240,13 +2244,51 @@ export class ProviderProxySetLifecycle {
 
   beginGracefulDrain(identity: ProviderProxySetIdentity): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
-    if (slot?.kind !== 'available') return;
+    if (slot?.kind !== 'available' || slot.controllerTransfer !== null) return;
     this.#retireAvailableSlot(slot, 'graceful_idle');
+  }
+
+  /**
+   * Released hosts must keep running and buffering events; the incumbent must retain authority to reclaim them if
+   * the attempt fails before serving.
+   */
+  async releaseControlForTransfer(attemptId: string): Promise<readonly ProviderProxySetIdentity[]> {
+    const released: EstablishedSlot[] = [];
+    for (const slot of this.#slots.values()) {
+      if ((slot.kind !== 'available' && slot.kind !== 'draining') || slot.controllerTransfer !== null) continue;
+      slot.controllerTransfer = { attemptId };
+      slot.attemptToken += 1;
+      this.#removeRoute(slot);
+      slot.authority.stopHeartbeats();
+      released.push(slot);
+    }
+    // A close that fails must fail the release rather than report a set released that still holds control.
+    for (const slot of released) await slot.authority.initiateControlClose();
+    return released.map((slot) => slot.identity);
+  }
+
+  /** A successor still holding control refuses redemption; reattachment must retry until that control lapses. */
+  reclaimTransferredControl(): void {
+    for (const slot of this.#slots.values()) {
+      if ((slot.kind !== 'available' && slot.kind !== 'draining') || slot.controllerTransfer === null) continue;
+      slot.controllerTransfer = null;
+      this.#beginControlReattachment(slot, {
+        kind: 'control-channel-fault',
+        role: 'guardian',
+        cause: 'closed',
+        error: new ControlClientError(
+          'control_client_closed',
+          'Control was released for a successor that did not serve.',
+          'closed',
+        ),
+      });
+    }
   }
 
   claimsChanged(identity: ProviderProxySetIdentity): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (slot === undefined) return;
+    if ((slot.kind === 'available' || slot.kind === 'draining') && slot.controllerTransfer !== null) return;
     // Ordinary retirement from a reattachment hold requires zero live claims.
     if (slot.kind === 'reattachment-hold') {
       const window = slot.controlReattachmentWindow;
@@ -2299,6 +2341,8 @@ export class ProviderProxySetLifecycle {
     ) {
       return;
     }
+    // A released set's control loss is the release itself; only the transfer's own settlement acts on it.
+    if ((slot.kind === 'available' || slot.kind === 'draining') && slot.controllerTransfer !== null) return;
     if (incident.kind === 'control-channel-fault') {
       if (slot.kind !== 'reattaching' && slot.kind !== 'reattachment-hold') {
         this.#beginControlReattachment(slot, incident);
@@ -3675,18 +3719,8 @@ export class ProviderProxySetLifecycle {
     this.#capsuleAddresses.set(addressKey, path);
     this.#capsuleGrants.set(capsule.grantId, path);
 
-    // Decided before anything is attached to a claim, because a capsule that names a durable operation is
-    // exactly the capsule an upgrade finds, and attaching it is what makes it get dialed.
-    //
-    // Reaching a role is what makes an un-inheritable capsule fatal rather than merely useless.
-    // `handoff.redeem` is gated on build identity (`assertNamedCoordinatorBuild`), so a foreign set answers
-    // `identity_mismatch`; the recovery policy reads that as `refused`, and `refused` retires fatally
-    // *before* any seam can weigh the absence evidence gathered beside it — taking this whole coordinator
-    // down over a set it never owned.
-    //
-    // A V2 capsule is the same problem from the other side: this build can reach it, but its process
-    // identity is in seconds it can no longer verify, and carrying those numbers into a token would make a
-    // live process read as absent.
+    // A capsule naming a durable operation must be classified before attachment. Dialing a foreign-controlled set
+    // can fatally retire this coordinator; V2 process seconds cannot be verified as incarnation tokens.
     const classified = this.#classifyCapsule(capsule);
     const uninheritable = classified.kind === 'uninheritable' ? classified.reason : null;
 
@@ -3923,7 +3957,11 @@ export class ProviderProxySetLifecycle {
   }
 
   #classifyCapsule(capsule: HandoffCapsule): CapsuleInheritance {
-    const verdict = classifyProviderProxySetInheritance(capsule, this.#deps.buildSetId);
+    const verdict = classifyProviderProxySetInheritance(
+      capsule,
+      this.#deps.buildSetId,
+      this.#deps.acceptsControllerTransfer,
+    );
     return verdict.kind === 'refused'
       ? { kind: 'uninheritable', reason: verdict.reason }
       : { kind: 'inheritable', capsule: verdict.candidate };
@@ -4167,11 +4205,16 @@ export class ProviderProxySetLifecycle {
             this.#slots.delete(slot.key);
             this.#identityIndex.delete(slot.identity);
             void this.#deleteOperatorDispositions(slot.identity);
+            const capsulePath = outcome.capsulePath ?? slot.capsulePath;
+            if (capsulePath !== slot.capsulePath) {
+              this.#capsuleAddresses.set(providerProxySetAddressKey(slot.address), capsulePath);
+              this.#capsuleGrants.set(slot.capsuleBinding.grantId, capsulePath);
+            }
             this.#establish(
               outcome.set,
               outcome.publicationReceipt,
               slot.routeKey,
-              slot.capsulePath,
+              capsulePath,
               slot.routeKey === null ? 'contain-unclaimed-discovery' : 'serve',
               outcome.protection,
             );
@@ -4315,6 +4358,7 @@ export class ProviderProxySetLifecycle {
       operatorExitGeneration: 0,
       protection,
       containmentCommitStatus: null,
+      controllerTransfer: null,
     };
     this.#slots.set(key, slot);
     this.#subscribeAuthority(slot, authority, slot.attemptToken);
@@ -4359,7 +4403,7 @@ export class ProviderProxySetLifecycle {
       );
     for (const [index, slot] of addressed.entries()) slot.capacityClass = index < 4 ? 'retained' : 'excess';
     for (const slot of addressed) {
-      if (slot.capacityClass !== 'excess' || slot.kind !== 'available') continue;
+      if (slot.capacityClass !== 'excess' || slot.kind !== 'available' || slot.controllerTransfer !== null) continue;
       this.#retireAvailableSlot(slot, 'excess_capacity');
     }
   }

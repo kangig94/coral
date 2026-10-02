@@ -41,7 +41,6 @@ export type KbQueryContext = {
 export class KbQueryRegistry {
   private cachedRuntime: { flavor: BuildFlavor; runtime: ReturnType<typeof createRealRuntime> } | undefined;
   private cachedDb: { flavor: BuildFlavor; db: ReadonlyDatabase } | undefined;
-  private readonly cachedRuntimeDbs = new Map<KbQueryRuntime, ReadonlyDatabase>();
 
   getRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRuntime> {
     if (this.cachedRuntime?.flavor !== flavor) {
@@ -63,24 +62,9 @@ export class KbQueryRegistry {
     return this.cachedDb.db;
   }
 
-  getRuntimeDb(runtime: KbQueryRuntime): ReadonlyDatabase {
-    const cached = this.cachedRuntimeDbs.get(runtime);
-    if (cached !== undefined) {
-      return cached;
-    }
-
-    const db = openReadOnlyStoreDatabase(runtime, { storeFormat: currentCoralStoreFormat() });
-    this.cachedRuntimeDbs.set(runtime, db);
-    return db;
-  }
-
   close(): void {
     this.cachedDb?.db.close();
     this.cachedDb = undefined;
-    for (const db of this.cachedRuntimeDbs.values()) {
-      db.close();
-    }
-    this.cachedRuntimeDbs.clear();
   }
 }
 
@@ -118,7 +102,7 @@ function getDefaultKbQueryDb(context: KbQueryContext): ReadonlyDatabase {
     return context.readDb;
   }
   if (context.runtime !== undefined) {
-    return defaultRegistry.getRuntimeDb(context.runtime);
+    throw new Error('An injected KB query runtime must supply the read database it owns.');
   }
   return defaultRegistry.getDb(resolveQueryFlavor(context));
 }
@@ -160,6 +144,23 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbReadQuer
   };
 
   return queryRuntime;
+}
+
+/**
+ * A long-lived process may hold the store only for one read: protecting a retiring epoch waits out every opener,
+ * and a handle kept between requests would hold that epoch for the life of the process.
+ */
+export function readWithKbQueryHost<T>(
+  context: KbQueryContext & { runtime: KbQueryRuntime },
+
+  read: (host: KbQueryHost) => T & { then?: never },
+): T {
+  const readDb = openReadOnlyStoreDatabase(context.runtime, { storeFormat: currentCoralStoreFormat() });
+  try {
+    return read(createKbQueryHost({ ...context, readDb }));
+  } finally {
+    readDb.close();
+  }
 }
 
 /**

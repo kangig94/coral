@@ -1,4 +1,5 @@
 import type { SettlePendingLaunchesFn, TerminateRegisteredChildrenFn } from '../shutdown.js';
+import type { SuccessionInterposition } from '../succession/interposition.js';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { BackendInfo, BackendInfoRemovalResult } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
@@ -17,12 +18,15 @@ import type { DiscussContext } from '../../discuss/shell/types.js';
 import type { DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { TypedEventBus } from '../event-bus.js';
+import type { ResolvedStoreEpoch } from '../../store/epoch/index.js';
+import type { UpgradeIntent } from '../../infra/upgrade-intent.js';
 
 import type { LaunchCoordinator } from '../live/admission.js';
 import type { ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { ProviderEventHandler } from '../../provider-proxy/control-client.js';
 import type { LocalOperationRegistry } from '../services/operation-registry.js';
 import type { IdleTimer } from '../live/idle.js';
+import type { RequestLeaseTiming } from '../live/request-leases.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } from '../../transport/ipc/server.js';
@@ -30,7 +34,7 @@ import type { KbJobRecorder } from '../../jobs/kb/recorder.js';
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
 import type { HealthSnapshot } from '../../transport/server-ports.js';
-import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor/index.js';
 import type { ProviderScope } from '../../infra/provider-scope.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import type { ProcessExitRemainder, ProcessExitRemainderAcceptance } from '../shutdown-settlement.js';
@@ -71,6 +75,7 @@ export type CoordinatorCoreOptions = {
     publishedCompatibilitySocketAddresses?: readonly PublishedIpcSocketAddress[],
   ) => Promise<ListenIpcServerResult>;
   createIdleTimer?: () => IdleTimer;
+  requestLeaseTiming?: RequestLeaseTiming;
   createExecutionService?: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
   writeBackendInfoFn?: (info: BackendInfo) => boolean | void;
   removeBackendInfoIfOwnerFn?: (instanceId: string) => void | BackendInfoRemovalResult;
@@ -84,6 +89,7 @@ export type CoordinatorCoreOptions = {
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   providerHostManager?: ProviderHostManager;
   providerHostAdmission?: HostAdmissionCollection;
+  successionInterposition?: SuccessionInterposition;
   /**
    * Builds the durable-effect handler for a proxy's `provider.event.v1` pushes (W2.3), fresh, once per proxy
    * set acquisition — never an already-built handler, because this option is consumed while composing
@@ -153,4 +159,7 @@ export type CoordinatorCoreResult = {
   requestDrain: (reason: ShutdownReason) => void;
   getKbJobRecorder: () => KbJobRecorder;
   hooks: LifecycleHooks;
+
+  openedStoreEpoch: () => ResolvedStoreEpoch | null;
+  repairSupervision: (target: UpgradeIntent['target']) => Promise<void>;
 };

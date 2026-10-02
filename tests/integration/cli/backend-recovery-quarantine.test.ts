@@ -32,7 +32,7 @@ import { sha256Hex } from '#src/infra/hash.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile } from '#src/store/db.js';
-import { epochPath } from '#src/store/epoch.js';
+import { epochPath } from '#src/store/epoch/index.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';

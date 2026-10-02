@@ -8,6 +8,11 @@ import { socketFallbackDir, socketPathByteLimit } from './unix-socket.js';
 
 export interface CoordinatorPaths {
   runDir: string;
+  legacyRunDir: string;
+  legacySocketPath: string;
+  legacyInfoFile: string;
+  upgradeIntentFile: string;
+  supervisorLockFile: string;
   socketPath: string;
   infoFile: string;
   startupErrorFile: string;
@@ -44,6 +49,15 @@ export function generationRunDir(flavor: BuildFlavor, opts?: CoordinatorPathOpti
   return join(generationRoot(opts), flavor === 'dev' ? 'run-dev' : 'run');
 }
 
+/** The intent address must remain outside epochs and installed plugin roots. */
+export function upgradeIntentPath(runDir: string): string {
+  return join(runDir, 'upgrade.v1.json');
+}
+
+export function supervisorLockPath(runDir: string): string {
+  return join(runDir, 'namespace-supervisor.v1.lock');
+}
+
 export function handoffRoutingStatusPath(
   flavor: BuildFlavor,
   generation: number,
@@ -63,6 +77,21 @@ export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: So
 
   const hash = hashToken(candidateSocket, FALLBACK_HASH_LENGTH);
   return join(socketFallbackDir(dirname(runDir)), `coral-${flavor}-${hash}.sock`);
+}
+
+export function v0100CoordinatorSocketPathForRunDir(
+  runDir: string,
+  flavor: BuildFlavor,
+  env: SocketPathEnvironment & Readonly<{ configuredTempDirectory: string | undefined; systemTempDirectory: string }>,
+): string {
+  const path = env.platform === 'win32' ? win32 : posix;
+  const candidateSocket = path.join(runDir, 'coordinator.sock');
+  const limit = env.platform === 'darwin' ? V0109_SOCKET_LIMIT_DARWIN : V0109_SOCKET_LIMIT_OTHER;
+  if (Buffer.byteLength(candidateSocket, 'utf8') < limit) return candidateSocket;
+  return path.join(
+    env.configuredTempDirectory ?? env.systemTempDirectory,
+    `coral-${flavor}-${hashToken(candidateSocket, V0109_FALLBACK_HASH_LENGTH)}.sock`,
+  );
 }
 
 export function v0109CoordinatorSocketGuardSetForRunDir(
@@ -110,11 +139,17 @@ export function v0109CoordinatorSocketGuardSetForRunDir(
 
 export function coordinatorPaths(flavor: BuildFlavor, opts?: CoordinatorPathOptions): CoordinatorPaths {
   const runDir = generationRunDir(flavor, opts);
+  const legacyRunDir = join(dirname(generationRoot(opts)), flavor === 'dev' ? 'run-dev' : 'run');
   const platformName = platform();
   const socketPath = socketPathForRunDir(runDir, flavor, { platform: platformName });
 
   return {
     runDir,
+    legacyRunDir,
+    legacySocketPath: join(legacyRunDir, 'coordinator.sock'),
+    legacyInfoFile: join(legacyRunDir, 'coordinator.json'),
+    upgradeIntentFile: upgradeIntentPath(runDir),
+    supervisorLockFile: supervisorLockPath(runDir),
     socketPath,
     infoFile: join(runDir, 'coordinator.json'),
     startupErrorFile: join(runDir, 'startup-error.json'),

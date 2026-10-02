@@ -46,12 +46,17 @@ import {
   readProviderOperations,
   readProviderOperationsDue,
 } from '#src/store/provider-operation-journal.js';
-import type { HandoffCapsuleV1, HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
+import type {
+  HandoffCapsuleV1,
+  HandoffCapsuleV3,
+  RedeemableHandoffCapsule,
+} from '#src/provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, ProxyControlProtocolError } from '#src/provider-proxy/protocol.js';
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
+import { readAddressedHandoffCapsule } from '#src/provider-proxy/handoff-capsule-discovery.js';
 import type { StorageBigIntStat, StorageEntryKind, StoragePort, TimePort, TimerHandle } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProcessPort, Runtime } from '#src/runtime/ports.js';
@@ -257,7 +262,7 @@ function lifecycleFor(
       signal: AbortSignal,
     ) => Promise<ProviderProxySetContainmentEvidence>;
     redeemCapsule?: (
-      capsule: HandoffCapsuleV3,
+      capsule: RedeemableHandoffCapsule,
       path: string,
       signal: AbortSignal,
     ) => Promise<ProviderProxySetRedemptionOutcome>;
@@ -1164,6 +1169,67 @@ async function terminalizationUncertaintyStartupCase(mode: 'atomic-unknown' | 'm
 }
 
 describe('provider proxy startup set recovery', () => {
+  it('recovers an executing operation after a v3-to-v4 capsule migration crash', async () => {
+    const record = providerOperationRecord('executing');
+    const time = new VirtualTime();
+    const realRuntime = createRealRuntime('prod');
+    const storage = new InMemoryStorage(time);
+    const runtime = { ...realRuntime, time, storage } satisfies Runtime;
+    storage.mkdirSync(runtime.paths.coral.coordinator.runDir, { recursive: true, mode: 0o700 });
+    const capsule = v3CapsuleFor(record);
+    const current = { ...capsule, version: 4 as const, controllerBuildSetId: FIXTURE_BUILD_SET_ID };
+    const baseDir = dirname(runtime.paths.coral.generation.root);
+    const oldPath = providerHandoffCapsulePath(capsule, 3, { baseDir });
+    const currentPath = providerHandoffCapsulePath(current, 4, { baseDir });
+    storage.writeAtomicDurableSync(oldPath, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
+    storage.writeAtomicDurableSync(currentPath, JSON.stringify(current), { encoding: 'utf-8', mode: 0o600 });
+
+    const attach = vi.fn(async (_operation, committedThroughProviderSeq: number) => ({
+      state: 'attached' as const,
+      replayFromProviderSeq: committedThroughProviderSeq + 1,
+    }));
+    const set = {
+      proxyInstanceId: record.operation.proxyInstanceId,
+      setIdentity: providerProxySetIdentityFromRecord(record),
+      autonomousDeadline: {
+        orphanTimeoutMs: 30_000,
+        adoptionWindowMs: 16_000,
+        heartbeatHoldBound: { spanMs: 30_000, materialSchedulerLatenessMs: 1_000 },
+      },
+      onFault: () => () => undefined,
+      onIncident: () => () => undefined,
+      attachOperation: attach,
+      buildOperationControl: () => ({ stop: async () => undefined }),
+    };
+    const inherit = vi.fn(async () => {
+      expect(readAddressedHandoffCapsule(capsule, { baseDir }, { storage, uid: process.getuid?.() ?? 0 })).toEqual({
+        path: currentPath,
+        capsule: current,
+      });
+      return { kind: 'inherited' as const, set, publicationReceipt: {} as never, protection: 'protected' as const };
+    });
+    const harness = composeProductionStartup(
+      record,
+      {
+        inheritProviderProxySet: inherit,
+        redeemDiscoveredCapsule: async () => {
+          throw new Error('claimed operation unexpectedly used unclaimed capsule redemption');
+        },
+      },
+      { runtime },
+    );
+    const outcome = await productionStartupOutcome(harness);
+
+    expect(outcome.kind).toBe('fulfilled');
+    expect(inherit).toHaveBeenCalledOnce();
+    expect(attach).toHaveBeenCalledWith(record.operation, expect.any(Number));
+    expect(readProviderOperation(harness.db, record.operation)).toMatchObject({ phase: 'executing' });
+    expect(storage.existsSync(oldPath)).toBe(false);
+    expect(storage.existsSync(currentPath)).toBe(true);
+    harness.services.stopProviderOperationReconciler();
+    harness.db.close();
+  });
+
   it('startup contains an identity-proven dead proxy with live enforcers and discharges executing plus settled claims', async () => {
     const executing = deadlinePrecedenceRecord();
     const settled = providerOperationRecord('settlement-pending', {
@@ -2119,5 +2185,33 @@ describe('production provider proxy startup classification', () => {
         capsuleExists: false,
       },
     });
+  });
+});
+
+describe('provider operation startup ownership across both startup hydrations', () => {
+  // Startup hydrates once before reconciliation and again after it. The binding prepared by the first pass still
+  // holds the job's permit, so the second pass restoring another one fails and fences a live operation.
+  it('reuses the binding the first hydration prepared instead of restoring a second permit', () => {
+    const record = providerOperationRecord('executing');
+    const db = createDb([record]);
+    const runtime = sandboxedRuntime(new VirtualTime());
+    const launchCoordinator = new LaunchCoordinator({ runtime });
+    const startupOwnership = createProviderOperationStartupOwnership({
+      runtime,
+      progressStore: startupProgressStore(db, [record]),
+      binding: launchCoordinator,
+      log: () => undefined,
+    });
+
+    const first = startupOwnership.hydrate(startupOwnership.snapshot());
+    const second = startupOwnership.hydrate(startupOwnership.snapshot());
+
+    expect(first.completion.kind).not.toBe('held');
+    expect(second.completion.kind).not.toBe('held');
+    expect(second.records[0]?.bindingDisposition.kind).not.toBe('refused');
+    expect(readProviderOperation(db, record.operation)?.retryNotBeforeMs).toBe(record.retryNotBeforeMs);
+    expect(
+      launchCoordinator.activeLaunchPermits().filter((permit) => permit.jobId === record.operation.jobId),
+    ).toHaveLength(1);
   });
 });

@@ -1,7 +1,11 @@
 declare const __VERSION__: string;
+import { join } from 'node:path';
 
 import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
+import { validatedRetainedBuildRoot } from '../../infra/retained-build-root.js';
+import { currentSuccessionAttemptChild } from '../succession/attempt-child.js';
+import { acceptedControllerTransferHandsCapsule } from '../succession/provider-host-transfer.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { HostRef } from '../../providers/contract.js';
 import { providerScopeSchema, type ProviderScope } from '../../infra/provider-scope.js';
@@ -45,8 +49,13 @@ import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
 import { ChildPrincipalRegistry } from '../child-principal-registry.js';
+import { createStoreChildPrincipalCredentials } from '../child-principal-credentials.js';
+import { readJobLaunchOriginNamespace } from '../../jobs/succession-coverage.js';
+import { createDefaultStoreReadContext } from '../../read-model/read-context.js';
 import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
-import { isLivePhase } from '../../jobs/phase.js';
+import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
+import { resolveCurrentStoreEpoch } from '../../store/epoch/index.js';
+import { bindCustodyProcessTicket, recordChildRoleCustodyIntent } from '../../infra/custody-process-ticket.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
@@ -321,12 +330,7 @@ export interface CoordinatorWorld {
   readonly log: (message: string) => void;
 }
 
-export function createCoordinatorWorld(
-  options: CoordinatorCoreOptions,
-  runtime: Runtime,
-  defaultsPlan: BackendDefaultsPlan,
-  startupRecoveryBarrier: StartupRecoveryBarrier = createStartupRecoveryBarrier().read,
-): CoordinatorWorld {
+function createWorldBoot(options: CoordinatorCoreOptions, runtime: Runtime, defaultsPlan: BackendDefaultsPlan) {
   const bootSnapshot = options.bootSnapshot ?? {};
   const pluginRoot = defaultsPlan.eager.resolvedPluginRoot;
   const namespace = options.backendNamespace ?? pluginRootNamespace(pluginRoot);
@@ -386,33 +390,67 @@ export function createCoordinatorWorld(
       backendLog.raw(message);
     });
 
-  // backendLog.init must complete before constructing singletons; do not move it below this point.
-  const idleTimer = defaultsPlan.eager.createIdleTimer();
-  const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
-  const eventBus = options.eventBus ?? new TypedEventBus();
-  const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
-  const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids);
-  const pluginRegistry = createPluginRegistry({
-    storage: runtime.storage,
-    env: runtime.env,
-    homeDir: runtime.env.get('HOME') ?? runtime.env.get('USERPROFILE') ?? undefined,
-  });
-  const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
-  const storeServicesRef = createStoreServicesRef();
-  const operationRegistry = options.operationRegistry ?? new LocalOperationRegistry();
-  const providerProxyClaims = new ProviderProxySetClaimMirror();
-  const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
-  const providerProxySetContainmentProver = createProviderProxySetContainmentProver(runtime);
-  const reapRecordedContainment = createProviderProxySetRecordedContainmentReaper(runtime);
-  const localCarrierRegistries = {
-    getDb: () => storeServicesRef.get().progressStore.getDb(),
-    loadJobProjectionDetail: (jobId: string) => storeServicesRef.get().progressStore.loadJobProjectionDetail(jobId),
-    platform: runtime.env.platform() as NodeJS.Platform,
-    hasStartupRecoveryPassed: () => startupRecoveryBarrier.hasPassed(),
-    isAdmittedByThisCoordinator: (jobId: string) => admittedByThisCoordinator(launchCoordinator, jobId),
-    registryStateForJob: (jobId: string) => operationRegistry.stateForJob(jobId),
+  const identity: CoordinatorIdentity = {
+    pluginRoot,
+    namespace,
+    version,
+    buildSetId,
+    bundleHash,
+    cliBundleHash,
+    claudeAppserverBundleHash,
+    durableWrapperBundleHash,
+    flavor,
+    instanceId,
+    token,
+    bootToken,
+    shutdownToken,
+    now,
+    log,
   };
-  const carrierBlocksRetirement = createCarrierBlocksRetirement(storeServicesRef, localCarrierRegistries);
+  return {
+    identity,
+    namespace,
+    bindHost,
+    advertiseHost,
+    remoteAccess,
+    backendPid,
+    coralEnvSnapshot,
+    configuredSystemScope,
+    resolveProjectSource,
+    pluginRoot,
+    now,
+    log,
+  };
+}
+
+type WorldProviderHostInput = Readonly<{
+  options: CoordinatorCoreOptions;
+  runtime: Runtime;
+  identity: CoordinatorIdentity;
+  launchCoordinator: LaunchCoordinator;
+  eventBus: TypedEventBus;
+  storeServicesRef: StoreServicesRef;
+  operationRegistry: LocalOperationRegistry;
+  carrierBlocksRetirement: ReturnType<typeof createCarrierBlocksRetirement>;
+  providerProxyLifecycleRef: ProviderProxySetLifecycleRef;
+  providerProxySetContainmentProver: ProviderProxySetContainmentProver;
+  reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
+}>;
+
+function createWorldProviderHosts(input: WorldProviderHostInput) {
+  const {
+    options,
+    runtime,
+    launchCoordinator,
+    eventBus,
+    storeServicesRef,
+    operationRegistry,
+    carrierBlocksRetirement,
+    providerProxyLifecycleRef,
+    providerProxySetContainmentProver,
+    reapRecordedContainment,
+  } = input;
+  const { pluginRoot, buildSetId, instanceId, flavor } = input.identity;
   // A caller-supplied `providerHostManager` (every test that fakes provider hosts) never carries live
   // guardian/reaper/proxy sets, so `providerProxyAuthority` stays absent rather than reporting on a
   // substitute it played no part in creating — matching `runShutdownSequence`'s own `undefined` default.
@@ -424,14 +462,60 @@ export function createCoordinatorWorld(
   } else {
     const created = createProviderHostManager({
       runtime,
-      spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+      spawnProviderServer: (
+        spawnOptions,
+        observeProviderResponse,
+        generation,
+        recordContainment,
+        acceptFailedSpawnCleanup,
+      ) => {
+        const activeEpoch = launchCoordinator.activeStoreEpochDirectory();
+        const dbDir = runtime.paths.coral.store.dbDir;
+        const epoch = activeEpoch === null ? resolveCurrentStoreEpoch(runtime.storage, dbDir) : null;
+        if (activeEpoch === null && epoch === null) {
+          throw new Error('Provider host custody requires a selected store epoch.');
+        }
+        const ticket = recordChildRoleCustodyIntent({
+          runDir: runtime.paths.coral.coordinator.runDir,
+          epoch: activeEpoch ?? join(dbDir, `epoch-${epoch}`),
+          owner: 'provider-host',
+          operationId: `${spawnOptions.provider}:${generation}`,
+          capsule: null,
+          nowMs: runtime.time.now(),
+          bindWithinMs: 10_000,
+          processGroupId: null,
+        });
+        return launchCoordinator.spawnProviderServer(
+          {
+            ...spawnOptions,
+            custodyTicket: JSON.stringify(ticket),
+            onCustodyIdentified: (pid, incarnation) =>
+              bindCustodyProcessTicket(ticket, { pid, incarnation }, runtime.time.now(), true),
+          },
+          observeProviderResponse,
+          generation,
+          recordContainment,
+          acceptFailedSpawnCleanup,
+        );
+      },
       admission: options.providerHostAdmission ?? createHostAdmissionCollection({ classify: () => 'unknown' }),
       allocateProviderServerGeneration: launchCoordinator.allocateProviderServerGeneration.bind(launchCoordinator),
       carrierBlocksRetirement,
       proxySetAcquisition: {
         pluginRoot,
+        retainedHostRoot: () => validatedRetainedBuildRoot(runtime, buildSetId),
         identity: { instanceId, buildSetId, flavor },
         operationRegistry,
+        custody: () => {
+          const activeEpoch = launchCoordinator.activeStoreEpochDirectory();
+          if (activeEpoch !== null) {
+            return { runDir: runtime.paths.coral.coordinator.runDir, epoch: activeEpoch };
+          }
+          const dbDir = runtime.paths.coral.store.dbDir;
+          const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+          if (epoch === null) throw new Error('Provider proxy custody requires a selected store epoch.');
+          return { runDir: runtime.paths.coral.coordinator.runDir, epoch: join(dbDir, `epoch-${epoch}`) };
+        },
         ...(options.buildProviderEventHandler === undefined
           ? {}
           : { onProviderEvent: options.buildProviderEventHandler }),
@@ -456,6 +540,13 @@ export function createCoordinatorWorld(
       runtime,
       identity: { instanceId, buildSetId, flavor },
       operationRegistry,
+      acceptsControllerTransfer: (capsule) =>
+        acceptedControllerTransferHandsCapsule(
+          runtime,
+          buildSetId,
+          currentSuccessionAttemptChild()?.attemptId ?? null,
+          capsule,
+        ),
       containmentProver: providerProxySetContainmentProver,
       reapRecordedContainment,
       ...(options.buildProviderEventHandler === undefined
@@ -466,25 +557,85 @@ export function createCoordinatorWorld(
       },
     });
   }
-  providerRegistry.connectAppServerHost(providerHostManager);
+  return { providerHostManager, providerProxyAuthority, providerProxyInheritance };
+}
 
-  const identity: CoordinatorIdentity = {
-    pluginRoot,
+export function createCoordinatorWorld(
+  options: CoordinatorCoreOptions,
+  runtime: Runtime,
+  defaultsPlan: BackendDefaultsPlan,
+  startupRecoveryBarrier: StartupRecoveryBarrier = createStartupRecoveryBarrier().read,
+): CoordinatorWorld {
+  const {
+    identity,
     namespace,
-    version,
-    buildSetId,
-    bundleHash,
-    cliBundleHash,
-    claudeAppserverBundleHash,
-    durableWrapperBundleHash,
-    flavor,
-    instanceId,
-    token,
-    bootToken,
-    shutdownToken,
+    bindHost,
+    advertiseHost,
+    remoteAccess,
+    backendPid,
+    coralEnvSnapshot,
+    configuredSystemScope,
+    resolveProjectSource,
+    pluginRoot,
     now,
     log,
+  } = createWorldBoot(options, runtime, defaultsPlan);
+  // backendLog.init must complete before constructing singletons; do not move it below this point.
+  const idleTimer = defaultsPlan.eager.createIdleTimer();
+  const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
+  const eventBus = options.eventBus ?? new TypedEventBus();
+  const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
+  const childPrincipalRegistry = new ChildPrincipalRegistry(
+    runtime.ids,
+    createStoreChildPrincipalCredentials(() => storeServicesRef.get().progressStore.getDb()),
+    {
+      namespace,
+      activeJobOrigin: (jobId) => {
+        const services = storeServicesRef.tryGet();
+        if (services === null) return null;
+        const status = services.progressStore.readStatus(jobId);
+        return status === null || isTerminalPhase(status.phase)
+          ? null
+          : readJobLaunchOriginNamespace(services.progressStore.getDb(), jobId, createDefaultStoreReadContext());
+      },
+      log,
+    },
+  );
+  const pluginRegistry = createPluginRegistry({
+    storage: runtime.storage,
+    env: runtime.env,
+    homeDir: runtime.env.get('HOME') ?? runtime.env.get('USERPROFILE') ?? undefined,
+  });
+  const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
+  const storeServicesRef = createStoreServicesRef();
+  const operationRegistry = options.operationRegistry ?? new LocalOperationRegistry();
+  const providerProxyClaims = new ProviderProxySetClaimMirror();
+  const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
+  const providerProxySetContainmentProver = createProviderProxySetContainmentProver(runtime);
+  const reapRecordedContainment = createProviderProxySetRecordedContainmentReaper(runtime);
+  const localCarrierRegistries = {
+    getDb: () => storeServicesRef.get().progressStore.getDb(),
+    loadJobProjectionDetail: (jobId: string) => storeServicesRef.get().progressStore.loadJobProjectionDetail(jobId),
+    platform: runtime.env.platform() as NodeJS.Platform,
+    hasStartupRecoveryPassed: () => startupRecoveryBarrier.hasPassed(),
+    isAdmittedByThisCoordinator: (jobId: string) => admittedByThisCoordinator(launchCoordinator, jobId),
+    registryStateForJob: (jobId: string) => operationRegistry.stateForJob(jobId),
   };
+  const carrierBlocksRetirement = createCarrierBlocksRetirement(storeServicesRef, localCarrierRegistries);
+  const { providerHostManager, providerProxyAuthority, providerProxyInheritance } = createWorldProviderHosts({
+    options,
+    runtime,
+    identity,
+    launchCoordinator,
+    eventBus,
+    storeServicesRef,
+    operationRegistry,
+    carrierBlocksRetirement,
+    providerProxyLifecycleRef,
+    providerProxySetContainmentProver,
+    reapRecordedContainment,
+  });
+  providerRegistry.connectAppServerHost(providerHostManager);
 
   return {
     identity,

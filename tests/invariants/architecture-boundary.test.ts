@@ -1290,6 +1290,11 @@ const RECOVERY_STARTUP_BOUNDARIES: readonly RecoveryStartupBoundary[] = [
   },
 ];
 
+const RECOVERY_RETRY_BOUNDARIES = [
+  { boundary: 'epoch closure retry', compositionSite: 'src/coordinator/services/recovery/epoch-closure-retry-plan.ts' },
+  { boundary: 'job location recovery retry', compositionSite: 'src/jobs/location-recovery.ts' },
+] as const;
+
 const RECOVERY_SHUTDOWN_BOUNDARIES: readonly RecoveryShutdownBoundary[] = [
   {
     boundary: 'AC13 crashed-job terminalization',
@@ -1303,6 +1308,7 @@ const RECOVERY_SHUTDOWN_BOUNDARIES: readonly RecoveryShutdownBoundary[] = [
 
 const RECOVERY_COMPOSITION_BOUNDARIES = [
   ...RECOVERY_STARTUP_BOUNDARIES.map(({ boundary, compositionSite }) => ({ boundary, compositionSite })),
+  ...RECOVERY_RETRY_BOUNDARIES,
   ...RECOVERY_SHUTDOWN_BOUNDARIES.map(({ boundary, compositionSite }) => ({ boundary, compositionSite })),
 ] as const;
 
@@ -1323,7 +1329,7 @@ const RECOVERY_STARTUP_CAPABILITIES = [
 ] as const;
 
 type RecoverySourceMatrixRow = {
-  readonly boundary: RecoveryStartupBoundary['boundary'];
+  readonly boundary: (typeof RECOVERY_COMPOSITION_BOUNDARIES)[number]['boundary'];
   readonly factory: string;
   readonly sourceModule: string;
   readonly rawAuthorities: readonly string[];
@@ -1334,6 +1340,18 @@ type RecoverySourceMatrixRow = {
 // Both inverse manifests below are derived from it so legacy decoded/aggregate symbols cannot
 // accidentally become granted authorities.
 const RECOVERY_SOURCE_MATRIX: readonly RecoverySourceMatrixRow[] = [
+  {
+    boundary: 'epoch closure retry',
+    factory: 'epochClosureRecoverySource',
+    sourceModule: 'src/coordinator/services/recovery/epoch-closure-source.ts',
+    rawAuthorities: [],
+  },
+  {
+    boundary: 'job location recovery retry',
+    factory: 'jobLocationRecoverySource',
+    sourceModule: 'src/jobs/location-recovery-source.ts',
+    rawAuthorities: [],
+  },
   {
     boundary: 'coordinator job recovery',
     factory: 'coordinatorJobRecoverySource',
@@ -3003,6 +3021,13 @@ describe('recovery authority boundary', () => {
         compositionSite: 'src/coordinator/lifecycle.ts',
       },
     ]);
+    expect(RECOVERY_RETRY_BOUNDARIES).toEqual([
+      {
+        boundary: 'epoch closure retry',
+        compositionSite: 'src/coordinator/services/recovery/epoch-closure-retry-plan.ts',
+      },
+      { boundary: 'job location recovery retry', compositionSite: 'src/jobs/location-recovery.ts' },
+    ]);
     expect(RECOVERY_SHUTDOWN_BOUNDARIES).toEqual([
       {
         boundary: 'AC13 crashed-job terminalization',
@@ -3039,6 +3064,8 @@ describe('recovery authority boundary', () => {
 
   it('derives exact factory and raw-authority sets from the canonical source matrix', () => {
     expect(RECOVERY_SOURCE_FACTORIES.map((factory) => factory.name)).toEqual([
+      'epochClosureRecoverySource',
+      'jobLocationRecoverySource',
       'coordinatorJobRecoverySource',
       'unreadableProviderOperationRecoverySource',
       'settledUnboundStatusRecoverySource',

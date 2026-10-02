@@ -14,7 +14,7 @@ type ExportedContextCoversCodes = AssertNever<AssertHandoffRefusalContextCoversC
 type ExportedCodesCoverContext = AssertNever<AssertHandoffRefusalCodesCoverContext>;
 
 const mismatchedConstructorInit: HandoffRefusalInit = {
-  code: 'handoff_manual_policy',
+  code: 'handoff_shutdown_capability_rejected',
   // @ts-expect-error a handoff refusal code must be paired with that code's exact context.
   context: { stage: 'handoff-deadline', socketPath: '/tmp/coral.sock' },
 };

@@ -94,7 +94,13 @@ describe('provider-host RPC authorization', () => {
       await expect(
         executeCatalogRequest(spec, { workDir: '..b', projectRoot: allowed }, ports, boundOperator),
       ).rejects.toBe(reachedOwner);
-      expect(providerHosts[method]).toHaveBeenCalledExactlyOnceWith({ workDir: canonicalizeWorkDir(child, allowed) });
+      if (method === 'evict')
+        expect(providerHosts[method]).toHaveBeenCalledExactlyOnceWith(
+          { workDir: canonicalizeWorkDir(child, allowed) },
+          undefined,
+        );
+      else
+        expect(providerHosts[method]).toHaveBeenCalledExactlyOnceWith({ workDir: canonicalizeWorkDir(child, allowed) });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -271,7 +277,7 @@ describe('provider-host RPC authorization', () => {
           'Run `coral-cli backend provider-host list`, inspect the intended host, then run `coral-cli backend provider-host evict <ref>` with its exact reference.',
       },
     });
-    expect(evict).toHaveBeenCalledExactlyOnceWith({ workDir: process.cwd() });
+    expect(evict).toHaveBeenCalledExactlyOnceWith({ workDir: process.cwd() }, undefined);
   });
 
   it('renders a shutdown hold with its observation, successor, exit, and exact retry command', async () => {
@@ -545,7 +551,7 @@ describe('provider-host RPC authorization', () => {
         detail: { hostRefs: refs.map(encodeHostRef) },
       },
     });
-    expect(evict).toHaveBeenCalledExactlyOnceWith({ workDir: process.cwd() });
+    expect(evict).toHaveBeenCalledExactlyOnceWith({ workDir: process.cwd() }, undefined);
   });
 
   it('returns the same canonical ambiguity detail for inspect without returning a host', async () => {

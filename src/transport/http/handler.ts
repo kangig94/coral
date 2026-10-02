@@ -1,13 +1,15 @@
 import type { ProcessIncarnation } from '../../infra/node-process.js';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z, type ZodError } from 'zod';
 import {
   parseSerializedWaitCursor,
   serializeWaitCursor,
+  type WaitCursor,
   type WaitStreamEvent,
   type WaitStreamRequest,
 } from '../../jobs/wait.js';
+import { advanceWaitRenderCursor } from '../../jobs/wait-stream-event.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
 import { isLoopbackRemoteAddress, normalizeRemoteAddressLiteral } from '../../infra/remote-address.js';
@@ -26,6 +28,7 @@ import { formatZodError } from '../validation.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';
 import { domainResultToHttp } from '../response.js';
 import { lifecycleRefusalResult } from '../lifecycle-refusal.js';
+import { buildTransportErrorResponse } from '../error-response.js';
 import { subscribeAll } from './sse-subscribe.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { createRealTimePort } from '../../infra/time.js';
@@ -74,7 +77,8 @@ const HTTP_UNAUTHORIZED_RESPONSE = {
 };
 const HTTP_SHUTDOWN_UNAUTHORIZED_RESPONSE = {
   code: 'shutdown_unauthorized',
-  message: 'Manual shutdown required: shutdown capability missing or invalid',
+  message:
+    'Shutdown refused: the shutdown capability is missing or invalid. The incumbent keeps serving, and any upgrade is deferred.',
 };
 const HTTP_KB_RESTART_UNAUTHORIZED_RESPONSE = {
   code: 'shutdown_unauthorized',
@@ -329,7 +333,7 @@ export function writeSseEvent(res: ServerResponse, event: string, data: unknown,
   return accepted;
 }
 
-function runOnResponseDone(res: ServerResponse, fn: () => void): void {
+function runOnResponseDone(res: ServerResponse, fn: () => void): () => void {
   let called = false;
   const run = () => {
     if (called) return;
@@ -341,6 +345,7 @@ function runOnResponseDone(res: ServerResponse, fn: () => void): void {
 
   res.once('finish', run);
   res.once('close', run);
+  return run;
 }
 
 function parseEventStreamRequest(url: string): { projectRoot?: string; filterJobId: string | null } | ZodError {
@@ -565,6 +570,7 @@ type ProjectedCatalogBackedHttpRoute = CatalogBackedHttpRoute & {
     res: ServerResponse,
     parsedUrl: URL,
     pathParams: Record<string, string>,
+    signal?: AbortSignal,
   ) => Promise<void>;
 };
 
@@ -738,7 +744,9 @@ async function handleCatalogUnaryRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) throw signal.reason;
   if (
     isRecord(request) &&
     Object.prototype.hasOwnProperty.call(request, 'providerScope') &&
@@ -761,7 +769,8 @@ async function handleCatalogUnaryRoute(
     return;
   }
 
-  const result = await executeCatalogRequest(spec, request, deps, principal);
+  const result = await executeCatalogRequest(spec, request, deps, principal, signal);
+  if (signal?.aborted) throw signal.reason;
   if (result.kind === 'lifecycle-refused') {
     sendJson(res, 503, lifecycleRefusalResult);
     return;
@@ -773,12 +782,46 @@ async function handleCatalogUnaryRoute(
   sendCatalogResponse(res, result);
 }
 
+function writeWaitSseEvent(
+  res: ServerResponse,
+  event: WaitStreamEvent,
+  cursor: WaitCursor,
+): {
+  cursor: WaitCursor;
+  written: boolean;
+} {
+  const nextCursor = advanceWaitRenderCursor(cursor, event).cursor;
+  switch (event.type) {
+    case 'progress':
+    case 'terminal':
+      return { cursor: nextCursor, written: writeSseEvent(res, event.type, event, serializeWaitCursor(nextCursor)) };
+    case 'queued':
+    case 'interrupted':
+      // A derived interruption carries no Journal seq, so the cursor only follows recorded events.
+      return {
+        cursor: nextCursor,
+        written: writeSseEvent(res, event.type, event, event.cursor && serializeWaitCursor(nextCursor)),
+      };
+    default:
+      return {
+        cursor: nextCursor,
+        written: writeSseEvent(res, 'waiting', event, event.cursor && serializeWaitCursor(nextCursor)),
+      };
+  }
+}
+
 async function handleJobsWaitSubscription(
   spec: RpcMethodSpec<unknown, unknown>,
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
-  request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { afterSeq: number } },
+  request: {
+    jobIds: string[];
+    projectRoot: string;
+    timeoutSeconds?: number;
+    cursor?: WaitCursor;
+    supportsWaitV2?: boolean;
+  },
 ): Promise<void> {
   if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
     return;
@@ -798,12 +841,11 @@ async function handleJobsWaitSubscription(
     return;
   }
 
-  const inputCursor = headerCursor ?? { afterSeq: 0 };
-  const currentCursor = { afterSeq: inputCursor.afterSeq };
+  let currentCursor: WaitCursor = headerCursor ?? { afterSeq: 0 };
   const controller = new AbortController();
   const waitRequest: WaitStreamRequest = {
     ...request,
-    cursor: inputCursor,
+    ...(headerCursor === null ? {} : { cursor: headerCursor }),
   };
   const principal = authenticateCatalogPrincipal(req, deps);
   if (principal === null) {
@@ -849,57 +891,40 @@ async function handleJobsWaitSubscription(
   req.once('close', close);
   runOnResponseDone(res, close);
 
+  const handover = deps.jobs.waitHandoverSignal();
+  let onHandover = (): void => {};
+  const handedOver = new Promise<'handover'>((resolve) => {
+    onHandover = () => resolve('handover');
+  });
+  if (handover.aborted) onHandover();
+  else handover.addEventListener('abort', onHandover, { once: true });
+
   try {
     while (true) {
-      const next = await iterator.next();
+      const next = await Promise.race([iterator.next(), handedOver]);
+      if (next === 'handover' || (!next.done && (next.value as { type?: unknown }).type === 'handover')) {
+        writeSseEvent(
+          res,
+          'handover',
+          { type: 'handover', ...lifecycleRefusalResult },
+          serializeWaitCursor(currentCursor),
+        );
+        break;
+      }
       if (next.done || closed || res.writableEnded || res.destroyed) {
         break;
       }
 
-      const event = next.value as WaitStreamEvent;
-      if (event.type === 'progress') {
-        currentCursor.afterSeq = event.seq;
-        if (!writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor))) {
-          break;
-        }
-        continue;
-      }
-
-      if (event.type === 'terminal') {
-        currentCursor.afterSeq = event.seq;
-        if (!writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor))) {
-          break;
-        }
-        continue;
-      }
-
-      if (event.type === 'queued') {
-        // No cursor update: queued events are synthetic and not Journal events.
-        if (!writeSseEvent(res, 'queued', event)) {
-          break;
-        }
-        continue;
-      }
-
-      if (event.type === 'interrupted') {
-        // Named on the wire, never folded into `waiting`: a client that cannot tell the two apart cannot
-        // report what was observed. No cursor update either — a derived observation is not a Journal event
-        // and carries no `seq`, so advancing here would let a reconnect resume past events never delivered.
-        if (!writeSseEvent(res, 'interrupted', event)) {
-          break;
-        }
-        continue;
-      }
-
-      if (!writeSseEvent(res, 'waiting', event)) {
-        break;
-      }
+      const emitted = writeWaitSseEvent(res, next.value as WaitStreamEvent, currentCursor);
+      currentCursor = emitted.cursor;
+      if (!emitted.written) break;
     }
   } catch (error) {
     if (!closed && !controller.signal.aborted) {
       throw error;
     }
   } finally {
+    handover.removeEventListener('abort', onHandover);
     close();
     if (!res.writableEnded && !res.destroyed) {
       res.end();
@@ -942,18 +967,19 @@ export function httpAdapter(
   return {
     ...route,
     pattern: compilePathPattern(route.path),
-    handle: async (req, res, parsedUrl, pathParams) => {
+    handle: async (req, res, parsedUrl, pathParams, signal) => {
       const parsed = await parseCatalogRequest(spec, req, res, parsedUrl, pathParams, rpcPorts.time);
       if (parsed === REQUEST_PARSE_FAILED) {
         return;
       }
+      if (signal?.aborted) throw signal.reason;
 
       if (spec.kind === 'subscription') {
         await handleCatalogSubscriptionRoute(spec, parsed, req, res, rpcPorts);
         return;
       }
 
-      await handleCatalogUnaryRoute(spec, parsed, req, res, rpcPorts);
+      await handleCatalogUnaryRoute(spec, parsed, req, res, rpcPorts, signal);
     },
   };
 }
@@ -1231,7 +1257,8 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
       pattern: compilePathPattern(transportLocalRoutes[2].path),
       handle: async (req, res) => {
         req.resume();
-        if (!deps.admin.restartKbDaemon) {
+        const restartKbDaemon = deps.admin.restartKbDaemon;
+        if (!restartKbDaemon) {
           sendJson(res, 501, { code: 'not_implemented', message: 'KB daemon supervisor is not available' });
           return;
         }
@@ -1247,8 +1274,22 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
           },
           'warn',
         );
-        const kbDaemon = await deps.admin.restartKbDaemon('http-admin');
-        sendJson(res, 200, { status: 'ok', instanceId: deps.identity.instanceId, kbDaemon });
+        const lease = deps.admin.beginRequestLease?.('transport.kb.restart', randomUUID());
+        if (lease === undefined) deps.admin.beginRequest();
+        try {
+          const kbDaemon =
+            lease === undefined
+              ? await restartKbDaemon('http-admin')
+              : await lease.run((signal) => restartKbDaemon('http-admin', signal));
+          sendJson(res, 200, { status: 'ok', instanceId: deps.identity.instanceId, kbDaemon });
+        } catch (error: unknown) {
+          if (!res.writableEnded && !res.headersSent) {
+            const response = buildTransportErrorResponse(error);
+            sendJson(res, response.statusCode, response.body);
+          }
+        } finally {
+          if (lease === undefined) deps.admin.endRequest();
+        }
       },
     },
     {
@@ -1374,6 +1415,32 @@ export function createHttpHandler(
     const catalogMatch = matchRoute(coordinatorRoutes, req.method, parsedUrl.pathname);
     if (catalogMatch) {
       if (catalogMatch.route.spec.kind === 'unary') {
+        const lease = deps.admin.beginRequestLease?.(catalogMatch.route.spec.name, randomUUID(), {
+          ...(typeof catalogMatch.pathParams.jobId === 'string' ? { jobId: catalogMatch.pathParams.jobId } : {}),
+          ...(typeof catalogMatch.pathParams.operationId === 'string'
+            ? { operationId: catalogMatch.pathParams.operationId }
+            : {}),
+        });
+        if (lease !== undefined) {
+          deps.admin.beginRequest();
+          const finishResponse = runOnResponseDone(res, () => deps.admin.endRequest());
+          try {
+            await lease.run((signal) =>
+              catalogMatch.route.handle(req, res, parsedUrl, catalogMatch.pathParams, signal),
+            );
+          } catch (error: unknown) {
+            if (error instanceof Error && 'code' in error && error.code === 'request_deadline_exceeded') {
+              finishResponse();
+            }
+            if (!res.writableEnded && !res.headersSent) {
+              const response = buildTransportErrorResponse(error);
+              sendJson(res, response.statusCode, response.body);
+            } else if (!res.writableEnded) {
+              res.destroy();
+            }
+          }
+          return;
+        }
         deps.admin.beginRequest();
         runOnResponseDone(res, () => {
           deps.admin.endRequest();

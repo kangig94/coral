@@ -1,8 +1,18 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -16,14 +26,26 @@ import {
   writeHandoffCapsuleFile,
   type HandoffCapsuleV1,
   type HandoffCapsuleV3,
+  type HandoffCapsuleV4,
   type HandoffCapsuleFileEnvironment,
   type InstalledGrant,
 } from '#src/provider-proxy/handoff-capsule.js';
 import type { ControlTenancyHolder } from '#src/provider-proxy/control-endpoint.js';
+import type { ControllerBuild } from '#src/provider-proxy/controller-succession.js';
 import type { OperationIdentity } from '#src/provider-proxy/protocol.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { controllerBuild } from '#src/coordinator-launch/controller-build.js';
+import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 
 const SECRET = 'c'.repeat(64);
+
+/** The build of the host every fixture capsule describes, and of the controller that installed its grant. */
+const HOST_BUILD: ControllerBuild = {
+  generation: 'gen2',
+  flavor: 'prod',
+  buildSetId: '22222222-2222-4222-8222-222222222222',
+};
 
 function capsuleFor(): HandoffCapsuleV1 {
   return {
@@ -60,6 +82,11 @@ function capsuleV3For(): HandoffCapsuleV3 {
   };
 }
 
+/** The only generation the writer accepts: V3 plus the controller build its grant authorizes. */
+function capsuleV4For(): HandoffCapsuleV4 {
+  return { ...capsuleV3For(), version: 4, controllerBuildSetId: HOST_BUILD.buildSetId };
+}
+
 const OPERATION_A: OperationIdentity = {
   jobId: '66666666-6666-4666-8666-666666666666',
   operationId: 'a1111111-1111-4111-8111-111111111111',
@@ -90,6 +117,7 @@ function installedGrantFor(operations: readonly OperationIdentity[]): InstalledG
     proxyInstanceId: capsule.proxyInstanceId,
     operations,
     orphanTimeoutMs: capsule.orphanTimeoutMs,
+    controllerBuild: HOST_BUILD,
   };
 }
 
@@ -248,7 +276,13 @@ describe('provider-proxy handoff capsule', () => {
 
     // Verification must not spend or install a redemption.
     expect(registry.redemption()).toBeNull();
-    const redeemed = registry.redeem({ grantId: grant.grantId, secret: SECRET, successor: SUCCESSOR, binding });
+    const redeemed = registry.redeem({
+      grantId: grant.grantId,
+      secret: SECRET,
+      successor: SUCCESSOR,
+      successorBuild: HOST_BUILD,
+      binding,
+    });
     expect(redeemed.redemptionReceipt).toBe('receipt-1');
   });
 
@@ -260,6 +294,7 @@ describe('provider-proxy handoff capsule', () => {
       grantId: grant.grantId,
       secret: SECRET,
       successor: SUCCESSOR,
+      successorBuild: HOST_BUILD,
       binding: bindingOf(grant),
     };
 
@@ -288,6 +323,7 @@ describe('provider-proxy handoff capsule', () => {
       grantId: first.grantId,
       secret: SECRET,
       successor: SUCCESSOR,
+      successorBuild: HOST_BUILD,
       binding: bindingOf(first),
     });
 
@@ -307,6 +343,7 @@ describe('provider-proxy handoff capsule', () => {
       grantId: next.grantId,
       secret: nextSecret,
       successor: OTHER_SUCCESSOR,
+      successorBuild: HOST_BUILD,
       binding: bindingOf(next),
     });
     expect(redeemedAgain.grant.grantId).toBe(next.grantId);
@@ -320,16 +357,19 @@ describe('provider-proxy handoff capsule', () => {
       grantId: grant.grantId,
       secret: SECRET,
       successor: SUCCESSOR,
+      successorBuild: HOST_BUILD,
       binding: bindingOf(grant),
     };
     registry.redeem(request);
 
     // Two racing coordinators reading the same capsule must not both come away believing they own the set.
-    expect(() => registry.redeem({ ...request, successor: OTHER_SUCCESSOR })).toThrow(/control epoch remains live/u);
+    expect(() => registry.redeem({ ...request, successor: OTHER_SUCCESSOR, successorBuild: HOST_BUILD })).toThrow(
+      /control epoch remains live/u,
+    );
     // A caller branches on the discriminated code, never on message text — `control-endpoint.ts` documents
     // `grant_replayed` as the code that means "give up", distinct from a retryable `grant_invalid`.
     try {
-      registry.redeem({ ...request, successor: OTHER_SUCCESSOR });
+      registry.redeem({ ...request, successor: OTHER_SUCCESSOR, successorBuild: HOST_BUILD });
     } catch (error: unknown) {
       expect(error).toMatchObject({ code: 'grant_replayed' });
     }
@@ -345,11 +385,14 @@ describe('provider-proxy handoff capsule', () => {
       grantId: grant.grantId,
       secret: SECRET,
       successor: SUCCESSOR,
+      successorBuild: HOST_BUILD,
       binding: bindingOf(grant),
     };
     const incumbent = registry.redeem(request);
 
-    expect(() => registry.redeem({ ...request, successor: IMPOSTOR_SUCCESSOR })).toThrow(/control epoch remains live/u);
+    expect(() => registry.redeem({ ...request, successor: IMPOSTOR_SUCCESSOR, successorBuild: HOST_BUILD })).toThrow(
+      /control epoch remains live/u,
+    );
     // The incumbent's own retry must still see exactly what it earned, undisturbed by the refused impostor.
     expect(registry.redeem(request)).toEqual(incumbent);
     expect(registry.redemption()?.successor).toEqual(SUCCESSOR);
@@ -365,22 +408,26 @@ describe('provider-proxy handoff capsule', () => {
       grantId: grant.grantId,
       secret: SECRET,
       successor: SUCCESSOR,
+      successorBuild: HOST_BUILD,
       binding: bindingOf(grant),
     };
 
     const incumbent = registry.redeem(request);
     expect(incumbent.grant.operations).toEqual([OPERATION_A]);
-    expect(() => registry.redeem({ ...request, successor: OTHER_SUCCESSOR })).toThrow(/control epoch remains live/u);
+    expect(() => registry.redeem({ ...request, successor: OTHER_SUCCESSOR, successorBuild: HOST_BUILD })).toThrow(
+      /control epoch remains live/u,
+    );
     expect(() =>
       registry.redeem({
         ...request,
         successor: OTHER_SUCCESSOR,
+        successorBuild: HOST_BUILD,
         binding: { ...request.binding, proxyInstanceId: randomUUID() },
       }),
     ).toThrow(/different guardian\/reaper\/proxy set/u);
 
     incumbentLive = false;
-    const rotated = registry.redeem({ ...request, successor: OTHER_SUCCESSOR });
+    const rotated = registry.redeem({ ...request, successor: OTHER_SUCCESSOR, successorBuild: HOST_BUILD });
 
     expect(rotated.successor).toEqual(OTHER_SUCCESSOR);
     expect(rotated.redemptionReceipt).toBe('receipt-2');
@@ -393,13 +440,19 @@ describe('provider-proxy handoff capsule', () => {
     const registry = createGrantRegistry(mintReceipt(), { mayReplaceRedemption: () => !incumbentLive });
     const grant = installedGrantFor([]);
     registry.install(grant);
-    const request = { grantId: grant.grantId, secret: SECRET, successor: SUCCESSOR, binding: bindingOf(grant) };
+    const request = {
+      grantId: grant.grantId,
+      secret: SECRET,
+      successor: SUCCESSOR,
+      successorBuild: HOST_BUILD,
+      binding: bindingOf(grant),
+    };
 
     const incumbent = registry.redeem(request);
     expect(incumbent.redemptionReceipt).toBe('receipt-1');
 
     incumbentLive = false;
-    const displaced = registry.redeem({ ...request, successor: IMPOSTOR_SUCCESSOR });
+    const displaced = registry.redeem({ ...request, successor: IMPOSTOR_SUCCESSOR, successorBuild: HOST_BUILD });
 
     // A replacement process must receive a distinct receipt.
     expect(displaced.redemptionReceipt).toBe('receipt-2');
@@ -417,6 +470,7 @@ describe('provider-proxy handoff capsule', () => {
         grantId: grant.grantId,
         secret: 'e'.repeat(64),
         successor: SUCCESSOR,
+        successorBuild: HOST_BUILD,
         binding: bindingOf(grant),
       }),
     ).toThrow(/did not present the installed grant/u);
@@ -434,6 +488,7 @@ describe('provider-proxy handoff capsule', () => {
         grantId: grant.grantId,
         secret: SECRET,
         successor: SUCCESSOR,
+        successorBuild: HOST_BUILD,
         binding: { ...bindingOf(grant), buildSetId: '99999999-9999-4999-8999-999999999999' },
       }),
     ).toThrow(/different guardian\/reaper\/proxy set/u);
@@ -456,13 +511,146 @@ describe('provider-proxy handoff capsule', () => {
         grantId: randomUUID(),
         secret: SECRET,
         successor: SUCCESSOR,
+        successorBuild: HOST_BUILD,
         binding: bindingOf(installedGrantFor(ORDERED)),
       }),
     ).toThrow(/No grant is installed/u);
   });
 });
 
+describe('provider-proxy grant registry controller succession', () => {
+  const SUCCESSOR_BUILD: ControllerBuild = { ...HOST_BUILD, buildSetId: 'e5555555-5555-4555-8555-555555555555' };
+
+  function transferRequest(grant: InstalledGrant) {
+    return { grantId: grant.grantId, secret: SECRET, successor: SUCCESSOR, binding: bindingOf(grant) };
+  }
+
+  it('refuses a transfer that does not ride on the installed recovery grant', () => {
+    const registry = createGrantRegistry(mintReceipt());
+    const grant = installedGrantFor([]);
+
+    expect(() =>
+      registry.authorizeTransfer({ grantId: grant.grantId, attemptId: 'attempt-1', successor: SUCCESSOR_BUILD }),
+    ).toThrow(/recovery grant already installed/u);
+    registry.install(grant);
+    expect(() =>
+      registry.authorizeTransfer({ grantId: randomUUID(), attemptId: 'attempt-1', successor: SUCCESSOR_BUILD }),
+    ).toThrow(/recovery grant already installed/u);
+    expect(
+      registry.authorizeTransfer({ grantId: grant.grantId, attemptId: 'attempt-1', successor: SUCCESSOR_BUILD }),
+    ).toEqual({ state: 'transfer-authorized', grantId: grant.grantId, attemptId: 'attempt-1' });
+  });
+
+  it('authorizes a same-build controller replacement on the installed grant', () => {
+    const registry = createGrantRegistry(mintReceipt());
+    const grant = installedGrantFor([OPERATION_A]);
+    registry.install(grant);
+
+    expect(
+      registry.authorizeTransfer({ grantId: grant.grantId, attemptId: 'repair-1', successor: HOST_BUILD }),
+    ).toEqual({ state: 'transfer-authorized', grantId: grant.grantId, attemptId: 'repair-1' });
+    expect(registry.redeem({ ...transferRequest(grant), successorBuild: HOST_BUILD }).grant.operations).toEqual([
+      OPERATION_A,
+    ]);
+  });
+
+  it('admits the transferred build only after the controller authorizes it, and keeps the controller build', () => {
+    // Every later redemption below happens after the previous holder's control lapsed.
+    const registry = createGrantRegistry(mintReceipt(), { mayReplaceRedemption: () => true });
+    const grant = installedGrantFor([OPERATION_A]);
+    registry.install(grant);
+
+    expect(() => registry.redeem({ ...transferRequest(grant), successorBuild: SUCCESSOR_BUILD })).toThrow(
+      /build this grant does not authorize/u,
+    );
+    registry.authorizeTransfer({ grantId: grant.grantId, attemptId: 'attempt-1', successor: SUCCESSOR_BUILD });
+    const transferred = registry.redeem({ ...transferRequest(grant), successorBuild: SUCCESSOR_BUILD });
+    expect(transferred.successorBuild).toEqual(SUCCESSOR_BUILD);
+    expect(transferred.grant.operations).toEqual([OPERATION_A]);
+
+    // The successor fails before it serves: the old controller's build reclaims with the same grant.
+    const reclaimed = registry.redeem({
+      ...transferRequest(grant),
+      successor: OTHER_SUCCESSOR,
+      successorBuild: HOST_BUILD,
+    });
+    expect(reclaimed.successorBuild).toEqual(HOST_BUILD);
+  });
+
+  it('ends every transfer when a controller takes the grant as its own', () => {
+    const registry = createGrantRegistry(mintReceipt());
+    const grant = installedGrantFor([]);
+    registry.install(grant);
+    registry.authorizeTransfer({ grantId: grant.grantId, attemptId: 'attempt-1', successor: SUCCESSOR_BUILD });
+
+    registry.install(grant);
+
+    expect(() => registry.redeem({ ...transferRequest(grant), successorBuild: SUCCESSOR_BUILD })).toThrow(
+      /build this grant does not authorize/u,
+    );
+  });
+
+  it('lets a redeemer the paired guardian verified reinstall the grant for its own build', () => {
+    const registry = createGrantRegistry(mintReceipt());
+    const grant = installedGrantFor([]);
+    registry.install(grant);
+    const takenOver: InstalledGrant = { ...grant, controllerBuild: SUCCESSOR_BUILD };
+
+    expect(() => registry.install(takenOver)).toThrow(/different grant/u);
+    expect(
+      registry.recordForwardedRedemption({
+        grantId: randomUUID(),
+        redemptionReceipt: 'r',
+        successor: SUCCESSOR,
+        successorBuild: SUCCESSOR_BUILD,
+      }),
+    ).toBe('not-installed');
+    expect(
+      registry.recordForwardedRedemption({
+        grantId: grant.grantId,
+        redemptionReceipt: 'guardian-receipt',
+        successor: SUCCESSOR,
+        successorBuild: SUCCESSOR_BUILD,
+      }),
+    ).toBe('recorded');
+    expect(registry.install(takenOver)).toEqual({ state: 'installed-dormant', grantId: grant.grantId });
+  });
+});
+
 describe('provider-proxy handoff capsule file I/O', () => {
+  it('counts V3 and V4 capsules left by a migration crash as one set', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-capsule-migration-'));
+    try {
+      const runtime = createRealRuntime('dev', { baseDir: join(root, '.coral') });
+      const runDir = runtime.paths.coral.coordinator.runDir;
+      const incarnation = probeProcessIncarnation(process.pid);
+      if (incarnation === null) throw new Error('Test process has no incarnation');
+      const oldCapsule: HandoffCapsuleV3 = {
+        ...capsuleV3For(),
+        flavor: 'dev',
+        proxyPid: process.pid,
+        proxyIncarnation: incarnation,
+      };
+      const newController = '66666666-6666-4666-8666-666666666666';
+      const newCapsule: HandoffCapsuleV4 = {
+        ...oldCapsule,
+        version: 4,
+        controllerBuildSetId: newController,
+      };
+      const pathOptions = { baseDir: dirname(runtime.paths.coral.generation.root) };
+      mkdirSync(runDir, { recursive: true });
+      const oldPath = providerHandoffCapsulePath(oldCapsule, 3, pathOptions);
+      writeFileSync(oldPath, `${JSON.stringify(oldCapsule)}\n`, { mode: 0o600 });
+      writeHandoffCapsuleFile(providerHandoffCapsulePath(newCapsule, 4, pathOptions), newCapsule, {
+        storage: runtime.storage,
+        uid: process.getuid?.() ?? 0,
+      });
+      expect(controllerBuild(runDir)).toEqual({ kind: 'required', buildSetId: newController });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   let tempRoot: string;
   let capsulePath: string;
   let env: HandoffCapsuleFileEnvironment;
@@ -493,12 +681,23 @@ describe('provider-proxy handoff capsule file I/O', () => {
   }
 
   it('writes a private mode-0600 capsule and reads it back unchanged', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV4For(), env);
 
     const stat = statSync(capsulePath, { bigint: true });
     expect(stat.uid).toBe(BigInt(env.uid));
     expect(stat.mode & 0o777n).toBe(0o600n);
-    expect(readHandoffCapsuleFile(capsulePath, env)).toEqual(capsuleV3For());
+    expect(readHandoffCapsuleFile(capsulePath, env)).toEqual(capsuleV4For());
+  });
+
+  it('preserves additive fields when a V4 capsule is rewritten for a new controller', () => {
+    writeHandoffCapsuleFile(capsulePath, capsuleV4For(), env);
+    const original = JSON.parse(readFileSync(capsulePath, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(capsulePath, JSON.stringify({ ...original, futureGrant: 'keep' }));
+    const inherited = readHandoffCapsuleFile(capsulePath, env);
+    if (inherited?.version !== 4) throw new Error('V4 capsule not read');
+    writeHandoffCapsuleFile(capsulePath, { ...inherited, controllerBuildSetId: HOST_BUILD.buildSetId }, env);
+    expect(JSON.parse(readFileSync(capsulePath, 'utf-8'))).toMatchObject({ futureGrant: 'keep' });
+    expect(readHandoffCapsuleFile(capsulePath, env)).toMatchObject({ version: 4, futureGrant: 'keep' });
   });
 
   it('returns null for an absent capsule', () => {
@@ -506,21 +705,21 @@ describe('provider-proxy handoff capsule file I/O', () => {
   });
 
   it('refuses a capsule whose mode is not 0600', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV4For(), env);
     chmodSync(capsulePath, 0o644);
 
     expect(readCapsuleFailure(capsulePath, env).code).toBe('handoff_capsule_not_private');
   });
 
   it('refuses a capsule whose filesystem owner is not the reading uid', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV4For(), env);
 
     expect(readCapsuleFailure(capsulePath, { ...env, uid: env.uid + 1 }).code).toBe('handoff_capsule_not_private');
   });
 
   it('refuses a capsule swapped for a same-length twin between the ownership check and the open', () => {
-    const capsuleA = capsuleV3For();
-    const capsuleB: HandoffCapsuleV3 = { ...capsuleA, grantId: '99999999-9999-4999-8999-999999999999' };
+    const capsuleA = capsuleV4For();
+    const capsuleB: HandoffCapsuleV4 = { ...capsuleA, grantId: '99999999-9999-4999-8999-999999999999' };
     expect(JSON.stringify(capsuleA).length).toBe(JSON.stringify(capsuleB).length);
     writeHandoffCapsuleFile(capsulePath, capsuleA, env);
 
@@ -537,7 +736,7 @@ describe('provider-proxy handoff capsule file I/O', () => {
   });
 
   it('refuses a capsule swapped for a symlink while the read was still in flight', () => {
-    writeHandoffCapsuleFile(capsulePath, capsuleV3For(), env);
+    writeHandoffCapsuleFile(capsulePath, capsuleV4For(), env);
     const targetPath = join(tempRoot, 'elsewhere.json');
 
     let readCount = 0;

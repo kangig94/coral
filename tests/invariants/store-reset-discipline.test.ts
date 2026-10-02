@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import { garbageStoreEpochs } from '#src/store/epoch.js';
+import { garbageStoreEpochs } from '#src/store/epoch/index.js';
 
 const ROOT = process.cwd();
 const STORE_ROOT = join(ROOT, 'src/store');
@@ -14,9 +14,16 @@ function source(path: string): string {
 }
 
 function storeSources(): readonly string[] {
-  return readdirSync(STORE_ROOT)
-    .filter((name) => name.endsWith('.ts'))
+  return readdirSync(STORE_ROOT, { recursive: true })
+    .filter((name): name is string => typeof name === 'string' && name.endsWith('.ts'))
     .map((name) => `src/store/${name}`);
+}
+
+function epochSource(): string {
+  return storeSources()
+    .filter((path) => path.startsWith('src/store/epoch/'))
+    .map(source)
+    .join('\n');
 }
 
 function enclosingFunctionName(node: ts.Node): string | null {
@@ -41,35 +48,30 @@ function functionSource(path: string, name: string): string {
 
 describe('write-once store epoch invariants', () => {
   it('publishes an epoch directory only by renaming a private mint', () => {
-    const parsed = ts.createSourceFile(
-      'src/store/epoch.ts',
-      source('src/store/epoch.ts'),
-      ts.ScriptTarget.Latest,
-      true,
-    );
+    const facets = storeSources().filter((path) => path.startsWith('src/store/epoch/'));
     const publications: ts.CallExpression[] = [];
     const visit = (node: ts.Node): void => {
       if (
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
         node.expression.name.text === 'renameSync' &&
-        /epochDirectory|epoch-/u.test(node.arguments[1]?.getText(parsed) ?? '')
+        /epochDirectory|epoch-/u.test(node.arguments[1]?.getText() ?? '')
       ) {
         publications.push(node);
       }
       ts.forEachChild(node, visit);
     };
-    visit(parsed);
+    for (const path of facets) visit(ts.createSourceFile(path, source(path), ts.ScriptTarget.Latest, true));
 
     expect(publications).toHaveLength(1);
-    expect(publications[0]?.arguments[0]?.getText(parsed)).toBe('mint');
+    expect(publications[0]?.arguments[0]?.getText()).toBe('mint');
     expect(enclosingFunctionName(publications[0])).toBe('mintNextEpoch');
-    expect(source('src/store/epoch.ts')).toContain("const MINT_DIRECTORY_PREFIX = '.mint-'");
-    expect(source('src/store/epoch.ts')).not.toContain('replaceEpoch');
+    expect(epochSource()).toContain("const MINT_DIRECTORY_PREFIX = '.mint-'");
+    expect(epochSource()).not.toContain('replaceEpoch');
   });
 
   it('makes descriptor and WAL-path binding race cells unreachable', () => {
-    const epoch = source('src/store/epoch.ts');
+    const epoch = epochSource();
     const ports = source('src/infra/port-types.ts');
     const runtime = source('src/runtime/real.ts');
 
@@ -80,32 +82,44 @@ describe('write-once store epoch invariants', () => {
     expect(runtime).not.toMatch(/openNoFollowSync|O_NOFOLLOW/u);
   });
 
-  it('keeps epoch deletion inside the sweep implementation', () => {
+  it('deletes superseded epochs only through the named deletion owners', () => {
     for (const path of storeSources()) {
-      if (path === 'src/store/epoch.ts') continue;
+      if (path.startsWith('src/store/epoch/')) continue;
       expect(source(path), path).not.toMatch(/(?:rmSync|unlinkSync)\([^\n]*epoch-/u);
     }
-    const parsed = ts.createSourceFile(
-      'src/store/epoch.ts',
-      source('src/store/epoch.ts'),
-      ts.ScriptTarget.Latest,
-      true,
-    );
-    const deletionOwners: Array<string | null> = [];
+
+    const facets = storeSources().filter((path) => path.startsWith('src/store/epoch/'));
+    const deletions = new Set([
+      'removeDuringSweep',
+      'removeDuringPostReadySweep',
+      'removeEpochEntry',
+      'removeClosedProtectedEpoch',
+    ]);
+    const deletionOwners = new Map<string, Set<string | null>>();
     const visit = (node: ts.Node): void => {
-      if (
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === 'removeDuringSweep'
-      ) {
-        deletionOwners.push(enclosingFunctionName(node));
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && deletions.has(node.expression.text)) {
+        const owners = deletionOwners.get(node.expression.text) ?? new Set<string | null>();
+        owners.add(enclosingFunctionName(node));
+        deletionOwners.set(node.expression.text, owners);
       }
       ts.forEachChild(node, visit);
     };
-    visit(parsed);
-    expect(deletionOwners.length).toBeGreaterThan(0);
-    expect(new Set(deletionOwners)).toEqual(
-      new Set(['removeAfterReapingRename', 'cleanStoreEpochHolders', 'reapStoreEpochEntries', 'sweepStoreEpochs']),
+    for (const path of facets) visit(ts.createSourceFile(path, source(path), ts.ScriptTarget.Latest, true));
+    expect(new Map([...deletionOwners].map(([callee, owners]) => [callee, [...owners].sort()]))).toEqual(
+      new Map([
+        ['removeDuringSweep', ['cleanStoreEpochHolders', 'removeAfterReapingRename', 'sweepStoreEpochs']],
+        [
+          'removeDuringPostReadySweep',
+          [
+            'cleanPostReadyStoreEpochHolders',
+            'removeAfterReapingRenameAsync',
+            'removeWhileExclusivelyLockedAsync',
+            'sweepStoreEpochsPostReady',
+          ],
+        ],
+        ['removeEpochEntry', ['discardUnservedRetirementMint', 'sweepStoreEpochsPostReady']],
+        ['removeClosedProtectedEpoch', ['sweepStoreEpochsPostReady']],
+      ]),
     );
   });
 
@@ -120,7 +134,7 @@ describe('write-once store epoch invariants', () => {
   });
 
   it('keeps filesystem identity comparisons at their proof sites', () => {
-    expect(source('src/store/epoch.ts')).not.toContain('sameDevice');
+    expect(epochSource()).not.toContain('sameDevice');
   });
 
   it('does not retain the deleted reset authority and resume mechanisms', () => {
@@ -137,11 +151,11 @@ describe('write-once store epoch invariants', () => {
   });
 
   it('replaces the swept-mint refusal with holder-publication safety in the semantic-refusal ratchet', () => {
-    expect(source('src/store/epoch.ts')).not.toContain('failStoreEpoch');
+    expect(epochSource()).not.toContain('failStoreEpoch');
   });
 
   it('uses file-lock acquisition rather than bare pid observation for holder liveness', () => {
-    const epoch = source('src/store/epoch.ts');
+    const epoch = epochSource();
     expect(epoch).not.toContain('observeLiveness');
     expect(epoch).toContain('attemptExclusiveFileLockSync');
   });
@@ -165,29 +179,39 @@ describe('write-once store epoch invariants', () => {
     expect(source('src/cli/read-store.ts')).not.toContain('.existsSync(');
     expect(source('clients/hooks/pre-compact.mjs')).not.toContain('existsSync(dbPath)');
     expect(functionSource('src/store/path-observation.ts', 'observeStorePath')).toContain("code === 'ENOENT'");
-    expect(functionSource('src/store/epoch.ts', 'inspectCurrentStore')).toContain('observeCurrentStore(runtime)');
-    expect(functionSource('src/store/epoch.ts', 'resolveCurrentStore')).toContain('observeCurrentStore(runtime)');
+    expect(functionSource('src/store/epoch/observation.ts', 'inspectCurrentStore')).toContain(
+      'observeCurrentStore(runtime)',
+    );
+    expect(functionSource('src/store/epoch/observation.ts', 'resolveCurrentStore')).toContain(
+      'observeCurrentStore(runtime)',
+    );
   });
 
   it('requires private device identity for every required epoch file in source and generated hooks', () => {
-    const epoch = source('src/store/epoch.ts');
+    const epoch = epochSource();
     const hook = source('clients/hooks/lib/store-epoch.mjs');
-    expect(functionSource('src/store/epoch.ts', 'observeRegularFile')).toContain('entry.nlink === 1n');
-    expect(functionSource('src/store/epoch.ts', 'observeRegularFile')).toContain('entry.dev === device');
-    expect(functionSource('src/store/epoch.ts', 'observeContainedDirectory')).toContain(
+    expect(functionSource('src/store/epoch/observation.ts', 'observeRegularFile')).toContain('entry.nlink === 1n');
+    expect(functionSource('src/store/epoch/observation.ts', 'observeRegularFile')).toContain('entry.dev === device');
+    expect(functionSource('src/store/epoch/observation.ts', 'observeContainedDirectory')).toContain(
       'entry.dev !== parentEntry.dev',
     );
-    expect(functionSource('src/store/epoch.ts', 'readEpochMetadata')).toContain('nlink !== 1n');
+    expect(functionSource('src/store/epoch/metadata.ts', 'readEpochMetadata')).toContain('nlink !== 1n');
     expect(epoch).toContain('entry.dev !== directoryEntry.dev');
     expect(epoch).toContain('return entry.isFile() && entry.nlink === 1n && entry.dev === device;');
     expect(hook).toContain('return entry.isFile() && entry.nlink === 1n && entry.dev === device;');
   });
 
   it('uses the metadata-complete epoch proof for every production opener', () => {
-    expect(functionSource('src/store/epoch.ts', 'resolveProvenStoreEpochAtPath')).toContain('observeStoreEpoch');
-    expect(functionSource('src/store/epoch.ts', 'openWritableStoreDbNoReset')).toContain('acquireStoreEpochReadLock');
-    expect(functionSource('src/store/epoch.ts', 'resolveCurrentStore')).toContain('resolveProvenStoreEpochAtPath');
-    expect(functionSource('src/store/epoch.ts', 'acquireStoreEpochReadLock')).toContain('resolved.storeRoot');
+    expect(functionSource('src/store/epoch/observation.ts', 'resolveProvenStoreEpochAtPath')).toContain(
+      'observeStoreEpoch',
+    );
+    expect(functionSource('src/store/epoch/opening.ts', 'openWritableStoreDbNoReset')).toContain(
+      'acquireStoreEpochReadLock',
+    );
+    expect(functionSource('src/store/epoch/observation.ts', 'resolveCurrentStore')).toContain(
+      'resolveProvenStoreEpochAtPath',
+    );
+    expect(functionSource('src/store/epoch/holder.ts', 'acquireStoreEpochReadLock')).toContain('resolved.storeRoot');
     expect(functionSource('src/store/read-port.ts', 'openReadOnlyStoreDatabase')).toContain(
       'acquireStoreEpochReadLock',
     );
@@ -198,32 +222,40 @@ describe('write-once store epoch invariants', () => {
   });
 
   it('keeps list publication provenance on the sidecar without opening SQLite', () => {
-    const list = functionSource('src/store/epoch.ts', 'listStoreEpochs');
-    expect(list).not.toMatch(/classifyStoreFile|acquireSharedFileLockSync|openStoreDatabase/u);
+    const list = functionSource('src/store/epoch/inventory.ts', 'storeEpochInventoryEntry');
+    expect(source('src/store/epoch/inventory.ts')).not.toMatch(
+      /classifyStoreFile|acquireSharedFileLockSync|openStoreDatabase/u,
+    );
     expect(list).toContain('publicationReason');
     expect(list).toContain('observation.epochJson.value.classification');
   });
 
   it('keeps reporting paths free of exclusive lock acquisition', () => {
     for (const name of ['observeStoreEpochHolder', 'observeStoreEpochHolderAsync', 'listStoreEpochResidues']) {
-      expect(functionSource('src/store/epoch.ts', name), name).not.toMatch(
-        /(?:attempt|tryAcquire)ExclusiveFileLockSync/u,
-      );
+      expect(
+        functionSource(
+          name === 'listStoreEpochResidues' ? 'src/store/epoch/residue.ts' : 'src/store/epoch/holder.ts',
+          name,
+        ),
+        name,
+      ).not.toMatch(/(?:attempt|tryAcquire)ExclusiveFileLockSync/u);
     }
-    expect(functionSource('src/store/epoch.ts', 'listStoreEpochHolders')).not.toContain('inspectStoreEpochHolder');
+    expect(functionSource('src/store/epoch/holder.ts', 'listStoreEpochHolders')).not.toContain(
+      'inspectStoreEpochHolder',
+    );
   });
 
   it('constructs on the store device in a namespace only the post-ready sweep reclaims', () => {
-    const mint = functionSource('src/store/epoch.ts', 'mintNextEpoch');
-    const postReady = functionSource('src/store/epoch.ts', 'sweepStoreEpochsPostReady');
+    const mint = functionSource('src/store/epoch/mint.ts', 'mintNextEpoch');
+    const postReady = functionSource('src/store/epoch/post-ready-sweep.ts', 'sweepStoreEpochsPostReady');
     expect(mint).toContain('join(dbDir, `${PRIVATE_MINT_CONSTRUCTION_PREFIX}${id}`)');
     expect(mint).not.toContain('createSharedFileLockSync(join(preparation');
     expect(postReady).toContain('isStoreEpochResidue(entry)');
-    expect(source('src/store/epoch.ts')).toContain('name.startsWith(PRIVATE_MINT_CONSTRUCTION_PREFIX)');
+    expect(epochSource()).toContain('name.startsWith(PRIVATE_MINT_CONSTRUCTION_PREFIX)');
   });
 
   it('keeps every store lock inside its store directory', () => {
-    const epoch = source('src/store/epoch.ts');
+    const epoch = epochSource();
     expect(epoch).toContain("export const STORE_LOCK_FILE_NAME = '.lock'");
     expect(epoch).not.toMatch(/\.epoch-lock-|\.mint-lock-|removeOrphanedEpochLock|removeLockFile/u);
   });

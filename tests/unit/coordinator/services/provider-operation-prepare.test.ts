@@ -82,7 +82,7 @@ describe('materializeProviderOperationPrepare', () => {
     );
   });
 
-  it('refuses an expired child authorization before reminting a bearer handle', () => {
+  it('refuses an expired child authorization before reminting a child credential', () => {
     const record = providerOperationRecord('prepare-pending');
     if (record.phase !== 'prepare-pending') throw new Error('expected prepare-pending fixture');
     const source: ProviderOperationPrepareSource = {
@@ -143,7 +143,7 @@ describe('materializeProviderOperationPrepare', () => {
     expect(rehydrateBinding).not.toHaveBeenCalled();
   });
 
-  it('rebuilds a fresh envelope from durable launch/session facts and a newly minted handle', () => {
+  it('rebuilds a fresh envelope from durable launch/session facts and a newly minted credential', () => {
     const record = providerOperationRecord('prepare-pending');
     if (record.phase !== 'prepare-pending') throw new Error('expected prepare-pending fixture');
     const binding = { provider: 'codex', kind: 'account', binding: { account: 'acct-1' } } as const;
@@ -174,7 +174,10 @@ describe('materializeProviderOperationPrepare', () => {
       conversationRef: 'durable-conversation',
       providerContinuity: { threadId: 'durable-thread' },
     } as unknown as ProviderSession;
-    const registerPersistedAuthorization = vi.fn(() => ({ handle: 'fresh-random-handle' }));
+    const registerPersistedAuthorization = vi.fn(() => ({
+      credentialId: 'fresh-credential',
+      privateKey: 'fresh-private-key',
+    }));
 
     const prepared = materializeProviderOperationPrepare(
       {
@@ -232,7 +235,8 @@ describe('materializeProviderOperationPrepare', () => {
         protectedEnv: {
           CORAL_JOB_ID: record.operation.jobId,
           CORAL_SESSION_ID: record.prepareSource.sessionId,
-          CORAL_CHILD_PRINCIPAL_HANDLE: 'fresh-random-handle',
+          CORAL_CHILD_CREDENTIAL_ID: 'fresh-credential',
+          CORAL_CHILD_CREDENTIAL_KEY: 'fresh-private-key',
         },
         platform: 'linux',
       },

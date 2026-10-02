@@ -23,7 +23,7 @@ import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { DurableProcessExit } from '#src/runtime/durable-runtime.js';
 import type { DurableContainmentOperatorControl, DurableProcessIdentityCallback } from '#src/providers/cli-runner.js';
-import { createRealRuntime } from '#src/runtime/real.js';
+import { createDurableTestRuntime } from '#tests/helpers/durable-runtime.js';
 import type { DurableLaunchResult, Runtime } from '#src/runtime/ports.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -122,7 +122,7 @@ function startWrapperPublication(
   const cleanupRetentions = new Map<DurableProcessCleanup, DurableProcessRetention>();
   const pendingLaunches = new Set<PendingDurableLaunch>();
   reapRecordedContainment.mockImplementationOnce(() => cleanup.promise);
-  const base = createRealRuntime('prod');
+  const base = createDurableTestRuntime();
   const runtime: Runtime = {
     ...base,
     process: {
@@ -277,7 +277,7 @@ describe('durable transport observer timing and cleanup ownership', () => {
     const exited = deferred<DurableProcessExit>();
     let monotonicNow = 0n;
     let sleeps = 0;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const runtime: Runtime = {
       ...base,
       time: {
@@ -323,7 +323,7 @@ describe('durable transport observer timing and cleanup ownership', () => {
       if (status?.kind === 'held') operatorControl = control;
       return { kind: 'published' };
     };
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const runtime: Runtime = {
       ...base,
       time: {
@@ -404,7 +404,7 @@ describe('durable transport observer timing and cleanup ownership', () => {
       if (status?.kind === 'held') operatorControl = control;
       return { kind: 'published' };
     };
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const runtime: Runtime = {
       ...base,
       time: {

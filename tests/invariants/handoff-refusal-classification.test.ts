@@ -88,27 +88,12 @@ describe('handoff refusal classification ownership', () => {
     // multiplicity. What it must not depend on is position — where a `throw` sits inside the function that
     // owns it is not a change of ownership, and an inventory that fails for it gets re-synced rather than read.
     const approved = [
-      'refreshIncumbentForSignal:handoff_fresh_discovery_unavailable',
-      'refreshIncumbentForSignal:handoff_fresh_discovery_changed',
-      'assertSignalCapability:handoff_signal_capability_unavailable',
-      'refuseUnverifiableSignalTarget:handoff_process_identity_unavailable',
-      'refuseUnverifiableSignalTarget:handoff_platform_identity_insufficient',
-      'refuseUnverifiableSignalTarget:handoff_published_incarnation_missing',
-      'refuseUnverifiableSignalTarget:handoff_published_incarnation_mismatch',
-      'refuseUnverifiableSignalTarget:handoff_signal_anchor_missing',
-      'refuseUnverifiableSignalTarget:handoff_pid_recycled',
-      'refuseUnverifiableSignalTarget:handoff_process_liveness_unknown',
-      'settleSignalAttempt:handoff_signal_rejected_live',
-      'refuseAfterPendingSignalFailure:handoff_accepted_signal_target_alive_after_failure',
-      'settleBoundSocketAgainstPendingSignal:handoff_accepted_signal_target_alive_after_bind',
-      'advanceExpiredPendingSignal:handoff_sigkill_grace_target_gone_socket_still_bound',
-      'advanceExpiredPendingSignal:handoff_sigkill_grace_target_alive',
-      'advanceExpiredPendingSignal:handoff_term_only_policy',
-      'bindWithHandoff:handoff_shutdown_capability_rejected',
-      'bindWithHandoff:handoff_shutdown_credential_unavailable',
+      'bindWithHandoff:handoff_administrative_drain_timeout',
+      'bindWithHandoff:handoff_administrative_drain_timeout',
+      'bindWithHandoff:handoff_ipc_capacity_timeout',
+      'bindWithHandoff:handoff_ipc_capacity_timeout',
       'bindWithHandoff:handoff_socket_holder_unverified',
       'bindWithHandoff:handoff_socket_holder_unverified',
-      'bindWithHandoff:handoff_manual_policy',
     ];
 
     expect(handoffEscalationConstructionSites(source).sort()).toEqual(approved.sort());

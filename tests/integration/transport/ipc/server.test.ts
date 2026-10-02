@@ -1,8 +1,10 @@
+import { randomBytes, randomUUID } from 'node:crypto';
 import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { createConnection, type Socket } from 'node:net';
+import { spawn } from 'node:child_process';
+import { createConnection, createServer as createNetServer, type Server as NetServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -23,10 +25,11 @@ vi.mock('#src/transport/http/handler.js', async (importOriginal) => {
 
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
+import { buildErrorEnvelope } from '#src/cli/errors.js';
+import { SuccessionWriterParkedError } from '#src/store/db.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
-import type { Principal } from '#src/security/principal.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 import {
   createProviderHostCommandOperations,
@@ -51,6 +54,17 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import { IdleTimer } from '#src/coordinator/live/idle.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { domainSuccess } from '#src/transport/tool-result.js';
+import { ChildPrincipalRegistry, type ChildPrincipalCredential } from '#src/coordinator/child-principal-registry.js';
+import { createStoreChildPrincipalCredentials } from '#src/coordinator/child-principal-credentials.js';
+import { childPrincipalAuthFromEnv } from '#src/transport/ipc/child-principal-auth.js';
+import { CORAL_CHILD_CREDENTIAL_ID, CORAL_CHILD_CREDENTIAL_KEY } from '#src/security/child-principal-env.js';
+import type { ChildProvenRequest } from '#src/security/child-credential.js';
+import type { Capability } from '#src/security/capability.js';
+import type { Database } from '#src/store/db.js';
+import { childCredentialDatabase } from '#tests/helpers/child-principal-registry.js';
+import { testPrincipal } from '#tests/helpers/principal.js';
+import { createRequestLeaseOwner } from '#src/coordinator/live/request-leases.js';
+import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
 
 const tempDirs: string[] = [];
 
@@ -73,6 +87,40 @@ async function withTestTimeout<T>(promise: Promise<T>, label: string, timeoutMs 
     if (timeout !== null) {
       clearTimeout(timeout);
     }
+  }
+}
+
+async function listenReadingServer(): Promise<{ server: NetServer; socketPath: string }> {
+  const server = createNetServer();
+  const socketPath = makeSocketPath();
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  return { server, socketPath };
+}
+
+function nextConnection(server: NetServer): Promise<Socket> {
+  return new Promise((resolve) => server.once('connection', resolve));
+}
+
+/** The error `data` exactly as it crosses the wire, before this build's client decodes it. */
+async function rawErrorData(socketPath: string, request: Record<string, unknown>): Promise<unknown> {
+  const socket = createConnection(socketPath);
+  try {
+    const line = await withTestTimeout(
+      new Promise<string>((resolve, reject) => {
+        let buffered = '';
+        socket.on('error', reject);
+        socket.on('data', (chunk) => {
+          buffered += chunk.toString();
+          const end = buffered.indexOf('\n');
+          if (end !== -1) resolve(buffered.slice(0, end));
+        });
+        socket.write(`${JSON.stringify({ kind: 'request', id: 'raw', ...request })}\n`);
+      }),
+      'raw error frame',
+    );
+    return (JSON.parse(line) as { error: { data?: unknown } }).error.data;
+  } finally {
+    socket.destroy();
   }
 }
 
@@ -292,9 +340,13 @@ function createPorts(): HttpHandlerPorts {
     jobs: {
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),
       abort: vi.fn(),
+      validateWait: vi.fn(() => null),
+      waitHandoverSignal: vi.fn(() => new AbortController().signal),
       waitStream: vi.fn(),
       list: vi.fn(() => []),
       detail: vi.fn(() => null),
+      unknownJobDisposition: vi.fn(() => 'not-found' as const),
+      outcomeUnrecoverable: vi.fn(() => []),
     },
     workflows: {
       execute: vi.fn(),
@@ -378,6 +430,76 @@ afterEach(() => {
 });
 
 describe('ipc server', () => {
+  it('returns the cancellation disposition when a unary handler obeys the lease abort', async () => {
+    const ports = createPorts();
+    ports.admin.beginRequestLease = createRequestLeaseOwner({
+      newRecordId: randomUUID,
+      time: createRealTimePort(),
+      begin: vi.fn(),
+      end: vi.fn(),
+      timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+    }).begin;
+    ports.kb.readSearch = vi.fn(
+      (request: { abortSignal?: AbortSignal }) =>
+        new Promise<never>((_, reject) => {
+          request.abortSignal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), {
+            once: true,
+          });
+        }),
+    );
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(
+        rawErrorData(socketPath, {
+          method: 'kb.entries.search',
+          params: { q: 'blocked' },
+          auth: { kind: 'boot', token: 'boot-token' },
+        }),
+      ).resolves.toMatchObject({
+        code: 'request_deadline_exceeded',
+        context: { method: 'kb.entries.search', requestId: 'raw', outcome: 'cancelled' },
+      });
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('returns a typed deadline error without stopping unrelated work for a never-settling unary operation', async () => {
+    const ports = createPorts();
+    const begin = vi.fn();
+    const end = vi.fn();
+    const leases = createRequestLeaseOwner({
+      newRecordId: randomUUID,
+      time: createRealTimePort(),
+      begin,
+      end,
+      abandon: vi.fn(),
+      timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+    });
+    ports.admin.beginRequestLease = leases.begin;
+    ports.admin.succession = () => new Promise<never>(() => {});
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    try {
+      const error = await rawErrorData(socketPath, {
+        method: SUCCESSION_METHODS.status,
+        params: {},
+        auth: { kind: 'boot', token: 'boot-token' },
+      });
+      expect(error).toMatchObject({
+        code: 'request_deadline_exceeded',
+        context: { method: SUCCESSION_METHODS.status, requestId: 'raw', outcome: 'continuing' },
+      });
+      expect(begin).toHaveBeenCalledTimes(1);
+      expect(end).toHaveBeenCalledOnce();
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
   it('serves and closes the same IPC surface at compatibility addresses', async () => {
     const ports = createPorts();
     const listener = createIpcServer(ports);
@@ -397,6 +519,353 @@ describe('ipc server', () => {
     }
 
     expect([socketPath, ...compatibilityPaths].some(existsSync)).toBe(false);
+  });
+
+  it('forwards an already-open partial frame without changing its bytes', async () => {
+    const listener = createIpcServer(createPorts());
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    const observed = new Promise<void>((resolve) => {
+      listener.server.once('connection', (socket) => socket.once('data', () => resolve()));
+    });
+    const client = createConnection(socketPath);
+    const forwarded: Socket[] = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', resolve);
+        client.once('error', reject);
+      });
+      const partial = Buffer.from('{"jsonrpc":"2.0","method":"transport.ping","id":"\xc3', 'latin1');
+      client.write(partial);
+      await observed;
+      const received = new Promise<Buffer>((resolve) => {
+        listener.forwardConnections!((socket, pendingFrameBase64) => {
+          forwarded.push(socket);
+          resolve(Buffer.from(pendingFrameBase64, 'base64'));
+        });
+      });
+      expect(await received).toEqual(partial);
+    } finally {
+      for (const socket of forwarded) socket.destroy();
+      client.destroy();
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('delivers every byte of pending sockets forwarded to another process in one burst', async () => {
+    const receiver = spawn(
+      process.execPath,
+      [
+        '-e',
+        `process.on('message', (message, socket) => {
+          let frame = Buffer.from(message.pending, 'base64');
+          socket.on('data', (chunk) => {
+            frame = Buffer.concat([frame, chunk]);
+            if (frame.includes(10)) process.send({ frame: frame.toString() });
+          });
+          socket.resume();
+        });
+        process.send({ online: true });`,
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+    );
+    const listener = createIpcServer(createPorts());
+    const socketPath = makeSocketPath();
+    const clients: Socket[] = [];
+    try {
+      await new Promise<void>((resolve) => receiver.once('message', () => resolve()));
+      const frames: string[] = [];
+      receiver.on('message', (message: { frame: string }) => frames.push(message.frame));
+      await listenIpcServer(listener, socketPath);
+      const count = 5;
+      const pending = new Promise<void>((resolve) => {
+        let observed = 0;
+        listener.server.on('connection', (socket) =>
+          socket.once('data', () => {
+            observed += 1;
+            if (observed === count) resolve();
+          }),
+        );
+      });
+      for (let index = 0; index < count; index += 1) {
+        const client = createConnection(socketPath);
+        clients.push(client);
+        client.on('error', () => undefined);
+        client.write('{"jsonrpc":"2.0",');
+      }
+      await pending;
+
+      listener.forwardConnections!((socket, pendingFrameBase64) => {
+        receiver.send({ pending: pendingFrameBase64 }, socket);
+      });
+      clients.forEach((client, index) => client.write(`"method":"transport.ping","id":"${index}"}\n`));
+
+      await waitForCondition(() => frames.length === count, 'every forwarded frame delivered').catch(() => undefined);
+      expect([...frames].sort()).toEqual(
+        clients.map((_client, index) => `{"jsonrpc":"2.0","method":"transport.ping","id":"${index}"}\n`),
+      );
+    } finally {
+      for (const client of clients) client.destroy();
+      receiver.kill('SIGKILL');
+      await closeIpcServer(listener);
+    }
+  });
+
+  // A socket handed to `acceptSocket` by an inherited server or returned by an attempt child is already reading.
+  // Forwarded that way, the bytes its handle reads while the transfer is queued go down with this process's copy.
+  it('delivers every frame of reading sockets it forwards to another process in one burst', async () => {
+    const receiver = spawn(
+      process.execPath,
+      [
+        '-e',
+        `process.on('message', (message, socket) => {
+          let frame = Buffer.from(message.pending, 'base64');
+          const report = () => { if (frame.includes(10)) process.send({ frame: frame.toString() }); };
+          report();
+          socket.on('data', (chunk) => {
+            frame = Buffer.concat([frame, chunk]);
+            report();
+          });
+          socket.resume();
+        });
+        process.send({ online: true });`,
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+    );
+    const listener = createIpcServer(createPorts());
+    const readingServer = createNetServer();
+    const socketPath = makeSocketPath();
+    const clients: Socket[] = [];
+    try {
+      await new Promise<void>((resolve) => receiver.once('message', () => resolve()));
+      const frames: string[] = [];
+      receiver.on('message', (message: { frame: string }) => frames.push(message.frame));
+      listener.forwardConnections!((socket, pendingFrameBase64) => {
+        receiver.send({ pending: pendingFrameBase64 }, socket);
+      });
+      readingServer.on('connection', (socket) => listener.acceptSocket!(socket));
+      await new Promise<void>((resolve) => readingServer.listen(socketPath, resolve));
+      const count = 20;
+      for (let index = 0; index < count; index += 1) {
+        const client = createConnection(socketPath, () =>
+          client.write(`{"jsonrpc":"2.0","method":"transport.ping","id":"${index}"}\n`),
+        );
+        clients.push(client);
+        client.on('error', () => undefined);
+      }
+
+      await waitForCondition(() => frames.length === count, 'every forwarded frame delivered').catch(() => undefined);
+      expect([...frames].sort()).toEqual(
+        clients.map((_client, index) => `{"jsonrpc":"2.0","method":"transport.ping","id":"${index}"}\n`).sort(),
+      );
+    } finally {
+      for (const client of clients) client.destroy();
+      receiver.kill('SIGKILL');
+      await new Promise<void>((resolve) => readingServer.close(() => resolve()));
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('carries bytes already buffered on a socket it forwards', async () => {
+    const listener = createIpcServer(createPorts());
+    const { server, socketPath } = await listenReadingServer();
+    const client = createConnection(socketPath);
+    const forwarded: Socket[] = [];
+    const accepted = await nextConnection(server);
+    try {
+      accepted.pause();
+      const frame = '{"jsonrpc":"2.0","method":"transport.ping","id":"buffered"}\n';
+      client.write(frame);
+      await waitForCondition(() => accepted.readableLength === Buffer.byteLength(frame), 'frame buffered');
+      const received = new Promise<string>((resolve) => {
+        listener.forwardConnections!((socket, pendingFrameBase64) => {
+          forwarded.push(socket);
+          resolve(Buffer.from(pendingFrameBase64, 'base64').toString());
+        });
+      });
+      listener.acceptSocket!(accepted);
+
+      expect(await withTestTimeout(received, 'forwarded frame')).toBe(frame);
+    } finally {
+      accepted.destroy();
+      for (const socket of forwarded) socket.destroy();
+      client.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('answers a complete request carried with a transferred socket', async () => {
+    const listener = createIpcServer(createPorts());
+    const { server, socketPath } = await listenReadingServer();
+    const client = createConnection(socketPath);
+    const accepted = await nextConnection(server);
+    try {
+      const response = new Promise<string>((resolve, reject) => {
+        let received = '';
+        client.on('error', reject);
+        client.on('data', (chunk) => {
+          received += chunk.toString();
+          if (received.includes('\n')) resolve(received);
+        });
+      });
+      listener.acceptSocket!(
+        accepted,
+        Buffer.from('{"kind":"request","method":"transport.ping","id":"carried"}\n').toString('base64'),
+      );
+      expect(await withTestTimeout(response, 'carried request')).toContain('carried');
+    } finally {
+      accepted.destroy();
+      client.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('completes a carried partial frame with bytes received after hand-back', async () => {
+    const listener = createIpcServer(createPorts());
+    const { server, socketPath } = await listenReadingServer();
+    const client = createConnection(socketPath);
+    const accepted = await nextConnection(server);
+    try {
+      const response = new Promise<string>((resolve, reject) => {
+        let received = '';
+        client.on('error', reject);
+        client.on('data', (chunk) => {
+          received += chunk.toString();
+          if (received.includes('\n')) resolve(received);
+        });
+      });
+      listener.acceptSocket!(
+        accepted,
+        Buffer.from('{"kind":"request","method":"transport.ping","id":"split"').toString('base64'),
+      );
+      client.write('}\n');
+
+      await expect(withTestTimeout(response, 'carried partial request')).resolves.toContain('split');
+    } finally {
+      accepted.destroy();
+      client.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeIpcServer(listener);
+    }
+  });
+
+  // A handle this build cannot stop keeps reading after it is sent, so forwarding it loses its frame: the only
+  // safe owner left is this process.
+  it('serves a socket locally instead of forwarding it when its handle cannot stop reading', async () => {
+    const listener = createIpcServer(createPorts());
+    const { server, socketPath } = await listenReadingServer();
+    const client = createConnection(socketPath);
+    const forward = vi.fn();
+    const accepted = await nextConnection(server);
+    try {
+      (accepted as unknown as { _handle: { readStop?: unknown } })._handle.readStop = undefined;
+      listener.forwardConnections!(forward);
+      listener.acceptSocket!(accepted);
+      const reply = new Promise<string>((resolve) => client.once('data', (chunk) => resolve(chunk.toString())));
+      client.write('{"kind":"request","id":"local","method":"transport.ping"}\n');
+
+      expect(JSON.parse(await withTestTimeout(reply, 'local reply'))).toMatchObject({ id: 'local' });
+      expect(forward).not.toHaveBeenCalled();
+    } finally {
+      accepted.destroy();
+      client.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('keeps a pending socket local when its handle cannot stop reading', async () => {
+    const listener = createIpcServer(createPorts());
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    const observed = new Promise<Socket>((resolve) => {
+      listener.server.once('connection', (socket) => socket.once('data', () => resolve(socket)));
+    });
+    const client = createConnection(socketPath);
+    const forward = vi.fn();
+    let accepted: Socket | null = null;
+    try {
+      client.write('{"kind":"request",');
+      accepted = await observed;
+      (accepted as unknown as { _handle: { readStop?: unknown } })._handle.readStop = undefined;
+      listener.forwardConnections!(forward);
+      const reply = new Promise<string>((resolve) => client.once('data', (chunk) => resolve(chunk.toString())));
+      client.write('"id":"pending","method":"transport.ping"}\n');
+
+      expect(JSON.parse(await withTestTimeout(reply, 'local reply'))).toMatchObject({ id: 'pending' });
+      expect(forward).not.toHaveBeenCalled();
+    } finally {
+      accepted?.destroy();
+      client.destroy();
+      await closeIpcServer(listener);
+    }
+  });
+
+  // v0.10.5-v0.10.13 CLIs read only `data.code` on this path, receive no HTTP status, and exit 1 for a code they
+  // do not know; the codes each of them maps to exit 75 without a status include `transient`.
+  const SHIPPED_CLI_TRANSIENT_CODES = ['transient', 'backend_shutting_down', 'kb_disabled'];
+
+  it('carries a parked store writer to shipped CLIs as a transient code, and to this CLI as itself', async () => {
+    const ports = createPorts();
+    vi.mocked(ports.discuss.listSessions).mockImplementation(() => {
+      throw new SuccessionWriterParkedError(new Promise<void>(() => undefined));
+    });
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    const request = { method: 'discuss.session.list', params: {}, auth: { kind: 'boot', token: 'boot-token' } };
+    try {
+      const wire = await rawErrorData(socketPath, request);
+      expect(SHIPPED_CLI_TRANSIENT_CODES).toContain((wire as { code?: unknown } | undefined)?.code);
+
+      const error = await requestIpcMethod(socketPath, request.method, request.params, {
+        auth: { kind: 'boot', token: 'boot-token' },
+      }).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'succession_writer_parked' });
+      expect(buildErrorEnvelope(error)).toMatchObject({
+        envelope: { code: 'succession_writer_parked' },
+        exitCode: 75,
+      });
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it.each([
+    { detail: { kind: 'unresolved', epochKey: 'epoch-a' }, code: 'job_unresolved', shippedTransient: true, exit: 75 },
+    {
+      detail: { kind: 'outcome-unrecoverable', epochKey: 'epoch-a' },
+      code: 'job_outcome_unrecoverable',
+      shippedTransient: false,
+      exit: 1,
+    },
+  ])('answers $code in the form a shipped CLI exits on correctly', async ({ detail, code, shippedTransient, exit }) => {
+    const ports = createPorts();
+    vi.mocked(ports.jobs.detail).mockReturnValue(detail as never);
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    const projectRoot = mkdtempSync(join(tmpdir(), 'coral-ipc-server-project-'));
+    tempDirs.push(projectRoot);
+    await listenIpcServer(listener, socketPath);
+    const params = { jobId: 'job-unresolved-1', projectRoot };
+    try {
+      const wire = (await rawErrorData(socketPath, {
+        method: 'jobs.detail',
+        params,
+        auth: { kind: 'boot', token: 'boot-token' },
+      })) as { code?: unknown };
+      if (shippedTransient) expect(SHIPPED_CLI_TRANSIENT_CODES).toContain(wire.code);
+      else expect(wire.code).toBe(code);
+
+      const error = await requestIpcMethod(socketPath, 'jobs.detail', params, {
+        auth: { kind: 'boot', token: 'boot-token' },
+      }).catch((caught: unknown) => caught);
+      expect(buildErrorEnvelope(error)).toMatchObject({ envelope: { code }, exitCode: exit });
+    } finally {
+      await closeIpcServer(listener);
+    }
   });
 
   it('reports sockets accepted on a published compatibility address in coordinator health', async () => {
@@ -600,144 +1069,481 @@ describe('ipc server', () => {
     await expect(sender.list()).rejects.toThrow(/Work directory must be absolute and normalized/u);
   });
 
-  it('authenticates catalog requests through child principal handles and rejects over-cap/replayed requests', async () => {
-    const childPrincipal: Principal = {
-      subject: 'operator',
-      transport: 'ipc',
-      credential: { kind: 'child-principal', id: 'job-a:session-a' },
-      binding: { kind: 'unbound' },
-      attenuatedCaps: new Set(['jobs:read']),
-    };
-    const ports: HttpHandlerPorts = {
-      ...createPorts(),
-      childPrincipals: {
-        authenticate: vi.fn((auth, namespace, nowMs) => {
-          if (
-            namespace === 'test-namespace' &&
-            nowMs === 0 &&
-            auth.handle === 'handle-a' &&
-            auth.jobId === 'job-a' &&
-            auth.sessionId === 'session-a'
-          ) {
-            return childPrincipal;
-          }
-          return null;
-        }),
-      },
-    };
-    const listener = createIpcServer(ports);
-    const socketPath = makeSocketPath();
+  describe('challenged child authentication', () => {
+    type ChallengedAuth = Extract<NonNullable<ReturnType<typeof childPrincipalAuthFromEnv>>, { kind: 'challenged' }>;
+    type CapturedProof = Readonly<{ auth: ReturnType<ChallengedAuth['prove']>; request: ChildProvenRequest }>;
 
-    await listenIpcServer(listener, socketPath);
-    try {
-      await expect(
-        requestIpcMethod(
-          socketPath,
-          'jobs.list',
-          {},
-          {
-            auth: {
-              kind: 'child',
-              handle: 'handle-a',
-              token: 'nonce-1',
-              jobId: 'job-a',
-              sessionId: 'session-a',
-            },
-          },
-        ),
-      ).resolves.toEqual({ jobs: [] });
-
-      const denied = await requestIpcMethod(
-        socketPath,
-        'coordinator.listExpansion',
-        {},
+    /** Each call is a separate coordinator incarnation over the same store. */
+    function registryOn(db: Database): ChildPrincipalRegistry {
+      return new ChildPrincipalRegistry(
+        { randomBytes },
+        createStoreChildPrincipalCredentials(() => db),
         {
-          auth: {
-            kind: 'child',
-            handle: 'handle-a',
-            token: 'nonce-2',
-            jobId: 'job-a',
-            sessionId: 'session-a',
-          },
+          namespace: 'test-namespace',
+          activeJobOrigin: () => 'test-namespace',
         },
-      ).catch((error: unknown) => error);
+      );
+    }
 
-      expect(denied).toBeInstanceOf(IpcRpcError);
-      expect(denied).toMatchObject({
-        code: 'missing_capability',
-        rpcCode: -32603,
-        message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
-        data: {
-          code: 'missing_capability',
-          message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
-          detail: { requires: expect.any(String) },
-        },
+    function issue(registry: ChildPrincipalRegistry, caps: readonly Capability[] = ['jobs:read', 'kb:read']) {
+      return registry.register({
+        issuer: 'durable-job',
+        parentPrincipal: testPrincipal(),
+        childCaps: caps,
+        namespace: 'test-namespace',
+        parentJobId: 'job-a',
+        parentSessionId: 'session-a',
+        nowMs: 0,
       });
+    }
 
-      // An operational route gates before catalog dispatch, so the authenticated child must read the same
-      // authorization answer there or the nested-session instruction and its exit code are lost. Every
-      // operational route whose refusal this change moved off `unauthorized` is listed, not just the new ones.
-      for (const method of [
-        'jobs.abort',
-        providerProxySetContainRpcSpec.name,
-        'transport.health',
-        providerHostListRpcSpec.name,
-      ]) {
-        const deniedOperationalRoute = await requestIpcMethod(
-          socketPath,
-          method,
-          {},
-          {
-            auth: {
-              kind: 'child',
-              handle: 'handle-a',
-              token: 'nonce-4',
-              jobId: 'job-a',
-              sessionId: 'session-a',
-            },
-          },
-        ).catch((error: unknown) => error);
+    /** The auth a launched child's CLI derives from its environment. */
+    function childAuth(credential: ChildPrincipalCredential, captured: CapturedProof[] = []): ChallengedAuth {
+      const auth = childPrincipalAuthFromEnv({
+        [CORAL_CHILD_CREDENTIAL_ID]: credential.credentialId,
+        [CORAL_CHILD_CREDENTIAL_KEY]: credential.privateKey,
+        CORAL_JOB_ID: credential.parentJobId,
+        CORAL_SESSION_ID: credential.parentSessionId,
+      });
+      if (auth === null || auth === undefined || typeof auth === 'function')
+        throw new Error('Expected challenged auth');
+      return {
+        kind: 'challenged',
+        prove: (challenge, request) => {
+          const proof = auth.prove(challenge, request);
+          captured.push({ auth: proof, request });
+          return proof;
+        },
+      };
+    }
 
-        expect(deniedOperationalRoute, method).toBeInstanceOf(IpcRpcError);
-        expect(deniedOperationalRoute, method).toMatchObject({
-          code: 'missing_capability',
-          message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
-          data: { code: 'missing_capability' },
+    /** Sends each frame on one connection and collects one answer per frame. */
+    async function exchange(socketPath: string, frames: readonly Record<string, unknown>[]): Promise<unknown[]> {
+      const socket = await connectRawIpcSocket(socketPath);
+      try {
+        const answers: unknown[] = [];
+        let buffered = '';
+        let deliver: (line: string) => void = () => undefined;
+        socket.on('data', (chunk) => {
+          buffered += chunk.toString();
+          for (let end = buffered.indexOf('\n'); end !== -1; end = buffered.indexOf('\n')) {
+            const line = buffered.slice(0, end);
+            buffered = buffered.slice(end + 1);
+            deliver(line);
+          }
         });
+        for (const frame of frames) {
+          const line = await withTestTimeout(
+            new Promise<string>((resolve) => {
+              deliver = resolve;
+              socket.write(`${JSON.stringify(frame)}\n`);
+            }),
+            'raw IPC answer',
+          );
+          answers.push(JSON.parse(line) as unknown);
+        }
+        return answers;
+      } finally {
+        socket.destroy();
+      }
+    }
+
+    function replayFrame(proof: CapturedProof): Record<string, unknown> {
+      return {
+        kind: 'request',
+        id: proof.request.id,
+        method: proof.request.method,
+        ...(proof.request.params === undefined ? {} : { params: proof.request.params }),
+        auth: proof.auth,
+      };
+    }
+
+    async function serve(registry: ChildPrincipalRegistry, overrides: Partial<HttpHandlerPorts> = {}) {
+      const listener = createIpcServer({ ...createPorts(), childPrincipals: registry, ...overrides });
+      const socketPath = makeSocketPath();
+      await listenIpcServer(listener, socketPath);
+      return { listener, socketPath };
+    }
+
+    it.each(['commit', 'abort'] as const)(
+      'retires a paused challenge at the %s serving fence and retries fresh',
+      async (outcome) => {
+        const db = childCredentialDatabase();
+        const registry = registryOn(db);
+        const credential = issue(registry);
+        const oldPorts = createPorts();
+        const newPorts = createPorts();
+        const oldList = vi.spyOn(oldPorts.jobs, 'list');
+        const newList = vi.spyOn(newPorts.jobs, 'list');
+        const older = await serve(registry, { jobs: oldPorts.jobs });
+        const newer = await serve(registryOn(db), { jobs: newPorts.jobs });
+        const forwarded = vi.fn((socket: Socket, pending: string) => newer.listener.acceptSocket?.(socket, pending));
+        let release: (() => void) | undefined;
+        let proofs = 0;
+        const auth = childAuth(credential);
+        try {
+          const result = requestIpcMethod(
+            older.socketPath,
+            'jobs.list',
+            {},
+            {
+              timeoutMs: 1_000,
+              auth: {
+                kind: 'challenged',
+                prove: (challenge, request) => {
+                  proofs += 1;
+                  if (proofs === 1) {
+                    release = older.listener.forwardConnections?.(forwarded);
+                    if (outcome === 'abort') release?.();
+                  }
+                  return auth.prove(challenge, request);
+                },
+              },
+            },
+          );
+          await expect(result).resolves.toEqual({ jobs: [] });
+          expect(proofs).toBe(2);
+          expect(oldList).toHaveBeenCalledTimes(outcome === 'abort' ? 1 : 0);
+          expect(newList).toHaveBeenCalledTimes(outcome === 'commit' ? 1 : 0);
+        } finally {
+          release?.();
+          await closeIpcServer(older.listener);
+          await closeIpcServer(newer.listener);
+        }
+      },
+    );
+
+    it('fences a proof racing an aborted handover before acquiring its request entitlement', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const credential = issue(registry);
+      const base = createPorts();
+      const list = vi.spyOn(base.jobs, 'list');
+      const serving = await serve(registry, { jobs: base.jobs });
+      const authenticate = registry.authenticate.bind(registry);
+      let raced = false;
+      vi.spyOn(registry, 'authenticate').mockImplementation((...args) => {
+        const result = authenticate(...args);
+        if (!raced) {
+          raced = true;
+          serving.listener.forwardConnections?.((socket) => socket.destroy())?.();
+        }
+        return result;
+      });
+      const captured: CapturedProof[] = [];
+      try {
+        await expect(
+          requestIpcMethod(
+            serving.socketPath,
+            'jobs.list',
+            {},
+            {
+              auth: childAuth(credential, captured),
+              timeoutMs: 1_000,
+            },
+          ),
+        ).resolves.toEqual({ jobs: [] });
+        expect(captured).toHaveLength(2);
+        expect(list).toHaveBeenCalledOnce();
+      } finally {
+        await closeIpcServer(serving.listener);
+      }
+    });
+
+    it('exhausts the original request budget during paced pre-dispatch reauthentication', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const credential = issue(registry);
+      const base = createPorts();
+      const list = vi.spyOn(base.jobs, 'list');
+      const serving = await serve(registry, { jobs: base.jobs });
+      const auth = childAuth(credential);
+      let proofs = 0;
+      const started = Date.now();
+      try {
+        await expect(
+          requestIpcMethod(
+            serving.socketPath,
+            'jobs.list',
+            {},
+            {
+              timeoutMs: 180,
+              auth: {
+                kind: 'challenged',
+                prove: (challenge, request) => {
+                  proofs += 1;
+                  serving.listener.forwardConnections?.((socket) => socket.destroy())?.();
+                  return auth.prove(challenge, request);
+                },
+              },
+            },
+          ),
+        ).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+        expect(Date.now() - started).toBeLessThan(600);
+        expect(proofs).toBeGreaterThanOrEqual(2);
+        expect(proofs).toBeLessThanOrEqual(5);
+        expect(list).not.toHaveBeenCalled();
+      } finally {
+        await closeIpcServer(serving.listener);
+      }
+    });
+
+    it('should authenticate catalog requests and keep capability refusals for an authenticated child', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const credential = issue(registry, ['jobs:read']);
+      const { listener, socketPath } = await serve(registry);
+      try {
+        const auth = childAuth(credential);
+        await expect(requestIpcMethod(socketPath, 'jobs.list', {}, { auth })).resolves.toEqual({ jobs: [] });
+
+        const denied = await requestIpcMethod(socketPath, 'coordinator.listExpansion', {}, { auth }).catch(
+          (error: unknown) => error,
+        );
+        expect(denied).toBeInstanceOf(IpcRpcError);
+        expect(denied).toMatchObject({
+          code: 'missing_capability',
+          rpcCode: -32603,
+          message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
+          data: {
+            code: 'missing_capability',
+            message:
+              'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
+            detail: { requires: expect.any(String) },
+          },
+        });
+
+        // An operational route gates before catalog dispatch, so the authenticated child must read the same
+        // authorization answer there or the nested-session instruction and its exit code are lost.
+        for (const method of [
+          'jobs.abort',
+          providerProxySetContainRpcSpec.name,
+          'transport.health',
+          providerHostListRpcSpec.name,
+        ]) {
+          const deniedOperationalRoute = await requestIpcMethod(socketPath, method, {}, { auth }).catch(
+            (error: unknown) => error,
+          );
+          expect(deniedOperationalRoute, method).toMatchObject({
+            code: 'missing_capability',
+            data: { code: 'missing_capability' },
+          });
+        }
+
+        // No principal at all stays `unauthorized`: the caller presented no credential to attenuate.
+        await expect(requestIpcMethod(socketPath, providerHostListRpcSpec.name, {})).rejects.toMatchObject({
+          code: 'unauthorized',
+        });
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should refuse one proof reused for a second request', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const captured: CapturedProof[] = [];
+      const { listener, socketPath } = await serve(registry);
+      try {
+        await expect(
+          requestIpcMethod(socketPath, 'jobs.list', {}, { auth: childAuth(issue(registry), captured) }),
+        ).resolves.toEqual({ jobs: [] });
+        const proof = captured[0];
+        if (proof === undefined) throw new Error('Expected a captured proof');
+
+        const [withoutChallenge] = await exchange(socketPath, [replayFrame(proof)]);
+        const [, underFreshChallenge] = await exchange(socketPath, [
+          { kind: 'request', id: 'challenge', method: 'transport.challenge' },
+          replayFrame(proof),
+        ]);
+
+        for (const answer of [withoutChallenge, underFreshChallenge]) {
+          expect(answer).toMatchObject({ kind: 'error', error: { data: { code: 'unauthorized' } } });
+        }
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should refuse a second challenge on one connection', async () => {
+      const { listener, socketPath } = await serve(registryOn(childCredentialDatabase()));
+      try {
+        const [first, second] = await exchange(socketPath, [
+          { kind: 'request', id: 1, method: 'transport.challenge' },
+          { kind: 'request', id: 2, method: 'transport.challenge' },
+        ]);
+
+        expect(first).toMatchObject({ kind: 'response', result: { namespace: 'test-namespace' } });
+        expect(second).toMatchObject({ kind: 'error', error: { data: { code: 'unauthorized' } } });
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should refuse at the successor a proof the incumbent accepted before it crashed', async () => {
+      const db = childCredentialDatabase();
+      const incumbent = registryOn(db);
+      const credential = issue(incumbent);
+      const captured: CapturedProof[] = [];
+      const first = await serve(incumbent);
+      try {
+        await expect(
+          requestIpcMethod(first.socketPath, 'jobs.list', {}, { auth: childAuth(credential, captured) }),
+        ).resolves.toEqual({ jobs: [] });
+      } finally {
+        await closeIpcServer(first.listener);
+      }
+      const proof = captured[0];
+      if (proof === undefined) throw new Error('Expected a captured proof');
+
+      const successor = await serve(registryOn(db));
+      try {
+        const [withoutChallenge] = await exchange(successor.socketPath, [replayFrame(proof)]);
+        const [, underFreshChallenge] = await exchange(successor.socketPath, [
+          { kind: 'request', id: 'challenge', method: 'transport.challenge' },
+          replayFrame(proof),
+        ]);
+
+        for (const answer of [withoutChallenge, underFreshChallenge]) {
+          expect(answer).toMatchObject({ kind: 'error', error: { data: { code: 'unauthorized' } } });
+        }
+      } finally {
+        await closeIpcServer(successor.listener);
+      }
+    });
+
+    it('should re-authenticate a child that stays alive across succession against the successor', async () => {
+      const db = childCredentialDatabase();
+      const incumbent = registryOn(db);
+      const auth = childAuth(issue(incumbent));
+      const first = await serve(incumbent);
+      try {
+        await expect(requestIpcMethod(first.socketPath, 'jobs.list', {}, { auth })).resolves.toEqual({ jobs: [] });
+      } finally {
+        await closeIpcServer(first.listener);
       }
 
-      // No principal at all stays `unauthorized`: the caller presented no credential to attenuate.
-      const unauthenticatedOperationalRoute = await requestIpcMethod(
-        socketPath,
-        providerHostListRpcSpec.name,
-        {},
-      ).catch((error: unknown) => error);
+      const readSearch = vi.fn(async () => domainSuccess({ results: [] }));
+      const basePorts = createPorts();
+      const successor = await serve(registryOn(db), { kb: { ...basePorts.kb, readSearch } });
+      try {
+        await expect(
+          requestIpcMethod(successor.socketPath, 'kb.entries.search', { q: 'carried work' }, { auth }),
+        ).resolves.toEqual({ results: [] });
+        expect(readSearch).toHaveBeenCalledOnce();
+      } finally {
+        await closeIpcServer(successor.listener);
+      }
+    });
 
-      expect(unauthenticatedOperationalRoute).toBeInstanceOf(IpcRpcError);
-      expect(unauthenticatedOperationalRoute).toMatchObject({ code: 'unauthorized' });
+    it('should accept at each of two overlapping generations only proofs answering its own challenge', async () => {
+      const db = childCredentialDatabase();
+      const incumbent = registryOn(db);
+      const successor = registryOn(db);
+      const credential = issue(incumbent);
+      const incumbentCaptured: CapturedProof[] = [];
+      const successorCaptured: CapturedProof[] = [];
+      const older = await serve(incumbent);
+      const newer = await serve(successor);
+      try {
+        await expect(
+          requestIpcMethod(older.socketPath, 'jobs.list', {}, { auth: childAuth(credential, incumbentCaptured) }),
+        ).resolves.toEqual({ jobs: [] });
+        await expect(
+          requestIpcMethod(newer.socketPath, 'jobs.list', {}, { auth: childAuth(credential, successorCaptured) }),
+        ).resolves.toEqual({ jobs: [] });
+        const [incumbentProof] = incumbentCaptured;
+        const [successorProof] = successorCaptured;
+        if (incumbentProof === undefined || successorProof === undefined) throw new Error('Expected proofs');
 
-      await expect(
-        requestIpcMethod(
-          socketPath,
-          'jobs.list',
-          {},
-          {
-            auth: {
-              kind: 'child',
-              handle: 'handle-a',
-              token: 'nonce-3',
-              jobId: 'job-b',
-              sessionId: 'session-a',
-            },
-          },
-        ),
-      ).rejects.toThrow('IPC boot token or child principal required');
-    } finally {
-      await closeIpcServer(listener);
-    }
+        const [, crossedIntoSuccessor] = await exchange(newer.socketPath, [
+          { kind: 'request', id: 'challenge', method: 'transport.challenge' },
+          replayFrame(incumbentProof),
+        ]);
+        const [, crossedIntoIncumbent] = await exchange(older.socketPath, [
+          { kind: 'request', id: 'challenge', method: 'transport.challenge' },
+          replayFrame(successorProof),
+        ]);
+
+        for (const answer of [crossedIntoSuccessor, crossedIntoIncumbent]) {
+          expect(answer).toMatchObject({ kind: 'error', error: { data: { code: 'unauthorized' } } });
+        }
+      } finally {
+        await closeIpcServer(older.listener);
+        await closeIpcServer(newer.listener);
+      }
+    });
+
+    it('should authenticate a retry whose earlier reply was lost with a fresh challenge', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const captured: CapturedProof[] = [];
+      const auth = childAuth(issue(registry), captured);
+      const basePorts = createPorts();
+      let calls = 0;
+      const list = vi.fn(() => {
+        calls += 1;
+        return calls === 1 ? new Promise<never>(() => undefined) : [];
+      });
+      const { listener, socketPath } = await serve(registry, {
+        jobs: { ...basePorts.jobs, list } as unknown as HttpHandlerPorts['jobs'],
+      });
+      try {
+        await expect(requestIpcMethod(socketPath, 'jobs.list', {}, { auth, timeoutMs: 200 })).rejects.toThrow();
+        await expect(requestIpcMethod(socketPath, 'jobs.list', {}, { auth })).resolves.toEqual({ jobs: [] });
+
+        expect(list).toHaveBeenCalledTimes(2);
+        expect(captured).toHaveLength(2);
+        expect(captured[0]?.auth).not.toEqual(captured[1]?.auth);
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should deny a credential whose record is unreadable by name while serving other children', async () => {
+      const db = childCredentialDatabase();
+      const issuer = registryOn(db);
+      const damaged = issue(issuer);
+      const intact = issue(issuer);
+      db.prepare('UPDATE meta SET value = ? WHERE key = ?').run(
+        'not json',
+        `child_principal_credential.v1:${damaged.credentialId}`,
+      );
+      const { listener, socketPath } = await serve(registryOn(db));
+      try {
+        const refused = await requestIpcMethod(socketPath, 'jobs.list', {}, { auth: childAuth(damaged) }).catch(
+          (error: unknown) => error,
+        );
+        expect(refused).toBeInstanceOf(IpcRpcError);
+        expect(refused).toMatchObject({
+          code: 'child_credential_unavailable',
+          data: { code: 'child_credential_unavailable', credentialId: damaged.credentialId },
+        });
+        await expect(requestIpcMethod(socketPath, 'jobs.list', {}, { auth: childAuth(intact) })).resolves.toEqual({
+          jobs: [],
+        });
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
+
+    it('should never authenticate a challenged credential presented through the bearer protocol', async () => {
+      const registry = registryOn(childCredentialDatabase());
+      const credential = issue(registry);
+      const { listener, socketPath } = await serve(registry);
+      try {
+        for (const handle of [credential.credentialId, credential.privateKey]) {
+          await expect(
+            requestIpcMethod(
+              socketPath,
+              'jobs.list',
+              {},
+              { auth: { kind: 'child', handle, token: 'nonce', jobId: 'job-a', sessionId: 'session-a' } },
+            ),
+          ).rejects.toMatchObject({ code: 'unauthorized' });
+        }
+      } finally {
+        await closeIpcServer(listener);
+      }
+    });
   });
 
-  it('exposes unauthenticated ping plus boot-token-authenticated health and shutdown methods', async () => {
+  it('exposes unauthenticated ping and boot-token-authenticated health while refusing legacy shutdown', async () => {
     const ports = createPorts();
     const requestDrain = vi.spyOn(ports.admin, 'requestDrain');
     const listener = createIpcServer(ports);
@@ -754,6 +1560,7 @@ describe('ipc server', () => {
         namespace: 'test-namespace',
         instanceId: 'test-instance',
         pid: 12345,
+        jobsWaitExtensions: ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'],
       });
       await expect(
         requestIpcMethod(socketPath, 'transport.health', undefined, { auth: { kind: 'boot', token: 'boot-token' } }),
@@ -764,18 +1571,14 @@ describe('ipc server', () => {
       });
       await expect(
         requestIpcMethod(socketPath, 'transport.shutdown', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
-      ).resolves.toEqual({
-        status: 'draining',
-        instanceId: 'test-instance',
-      });
-      expect(requestDrain).toHaveBeenCalledWith('replaced');
+      ).rejects.toMatchObject({ code: 'shutdown_unauthorized' });
+      expect(requestDrain).not.toHaveBeenCalled();
       const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
       expect(
         messages.some(
           (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
         ),
-      ).toBe(true);
-      expect(messages.some((message) => message.includes('"transport":"ipc"'))).toBe(true);
+      ).toBe(false);
     } finally {
       await closeIpcServer(listener);
       warnSpy.mockRestore();
@@ -790,7 +1593,7 @@ describe('ipc server', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      await expect(requestIpcMethod(socketPath, 'transport.shutdown', {})).rejects.toThrow('Manual shutdown required');
+      await expect(requestIpcMethod(socketPath, 'transport.shutdown', {})).rejects.toThrow('Shutdown refused');
       expect(requestDrain).not.toHaveBeenCalled();
     } finally {
       await closeIpcServer(listener);

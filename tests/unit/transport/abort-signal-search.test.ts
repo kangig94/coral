@@ -7,7 +7,7 @@ import { searchKb } from '#src/kb/ops/search.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { createKbDaemonReadPort } from '#src/coordinator/composition/index.js';
-import type { KbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
+import type { KbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor/index.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';

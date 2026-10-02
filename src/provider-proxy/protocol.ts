@@ -413,9 +413,6 @@ export type ProviderEventResult = z.infer<typeof providerEventResultSchema>;
  */
 export const PROVIDER_EVENT_METHOD = 'provider.event.v1' as const;
 
-/** A grant or tenancy is build-bound: only a coordinator of the exact build a role's own capsule names may
- *  install, redeem, or open one. Shared by every role that holds a bootstrap capsule, so the same check and
- *  message are not hand-retyped per role. */
 export function assertNamedCoordinatorBuild(
   coordinator: CoordinatorIdentity,
   build: Readonly<{ generation: string; flavor: string; buildSetId: string }>,

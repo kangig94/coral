@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -48,6 +48,7 @@ describe('session-start.mjs daemon spawn', () => {
       ].join('\n'),
       'utf-8',
     );
+    writeFileSync(join(fixture.pluginRoot, 'bridge', 'coral-sentinel.cjs'), 'require(process.argv[2]);\n', 'utf-8');
 
     return { fixture, markerPath };
   }
@@ -97,6 +98,18 @@ describe('session-start.mjs daemon spawn', () => {
     },
     WARM_START_TIMEOUT_MS,
   );
+
+  it('does not launch a coordinator without its supervisor executable', async () => {
+    const { fixture, markerPath } = setupWarmStartFixture();
+    rmSync(join(fixture.pluginRoot, 'bridge', 'coral-sentinel.cjs'));
+    const result = await runHookAsync(
+      SESSION_START_HOOK,
+      { session_id: 'test-session-no-supervisor' },
+      { HOME: fixture.root, CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+    expect(result.status).toBe(0);
+    expect(await waitForFile(markerPath, 500)).toBe(false);
+  });
 });
 
 /**
@@ -183,6 +196,31 @@ describe('session-start.mjs startup failure notice', () => {
       expect(context).not.toContain('\u001B');
       expect(context).not.toContain('forged cause');
       expect(context).not.toContain('Remedy: erase the store');
+    },
+    WARM_START_TIMEOUT_MS,
+  );
+
+  it.each(['handoff_shutdown_capability_rejected', 'handoff_shutdown_credential_unavailable'])(
+    'reports the legacy contender refusal %s as a deferred upgrade',
+    async (code) => {
+      const fixture = setupFixture();
+      writeDiagnostic(fixture, {
+        ...documentedFailure(new Date().toISOString()),
+        error: {
+          kind: 'coral_setup_error',
+          code,
+          userMessage: 'The new incumbent refused an old shutdown request.',
+          remediation: 'Wait for automatic succession.',
+        },
+      });
+      writeFileSync(
+        join(fixture.root, '.coral', 'gen2', 'run', 'coordinator.json'),
+        JSON.stringify({ pid: process.pid }),
+      );
+      const context = await contextFor(fixture, `test-session-deferred-upgrade-${code}`);
+      expect(context).toContain('deferred its upgrade');
+      expect(context).not.toContain('start attempt failed');
+      expect(context).not.toContain('coral-cli');
     },
     WARM_START_TIMEOUT_MS,
   );

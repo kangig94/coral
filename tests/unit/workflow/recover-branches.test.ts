@@ -104,12 +104,12 @@ function running(jobId: string, sessionId: string) {
   };
 }
 
-function terminal(jobId: string, content: string): WaitStreamEvent {
+function terminal(jobId: string, content: string, seq = 0): WaitStreamEvent {
   const result: JobTerminal = { content, outcome: { kind: 'completed' }, durationMs: 0 };
   return {
     type: 'terminal',
     jobId,
-    seq: 0,
+    seq,
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     result,
@@ -306,9 +306,10 @@ function createHarness(options: {
       waitRequests.push({
         ...req,
         jobIds: [...req.jobIds],
-        ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
+        ...(req.cursor ? { cursor: structuredClone(req.cursor) } : {}),
       });
-      return emit(req.jobIds.map((jobId) => terminal(jobId, `result:${jobId}`)));
+      const nextSeq = req.cursor && 'afterSeq' in req.cursor ? req.cursor.afterSeq + 1 : 1;
+      return emit(req.jobIds.map((jobId, index) => terminal(jobId, `result:${jobId}`, nextSeq + index)));
     }),
     waitForJobTerminal: vi.fn(async () => {}),
   };
@@ -1011,9 +1012,14 @@ describe('workflow recovery branch rules', () => {
       harness.waitRequests.push({
         ...req,
         jobIds: [...req.jobIds],
-        ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
+        ...(req.cursor ? { cursor: structuredClone(req.cursor) } : {}),
       });
-      return emit(req.jobIds.map((jobId) => terminal(jobId, jobId === pendingJobId ? 'CRIT_DONE' : 'VERIFY_DONE')));
+      const nextSeq = req.cursor && 'afterSeq' in req.cursor ? req.cursor.afterSeq + 1 : 1;
+      return emit(
+        req.jobIds.map((jobId, index) =>
+          terminal(jobId, jobId === pendingJobId ? 'CRIT_DONE' : 'VERIFY_DONE', nextSeq + index),
+        ),
+      );
     });
 
     try {
@@ -1192,9 +1198,10 @@ describe('workflow recovery branch rules', () => {
       harness.waitRequests.push({
         ...req,
         jobIds: [...req.jobIds],
-        ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
+        ...(req.cursor ? { cursor: structuredClone(req.cursor) } : {}),
       });
-      return emit(req.jobIds.map((jobId) => terminal(jobId, 'ARCH_DONE')));
+      const nextSeq = req.cursor && 'afterSeq' in req.cursor ? req.cursor.afterSeq + 1 : 1;
+      return emit(req.jobIds.map((jobId, index) => terminal(jobId, 'ARCH_DONE', nextSeq + index)));
     });
 
     try {

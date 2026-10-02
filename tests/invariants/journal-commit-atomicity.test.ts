@@ -406,9 +406,16 @@ function createWorkflowExecutionPort(
       waitRequests.push({
         ...req,
         jobIds: [...req.jobIds],
-        ...(req.cursor === undefined ? {} : { cursor: { afterSeq: req.cursor.afterSeq } }),
+        ...(req.cursor === undefined ? {} : { cursor: structuredClone(req.cursor) }),
       });
-      const baseSeq = Math.max(req.cursor?.afterSeq ?? 0, 100);
+      const baseSeq = Math.max(
+        req.cursor === undefined
+          ? 0
+          : 'afterSeq' in req.cursor
+            ? req.cursor.afterSeq
+            : Math.max(0, ...Object.values(req.cursor.positions)),
+        100,
+      );
       return emitWaitEvents(
         req.jobIds.map((jobId, index): WaitStreamEvent => {
           const outcome = options.terminalOutcomeByJob?.get(jobId) ?? { kind: 'completed' };

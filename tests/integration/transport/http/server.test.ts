@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
@@ -10,7 +11,7 @@ import {
   TEST_SYSTEM_PROVIDER_SCOPE,
   withTestBindingLocation,
 } from '../../../helpers/provider-credentials.js';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import {
   createServer,
   request as httpRequest,
@@ -19,7 +20,7 @@ import {
   type Server as HttpServer,
 } from 'node:http';
 import { join } from 'node:path';
-import type { WaitStreamEvent } from '#src/jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
@@ -27,6 +28,7 @@ import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
+import { createRequestLeaseOwner } from '#src/coordinator/live/request-leases.js';
 
 import { makeEvent } from '#src/discuss/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
@@ -42,7 +44,7 @@ import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.j
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openSettledTestStoreDb, openTestStoreDb } from '#tests/helpers/store-db.js';
-import { resolveCurrentStore } from '#src/store/epoch.js';
+import { resolveCurrentStore } from '#src/store/epoch/index.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
@@ -65,7 +67,7 @@ import {
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
 import { MAX_EVENT_STREAM_CONNECTIONS } from '#src/coordinator/composition/index.js';
-import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
+import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
@@ -876,11 +878,14 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(201);
-    expect(mutateKb).toHaveBeenCalledWith({
-      method: 'createMemo',
-      args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
-      ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
-    });
+    expect(mutateKb).toHaveBeenCalledWith(
+      {
+        method: 'createMemo',
+        args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+        ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
+      },
+      expect.any(AbortSignal),
+    );
   });
 
   it('uses the daemon supervisor in the standard server path', async () => {
@@ -933,11 +938,14 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(201);
-    expect(mutateKb).toHaveBeenCalledWith({
-      method: 'createMemo',
-      args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
-      ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
-    });
+    expect(mutateKb).toHaveBeenCalledWith(
+      {
+        method: 'createMemo',
+        args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+        ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
+      },
+      expect.any(AbortSignal),
+    );
   });
 
   it('reports the KB daemon proxy offline when the daemon is disabled', async () => {
@@ -982,11 +990,14 @@ describe('execution backend server', () => {
     });
 
     expect(kbResponse.status).toBe(503);
-    expect(kbDaemonSupervisor.readKb).toHaveBeenCalledWith({
-      method: 'readSearch',
-      args: { query: 'alpha' },
-      ctx: expectedDaemonPrincipalContext(),
-    });
+    expect(kbDaemonSupervisor.readKb).toHaveBeenCalledWith(
+      {
+        method: 'readSearch',
+        args: { query: 'alpha' },
+        ctx: expectedDaemonPrincipalContext(),
+      },
+      { signal: expect.any(AbortSignal) },
+    );
   });
 
   it('keeps CORAL_KB_ENABLE=0 on the explicit disabled KB daemon runtime path', async () => {
@@ -1979,11 +1990,14 @@ describe('execution backend server', () => {
       deleted: ['a.md'],
       count: 1,
     });
-    expect(mutateKb).toHaveBeenCalledWith({
-      method: 'deleteMemos',
-      args: { pattern: 'a*' },
-      ctx: expectedDaemonProjectContext(projectRoot),
-    });
+    expect(mutateKb).toHaveBeenCalledWith(
+      {
+        method: 'deleteMemos',
+        args: { pattern: 'a*' },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+      expect.any(AbortSignal),
+    );
 
     const purgeResponse = await fetch(
       `${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}&all=true`,
@@ -1998,11 +2012,14 @@ describe('execution backend server', () => {
     expect(purgeResponse.status).toBe(200);
     const purgeBody = (await purgeResponse.json()) as Record<string, unknown>;
     expect(purgeBody).toEqual({ deleted: 1 });
-    expect(mutateKb).toHaveBeenLastCalledWith({
-      method: 'deleteMemos',
-      args: { all: true },
-      ctx: expectedDaemonProjectContext(projectRoot),
-    });
+    expect(mutateKb).toHaveBeenLastCalledWith(
+      {
+        method: 'deleteMemos',
+        args: { all: true },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+      expect.any(AbortSignal),
+    );
   });
 
   describe('resource-oriented HTTP routes', () => {
@@ -2224,6 +2241,7 @@ describe('execution backend server', () => {
           waitStream: (request: unknown) => service.waitStream(request),
           list: () => [],
           detail: () => null,
+          unknownJobDisposition: () => 'not-found' as const,
         },
         workflows: {
           execute:
@@ -2497,6 +2515,116 @@ describe('execution backend server', () => {
         release.resolve();
         await request.catch(() => undefined);
         idleTimer.stopWatching();
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('returns a typed deadline when an HTTP unary handler never settles', async () => {
+      const { deps } = createHttpHandlerDeps();
+      let inflight = 0;
+      deps.admin.beginRequestLease = createRequestLeaseOwner({
+        newRecordId: randomUUID,
+        time: runtime.time,
+        abandon: vi.fn(),
+        begin: () => {
+          inflight += 1;
+        },
+        end: () => {
+          inflight -= 1;
+        },
+        timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+      }).begin;
+      deps.kb.readSearch = vi.fn(() => new Promise<never>(() => {}));
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const response = await fetch(`${started.baseUrl}/kb/entries?q=held`, {
+          headers: { 'X-Coral-Backend-Token': 'test-token' },
+        });
+        expect(response.status).toBe(503);
+        await expect(response.json()).resolves.toMatchObject({ code: 'request_deadline_exceeded' });
+        expect(inflight).toBe(0);
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('bounds an HTTP KB restart that never settles', async () => {
+      const { deps } = createHttpHandlerDeps();
+      deps.admin.beginRequestLease = createRequestLeaseOwner({
+        newRecordId: randomUUID,
+        time: runtime.time,
+        begin: deps.admin.beginRequest,
+        end: deps.admin.endRequest,
+        timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+      }).begin;
+      deps.admin.restartKbDaemon = vi.fn(() => new Promise<never>(() => {}));
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const response = await fetch(`${started.baseUrl}/admin/kb/restart`, {
+          method: 'POST',
+          headers: { 'X-Coral-Shutdown-Token': 'test-shutdown-token' },
+        });
+        expect(response.status).toBe(503);
+        await expect(response.json()).resolves.toMatchObject({ code: 'request_deadline_exceeded' });
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('keeps a committed HTTP response counted until its buffered bytes finish during shutdown', async () => {
+      const { deps } = createHttpHandlerDeps();
+      let inflight = 0;
+      deps.admin.beginRequest = () => {
+        inflight += 1;
+      };
+      deps.admin.endRequest = () => {
+        inflight -= 1;
+      };
+      deps.admin.beginRequestLease = createRequestLeaseOwner({
+        newRecordId: randomUUID,
+        time: runtime.time,
+        begin: deps.admin.beginRequest,
+        end: deps.admin.endRequest,
+      }).begin;
+      deps.kb.readSearch = vi.fn(async () => domainSuccess({ results: [] }));
+      const originalEnd = ServerResponse.prototype.end;
+      const pendingFlush: { run?: () => void } = {};
+      const endSpy = vi.spyOn(ServerResponse.prototype, 'end').mockImplementation(function (
+        this: ServerResponse,
+        ...args: Parameters<ServerResponse['end']>
+      ) {
+        if (this.req?.url?.startsWith('/kb/entries')) {
+          pendingFlush.run = () => {
+            originalEnd.apply(this, args);
+          };
+          return this;
+        }
+        return originalEnd.apply(this, args);
+      });
+      const started = await startHttpHandlerServer(deps);
+      const request = fetch(`${started.baseUrl}/kb/entries?q=held`, {
+        headers: { 'X-Coral-Backend-Token': 'test-token' },
+      });
+      try {
+        await vi.waitFor(() => expect(pendingFlush.run).toBeDefined());
+        let shutdownClosedConnections = false;
+        const shutdown = vi
+          .waitFor(() => expect(inflight).toBe(0))
+          .then(() => {
+            started.server.closeAllConnections();
+            shutdownClosedConnections = true;
+          });
+        expect(inflight).toBe(1);
+        expect(shutdownClosedConnections).toBe(false);
+        pendingFlush.run?.();
+        const response = await request;
+        await expect(response.json()).resolves.toEqual({ results: [] });
+        await shutdown;
+        expect(shutdownClosedConnections).toBe(true);
+      } finally {
+        pendingFlush.run?.();
+        endSpy.mockRestore();
+        await request.catch(() => undefined);
         await _closeHttpServer(started.server);
       }
     });
@@ -4625,7 +4753,6 @@ describe('execution backend server', () => {
     expect(fakeService.waitStream).toHaveBeenCalledWith({
       jobIds: ['job-1', 'missing-job'],
       timeoutSeconds: 1,
-      cursor: { afterSeq: 0 },
       projectRoot: DEFAULT_PROJECT_ROOT,
     });
   });
@@ -4675,6 +4802,63 @@ describe('execution backend server', () => {
       },
       projectRoot: DEFAULT_PROJECT_ROOT,
     });
+  });
+
+  it('carries the full v2 cursor through Last-Event-ID and SSE event ids', async () => {
+    const progressStore = createProgressStore();
+    createdJobIds.add('job-1');
+    initTestJob(progressStore, {
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: DEFAULT_PROJECT_ROOT,
+      backendNamespace: testBackendNamespace,
+    });
+    const fakeService = createFakeExecutionService({
+      waitStream: vi.fn(async function* (request: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
+        const afterSeq = request.cursor !== undefined && 'afterSeq' in request.cursor ? request.cursor.afterSeq : 0;
+        yield { type: 'progress', jobId: 'job-1', seq: afterSeq + 4, message: 'working', timing: waitTiming };
+      }),
+    });
+    const backend = await startBackendServer({ createExecutionService: () => fakeService as never });
+    const firstEventId = async (lastEventId?: string): Promise<string> => {
+      const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': backend.token,
+          ...(lastEventId === undefined ? {} : { 'Last-Event-ID': lastEventId }),
+        },
+        body: JSON.stringify({
+          jobIds: ['job-1'],
+          projectRoot: DEFAULT_PROJECT_ROOT,
+          timeoutSeconds: 1,
+          supportsWaitV2: true,
+        }),
+      });
+      expect(response.status).toBe(200);
+      const eventId = (await response.text())
+        .split('\n')
+        .find((line) => line.startsWith('id: '))
+        ?.slice(4);
+      if (eventId === undefined) throw new Error('Expected an SSE event id.');
+      return eventId;
+    };
+    const decode = (eventId: string): { locations: Record<string, string>; positions: Record<string, number> } =>
+      JSON.parse(Buffer.from(eventId, 'base64url').toString('utf8')) as {
+        locations: Record<string, string>;
+        positions: Record<string, number>;
+      };
+
+    const firstId = await firstEventId();
+    const first = decode(firstId);
+    expect(first).toMatchObject({ version: 'jobs.wait.v2', locations: { 'job-1': expect.any(String) } });
+    const epochKey = first.locations['job-1'];
+    expect(first.positions).toEqual({ [epochKey]: 4 });
+
+    const second = decode(await firstEventId(firstId));
+    expect(fakeService.waitStream).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: { afterSeq: 4 } }));
+    expect(second).toEqual({ ...first, positions: { [epochKey]: 8 } });
   });
 
   it('withholds interrupted wait events from a subscriber that never declared it can render them', async () => {
@@ -5678,38 +5862,86 @@ describe('execution backend server', () => {
     });
   });
 
-  it('returns 200 from /admin/shutdown with draining status and shuts down when idle', async () => {
-    const pluginRoot = createPluginRoot('plugin-root');
-    const backend = await startBackendServer({ pluginRoot });
-    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+  it.each(['shutdownToken', 'bootToken'] as const)(
+    'returns 200 from /admin/shutdown with %s and shuts down when idle',
+    async (tokenName) => {
+      const pluginRoot = createPluginRoot('plugin-root');
+      const backend = await startBackendServer({ pluginRoot });
+      const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-    try {
-      const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
-        method: 'POST',
-        headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
-      });
+      try {
+        const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+          method: 'POST',
+          headers: {
+            [tokenName === 'bootToken' ? 'X-Coral-Boot-Token' : 'X-Coral-Shutdown-Token']: backend[tokenName],
+          },
+        });
 
-      expect(response.status).toBe(200);
-      const body = (await response.json()) as Record<string, unknown>;
-      expect(body.status).toBe('draining');
-      expect(typeof body.instanceId).toBe('string');
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as Record<string, unknown>;
+        expect(body.status).toBe('draining');
+        expect(typeof body.instanceId).toBe('string');
 
-      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
-      expect(
-        messages.some(
-          (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
-        ),
-      ).toBe(true);
-      expect(messages.some((message) => message.includes('"transport":"http"'))).toBe(true);
+        const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+        expect(
+          messages.some(
+            (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
+          ),
+        ).toBe(true);
+        expect(messages.some((message) => message.includes('"transport":"http"'))).toBe(true);
+        expect(messages.some((message) => message.includes('"reason":"replaced"'))).toBe(true);
 
-      // Backend is idle (no active jobs in test), so drain fires promptly
-      await backend.controller.waitForShutdown();
+        // Backend is idle (no active jobs in test), so drain fires promptly
+        await backend.controller.waitForShutdown();
 
-      expect(backend.controller.getLifecycle()).toBe('stopped');
-      expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
-    } finally {
-      warnSpy.mockRestore();
-    }
+        expect(backend.controller.getLifecycle()).toBe('stopped');
+        expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it('finishes admin shutdown after a KB restart request is abandoned', async () => {
+    let started!: () => void;
+    const restartStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const kbDaemonSupervisor = {
+      ...createMockKbDaemonSupervisor(),
+      restart: async () => {
+        started();
+        return new Promise<never>(() => {});
+      },
+    };
+    const backend = await startBackendServer({
+      kbDaemonSupervisor,
+      requestLeaseTiming: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
+    });
+    const restart = fetch(`${backend.baseUrl}/admin/kb/restart`, {
+      method: 'POST',
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+    });
+    await restartStarted;
+    const response = await restart;
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe('request_deadline_exceeded');
+    expect(backend.controller.getIdleTimer().inflightRequests).toBe(0);
+    const records = readdirSync(join(runtime.paths.coral.coordinator.runDir, 'abandoned-requests.v1'));
+    expect(records).toHaveLength(1);
+    expect(
+      JSON.parse(
+        readFileSync(join(runtime.paths.coral.coordinator.runDir, 'abandoned-requests.v1', records[0]), 'utf8'),
+      ),
+    ).toMatchObject({ method: 'transport.kb.restart', outcome: 'continuing' });
+
+    const shutdown = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+    });
+    expect(shutdown.status).toBe(200);
+    await backend.controller.waitForShutdown();
+    expect(backend.controller.getLifecycle()).toBe('stopped');
   });
 
   it('rejects /admin/shutdown when only the general backend token is provided', async () => {
@@ -5723,7 +5955,8 @@ describe('execution backend server', () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({
       code: 'shutdown_unauthorized',
-      message: 'Manual shutdown required: shutdown capability missing or invalid',
+      message:
+        'Shutdown refused: the shutdown capability is missing or invalid. The incumbent keeps serving, and any upgrade is deferred.',
     });
     expect(backend.controller.getLifecycle()).toBe('running');
   });
@@ -5768,7 +6001,7 @@ describe('execution backend server', () => {
         instanceId: 'execution-backend-instance-1',
         kbDaemon: daemonHealth,
       });
-      expect(kbDaemonSupervisor.restart).toHaveBeenCalledWith('http-admin');
+      expect(kbDaemonSupervisor.restart).toHaveBeenCalledWith('http-admin', expect.any(AbortSignal));
       const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
       expect(
         messages.some(
@@ -5851,7 +6084,7 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(listActiveKbJobs).toHaveBeenCalledTimes(1);
-    expect(restart).toHaveBeenCalledWith('http-admin');
+    expect(restart).toHaveBeenCalledWith('http-admin', expect.any(AbortSignal));
     expect(listActiveKbJobs.mock.invocationCallOrder[0]).toBeLessThan(restart.mock.invocationCallOrder[0]);
     expect(exit.listener).not.toBeNull();
 
@@ -6201,6 +6434,14 @@ describe('execution backend server', () => {
           removeBackendInfoIfOwnerFn: () => {},
           cleanupStaleJobsFn: () => {},
           readSelfIncarnationFn: () => null,
+          successionIncumbent: () => ({
+            instanceId: 'test-coordinator',
+            pid: process.pid,
+            incarnation: null,
+            version: '0.0.0',
+            bundleHash: 'test-bundle',
+            flavor: 'prod',
+          }),
           markJobsAsErrorFn: vi.fn(),
           settlePendingLaunchesFn: vi.fn(() => ({ kind: 'all-pending-launches-settled' }) as const),
           terminateRegisteredChildrenFn: vi.fn(() => ({ kind: 'all-children-observed-absent' }) as const),
@@ -6452,7 +6693,7 @@ describe('execution backend server', () => {
       );
     }
 
-    async function startFencedToolServer() {
+    async function startFencedToolServer(successionPaused = false) {
       const { createHttpHandler, sendJson } = await import('#src/transport/http/handler.js');
       const { runtimeState } = createRuntimeStateMock();
       const idleTimer = createFakeIdleTimer();
@@ -6481,6 +6722,7 @@ describe('execution backend server', () => {
           isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
           isDrainRequested: () => false,
           isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
+          isSuccessionAdmissionPaused: () => successionPaused,
           beginRequest: () => {
             idleTimer.beginRequest();
           },
@@ -6529,6 +6771,7 @@ describe('execution backend server', () => {
           },
           list: () => [],
           detail: () => null,
+          unknownJobDisposition: () => 'not-found' as const,
         },
         workflows: {
           execute: vi.fn(),
@@ -6618,6 +6861,29 @@ describe('execution backend server', () => {
         expect(await response.json()).toEqual({
           code: 'backend_recovering',
           message: 'recovering — retry after 500ms',
+        });
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          fenced.server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+
+    it('returns the retryable succession pause code while reclaim holds the launch fence', async () => {
+      const fenced = await startFencedToolServer(true);
+      try {
+        const response = await fetch(`${fenced.baseUrl}/sessions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({ provider: 'codex', prompt: 'hello', projectRoot: DEFAULT_PROJECT_ROOT }),
+        });
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({
+          code: 'succession_admission_paused',
+          message: 'Launch admission is paused during succession. Retry shortly.',
         });
       } finally {
         await new Promise<void>((resolve, reject) =>

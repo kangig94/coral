@@ -2,11 +2,15 @@ import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 vi.mock('#src/provider-proxy/handoff-capsule.js', async (importOriginal) => {
   const original = await importOriginal<object>();
-  return { ...original, readHandoffCapsuleFile: vi.fn() };
+  return { ...original, readHandoffCapsuleFile: vi.fn(() => null) };
 });
 
 vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
@@ -28,6 +32,7 @@ import {
   type HandoffCapsule,
   type HandoffCapsuleV2,
   type HandoffCapsuleV3,
+  type HandoffCapsuleV4,
 } from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -54,8 +59,17 @@ import { insertProviderOperation, providerOperationMutationAdmission } from '#sr
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { compareAndSwapUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { acceptedControllerTransferHandsCapsule } from '#src/coordinator/succession/provider-host-transfer.js';
+import {
+  advanceSuccessionWriterGeneration,
+  joinSuccessionWriterGeneration,
+  observeSuccessionServing,
+  recordSuccessionServing,
+} from '#src/store/succession-writer-generation.js';
 import {
   attemptProviderProxySetInheritance as attemptProviderProxySetInheritanceWithRequiredContainment,
+  classifyProviderProxySetInheritance,
   createProviderProxySetInheritance,
   recoverProviderProxySetAtStartup,
   type CreateProviderProxySetInheritanceOptions,
@@ -78,6 +92,7 @@ import {
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { recordPendingGrantTransfer } from '#src/coordinator/services/provider-proxy-set/pending-grant-transfer.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -306,12 +321,13 @@ function proofRuntime(liveProcesses: ReadonlyMap<number, ProcessIncarnation>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedReadCapsule.mockImplementation(() => null);
   mockedProbe.mockImplementation(() => testIncarnation(1_700_000_000));
 });
 
 // The current generation, because that is the only one this build may inherit: a capsule whose identity it
 // cannot read is represented and never dialed, whatever the number on it.
-function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV3> = {}): HandoffCapsule {
+function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV4> = {}): HandoffCapsule {
   const { operation, locator: set } = reference;
   return {
     version: CURRENT_HANDOFF_CAPSULE_VERSION,
@@ -328,6 +344,7 @@ function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<Hando
     generation: 'gen2',
     flavor: 'prod',
     buildSetId: operation.buildSetId,
+    controllerBuildSetId: operation.buildSetId,
     hostFingerprint: set.hostFingerprint,
     guardianInstanceId: set.guardian.instanceId,
     reaperInstanceId: set.reaper.instanceId,
@@ -857,13 +874,12 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
-  // The upgrade path, and the one a discovery-side build gate cannot cover: this entry derives the capsule's
-  // address from the record itself rather than from anything discovery classified. Dialing a set from another
-  // build returns `identity_mismatch`, which the recovery policy retires fatally — the coordinator dies over a
-  // set it never owned. `capsuleMatchesLocator` cannot catch it either, because it compares the capsule
-  // against the *record's* build, and for a foreign set those two agree.
-  it('reports not-bequeathed without reading a foreign build’s capsule at all', async () => {
+  // A set spawned by an older build keeps the capsule that build wrote, at that generation's own address.
+  it('reads a set capsule written at an older supported generation address', async () => {
     const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    const { controllerBuildSetId: _controller, ...currentFields } = capsuleFor(loc) as HandoffCapsuleV4;
+    const olderGeneration: HandoffCapsuleV3 = { ...currentFields, version: 3 };
+    mockedReadCapsule.mockImplementation((path) => (path.endsWith('.handoff.v3.json') ? olderGeneration : null));
 
     const outcome = await attemptProviderProxySetInheritance(
       loc,
@@ -876,17 +892,182 @@ describe('attemptProviderProxySetInheritance', () => {
       neverAborts,
     );
 
-    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'the recorded set belongs to another build' });
-    expect(mockedReadCapsule, 'a foreign capsule is refused before it is even read').not.toHaveBeenCalled();
+    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'the set is controlled by another build' });
+    expect(mockedReadCapsule.mock.calls.map(([path]) => path.slice(path.indexOf('.handoff')))).toEqual([
+      '.handoff.v4.json',
+      '.handoff.v3.json',
+    ]);
+  });
+
+  // The upgrade path, and the one a discovery-side build gate cannot cover: this entry derives the capsule's
+  // address from the record itself rather than from anything discovery classified. Dialing a set another build
+  // controls returns `identity_mismatch`, which the recovery policy retires fatally — the coordinator dies over
+  // a set it does not control. `capsuleMatchesLocator` cannot catch it either, because it compares the capsule
+  // against the *record's* build, and for a foreign set those two agree.
+  it('reports not-bequeathed without dialing a set another build controls', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'the set is controlled by another build' });
     expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  // Host provenance does not decide: a set whose capsule names this build as controller is inherited even
+  // though its host runs another build, and one only an unaccepted receipt names stays another build's.
+  it('dials a foreign-host set only when its capsule or an accepted receipt names this build', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    const acceptsControllerTransfer = vi.fn(() => 'not-accepted' as const);
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+
+    const refused = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        acceptsControllerTransfer,
+      },
+      neverAborts,
+    );
+
+    expect(refused).toEqual({ kind: 'not-bequeathed', reason: 'the set is controlled by another build' });
+    expect(acceptsControllerTransfer).toHaveBeenCalledTimes(1);
+    expect(mockedConnect).not.toHaveBeenCalled();
+    expect(
+      classifyProviderProxySetInheritance(
+        capsuleFor(loc, { controllerBuildSetId: COORDINATOR_IDENTITY.buildSetId }),
+        COORDINATOR_IDENTITY.buildSetId,
+      ),
+    ).toMatchObject({ kind: 'inheritable', via: 'controller' });
+    expect(
+      classifyProviderProxySetInheritance(capsuleFor(loc), COORDINATOR_IDENTITY.buildSetId, () => 'before-serving'),
+    ).toMatchObject({ kind: 'inheritable', via: 'transfer-before-serving' });
+    expect(
+      classifyProviderProxySetInheritance(capsuleFor(loc), COORDINATOR_IDENTITY.buildSetId, () => 'served'),
+    ).toMatchObject({ kind: 'inheritable', via: 'transfer-served' });
+  });
+
+  it('redeems an old-grant host after the transfer intent is gone when durable transfer evidence survives', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-pending-grant-'));
+    const isolatedRuntime = {
+      ...runtime,
+      paths: createRealRuntime('prod', { baseDir: join(root, '.coral') }).paths,
+    };
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    const capsule = capsuleFor(loc);
+    if (capsule.version !== 4) throw new Error('expected a current recovery capsule');
+    mockedReadCapsule.mockReturnValueOnce(capsule);
+    const calls: { method: string; params: unknown }[] = [];
+    stubConnect(fakeClient(redemptionResponses(loc, matchingOperationSets([])), calls));
+    try {
+      expect(
+        recordPendingGrantTransfer(isolatedRuntime, capsule, COORDINATOR_IDENTITY.buildSetId, 'attempt-1'),
+      ).toEqual({
+        kind: 'recorded',
+      });
+      const store = { storeRoot: isolatedRuntime.paths.coral.generation.root, epoch: 'epoch-1' };
+      const epochKey = JSON.stringify({ ...store, path: join(store.storeRoot, store.epoch) });
+      const writer = joinSuccessionWriterGeneration(isolatedRuntime, store);
+      recordSuccessionServing(isolatedRuntime, writer.generation, {
+        attemptId: 'attempt-1',
+        epochKey,
+        successorInstanceId: 'successor',
+        controlGeneration: writer.generation.generation,
+        recordedAt: new Date().toISOString(),
+      });
+      const build = {
+        version: '0.11.0',
+        buildSetId: COORDINATOR_IDENTITY.buildSetId,
+        flavor: 'prod' as const,
+        storeFormatFingerprint: `sha256:${'0'.repeat(64)}`,
+        bundleHash: '0123456789abcdef',
+        cliBundleHash: '0123456789abcdef',
+        claudeAppserverBundleHash: '0123456789abcdef',
+        durableWrapperBundleHash: '0123456789abcdef',
+      };
+      const written = await compareAndSwapUpgradeIntent(isolatedRuntime.paths.coral.coordinator.runDir, null, {
+        requestId: 'request-1',
+        incumbent: {
+          instanceId: 'incumbent',
+          pid: 1,
+          incarnation: null,
+          version: '0.10.13',
+          bundleHash: 'fedcba9876543210',
+          flavor: 'prod',
+        },
+        target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+        attemptId: 'attempt-1',
+        attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: 1, incarnation: null },
+        attemptChild: null,
+        disposition: 'completed',
+        blockers: [],
+        retryCondition: null,
+        attemptDeadline: null,
+        successionPreparation: null,
+        completionReceipt: {
+          kind: 'serving',
+          attemptId: 'attempt-1',
+          successor: { instanceId: 'successor', pid: 2, incarnation: null, build },
+          epochKey,
+          controlGeneration: writer.generation.generation,
+          acceptedObligations: [
+            {
+              owner: 'provider-proxy-sets',
+              receiptId: 'provider-proxy-sets:attempt-1',
+              controlGeneration: writer.generation.generation,
+            },
+          ],
+          recordedAt: new Date().toISOString(),
+        },
+      });
+      expect(written.kind).toBe('written');
+      advanceSuccessionWriterGeneration(isolatedRuntime, writer.generation, store);
+      expect(observeSuccessionServing(isolatedRuntime, 'attempt-1')).toBeNull();
+      const restartedAcceptance = () =>
+        acceptedControllerTransferHandsCapsule(isolatedRuntime, COORDINATOR_IDENTITY.buildSetId, null, capsule);
+      expect(restartedAcceptance()).toBe('served');
+      const outcome = await attemptProviderProxySetInheritance(
+        loc,
+        unusedDb,
+        {
+          runtime: isolatedRuntime,
+          coordinatorIdentity: COORDINATOR_IDENTITY,
+          operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+          acceptsControllerTransfer: restartedAcceptance,
+        },
+        neverAborts,
+      );
+
+      expect(outcome.kind).toBe('inherited');
+      expect(calls.some(({ method }) => method === 'guardian.handoff-redeem.v1')).toBe(true);
+      if (outcome.kind === 'inherited') {
+        outcome.set.stopHeartbeats();
+        await outcome.set.initiateControlClose();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // Same build, shipped-V2 capsule. Its process fields are seconds this build cannot verify, so there is no
   // identity to redeem against — and inventing one from them reports a live process as absent.
   it('reports not-bequeathed for a capsule that predates the incarnation token', async () => {
     const loc = locator();
+    const { controllerBuildSetId: _controller, ...currentFields } = capsuleFor(loc) as HandoffCapsuleV4;
     const shippedV2: HandoffCapsuleV2 = {
-      ...(capsuleFor(loc) as HandoffCapsuleV3),
+      ...currentFields,
       version: 2,
       guardianPid: loc.locator.guardian.pid,
       guardianProcessStartedAtSeconds: 1_700_000_001,
@@ -1347,7 +1528,7 @@ describe('attemptProviderProxySetInheritance', () => {
       },
     };
     const capsule = capsuleFor(loc);
-    if (capsule.version !== 3) throw new Error('expected a V3 recovery capsule');
+    if (capsule.version !== 4) throw new Error('expected a current recovery capsule');
     mockedReadCapsule.mockReturnValueOnce(capsule);
     const otherIdentity = { jobId: randomUUID(), operationId: randomUUID() };
     const guardianOperations = byteSorted([operationFor(loc), operationFor(loc, otherIdentity)]);
@@ -1424,7 +1605,7 @@ describe('attemptProviderProxySetInheritance', () => {
   it('returns a redeemed authority with capsule timing when credential installation is refused', async () => {
     const loc = locator();
     const capsule = capsuleFor(loc);
-    if (capsule.version !== 3) throw new Error('expected a V3 recovery capsule');
+    if (capsule.version !== 4) throw new Error('expected a current recovery capsule');
     mockedReadCapsule.mockReturnValueOnce(capsule);
     const calls: { method: string; params: unknown }[] = [];
     const client = fakeClient(
@@ -1469,6 +1650,95 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(calls.some(({ method }) => method === 'handoff.install.v1')).toBe(false);
     outcome.set.stopHeartbeats();
     await outcome.set.initiateControlClose();
+  });
+
+  it('should keep installing a served transfer recovery grant until the host acknowledges it', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const calls: { method: string; params: unknown }[] = [];
+    let guardianInstalls = 0;
+    const client = fakeClient(
+      redemptionResponses(loc, matchingOperationSets([]), {
+        'guardian.handoff-install.v1': (params: unknown) => {
+          guardianInstalls += 1;
+          if (guardianInstalls === 1) {
+            throw new ControlClientError('control_call_failed', 'the guardian did not answer', 'timeout');
+          }
+          return { state: 'installed-dormant', grantId: (params as { grantId: string }).grantId };
+        },
+      }),
+      calls,
+    );
+    stubConnect(client);
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        acceptsControllerTransfer: () => 'served',
+      },
+      neverAborts,
+    );
+
+    if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
+    try {
+      expect(calls.some(({ method }) => method === 'handoff.install.v1')).toBe(false);
+      await waitForCondition(() => calls.some(({ method }) => method === 'handoff.install.v1'), 5_000);
+      expect(guardianInstalls).toBe(2);
+    } finally {
+      outcome.set.stopHeartbeats();
+      await outcome.set.initiateControlClose();
+    }
+  });
+
+  it('retries a served transfer grant after a host refusal', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const calls: { method: string; params: unknown }[] = [];
+    let guardianInstalls = 0;
+    const client = fakeClient(
+      redemptionResponses(loc, matchingOperationSets([]), {
+        'guardian.handoff-install.v1': (params: unknown) => {
+          guardianInstalls += 1;
+          if (guardianInstalls === 1) {
+            throw new ControlClientError('control_call_failed', 'guardian refused the grant', 'remote-response', {
+              kind: 'json-rpc-error',
+              jsonRpcCode: -32_000,
+              protocolCode: 'identity_mismatch',
+              admissionReason: null,
+              heartbeatRefusal: null,
+            });
+          }
+          return { state: 'installed-dormant', grantId: (params as { grantId: string }).grantId };
+        },
+      }),
+      calls,
+    );
+    stubConnect(client);
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        acceptsControllerTransfer: () => 'served',
+      },
+      neverAborts,
+    );
+
+    if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
+    try {
+      await waitForCondition(() => calls.some(({ method }) => method === 'handoff.install.v1'), 5_000);
+      expect(guardianInstalls).toBe(2);
+    } finally {
+      outcome.set.stopHeartbeats();
+      await outcome.set.initiateControlClose();
+    }
   });
 
   // Every refusal `registerInheritedSet` can raise happens before a slot holds the set, so no owner is left

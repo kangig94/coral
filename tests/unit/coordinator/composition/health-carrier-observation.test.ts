@@ -8,7 +8,6 @@ import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type * as CompositionWorldMod from '#src/coordinator/composition/world.js';
 import type * as ExecutionServicesMod from '#src/coordinator/composition/execution-services.js';
 import type * as CarrierObserverMod from '#src/coordinator/live/carrier-observer.js';
-import type * as NodeProcessMod from '#src/infra/node-process.js';
 import type { ProviderOperationStartupOwnershipReleaseDisposition } from '#src/recovery/unreadable-provider-operation.js';
 import { statusFromParsedHealth } from '#src/cli/backend-status.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
@@ -74,11 +73,6 @@ vi.mock('#src/coordinator/live/carrier-observer.js', async (importOriginal) => {
   return { ...actual, observeCarrierStatuses };
 });
 
-vi.mock('#src/infra/node-process.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof NodeProcessMod>();
-  return { ...actual, probeProcessIncarnation: probeSelfIncarnation };
-});
-
 import {
   createCoordinatorCore,
   LAUNCH_PERMIT_REPORT_AGE_MS,
@@ -129,7 +123,8 @@ import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 } from '#src/recovery/source-registry.js';
 import { MAX_SETTLED_UNBOUND_STATUS_ENTRIES } from '#src/coordinator/services/recovery/settled-unbound-status.js';
-import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_POLL_MS } from '#src/coordinator/shutdown.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS } from '#src/infra/shutdown-contract.js';
+import { SHUTDOWN_POLL_MS } from '#src/coordinator/shutdown.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
 
@@ -240,7 +235,7 @@ function createCore(
   const core = createCoordinatorCore(
     {
       onFatalShutdownError: vi.fn(),
-      runtime,
+      runtime: { ...runtime, process: { ...runtime.process, readProcessIncarnation: probeSelfIncarnation } },
       storeFormat: currentCoralStoreFormat(),
       pluginRoot: process.cwd(),
       backendNamespace: 'health-carrier-test',
@@ -543,11 +538,12 @@ describe('health local carrier observation', () => {
 
   it('retries a failed self-incarnation probe and caches the first success', () => {
     const incarnation = testIncarnation('health-retry-success');
-    probeSelfIncarnation.mockReset().mockReturnValueOnce(null).mockReturnValue(incarnation);
+    probeSelfIncarnation.mockReset().mockReturnValue(null);
     createCore(
       new LocalOperationRegistry(),
       vi.fn(async () => ({ ok: true }) as never),
     );
+    probeSelfIncarnation.mockReset().mockReturnValueOnce(null).mockReturnValue(incarnation);
 
     const first = readHealth();
     const second = readHealth();

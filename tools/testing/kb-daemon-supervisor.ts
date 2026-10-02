@@ -1,6 +1,9 @@
 import { vi } from 'vitest';
 
-import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../../src/coordinator/live/kb-daemon-supervisor.js';
+import type {
+  KbDaemonHealthSnapshot,
+  KbDaemonSupervisor,
+} from '../../src/coordinator/live/kb-daemon-supervisor/index.js';
 
 export function createOnlineKbDaemonHealth(overrides: Partial<KbDaemonHealthSnapshot> = {}): KbDaemonHealthSnapshot {
   return {
@@ -25,6 +28,8 @@ export type MockKbDaemonSupervisorOptions = {
   expansionRpc?: KbDaemonSupervisor['expansionRpc'];
   abortKbJobs?: KbDaemonSupervisor['abortKbJobs'];
   listActiveKbJobs?: KbDaemonSupervisor['listActiveKbJobs'];
+  parkWriterTurn?: KbDaemonSupervisor['parkWriterTurn'];
+  reclaimWriterTurn?: KbDaemonSupervisor['reclaimWriterTurn'];
   stop?: KbDaemonSupervisor['stop'];
   restart?: KbDaemonSupervisor['restart'];
   dispose?: KbDaemonSupervisor['dispose'];
@@ -63,6 +68,8 @@ export function createMockKbDaemonSupervisor(options: MockKbDaemonSupervisorOpti
       })),
     abortKbJobs: options.abortKbJobs ?? vi.fn(async (jobIds) => ({ aborted: [], notFound: [...jobIds] })),
     listActiveKbJobs: options.listActiveKbJobs ?? vi.fn(async () => ({ active: [] })),
+    parkWriterTurn: options.parkWriterTurn ?? vi.fn(async () => {}),
+    reclaimWriterTurn: options.reclaimWriterTurn ?? vi.fn(async () => {}),
     stop: options.stop ?? vi.fn(async () => health),
     restart: options.restart ?? vi.fn(async () => health),
     dispose:

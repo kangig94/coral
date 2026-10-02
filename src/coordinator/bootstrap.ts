@@ -2,8 +2,10 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 declare const __PLUGIN_ROOT__: string | undefined;
 
 import { resolve } from 'node:path';
+
 import { z } from 'zod';
 
+import { closeHandle } from '../infra/ipc-handle.js';
 import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSentinel } from './bootstrap-diagnostics.js';
 import { BackendAlreadyRunningError } from './handoff.js';
 import {
@@ -16,15 +18,24 @@ import {
 import type { UnresolvedIncumbentCause } from './handoff-routing/policy.js';
 import type { handoffRoutingStatusExitContribution } from './handoff-routing/status.js';
 import { createCoordinatorServer } from './index.js';
+import { installSuccessionAttemptChild, receiveSuccessionAttemptChild } from './succession/attempt-child.js';
+import { parseRetainedEpochArgv, runRetainedEpochCommand } from './services/retained-epoch-executor.js';
 import { StartupStoreHandoffError } from './lifecycle.js';
+import { SuccessionAttemptStartupHoldError } from './succession/startup.js';
+import type { SuccessionInterposition } from './succession/interposition.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
 import { assertNever } from '../infra/error-format.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { startReplacementSupervisor } from '../runtime/supervisor-loss.js';
+import { createRealSuccessionAttemptPorts } from '../runtime/succession-attempt.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
+import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
+import { updateLaunchStatus } from '../infra/launch-status.js';
+import { authenticatedLaunchParent } from '../infra/coordinator-admission.js';
 import { parseProviderRoleArgv, type ProviderRole } from '../provider-proxy/role-argv.js';
 import { runProviderRoleMain } from '../provider-proxy/role-main.js';
 import { currentCoralStoreFormat } from '../store-format.js';
@@ -32,6 +43,8 @@ import { generationMutationCoordinationSeam } from '../store/generation-mutation
 import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import {
   processIncarnationProbeRegistrySize,
+  probeProcessIncarnation,
+  incarnationMayAuthorizeSignal,
   snapshotProcessIncarnationProbeSubjects,
   terminateProcessIncarnationProbes,
 } from '../infra/node-process.js';
@@ -148,7 +161,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 
   try {
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-    const { openWritableStoreDbNoReset, resolveProvenStoreEpochAtPath } = await import('../store/epoch.js');
+    const { openWritableStoreDbNoReset, resolveProvenStoreEpochAtPath } = await import('../store/epoch/index.js');
     const smokeStorePathInput = z
       .string()
       .refine((path) => resolve(path) === path, 'path is not a canonical absolute path');
@@ -274,7 +287,12 @@ function logStartupHandoffPublicationIncident(incident: HandoffPublicationIncide
   backendLog.warn(`Backend startup handoff routing-status publication incident: ${JSON.stringify(incident)}`);
 }
 
-export async function main(): Promise<number> {
+export type BackendHarness = Readonly<{
+  successionInterposition?: SuccessionInterposition;
+  afterReady?: () => void;
+}>;
+
+async function dispatchBackendRole(): Promise<number | null> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
 
@@ -290,9 +308,12 @@ export async function main(): Promise<number> {
     return 0;
   }
 
-  // Provider-proxy role dispatch runs before ordinary coordinator construction: a guardian, reaper, or proxy
-  // process is a role of this same backend artifact, never a coordinator. Parsing lives in `role-argv.ts`
-  // and running in `role-main.ts` — this is dispatch only.
+  const retainedEpochCommand = parseRetainedEpochArgv(process.argv);
+  if (retainedEpochCommand !== null) {
+    return runRetainedEpochCommand(retainedEpochCommand, createRealRuntime, currentCoralStoreFormat());
+  }
+
+  // Provider-proxy roles must be dispatched before coordinator construction.
   const providerRole = parseProviderRoleArgv(process.argv);
   if (providerRole.role !== 'none') {
     try {
@@ -300,11 +321,7 @@ export async function main(): Promise<number> {
         pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
       });
     } catch (error: unknown) {
-      // A guardian/reaper/proxy role failing to start is not a coordinator startup failure — it must not
-      // reach `writeBootstrapDiagnostic`/`auditBootstrapFailure` below, which are the coordinator's own
-      // diagnostic surface, or an operator reading them would see a role's own crash reported as if this
-      // process had tried and failed to become the backend itself. Distinct codes, mirroring this file's own
-      // `70` for `--print-store-reset-build-identity`, are what let the two be told apart from the outside.
+      // Provider role failures must not be recorded as coordinator bootstrap failures.
       backendLog.error(`Provider ${providerRole.role} role failed to start`, error);
       return PROVIDER_ROLE_STARTUP_FAILURE_EXIT_CODES[providerRole.role];
     }
@@ -320,21 +337,247 @@ export async function main(): Promise<number> {
     return handleSmokeOpenStore(process.argv);
   }
 
+  return null;
+}
+
+async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLoss: () => void): Promise<void> {
+  let sentinelArm: Promise<void> | null = null;
+  if (process.env.CORAL_SENTINEL_ID !== undefined) {
+    const sentinelId = process.env.CORAL_SENTINEL_ID;
+    const parent = authenticatedLaunchParent();
+    const parentPid = parent?.pid ?? process.ppid;
+    const parentIncarnation = parent?.incarnation ?? null;
+    let parentObservation = probeProcessIncarnation(parentPid);
+    const holdId = `parent:${parentPid}`;
+    let parentSilent = false;
+    let parentTermDeliveredAt: number | null = null;
+    let parentKillSent = false;
+    let lastParentProgress = Date.now();
+    let lastWake = lastParentProgress;
+    const recordParentHold = (held: boolean): void => {
+      const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
+      if (runDir === undefined) return;
+      try {
+        updateLaunchStatus(runDir, (status) => ({
+          ...status,
+          signalHolds: [
+            ...status.signalHolds.filter((hold) => hold.launchId !== holdId),
+            ...(held
+              ? [
+                  {
+                    launchId: holdId,
+                    pid: parentPid,
+                    incarnation: parentIncarnation ?? 'unavailable',
+                    disposition:
+                      parentObservation === null ? ('parent-identity-unknown' as const) : ('parent-silent' as const),
+                    observation: parentObservation ?? 'unknown',
+                  },
+                ]
+              : []),
+          ],
+        }));
+      } catch (error: unknown) {
+        backendLog.error('Could not record unresponsive supervisor hold', error);
+      }
+    };
+    const signalSilentParent = (signal: 'SIGTERM' | 'SIGKILL'): boolean => {
+      if (process.platform !== 'linux' || !incarnationMayAuthorizeSignal(process.platform)) return false;
+      if (parentIncarnation === null || process.ppid !== parentPid) return false;
+      parentObservation = probeProcessIncarnation(parentPid);
+      if (parentObservation !== parentIncarnation) return false;
+      try {
+        return process.kill(parentPid, signal);
+      } catch {
+        return false;
+      }
+    };
+    const parentAnswered = (): void => {
+      if (parentTermDeliveredAt !== null || parentKillSent) return;
+      lastParentProgress = Date.now();
+      if (!parentSilent) return;
+      parentSilent = false;
+      parentTermDeliveredAt = null;
+      parentKillSent = false;
+      recordParentHold(false);
+    };
+    const supervisorMonitor = setInterval(() => {
+      const now = Date.now();
+      const gap = now - lastWake;
+      lastWake = now;
+      if (gap > SENTINEL_TIMING.schedulingGapMs) {
+        lastParentProgress = now;
+        return;
+      }
+      if (now - lastParentProgress < SENTINEL_TIMING.lapseMs) return;
+      if (!parentSilent) {
+        parentSilent = true;
+        replaceSupervisor();
+      }
+      if (process.ppid !== parentPid) return recordParentHold(false);
+      parentObservation = probeProcessIncarnation(parentPid);
+      const killDue = parentTermDeliveredAt !== null && now >= parentTermDeliveredAt + SENTINEL_TIMING.graceMs;
+      if (killDue && !parentKillSent) parentKillSent = signalSilentParent('SIGKILL');
+      else if (parentTermDeliveredAt === null && signalSilentParent('SIGTERM')) parentTermDeliveredAt = now;
+      recordParentHold(killDue ? !parentKillSent : parentTermDeliveredAt === null);
+    }, SENTINEL_TIMING.challengeMs);
+    supervisorMonitor.unref();
+    sentinelArm = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Coordinator sentinel did not arm before startup')), 30_000);
+      const onArm = (message: unknown, handle: unknown): void => {
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          'kind' in message &&
+          message.kind === 'coral-sentinel-armed'
+        )
+          closeHandle(handle);
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          'kind' in message &&
+          message.kind === 'coral-sentinel-armed' &&
+          'id' in message &&
+          message.id === sentinelId
+        ) {
+          clearTimeout(timeout);
+          process.off('message', onArm);
+          resolve();
+        }
+      };
+      process.on('message', onArm);
+      process.send?.({ kind: 'coral-sentinel-hello', id: sentinelId });
+    });
+    process.on('message', (message: unknown, handle: unknown) => {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'kind' in message &&
+        message.kind === 'coral-sentinel-challenge'
+      )
+        closeHandle(handle);
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'kind' in message &&
+        message.kind === 'coral-sentinel-challenge' &&
+        'id' in message &&
+        Number.isSafeInteger(message.id)
+      ) {
+        parentAnswered();
+        process.send?.({ kind: 'coral-sentinel-answer', id: message.id });
+      }
+    });
+    process.on('disconnect', () => {
+      if (parentSilent) recordParentHold(false);
+      onSentinelLoss();
+    });
+  }
+  if (sentinelArm !== null) await sentinelArm;
+}
+
+async function handleCoordinatorStartupFailure(
+  pluginRoot: string,
+  successionAttempt: Awaited<ReturnType<typeof receiveSuccessionAttemptChild>>,
+  error: unknown,
+): Promise<number> {
+  if (successionAttempt !== null) {
+    backendLog.warn(
+      error instanceof SuccessionAttemptStartupHoldError
+        ? error.message
+        : `Succession attempt startup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return 1;
+  }
+  if (error instanceof BackendAlreadyRunningError) {
+    backendLog.info(error.message);
+    return 0;
+  }
+  if ((error as { name?: string } | null)?.name === 'AbortError') {
+    return 0;
+  }
+
+  let startupError = error;
+  let startupExitCode = 1;
+  if (error instanceof StartupStoreHandoffError) {
+    const handoff = await handoffStartupToSelectedBuild(pluginRoot, error);
+    switch (handoff.kind) {
+      case 'started':
+        return 0;
+      case 'undetermined':
+        backendLog.warn(
+          `This process delegated startup to the selected Coral build and could not observe whether that build ` +
+            `is now serving (${handoff.cause}). No startup failure is recorded, because none was observed. Run ` +
+            `'coral-cli backend status' to see whether the selected build is serving, and to settle the routing ` +
+            `invocation this process left unresolved.`,
+        );
+        return UNOBSERVED_STARTUP_DELEGATION_EXIT_CODE;
+      case 'failed':
+        startupError = handoff.error;
+        startupExitCode = handoff.exitCode;
+        break;
+      default:
+        return assertNever(handoff);
+    }
+  }
+
+  backendLog.error('Fatal startup error', startupError);
+  const diagnosticFile = writeBootstrapDiagnostic(pluginRoot, 'startup_failed', startupError, startupExitCode);
+  writeStartupErrorSentinel(pluginRoot, startupError, diagnosticFile);
+  auditBootstrapFailure(
+    'bootstrap_startup_failed',
+    pluginRoot,
+    'startup_failed',
+    startupError,
+    startupExitCode,
+    diagnosticFile,
+  );
+  return startupExitCode;
+}
+
+export async function main(harness: BackendHarness = {}): Promise<number> {
+  const dispatched = await dispatchBackendRole();
+  if (dispatched !== null) return dispatched;
+
   if (typeof __PLUGIN_ROOT__ !== 'string') {
     throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
   }
 
-  // Hold a ref'd keepalive for the duration of startup. Without it, a contender
-  // entering `bindWithHandoff`'s retry sleep can drain the event loop and exit
-  // silently with code 0: `runtime.time.sleep` uses `timer.unref()` (real.ts),
-  // and no other ref-holding I/O exists between IPC client close and the next
-  // bind attempt. After `start()` resolves the bound IPC + HTTP servers keep
-  // the loop alive on their own.
+  const runningIdentity = resolveStrictBundleIdentity();
+  let repairAfterSupervisorAccepted = (_pluginRoot: string): Promise<void> => Promise.resolve();
+  let replacingSupervisor = false;
+  const replaceSupervisor = (): void => {
+    if (replacingSupervisor) return;
+    const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
+    if (!runningIdentity.ok || runDir === undefined) {
+      backendLog.error('Could not replace coordinator supervisor: running build identity is unavailable');
+      return;
+    }
+    replacingSupervisor = true;
+    startReplacementSupervisor(
+      __PLUGIN_ROOT__,
+      runDir,
+      runningIdentity.manifest,
+      (error) => backendLog.error('Could not replace coordinator supervisor', error),
+      (pluginRoot) => repairAfterSupervisorAccepted(pluginRoot),
+    );
+  };
+  let shutdownAfterSentinelLoss = (): void => {
+    replaceSupervisor();
+    bootstrapProbeExitGate.requestExit(1);
+  };
+  await armSupervisorSentinel(replaceSupervisor, () => shutdownAfterSentinelLoss());
+
+  const successionAttempt = await receiveSuccessionAttemptChild(createRealSuccessionAttemptPorts());
+  installSuccessionAttemptChild(successionAttempt);
+
+  // Startup must retain a referenced handle until `start()` resolves.
   const startupKeepalive = setInterval(() => {}, 60_000);
 
   try {
     const coordinator = createCoordinatorServer({
+      ...harness,
       pluginRoot: __PLUGIN_ROOT__,
+      ...(successionAttempt === null ? {} : { bootSnapshot: { bootToken: successionAttempt.bootToken } }),
       onStopped: (exitCode = 0) => {
         bootstrapProbeExitGate.requestExit(exitCode);
       },
@@ -357,6 +600,11 @@ export async function main(): Promise<number> {
         bootstrapProbeExitGate.requestExit(1);
       },
     });
+    repairAfterSupervisorAccepted = (pluginRoot) => {
+      if (!runningIdentity.ok) return Promise.reject(new Error('Running build identity is unavailable'));
+      return coordinator.repairSupervision({ build: runningIdentity.manifest, pluginRootLabel: pluginRoot });
+    };
+    shutdownAfterSentinelLoss = replaceSupervisor;
 
     const handleShutdownSignal = createCoordinatorShutdownSignalHandler({
       shutdown: coordinator.shutdown,
@@ -367,63 +615,25 @@ export async function main(): Promise<number> {
     process.on('SIGINT', () => handleShutdownSignal('sigint'));
 
     const info = await coordinator.start();
+    harness.afterReady?.();
     backendLog.info(`Running on ${info.host}:${info.port}`);
     return 0;
   } catch (error: unknown) {
-    if (error instanceof BackendAlreadyRunningError) {
-      backendLog.info(error.message);
-      return 0;
-    }
-    if ((error as { name?: string } | null)?.name === 'AbortError') {
-      return 0;
-    }
-
-    let startupError = error;
-    let startupExitCode = 1;
-    if (error instanceof StartupStoreHandoffError) {
-      const handoff = await handoffStartupToSelectedBuild(__PLUGIN_ROOT__, error);
-      switch (handoff.kind) {
-        case 'started':
-          return 0;
-        case 'undetermined':
-          backendLog.warn(
-            `This process delegated startup to the selected Coral build and could not observe whether that build ` +
-              `is now serving (${handoff.cause}). No startup failure is recorded, because none was observed. Run ` +
-              `'coral-cli backend status' to see whether the selected build is serving, and to settle the routing ` +
-              `invocation this process left unresolved.`,
-          );
-          return UNOBSERVED_STARTUP_DELEGATION_EXIT_CODE;
-        case 'failed':
-          startupError = handoff.error;
-          startupExitCode = handoff.exitCode;
-          break;
-        default:
-          return assertNever(handoff);
-      }
-    }
-
-    backendLog.error('Fatal startup error', startupError);
-    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', startupError, startupExitCode);
-    writeStartupErrorSentinel(__PLUGIN_ROOT__, startupError, diagnosticFile);
-    auditBootstrapFailure(
-      'bootstrap_startup_failed',
-      __PLUGIN_ROOT__,
-      'startup_failed',
-      startupError,
-      startupExitCode,
-      diagnosticFile,
-    );
-    return startupExitCode;
+    return await handleCoordinatorStartupFailure(__PLUGIN_ROOT__, successionAttempt, error);
   } finally {
     clearInterval(startupKeepalive);
   }
 }
 
-if (typeof __IS_CORAL_BACKEND_MAIN__ !== 'undefined' && __IS_CORAL_BACKEND_MAIN__) {
-  void main()
+export function runBackendMain(harness: BackendHarness = {}): void {
+  void main(harness)
     .then((code) => {
       if (code !== 0) {
         bootstrapProbeExitGate.requestExit(code);
+      } else {
+        // A contender that conceded has no server to keep it alive. The private sentinel channel must not
+        // turn that normal return into a process that lives only to answer heartbeats.
+        process.channel?.unref();
       }
     })
     .catch((error: unknown) => {
@@ -442,3 +652,5 @@ if (typeof __IS_CORAL_BACKEND_MAIN__ !== 'undefined' && __IS_CORAL_BACKEND_MAIN_
       bootstrapProbeExitGate.requestExit(1);
     });
 }
+
+if (typeof __IS_CORAL_BACKEND_MAIN__ !== 'undefined' && __IS_CORAL_BACKEND_MAIN__) runBackendMain();

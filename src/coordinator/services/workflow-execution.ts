@@ -1,6 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
+import { identifyDurableRequest, throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import { hasProviderScope, type InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
@@ -43,6 +44,7 @@ export interface WorkflowExecutionServiceDeps {
   coordinatorCommit: CommitEventsFn;
   launchOrchestrator: WorkflowJobLifecyclePort;
   executionPort: WorkflowExecutionPort;
+  admitTopLevelLaunch?: () => boolean;
 }
 
 export class WorkflowExecutionService {
@@ -57,7 +59,9 @@ export class WorkflowExecutionService {
     input: CanonicalWorkflowCommand,
     ctx: InvocationContext,
     workDir: CanonicalWorkDir,
+    signal?: AbortSignal,
   ): Promise<WorkflowLaunchDecision> {
+    throwIfRequestAborted(signal);
     if (!this.deps.providerRegistry.get(providerName)) {
       return refuseLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
@@ -80,9 +84,18 @@ export class WorkflowExecutionService {
     const boundCtx: InvocationContext = { ...ctx, providerScope: decodedScope.value };
 
     const jobId = this.deps.abortRegistry.register();
+    identifyDurableRequest(signal, { jobId });
     let plan: ReturnType<typeof buildWorkflowPlan>;
     try {
       plan = buildWorkflowPlan(jobId, ast, { defaultProvider: providerName });
+      if (this.deps.admitTopLevelLaunch?.() === false) {
+        this.deps.abortRegistry.remove(jobId);
+        return refuseLaunch(
+          'succession_admission_paused',
+          'Launch admission is paused during succession. Retry shortly.',
+        );
+      }
+      throwIfRequestAborted(signal);
       this.deps.progressStore.commit((c) => {
         c.append(workflowPlanDeclaredEvent(jobId, plan, decodedScope.value));
         c.append({

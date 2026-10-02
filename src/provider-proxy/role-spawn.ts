@@ -18,6 +18,11 @@ import {
 } from './control-client.js';
 import type { ControlEndpointTimer } from './control-endpoint.js';
 import { PROVIDER_ROLE_FLAGS, type ProviderRole } from './role-argv.js';
+import {
+  CUSTODY_PROCESS_TICKET_ENV,
+  custodyProcessArgument,
+  parseCustodyProcessTicket,
+} from '../infra/custody-process-ticket.js';
 
 /**
  * The shared mechanics every role-spawning caller needs: launching one role process from the existing
@@ -63,6 +68,7 @@ export type RoleSpawnOptions = Readonly<{
    *  parent's group. */
   detached: boolean;
   envAdditions?: Record<string, string>;
+  custodyTicket?: string;
   /** Overrides "am I already running as the backend artifact"; defaults to `process.argv[1]`. */
   currentEntrypoint?: string;
   /** Overrides the node executable used to re-invoke the artifact; defaults to `process.execPath`. */
@@ -176,6 +182,123 @@ function resolveBackendArtifact(pluginRoot: string, currentEntrypoint: string | 
 }
 
 /** A failed role spawn remains owned until exact absence or accepted operator abandonment. */
+const operatorExitFor = <Subject extends RoleSpawnCleanupSubject>(
+  subject: Subject,
+  acceptTransfer: () => void = () => undefined,
+): RoleSpawnOperatorExit<Subject> => ({
+  kind: 'abandon-provider-proxy-acquisition',
+  subject,
+  abandon: () => {
+    acceptTransfer();
+    return {
+      kind: 'operator-abandoned',
+      subject,
+      processAbsenceProven: false,
+      successor: { owner: 'operator-command', acceptance: 'accepted' },
+    };
+  },
+});
+const observedProcessAbsent = (
+  subject: RoleSpawnProcessSubject,
+): Extract<RoleSpawnCleanupDisposition<RoleSpawnProcessSubject>, { kind: 'observed-absent' }> => ({
+  kind: 'observed-absent',
+  evidence: Object.freeze({ subject, [roleSpawnAbsenceEvidenceBrand]: true as const }),
+});
+
+type HeldRoleSpawnState = {
+  childClosed: boolean;
+  childSettled: Promise<void>;
+  killInFlight: GracefulKillPendingDisposition | null;
+  killOutcome: GracefulKillOutcome | null;
+};
+
+function createHeldRoleSpawnState(child: ChildProcessLike): HeldRoleSpawnState {
+  const state: HeldRoleSpawnState = {
+    childClosed: false,
+    childSettled: Promise.resolve(),
+    killInFlight: null,
+    killOutcome: null,
+  };
+  state.childSettled = new Promise<void>((resolve) => {
+    child.on('close', () => {
+      state.childClosed = true;
+      resolve();
+    });
+  });
+  // Piped output must be drained so a full OS pipe cannot block the child.
+  child.stdout?.on('data', () => {});
+  child.stdout?.on('error', () => {});
+  child.stderr?.on('data', () => {});
+  child.stderr?.on('error', () => {});
+  return state;
+}
+
+function holdDetachedRoleSpawn(child: ChildProcessLike, ports: RoleSpawnPorts, error: RoleSpawnError): HeldRoleSpawn {
+  const subject = { kind: 'unattributable-process-group', processGroupId: child.pid ?? null } as const;
+  let resolveSettled!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  });
+  const operatorExit = operatorExitFor(subject, resolveSettled);
+  const retry = async (_signal?: AbortSignal): Promise<RoleSpawnCleanupDisposition<typeof subject>> => {
+    if (subject.processGroupId !== null) {
+      const observation = observeUnattributableSpawnedProcessGroup(subject.processGroupId, ports.runtime);
+      if (observation.kind === 'observed-absent') {
+        resolveSettled();
+        return {
+          kind: 'observed-absent',
+          evidence: Object.freeze({
+            subject,
+            processGroupEvidence: observation.evidence,
+            [roleSpawnAbsenceEvidenceBrand]: true as const,
+          }),
+        };
+      }
+    }
+    return {
+      kind: 'held-unobservable',
+      subject,
+      observation: 'unobservable',
+      operatorExit,
+      settled,
+      retry,
+    };
+  };
+  return { kind: 'held', child, error, subject, settled, operatorExit, retry };
+}
+
+function classifyHeldProcessSpawn(
+  child: ChildProcessLike,
+  ports: RoleSpawnPorts,
+  state: HeldRoleSpawnState,
+  subject: RoleSpawnProcessSubject,
+  operatorExit: RoleSpawnOperatorExit<RoleSpawnProcessSubject>,
+  retry: (signal?: AbortSignal) => Promise<RoleSpawnCleanupDisposition<RoleSpawnProcessSubject>>,
+): RoleSpawnCleanupDisposition<RoleSpawnProcessSubject> {
+  if (state.childClosed) return observedProcessAbsent(subject);
+  if (typeof child.pid === 'number') {
+    try {
+      const observation = ports.runtime.process.observeLiveness(child.pid);
+      if (state.childClosed) return observedProcessAbsent(subject);
+      if (observation === 'absent') return observedProcessAbsent(subject);
+      if (observation === 'alive') {
+        return { kind: 'held-alive', subject, observation, operatorExit, settled: state.childSettled, retry };
+      }
+    } catch {
+      // A close observation remains required when leader liveness cannot answer.
+    }
+  }
+  if (state.childClosed) return observedProcessAbsent(subject);
+  return {
+    kind: 'held-unobservable',
+    subject,
+    observation: 'unobservable',
+    operatorExit,
+    settled: state.childSettled,
+    retry,
+  };
+}
+
 export function spawnRoleProcess(
   role: ProviderRole,
   capsulePath: string,
@@ -186,9 +309,19 @@ export function spawnRoleProcess(
   const command = options.command ?? process.execPath;
   const child = ports.process.spawn({
     command,
-    args: [entrypoint, ROLE_FLAG_BY_ROLE[role], capsulePath],
+    args: [
+      entrypoint,
+      ROLE_FLAG_BY_ROLE[role],
+      capsulePath,
+      ...(options.custodyTicket === undefined
+        ? []
+        : [custodyProcessArgument(parseCustodyProcessTicket(options.custodyTicket).processToken)]),
+    ],
     cwd: options.pluginRoot,
-    envAdditions: options.envAdditions ?? {},
+    envAdditions: {
+      ...options.envAdditions,
+      ...(options.custodyTicket === undefined ? {} : { [CUSTODY_PROCESS_TICKET_ENV]: options.custodyTicket }),
+    },
     detached: options.detached,
   });
 
@@ -202,130 +335,41 @@ export function spawnRoleProcess(
   });
   spawnFailed.catch(() => {});
 
-  let childClosed = false;
-  const childSettled = new Promise<void>((resolve) => {
-    child.on('close', () => {
-      childClosed = true;
-      resolve();
-    });
-  });
-  let killInFlight: GracefulKillPendingDisposition | null = null;
-  let killOutcome: GracefulKillOutcome | null = null;
-  // Piped output must be drained so a full OS pipe cannot block the child.
-  child.stdout?.on('data', () => {});
-  child.stdout?.on('error', () => {});
-  child.stderr?.on('data', () => {});
-  child.stderr?.on('error', () => {});
-  const operatorExitFor = <Subject extends RoleSpawnCleanupSubject>(
-    subject: Subject,
-    acceptTransfer: () => void = () => undefined,
-  ): RoleSpawnOperatorExit<Subject> => ({
-    kind: 'abandon-provider-proxy-acquisition',
-    subject,
-    abandon: () => {
-      acceptTransfer();
-      return {
-        kind: 'operator-abandoned',
-        subject,
-        processAbsenceProven: false,
-        successor: { owner: 'operator-command', acceptance: 'accepted' },
-      };
-    },
-  });
-  const observedProcessAbsent = (
-    subject: RoleSpawnProcessSubject,
-  ): Extract<RoleSpawnCleanupDisposition<RoleSpawnProcessSubject>, { kind: 'observed-absent' }> => ({
-    kind: 'observed-absent',
-    evidence: Object.freeze({ subject, [roleSpawnAbsenceEvidenceBrand]: true as const }),
-  });
+  const state = createHeldRoleSpawnState(child);
   const holdFailedSpawn = (error: RoleSpawnError): HeldRoleSpawn => {
-    if (options.detached) {
-      const subject = { kind: 'unattributable-process-group', processGroupId: child.pid ?? null } as const;
-      let resolveSettled!: () => void;
-      const settled = new Promise<void>((resolve) => {
-        resolveSettled = resolve;
-      });
-      const operatorExit = operatorExitFor(subject, resolveSettled);
-      const retry = async (_signal?: AbortSignal): Promise<RoleSpawnCleanupDisposition<typeof subject>> => {
-        if (subject.processGroupId !== null) {
-          const observation = observeUnattributableSpawnedProcessGroup(subject.processGroupId, ports.runtime);
-          if (observation.kind === 'observed-absent') {
-            resolveSettled();
-            return {
-              kind: 'observed-absent',
-              evidence: Object.freeze({
-                subject,
-                processGroupEvidence: observation.evidence,
-                [roleSpawnAbsenceEvidenceBrand]: true as const,
-              }),
-            };
-          }
-        }
-        return {
-          kind: 'held-unobservable',
-          subject,
-          observation: 'unobservable',
-          operatorExit,
-          settled,
-          retry,
-        };
-      };
-      return { kind: 'held', child, error, subject, settled, operatorExit, retry };
-    }
-
+    if (options.detached) return holdDetachedRoleSpawn(child, ports, error);
     const subject = { kind: 'process', pid: child.pid ?? null } as const;
     const operatorExit = operatorExitFor(subject);
     const retry = async (signal?: AbortSignal): Promise<RoleSpawnCleanupDisposition<typeof subject>> => {
-      if (childClosed) return observedProcessAbsent(subject);
-      if (killOutcome?.kind === 'observed-absent') return observedProcessAbsent(subject);
+      if (state.childClosed) return observedProcessAbsent(subject);
+      if (state.killOutcome?.kind === 'observed-absent') return observedProcessAbsent(subject);
       if (signal?.aborted) {
         return {
           kind: 'held-unobservable',
           subject,
           observation: 'unobservable',
           operatorExit,
-          settled: childSettled,
+          settled: state.childSettled,
           retry,
         };
       }
-      if (killInFlight === null) {
+      if (state.killInFlight === null) {
         const disposition = gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
         if ('settlement' in disposition) {
-          killInFlight = disposition;
+          state.killInFlight = disposition;
           void disposition.settlement.then((outcome) => {
-            if (killInFlight === disposition) {
-              killInFlight = null;
-              killOutcome = outcome;
+            if (state.killInFlight === disposition) {
+              state.killInFlight = null;
+              state.killOutcome = outcome;
             }
           });
         } else {
-          killOutcome = disposition;
+          state.killOutcome = disposition;
         }
       }
-      if (childClosed) return observedProcessAbsent(subject);
-      if (typeof child.pid === 'number') {
-        try {
-          const observation = ports.runtime.process.observeLiveness(child.pid);
-          if (childClosed) return observedProcessAbsent(subject);
-          if (observation === 'absent') return observedProcessAbsent(subject);
-          if (observation === 'alive') {
-            return { kind: 'held-alive', subject, observation, operatorExit, settled: childSettled, retry };
-          }
-        } catch {
-          // A close observation remains required when leader liveness cannot answer.
-        }
-      }
-      if (childClosed) return observedProcessAbsent(subject);
-      return {
-        kind: 'held-unobservable',
-        subject,
-        observation: 'unobservable',
-        operatorExit,
-        settled: childSettled,
-        retry,
-      };
+      return classifyHeldProcessSpawn(child, ports, state, subject, operatorExit, retry);
     };
-    return { kind: 'held', child, error, subject, settled: childSettled, operatorExit, retry };
+    return { kind: 'held', child, error, subject, settled: state.childSettled, operatorExit, retry };
   };
 
   if (typeof child.pid !== 'number') {

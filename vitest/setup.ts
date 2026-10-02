@@ -2,6 +2,13 @@ import { join } from 'node:path';
 
 import { beforeEach } from 'vitest';
 
+if (process.env.CORAL_TEST_TIER === 'unit') {
+  const home = process.env.CORAL_TEST_HOME;
+  if (home === undefined || process.env.HOME !== home || process.env.USERPROFILE !== home) {
+    throw new Error('Unit tests require an isolated HOME from vitest/isolated-unit-home.ts.');
+  }
+}
+
 declare module 'vitest' {
   interface TaskMeta {
     timeout?: number;

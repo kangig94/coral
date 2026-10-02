@@ -56,6 +56,7 @@ const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/provider-proxy/role-main.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
   'src/coordinator/services/recovery/actions.ts',
+  'src/coordinator/services/recovery/epoch-closure.ts',
   'src/coordinator/services/recovery/interrupted-performer.ts',
   'src/coordinator/services/provider-proxy-set/index.ts',
   'src/coordinator/services/provider-proxy-set/inheritance.ts',
@@ -67,7 +68,7 @@ const RECORDED_CONTAINMENT_OWNER_FILES = [
 // decision that must carry a justification.
 const ALLOWLIST = new Map<string, string>([
   [
-    'src/coordinator/live/kb-daemon-supervisor.ts',
+    'src/coordinator/live/kb-daemon-supervisor/index.ts',
     // The single bare call is the spawn-error catch: the child either failed to
     // spawn or lacks piped stdio, so it is not a live process awaiting graceful
     // shutdown. The timeout/stop paths in this file use `gracefulKill`.
@@ -201,10 +202,12 @@ describe('process kills escalate SIGTERM→SIGKILL', () => {
 // Migrating one to a sanctioned helper removes its entry.
 const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
   [
-    'src/coordinator/handoff.ts',
-    // Handoff targets a separately discovered incumbent, not a child or recorded containment. Each signal
-    // requires a fresh pid/start-time check and its own capability, policy, cooldown, and audit handling.
-    'verified incumbent handoff escalation has no child handle or recorded containment and revalidates policy and identity before each audited signal',
+    'src/coordinator-launch/',
+    'the namespace supervisor holds each exact ChildProcess handle and retains its termination duty through exit',
+  ],
+  [
+    'src/runtime/supervisor-loss.ts',
+    'the serving coordinator retries refused signals against the replacement supervisor incarnation until ownership accepts or that exact process exits',
   ],
   [
     'src/providers/claude/appserver/controller.ts',
@@ -215,6 +218,21 @@ const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
     'pre-existing Claude appserver child-shutdown escalation (shutdown()), not yet migrated to gracefulKill',
   ],
 ]);
+
+const NAMESPACE_SIGNAL_FILES = [
+  'src/coordinator-launch/child-process.ts',
+  'src/coordinator-launch/child-watch.ts',
+  'src/coordinator-launch/inherited-children.ts',
+];
+
+function escalationOwner(canonical: string): string {
+  return NAMESPACE_SIGNAL_FILES.includes(canonical) ? 'src/coordinator-launch/' : canonical;
+}
+
+function escalationOwnerSource(canonical: string): string {
+  const files = canonical === 'src/coordinator-launch/' ? NAMESPACE_SIGNAL_FILES : [canonical];
+  return files.map((file) => readFileSync(join(REPO_ROOT, file), 'utf-8')).join('\n');
+}
 
 /** Whether `call`'s callee is the real kill primitive (`child.kill(`, `process.kill(`, a bare `kill(`) rather
  *  than the sanctioned `safeKill`/`gracefulKill` wrapper — the same "callee is exactly `kill`" distinction the
@@ -499,7 +517,7 @@ describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside 
       (canonical) => !callsReapRecordedContainment(readFileSync(join(REPO_ROOT, canonical), 'utf-8')),
     );
     const exemptedOwners = RECORDED_CONTAINMENT_OWNER_FILES.filter(
-      (canonical) => ALLOWLIST.has(canonical) || HAND_ROLLED_ESCALATION_ALLOWLIST.has(canonical),
+      (canonical) => ALLOWLIST.has(canonical) || HAND_ROLLED_ESCALATION_ALLOWLIST.has(escalationOwner(canonical)),
     );
 
     expect({ recordedContainmentOwners, ownersWithoutRecordedContainmentReaping, exemptedOwners }).toEqual({
@@ -556,11 +574,11 @@ describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside 
       if (
         canonical === PRIMITIVE_FILE ||
         canonical === CONTAINMENT_HELPER_FILE ||
-        HAND_ROLLED_ESCALATION_ALLOWLIST.has(canonical)
+        HAND_ROLLED_ESCALATION_ALLOWLIST.has(escalationOwner(canonical))
       ) {
         continue;
       }
-      if (hasHandRolledEscalation(readFileSync(filePath, 'utf-8'))) {
+      if (hasHandRolledEscalation(escalationOwnerSource(escalationOwner(canonical)))) {
         violations.push(canonical);
       }
     }
@@ -571,7 +589,7 @@ describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside 
   it('every hand-rolled-escalation allowlist entry still combines both signals (stale exemptions are removed)', () => {
     const stale: string[] = [];
     for (const canonical of HAND_ROLLED_ESCALATION_ALLOWLIST.keys()) {
-      const source = readFileSync(join(REPO_ROOT, canonical), 'utf-8');
+      const source = escalationOwnerSource(canonical);
       if (!hasHandRolledEscalation(source)) {
         stale.push(canonical);
       }

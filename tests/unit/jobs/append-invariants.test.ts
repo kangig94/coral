@@ -16,6 +16,8 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { workflowRegistry } from '#src/workflow/events.js';
+import { readJobLaunchOriginNamespace } from '#src/jobs/succession-coverage.js';
+import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
@@ -193,7 +195,7 @@ describe('jobs append invariants', () => {
     }
   });
 
-  it('requires provider job project and backend scope to equal its ProviderSession', () => {
+  it('requires provider job project scope to equal its ProviderSession', () => {
     const db = createDb();
     try {
       const jobId = 'scope-mismatch-job';
@@ -211,6 +213,38 @@ describe('jobs append invariants', () => {
         expect.objectContaining({ code: 'job_binding_owner_mismatch' }),
       );
       expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('accepts a resumed session claim from an earlier coordinator namespace', () => {
+    const db = createDb();
+    try {
+      const jobId = 'cross-build-resume';
+      const input = launchInput(jobId);
+      const launch = input.body as Extract<JobLaunchRequestBody, { jobKind: 'provider' }>;
+      seedTestSessionProjection(db, {
+        sessionId: launch.sessionId,
+        provider: launch.provider,
+        projectRoot: launch.projectRoot,
+        backendNamespace: 'incumbent-namespace',
+        activeJobId: jobId,
+      });
+
+      expect(() => appendJobEvents(db, [input])).not.toThrow();
+      expect(
+        (
+          db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'job.launch.requested'").get() as {
+            count: number;
+          }
+        ).count,
+      ).toBe(1);
+      db.prepare('UPDATE projection_jobs SET backend_namespace = ? WHERE job_id = ?').run(
+        'successor-projection',
+        jobId,
+      );
+      expect(readJobLaunchOriginNamespace(db, jobId, createDefaultStoreReadContext())).toBe(launch.backendNamespace);
     } finally {
       db.close();
     }

@@ -7,7 +7,7 @@
  * (`src/infra/env-sanitize.ts`), which strips ALL inherited `CORAL_*` from the child
  * env. The supervisor re-injects them with a single prefix rule —
  * `collectForwardedKbDaemonEnv` forwards every inherited `CORAL_KB_*` plus the
- * `PARENT_FORWARDED_KB_ENV` allowlist (`src/coordinator/live/kb-daemon-supervisor.ts`).
+ * `PARENT_FORWARDED_KB_ENV` allowlist (`src/coordinator/live/kb-daemon-supervisor/index.ts`).
  * A new daemon-read CORAL var that does NOT carry the prefix (and is not allowlisted)
  * would be silently dropped before reaching the daemon — exactly the class of bug
  * this convention exists to prevent. This test fails the moment such a var is added,
@@ -25,7 +25,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { CORAL_KB_ENV_PREFIX, PARENT_FORWARDED_KB_ENV } from '#src/coordinator/live/kb-daemon-supervisor.js';
+import { CORAL_KB_ENV_PREFIX, PARENT_FORWARDED_KB_ENV } from '#src/coordinator/live/kb-daemon-supervisor/index.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCANNED_ROOTS = ['src/kb', 'src/kb-daemon'];

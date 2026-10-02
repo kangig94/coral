@@ -5,7 +5,7 @@ import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import { JobLaunchService } from '#src/coordinator/services/job-launch.js';
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_BINDING, TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
@@ -69,7 +69,7 @@ describe('JobLaunchService continuation lease admission', () => {
     providerRegistry.register(provider);
     const service = new JobLaunchService({
       runtime,
-      childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+      childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
       sessionManager: {
         prepare: vi.fn(),
         appendPreparedClaim: vi.fn(),

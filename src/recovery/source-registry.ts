@@ -16,6 +16,7 @@ export const SETTLED_UNBOUND_STATUS_REMEDIATION = {
 } as const;
 export const SETTLED_UNBOUND_STATUS_BOUNDARY = SETTLED_UNBOUND_STATUS_REMEDIATION.boundary;
 export const COORDINATOR_JOB_RECOVERY_BOUNDARY = 'coordinator-job-recovery';
+export const EPOCH_CLOSURE_BOUNDARY = 'epoch-closure';
 
 export const repeatableRecoveryBoundaryIds = [
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
@@ -29,6 +30,8 @@ export const repeatableRecoveryBoundaryIds = [
   'workflow-recovery',
   'stale-job-cleanup',
   'crashed-job-terminalization',
+  'job-location-write-through',
+  EPOCH_CLOSURE_BOUNDARY,
   SETTLED_UNBOUND_STATUS_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 ] as const;
@@ -69,7 +72,10 @@ export interface RecoverySourceRegistry {
   ): Promise<RecoveryReport<unknown>>;
 }
 
-export function createRecoverySourceRegistry(): RecoverySourceRegistry {
+export function createRecoverySourceRegistry(retryDeadlineMs = 55_000): RecoverySourceRegistry {
+  if (!Number.isSafeInteger(retryDeadlineMs) || retryDeadlineMs <= 0) {
+    throw new Error('Recovery retry deadline must be positive');
+  }
   const factories = new Map<RepeatableRecoveryBoundaryId, RegisteredRecoverySourceFactory>();
 
   return {
@@ -99,12 +105,30 @@ export function createRecoverySourceRegistry(): RecoverySourceRegistry {
     boundaries(): readonly RepeatableRecoveryBoundaryId[] {
       return repeatableRecoveryBoundaryIds.filter((boundary) => factories.has(boundary));
     },
-    retry(boundary, retry, quarantine, signal): Promise<RecoveryReport<unknown>> {
+    async retry(boundary, retry, quarantine, signal): Promise<RecoveryReport<unknown>> {
       const factory = factories.get(boundary);
       if (factory === undefined) {
         throw new Error(`Recovery source factory is not registered for ${boundary}`);
       }
-      return factory(retry, quarantine, signal);
+      const deadline = new AbortController();
+      const timer = setTimeout(
+        () => deadline.abort(new Error('Recovery source retry deadline exceeded')),
+        retryDeadlineMs,
+      );
+      const boundedSignal = AbortSignal.any([signal, deadline.signal]);
+      const abortError = (): Error =>
+        boundedSignal.reason instanceof Error ? boundedSignal.reason : new Error(String(boundedSignal.reason));
+      try {
+        return await Promise.race([
+          factory(retry, quarantine, boundedSignal),
+          new Promise<never>((_resolve, reject) => {
+            if (boundedSignal.aborted) reject(abortError());
+            else boundedSignal.addEventListener('abort', () => reject(abortError()), { once: true });
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }

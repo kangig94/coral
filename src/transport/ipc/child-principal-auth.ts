@@ -1,16 +1,19 @@
 import { randomBytes } from 'node:crypto';
 
+import { childProofSubject, signChildProof } from '../../security/child-credential.js';
 import {
+  CORAL_CHILD_CREDENTIAL_ID,
+  CORAL_CHILD_CREDENTIAL_KEY,
   CORAL_CHILD_PRINCIPAL_HANDLE,
   isCoralChildEnvironment,
   type CoralChildEnvironment,
 } from '../../security/child-principal-env.js';
-import type { IpcAuthMetadata } from './json-rpc.js';
+import type { IpcAuthProvider, IpcChallengedAuth } from './client.js';
 
 export type ChildPrincipalEnv = CoralChildEnvironment;
 
 export type ChildPrincipalNonceFactory = () => string;
-export type ChildPrincipalAuthProvider = (() => IpcAuthMetadata) | null | undefined;
+export type ChildPrincipalAuthProvider = IpcChallengedAuth | IpcAuthProvider | null | undefined;
 export type ChildPrincipalAuthOptions = { readonly auth: Exclude<ChildPrincipalAuthProvider, null | undefined> };
 
 export class ChildPrincipalBindingError extends Error {
@@ -37,9 +40,27 @@ export function childPrincipalAuthFromEnv(
   env: ChildPrincipalEnv = process.env,
   nonce: ChildPrincipalNonceFactory = defaultNonce,
 ): ChildPrincipalAuthProvider {
+  const credentialId = nonEmpty(env[CORAL_CHILD_CREDENTIAL_ID]);
+  const privateKey = nonEmpty(env[CORAL_CHILD_CREDENTIAL_KEY]);
   const handle = nonEmpty(env[CORAL_CHILD_PRINCIPAL_HANDLE]);
   const jobId = nonEmpty(env.CORAL_JOB_ID);
   const sessionId = nonEmpty(env.CORAL_SESSION_ID);
+
+  if (credentialId !== undefined || privateKey !== undefined) {
+    if (credentialId === undefined || privateKey === undefined || jobId === undefined || sessionId === undefined) {
+      return null;
+    }
+    return {
+      kind: 'challenged',
+      prove: (challenge, request) => ({
+        kind: 'child-proof',
+        credentialId,
+        jobId,
+        sessionId,
+        proof: signChildProof(privateKey, childProofSubject(challenge, { credentialId, jobId, sessionId }, request)),
+      }),
+    };
+  }
 
   if (handle && jobId && sessionId) {
     return () => ({

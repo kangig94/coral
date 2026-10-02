@@ -891,6 +891,59 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
     return { authority, forceClose, rootAlive: () => rootAlive };
   }
 
+  it('confirms a shared-host interrupt the kernel reports events after, without relinquishing the set', async () => {
+    const { proxy, ledger, emittedEvents } = createTestProxy();
+    const operation = testKey('op-reported-after-interrupt');
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, operation, prepared);
+    const hostRef = sharedHostRef();
+    const shared = sharedHostAuthority();
+
+    providerRegistryDouble.rehydrateBinding.mockReturnValueOnce({
+      ok: true,
+      value: fakeBoundProvider({
+        supportsInterrupt: true,
+        executionHostRef: hostRef,
+        openReplacement: async () => ({ hostRef, close: vi.fn() }),
+        execute: async function* (execRuntime) {
+          await new Promise<void>((resolve) => {
+            if (execRuntime.signal.aborted) resolve();
+            else execRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          execRuntime.onProviderTurnTerminal({
+            kind: 'provider-turn-terminal',
+            providerTurnId: 'turn-reported-after',
+            status: 'interrupted',
+          });
+          // Codex checkpoints its cleared turn continuity after the interrupted turn and before the terminal.
+          yield { kind: 'progress', message: 'turn cleared after interrupt' };
+          yield {
+            kind: 'terminal',
+            terminal: { content: '', durationMs: 1, outcome: { kind: 'aborted', reason: 'signal_abort' } },
+            diagnostics: {},
+          };
+        },
+      }),
+    });
+
+    const semantic = createSemanticOperationRuntime({
+      runtime,
+      hostAuthority: shared.authority,
+      getProxy: () => proxy,
+    });
+    await semantic.ensureProviderRoot(operation, prepared);
+    const started = semantic.host.start({ key: operation, prepared });
+    await expect(started.result).resolves.toEqual({ kind: 'started', hostRef });
+
+    await semantic.host.stop({ key: operation, cause: 'user_abort' });
+    expect(
+      emittedEvents.some(({ key, event }) => key === operation && event.kind === 'terminal'),
+      'the aborted terminal the kernel yielded after its interrupt must still reach the coordinator',
+    ).toBe(true);
+    expect(shared.rootAlive()).toBe(true);
+    expect(shared.forceClose).not.toHaveBeenCalled();
+  });
+
   it.each(['notification', 'start-response', 'final-answer'] as const)(
     'releases a normally completed real Codex kernel without cancellation refusal (%s)',
     async (path) => {

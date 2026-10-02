@@ -218,6 +218,7 @@ describe('launchToHttp', () => {
     ['agent_not_found', 404],
     ['agent_namespace_not_found', 404],
     ['busy', 503],
+    ['succession_admission_paused', 503],
     ['session_not_found', 404],
     ['provider_preflight_failed', 400],
     ['unknown_provider', 404],

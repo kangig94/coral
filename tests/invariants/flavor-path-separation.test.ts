@@ -162,6 +162,15 @@ function legacyBaseConsumers(): string[] {
           .flatMap((argument) => staticPathSegments(argument, staticBindings, helperReturns))
           .some((segment) => LEGACY_BASE_SEGMENTS.has(segment));
         if (resolvesLegacySegment && !isGenerationRootCall(node.arguments[0])) {
+          if (
+            relativePath === 'src/infra/path/coordinator.ts' &&
+            node.getText(source) === "join(dirname(generationRoot(opts)), flavor === 'dev' ? 'run-dev' : 'run')" &&
+            ts.isVariableDeclaration(node.parent) &&
+            ts.isIdentifier(node.parent.name) &&
+            node.parent.name.text === 'legacyRunDir'
+          ) {
+            return;
+          }
           const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
           violations.push(`${relativePath}:${line} ${node.getText(source)}`);
         }

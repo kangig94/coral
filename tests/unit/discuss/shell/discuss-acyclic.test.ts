@@ -47,6 +47,7 @@ const DOMAIN_BUCKET_PREFIXES = [
   'testing',
   'simulation',
   'expansion',
+  'upgrade-waiter',
 ] as const;
 
 type DomainBucket = (typeof DOMAIN_BUCKET_PREFIXES)[number];
@@ -81,6 +82,9 @@ const ALLOWED_PROVIDER_SESSION_RUNTIME_EDGES = new Set([
 function classifyDomainBucket(canonicalPath: string): DomainBucket {
   const sourceRelativePath = canonicalPath.slice('src/'.length);
   if (sourceRelativePath === 'store-format.ts') {
+    return 'coordinator';
+  }
+  if (sourceRelativePath === 'coordinator-launch' || sourceRelativePath.startsWith('coordinator-launch/')) {
     return 'coordinator';
   }
   if (sourceRelativePath === 'engines' || sourceRelativePath.startsWith('engines/')) {

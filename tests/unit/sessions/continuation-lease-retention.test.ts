@@ -197,6 +197,32 @@ function appendTerminal(commitEvents: CommitEventsFn, jobId: string, sessionId: 
 }
 
 describe('continuation lease retention integration', () => {
+  it('allows a successor to claim a session opened under the incumbent namespace', async () => {
+    const { runtime, db, coordinatorCommit, sessionManager, reactor } = createHarness();
+    const original = await openClaimedSession(sessionManager, 'incumbent-job');
+    expect(
+      await sessionManager.releaseJobClaimAtomic(original.sessionId, {
+        expectedActiveJobId: 'incumbent-job',
+        expectedVersion: original.version,
+      }),
+    ).toBe(true);
+
+    const successor = new SessionManager('/tmp/project', runtime, coordinatorCommit, undefined, db);
+    successor.allocate({
+      binding: TEST_CLAUDE_BINDING,
+      name: 'successor-session',
+      cwd: '/tmp/project',
+      projectRoot: '/tmp/project',
+      backendNamespace: 'successor-ns',
+    });
+    expect(await successor.claimForJobAtomic(original.sessionId, 'successor-job')).toBe(true);
+    expect(successor.get('claude', original.sessionId)).toMatchObject({
+      backendNamespace: 'test-ns',
+      activeJobId: 'successor-job',
+    });
+    await reactor.dispose();
+    db.close();
+  });
   it('keeps artifacts while stale-aborted session is resumed and discards after resumed release', async () => {
     const { runtime, db, sessionManager, reactor, coordinatorCommit, discardCalls } = createHarness();
 

@@ -4,23 +4,23 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorShutdownSignalHandler } from '#src/coordinator/bootstrap.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS } from '#src/infra/shutdown-contract.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
 import { statusFromParsedHealth } from '#src/cli/backend-status.js';
 import { createLifecycle, isLifecycleShutdownTerminal } from '#src/coordinator/lifecycle.js';
 import {
-  HANDOFF_DRAIN_TIMEOUT_MS,
   SHUTDOWN_DRAIN_TIMEOUT_MS,
   SHUTDOWN_POLL_MS,
   childTerminationRemainder,
   runShutdownSequence,
 } from '#src/coordinator/shutdown.js';
 import {
-  createShutdownSettlementLedger,
+  createShutdownSettlementLedger as createRegisteredShutdownSettlementLedger,
   type ProcessExitRemainder,
   type ProcessExitRemainderAcceptance,
   type ShutdownDeclinedSettlement,
   type ShutdownAuthorityReleaseBoundary,
-  type ShutdownObligation,
+  type ShutdownObligation as RegisteredShutdownObligation,
 } from '#src/coordinator/shutdown-settlement.js';
 import type {
   ProviderProxyAuthorityRegistry,
@@ -36,6 +36,8 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
 
+type ShutdownObligation = RegisteredShutdownObligation<string>;
+const createShutdownSettlementLedger = createRegisteredShutdownSettlementLedger<string>;
 type CallLog = string[];
 
 function formatProducedShutdown(shutdown: NonNullable<HealthSnapshot['shutdown']>): string {

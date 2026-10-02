@@ -82,10 +82,10 @@ async function buildWrapperWithFinalizerOutcomes(
           pluginBuild.onLoad({ filter: /.*/, namespace: 'group-finalizer-scenario' }, () => ({
             loader: 'js',
             contents: `
-              import { execFile, execFileSync, spawn as realSpawn } from 'node:child_process';
+              import { execFile, execFileSync, spawnSync, spawn as realSpawn } from 'node:child_process';
               import { EventEmitter } from 'node:events';
               import { appendFileSync } from 'node:fs';
-              export { execFile, execFileSync };
+              export { execFile, execFileSync, spawnSync };
               const outcomes = ${JSON.stringify(outcomes)};
               let finalizerAttempt = 0;
               export const spawn = (command, args, options) => {
@@ -368,9 +368,9 @@ describe('durable-cli-wrapper', () => {
             pluginBuild.onLoad({ filter: /.*/, namespace: 'spawn-observer' }, () => ({
               loader: 'js',
               contents: `
-                import { execFile, execFileSync, spawn as realSpawn } from 'node:child_process';
+                import { execFile, execFileSync, spawnSync, spawn as realSpawn } from 'node:child_process';
                 import { appendFileSync } from 'node:fs';
-                export { execFile, execFileSync };
+                export { execFile, execFileSync, spawnSync };
                 export const spawn = (...args) => {
                   appendFileSync(${JSON.stringify(spawnLogPath)}, JSON.stringify(args.slice(0, 2)) + '\\n');
                   return realSpawn(...args);
@@ -441,9 +441,9 @@ describe('durable-cli-wrapper', () => {
             pluginBuild.onLoad({ filter: /.*/, namespace: 'closed-provider-stdin' }, () => ({
               loader: 'js',
               contents: `
-                import { execFile, execFileSync, spawn as realSpawn } from 'node:child_process';
+                import { execFile, execFileSync, spawnSync, spawn as realSpawn } from 'node:child_process';
                 import { EventEmitter } from 'node:events';
-                export { execFile, execFileSync };
+                export { execFile, execFileSync, spawnSync };
                 export const spawn = (command, args, options) => {
                   if (command !== 'provider-closes-stdin') return realSpawn(command, args, options);
                   const child = new EventEmitter();

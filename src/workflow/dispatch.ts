@@ -13,13 +13,24 @@ export const workflowCommands = {
         input: CanonicalWorkflowCommand,
         ctx: InvocationContext,
         workDir: CanonicalWorkDir,
+        signal?: AbortSignal,
       ): Promise<WorkflowLaunchDecision>;
     },
     compiled: CompiledWorkflow,
     ctx: InvocationContext,
+    signal?: AbortSignal,
   ): Promise<WorkflowLaunchDecision> {
     const effectiveCtx =
       compiled.owner === undefined ? ctx : { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: compiled.owner } };
-    return service.executeWorkflow(compiled.providerName, compiled.ast, compiled.input, effectiveCtx, compiled.workDir);
+    return signal === undefined
+      ? service.executeWorkflow(compiled.providerName, compiled.ast, compiled.input, effectiveCtx, compiled.workDir)
+      : service.executeWorkflow(
+          compiled.providerName,
+          compiled.ast,
+          compiled.input,
+          effectiveCtx,
+          compiled.workDir,
+          signal,
+        );
   },
 } as const;

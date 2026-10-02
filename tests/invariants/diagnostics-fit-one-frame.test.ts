@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS } from '#src/coordinator/live/kb-daemon-supervisor.js';
+import { KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS } from '#src/coordinator/live/kb-daemon-supervisor/index.js';
 import {
   PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET,
   PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_FACT_BUDGET,

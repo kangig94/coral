@@ -41,9 +41,12 @@ export type ProviderProxySetAcquisitionIdentity = Readonly<{
  *  configured to attempt acquisition at all. */
 export type ProviderProxySetAcquisitionConfig = Readonly<{
   pluginRoot: string;
+
+  retainedHostRoot?: () => string | null;
   identity: ProviderProxySetAcquisitionIdentity;
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
+  custody?: () => Readonly<{ runDir: string; epoch: string }>;
   /** Invocation is permitted only after provider-proxy control is established. */
   onProviderEvent?: () => ProviderEventHandler;
 }>;
@@ -158,7 +161,7 @@ export async function disposeStoppedProviderProxySetAcquisition(
  * failure or release its recovery owner.
  */
 export function ensureProviderProxySet(
-  entry: ProviderHostEntry,
+  entry: Pick<ProviderHostEntry, 'identityKey' | 'spec'>,
   env: ProviderProxySetAcquisitionEnvironment,
   onSettled: (outcome: ProviderProxySetAcquisitionOutcome) => void | Promise<void>,
 ): Promise<void> {
@@ -188,9 +191,11 @@ export function ensureProviderProxySet(
   const steps = createProviderProxyAcquisitionSteps({
     runtime: env.runtime,
     pluginRoot: env.pluginRoot,
+    ...(env.retainedHostRoot === undefined ? {} : { retainedHostRoot: env.retainedHostRoot() }),
     coordinatorIdentity,
     hostFingerprint: hostFingerprintFromSpec(entry.spec),
     operationRegistry: env.operationRegistry,
+    ...(env.custody === undefined ? {} : { custody: env.custody() }),
     ...(env.onProviderEvent === undefined ? {} : { onProviderEvent: env.onProviderEvent }),
   });
   return acquireProviderProxySet({

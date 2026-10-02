@@ -244,6 +244,9 @@ vi.mock('#src/provider-proxy/guardian.js', async (importOriginal) => {
   };
 });
 
+const parentPipeErrorListeners = new Map(
+  [process.stdout, process.stderr].map((pipe) => [pipe, new Set(pipe.listeners('error'))]),
+);
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
@@ -271,6 +274,11 @@ afterEach(() => {
   guardianConstructionHarness.close.mockReset();
   guardianConstructionHarness.recordContainment.mockReset();
   vi.restoreAllMocks();
+  for (const [pipe, originalListeners] of parentPipeErrorListeners) {
+    for (const listener of pipe.listeners('error')) {
+      if (!originalListeners.has(listener)) pipe.removeListener('error', listener as (error: Error) => void);
+    }
+  }
 });
 
 function scopedTempDir(prefix: string): string {

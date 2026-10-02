@@ -10,7 +10,6 @@ export function createBoundIpcLifecycleDeps(): BoundIpcLifecycleDeps {
       server: createServer(),
       sockets: new Set(),
       socketPath: null,
-      onShutdownRequest: () => {},
     },
     closeIpcServerFn: async () => {},
     listenIpcFn: async () => ({ kind: 'bound', socketPath: 'bound-test-coordinator.sock' }),

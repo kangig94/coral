@@ -57,6 +57,31 @@ const PROVIDER_PROXY_FORBIDDEN = [
   'src/workflow/',
   'src/kb/',
 ] as const;
+/** The supervisor outlives coordinators and reads only durable launch and provider-custody evidence. */
+const SUPERVISOR_ROOT = 'src/coordinator-launch/';
+const SUPERVISOR_ALLOWED = [SUPERVISOR_ROOT, 'src/infra/', 'src/runtime/'] as const;
+const SUPERVISOR_ALLOWED_FILES = new Set([
+  // Read-only provider custody evidence used to choose a controller after a committed transfer.
+  'src/coordinator/services/provider-proxy-set/identity.ts',
+  'src/coordinator/services/startup-retirement.ts',
+  'src/coordinator/succession/provider-host-transfer.ts',
+  'src/jobs/location-index.ts',
+  'src/provider-proxy/handoff-capsule.ts',
+  'src/provider-proxy/handoff-capsule-discovery.ts',
+  'src/store/custody-ledger.ts',
+]);
+
+function supervisorImportViolations(edges: readonly ParsedImportEdge[]): string[] {
+  return edges
+    .filter(
+      ({ source, target }) =>
+        source.startsWith(SUPERVISOR_ROOT) &&
+        !startsWithAny(target, SUPERVISOR_ALLOWED) &&
+        !SUPERVISOR_ALLOWED_FILES.has(target),
+    )
+    .map(({ source, target }) => `${source} -> ${target}`)
+    .sort();
+}
 const SECURITY_ROOT = 'src/security/';
 const SECURITY_ALLOWED = new Set([
   // Security owns work-directory admission, but the branded canonical path and its realpath implementation
@@ -65,6 +90,7 @@ const SECURITY_ALLOWED = new Set([
 ]);
 const TRANSPORT_ALLOWED = new Set([
   'src/expansion/rpc-contract.ts',
+  'src/jobs/contracts/addressing.ts',
   'src/jobs/contracts/abort-registry.ts',
   'src/jobs/contracts/event-stream.ts',
   'src/jobs/launch.ts',
@@ -348,6 +374,28 @@ describe('architecture layering invariants', () => {
       .map((edge) => `${edge.source} -> ${edge.target}`);
 
     expect(violations).toEqual([]);
+  });
+
+  it('the namespace supervisor reaches only durable infrastructure and provider custody', () => {
+    expect(IMPORT_EDGES.some((edge) => edge.source.startsWith(SUPERVISOR_ROOT))).toBe(true);
+    expect(supervisorImportViolations(IMPORT_EDGES)).toEqual([]);
+  });
+
+  it.each([
+    ['src/store/epoch/index.ts', '../store/epoch/index.js'],
+    ['src/coordinator/lifecycle.ts', '../coordinator/lifecycle.js'],
+    ['src/transport/ipc/server.ts', '../transport/ipc/server.js'],
+  ] as const)('rejects a namespace supervisor import of %s', (target, specifier) => {
+    const mutation: ParsedImportEdge = {
+      source: 'src/coordinator-launch/supervisor.ts',
+      target,
+      specifier,
+      via: 'ImportDeclaration',
+      runtime: true,
+      typeOnly: false,
+    };
+
+    expect(supervisorImportViolations([mutation])).toEqual([`${mutation.source} -> ${target}`]);
   });
 
   it('the shared providers domain reaches neither provider-host owner', () => {

@@ -14,6 +14,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { releaseStoreReset } from '#src/store/operator-store-reset.js';
 import {
+  formatAbandonedRequestStatus,
   formatBackendStatus,
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
@@ -40,6 +41,7 @@ import {
 } from '#src/coordinator/handoff-routing/status.js';
 import { incumbentIdentitySummarySchema, type HandoffRoutingBasis } from '#src/coordinator/handoff-routing/policy.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import type { ShutdownObligationLabel } from '#src/coordinator/shutdown-settlement.js';
 import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
 import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
@@ -47,7 +49,12 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
-import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/cli/backend-status.js';
+import {
+  operatorFacingShutdownObligation,
+  statusFromStartupDiagnostic,
+  statusFromStartupSentinel,
+  type BackendStatusFull,
+} from '#src/cli/backend-status.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
@@ -150,6 +157,237 @@ const BASE_RUNNING_HEALTH = {
   skippedProviderProxySetTokens: [],
 } as const satisfies RunningBackendHealth;
 
+const UPGRADE_TARGET = {
+  version: '0.11.0',
+  buildSetId: 'build-1',
+  flavor: 'prod',
+  storeFormatFingerprint: 'format-1',
+  bundleHash: 'hash-1',
+  cliBundleHash: 'cli-1',
+  claudeAppserverBundleHash: 'appserver-1',
+  durableWrapperBundleHash: 'wrapper-1',
+  pluginRootLabel: '/installed/new',
+} as const;
+
+type FixedShutdownObligationLabel = Exclude<
+  ShutdownObligationLabel,
+  `stream response close ${number}` | `provider proxy lifecycle fatal incident${string}`
+>;
+
+// Keyed by the coordinator's own label union, so a new shutdown obligation cannot ship without a status projection.
+const FIXED_SHUTDOWN_OBLIGATION_LABELS: Record<FixedShutdownObligationLabel, true> = {
+  'inflight drain': true,
+  'server connection close': true,
+  'server close': true,
+  'recovery coordinator teardown': true,
+  'ownership checker teardown': true,
+  'kb child shutdown': true,
+  'provider operation mutation drain': true,
+  'store services availability check': true,
+  'provider host shutdown': true,
+  'pending launch settlement': true,
+  'child termination': true,
+  'crashed job terminalization': true,
+  'app-server handoff quiesce': true,
+  'provider host drain for handoff': true,
+  'components disposeAll': true,
+  'hooks.onShutdown': true,
+  'discuss store dispose': true,
+  'process incarnation probe shutdown': true,
+  'lifecycle reactor dispose': true,
+  'store epoch sweep cancellation': true,
+  'succession attempt settlement': true,
+  'succession connection handover': true,
+};
+
+describe('shutdown obligation projection', () => {
+  it.each(Object.keys(FIXED_SHUTDOWN_OBLIGATION_LABELS))('should name the %s obligation to the reader', (label) => {
+    expect(operatorFacingShutdownObligation(label)).toEqual({ label });
+  });
+});
+
+describe('pending upgrade visibility', () => {
+  it('keeps the incumbent serving and states the legacy idle-retirement delay without an exit command', () => {
+    const rendered = formatBackendStatus(
+      runningBackendStatus(
+        {},
+        {
+          succession: {
+            requestId: 'request-1',
+            disposition: 'deferred',
+            phase: 'pending',
+            target: UPGRADE_TARGET,
+            blockers: [{ owner: 'legacy-incumbent', reason: 'live job' }],
+            reason: 'waiting for natural retirement',
+            since: '2026-09-25T00:00:00.000Z',
+            retryCondition: { kind: 'incumbent-retirement', evidence: 'idle exit' },
+          },
+        },
+      ),
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('Backend ok');
+    expect(rendered).toContain('Pending upgrade:');
+    expect(rendered).toContain('Since: 2026-09-25T00:00:00.000Z');
+    expect(rendered).toContain('legacy-incumbent');
+    expect(rendered).toContain('normally at least 6 hours');
+    expect(rendered).not.toContain('command=');
+  });
+
+  it('preserves serving health while accepting an additive succession projection', () => {
+    const parsed = parseBackendHealth({
+      ...BASE_RUNNING_HEALTH,
+      flavor: 'prod',
+      namespace: 'serving_incumbent',
+      pid: 4242,
+      succession: {
+        requestId: 'request-1',
+        disposition: 'attempting',
+        phase: 'committing',
+        target: UPGRADE_TARGET,
+        blockers: [],
+        reason: 'commit in progress',
+        since: '2026-09-25T00:00:00.000Z',
+        retryCondition: null,
+      },
+    });
+    expect(parsed?.health.status).toBe('ok');
+    expect(parsed?.health.succession?.disposition).toBe('attempting');
+    expect(parsed?.health.succession?.phase).toBe('committing');
+  });
+
+  it('renders each superseded epoch closure disposition without an operator command', () => {
+    const rendered = formatBackendStatus(
+      {
+        ...runningBackendStatus({}),
+        supersededEpochs: {
+          kind: 'observed',
+          epochs: [
+            {
+              epoch: '7',
+              epochKey: '00000000-0000-4000-8000-000000000007:7',
+              role: 'protected',
+              closure: 'unrecoverable-retained',
+              reason: 'this epoch predates complete pre-effect custody coverage',
+            },
+            { epoch: '8', epochKey: null, role: 'unobservable', closure: 'pending', reason: null },
+          ],
+        },
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('Superseded store epochs:');
+    expect(rendered).toContain(
+      '00000000-0000-4000-8000-000000000007:7 (epoch 7, protected): unrecoverable-retained; this epoch predates complete pre-effect custody coverage',
+    );
+    expect(rendered).toContain('unobservable (epoch 8, unobservable): pending');
+    expect(rendered).not.toContain('command=');
+  });
+
+  it('shows an unreadable pending protection marker in backend status', () => {
+    const rendered = formatBackendStatus(
+      {
+        ...runningBackendStatus({}),
+        supersededEpochs: {
+          kind: 'observed',
+          epochs: [
+            {
+              epoch: '1',
+              epochKey: null,
+              role: 'preserved',
+              closure: 'pending',
+              reason: null,
+              protectionUnreadable: true,
+            },
+          ],
+        },
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('pending protection marker unreadable; retained for retry');
+  });
+
+  it('shows the launch ID whose SIGKILL delivery is still held', () => {
+    const rendered = formatBackendStatus(
+      {
+        ...runningBackendStatus({}),
+        launchSignalHolds: [{ launchId: 'attempt-1', pid: 123, incarnation: testIncarnation('attempt') }],
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('attempt-1');
+    expect(rendered).toContain(`incarnation ${testIncarnation('attempt')}`);
+    expect(rendered).toContain('SIGKILL');
+    expect(rendered).toContain('retries');
+  });
+
+  it('shows refused retirement of a replacement supervisor and its retry successor', () => {
+    const rendered = formatBackendStatus(
+      {
+        ...runningBackendStatus({}),
+        launchSignalHolds: [
+          { launchId: 'replacement:123:incarnation', pid: 123, incarnation: testIncarnation('incarnation') },
+        ],
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('Replacement supervisor replacement:123:incarnation (PID 123');
+    expect(rendered).toContain('replacement:123:incarnation');
+    expect(rendered).toContain(`incarnation ${testIncarnation('incarnation')}`);
+    expect(rendered).toContain('retirement signal was refused');
+    expect(rendered).toContain('once it exits, recovery launches the next replacement');
+  });
+
+  it('renders a corrupt durable intent as a visible automatic hold', () => {
+    const rendered = formatBackendStatus(
+      runningBackendStatus({}, { successionProblem: 'corrupt' }),
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('Backend ok');
+    expect(rendered).toContain('Upgrade intent record is corrupt');
+    expect(rendered).toContain('coordinator durably quarantines');
+    expect(rendered).toContain('next recorded upgrade request');
+    expect(rendered).not.toContain('file a Coral issue');
+  });
+
+  it.each(['handoff_shutdown_capability_rejected', 'handoff_shutdown_credential_unavailable'])(
+    'classifies the legacy shutdown refusal %s as a deferred upgrade',
+    (code) => {
+      const diagnostic = statusFromStartupDiagnostic(
+        {
+          schemaVersion: 1,
+          state: 'stopped_with_diagnostic',
+          phase: 'startup_failed',
+          retryable: false,
+          recordedAt: '2026-08-03T00:00:00.000Z',
+          error: { kind: 'coral_setup_error', code },
+        },
+        TEST_TIME.now(),
+        () => null,
+      );
+      expect(diagnostic).toEqual({ status: 'deferred_upgrade' });
+      expect(formatBackendStatus(diagnostic!, { kind: 'absent' }, null)).toContain('Upgrade deferred');
+      expect(
+        statusFromStartupSentinel(
+          {
+            version: 1,
+            state: 'stopped_with_diagnostic',
+            recordedAt: TEST_TIME.now(),
+            error: { kind: 'coral_setup_error', code },
+          },
+          TEST_TIME.now(),
+        ),
+      ).toEqual({ status: 'deferred_upgrade' });
+    },
+  );
+});
+
 function runningBackendStatus(
   diagnostics: RunningDiagnostics,
   health: Partial<RunningBackendHealth> = {},
@@ -213,6 +451,92 @@ afterEach(() => {
   vi.restoreAllMocks();
   process.exitCode = undefined;
   for (const root of storeResetRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe('backend status request lookup', () => {
+  it('rejects --json without --request before reading or printing general status', async () => {
+    const getStatus = vi.fn(async () => {
+      throw new Error('General status must not be read');
+    });
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      storeReset,
+      backendStatus: {
+        inspectReadiness: () => ({ kind: 'no-legacy' }),
+        getStatus,
+        getLiveHandoffResult: () => null,
+        getRoutingStatus: async () => ({ kind: 'absent' }),
+      },
+    });
+    await expect(program.parseAsync(['node', 'coral-cli', 'backend', 'status', '--json'])).rejects.toMatchObject({
+      exitCode: 2,
+    });
+    expect(stdout).toBe('');
+    expect(stderr).toContain('--json requires --request');
+    expect(getStatus).not.toHaveBeenCalled();
+  });
+  it('explains the continuing request and its read-only recheck', async () => {
+    const getStatus = vi.fn(async () => {
+      throw new Error('request lookup should not probe the backend');
+    });
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      storeReset,
+      backendStatus: {
+        inspectReadiness: () => ({ kind: 'no-legacy' }),
+        getStatus,
+        getLiveHandoffResult: () => null,
+        getRoutingStatus: async () => ({ kind: 'absent' }),
+        getAbandonedRequestStatus: (recordId) => ({
+          kind: 'found',
+          status: {
+            recordId,
+            method: 'jobs.detail',
+            requestId: 'request-1',
+            startedAt: '2026-09-27T00:00:00.000Z',
+            outcome: 'continuing',
+          },
+        }),
+      },
+    });
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status', '--request', 'request-1']);
+    expect(stdout).toContain('continuing');
+    expect(stdout).toContain('settles automatically');
+    expect(stdout).toContain('command=coral-cli backend status --request request-1');
+    expect(getStatus).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
+    stdout = '';
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status', '--request', 'request-1', '--json']);
+    expect(JSON.parse(stdout)).toMatchObject({
+      kind: 'found',
+      status: { recordId: 'request-1', outcome: 'continuing' },
+    });
+  });
+
+  it('explains every request lookup outcome without authorizing a blind retry', () => {
+    for (const kind of ['missing', 'unreadable'] as const) {
+      const rendered = formatAbandonedRequestStatus('request-1', { kind });
+      expect(rendered).toContain('unverified');
+      expect(rendered).toContain('blind mutation retry is not safe');
+    }
+    expect(formatAbandonedRequestStatus('bad/id', { kind: 'invalid-id' })).toContain('exact recordId');
+    for (const outcome of ['completed', 'failed', 'cancelled', 'owner_exited'] as const) {
+      const rendered = formatAbandonedRequestStatus('request-1', {
+        kind: 'found',
+        status: {
+          recordId: 'request-1',
+          method: 'jobs.detail',
+          requestId: 'request-1',
+          startedAt: '2026-09-27T00:00:00.000Z',
+          outcome,
+        },
+      });
+      expect(rendered).toContain(outcome);
+      expect(rendered).toMatch(/read the operation state/i);
+    }
+  });
 });
 
 describe('backend store-reset discard output', () => {
@@ -1681,6 +2005,14 @@ describe('handoff continuation remediation', () => {
       expected: [
         'Handoff: continuing current build — the incumbent coordinator is shutting down.',
         'Handoff hold: wait for backend shutdown to finish, then retry.',
+      ].join('\n'),
+    },
+    {
+      name: 'identity changed during succession',
+      reason: { kind: 'routing', basis: { kind: 'incumbent-unusable', cause: 'identity-mismatch' } },
+      expected: [
+        'Handoff: continuing current build — the authenticated coordinator identity does not match its discovery record.',
+        'Handoff hold: retry after coordinator discovery catches up with the answering coordinator.',
       ].join('\n'),
     },
     {

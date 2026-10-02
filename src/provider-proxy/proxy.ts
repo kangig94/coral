@@ -3,6 +3,7 @@ import type { ProviderEventBody } from '../providers/contract.js';
 import { createBootstrapNonceCredential, type ProxyBootstrapCapsule } from './bootstrap-capsule.js';
 import { ControlLeaseEvidence } from './control-lease.js';
 import {
+  activeControlHolder,
   controlTenancyHolderOf,
   createControlEndpoint,
   type ControlChallengeAuthority,
@@ -10,6 +11,14 @@ import {
   type ControlEndpointTimer,
   type ControlMethod,
 } from './control-endpoint.js';
+import {
+  assertCompatibleControlGeneration,
+  controllerBuildOf,
+  controllerTransferParamsSchema,
+  controllerTransferResultSchema,
+  createControllerBuildLedger,
+  requireInstallerBuild,
+} from './controller-succession.js';
 import {
   createGrantRegistry,
   proxyHandoffRedeemFieldsSchema,
@@ -107,101 +116,29 @@ function ledgerKey(operation: OperationIdentity): ProviderOperationKey {
   return { jobId: operation.jobId, operationId: operation.operationId };
 }
 
+type ProxyMethodContext<Scope extends symbol> = {
+  options: ProxyOptions<Scope>;
+  supervisor: OperationSupervisor;
+  holderAuthority: ReturnType<typeof createControlHolderAuthority>;
+  bootstrapNonce: ReturnType<typeof createBootstrapNonceCredential>;
+  grants: ReturnType<typeof createGrantRegistry>;
+  controllers: ReturnType<typeof createControllerBuildLedger>;
+  setIdentity: GrantBinding;
+  assertNamedSet: (
+    named: Readonly<{ generation: string; hostFingerprint: string; buildSetId: string; proxyInstanceId: string }>,
+  ) => void;
+  assertNamedCoordinatorBuild: (coordinator: CoordinatorIdentity) => void;
+  assertNamedOperation: (operation: OperationIdentity) => void;
+};
+
 /**
  * The proxy's control tenancy is operational rather than containment authority: losing it stops mutation,
  * while the guardian and reaper remain solely responsible for bounding the process set.
  */
-export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
-  const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
-  // Every proxy admission must install into one holder authority.
-  const holderAuthority = createControlHolderAuthority();
-  const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
-  const startedAt = clock.now();
-  const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
-  const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, startedAt);
-  const grants = createGrantRegistry(mintReceipt, {
-    mayReplaceRedemption: () => !evidence.isControlLive(clock.now()),
-  });
-
-  const supervisor = new OperationSupervisor({
-    host,
-    timer,
-    mintReservation: options.mintReservation,
-    wallClockNow: options.wallClockNow,
-    nowMs,
-    proxyInstanceId: identity.proxyInstanceId,
-    buildSetId: capsule.buildSetId,
-    stageProviderRoot: options.containment.stageProviderRoot,
-    pushProviderEvent: (frame) => endpoint.pushOnTenancy(frame, PROXY_EVENT_COMMIT_TIMEOUT_MS),
-    faultProviderEventControl: (fault) => endpoint.faultControlTenancy(fault.expectedControlEpoch),
-  });
-
-  const challenges: ControlChallengeAuthority = {
-    controlIsLive: () => evidence.isControlLive(clock.now()),
-    issueFirstChallenge: () => {
-      const challenge = mintChallenge();
-      return evidence.issueFirstChallenge(challenge)
-        ? { accepted: true, challenge }
-        : { accepted: false, reason: 'invalid-state' };
-    },
-    admitSuccessor: () => {
-      const now = clock.now();
-      if (evidence.isControlLive(now)) return { accepted: false, reason: 'control-active' };
-      const challenge = mintChallenge();
-      evidence.beginSuccessorControl(challenge);
-      return { accepted: true, challenge };
-    },
-    reattachControl: () => {
-      evidence.reattachControl();
-      return { accepted: true };
-    },
-    echoChallenge: (challenge) => {
-      const nextChallenge = mintChallenge();
-      const recorded = evidence.echoChallenge(clock.now(), challenge, nextChallenge);
-      return recorded.accepted ? { accepted: true, nextChallenge } : recorded;
-    },
-  };
-
-  const setIdentity: GrantBinding = Object.freeze({
-    generation: capsule.generation,
-    flavor: capsule.flavor,
-    buildSetId: capsule.buildSetId,
-    hostFingerprint: capsule.hostFingerprint,
-    guardianInstanceId: capsule.guardianInstanceId,
-    reaperInstanceId: capsule.reaperInstanceId,
-    proxyInstanceId: capsule.proxyInstanceId,
-  });
-
-  const assertNamedSet = (
-    named: Readonly<{ generation: string; hostFingerprint: string; buildSetId: string; proxyInstanceId: string }>,
-  ): void => {
-    if (
-      named.generation !== capsule.generation ||
-      named.hostFingerprint !== capsule.hostFingerprint ||
-      named.buildSetId !== capsule.buildSetId ||
-      named.proxyInstanceId !== capsule.proxyInstanceId
-    ) {
-      throw new ProxyControlProtocolError('identity_mismatch', 'The named set is not this proxy.');
-    }
-  };
-
-  const assertNamedCoordinatorBuild = (coordinator: CoordinatorIdentity): void => {
-    if (
-      coordinator.generation !== capsule.generation ||
-      coordinator.flavor !== capsule.flavor ||
-      coordinator.buildSetId !== capsule.buildSetId
-    ) {
-      throw new ProxyControlProtocolError('identity_mismatch', 'The named coordinator belongs to a different build.');
-    }
-  };
-
-  const assertNamedOperation = (operation: OperationIdentity): void => {
-    if (operation.proxyInstanceId !== capsule.proxyInstanceId || operation.buildSetId !== capsule.buildSetId) {
-      throw new ProxyControlProtocolError('identity_mismatch', 'The named operation is not held by this proxy.');
-    }
-  };
-
-  const methods = new Map<string, ControlMethod>([
+function proxyOpeningMethods<Scope extends symbol>(context: ProxyMethodContext<Scope>): Array<[string, ControlMethod]> {
+  const { options, bootstrapNonce, controllers, assertNamedCoordinatorBuild } = context;
+  const { identity } = options;
+  return [
     [
       'control.open.v1',
       {
@@ -209,14 +146,26 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         handle: (params) => {
           const request = openParamsSchema.parse(params);
           bootstrapNonce.spend(request.bootstrapNonce);
+
           assertNamedCoordinatorBuild(request.coordinator);
+          const holder = controlTenancyHolderOf(request.coordinator);
+          controllers.admit(holder, controllerBuildOf(request.coordinator));
           return {
-            holder: controlTenancyHolderOf(request.coordinator),
+            holder,
             fields: { proxy: identity },
           };
         },
       },
     ],
+  ];
+}
+
+function proxyOperationMutationMethods<Scope extends symbol>(
+  context: ProxyMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options, supervisor, grants, assertNamedOperation } = context;
+  const { capsule } = options;
+  return [
     [
       'operation.prepare.v1',
       {
@@ -335,6 +284,15 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         },
       },
     ],
+  ];
+}
+
+function proxyOperationObservationMethods<Scope extends symbol>(
+  context: ProxyMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options, supervisor, assertNamedOperation } = context;
+  const { identity } = options;
+  return [
     [
       'operation.inspect.v1',
       {
@@ -366,6 +324,14 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         },
       },
     ],
+  ];
+}
+
+function proxyProviderHostInventoryMethods<Scope extends symbol>(
+  context: ProxyMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options } = context;
+  return [
     [
       'provider-host.list.v2',
       {
@@ -444,6 +410,14 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         },
       },
     ],
+  ];
+}
+
+function proxyProviderHostEvictionMethods<Scope extends symbol>(
+  context: ProxyMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options } = context;
+  return [
     [
       'provider-host.terminal-eviction.v2',
       {
@@ -496,11 +470,18 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         },
       },
     ],
+  ];
+}
+
+function proxyHandoffMethods<Scope extends symbol>(context: ProxyMethodContext<Scope>): Array<[string, ControlMethod]> {
+  const { options, grants, controllers, setIdentity, assertNamedSet, assertNamedOperation } = context;
+  const { identity } = options;
+  return [
     [
       'handoff.install.v1',
       {
         authority: 'active',
-        handle: (params) => {
+        handle: (params, authorization) => {
           const request = handoffInstallParamsSchema.parse(params);
           assertNamedSet(request);
           return grants.install({
@@ -509,7 +490,19 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             ...setIdentity,
             operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
+            controllerBuild: requireInstallerBuild(controllers, activeControlHolder(authorization), null),
           });
+        },
+      },
+    ],
+    [
+      'controller-transfer.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = controllerTransferParamsSchema.parse(params);
+          assertCompatibleControlGeneration(request.controlGeneration);
+          return controllerTransferResultSchema.parse(grants.authorizeTransfer(request));
         },
       },
     ],
@@ -531,13 +524,15 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         handle: (params) => {
           const request = handoffRedeemParamsSchema.parse(params);
           assertNamedSet(request);
-          assertNamedCoordinatorBuild(request.successor);
+          const holder = controlTenancyHolderOf(request.successor);
           const redemption = grants.redeem({
             grantId: request.grantId,
             secret: request.secret,
-            successor: controlTenancyHolderOf(request.successor),
+            successor: holder,
+            successorBuild: controllerBuildOf(request.successor),
             binding: setIdentity,
           });
+          controllers.admit(holder, redemption.successorBuild);
           return {
             holder: controlTenancyHolderOf(request.successor),
             fields: proxyHandoffRedeemFieldsSchema.parse({
@@ -550,6 +545,15 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         },
       },
     ],
+  ];
+}
+
+function proxyAcquisitionMethods<Scope extends symbol>(
+  context: ProxyMethodContext<Scope>,
+): Array<[string, ControlMethod]> {
+  const { options, holderAuthority } = context;
+  const { capsule } = options;
+  return [
     [
       'proxy.acquisition-publish.v1',
       {
@@ -589,6 +593,128 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         },
       },
     ],
+  ];
+}
+
+function createProxyControlChallenges<Scope extends symbol>(
+  clock: MonotonicClock<Scope>,
+  evidence: ControlLeaseEvidence<Scope>,
+  mintChallenge: () => string,
+): ControlChallengeAuthority {
+  return {
+    controlIsLive: () => evidence.isControlLive(clock.now()),
+    issueFirstChallenge: () => {
+      const challenge = mintChallenge();
+      return evidence.issueFirstChallenge(challenge)
+        ? { accepted: true, challenge }
+        : { accepted: false, reason: 'invalid-state' };
+    },
+    admitSuccessor: () => {
+      const now = clock.now();
+      if (evidence.isControlLive(now)) return { accepted: false, reason: 'control-active' };
+      const challenge = mintChallenge();
+      evidence.beginSuccessorControl(challenge);
+      return { accepted: true, challenge };
+    },
+    reattachControl: () => {
+      evidence.reattachControl();
+      return { accepted: true };
+    },
+    echoChallenge: (challenge) => {
+      const nextChallenge = mintChallenge();
+      const recorded = evidence.echoChallenge(clock.now(), challenge, nextChallenge);
+      return recorded.accepted ? { accepted: true, nextChallenge } : recorded;
+    },
+  };
+}
+
+export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
+  const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
+  // Every proxy admission must install into one holder authority.
+  const holderAuthority = createControlHolderAuthority();
+  const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
+  const startedAt = clock.now();
+  const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
+  const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, startedAt);
+  const grants = createGrantRegistry(mintReceipt, {
+    mayReplaceRedemption: () => !evidence.isControlLive(clock.now()),
+  });
+  const controllers = createControllerBuildLedger(controllerBuildOf(capsule));
+
+  const supervisor = new OperationSupervisor({
+    host,
+    timer,
+    mintReservation: options.mintReservation,
+    wallClockNow: options.wallClockNow,
+    nowMs,
+    proxyInstanceId: identity.proxyInstanceId,
+    buildSetId: capsule.buildSetId,
+    stageProviderRoot: options.containment.stageProviderRoot,
+    pushProviderEvent: (frame) => endpoint.pushOnTenancy(frame, PROXY_EVENT_COMMIT_TIMEOUT_MS),
+    faultProviderEventControl: (fault) => endpoint.faultControlTenancy(fault.expectedControlEpoch),
+  });
+
+  const challenges = createProxyControlChallenges(clock, evidence, mintChallenge);
+
+  const setIdentity: GrantBinding = Object.freeze({
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    reaperInstanceId: capsule.reaperInstanceId,
+    proxyInstanceId: capsule.proxyInstanceId,
+  });
+
+  const assertNamedSet = (
+    named: Readonly<{ generation: string; hostFingerprint: string; buildSetId: string; proxyInstanceId: string }>,
+  ): void => {
+    if (
+      named.generation !== capsule.generation ||
+      named.hostFingerprint !== capsule.hostFingerprint ||
+      named.buildSetId !== capsule.buildSetId ||
+      named.proxyInstanceId !== capsule.proxyInstanceId
+    ) {
+      throw new ProxyControlProtocolError('identity_mismatch', 'The named set is not this proxy.');
+    }
+  };
+
+  const assertNamedCoordinatorBuild = (coordinator: CoordinatorIdentity): void => {
+    if (
+      coordinator.generation !== capsule.generation ||
+      coordinator.flavor !== capsule.flavor ||
+      coordinator.buildSetId !== capsule.buildSetId
+    ) {
+      throw new ProxyControlProtocolError('identity_mismatch', 'The named coordinator belongs to a different build.');
+    }
+  };
+
+  const assertNamedOperation = (operation: OperationIdentity): void => {
+    if (operation.proxyInstanceId !== capsule.proxyInstanceId || operation.buildSetId !== capsule.buildSetId) {
+      throw new ProxyControlProtocolError('identity_mismatch', 'The named operation is not held by this proxy.');
+    }
+  };
+
+  const methodContext: ProxyMethodContext<Scope> = {
+    options,
+    supervisor,
+    holderAuthority,
+    bootstrapNonce,
+    grants,
+    controllers,
+    setIdentity,
+    assertNamedSet,
+    assertNamedCoordinatorBuild,
+    assertNamedOperation,
+  };
+  const methods = new Map<string, ControlMethod>([
+    ...proxyOpeningMethods(methodContext),
+    ...proxyOperationMutationMethods(methodContext),
+    ...proxyOperationObservationMethods(methodContext),
+    ...proxyProviderHostInventoryMethods(methodContext),
+    ...proxyProviderHostEvictionMethods(methodContext),
+    ...proxyHandoffMethods(methodContext),
+    ...proxyAcquisitionMethods(methodContext),
   ]);
 
   const endpoint: ControlEndpoint = createControlEndpoint({

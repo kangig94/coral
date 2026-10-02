@@ -33,7 +33,10 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { createProviderOperationStartupOwnership } from '#src/coordinator/services/recovery/provider-operation-startup-ownership.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 
 export type RetryOrdering = 'before-effect' | 'after-effect';
 export type RetryMethod = 'attach' | 'stop';
@@ -185,6 +188,7 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
     base: {
       proxyInstanceId: record.operation.proxyInstanceId,
       providerHosts: unexercisedProviderHostControls,
+      ...unexercisedControllerSuccessionControls,
       autonomousDeadline: {
         orphanTimeoutMs: 37_000,
         adoptionWindowMs: 23_000,

@@ -1,4 +1,7 @@
+import { join } from 'node:path';
+
 import { z } from 'zod';
+import { bindCustodyIdentity, recordCustodyIntent, type CustodyIntent } from '../../../store/custody-ledger.js';
 
 import { BUILD_FLAVOR_ENV_KEY } from '../../../infra/build-flavor.js';
 import type { ProcessIncarnation } from '../../../infra/node-process.js';
@@ -31,7 +34,7 @@ import {
 } from '../../../provider-proxy/role-spawn.js';
 import {
   currentHandoffCapsulePath,
-  handoffCapsuleV3Schema,
+  handoffCapsuleV4Schema,
   readHandoffCapsuleFile,
 } from '../../../provider-proxy/handoff-capsule.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../../provider-proxy/guardian.js';
@@ -103,6 +106,8 @@ export const PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS =
 export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   runtime: Runtime;
   pluginRoot: string;
+  /** A host that outlives its coordinator across an upgrade must retain its own bundle and assets. */
+  retainedHostRoot?: string | null;
   /** This coordinator's own identity — the set's `buildSetId`/`generation`/`flavor` are its own, since every
    *  role dispatches from the exact same backend artifact this coordinator is running. */
   coordinatorIdentity: CoordinatorIdentity;
@@ -111,6 +116,7 @@ export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   /** Overrides the capsule/endpoint path base directory; defaults to the real `~/.coral` tree. Tests pass a
    *  scoped temp directory so they never touch real user state. */
   baseDir?: string;
+  custody?: Readonly<{ runDir: string; epoch: string }>;
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. This file only spawns the
    *  guardian — it never consumes a capsule itself, so it has no strict-identity check to inject. */
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
@@ -167,494 +173,609 @@ const reaperOpenResultSchema = z
   })
   .strict();
 
-export function createProviderProxyAcquisitionSteps(
+type ProviderProxyAcquisitionState = {
+  minted: MintedSet | null;
+  guardianSpawn: SpawnedRoleProcess | null;
+  guardianSpawnUndo: GuardianSpawnUndo | null;
+  guardianCustodyIntent: CustodyIntent | null;
+};
+
+async function createProviderProxyCapsules(
   options: ProviderProxyAcquisitionStepsOptions,
-): ProviderProxyAcquisitionSteps {
+  state: ProviderProxyAcquisitionState,
+  mintSecret: () => string,
+): Promise<AcquisitionUndo> {
   const { runtime, coordinatorIdentity } = options;
   const { generation, flavor, buildSetId } = coordinatorIdentity;
   const hostFingerprint = options.hostFingerprint;
+
+  const setIdentity = { generation, flavor, buildSetId, hostFingerprint };
+  const guardianInstanceId = runtime.ids.uuid();
+  const reaperInstanceId = runtime.ids.uuid();
+  const proxyInstanceId = runtime.ids.uuid();
+  const uid = process.getuid?.() ?? 0;
+
+  const endpointEnv: ProviderProxyEndpointEnvironment = {
+    ...(options.baseDir === undefined ? {} : { baseDir: options.baseDir }),
+    platform: runtime.env.platform(),
+    uid,
+    storage: runtime.storage,
+  };
+  const guardianEndpoint = providerGuardianEndpoint({ ...setIdentity, guardianInstanceId }, endpointEnv);
+  const reaperEndpoint = providerReaperEndpoint({ ...setIdentity, reaperInstanceId }, endpointEnv);
+  const proxyEndpoint = providerProxyEndpoint({ ...setIdentity, proxyInstanceId }, endpointEnv);
+  const capsulePathOptions = options.baseDir === undefined ? undefined : { baseDir: options.baseDir };
+  const guardianCapsulePath = providerGuardianBootstrapCapsulePath(
+    { ...setIdentity, guardianInstanceId },
+    capsulePathOptions,
+  );
+  const reaperCapsulePath = providerReaperBootstrapCapsulePath(
+    { ...setIdentity, reaperInstanceId },
+    capsulePathOptions,
+  );
+  const proxyCapsulePath = providerProxyBootstrapCapsulePath({ ...setIdentity, proxyInstanceId }, capsulePathOptions);
+
+  const next: MintedSet = {
+    guardianInstanceId,
+    reaperInstanceId,
+    proxyInstanceId,
+    guardianEndpoint,
+    reaperEndpoint,
+    proxyEndpoint,
+    guardianCapsulePath,
+    reaperCapsulePath,
+    proxyCapsulePath,
+    guardianBootstrapNonce: mintSecret(),
+    reaperBootstrapNonce: mintSecret(),
+    proxyBootstrapNonce: mintSecret(),
+    // One shared secret per pairing channel — guardian<->reaper and proxy<->guardian are two distinct
+    // trust relationships, so a leak of one must not also compromise the other.
+    guardianReaperAuthSecret: mintSecret(),
+    proxyGuardianAuthSecret: mintSecret(),
+  };
+
+  const capsuleEnv: Pick<ProviderBootstrapCapsuleEnvironment, 'storage' | 'uid'> = {
+    storage: runtime.storage,
+    uid,
+  };
+
+  const capsuleIdentityFields = { ...setIdentity, guardianInstanceId, reaperInstanceId, proxyInstanceId };
+  const guardianCapsule: GuardianBootstrapCapsule = {
+    role: 'guardian',
+    ...capsuleIdentityFields,
+    bootstrapNonce: next.guardianBootstrapNonce,
+    canonicalControlEndpoint: guardianEndpoint,
+    reaperControlEndpoint: reaperEndpoint,
+    proxyEndpoint,
+    guardianReaperAuthSecret: next.guardianReaperAuthSecret,
+    proxyGuardianAuthSecret: next.proxyGuardianAuthSecret,
+  };
+  const reaperCapsule: ReaperBootstrapCapsule = {
+    role: 'reaper',
+    ...capsuleIdentityFields,
+    bootstrapNonce: next.reaperBootstrapNonce,
+    canonicalControlEndpoint: reaperEndpoint,
+    guardianControlEndpoint: guardianEndpoint,
+    proxyEndpoint,
+    guardianReaperAuthSecret: next.guardianReaperAuthSecret,
+  };
+  const proxyCapsule: ProxyBootstrapCapsule = {
+    role: 'proxy',
+    ...capsuleIdentityFields,
+    bootstrapNonce: next.proxyBootstrapNonce,
+    canonicalEndpoint: proxyEndpoint,
+    guardianControlEndpoint: guardianEndpoint,
+    proxyGuardianAuthSecret: next.proxyGuardianAuthSecret,
+  };
+
+  createProviderBootstrapCapsule(guardianCapsulePath, guardianCapsule, capsuleEnv);
+  createProviderBootstrapCapsule(reaperCapsulePath, reaperCapsule, capsuleEnv);
+  createProviderBootstrapCapsule(proxyCapsulePath, proxyCapsule, capsuleEnv);
+
+  state.minted = next;
+  return {
+    label: 'capsules',
+    run: () => {
+      runtime.storage.rmSync(guardianCapsulePath, { force: true });
+      runtime.storage.rmSync(reaperCapsulePath, { force: true });
+      runtime.storage.rmSync(proxyCapsulePath, { force: true });
+    },
+  };
+}
+
+function heldProviderProxyGuardianSpawn(
+  spawned: Extract<Awaited<ReturnType<typeof requireSpawnedRole>>, { kind: 'held' }>,
+  setMinted: MintedSet,
+  buildSetId: string,
+  hostFingerprint: string,
+): ProviderProxyRoleSpawnHeld {
+  if (spawned.subject.kind === 'process') {
+    throw new Error('A detached guardian spawn cannot retain a leader-only cleanup subject.');
+  }
+  const recoverySubject: PreIdentityRoleSpawnRecoverySubject =
+    spawned.subject.processGroupId === null
+      ? { kind: 'unattributable-process-group' }
+      : { kind: 'spawned-process-group', processGroupId: spawned.subject.processGroupId };
+  const operatorExit = {
+    kind: 'abandon-provider-proxy-acquisition' as const,
+    abandon: () => {
+      const abandonment = spawned.operatorExit.abandon();
+      const subjectMatches =
+        abandonment.subject.kind === 'unattributable-process-group' &&
+        abandonment.subject.processGroupId ===
+          (recoverySubject.kind === 'spawned-process-group' ? recoverySubject.processGroupId : null);
+      if (
+        !subjectMatches ||
+        abandonment.processAbsenceProven ||
+        abandonment.successor.owner !== 'operator-command' ||
+        abandonment.successor.acceptance !== 'accepted'
+      ) {
+        throw new Error('Role spawn operator exit did not accept the exact acquisition cleanup subject.');
+      }
+      return {
+        kind: 'operator-abandoned' as const,
+        recoverySubject,
+        processAbsenceProven: false as const,
+        successor: abandonment.successor,
+      };
+    },
+  };
+  let retry = spawned.retry;
+  return {
+    kind: 'provider_proxy_role_spawn_held',
+    reason: spawned.error.message,
+    setAddress: { buildSetId, hostFingerprint, proxyInstanceId: setMinted.proxyInstanceId },
+    recoverySubject,
+    operatorExit,
+    recoveryCapability: {
+      retry: async (signal) => {
+        const cleanup = await retry(signal);
+        if (cleanup.kind !== 'observed-absent') {
+          retry = cleanup.retry;
+          return { kind: 'held', reason: `${cleanup.subject.kind}:${cleanup.observation}` };
+        }
+        if (recoverySubject.kind !== 'spawned-process-group') {
+          return { kind: 'held', reason: 'spawned process-group attribution remains unavailable' };
+        }
+        if (!('processGroupEvidence' in cleanup.evidence)) {
+          throw new Error('Detached guardian cleanup returned leader-only absence evidence.');
+        }
+        return {
+          kind: 'absence-confirmed',
+          evidence: preIdentityRoleSpawnAbsenceEvidence(cleanup.evidence.processGroupEvidence),
+          strandedArtifacts: [],
+        };
+      },
+    },
+  };
+}
+
+async function spawnProviderProxyGuardian(
+  options: ProviderProxyAcquisitionStepsOptions,
+  state: ProviderProxyAcquisitionState,
+  deadlineConfiguration: ReturnType<typeof resolveProviderProxyDeadlineConfiguration>,
+): Promise<AcquisitionUndo | ProviderProxyRoleSpawnHeld> {
+  const { runtime, coordinatorIdentity } = options;
+  const { flavor, buildSetId } = coordinatorIdentity;
+  const hostFingerprint = options.hostFingerprint;
+
+  if (state.minted === null) {
+    throw new Error('createCapsules must run before spawnGuardian.');
+  }
+  const setMinted = state.minted;
+  const platform = runtime.env.platform() as NodeJS.Platform;
+  const readProcessIncarnation = options.readProcessIncarnation ?? runtime.process.readProcessIncarnation;
+  const spawnPorts: RoleSpawnPorts = {
+    process: runtime.process,
+    runtime,
+    platform,
+    readProcessIncarnation,
+  };
+  if (options.custody !== undefined) {
+    state.guardianCustodyIntent = recordCustodyIntent(runtime, options.custody.runDir, {
+      effect: 'process-spawn',
+      epoch: options.custody.epoch,
+      owner: 'provider-proxy-set',
+      operationId: `${setMinted.proxyInstanceId}:guardian`,
+      capsule: setMinted.guardianCapsulePath,
+      nowMs: runtime.time.now(),
+      bindWithinMs: 10_000,
+    });
+  }
+  const spawned = await requireSpawnedRole(
+    spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
+      ...(options.retainedHostRoot === undefined || options.retainedHostRoot === null
+        ? { pluginRoot: options.pluginRoot }
+        : {
+            pluginRoot: options.retainedHostRoot,
+            currentEntrypoint: join(options.retainedHostRoot, 'bridge', 'coral-backend.cjs'),
+          }),
+      detached: true,
+      envAdditions: {
+        [BUILD_FLAVOR_ENV_KEY]: flavor,
+        [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
+      },
+      ...(state.guardianCustodyIntent === null
+        ? {}
+        : {
+            custodyTicket: JSON.stringify({
+              runDir: options.custody?.runDir,
+              epoch: options.custody?.epoch,
+              intentId: state.guardianCustodyIntent.id,
+              processToken: state.guardianCustodyIntent.processToken,
+              processGroupId: null,
+            }),
+          }),
+    }),
+  );
+  if (spawned.kind === 'held') return heldProviderProxyGuardianSpawn(spawned, setMinted, buildSetId, hostFingerprint);
+  state.guardianSpawn = spawned;
+  if (state.guardianCustodyIntent !== null && options.custody !== undefined) {
+    bindCustodyIdentity(runtime, options.custody.runDir, state.guardianCustodyIntent, {
+      process: { pid: spawned.pid, incarnation: spawned.incarnation, processGroupId: spawned.pid },
+      capsule: state.guardianCustodyIntent.capsule,
+      observedAtMs: runtime.time.now(),
+    });
+  }
+  state.guardianSpawnUndo = buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation);
+  state.guardianSpawnUndo.retainPossibleProxy();
+  return {
+    kind: 'guardian-containment',
+    label: 'guardian',
+    run: state.guardianSpawnUndo,
+    setAddress: {
+      buildSetId,
+      hostFingerprint,
+      proxyInstanceId: setMinted.proxyInstanceId,
+    },
+    guardianIdentity: state.guardianSpawnUndo.guardianIdentity,
+    captureRecoveryProof: state.guardianSpawnUndo.captureRecoveryProof,
+  };
+}
+
+async function establishProviderProxyRoleSessions(
+  options: ProviderProxyAcquisitionStepsOptions,
+  setMinted: MintedSet,
+  spawnedGuardian: SpawnedRoleProcess,
+  spawnUndo: GuardianSpawnUndo,
+  opened: ControlClient[],
+  timer: ReturnType<typeof runtimeControlTimer>,
+  retry: RoleConnectRetryOptions,
+  heartbeatAssembly: ReturnType<typeof createProviderProxyAuthorityHeartbeatAssembly>,
+) {
+  const { coordinatorIdentity } = options;
+  const { generation, flavor, buildSetId } = coordinatorIdentity;
+  const hostFingerprint = options.hostFingerprint;
+
+  const proxySession = await establishRoleControl(opened, timer, retry, {
+    role: 'proxy',
+    endpoint: setMinted.proxyEndpoint,
+    openMethod: 'control.open.v1',
+    openParams: { bootstrapNonce: setMinted.proxyBootstrapNonce, coordinator: coordinatorIdentity },
+    openParamsSchema: proxyControlOpenParamsSchema,
+    openResultSchema: proxyOpenResultSchema,
+    identity: (opened) => opened.proxy,
+    heartbeatMethod: 'control.heartbeat.v1',
+    expectedIdentity: {
+      proxyInstanceId: setMinted.proxyInstanceId,
+      guardianInstanceId: setMinted.guardianInstanceId,
+      reaperInstanceId: setMinted.reaperInstanceId,
+      generation,
+      flavor,
+      buildSetId,
+      hostFingerprint,
+      canonicalEndpoint: setMinted.proxyEndpoint,
+    },
+    ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent() }),
+  });
+  spawnUndo.bindProxyIdentity(proxySession.opened.proxy);
+  heartbeatAssembly.startRole('proxy', {
+    client: proxySession.client,
+    controlEpoch: proxySession.opened.controlEpoch,
+    nextHeartbeatChallenge: proxySession.nextHeartbeatChallenge,
+    instanceId: setMinted.proxyInstanceId,
+  });
+
+  const guardianSession = await establishRoleControl(opened, timer, retry, {
+    role: 'guardian',
+    endpoint: setMinted.guardianEndpoint,
+    openMethod: 'guardian.open.v1',
+    openParams: {
+      bootstrapNonce: setMinted.guardianBootstrapNonce,
+      coordinator: coordinatorIdentity,
+      proxy: proxySession.opened.proxy,
+    },
+    openParamsSchema: guardianOpenParamsSchema,
+    openResultSchema: guardianOpenResultSchema,
+    identity: (opened) => opened.guardian,
+    heartbeatMethod: 'guardian.heartbeat.v1',
+    expectedIdentity: {
+      guardianInstanceId: setMinted.guardianInstanceId,
+      pid: spawnedGuardian.pid,
+      incarnation: spawnedGuardian.incarnation,
+      generation,
+      flavor,
+      buildSetId,
+      hostFingerprint,
+      canonicalControlEndpoint: setMinted.guardianEndpoint,
+    },
+  });
+  heartbeatAssembly.startRole('guardian', {
+    client: guardianSession.client,
+    controlEpoch: guardianSession.opened.controlEpoch,
+    nextHeartbeatChallenge: guardianSession.nextHeartbeatChallenge,
+    instanceId: setMinted.guardianInstanceId,
+  });
+
+  const proxyIdentity = proxySession.opened.proxy;
+
+  const reaperSession = await establishRoleControl(opened, timer, retry, {
+    role: 'reaper',
+    endpoint: setMinted.reaperEndpoint,
+    openMethod: 'reaper.open.v1',
+    openParams: {
+      bootstrapNonce: setMinted.reaperBootstrapNonce,
+      coordinator: coordinatorIdentity,
+      guardian: guardianSession.opened.guardian,
+      proxy: proxySession.opened.proxy,
+      containment: {
+        pid: proxyIdentity.pid,
+        incarnation: proxyIdentity.incarnation,
+        processGroupId: proxyIdentity.processGroupId,
+        containmentKind: DETACHED_CONTAINMENT_KIND,
+      },
+    },
+    openParamsSchema: reaperOpenParamsSchema,
+    openResultSchema: reaperOpenResultSchema,
+    identity: (opened) => opened.reaper,
+    heartbeatMethod: 'reaper.heartbeat.v1',
+    expectedIdentity: {
+      reaperInstanceId: setMinted.reaperInstanceId,
+      guardianInstanceId: setMinted.guardianInstanceId,
+      generation,
+      flavor,
+      buildSetId,
+      hostFingerprint,
+      canonicalControlEndpoint: setMinted.reaperEndpoint,
+      containmentKind: DETACHED_CONTAINMENT_KIND,
+    },
+  });
+  spawnUndo.bindControl({
+    client: guardianSession.client,
+    guardian: guardianSession.opened.guardian,
+    reaper: reaperSession.opened.reaper,
+    proxy: proxySession.opened.proxy,
+  });
+  heartbeatAssembly.startRole('reaper', {
+    client: reaperSession.client,
+    controlEpoch: reaperSession.opened.controlEpoch,
+    nextHeartbeatChallenge: reaperSession.nextHeartbeatChallenge,
+    instanceId: setMinted.reaperInstanceId,
+  });
+
+  return { proxySession, guardianSession, reaperSession };
+}
+
+async function assembleProviderProxyAcquisitionSession(
+  options: ProviderProxyAcquisitionStepsOptions,
+  setMinted: MintedSet,
+  spawnedGuardian: SpawnedRoleProcess,
+  sessions: Awaited<ReturnType<typeof establishProviderProxyRoleSessions>>,
+  heartbeats: ReturnType<ReturnType<typeof createProviderProxyAuthorityHeartbeatAssembly>['complete']>,
+  faults: ReturnType<typeof createProviderProxyAuthorityFaultLatch>,
+  registerUndo: (undo: AcquisitionUndo) => void,
+) {
+  const { runtime, coordinatorIdentity } = options;
+  const { generation, flavor, buildSetId } = coordinatorIdentity;
+  const hostFingerprint = options.hostFingerprint;
+  const { proxySession, guardianSession, reaperSession } = sessions;
+  const proxyIdentity = proxySession.opened.proxy;
+  const clients = { proxy: proxySession.client, guardian: guardianSession.client, reaper: reaperSession.client };
+  const handoffCapsulePath = currentHandoffCapsulePath(
+    { generation, flavor, buildSetId, hostFingerprint, proxyInstanceId: setMinted.proxyInstanceId },
+    options.baseDir === undefined ? undefined : { baseDir: options.baseDir },
+  );
+  const base = createProviderProxySetAuthority({
+    proxyInstanceId: setMinted.proxyInstanceId,
+    guardianClient: guardianSession.client,
+    proxyClient: proxySession.client,
+    reaperClient: reaperSession.client,
+    guardianIdentity: guardianSession.opened.guardian,
+    reaperIdentity: reaperSession.opened.reaper,
+    proxyIdentityFields: proxySession.opened.proxy,
+    heartbeats,
+    coordinatorIdentity,
+    handoffCapsulePath,
+    runtime,
+    operationRegistry: options.operationRegistry,
+    registerAcquisitionUndo: registerUndo,
+    ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
+  });
+  const installation = await base.installRecoveryCredential(new AbortController().signal);
+  if (installation.kind !== 'installed') {
+    throw new Error(`provider_proxy_recovery_credential_${installation.kind}`);
+  }
+  const capsuleBinding = handoffCapsuleV4Schema.parse(
+    readHandoffCapsuleFile(handoffCapsulePath, {
+      storage: runtime.storage,
+      uid: process.getuid?.() ?? 0,
+    }),
+  );
+
+  const setIdentity: ProviderProxySetIdentity = {
+    buildSetId,
+    hostFingerprint,
+    guardianInstanceId: setMinted.guardianInstanceId,
+    guardianPid: spawnedGuardian.pid,
+    guardianIncarnation: spawnedGuardian.incarnation,
+    guardianControlEndpoint: setMinted.guardianEndpoint,
+    proxyInstanceId: setMinted.proxyInstanceId,
+    proxyPid: proxyIdentity.pid,
+    reaperInstanceId: setMinted.reaperInstanceId,
+    reaperPid: reaperSession.opened.reaper.pid,
+    reaperIncarnation: reaperSession.opened.reaper.incarnation,
+    reaperControlEndpoint: setMinted.reaperEndpoint,
+    containmentKind: DETACHED_CONTAINMENT_KIND,
+    proxyIncarnation: proxyIdentity.incarnation,
+    proxyProcessGroupId: proxyIdentity.processGroupId,
+    canonicalEndpoint: setMinted.proxyEndpoint,
+  };
+  const session = createOwnedProviderProxyAcquisitionControlSession(
+    providerProxyControlSessionOwner.controlEstablishment,
+    {
+      base,
+      setIdentity,
+      clients,
+      heartbeats,
+      faults,
+      guardianIdentity: guardianSession.opened.guardian,
+      reaperIdentity: reaperSession.opened.reaper,
+      proxyIdentity: proxySession.opened.proxy,
+      capsulePath: handoffCapsulePath,
+      capsuleBinding,
+      mutationRpcTimeoutMs: PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS,
+    },
+  );
+
+  return session;
+}
+
+async function establishProviderProxyControl(
+  options: ProviderProxyAcquisitionStepsOptions,
+  state: ProviderProxyAcquisitionState,
+  registerUndo: (undo: AcquisitionUndo) => void,
+  assertPublicationMayBegin: () => void,
+): ReturnType<ProviderProxyAcquisitionSteps['establishControl']> {
+  const { runtime } = options;
+
+  if (state.minted === null || state.guardianSpawn === null || state.guardianSpawnUndo === null) {
+    throw new Error('createCapsules and spawnGuardian must run before establishControl.');
+  }
+  const setMinted = state.minted;
+  const spawnedGuardian = state.guardianSpawn;
+  const spawnUndo = state.guardianSpawnUndo;
+  const timer = runtimeControlTimer(runtime);
+  const retry: RoleConnectRetryOptions = {
+    connectTimeoutMs: ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
+    retryIntervalMs: ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
+    overallDeadlineMs: ESTABLISH_CONTROL_READY_DEADLINE_MS,
+    monotonicNow: () => runtime.time.monotonicNow(),
+    sleep: (ms: number) => runtime.time.sleep(ms),
+  };
+  const opened: ControlClient[] = [];
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
+  // An acquisition abort must name every role identity bound to the set it concerns.
+  let acquisitionAbortIdentities: Readonly<{
+    client: ControlClient;
+    guardian: GuardianIdentity;
+    reaper: ReaperIdentity;
+    proxy: ProxyIdentity;
+  }> | null = null;
+  let guardianTeardownClient: ControlClient | null = null;
+
+  try {
+    const { proxySession, guardianSession, reaperSession } = await establishProviderProxyRoleSessions(
+      options,
+      setMinted,
+      spawnedGuardian,
+      spawnUndo,
+      opened,
+      timer,
+      retry,
+      heartbeatAssembly,
+    );
+    guardianTeardownClient = guardianSession.client;
+    const heartbeats = heartbeatAssembly.complete();
+    acquisitionAbortIdentities = {
+      client: guardianSession.client,
+      guardian: guardianSession.opened.guardian,
+      reaper: reaperSession.opened.reaper,
+      proxy: proxySession.opened.proxy,
+    };
+
+    const session = await assembleProviderProxyAcquisitionSession(
+      options,
+      setMinted,
+      spawnedGuardian,
+      { proxySession, guardianSession, reaperSession },
+      heartbeats,
+      faults,
+      registerUndo,
+    );
+
+    assertPublicationMayBegin();
+    const publication = await retryProviderProxyAcquisitionPublication(session);
+    if (publication.kind === 'publication-unknown') {
+      return handOverProviderProxyAcquisitionControlSession(
+        session,
+        providerProxyControlSessionOwner.acquisition,
+        publication,
+      );
+    }
+    if (publication.kind === 'not-attempted') {
+      throw new Error(`provider_proxy_acquisition_publication_refused:${publication.role}:${publication.reason}`);
+    }
+    const established = establishProviderProxyAcquisitionSession(session, publication.receipt);
+    return {
+      ...established,
+      undo: {
+        label: 'control',
+        run: () => {
+          heartbeats.proxy.stop();
+          heartbeats.guardian.stop();
+          heartbeats.reaper.stop();
+          proxySession.client.close();
+          reaperSession.client.close();
+        },
+      },
+    };
+  } catch (error: unknown) {
+    if (acquisitionAbortIdentities !== null) {
+      // Acquisition abort is best-effort and cannot reverse publication; definitive cleanup remains with
+      // the guardian teardown owner.
+      const { client, guardian, reaper, proxy } = acquisitionAbortIdentities;
+      try {
+        const abortExchange = await client.exchange(
+          'guardian.acquisition-abort.v1',
+          guardianAcquisitionAbortParamsSchema.parse({ guardian, reaper, proxy }),
+          PROXY_CONTROL_RPC_TIMEOUT_MS,
+        );
+        if (abortExchange.kind === 'response' && abortExchange.response.kind === 'result') {
+          guardianAcquisitionAbortResultSchema.parse(abortExchange.response.value);
+        }
+      } catch {
+        // Definitive cleanup remains with the guardian teardown owner when the abort is not heard.
+      }
+    }
+    heartbeatAssembly.stop();
+    for (const client of opened) {
+      if (client !== guardianTeardownClient) client.close();
+    }
+    throw error;
+  }
+}
+
+export function createProviderProxyAcquisitionSteps(
+  options: ProviderProxyAcquisitionStepsOptions,
+): ProviderProxyAcquisitionSteps {
+  const { runtime } = options;
   const deadlineConfiguration = resolveProviderProxyDeadlineConfiguration(runtime.env);
   const mintSecret = (): string => runtime.ids.randomBytes(32).toString('hex');
 
-  let minted: MintedSet | null = null;
-  let guardianSpawn: SpawnedRoleProcess | null = null;
-  let guardianSpawnUndo: GuardianSpawnUndo | null = null;
+  const state: ProviderProxyAcquisitionState = {
+    minted: null,
+    guardianSpawn: null,
+    guardianSpawnUndo: null,
+    guardianCustodyIntent: null,
+  };
 
   return {
-    async createCapsules(): Promise<AcquisitionUndo> {
-      const setIdentity = { generation, flavor, buildSetId, hostFingerprint };
-      const guardianInstanceId = runtime.ids.uuid();
-      const reaperInstanceId = runtime.ids.uuid();
-      const proxyInstanceId = runtime.ids.uuid();
-      const uid = process.getuid?.() ?? 0;
+    createCapsules: () => createProviderProxyCapsules(options, state, mintSecret),
 
-      const endpointEnv: ProviderProxyEndpointEnvironment = {
-        ...(options.baseDir === undefined ? {} : { baseDir: options.baseDir }),
-        platform: runtime.env.platform(),
-        uid,
-        storage: runtime.storage,
-      };
-      const guardianEndpoint = providerGuardianEndpoint({ ...setIdentity, guardianInstanceId }, endpointEnv);
-      const reaperEndpoint = providerReaperEndpoint({ ...setIdentity, reaperInstanceId }, endpointEnv);
-      const proxyEndpoint = providerProxyEndpoint({ ...setIdentity, proxyInstanceId }, endpointEnv);
-      const capsulePathOptions = options.baseDir === undefined ? undefined : { baseDir: options.baseDir };
-      const guardianCapsulePath = providerGuardianBootstrapCapsulePath(
-        { ...setIdentity, guardianInstanceId },
-        capsulePathOptions,
-      );
-      const reaperCapsulePath = providerReaperBootstrapCapsulePath(
-        { ...setIdentity, reaperInstanceId },
-        capsulePathOptions,
-      );
-      const proxyCapsulePath = providerProxyBootstrapCapsulePath(
-        { ...setIdentity, proxyInstanceId },
-        capsulePathOptions,
-      );
+    spawnGuardian: () => spawnProviderProxyGuardian(options, state, deadlineConfiguration),
 
-      const next: MintedSet = {
-        guardianInstanceId,
-        reaperInstanceId,
-        proxyInstanceId,
-        guardianEndpoint,
-        reaperEndpoint,
-        proxyEndpoint,
-        guardianCapsulePath,
-        reaperCapsulePath,
-        proxyCapsulePath,
-        guardianBootstrapNonce: mintSecret(),
-        reaperBootstrapNonce: mintSecret(),
-        proxyBootstrapNonce: mintSecret(),
-        // One shared secret per pairing channel — guardian<->reaper and proxy<->guardian are two distinct
-        // trust relationships, so a leak of one must not also compromise the other.
-        guardianReaperAuthSecret: mintSecret(),
-        proxyGuardianAuthSecret: mintSecret(),
-      };
-
-      const capsuleEnv: Pick<ProviderBootstrapCapsuleEnvironment, 'storage' | 'uid'> = {
-        storage: runtime.storage,
-        uid,
-      };
-      // Every capsule in a set shares this same identity; only its own bootstrap nonce and endpoint
-      // fields differ per role. Named once here, mirroring `bootstrap-capsule.ts`'s own
-      // `commonBootstrapCapsuleShape` precedent for the identical shape at the schema level.
-      const capsuleIdentityFields = { ...setIdentity, guardianInstanceId, reaperInstanceId, proxyInstanceId };
-      const guardianCapsule: GuardianBootstrapCapsule = {
-        role: 'guardian',
-        ...capsuleIdentityFields,
-        bootstrapNonce: next.guardianBootstrapNonce,
-        canonicalControlEndpoint: guardianEndpoint,
-        reaperControlEndpoint: reaperEndpoint,
-        proxyEndpoint,
-        guardianReaperAuthSecret: next.guardianReaperAuthSecret,
-        proxyGuardianAuthSecret: next.proxyGuardianAuthSecret,
-      };
-      const reaperCapsule: ReaperBootstrapCapsule = {
-        role: 'reaper',
-        ...capsuleIdentityFields,
-        bootstrapNonce: next.reaperBootstrapNonce,
-        canonicalControlEndpoint: reaperEndpoint,
-        guardianControlEndpoint: guardianEndpoint,
-        proxyEndpoint,
-        guardianReaperAuthSecret: next.guardianReaperAuthSecret,
-      };
-      const proxyCapsule: ProxyBootstrapCapsule = {
-        role: 'proxy',
-        ...capsuleIdentityFields,
-        bootstrapNonce: next.proxyBootstrapNonce,
-        canonicalEndpoint: proxyEndpoint,
-        guardianControlEndpoint: guardianEndpoint,
-        proxyGuardianAuthSecret: next.proxyGuardianAuthSecret,
-      };
-
-      createProviderBootstrapCapsule(guardianCapsulePath, guardianCapsule, capsuleEnv);
-      createProviderBootstrapCapsule(reaperCapsulePath, reaperCapsule, capsuleEnv);
-      createProviderBootstrapCapsule(proxyCapsulePath, proxyCapsule, capsuleEnv);
-
-      minted = next;
-      return {
-        label: 'capsules',
-        run: () => {
-          // `force: true` tolerates a capsule already claimed by the process that consumed it — cleanup
-          // after any later cut always reaches this point with at least the guardian's capsule already gone.
-          runtime.storage.rmSync(guardianCapsulePath, { force: true });
-          runtime.storage.rmSync(reaperCapsulePath, { force: true });
-          runtime.storage.rmSync(proxyCapsulePath, { force: true });
-        },
-      };
-    },
-
-    async spawnGuardian(): Promise<AcquisitionUndo | ProviderProxyRoleSpawnHeld> {
-      if (minted === null) {
-        throw new Error('createCapsules must run before spawnGuardian.');
-      }
-      const setMinted = minted;
-      const platform = runtime.env.platform() as NodeJS.Platform;
-      const readProcessIncarnation = options.readProcessIncarnation ?? runtime.process.readProcessIncarnation;
-      const spawnPorts: RoleSpawnPorts = {
-        process: runtime.process,
-        runtime,
-        platform,
-        readProcessIncarnation,
-      };
-      const spawned = await requireSpawnedRole(
-        spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
-          pluginRoot: options.pluginRoot,
-          detached: true,
-          envAdditions: {
-            [BUILD_FLAVOR_ENV_KEY]: flavor,
-            [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
-          },
-        }),
-      );
-      if (spawned.kind === 'held') {
-        if (spawned.subject.kind === 'process') {
-          throw new Error('A detached guardian spawn cannot retain a leader-only cleanup subject.');
-        }
-        const recoverySubject: PreIdentityRoleSpawnRecoverySubject =
-          spawned.subject.processGroupId === null
-            ? { kind: 'unattributable-process-group' }
-            : { kind: 'spawned-process-group', processGroupId: spawned.subject.processGroupId };
-        const operatorExit = {
-          kind: 'abandon-provider-proxy-acquisition' as const,
-          abandon: () => {
-            const abandonment = spawned.operatorExit.abandon();
-            const subjectMatches =
-              abandonment.subject.kind === 'unattributable-process-group' &&
-              abandonment.subject.processGroupId ===
-                (recoverySubject.kind === 'spawned-process-group' ? recoverySubject.processGroupId : null);
-            if (
-              !subjectMatches ||
-              abandonment.processAbsenceProven ||
-              abandonment.successor.owner !== 'operator-command' ||
-              abandonment.successor.acceptance !== 'accepted'
-            ) {
-              throw new Error('Role spawn operator exit did not accept the exact acquisition cleanup subject.');
-            }
-            return {
-              kind: 'operator-abandoned' as const,
-              recoverySubject,
-              processAbsenceProven: false as const,
-              successor: abandonment.successor,
-            };
-          },
-        };
-        let retry = spawned.retry;
-        return {
-          kind: 'provider_proxy_role_spawn_held',
-          reason: spawned.error.message,
-          setAddress: { buildSetId, hostFingerprint, proxyInstanceId: setMinted.proxyInstanceId },
-          recoverySubject,
-          operatorExit,
-          recoveryCapability: {
-            retry: async (signal) => {
-              const cleanup = await retry(signal);
-              if (cleanup.kind !== 'observed-absent') {
-                retry = cleanup.retry;
-                return { kind: 'held', reason: `${cleanup.subject.kind}:${cleanup.observation}` };
-              }
-              if (recoverySubject.kind !== 'spawned-process-group') {
-                return { kind: 'held', reason: 'spawned process-group attribution remains unavailable' };
-              }
-              if (!('processGroupEvidence' in cleanup.evidence)) {
-                throw new Error('Detached guardian cleanup returned leader-only absence evidence.');
-              }
-              return {
-                kind: 'absence-confirmed',
-                evidence: preIdentityRoleSpawnAbsenceEvidence(cleanup.evidence.processGroupEvidence),
-                strandedArtifacts: [],
-              };
-            },
-          },
-        };
-      }
-      guardianSpawn = spawned;
-      guardianSpawnUndo = buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation);
-      guardianSpawnUndo.retainPossibleProxy();
-      return {
-        kind: 'guardian-containment',
-        label: 'guardian',
-        run: guardianSpawnUndo,
-        setAddress: {
-          buildSetId,
-          hostFingerprint,
-          proxyInstanceId: setMinted.proxyInstanceId,
-        },
-        guardianIdentity: guardianSpawnUndo.guardianIdentity,
-        captureRecoveryProof: guardianSpawnUndo.captureRecoveryProof,
-      };
-    },
-
-    async establishControl(registerUndo: (undo: AcquisitionUndo) => void, assertPublicationMayBegin: () => void) {
-      if (minted === null || guardianSpawn === null || guardianSpawnUndo === null) {
-        throw new Error('createCapsules and spawnGuardian must run before establishControl.');
-      }
-      const setMinted = minted;
-      const spawnedGuardian = guardianSpawn;
-      const spawnUndo = guardianSpawnUndo;
-      const timer = runtimeControlTimer(runtime);
-      const retry: RoleConnectRetryOptions = {
-        connectTimeoutMs: ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
-        retryIntervalMs: ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
-        overallDeadlineMs: ESTABLISH_CONTROL_READY_DEADLINE_MS,
-        monotonicNow: () => runtime.time.monotonicNow(),
-        sleep: (ms: number) => runtime.time.sleep(ms),
-      };
-      const opened: ControlClient[] = [];
-      const faults = createProviderProxyAuthorityFaultLatch();
-      const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
-      // An acquisition abort must name every role identity bound to the set it concerns.
-      let acquisitionAbortIdentities: Readonly<{
-        client: ControlClient;
-        guardian: GuardianIdentity;
-        reaper: ReaperIdentity;
-        proxy: ProxyIdentity;
-      }> | null = null;
-      let guardianTeardownClient: ControlClient | null = null;
-
-      try {
-        // The proxy is reached first: only it can report its own pid, incarnation, and process-group id, and
-        // both `guardian.open.v1` and `reaper.open.v1` need that identity as an input.
-        const proxySession = await establishRoleControl(opened, timer, retry, {
-          role: 'proxy',
-          endpoint: setMinted.proxyEndpoint,
-          openMethod: 'control.open.v1',
-          openParams: { bootstrapNonce: setMinted.proxyBootstrapNonce, coordinator: coordinatorIdentity },
-          openParamsSchema: proxyControlOpenParamsSchema,
-          openResultSchema: proxyOpenResultSchema,
-          identity: (opened) => opened.proxy,
-          heartbeatMethod: 'control.heartbeat.v1',
-          expectedIdentity: {
-            proxyInstanceId: setMinted.proxyInstanceId,
-            guardianInstanceId: setMinted.guardianInstanceId,
-            reaperInstanceId: setMinted.reaperInstanceId,
-            generation,
-            flavor,
-            buildSetId,
-            hostFingerprint,
-            canonicalEndpoint: setMinted.proxyEndpoint,
-          },
-          ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent() }),
-        });
-        spawnUndo.bindProxyIdentity(proxySession.opened.proxy);
-        heartbeatAssembly.startRole('proxy', {
-          client: proxySession.client,
-          controlEpoch: proxySession.opened.controlEpoch,
-          nextHeartbeatChallenge: proxySession.nextHeartbeatChallenge,
-          instanceId: setMinted.proxyInstanceId,
-        });
-
-        // The one identity this acquisition can verify in full: it spawned the guardian itself and observed
-        // its pid and incarnation directly, rather than trusting a self-report with nothing to check it against.
-        const guardianSession = await establishRoleControl(opened, timer, retry, {
-          role: 'guardian',
-          endpoint: setMinted.guardianEndpoint,
-          openMethod: 'guardian.open.v1',
-          openParams: {
-            bootstrapNonce: setMinted.guardianBootstrapNonce,
-            coordinator: coordinatorIdentity,
-            proxy: proxySession.opened.proxy,
-          },
-          openParamsSchema: guardianOpenParamsSchema,
-          openResultSchema: guardianOpenResultSchema,
-          identity: (opened) => opened.guardian,
-          heartbeatMethod: 'guardian.heartbeat.v1',
-          expectedIdentity: {
-            guardianInstanceId: setMinted.guardianInstanceId,
-            pid: spawnedGuardian.pid,
-            incarnation: spawnedGuardian.incarnation,
-            generation,
-            flavor,
-            buildSetId,
-            hostFingerprint,
-            canonicalControlEndpoint: setMinted.guardianEndpoint,
-          },
-        });
-        heartbeatAssembly.startRole('guardian', {
-          client: guardianSession.client,
-          controlEpoch: guardianSession.opened.controlEpoch,
-          nextHeartbeatChallenge: guardianSession.nextHeartbeatChallenge,
-          instanceId: setMinted.guardianInstanceId,
-        });
-
-        const proxyIdentity = proxySession.opened.proxy;
-        // Named from the proxy's own self-report, not re-derived: if this disagrees with what the guardian
-        // recorded, `reaper.open.v1` itself refuses — the cross-check this acquisition needs for free, from
-        // the one RPC built to make that exact disagreement visible.
-        const reaperSession = await establishRoleControl(opened, timer, retry, {
-          role: 'reaper',
-          endpoint: setMinted.reaperEndpoint,
-          openMethod: 'reaper.open.v1',
-          openParams: {
-            bootstrapNonce: setMinted.reaperBootstrapNonce,
-            coordinator: coordinatorIdentity,
-            guardian: guardianSession.opened.guardian,
-            proxy: proxySession.opened.proxy,
-            containment: {
-              pid: proxyIdentity.pid,
-              incarnation: proxyIdentity.incarnation,
-              processGroupId: proxyIdentity.processGroupId,
-              containmentKind: DETACHED_CONTAINMENT_KIND,
-            },
-          },
-          openParamsSchema: reaperOpenParamsSchema,
-          openResultSchema: reaperOpenResultSchema,
-          identity: (opened) => opened.reaper,
-          heartbeatMethod: 'reaper.heartbeat.v1',
-          expectedIdentity: {
-            reaperInstanceId: setMinted.reaperInstanceId,
-            guardianInstanceId: setMinted.guardianInstanceId,
-            generation,
-            flavor,
-            buildSetId,
-            hostFingerprint,
-            canonicalControlEndpoint: setMinted.reaperEndpoint,
-            containmentKind: DETACHED_CONTAINMENT_KIND,
-          },
-        });
-        spawnUndo.bindControl({
-          client: guardianSession.client,
-          guardian: guardianSession.opened.guardian,
-          reaper: reaperSession.opened.reaper,
-          proxy: proxySession.opened.proxy,
-        });
-        guardianTeardownClient = guardianSession.client;
-        heartbeatAssembly.startRole('reaper', {
-          client: reaperSession.client,
-          controlEpoch: reaperSession.opened.controlEpoch,
-          nextHeartbeatChallenge: reaperSession.nextHeartbeatChallenge,
-          instanceId: setMinted.reaperInstanceId,
-        });
-
-        const clients = {
-          proxy: proxySession.client,
-          guardian: guardianSession.client,
-          reaper: reaperSession.client,
-        };
-        const heartbeats = heartbeatAssembly.complete();
-        acquisitionAbortIdentities = {
-          client: guardianSession.client,
-          guardian: guardianSession.opened.guardian,
-          reaper: reaperSession.opened.reaper,
-          proxy: proxySession.opened.proxy,
-        };
-
-        const handoffCapsulePath = currentHandoffCapsulePath(
-          { generation, flavor, buildSetId, hostFingerprint, proxyInstanceId: setMinted.proxyInstanceId },
-          options.baseDir === undefined ? undefined : { baseDir: options.baseDir },
-        );
-        const base = createProviderProxySetAuthority({
-          proxyInstanceId: setMinted.proxyInstanceId,
-          guardianClient: guardianSession.client,
-          proxyClient: proxySession.client,
-          reaperClient: reaperSession.client,
-          guardianIdentity: guardianSession.opened.guardian,
-          reaperIdentity: reaperSession.opened.reaper,
-          proxyIdentityFields: proxySession.opened.proxy,
-          heartbeats,
-          coordinatorIdentity,
-          handoffCapsulePath,
-          runtime,
-          operationRegistry: options.operationRegistry,
-          registerAcquisitionUndo: registerUndo,
-          ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
-        });
-        const installation = await base.installRecoveryCredential(new AbortController().signal);
-        if (installation.kind !== 'installed') {
-          throw new Error(`provider_proxy_recovery_credential_${installation.kind}`);
-        }
-        const capsuleBinding = handoffCapsuleV3Schema.parse(
-          readHandoffCapsuleFile(handoffCapsulePath, {
-            storage: runtime.storage,
-            uid: process.getuid?.() ?? 0,
-          }),
-        );
-
-        const setIdentity: ProviderProxySetIdentity = {
-          buildSetId,
-          hostFingerprint,
-          guardianInstanceId: setMinted.guardianInstanceId,
-          guardianPid: spawnedGuardian.pid,
-          guardianIncarnation: spawnedGuardian.incarnation,
-          guardianControlEndpoint: setMinted.guardianEndpoint,
-          proxyInstanceId: setMinted.proxyInstanceId,
-          proxyPid: proxyIdentity.pid,
-          reaperInstanceId: setMinted.reaperInstanceId,
-          reaperPid: reaperSession.opened.reaper.pid,
-          reaperIncarnation: reaperSession.opened.reaper.incarnation,
-          reaperControlEndpoint: setMinted.reaperEndpoint,
-          containmentKind: DETACHED_CONTAINMENT_KIND,
-          proxyIncarnation: proxyIdentity.incarnation,
-          proxyProcessGroupId: proxyIdentity.processGroupId,
-          canonicalEndpoint: setMinted.proxyEndpoint,
-        };
-        const session = createOwnedProviderProxyAcquisitionControlSession(
-          providerProxyControlSessionOwner.controlEstablishment,
-          {
-            base,
-            setIdentity,
-            clients,
-            heartbeats,
-            faults,
-            guardianIdentity: guardianSession.opened.guardian,
-            reaperIdentity: reaperSession.opened.reaper,
-            proxyIdentity: proxySession.opened.proxy,
-            capsulePath: handoffCapsulePath,
-            capsuleBinding,
-            mutationRpcTimeoutMs: PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS,
-          },
-        );
-
-        // No claim authority exists until every publication stage confirms.
-        assertPublicationMayBegin();
-        const publication = await retryProviderProxyAcquisitionPublication(session);
-        if (publication.kind === 'publication-unknown') {
-          return handOverProviderProxyAcquisitionControlSession(
-            session,
-            providerProxyControlSessionOwner.acquisition,
-            publication,
-          );
-        }
-        if (publication.kind === 'not-attempted') {
-          throw new Error(`provider_proxy_acquisition_publication_refused:${publication.role}:${publication.reason}`);
-        }
-        const established = establishProviderProxyAcquisitionSession(session, publication.receipt);
-        return {
-          ...established,
-          undo: {
-            label: 'control',
-            run: () => {
-              heartbeats.proxy.stop();
-              heartbeats.guardian.stop();
-              heartbeats.reaper.stop();
-              proxySession.client.close();
-              reaperSession.client.close();
-            },
-          },
-        };
-      } catch (error: unknown) {
-        if (acquisitionAbortIdentities !== null) {
-          // Acquisition abort is best-effort and cannot reverse publication; definitive cleanup remains with
-          // the guardian teardown owner.
-          const { client, guardian, reaper, proxy } = acquisitionAbortIdentities;
-          try {
-            const abortExchange = await client.exchange(
-              'guardian.acquisition-abort.v1',
-              guardianAcquisitionAbortParamsSchema.parse({ guardian, reaper, proxy }),
-              PROXY_CONTROL_RPC_TIMEOUT_MS,
-            );
-            if (abortExchange.kind === 'response' && abortExchange.response.kind === 'result') {
-              guardianAcquisitionAbortResultSchema.parse(abortExchange.response.value);
-            }
-          } catch {
-            // Definitive cleanup remains with the guardian teardown owner when the abort is not heard.
-          }
-        }
-        heartbeatAssembly.stop();
-        for (const client of opened) {
-          if (client !== guardianTeardownClient) client.close();
-        }
-        throw error;
-      }
-    },
+    establishControl: (registerUndo, assertPublicationMayBegin) =>
+      establishProviderProxyControl(options, state, registerUndo, assertPublicationMayBegin),
   };
 }

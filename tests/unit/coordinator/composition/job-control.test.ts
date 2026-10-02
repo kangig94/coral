@@ -68,7 +68,10 @@ describe('createCoordinatorControl.abortJobs', () => {
     registry.register(record.operation.jobId, listener, settle);
     const signal = registry.getSignal(record.operation.jobId);
     const control = createCoordinatorControl({
-      world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
+      world: {
+        idleTimer: { requestDrain() {} },
+        launchCoordinator: { successionAdmissionPaused: () => false },
+      } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
       isLifecycleRunning: () => true,
       getLifecycleController: () => null,
@@ -281,7 +284,10 @@ describe('createCoordinatorControl.abortJobs', () => {
     expect(registry.abort([heldJobId]).refused).toHaveLength(1);
     expect(harness.reconciler.stop()).toEqual({ kind: 'drained' });
     const control = createCoordinatorControl({
-      world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
+      world: {
+        idleTimer: { requestDrain() {} },
+        launchCoordinator: { successionAdmissionPaused: () => false },
+      } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
       isLifecycleRunning: () => true,
       getLifecycleController: () => null,
@@ -295,6 +301,38 @@ describe('createCoordinatorControl.abortJobs', () => {
       jobIds: [saga.operation.jobId, heldJobId],
     });
     expect(registry.has(heldJobId)).toBe(true);
+  });
+
+  it('returns a typed retryable cancellation while writers are parked and aborts after admission reopens', () => {
+    const runtime = new SimulationRuntime();
+    const registry = new AbortRegistry(runtime.ids);
+    const jobId = registry.register('parked-job');
+    let parked = true;
+    const control = createCoordinatorControl({
+      world: {
+        idleTimer: { requestDrain() {} },
+        launchCoordinator: { successionAdmissionPaused: () => parked },
+      } as unknown as CoordinatorWorld,
+      listExecutionServices: () => [],
+      getLifecycleController: () => null,
+      isLifecycleRunning: () => true,
+      getProgressStore: () => ({}) as never,
+      internalJobAbortRegistry: registry,
+      requestStops: (jobIds) => (parked ? { kind: 'admission-closed', jobIds } : noProviderStops(jobIds)),
+    });
+
+    expect(control.abortJobs([jobId])).toEqual({
+      kind: 'retryable',
+      code: 'succession_admission_paused',
+      jobIds: [jobId],
+    });
+    expect(registry.has(jobId)).toBe(true);
+
+    parked = false;
+    expect(control.abortJobs([jobId])).toEqual({
+      kind: 'answered',
+      result: { aborted: [jobId], notFound: [] },
+    });
   });
 
   it('abandons a held job with no saga row while admission is closed', () => {

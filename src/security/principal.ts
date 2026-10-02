@@ -12,6 +12,8 @@ export type ResourceBinding =
   | { readonly kind: 'unbound' }
   | { readonly kind: 'project'; readonly root: CanonicalWorkDir };
 
+export type RequestedBinding = ResourceBinding | { readonly kind: 'corpus' };
+
 export type Principal = {
   readonly subject: Subject;
   readonly transport: string;

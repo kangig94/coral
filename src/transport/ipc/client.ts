@@ -2,8 +2,22 @@ import { createConnection, type Socket } from 'node:net';
 import { errorMessage } from '../../infra/error-format.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { createRealTimePort } from '../../infra/time.js';
-import { encode, decode, type IpcAuthMetadata, type JsonRpcEnvelope, type JsonRpcRequestEnvelope } from './json-rpc.js';
+import {
+  encode,
+  decode,
+  decodeIpcErrorData,
+  ipcAuthChallengeSchema,
+  type IpcAuthMetadata,
+  type JsonRpcEnvelope,
+  type JsonRpcRequestEnvelope,
+} from './json-rpc.js';
 import { createLineFramer } from '../line-framing.js';
+import {
+  CHILD_AUTH_CHALLENGE_METHOD,
+  CHILD_REAUTHENTICATION_REQUIRED,
+  type ChildAuthChallenge,
+  type ChildProvenRequest,
+} from '../../security/child-credential.js';
 import { isLifecycleRefusalResult, lifecycleRefusalResult } from '../lifecycle-refusal.js';
 import type { TimePort } from '../../infra/port-types.js';
 
@@ -20,18 +34,24 @@ const IPC_RETRY_BACKOFF_MS = 100;
 export type IpcRequestOptions = {
   timeoutMs?: number;
   time?: TimePort;
-  auth?: IpcAuthMetadata | IpcAuthProvider | null;
+  auth?: IpcClientAuth | null;
 };
 
 export type IpcSubscriptionOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   time?: TimePort;
-  auth?: IpcAuthMetadata | IpcAuthProvider | null;
+  auth?: IpcClientAuth | null;
 };
 
 export type IpcAuthProvider = () => IpcAuthMetadata | undefined;
-export type IpcClientAuth = IpcAuthMetadata | IpcAuthProvider;
+
+export type IpcChallengedAuth = Readonly<{
+  kind: 'challenged';
+  prove(challenge: ChildAuthChallenge, request: ChildProvenRequest): IpcAuthMetadata;
+}>;
+
+export type IpcClientAuth = IpcAuthMetadata | IpcAuthProvider | IpcChallengedAuth;
 
 export type IpcSubscription<TResult> = AsyncIterable<TResult> & {
   close(): Promise<void>;
@@ -61,16 +81,14 @@ export class IpcRpcError extends Error {
   readonly code: string | undefined;
 
   constructor(error: Extract<JsonRpcEnvelope, { kind: 'error' }>['error']) {
-    super(error.message, error.data === undefined ? undefined : { cause: error.data });
+    const data = decodeIpcErrorData(error.data);
+    super(error.message, data === undefined ? undefined : { cause: data });
     this.name = 'IpcRpcError';
     this.rpcCode = error.code;
-    this.data = error.data;
+    this.data = data;
     this.code =
-      typeof error.data === 'object' &&
-      error.data !== null &&
-      'code' in error.data &&
-      typeof error.data.code === 'string'
-        ? error.data.code
+      typeof data === 'object' && data !== null && 'code' in data && typeof data.code === 'string'
+        ? data.code
         : undefined;
   }
 }
@@ -135,6 +153,7 @@ export class IpcLifecycleRefusal extends Error {
  * expiring without re-deriving it from prose — see drainBoundedClient in src/transport/ipc/ensure.ts.
  */
 export class IpcRequestTimeout extends Error {
+  readonly code = 'ETIMEDOUT';
   constructor(message: string) {
     super(message);
     this.name = 'IpcRequestTimeout';
@@ -268,8 +287,130 @@ function isSubscriptionAck(value: unknown, method: string): boolean {
   return record.status === 'subscribed' && record.method === method;
 }
 
-function resolveAuthMetadata(auth: IpcAuthMetadata | IpcAuthProvider | null | undefined): IpcAuthMetadata | undefined {
-  return typeof auth === 'function' ? auth() : (auth ?? undefined);
+async function receiveAuthChallenge(
+  socket: Socket,
+  deadlineMs: number | null,
+  timePort: TimePort,
+): Promise<ChildAuthChallenge> {
+  const challengeId = nextRequestId++;
+  return await new Promise<ChildAuthChallenge>((resolve, reject) => {
+    const framer = createLineFramer();
+    let timer: ReturnType<TimePort['setTimeout']> | null = null;
+    const finish = (settle: () => void): void => {
+      if (timer) timePort.clearTimeout(timer);
+      socket.off('data', onData);
+      socket.off('error', onError);
+      socket.off('close', onClose);
+      settle();
+    };
+    const onError = (error: Error): void => finish(() => reject(error));
+    const onClose = (): void =>
+      finish(() =>
+        reject(new Error('IPC connection closed before the coordinator issued an authentication challenge')),
+      );
+    const onData = (chunk: Buffer | string): void => {
+      const frames = framer.push(chunk);
+      for (const [index, frame] of frames.entries()) {
+        if (frame.trim().length === 0) continue;
+        let envelope: JsonRpcEnvelope;
+        try {
+          envelope = decode(frame);
+        } catch (error: unknown) {
+          finish(() => reject(normalizeIpcError(error)));
+          return;
+        }
+        if (
+          envelope.kind === 'error' &&
+          (envelope.id === challengeId || isReauthenticationError(envelope.error.data))
+        ) {
+          finish(() => reject(buildIpcRpcError(envelope.error)));
+          socket.destroy();
+          return;
+        }
+        if (envelope.kind === 'response' && envelope.id === challengeId) {
+          const parsed = ipcAuthChallengeSchema.safeParse(envelope.result);
+          socket.pause();
+          const remainder =
+            frames
+              .slice(index + 1)
+              .map((rest) => `${rest}\n`)
+              .join('') + framer.flush();
+          if (remainder.length > 0) socket.unshift(Buffer.from(remainder));
+          finish(() =>
+            parsed.success
+              ? resolve(parsed.data)
+              : reject(buildIpcError('Coordinator issued a malformed authentication challenge', envelope.result)),
+          );
+          return;
+        }
+      }
+    };
+    socket.on('data', onData);
+    socket.once('error', onError);
+    socket.once('close', onClose);
+    const budget = remainingMs(deadlineMs, timePort);
+    if (typeof budget === 'number') {
+      timer = timePort.setTimeout(() => {
+        socket.destroy(new IpcRequestTimeout(`IPC authentication challenge timed out after ${budget}ms`));
+      }, budget);
+    }
+    socket.write(`${encode({ kind: 'request', id: challengeId, method: CHILD_AUTH_CHALLENGE_METHOD })}\n`);
+  });
+}
+
+async function resolveAuthMetadata(
+  auth: IpcClientAuth | null | undefined,
+  socket: Socket,
+  request: ChildProvenRequest,
+  deadlineMs: number | null,
+  timePort: TimePort,
+): Promise<IpcAuthMetadata | undefined> {
+  if (typeof auth === 'function') return auth();
+  if (auth?.kind !== 'challenged') return auth ?? undefined;
+  try {
+    return auth.prove(await receiveAuthChallenge(socket, deadlineMs, timePort), request);
+  } catch (error: unknown) {
+    socket.destroy();
+    throw error;
+  }
+}
+
+function isReauthenticationError(data: unknown): boolean {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'code' in data &&
+    data.code === CHILD_REAUTHENTICATION_REQUIRED &&
+    'dispatched' in data &&
+    data.dispatched === false
+  );
+}
+
+async function retryChildAuthentication<T>(
+  auth: IpcClientAuth | null | undefined,
+  deadlineMs: number | null,
+  timePort: TimePort,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  const retryDeadline = deadlineMs ?? timePort.now() + 5_000;
+  for (;;) {
+    try {
+      return await attempt();
+    } catch (error: unknown) {
+      if (
+        typeof auth !== 'object' ||
+        auth?.kind !== 'challenged' ||
+        !(error instanceof IpcRpcError) ||
+        !isReauthenticationError(error.data)
+      )
+        throw error;
+      const budget = retryDeadline - timePort.now();
+      if (budget <= 0) throw new IpcRequestTimeout('IPC reauthentication request deadline exceeded');
+      await timePort.sleep(Math.min(50, budget));
+      if (timePort.now() >= retryDeadline)
+        throw new IpcRequestTimeout('IPC reauthentication request deadline exceeded');
+    }
+  }
 }
 
 export async function requestIpcMethod<TResult>(
@@ -279,11 +420,30 @@ export async function requestIpcMethod<TResult>(
   options?: IpcRequestOptions,
 ): Promise<TResult> {
   const timePort = options?.time ?? createRealTimePort();
-  const auth = resolveAuthMetadata(options?.auth);
-  const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
   const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
+  return retryChildAuthentication(options?.auth, deadlineMs, timePort, () =>
+    requestIpcMethodOnce<TResult>(socketPath, method, params, options, timePort, deadlineMs),
+  );
+}
+
+async function requestIpcMethodOnce<TResult>(
+  socketPath: string,
+  method: string,
+  params: unknown,
+  options: IpcRequestOptions | undefined,
+  timePort: TimePort,
+  deadlineMs: number | null,
+): Promise<TResult> {
+  const requestId = nextRequestId++;
   const socket = await connectSocket(socketPath, deadlineMs, timePort);
+  const auth = await resolveAuthMetadata(
+    options?.auth,
+    socket,
+    { method, id: requestId, params },
+    deadlineMs,
+    timePort,
+  );
 
   return new Promise<TResult>((resolve, reject) => {
     let settled = false;
@@ -332,10 +492,11 @@ export async function requestIpcMethod<TResult>(
         }
 
         if (envelope.kind === 'error') {
-          if (envelope.id !== requestId) {
+          if (envelope.id !== requestId && !isReauthenticationError(envelope.error.data)) {
             continue;
           }
           finish(() => reject(buildIpcRpcError(envelope.error)));
+          socket.destroy();
           return;
         }
 
@@ -375,6 +536,7 @@ export async function requestIpcMethod<TResult>(
       ...(auth === undefined ? {} : { auth }),
     };
     socket.write(`${encode(envelope)}\n`);
+    if (typeof options?.auth === 'object' && options.auth?.kind === 'challenged') socket.resume();
   });
 }
 
@@ -385,11 +547,30 @@ export async function subscribeIpcMethod<TResult>(
   options?: IpcSubscriptionOptions,
 ): Promise<IpcSubscription<TResult>> {
   const timePort = options?.time ?? createRealTimePort();
-  const auth = resolveAuthMetadata(options?.auth);
-  const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
   const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
+  return retryChildAuthentication(options?.auth, deadlineMs, timePort, () =>
+    subscribeIpcMethodOnce<TResult>(socketPath, method, params, options, timePort, deadlineMs),
+  );
+}
+
+async function subscribeIpcMethodOnce<TResult>(
+  socketPath: string,
+  method: string,
+  params: unknown,
+  options: IpcSubscriptionOptions | undefined,
+  timePort: TimePort,
+  deadlineMs: number | null,
+): Promise<IpcSubscription<TResult>> {
+  const requestId = nextRequestId++;
   const socket = await connectSocket(socketPath, deadlineMs, timePort);
+  const auth = await resolveAuthMetadata(
+    options?.auth,
+    socket,
+    { method, id: requestId, params },
+    deadlineMs,
+    timePort,
+  );
 
   let done = false;
   let failure: Error | null = null;
@@ -520,12 +701,12 @@ export async function subscribeIpcMethod<TResult>(
         envelope = decode(frame);
       } catch (error: unknown) {
         fail(error);
-        socket.destroy(normalizeIpcError(error));
+        socket.destroy();
         return;
       }
 
       if (envelope.kind === 'error') {
-        if (envelope.id !== requestId) {
+        if (envelope.id !== requestId && !isReauthenticationError(envelope.error.data)) {
           continue;
         }
         fail(buildIpcRpcError(envelope.error));
@@ -567,9 +748,9 @@ export async function subscribeIpcMethod<TResult>(
   const handshakeBudget = remainingMs(deadlineMs, timePort);
   if (typeof handshakeBudget === 'number' && handshakeBudget > 0) {
     handshakeTimer = timePort.setTimeout(() => {
-      const error = new Error(`IPC subscription timed out after ${handshakeBudget}ms`);
+      const error = new IpcRequestTimeout(`IPC subscription timed out after ${handshakeBudget}ms`);
       fail(error);
-      socket.destroy(error);
+      socket.destroy();
     }, handshakeBudget);
   }
 
@@ -581,6 +762,7 @@ export async function subscribeIpcMethod<TResult>(
     ...(auth === undefined ? {} : { auth }),
   };
   socket.write(`${encode(envelope)}\n`);
+  if (typeof options?.auth === 'object' && options.auth?.kind === 'challenged') socket.resume();
   await handshakePromise;
 
   const close = async (): Promise<void> => {

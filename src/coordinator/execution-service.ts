@@ -169,6 +169,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       providerRegistry: deps.providerRegistry,
       coordinatorCommit,
       launchOrchestrator: this.launchOrchestrator,
+      admitTopLevelLaunch: () => deps.launchCoordinator.admitTopLevelLaunch?.() ?? true,
       executionPort: {
         coralDispatch: (providerName, coralName, input, requestCtx) =>
           this.runWithInvocationScope(requestCtx, () =>
@@ -221,8 +222,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     providerName: string,
     input: JobLaunchRequest,
     ctx: InvocationContext,
+    signal?: AbortSignal,
   ): Promise<ProviderSessionLaunchDecision> {
-    return this.runWithInvocationScope(ctx, async () => this.launchService.start(providerName, input, ctx));
+    return this.runWithInvocationScope(ctx, async () => this.launchService.start(providerName, input, ctx, signal));
   }
 
   async resume(
@@ -248,8 +250,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     input: CanonicalWorkflowCommand,
     ctx: InvocationContext,
     workDir: CanonicalWorkDir,
+    signal?: AbortSignal,
   ): Promise<WorkflowLaunchDecision> {
-    return this.workflowService.executeWorkflow(providerName, ast, input, ctx, workDir);
+    return this.workflowService.executeWorkflow(providerName, ast, input, ctx, workDir, signal);
   }
 
   list(providerName: string): ListResult {
