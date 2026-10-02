@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import { z } from 'zod';
 import type { Runtime } from '../runtime/ports.js';
 import type { RetentionOutcome, RetentionRunBudget } from '../store/retention-outcome.js';
 import { errorMessage } from '../infra/error-format.js';
@@ -31,30 +32,91 @@ export function readExportJobState(db: Database, readCtx: StoreReadContext, jobI
   }
 }
 
-async function exportTreeExpired(
-  runtime: Runtime,
-  path: string,
-  cutoff: number,
-  budget: RetentionRunBudget,
-  admitted: boolean,
-): Promise<boolean> {
-  if (!budget.canContinue()) return false;
+const eligibilityKey = 'storage-retention.exports.eligibility.v1';
+const eligibilitySchema = z.object({
+  jobId: z.string(),
+  lastEntry: z.string(),
+  directoryMtimeNs: z.string().regex(/^-?\d+$/),
+  newestMtimeNs: z.string().regex(/^-?\d+$/),
+  admitted: z.boolean(),
+});
+
+async function exportTreeExpired(input: {
+  db: Database;
+  runtime: Runtime;
+  jobId: string;
+  path: string;
+  cutoff: number;
+  budget: RetentionRunBudget;
+  admitted: boolean;
+  mutate<T>(operation: () => T): T;
+}): Promise<'expired' | 'recent' | 'pending'> {
+  const { db, runtime, jobId, path, cutoff, budget, admitted, mutate } = input;
+  if (!budget.canContinue()) return 'pending';
   const cutoffNs = BigInt(Math.floor(cutoff)) * 1_000_000n;
   const directory = runtime.storage.lstatSync(path, { bigint: true });
-  if (!admitted && directory.mtimeNs >= cutoffNs) return false;
+  let checkpoint: z.infer<typeof eligibilitySchema> | null = null;
+  const saved = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(eligibilityKey);
+  if (saved) {
+    try {
+      checkpoint = eligibilitySchema.parse(JSON.parse(saved.value));
+    } catch {
+      checkpoint = null;
+    }
+  }
+  if (
+    checkpoint?.jobId !== jobId ||
+    checkpoint.directoryMtimeNs !== String(directory.mtimeNs) ||
+    checkpoint.admitted !== admitted
+  )
+    checkpoint = {
+      jobId,
+      lastEntry: '',
+      directoryMtimeNs: String(directory.mtimeNs),
+      newestMtimeNs: String(admitted ? cutoffNs - 1n : directory.mtimeNs),
+      admitted,
+    };
+  const clear = (): void => {
+    mutate(() => db.prepare('DELETE FROM meta WHERE key = ?').run(eligibilityKey));
+  };
+  const save = (): void => {
+    mutate(() =>
+      db
+        .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+        .run(eligibilityKey, JSON.stringify(checkpoint)),
+    );
+  };
+  if (BigInt(checkpoint.newestMtimeNs) >= cutoffNs) {
+    clear();
+    return 'recent';
+  }
+  const children = (await runtime.storage.readdir(path)).sort();
   let batchRemaining = 0;
-  for await (const child of runtime.storage.iterateDirectory(path)) {
+  for (const child of children) {
+    if (child <= checkpoint.lastEntry) continue;
     if (batchRemaining === 0) {
-      if (!budget.canContinue()) return false;
+      save();
+      if (!budget.canContinue()) return 'pending';
       await setImmediate();
-      if (!budget.canContinue()) return false;
+      if (!budget.canContinue()) return 'pending';
       batchRemaining = 64;
     }
     batchRemaining -= 1;
     const entry = runtime.storage.lstatSync(join(path, child), { bigint: true });
-    if ((!admitted || !entry.isDirectory()) && entry.mtimeNs >= cutoffNs) return false;
+    if ((!admitted || !entry.isDirectory()) && entry.mtimeNs > BigInt(checkpoint.newestMtimeNs))
+      checkpoint.newestMtimeNs = String(entry.mtimeNs);
+    checkpoint.lastEntry = child;
+    if (BigInt(checkpoint.newestMtimeNs) >= cutoffNs) {
+      clear();
+      return 'recent';
+    }
   }
-  return true;
+  save();
+  if (runtime.storage.lstatSync(path, { bigint: true }).mtimeNs !== directory.mtimeNs) {
+    clear();
+    return 'pending';
+  }
+  return 'expired';
 }
 
 async function deleteExportTree(
@@ -129,25 +191,43 @@ export async function pruneJobExports(input: {
         outcome = { kind: 'kept', subject: path, reason: state.kind, pending: state.kind === 'unknown' };
       else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))
         outcome = { kind: 'kept', subject: path, reason: 'terminal-not-expired-or-unknown' };
-      else if (
-        state.kind === 'absent' &&
-        !(await exportTreeExpired(runtime, path, admittedCutoff ?? cutoff, budget, admittedCutoff !== null))
-      ) {
-        if (budget.canContinue())
-          input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey));
-        outcome = { kind: 'kept', subject: path, reason: 'residue-recent-or-unobservable' };
-      } else if (input.resultHold(id) !== 'released')
-        outcome = { kind: 'kept', subject: path, reason: 'epoch-result-proof-required-or-unknown' };
-      else if (!budget.canContinue()) return cursor;
       else {
-        if (state.kind === 'absent' && admittedCutoff === null)
-          input.mutate(() =>
-            input.db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(admissionKey, String(cutoff)),
-          );
-        deleting = true;
-        await deleteExportTree(runtime, path, budget, input.mutate);
-        input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey));
-        outcome = { kind: 'deleted', subject: path, count: 1 };
+        const eligibility =
+          state.kind === 'absent'
+            ? await exportTreeExpired({
+                db: input.db,
+                runtime,
+                jobId: id,
+                path,
+                cutoff: admittedCutoff ?? cutoff,
+                budget,
+                admitted: admittedCutoff !== null,
+                mutate: input.mutate,
+              })
+            : 'expired';
+        if (eligibility === 'pending') {
+          budget.record({ kind: 'kept', subject: path, reason: 'eligibility-scan-pending' });
+          return cursor;
+        }
+        if (eligibility === 'recent') {
+          input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey));
+          outcome = { kind: 'kept', subject: path, reason: 'residue-recent-or-unobservable' };
+        } else if (input.resultHold(id) !== 'released')
+          outcome = { kind: 'kept', subject: path, reason: 'epoch-result-proof-required-or-unknown' };
+        else {
+          if (state.kind === 'absent' && admittedCutoff === null)
+            input.mutate(() =>
+              input.db
+                .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+                .run(admissionKey, String(cutoff)),
+            );
+          input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(eligibilityKey));
+          if (!budget.canContinue()) return cursor;
+          deleting = true;
+          await deleteExportTree(runtime, path, budget, input.mutate);
+          input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey));
+          outcome = { kind: 'deleted', subject: path, count: 1 };
+        }
       }
     } catch (error: unknown) {
       outcome = { kind: deleting ? 'failed' : 'kept', subject: path, reason: errorMessage(error) };

@@ -55,6 +55,67 @@ async function prune(
 }
 
 describe('export retention', () => {
+  it.each([false, true])(
+    'continues slow sorted top-level eligibility and restarts changed directories (%s)',
+    async (changed) => {
+      const f = fixture();
+      const path = join(f.runtime.paths.coral.exports.jobsRoot, 'wide-residue');
+      mkdirSync(path, { recursive: true });
+      for (let i = 319; i >= 0; i -= 1) {
+        const child = join(path, `old-${String(i).padStart(3, '0')}`);
+        writeFileSync(child, 'old');
+        utimesSync(child, 1, 1);
+      }
+      utimesSync(path, 1, 1);
+      const lstat = f.runtime.storage.lstatSync;
+      let elapsed = 0;
+      const checked: string[] = [];
+      f.runtime.storage.lstatSync = ((...args: Parameters<typeof lstat>) => {
+        elapsed += 20;
+        if (args[1]?.bigint && String(args[0]) !== path) checked.push(String(args[0]));
+        return lstat(...args);
+      }) as typeof lstat;
+      let afterId = '';
+      for (let cycle = 0; cycle < 4 && existsSync(path); cycle += 1) {
+        elapsed = 0;
+        checked.length = 0;
+        afterId = await pruneJobExports({
+          db: f.db,
+          runtime: f.runtime,
+          cutoff: RETENTION_CUTOFF + cycle * 86_400_000,
+          afterId,
+          budget: { canContinue: () => elapsed < 5000, record: f.budget.record },
+          jobState: () => ({ kind: 'absent' }),
+          resultHold: () => 'released',
+          mutate: (operation) => operation(),
+        });
+        if (cycle === 0) {
+          expect(checked).toEqual([...checked].sort());
+          const saved = f.db
+            .prepare<
+              [],
+              { value: string }
+            >("SELECT value FROM meta WHERE key = 'storage-retention.exports.eligibility.v1'")
+            .get();
+          expect(saved).toBeDefined();
+          expect(JSON.parse(saved!.value)).toMatchObject({
+            jobId: 'wide-residue',
+            lastEntry: 'old-255',
+            newestMtimeNs: '1000000000',
+          });
+          expect(readdirSync(path)).toHaveLength(320);
+          if (changed) {
+            utimesSync(join(path, 'old-000'), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+            utimesSync(path, 2, 2);
+          }
+        }
+        if (cycle === 1) expect(checked[0]).toBe(join(path, changed ? 'old-000' : 'old-256'));
+      }
+      expect(existsSync(path)).toBe(changed);
+      if (changed) expect(readdirSync(path)).toHaveLength(320);
+    },
+  );
+
   it.each([false, true])('retries partial residue deletion without resetting age (new content: %s)', async (fresh) => {
     const f = fixture();
     const path = join(f.runtime.paths.coral.exports.jobsRoot, 'residue');

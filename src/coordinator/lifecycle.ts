@@ -1,6 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { z } from 'zod';
 import type { RetentionRunBudget } from '../store/retention-outcome.js';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
@@ -580,6 +581,7 @@ const crashedJobTerminalizationRetryContexts = new WeakMap<Database, CrashedJobT
 
 function createStaleJobCleanupPolicy(
   context: StaleJobCleanupPolicyContext,
+  budget?: RetentionRunBudget,
 ): RecoveryRetryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> {
   const { progressStore, currentBundleHash, log, storage, nowMs, retentionMs } = context;
   return {
@@ -599,7 +601,15 @@ function createStaleJobCleanupPolicy(
       }
 
       const artifactPath = progressStore.jobDir(item.jobId);
-      storage.rmSync(artifactPath, { recursive: true, force: true });
+      let removed = false;
+      try {
+        storage.rmSync(artifactPath, { recursive: true, force: false });
+        removed = true;
+        budget?.record({ kind: 'deleted', subject: artifactPath, count: 1 });
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        budget?.record({ kind: 'kept', subject: artifactPath, reason: 'scratch-already-absent', pending: false });
+      }
       progressStore.purgeFromCache(item.jobId);
       // The carrier identity captured at launch describes a process, so nothing about the job ending makes it
       // stale — this prune is the only thing that ever removes it. Deleting it here rather than on the
@@ -610,8 +620,8 @@ function createStaleJobCleanupPolicy(
       return {
         kind: 'advanced',
         outcome: 'settled',
-        facts: [recoveryFact(STALE_ARTIFACT_PRUNE_OBLIGATION, 'done', artifactPath)],
-        detail: 'job artifact pruned',
+        facts: [recoveryFact(STALE_ARTIFACT_PRUNE_OBLIGATION, removed ? 'done' : 'not-applicable', artifactPath)],
+        detail: removed ? 'job artifact pruned' : 'job artifact already absent',
       };
     },
     onFault: (fault) => {
@@ -720,6 +730,9 @@ export function createCrashedJobTerminalizationRetryPlan(
   };
 }
 
+const scratchPendingKey = 'storage-retention.scratch.pending.v1';
+const scratchPendingSchema = z.object({ subjects: z.array(z.string()).max(100), overflow: z.boolean() });
+
 export async function cleanupStaleJobs(
   progressStore: JobStore,
   currentBundleHash: string,
@@ -734,6 +747,31 @@ export async function cleanupStaleJobs(
   const context = { progressStore, currentBundleHash, log, storage, nowMs, retentionMs };
   staleJobCleanupRetryContexts.set(progressStore.getDb(), context);
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs });
+  const db = progressStore.getDb();
+  const saved = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(scratchPendingKey);
+  const pendingState = saved ? scratchPendingSchema.parse(JSON.parse(saved.value)) : { subjects: [], overflow: false };
+  const pending = new Set(pendingState.subjects);
+  const attempted = new Set<string>();
+  const savePending = (): void => {
+    if (pending.size === 0 && !pendingState.overflow)
+      db.prepare('DELETE FROM meta WHERE key = ?').run(scratchPendingKey);
+    else
+      db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
+        scratchPendingKey,
+        JSON.stringify({ subjects: [...pending], overflow: pendingState.overflow }),
+      );
+  };
+  const clearSettlementQuarantine = (id: string): void => {
+    const entry = quarantine.read('stale-job-cleanup', id);
+    const stage = db
+      .prepare<
+        [string],
+        { stage: string }
+      >("SELECT stage FROM recovery_quarantine WHERE boundary_id = 'stale-job-cleanup' AND subject_key = ?")
+      .get(id)?.stage;
+    if (stage === 'settle' && entry?.state === 'active')
+      quarantine.delete({ boundary: entry.boundary, subject: entry.subject });
+  };
   let interrupted = false;
   const canContinue = (): boolean => {
     signal.throwIfAborted();
@@ -744,25 +782,37 @@ export async function cleanupStaleJobs(
     }
     return !interrupted;
   };
-  const cleanupPolicy = createStaleJobCleanupPolicy(context);
+  const cleanupPolicy = createStaleJobCleanupPolicy(context, budget);
   const failures: string[] = [];
   const policy: RecoveryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> = {
     signal,
     quarantine,
     ...cleanupPolicy,
-    settle: (item) => {
-      if (!canContinue())
+    settle: async (item) => {
+      if (!canContinue() || attempted.has(item.jobId))
         return {
           kind: 'deferred',
           authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
           detail: 'scratch cleanup budget exhausted; retry next cycle',
         };
-      return cleanupPolicy.settle(item);
+      attempted.add(item.jobId);
+      const result = await cleanupPolicy.settle(item);
+      if (result.kind === 'advanced') {
+        pending.delete(item.jobId);
+        savePending();
+      }
+      return result;
     },
     onFault: (fault) => {
       const disposition = cleanupPolicy.onFault(fault);
       failures.push(`${fault.subject.key}: ${errorMessage(fault.error)}`);
       if (fault.stage !== 'settle') return disposition;
+      if (pending.has(fault.subject.key) || pending.size < 100) pending.add(fault.subject.key);
+      else {
+        pendingState.overflow = true;
+        interrupted = true;
+      }
+      savePending();
       return {
         kind: 'deferred',
         authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
@@ -770,10 +820,29 @@ export async function cleanupStaleJobs(
       };
     },
   };
-  const db = progressStore.getDb();
   const cursorKey = 'storage-retention.scratch.v1';
   let afterId =
     db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(cursorKey)?.value ?? '';
+  for (const id of [...pending]) {
+    if (!canContinue()) break;
+    const candidate = db
+      .prepare<
+        [string],
+        { job_id: string }
+      >("SELECT job_id FROM projection_jobs WHERE job_id = ? AND phase NOT IN ('queued', 'launching', 'running')")
+      .get(id);
+    if (!candidate) {
+      pending.delete(id);
+      savePending();
+      continue;
+    }
+    clearSettlementQuarantine(id);
+    await runStartupStaleArtifactPrune({
+      source: staleJobCleanupSource(db, { key: id, revision: { kind: 'until-cleared' } }),
+      policy,
+    });
+    await yieldToEventLoop();
+  }
   while (canContinue()) {
     let nextId: string | null = null;
     await runStartupStaleArtifactPrune({
@@ -782,15 +851,7 @@ export async function cleanupStaleJobs(
         canContinue,
         scanned: (id) => {
           nextId = id;
-          const entry = quarantine.read('stale-job-cleanup', id);
-          const stage = db
-            .prepare<
-              [string],
-              { stage: string }
-            >("SELECT stage FROM recovery_quarantine WHERE boundary_id = 'stale-job-cleanup' AND subject_key = ?")
-            .get(id)?.stage;
-          if (stage === 'settle' && entry?.state === 'active')
-            quarantine.delete({ boundary: entry.boundary, subject: entry.subject });
+          clearSettlementQuarantine(id);
         },
       }),
       policy,
@@ -798,12 +859,17 @@ export async function cleanupStaleJobs(
     if (interrupted) break;
     if (nextId === null) {
       db.prepare('DELETE FROM meta WHERE key = ?').run(cursorKey);
+      pendingState.overflow = false;
+      savePending();
       break;
     }
     afterId = nextId;
     db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(cursorKey, afterId);
     await yieldToEventLoop();
   }
+  for (const id of pending) budget?.record({ kind: 'kept', subject: id, reason: 'scratch-cleanup-pending' });
+  if (pendingState.overflow)
+    budget?.record({ kind: 'kept', subject: 'scratch-jobs', reason: 'scratch-pending-overflow' });
   const hydrationHolds = db
     .prepare<
       [],

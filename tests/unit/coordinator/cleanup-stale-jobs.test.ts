@@ -163,7 +163,7 @@ describe('cleanupStaleJobs', () => {
     ).rejects.toMatchObject({ name: 'AbortError' });
 
     expect(rmSync).toHaveBeenCalledTimes(1);
-    expect(rmSync).toHaveBeenCalledWith('/jobs/first', { recursive: true, force: true });
+    expect(rmSync).toHaveBeenCalledWith('/jobs/first', { recursive: true, force: false });
   });
 
   it('warns when pruning a stale job artifact fails', async () => {
