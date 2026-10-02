@@ -53,6 +53,27 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
     ],
   },
   {
+    file: 'clients/skills/loop-review/SKILL.md',
+    launch: 'coral-cli <run-host> <agent> -i "<review prompt>" --work-dir "<project root>" -d',
+    end: '\n```',
+    waits: [
+      'cd "<project root>" && coral-cli wait jobs <job-id...> --embed',
+      'cd "<project root>" && coral-cli wait jobs <job-id...> --embed',
+      'cd "<project root>" && coral-cli wait jobs <job-id...> --cursor <cursor> --embed',
+      'cd "<project root>" && <the printed coral-cli wait jobs command>',
+    ],
+  },
+  {
+    file: 'clients/skills/loop-review/SKILL.md',
+    launch: 'coral-cli <run-host> -b -i "<fix brief>" --work-dir "<project root>" -d',
+    end: '\n```',
+    waits: [
+      'cd "<project root>" && coral-cli wait jobs <job> --embed',
+      'cd "<project root>" && coral-cli wait jobs <job> --cursor <cursor> --embed',
+      'cd "<project root>" && <the printed coral-cli wait jobs command>',
+    ],
+  },
+  {
     file: 'clients/skills/code-simplify/SKILL.md',
     launch: `coral-cli <other-host> -b --work-dir "<project root>" -d -i - <<'CORAL_INPUT'`,
     end: '\n    5) Review',
