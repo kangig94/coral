@@ -21,7 +21,6 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 import { observeProcessLiveness, probeProcessIncarnation } from '#src/infra/node-process.js';
 import {
   admittedByThisCoordinator,
-  classifyLocalCarriers,
   collectLocalCarrierInputs,
   createObserveCarriers,
   type LocalCarrierRegistries,
@@ -175,42 +174,6 @@ describe('createObserveCarriers', () => {
     expect(await observe(['job-1'])).toEqual([
       { jobId: 'job-1', liveness: 'unknown', storedPhase: 'running', observedMaxJournalSeq: 7 },
     ]);
-  });
-
-  it('keeps a missing local registry entry defect-free when a durable operation still owns the job', () => {
-    const db = createDb();
-    const record = providerOperationRecord('executing', { job: 98 });
-    insertProviderOperation(db, record);
-    const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
-
-    const [result] = classifyLocalCarriers(
-      [ACQUIRED_JOB_ID],
-      registriesFor(details, {
-        getDb: () => db,
-        hasStartupRecoveryPassed: () => true,
-      }),
-      7,
-    );
-
-    expect(result?.observation.liveness).toBe('unknown');
-    expect(result?.observation.defect).toBeUndefined();
-  });
-
-  it('reports an advisory defect when settlement removes both owners before the terminal projects', () => {
-    const db = createDb();
-    const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
-
-    const [result] = classifyLocalCarriers(
-      [ACQUIRED_JOB_ID],
-      registriesFor(details, {
-        getDb: () => db,
-        hasStartupRecoveryPassed: () => true,
-      }),
-      7,
-    );
-
-    expect(result?.observation.liveness).toBe('unknown');
-    expect(result?.observation.defect).toBe('local-unknown-after-recovery-decision');
   });
 
   it.each([

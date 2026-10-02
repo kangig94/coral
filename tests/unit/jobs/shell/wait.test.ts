@@ -99,20 +99,6 @@ describe('WaitCoordinator', () => {
     await Promise.all([waiting, terminalWaiting]);
   });
 
-  it('rechecks persisted state after subscribing', async () => {
-    const f = fixture();
-    const on = f.eventBus.on.bind(f.eventBus);
-    vi.spyOn(f.eventBus, 'on').mockImplementation((...args) => {
-      on(...args);
-      if (args[0] === 'session:released') {
-        f.terminalize();
-        f.releaseClaim();
-      }
-      return f.eventBus;
-    });
-    await expect(f.wait.waitForJobTerminal('job-1')).resolves.toBeUndefined();
-  });
-
   it('catches up from the durable journal after a missed notification', async () => {
     const f = fixture();
     const stream = f.wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 1 });

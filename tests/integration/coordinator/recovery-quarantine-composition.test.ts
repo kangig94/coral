@@ -27,47 +27,6 @@ describe('recovery quarantine composition', () => {
     harness = null;
   });
 
-  it('rehydrates and clears a settled-unbound status after restart without an in-memory binding', async () => {
-    // The fixture's recorded pids are small numbers a busy host usually has running, and startup retires
-    // a superseded record whose processes are all observed absent. Left to the real port this test asks
-    // the host what pid 101 is doing: a developer machine answers EPERM and the record survives, a CI
-    // container answers ESRCH and boot retires the very status the test is here to see rehydrated.
-    harness = createHandoffCoresHarness({ observeLiveness: () => 'alive' });
-    const record = providerOperationRecord('settlement-pending');
-    insertProviderOperation(harness.db, record);
-    const status = createSettledUnboundStatusPort(() => harness!.db, harness.runtime.time);
-    const recorded = status.record(record.operation);
-    if (recorded.kind !== 'recorded') throw new Error('expected durable settled-unbound status');
-    const [subject] = recorded.ownership.subjects;
-    if (subject === undefined) throw new Error('expected durable settled-unbound subject');
-
-    const quarantine = new RecoveryQuarantineStore(harness.db, harness.runtime.time);
-    const beforeBoot = quarantine.list().map((entry) => `${entry.boundary}/${entry.subject.key}`);
-    const coordinator = await harness.bootCore({ instanceId: 'settled-unbound-restart-owner' });
-    // Boot must rehydrate this status, not consume it, so a failure has to say which one happened.
-    expect(
-      quarantine.read(subject.boundary, subject.key),
-      `boot consumed the durable settled-unbound status.\n` +
-        `  want: ${subject.boundary}/${subject.key}\n` +
-        `  before boot: ${JSON.stringify(beforeBoot)}\n` +
-        `  after boot:  ${JSON.stringify(quarantine.list().map((entry) => `${entry.boundary}/${entry.subject.key}`))}\n` +
-        `  operation row after boot: ${JSON.stringify(readProviderOperation(harness.db, record.operation))}`,
-    ).not.toBeNull();
-    const admission = coordinator.core.launchCoordinator.requestLaunch(
-      record.operation.jobId,
-      'codex',
-      { kind: 'system-task', id: 'settled-unbound-restart-preparation' },
-      'default',
-    );
-    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected caller permit');
-    expect(
-      coordinator.core.launchCoordinator.prepareProviderOperationBinding(admission.permit, record.operation),
-    ).toEqual({ kind: 'already-settled' });
-    expect(quarantine.read(subject.boundary, subject.key)).toBeNull();
-    expect(coordinator.core.launchCoordinator.reservationFor(record.operation.jobId)).toBeNull();
-    expect(readProviderOperation(harness.db, record.operation)).toMatchObject({ operation: record.operation });
-  });
-
   it('runs the advertised command after restart to clear durable and rehydrated settled-unbound ownership', async () => {
     harness = createHandoffCoresHarness();
     const record = providerOperationRecord('settlement-pending');

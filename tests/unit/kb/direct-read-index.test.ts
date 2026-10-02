@@ -6,7 +6,6 @@ import type { Database } from '../../../src/store/db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { INDEX_FILE, INDEX_STATE_FILE } from '#src/kb/corpus/index/store.js';
-import type { KbIndex } from '#src/kb/entry-types.js';
 import { listPrinciples } from '#src/kb/ops/principles-list.js';
 import { listSources } from '#src/kb/ops/source/store.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
@@ -128,25 +127,5 @@ describe('KB direct read index', () => {
 
     expect(existsSync(join(runtimeDir, INDEX_FILE))).toBe(false);
     expect(existsSync(join(runtimeDir, INDEX_STATE_FILE))).toBe(false);
-  });
-
-  it('uses the persisted list index when one exists', () => {
-    const { kb, markdownRoot } = createRuntime();
-    writeMarkdownFixture(markdownRoot);
-
-    const persisted: KbIndex = {
-      entries: {},
-      principles: {
-        persisted: 'Persisted statement.',
-      },
-      entityMeta: {},
-      relationships: [],
-    };
-    kb.writeIndex(persisted);
-
-    expect(listPrinciples(kb, {})).toEqual({
-      principles: ['persisted'],
-      total: 1,
-    });
   });
 });

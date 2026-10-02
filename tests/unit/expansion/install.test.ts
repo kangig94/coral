@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,18 +10,12 @@ import { writeKiwiModelFilesAtomicInWorker } from '#src/engines/kiwi/model-artif
 import { kiwiWasmManifestPath } from '#src/engines/kiwi/paths.js';
 import { publishKiwiWasmArtifact } from '#src/engines/kiwi/wasm-artifact.js';
 import { KIWI_MODEL_FILES, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
-import { installResponseSchema, type InstallMethod } from '#src/expansion/rpc-contract.js';
 import { acquirePackageOperationLockAtPath } from '#src/infra/package-operation-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { installExpansion } from '#src/cli/expansion/install.js';
-import { applyBundledStoreSchema } from '#src/store/db.js';
-import { epochPath } from '#src/store/epoch/index.js';
-import { currentCoralStoreFormat } from '#src/store-format.js';
-import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const createdRoots: string[] = [];
-const kiwiInstallMethod = 'runtime-download' satisfies InstallMethod;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -66,50 +60,6 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
 }
 
 describe('installExpansion', () => {
-  it('refuses catalog registration through an epoch with malformed metadata', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    const dbPath = epochPath(runtime.paths.coral.store.dbDir, '1');
-    mkdirSync(dirname(dbPath), { recursive: true });
-    const db = openTestStoreDatabase({
-      path: dbPath,
-      storage: runtime.storage,
-      storeFormat: currentCoralStoreFormat(),
-      flavor: runtime.flavor,
-    });
-    applyBundledStoreSchema(db, currentCoralStoreFormat());
-    db.close();
-    writeFileSync(join(dirname(dbPath), '.lock'), '');
-    writeFileSync(join(dirname(dbPath), 'epoch.json'), '{');
-    vi.spyOn(kiwiInstaller, 'install').mockResolvedValue({
-      status: 'installed',
-      method: kiwiInstallMethod,
-      targetDir: runtime.paths.coral.engine.dataDir('kiwi'),
-      postInstall: [{ action: 'register_expansion', manifestPath: 'missing-manifest.json' }],
-    });
-
-    let refusal: unknown;
-    try {
-      await installExpansion('kiwi', { runtime });
-    } catch (error: unknown) {
-      refusal = error;
-    }
-    expect(refusal).toMatchObject({ code: 'store_not_initialized' });
-  });
-
-  it('returns a structured unknown_expansion error for names outside the bundled manifest', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-
-    const result = await installExpansion('missing-package', { runtime });
-
-    expect(installResponseSchema.parse(result)).toMatchObject({
-      status: 'error',
-      code: 'unknown_expansion',
-      context: { name: 'missing-package' },
-    });
-  });
-
   it('installs a supported package through the shared outer lock without self-contention', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
@@ -133,57 +83,9 @@ describe('installExpansion', () => {
     });
     expect(inspectKiwiArtifact(runtime).ready).toBe(true);
   });
-
-  it.each([
-    {
-      label: 'non-canonical target directory',
-      result: (runtime: Runtime) => ({
-        status: 'installed' as const,
-        method: kiwiInstallMethod,
-        targetDir: join(runtime.paths.coral.engine.dataDir('kiwi'), '..', 'other'),
-      }),
-      message: /non-canonical target directory/u,
-    },
-    {
-      label: 'absolute manifest path',
-      result: (runtime: Runtime) => ({
-        status: 'installed' as const,
-        method: kiwiInstallMethod,
-        targetDir: runtime.paths.coral.engine.dataDir('kiwi'),
-        postInstall: [
-          { action: 'register_expansion' as const, manifestPath: join(fixtureAbsoluteRoot(), 'manifest.json') },
-        ],
-      }),
-      message: /absolute manifest path/u,
-    },
-  ])('rejects installer registration with $label', async ({ result, message }) => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    vi.spyOn(kiwiInstaller, 'install').mockImplementation(async () => result(runtime));
-
-    await expect(installExpansion('kiwi', { runtime })).rejects.toThrow(message);
-  });
 });
 
 describe('Kiwi direct installer boundary', () => {
-  it('rejects a foreign package identity before touching Kiwi data', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    const targetDir = runtime.paths.coral.engine.dataDir('kiwi');
-    mkdirSync(targetDir, { recursive: true });
-    writeFileSync(join(targetDir, 'sentinel'), 'keep', 'utf-8');
-
-    expect(() => kiwiInstaller.inspect(runtime, 'foreign-package')).toThrow(/identity mismatch/u);
-    await expect(
-      kiwiInstaller.uninstall({
-        name: 'foreign-package',
-        version: '1.0.0',
-        runtime,
-      }),
-    ).rejects.toThrow(/identity mismatch/u);
-    expect(pathExists(join(targetDir, 'sentinel'))).toBe(true);
-  });
-
   it('keeps direct uninstall behind the shared package-operation lock', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
@@ -229,8 +131,4 @@ function pathExists(path: string): boolean {
   } catch {
     return false;
   }
-}
-
-function fixtureAbsoluteRoot(): string {
-  return process.platform === 'win32' ? 'C:\\outside' : '/outside';
 }

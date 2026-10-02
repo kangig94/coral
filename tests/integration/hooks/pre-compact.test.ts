@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { PRE_COMPACT_HOOK, cleanupFixtures, createFixture, runHook } from '#tests/unit/hooks/_helpers.js';
+import { cleanupFixtures, createFixture, runHook } from '#tests/unit/hooks/_helpers.js';
 
 afterEach(cleanupFixtures);
 
@@ -83,23 +83,6 @@ function seedPluginManifest(pluginRoot: string, fingerprint: string): string {
 }
 
 describe('pre-compact.mjs', () => {
-  it('exits 0, emits a no-op log line, and does not write snapshots', () => {
-    const fixture = createFixture();
-    const result = runHook(
-      PRE_COMPACT_HOOK,
-      { session_id: 'sess-1', cwd: fixture.projectRoot },
-      { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot, HOME: fixture.root },
-    );
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe('');
-    expect(existsSync(fixture.snapshotDir)).toBe(false);
-    expect(JSON.parse(result.stderr.trim())).toMatchObject({
-      hook: 'pre-compact',
-      message: 'no relevant jobs to snapshot',
-    });
-  });
-
   it('does not call a vanished symlinked store root an empty store', () => {
     const fixture = createFixture();
     const hook = seedPluginManifest(

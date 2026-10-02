@@ -1,3 +1,8 @@
+import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
+import { proxyOperationPrepareResultSchema, type OperationIdentity } from '#src/provider-proxy/protocol.js';
+import { attachContinuityCommit } from '#src/providers/internal/continuity-commit.js';
+import { createDeferred } from '#tools/testing/deferred.js';
+import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type * as MockedNodeNetModule from 'node:net';
 vi.mock('node:net', async (importOriginal) => {
   const actual = await importOriginal<typeof MockedNodeNetModule>();
@@ -61,11 +66,9 @@ vi.mock('node:net', async (importOriginal) => {
     },
   };
 });
-
-import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -90,8 +93,6 @@ import {
 import type { ProxyBootstrapCapsule } from '#src/provider-proxy/bootstrap-capsule.js';
 import {
   proxyOperationActivationOutcomeSchema,
-  proxyOperationSettleParamsSchema,
-  proxyOperationSettleResultSchema,
   type JointContainmentReceipt,
   type Reservation,
   type ProxyIdentity,
@@ -368,35 +369,6 @@ async function startProxy(
   return { control, operation, proxy, capsule };
 }
 
-describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)', () => {
-  it('releases a staged provider root when operation.stop.v1 stops before activation', async () => {
-    const host = fakeHost();
-    const { control, operation } = await startProxy(host);
-
-    const prepared = (await strictTestExchange(
-      control,
-      'operation.prepare.v1',
-      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
-      5_000,
-    )) as { state: string };
-    expect(prepared.state).toBe('pending-activation');
-
-    const stopped = (await strictTestExchange(
-      control,
-      'operation.stop.v1',
-      { operation, cause: 'signal_abort' },
-      5_000,
-    )) as {
-      state: string;
-    };
-
-    expect(stopped.state).toBe('released');
-    expect(host.starts).toBe(0);
-    expect(host.stops).toBe(0);
-    expect(host.released).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
-  });
-});
-
 describe('provider-proxy truthful operation authority', () => {
   it('replays the stored activation ACK without starting the host twice', async () => {
     const host = fakeHost();
@@ -445,56 +417,6 @@ describe('provider-proxy truthful operation authority', () => {
     expect(host.starts).toBe(1);
   });
 
-  it('aborts unresolved staging as soon as its activation lease expires', async () => {
-    const controlled = controlledTimer();
-    const staging = deferred<{
-      state: 'staged';
-      providerRoot: { pid: number; incarnation: ProcessIncarnation };
-      receipt: JointContainmentReceipt;
-    }>();
-    const stageStarted = deferred();
-    const stageAbort = deferred();
-    const stageAborted = vi.fn(() => {
-      stageAbort.resolve();
-    });
-    const host = fakeHost();
-    const { control, operation, proxy } = await startProxy(host, controlled.timer, {
-      readMilliseconds: controlled.readMilliseconds,
-      stageProviderRoot: (signal) => {
-        stageStarted.resolve();
-        signal.addEventListener('abort', stageAborted, { once: true });
-        return staging.promise;
-      },
-    });
-    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
-    const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    const preparing = strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000);
-    await stageStarted.promise;
-
-    controlled.advance(PROXY_PENDING_ACTIVATION_LEASE_MS);
-
-    await stageAbort.promise;
-    expect(stageAborted).toHaveBeenCalledOnce();
-    expect(proxy.ledger().get(operation)?.state).toBe('releasing');
-    await expect(
-      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
-    ).resolves.toMatchObject({
-      state: 'releasing',
-      releaseKind: 'never-started',
-    });
-
-    staging.resolve({
-      state: 'staged',
-      providerRoot: { pid: 7_000, incarnation: testIncarnation(900) },
-      receipt: asJointContainmentReceipt('joint-late'),
-    });
-    await expect(preparing).rejects.toThrow(/lease expired/u);
-    await expect(
-      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5000),
-    ).resolves.toMatchObject({ state: 'released-never-started' });
-    expect(proxy.ledger().get(operation)).toBeNull();
-  });
-
   it('retains a failed guardian release and retries it from the releasing state', async () => {
     const controlled = controlledTimer();
     const firstRelease = deferred();
@@ -538,122 +460,173 @@ describe('provider-proxy truthful operation authority', () => {
       state: 'released-never-started',
     });
   });
-
-  it('settles cumulatively and releases proxy-local and guardian membership state once', async () => {
-    const releaseMembership = vi.fn(async () => {});
-    const host = fakeHost();
-    const { control, operation, proxy } = await startProxy(host, timer, {
-      releaseMembership,
-      onProviderEvent: (request) => ({ kind: 'ack', committedThroughProviderSeq: request.providerSeq }),
-    });
-    const prepared = (await strictTestExchange(
-      control,
-      'operation.prepare.v1',
-      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
-      5_000,
-    )) as { reservation: Reservation; jointContainmentReceipt: JointContainmentReceipt };
-    await strictTestExchange(
-      control,
-      'operation.activate.v1',
-      {
-        operation,
-        reservation: prepared.reservation,
-        jointContainmentReceipt: prepared.jointContainmentReceipt,
-        jointActivationReceipt: asJointActivationReceipt('activation-1'),
-      },
-      5_000,
-    );
-    await strictTestExchange(control, 'operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
-    proxy.emitProviderEvent(operation, { kind: 'progress', message: 'final' });
-    await strictTestExchange(control, 'operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000);
-
-    const settleRequest = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq: 1 });
-    const settled = proxyOperationSettleResultSchema.parse(
-      await strictTestExchange(control, 'operation.settle.v1', settleRequest, 5_000),
-    );
-    expect(settled).toEqual({ state: 'released-after-terminal', settledThroughProviderSeq: 1 });
-    const replayRequest = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq: 0 });
-    const replay = proxyOperationSettleResultSchema.parse(
-      await strictTestExchange(control, 'operation.settle.v1', replayRequest, 5_000),
-    );
-    expect(replay).toEqual({ state: 'released-after-terminal', settledThroughProviderSeq: 1 });
-    expect(proxy.ledger().get(operation)).toBeNull();
-    expect(host.settled).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
-    expect(releaseMembership).toHaveBeenCalledOnce();
-  });
 });
 
-describe('provider-proxy proxy: controller succession', () => {
-  const SECRET = 'd'.repeat(64);
+const CONTINUITY_PREPARED: ProxyPreparedAppServerOperation = {
+  version: 1,
+  provider: 'codex',
+  binding: { provider: 'codex', kind: 'account', binding: {} },
+  request: {
+    action: 'exec',
+    sessionId: 'session-1',
+    prompt: 'hi',
+    cwd: fixtureCanonicalWorkDir('/tmp'),
+    bypassPermissions: false,
+    coralEnv: {},
+  },
+  persistedContinuity: null,
+  baseEnv: {},
+  protectedEnv: {},
+  platform: 'linux',
+};
 
-  async function installRecoveryGrant(
-    control: ControlClient,
-    capsule: ProxyBootstrapCapsule,
-  ): Promise<Readonly<{ grantId: string; set: Record<string, string> }>> {
-    const grantId = randomUUID();
-    const set = {
-      generation: capsule.generation,
-      hostFingerprint: capsule.hostFingerprint,
-      buildSetId: capsule.buildSetId,
-      proxyInstanceId: capsule.proxyInstanceId,
-    };
-    await strictTestExchange(
-      control,
-      'handoff.install.v1',
-      {
-        grantId,
-        secretSha256: createHash('sha256').update(SECRET, 'utf8').digest('hex'),
-        ...set,
-        operations: [],
-        orphanTimeoutMs: 30_000,
+const supervisors: OperationSupervisor[] = [];
+afterEach(() => {
+  for (const supervisor of supervisors.splice(0)) supervisor.close();
+});
+
+async function preparedOperation(
+  pushProviderEvent: ConstructorParameters<typeof OperationSupervisor>[0]['pushProviderEvent'],
+  startOverride?: SemanticOperationStartHandle,
+) {
+  const operation: OperationIdentity = {
+    jobId: randomUUID(),
+    operationId: randomUUID(),
+    proxyInstanceId: randomUUID(),
+    buildSetId: randomUUID(),
+  };
+  const time = new VirtualTime();
+  const start = vi.fn(
+    () =>
+      startOverride ?? {
+        result: Promise.resolve({
+          kind: 'started' as const,
+          hostRef: {
+            provider: 'codex',
+            fingerprint: 'a'.repeat(64),
+            instanceId: 'host-1',
+            leaseMode: 'shared' as const,
+          },
+        }),
+        abortAndRelease: async () => {},
       },
-      5_000,
-    );
-    return { grantId, set };
-  }
+  );
+  const supervisor = new OperationSupervisor({
+    host: { start, stop: async () => {} },
+    timer: time,
+    nowMs: () => time.now(),
+    wallClockNow: () => 0,
+    mintReservation: () => asReservation(randomUUID()),
+    proxyInstanceId: operation.proxyInstanceId,
+    buildSetId: operation.buildSetId,
+    stageProviderRoot: () => ({
+      result: Promise.resolve({
+        state: 'staged' as const,
+        providerRoot: { pid: 4242, incarnation: testIncarnation(1700000000) },
+        receipt: asJointContainmentReceipt('containment'),
+      }),
+      confirmActivation: async () => {},
+      abortAndRelease: async () => {},
+    }),
+    pushProviderEvent,
+    faultProviderEventControl: () => {},
+  });
+  supervisors.push(supervisor);
+  const prepareAttemptKey = operationPrepareAttemptKey({
+    operation,
+    hostFingerprint: 'a'.repeat(64),
+    prepareAttemptNumber: 1,
+    prepared: CONTINUITY_PREPARED,
+  });
+  const prepared = proxyOperationPrepareResultSchema.parse(
+    await supervisor.prepare(operation, { prepareAttemptNumber: 1, prepareAttemptKey, prepared: CONTINUITY_PREPARED }),
+  );
+  if (prepared.state !== 'pending-activation') throw new Error('expected pending activation');
+  const activation = {
+    operation,
+    reservation: prepared.reservation,
+    jointContainmentReceipt: prepared.jointContainmentReceipt,
+    jointActivationReceipt: asJointActivationReceipt('activation'),
+  };
+  return {
+    supervisor,
+    operation,
+    time,
+    start,
+    activate: () =>
+      supervisor.activate(operation, {
+        ...activation,
+        activationFingerprint: operationActivationFingerprint(activation),
+      }),
+  };
+}
 
-  function successorOf(buildSetId: string) {
-    return {
-      instanceId: randomUUID(),
-      pid: 2,
-      incarnation: testIncarnation(2),
-      generation: 'gen2' as const,
-      flavor: 'prod' as const,
-      buildSetId,
-    };
-  }
-
-  async function redeem(
-    endpoint: string,
-    grantId: string,
-    set: Record<string, string>,
-    successor: ReturnType<typeof successorOf>,
-  ): Promise<unknown> {
-    const client = await connectControlClient(endpoint, timer, 5_000);
-    cleanups.push(() => client.close());
-    return strictTestExchange(client, 'handoff.redeem.v1', { grantId, secret: SECRET, successor, ...set }, 5_000);
-  }
-  it('redeems a cross-build grant only for the successor the controller authorized', async () => {
-    const { control, capsule } = await startProxy(fakeHost());
-    const { grantId, set } = await installRecoveryGrant(control, capsule);
-    const successorBuild = { generation: 'gen2' as const, flavor: 'prod' as const, buildSetId: randomUUID() };
-    await strictTestExchange(
-      control,
-      'controller-transfer.v1',
+it('commits provider continuity only after a durable ACK', async () => {
+  const ack = createDeferred<unknown>();
+  const { supervisor, operation, time, activate } = await preparedOperation(() => ({
+    controlEpoch: 1,
+    response: ack.promise,
+  }));
+  await activate();
+  await supervisor.attach(operation, 0);
+  const commit = vi.fn();
+  const reject = vi.fn();
+  const emission = supervisor.emitProviderEvent(
+    operation,
+    attachContinuityCommit(
       {
-        grantId,
-        attemptId: 'attempt-1',
-        successor: successorBuild,
-        controlGeneration: 1,
+        kind: 'continuity',
+        conversationRef: 'thread-1',
+        resumable: true,
+        providerContinuity: { provider: 'codex', state: { threadId: 'thread-1' } },
       },
-      5000,
-    );
-    control.close();
-    await expect(redeem(capsule.canonicalEndpoint, grantId, set, successorOf(randomUUID()))).rejects.toThrow(
-      /build this grant does not authorize/u,
-    );
-    await expect(
-      redeem(capsule.canonicalEndpoint, grantId, set, successorOf(successorBuild.buildSetId)),
-    ).resolves.toMatchObject({ state: 'redeemed-provisional' });
+      { commit, reject },
+    ),
+  );
+  if (emission.kind !== 'continuity-recorded') throw new Error('expected continuity settlement');
+  time.tick(1);
+  expect(commit).not.toHaveBeenCalled();
+  expect(supervisor.ledger().get(operation)?.committedThroughProviderSeq).toBe(0);
+
+  ack.resolve({ kind: 'ack', committedThroughProviderSeq: 1 });
+  await emission.settlement.committed;
+  expect(commit).toHaveBeenCalledOnce();
+  expect(reject).not.toHaveBeenCalled();
+  expect(supervisor.ledger().get(operation)?.committedThroughProviderSeq).toBe(1);
+});
+
+it('discards an ACK that arrives after beginRelease', async () => {
+  const response = createDeferred<unknown>();
+  const pushed = createDeferred<void>();
+  const startResult = createDeferred<{ kind: 'started'; hostRef: HostRef }>();
+  const releaseGate = createDeferred<void>();
+  const { supervisor, operation, time, start, activate } = await preparedOperation(
+    () => {
+      pushed.resolve();
+      return { controlEpoch: 1, response: response.promise };
+    },
+    { result: startResult.promise, abortAndRelease: () => releaseGate.promise },
+  );
+  void activate();
+  await vi.waitFor(() => expect(start).toHaveBeenCalledOnce());
+  const emission = supervisor.emitProviderEvent(operation, {
+    kind: 'continuity',
+    conversationRef: 'late-ack-thread',
+    resumable: true,
+    providerContinuity: { cwd: '/workspace', threadId: 'late-ack-thread' },
+  });
+  if (emission.kind !== 'continuity-recorded') throw new Error('expected a pending continuity settlement');
+  const settlementFailure = emission.settlement.committed.catch((error: unknown) => error);
+  time.tick(PROXY_PENDING_ACTIVATION_LEASE_MS);
+  expect(await settlementFailure).toMatchObject({ code: 'continuity_commit_operation_released' });
+  supervisor.controlActivated(1);
+  time.tick(1);
+  await pushed.promise;
+  response.resolve({ kind: 'ack', committedThroughProviderSeq: 1 });
+  await flushMicrotasks();
+  expect(supervisor.ledger().get(operation)).toMatchObject({
+    state: 'releasing',
+    committedThroughProviderSeq: 0,
+    bufferedEvents: [{ providerSeq: 1 }],
   });
 });

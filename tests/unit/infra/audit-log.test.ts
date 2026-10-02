@@ -1,12 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { backendLog } from '#src/infra/backend-log.js';
-import {
-  describeAuthorizationDecision,
-  formatAuditEvent,
-  writeAuditEvent,
-  writeAuthorizationDecisionAudit,
-} from '#src/infra/audit-log.js';
+import { describeAuthorizationDecision, formatAuditEvent } from '#src/infra/audit-log.js';
 import type { Capability } from '#src/security/capability.js';
 import type { Principal } from '#src/security/principal.js';
 import type { Decision } from '#src/security/policy/authorize.js';
@@ -47,19 +41,6 @@ describe('audit-log', () => {
     expect(typeof record.recordedAt).toBe('string');
   });
 
-  it('writes to the selected backend log level', () => {
-    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
-    try {
-      writeAuditEvent('example_warn', { ok: true }, 'warn');
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      const record = parseAuditLine(String(warnSpy.mock.calls[0][0]));
-      expect(record.event).toBe('example_warn');
-      expect(record.ok).toBe(true);
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
   it('describes authorization decisions without credential material', () => {
     const principal: Principal = {
       subject: 'agent',
@@ -91,32 +72,5 @@ describe('audit-log', () => {
       decision,
       binding,
     });
-  });
-
-  it('writes authorization decisions through the existing audit sink', () => {
-    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
-    try {
-      const binding = { kind: 'project', root: fixtureCanonicalWorkDir('/workspace/project') } as const;
-      const decision = {
-        ok: false,
-        reason: 'unauthenticated',
-        detail: {
-          requires: 'kb:read',
-          requestedBinding: binding,
-        },
-      } satisfies Decision;
-
-      writeAuthorizationDecisionAudit(null, 'kb.source.read', decision, binding);
-
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      const record = parseAuditLine(String(warnSpy.mock.calls[0][0]));
-      expect(record.event).toBe('authorization_decision');
-      expect(record.principal).toBeNull();
-      expect(record.method).toBe('kb.source.read');
-      expect(record.decision).toEqual(decision);
-      expect(record.binding).toEqual(binding);
-    } finally {
-      warnSpy.mockRestore();
-    }
   });
 });

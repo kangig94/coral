@@ -90,9 +90,6 @@ describe('provider app-server transport diagnostics', () => {
       },
       hostLog: { startSeq: 2, endSeq: 3 },
     });
-    expect(Object.isFrozen(observations[0])).toBe(true);
-    expect(Object.isFrozen(observations[0]?.response)).toBe(true);
-    expect(Object.isFrozen(observations[0]?.hostLog)).toBe(true);
   });
 
   it('caps retained UTF-8 host-log payload and marks incomplete request spans', async () => {

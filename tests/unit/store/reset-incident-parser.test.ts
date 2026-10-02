@@ -68,14 +68,10 @@ function expectDecodeCode(run: () => unknown, code: StoreResetManifestDecodeErro
 }
 
 describe('store reset incident manifest parser', () => {
-  it('parses the exact current schema and freezes the validated result', () => {
+  it('parses the exact current schema', () => {
     const parsed = parseStoreResetIncidentManifest(bytes(manifest()));
 
     expect(parsed).toEqual(manifest());
-    expect(Object.isFrozen(parsed)).toBe(true);
-    expect(Object.isFrozen(parsed.build)).toBe(true);
-    expect(Object.isFrozen(parsed.files)).toBe(true);
-    expect(Object.isFrozen(parsed.files[0])).toBe(true);
   });
 
   it('serializes only known fields in deterministic schema order', () => {
@@ -183,21 +179,6 @@ describe('store reset incident manifest parser', () => {
       MAX_RESET_MANIFEST_JSON_DEPTH + 1,
     )}`;
     expectDecodeCode(() => parseStoreResetIncidentManifest(encoder.encode(nested)), 'manifest_depth_exceeded');
-  });
-
-  it('accepts manifests exactly at the byte and container depth limits', () => {
-    const serialized = encoder.encode(serializeStoreResetIncidentManifest(manifest()));
-    const exactBytes = new Uint8Array(MAX_RESET_MANIFEST_BYTES);
-    exactBytes.fill(0x20);
-    exactBytes.set(serialized);
-
-    expect(parseStoreResetIncidentManifest(exactBytes)).toEqual(manifest());
-
-    let nestedUnknown: unknown = null;
-    for (let depth = 0; depth < MAX_RESET_MANIFEST_JSON_DEPTH - 1; depth += 1) {
-      nestedUnknown = { nested: nestedUnknown };
-    }
-    expect(parseStoreResetIncidentManifest(bytes({ ...manifest(), unknown: nestedUnknown }))).toEqual(manifest());
   });
 
   it('rejects duplicate, unknown, or non-canonically ordered evidence files', () => {

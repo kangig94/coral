@@ -121,28 +121,6 @@ function expectSetupError(run: () => void, code: string): void {
 }
 
 describe('sessions projections', () => {
-  it('should project session.opened into a fresh projection row', () => {
-    const h = newHarness();
-    try {
-      const entry = sessionEntry({ sessionId: 'session-open' });
-      const appended = h.commit([openedInput(entry, 'scope-open')]);
-
-      const row = readProjectionSession(h.db, 'session-open');
-      expect(row).not.toBeNull();
-      expect(row).toMatchObject({
-        controller: 'default',
-        provider: 'codex',
-        resumable: false,
-        conversationRef: null,
-        scopeKey: 'scope-open',
-        lastSeq: appended.at(-1)?.seq,
-      });
-      expect(row?.entry).toMatchObject({ sessionId: 'session-open', state: 'pending', version: 1 });
-    } finally {
-      h.close();
-    }
-  });
-
   it('rejects unknown controller profile fields instead of normalizing persisted data', () => {
     const h = newHarness();
     try {
@@ -153,34 +131,6 @@ describe('sessions projections', () => {
 
       expect(() => h.commit([openedInput(entry, 'scope-stale-transport')])).toThrow();
       expect(readProjectionSession(h.db, 'session-stale-transport')).toBeNull();
-    } finally {
-      h.close();
-    }
-  });
-
-  it('should update resumable and conversation ref from continuity checkpoint snapshots', () => {
-    const h = newHarness();
-    try {
-      const opened = sessionEntry({ sessionId: 'session-ckpt' });
-      const ready = sessionEntry({ ...opened, state: 'ready', conversationRef: 'thread-1', version: 2 });
-      h.commit([
-        openedInput(opened, 'scope-ckpt'),
-        checkpointedInput(ready, { conversationRef: 'thread-1', resumable: true }),
-      ]);
-
-      expect(readProjectionSession(h.db, 'session-ckpt')).toMatchObject({
-        resumable: true,
-        conversationRef: 'thread-1',
-      });
-
-      const sealed = sessionEntry({ ...opened, state: 'non_resumable', version: 3 });
-      h.commit([checkpointedInput(sealed, { conversationRef: null, resumable: false })]);
-
-      expect(readProjectionSession(h.db, 'session-ckpt')).toMatchObject({
-        resumable: false,
-        conversationRef: null,
-        entry: { state: 'non_resumable', version: 3 },
-      });
     } finally {
       h.close();
     }

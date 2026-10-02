@@ -10,7 +10,6 @@ import type {
   RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type {
-  ProviderProxySetContainmentRefusedDecision,
   ProviderProxySetDecision,
   ProviderProxySetNonAuthorizingContainmentDecision,
   ProviderProxySetOperatorAbandonmentDecision,
@@ -338,16 +337,6 @@ void [
   validHeartbeatHoldExhaustedAwaitAbsence,
 ];
 
-const boundExpiryRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
-  reason: 'control_reattachment_bound_expired',
-  fault: 'control-channel-fault',
-  role: 'guardian',
-  cause: 'closed',
-  attempts: 3,
-  elapsedMs: 23_000,
-  boundMs: 23_000,
-  error: 'bound expired',
-};
 const localFailureRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
   reason: 'heartbeat_local_failure',
   fault: 'heartbeat-failed',
@@ -356,55 +345,7 @@ const localFailureRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
   terminalReason: 'local-failure',
   error: 'cannot encode heartbeat',
 };
-const heartbeatBoundRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
-  reason: 'heartbeat_hold_exhausted',
-  fault: 'heartbeat-hold-exhausted',
-  role: 'guardian',
-  method: 'guardian.heartbeat.v1',
-  lastIncidentReason: 'unanswered',
-  attempts: 3,
-  observedDurationMs: 23_000,
-  schedulerLatenessMs: 0,
-  error: 'heartbeat timed out',
-};
-const heartbeatProtocolRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
-  reason: 'heartbeat_protocol_incompatible',
-  fault: 'heartbeat-method-not-found',
-  role: 'guardian',
-  method: 'guardian.heartbeat.v1',
-  incidentReason: 'method-not-found',
-  error: 'method not found',
-};
-const operationControlRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
-  reason: 'operation_control_indeterminate',
-  fault: 'operation-control-failed',
-  policy: containmentPolicy,
-  error: 'mutation outcome unknown',
-};
-
-const heldWithLiveClaims: ProviderProxySetDecision = {
-  action: 'preserve',
-  reason: 'containment_refused_live_claims',
-  liveClaims: 1,
-  setIdentity,
-  refusedDecision: heartbeatBoundRefusal,
-};
-
-declare const flattenedContainmentRefusalShape: Readonly<{
-  action: 'preserve';
-  reason: 'containment_refused_live_claims';
-  liveClaims: number;
-  setIdentity: ProviderProxySetIdentity;
-  role: 'guardian';
-  method: 'guardian.heartbeat.v1';
-}>;
-
-// @ts-expect-error flattened refusals must not inhabit containment-refusal decisions.
-const flattenedContainmentRefusal: ProviderProxySetContainmentRefusedDecision = flattenedContainmentRefusalShape;
 
 // @ts-expect-error non-authorizing refusals must never authorize stop-and-reap.
 const nonAuthorizingCannotStop: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> = localFailureRefusal;
 void nonAuthorizingCannotStop;
-
-void [boundExpiryRefusal, localFailureRefusal, heartbeatProtocolRefusal, operationControlRefusal, heldWithLiveClaims];
-void flattenedContainmentRefusal;

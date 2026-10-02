@@ -1,4 +1,3 @@
-import { once } from 'node:events';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -84,13 +83,16 @@ async function startEndpoint(echo: (params: unknown) => void = () => {}) {
       return { accepted: true, nextChallenge };
     },
   };
+  const operator = vi.fn(() => ({ state: 'abandoned' }));
   const nonce = createBootstrapNonceCredential(BOOTSTRAP_NONCE);
   const redemptions = new Map<string, { role: string; redemptionReceipt: string }>();
   const endpoint = createControlEndpoint({
     socketPath,
     role: {
       heartbeatMethod: 'role.heartbeat.v1',
+      pairing: { openMethod: 'role.pair.v1', secret: 'shared-secret' },
       methods: new Map<string, ControlMethod>([
+        ['role.operator.v1', { authority: 'operator', handle: operator }],
         [
           'role.open.v1',
           {
@@ -137,6 +139,7 @@ async function startEndpoint(echo: (params: unknown) => void = () => {}) {
     endpoint,
     socketPath,
     observer,
+    operator,
     lapseControl: () => {
       controlLive = false;
     },
@@ -189,41 +192,6 @@ function connect(socketPath: string): Promise<Client> {
 }
 
 describe('provider-proxy control endpoint', () => {
-  it('returns the identical opening to a same-successor retry on a new socket, and keeps the first challenge live', async () => {
-    const set = await startEndpoint();
-    const { socketPath } = set;
-    const incumbent = await connect(socketPath);
-    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
-    set.lapseControl();
-
-    const first = await connect(socketPath);
-    const opened = await first.call('role.redeem.v1', { successorId: 'successor-new-socket' });
-    expect(opened.result).toMatchObject({ role: 'successor', redemptionReceipt: expect.any(String) });
-
-    // The reply never reached the successor — network partition, timeout, anything — so it retries on a
-    // brand-new connection while the first is still open and its challenge still unechoed.
-    const firstClosed = once(first.socket, 'close');
-    const retry = await connect(socketPath);
-    const retried = await retry.call('role.redeem.v1', { successorId: 'successor-new-socket' });
-
-    // The severe defect: today this mints a fresh epoch and challenge, destroying the one the successor is
-    // still holding — so the fix is proven by every field of the reply being byte-identical, including the
-    // registry's own memoized receipt.
-    expect(retried.result).toEqual(opened.result);
-
-    // And proof the outstanding challenge itself survived, not just the reply: the exact challenge from the
-    // *first* redemption is still the one this tenancy answers to.
-    const { controlEpoch, heartbeatChallenge } = opened.result as { controlEpoch: number; heartbeatChallenge: string };
-    expect(set.observer.onControlActive).not.toHaveBeenCalled();
-    const beat = await retry.call('role.heartbeat.v1', { controlEpoch, heartbeatChallenge });
-    expect(beat.result).toMatchObject({ state: 'active' });
-    expect(set.observer.onControlActive).toHaveBeenCalledExactlyOnceWith(controlEpoch);
-
-    // The superseded first connection is retired without being read as a loss of the tenancy it opened.
-    await firstClosed;
-    expect(set.observer.onControlLost).not.toHaveBeenCalled();
-  });
-
   it('carries a multi-byte payload intact when its frame is split across socket writes', async () => {
     const received: unknown[] = [];
     const delivered = createDeferred<void>();
@@ -255,34 +223,36 @@ describe('provider-proxy control endpoint', () => {
   });
 });
 
-/** A pre-encoded request frame `pushOnTenancy` can write — the shape any `provider.event.v1` push takes,
- *  though `pushOnTenancy` itself is transport-only and does not inspect `method`. */
-function pushFrame(id: number): string {
-  return `${JSON.stringify({ jsonrpc: '2.0', id, method: 'provider.event.v1', params: { hello: 'world' } })}\n`;
-}
+it('refuses operator abandonment while coordinator control is live', async () => {
+  const set = await startEndpoint();
+  const incumbent = await connect(set.socketPath);
+  await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+  const pairing = await connect(set.socketPath);
+  await pairing.call('role.pair.v1', { pairingSecret: 'shared-secret' });
+  const provisional = await connect(set.socketPath);
 
-describe('provider-proxy control endpoint: pushOnTenancy', () => {
-  it('rejects a push outstanding on a predecessor connection rather than letting the successor answer it', async () => {
-    const set = await startEndpoint();
-    const { socketPath, endpoint } = set;
-    const incumbent = await connect(socketPath);
-    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
-    await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
-
-    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000).response;
-    // Attached in the same tick `pushed` is created: the rejection this test provokes below fires from a
-    // socket 'close' callback several ticks later, and Node flags a promise as unhandled by whether a handler
-    // was attached *before* that callback runs — not by whether one is attached eventually.
-    const rejected = expect(pushed).rejects.toMatchObject({ code: 'control_endpoint_push_lost' });
-    // The incumbent never answers; instead its lease lapses and a successor redeems while the push is still
-    // outstanding — the epoch rotates, but the pending push was bound to the *socket* it was written on.
-    set.lapseControl();
-    const successor = await connect(socketPath);
-    await successor.call('role.redeem.v1', {});
-
-    // The predecessor's connection is destroyed on redemption, which is what must reject this push — a reply
-    // arriving on the successor's own (different) socket could never satisfy it even without this cleanup,
-    // but nothing here should leave it hanging either.
-    await rejected;
+  await expect(provisional.call('role.operator.v1', {})).resolves.toMatchObject({
+    error: { data: { code: 'invalid_state' } },
   });
+  expect(set.operator).not.toHaveBeenCalled();
+});
+
+it('keeps a provisionally accepted socket when successor control is admitted after expiry', async () => {
+  const set = await startEndpoint();
+  const incumbent = await connect(set.socketPath);
+  await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+  const pairing = await connect(set.socketPath);
+  await pairing.call('role.pair.v1', { pairingSecret: 'shared-secret' });
+  const provisional = await connect(set.socketPath);
+  set.lapseControl();
+
+  const opened = await provisional.call('role.redeem.v1', { successorId: 'successor' });
+  const control = opened.result as { controlEpoch: number; heartbeatChallenge: string };
+  await expect(
+    provisional.call('role.heartbeat.v1', {
+      controlEpoch: control.controlEpoch,
+      heartbeatChallenge: control.heartbeatChallenge,
+    }),
+  ).resolves.toMatchObject({ result: { state: 'active' } });
+  await expect(provisional.call('role.echo.v1', {})).resolves.toMatchObject({ result: { state: 'worked' } });
 });

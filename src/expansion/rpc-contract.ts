@@ -28,7 +28,6 @@ const expansionCatalogStatusLiterals = [
 
 const installOnlyCatalogStatusLiterals = ['not_installed', 'installed', 'installing'] as const;
 export const installMethodSchema = z.enum(['runtime-download', 'shell']);
-export type InstallMethod = z.infer<typeof installMethodSchema>;
 
 const providesSchema = z
   .object({

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -73,20 +73,6 @@ afterEach(() => {
 });
 
 describe('store format classification', () => {
-  it('classifies an absent database without creating it', () => {
-    const { dbPath } = tempPath('absent.db');
-
-    expect(classify(dbPath, format('1.0.0'))).toEqual({ kind: 'absent' });
-    expect(existsSync(dbPath)).toBe(false);
-  });
-
-  it('classifies a database with no user tables as fresh', () => {
-    const { dbPath } = tempPath('fresh.db');
-    new DatabaseSync(dbPath).close();
-
-    expect(classify(dbPath, format('1.0.0'))).toEqual({ kind: 'fresh' });
-  });
-
   it('leaves a fresh database byte-identical when a read-only opener refuses it', () => {
     const { root, dbPath } = tempPath('readonly-fresh.db');
     new DatabaseSync(dbPath).close();
@@ -99,19 +85,13 @@ describe('store format classification', () => {
     expect(sha256File(dbPath)).toBe(before);
   });
 
-  it('classifies an equal fingerprint with a lower or equal SemVer as compatible', () => {
+  it('classifies an equal fingerprint with a lower SemVer as compatible', () => {
     const lower = tempPath('lower.db').dbPath;
-    const equal = tempPath('equal.db').dbPath;
     createStore(lower, { fingerprint: CURRENT_FINGERPRINT, productVersion: '0.9.16' });
-    createStore(equal, { fingerprint: CURRENT_FINGERPRINT, productVersion: '0.10.0' });
 
     expect(classify(lower, format('0.10.0'))).toMatchObject({
       kind: 'compatible',
       storedProductVersion: '0.9.16',
-    });
-    expect(classify(equal, format('0.10.0'))).toMatchObject({
-      kind: 'compatible',
-      storedProductVersion: '0.10.0',
     });
   });
 

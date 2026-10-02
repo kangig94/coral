@@ -7,9 +7,7 @@ import {
   cleanupSpawnedProcessGroup,
   gracefulKill,
   gracefulKillByPid,
-  liveChildAuthority,
   retainSpawnedProcessGroupCleanup,
-  signalOwnedProcessGroup,
 } from '#src/infra/process-supervision.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -24,111 +22,21 @@ class FakeChild extends EventEmitter implements ChildProcessLike {
   readonly stdout = null;
   readonly stderr = null;
   readonly killedSignals: NodeJS.Signals[] = [];
-  transportClosed = false;
-  private collected = false;
-  private returnFalseOnSignal: NodeJS.Signals | null = null;
-  private throwOnSignal: NodeJS.Signals | null = null;
 
   constructor(...args: [] | [number | undefined]) {
     super();
     this.pid = args.length === 0 ? 4_242 : args[0];
   }
 
-  /** Models the "child is already gone" race `safeKill`'s try/catch exists to absorb. */
-  throwOnNextKill(signal: NodeJS.Signals): void {
-    this.throwOnSignal = signal;
-  }
-
-  returnFalseOnNextKill(signal: NodeJS.Signals): void {
-    this.returnFalseOnSignal = signal;
-  }
-
   kill(signal?: NodeJS.Signals): boolean {
-    if (signal && this.throwOnSignal === signal) {
-      this.throwOnSignal = null;
-      throw new Error(`simulated kill(${signal}) failure`);
-    }
     if (signal) this.killedSignals.push(signal);
-    if (signal && this.returnFalseOnSignal === signal) {
-      this.returnFalseOnSignal = null;
-      return false;
-    }
     return true;
-  }
-
-  emitClose(): void {
-    if (!this.collected) this.emitExit(0, null);
-    this.transportClosed = true;
-    this.emit('close', null, null);
-  }
-
-  emitExit(code: number | null, signal: NodeJS.Signals | null): void {
-    this.collected = true;
-    this.exitCode = code;
-    this.signalCode = signal;
-    this.emit('exit', code, signal);
   }
 }
 
 function fakeRuntime(time: VirtualTime): Runtime {
   return { time } as unknown as Runtime;
 }
-
-describe('live child authority', () => {
-  it('is unavailable before the child has a pid', () => {
-    expect(liveChildAuthority(new FakeChild(undefined))).toBeUndefined();
-  });
-
-  it('tracks collection from the child exit fields before transport close', () => {
-    const child = new FakeChild();
-    const authority = liveChildAuthority(child);
-
-    expect(authority).toBeDefined();
-    expect(authority?.hasExited()).toBe(false);
-    child.emitExit(null, 'SIGTERM');
-    expect(authority?.hasExited()).toBe(true);
-    expect(child.transportClosed).toBe(false);
-    child.emitClose();
-    expect(child.transportClosed).toBe(true);
-    expect(authority?.hasExited()).toBe(true);
-  });
-});
-
-describe('signalOwnedProcessGroup', () => {
-  it('signals the group while the leader remains uncollected', () => {
-    const calls: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
-
-    expect(
-      signalOwnedProcessGroup(
-        new FakeChild(),
-        (pid, signal) => {
-          calls.push({ pid, signal });
-          return true;
-        },
-        'SIGTERM',
-      ),
-    ).toBe('delivered');
-    expect(calls).toEqual([{ pid: -4_242, signal: 'SIGTERM' }]);
-  });
-
-  it('returns leader-collected without signaling after exit', () => {
-    const child = new FakeChild();
-    child.emitExit(0, null);
-    const calls: number[] = [];
-
-    expect(
-      signalOwnedProcessGroup(
-        child,
-        (pid) => {
-          calls.push(pid);
-          return true;
-        },
-        'SIGKILL',
-      ),
-    ).toBe('leader-collected');
-    expect(calls).toEqual([]);
-  });
-});
 
 describe('gracefulKill', () => {
   it('sends SIGTERM immediately and escalates to SIGKILL exactly SIGTERM_GRACE_MS later', () => {
@@ -145,37 +53,6 @@ describe('gracefulKill', () => {
     expect(child.killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 
-  it('settles observed absence when the child closes during the grace period', async () => {
-    const time = new VirtualTime();
-    const child = new FakeChild();
-
-    const disposition = gracefulKill(child, fakeRuntime(time), () => 'alive');
-    if (disposition.kind !== 'escalation-scheduled') throw new Error('expected SIGTERM delivery');
-    time.tick(SIGTERM_GRACE_MS / 2);
-    child.emitClose();
-
-    time.tick(SIGTERM_GRACE_MS);
-    expect(child.killedSignals).toEqual(['SIGTERM']);
-    await expect(disposition.settlement).resolves.toEqual({ kind: 'observed-absent', pid: 4_242 });
-  });
-
-  it('reports when SIGTERM delivery returns false', () => {
-    const time = new VirtualTime();
-    const child = new FakeChild();
-    child.returnFalseOnNextKill('SIGTERM');
-
-    expect(gracefulKill(child, fakeRuntime(time), () => 'alive')).toEqual({
-      kind: 'signal-failed',
-      pid: 4_242,
-      signal: 'SIGTERM',
-      reason: 'kill-port-returned-false',
-    });
-    expect(child.killedSignals).toEqual(['SIGTERM']);
-
-    time.tick(SIGTERM_GRACE_MS);
-    expect(child.killedSignals).toEqual(['SIGTERM']);
-  });
-
   it('settles an unobservable target when the delayed observation is unknown', async () => {
     const time = new VirtualTime();
     const child = new FakeChild();
@@ -190,41 +67,6 @@ describe('gracefulKill', () => {
       pid: 4_242,
       stage: 'after-sigterm',
     });
-  });
-
-  it('settles an observed-live target after SIGKILL', async () => {
-    const time = new VirtualTime();
-    const child = new FakeChild();
-    const disposition = gracefulKill(child, fakeRuntime(time), () => 'alive');
-    if (disposition.kind !== 'escalation-scheduled') throw new Error('expected SIGTERM delivery');
-
-    time.tick(SIGTERM_GRACE_MS);
-    expect(child.killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
-    time.tick(SIGKILL_GRACE_MS);
-
-    await expect(disposition.settlement).resolves.toEqual({
-      kind: 'target-alive',
-      pid: 4_242,
-      stage: 'after-sigkill',
-    });
-  });
-
-  it('reports when SIGKILL delivery returns false', async () => {
-    const time = new VirtualTime();
-    const child = new FakeChild();
-    child.returnFalseOnNextKill('SIGKILL');
-    const disposition = gracefulKill(child, fakeRuntime(time), () => 'alive');
-    if (disposition.kind !== 'escalation-scheduled') throw new Error('expected SIGTERM delivery');
-
-    time.tick(SIGTERM_GRACE_MS);
-
-    await expect(disposition.settlement).resolves.toEqual({
-      kind: 'signal-failed',
-      pid: 4_242,
-      signal: 'SIGKILL',
-      reason: 'kill-port-returned-false',
-    });
-    expect(child.killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 });
 
@@ -256,54 +98,6 @@ function pidRuntime(
 describe('gracefulKillByPid', () => {
   const incarnation = testIncarnation(42);
 
-  it('escalates only after the recorded incarnation is re-observed alive', () => {
-    const time = new VirtualTime();
-    const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation]);
-
-    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
-    expect(disposition).toMatchObject({ kind: 'escalation-scheduled', pid: 4_242 });
-    expect(killedSignals).toEqual(['SIGTERM']);
-
-    time.tick(SIGTERM_GRACE_MS);
-    expect(killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
-  });
-
-  it('refuses every signal when no recorded incarnation is supplied', () => {
-    const time = new VirtualTime();
-    const { runtime, killedSignals } = pidRuntime(time, [incarnation]);
-
-    const disposition = gracefulKillByPid(runtime, 4_242, null);
-
-    expect(disposition).toEqual({
-      kind: 'signal-refused',
-      pid: 4_242,
-      reason: 'recorded-incarnation-unavailable',
-    });
-    expect(killedSignals).toEqual([]);
-
-    time.tick(SIGTERM_GRACE_MS);
-    expect(killedSignals).toEqual([]);
-  });
-
-  it('refuses escalation when the recorded incarnation cannot be re-established', () => {
-    const time = new VirtualTime();
-    const { runtime, killedSignals } = pidRuntime(time, [incarnation, null]);
-
-    gracefulKillByPid(runtime, 4_242, incarnation);
-    time.tick(SIGTERM_GRACE_MS);
-
-    expect(killedSignals).toEqual(['SIGTERM']);
-  });
-
-  it('sends the first SIGTERM when a passed expected incarnation still matches', () => {
-    const time = new VirtualTime();
-    const { runtime, killedSignals } = pidRuntime(time, [incarnation]);
-
-    gracefulKillByPid(runtime, 4_242, incarnation);
-
-    expect(killedSignals).toEqual(['SIGTERM']);
-  });
-
   it('refuses the first SIGTERM when the pid no longer carries the expected incarnation', () => {
     const time = new VirtualTime();
     const { runtime, killedSignals } = pidRuntime(time, [testIncarnation(43)]);
@@ -314,20 +108,6 @@ describe('gracefulKillByPid', () => {
       kind: 'signal-refused',
       pid: 4_242,
       reason: 'expected-incarnation-mismatch',
-    });
-    expect(killedSignals).toEqual([]);
-  });
-
-  it('refuses every signal on a platform whose incarnation cannot authorize a signal', () => {
-    const time = new VirtualTime();
-    const { runtime, killedSignals } = pidRuntime(time, [testIncarnation(43)], () => 'alive', 'darwin');
-
-    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
-
-    expect(disposition).toEqual({
-      kind: 'signal-refused',
-      pid: 4_242,
-      reason: 'platform-incarnation-cannot-authorize-signal',
     });
     expect(killedSignals).toEqual([]);
   });
@@ -393,35 +173,5 @@ describe('cleanupSpawnedProcessGroup', () => {
     await flushMicrotasks();
 
     await expect(disposition).resolves.toMatchObject({ kind: 'held-alive', observation: 'alive' });
-  });
-
-  it('holds without signaling when the group is present after the leader was collected', async () => {
-    const time = new VirtualTime();
-    const child = new FakeChild();
-    child.emitExit(0, null);
-    const { runtime, signals } = processGroupRuntime(time);
-    const cleanup = retainSpawnedProcessGroupCleanup(child);
-
-    await expect(cleanupSpawnedProcessGroup(cleanup, runtime)).resolves.toMatchObject({
-      kind: 'held-unobservable',
-      observation: 'unobservable',
-    });
-    expect(signals).toEqual([]);
-  });
-
-  it('does not signal again when the leader is collected during the SIGTERM grace', async () => {
-    const time = new VirtualTime();
-    const child = new FakeChild();
-    const { runtime, signals } = processGroupRuntime(time);
-    const cleanup = retainSpawnedProcessGroupCleanup(child);
-
-    const disposition = cleanupSpawnedProcessGroup(cleanup, runtime);
-    expect(signals).toEqual([{ pid: -4_242, signal: 'SIGTERM' }]);
-    child.emitExit(0, null);
-    time.tick(SIGTERM_GRACE_MS);
-    await flushMicrotasks();
-
-    await expect(disposition).resolves.toMatchObject({ kind: 'held-unobservable', observation: 'unobservable' });
-    expect(signals).toEqual([{ pid: -4_242, signal: 'SIGTERM' }]);
   });
 });

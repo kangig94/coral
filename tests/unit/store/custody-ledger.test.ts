@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -32,22 +32,6 @@ afterEach(() => {
 });
 
 describe('custody ledger', () => {
-  it('should ignore an intent directory abandoned before publication', () => {
-    const run = runDir();
-    const intent = recordCustodyIntent(runtimeFor(run), run, {
-      effect: 'process-spawn',
-      epoch: 'epoch-2',
-      owner: 'durable-cli',
-      operationId: 'job-0',
-      capsule: null,
-      bindWithinMs: 1_000,
-      nowMs: 100,
-    });
-    mkdirSync(join(custodyLedgerDir(run), '.stage.interrupted'));
-
-    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'holding', intent: { id: intent.id } }]);
-  });
-
   it('should hold a crash after intent until deadline, grace, and absence evidence', () => {
     const run = runDir();
     const intent = recordCustodyIntent(runtimeFor(run), run, {

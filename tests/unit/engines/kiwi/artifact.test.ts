@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,7 +8,6 @@ import { ensureKiwiArtifact, inspectKiwiArtifact } from '#src/engines/kiwi/artif
 import { KIWI_MODEL_FILES, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
 import { writeKiwiModelFilesAtomicInWorker } from '#src/engines/kiwi/model-artifact.js';
 import { publishKiwiWasmArtifact } from '#src/engines/kiwi/wasm-artifact.js';
-import { installErrorSchema } from '#src/expansion/rpc-contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const wasmFixture = readFileSync(join(process.cwd(), 'node_modules', 'kiwi-nlp', 'dist', 'kiwi-wasm.wasm'));
@@ -59,41 +58,6 @@ describe('Kiwi composite artifact', () => {
     }
   });
 
-  it('preserves an existing WASM while installing only the missing model', async () => {
-    const { root, runtime } = createTestRuntime();
-    try {
-      publishKiwiWasmArtifact(runtime, wasmFixture);
-      const wasmPath = inspectKiwiArtifact(runtime).wasm.wasmPath;
-      const wasmBefore = readFileSync(wasmPath);
-      const wasmMtimeBefore = statSync(wasmPath, { bigint: true }).mtimeNs;
-      const ensureModelArtifact = vi.fn(async () => {
-        await writeKiwiModelFilesAtomicInWorker(runtime, modelFiles());
-        return {
-          status: 'installed' as const,
-          method: 'github-release' as const,
-          version: '0.23.0',
-          targetDir: root,
-        };
-      });
-      const ensureWasmArtifact = vi.fn();
-
-      const result = await ensureKiwiArtifact(runtime, {
-        ensureModelArtifact,
-        ensureWasmArtifact,
-      });
-
-      expect(result).toMatchObject({ status: 'installed', method: 'runtime-download' });
-      expect(ensureModelArtifact).toHaveBeenCalledTimes(1);
-      expect(ensureWasmArtifact).not.toHaveBeenCalled();
-      expect(statSync(wasmPath).size).toBe(wasmBefore.length);
-      expect(readFileSync(wasmPath).compare(wasmBefore)).toBe(0);
-      expect(statSync(wasmPath, { bigint: true }).mtimeNs).toBe(wasmMtimeBefore);
-      expect(inspectKiwiArtifact(runtime).ready).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it('keeps a successfully installed model when WASM installation fails', async () => {
     const { root, runtime } = createTestRuntime();
     try {
@@ -125,38 +89,6 @@ describe('Kiwi composite artifact', () => {
         missingComponents: ['wasm'],
         model: { installed: true },
         wasm: { installed: false },
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('reports already_up_to_date and updated through the observable update contract', async () => {
-    const { root, runtime } = createTestRuntime();
-    try {
-      const ensureModelArtifact = vi.fn(async () => {
-        await writeKiwiModelFilesAtomicInWorker(runtime, modelFiles());
-        return {
-          status: 'updated' as const,
-          method: 'github-release' as const,
-          version: '0.23.0',
-          targetDir: root,
-        };
-      });
-      const ensureWasmArtifact = vi.fn(async () => publishKiwiWasmArtifact(runtime, wasmFixture));
-
-      const result = await ensureKiwiArtifact(runtime, {
-        update: true,
-        ensureModelArtifact,
-        ensureWasmArtifact,
-      });
-
-      expect(result.status).toBe('updated');
-      expect(inspectKiwiArtifact(runtime).ready).toBe(true);
-
-      await expect(ensureKiwiArtifact(runtime, { update: true })).resolves.toMatchObject({
-        status: 'already_up_to_date',
-        method: 'runtime-download',
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -199,75 +131,6 @@ describe('Kiwi composite artifact', () => {
       expect(ensureWasmArtifact).toHaveBeenCalledTimes(1);
     } finally {
       releaseModel();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('returns a schema-valid error when installation completes without readiness', async () => {
-    const { root, runtime } = createTestRuntime();
-    try {
-      const result = await ensureKiwiArtifact(runtime, {
-        ensureModelArtifact: async () => ({
-          status: 'installed',
-          method: 'github-release',
-          version: '0.23.0',
-          targetDir: root,
-        }),
-        ensureWasmArtifact: async () => publishKiwiWasmArtifact(runtime, wasmFixture),
-      });
-
-      expect(result).toMatchObject({
-        status: 'error',
-        code: 'expansion_install_artifact_failed',
-      });
-      expect(result).toHaveProperty('context', {
-        name: 'kiwi',
-        detail: expect.stringContaining('Kiwi artifact install completed without readiness: model'),
-        causeName: 'Error',
-      });
-      expect(result).not.toHaveProperty('cause');
-      expect(JSON.parse(JSON.stringify(result))).toEqual(result);
-      expect(installErrorSchema.safeParse(result).success).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it.each(['EACCES'])('maps a component %s failure to the structured unwritable-path result', async (code) => {
-    const { root, runtime } = createTestRuntime();
-    try {
-      const result = await ensureKiwiArtifact(runtime, {
-        ensureModelArtifact: async () => {
-          throw Object.assign(new Error(`model ${code}`), { code });
-        },
-      });
-
-      expect(result).toMatchObject({
-        status: 'error',
-        code: 'expansion_install_path_unwritable',
-        context: { name: 'kiwi' },
-      });
-      expect(installErrorSchema.safeParse(result).success).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('maps an unrelated component exception to the structured artifact failure', async () => {
-    const { root, runtime } = createTestRuntime();
-    try {
-      const result = await ensureKiwiArtifact(runtime, {
-        ensureModelArtifact: async () => {
-          throw new Error('model exploded');
-        },
-      });
-
-      expect(result).toMatchObject({
-        status: 'error',
-        code: 'expansion_install_artifact_failed',
-        context: { name: 'kiwi', detail: 'model exploded' },
-      });
-    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

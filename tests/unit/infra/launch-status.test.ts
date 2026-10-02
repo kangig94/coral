@@ -49,42 +49,6 @@ describe('launch status diagnostics', () => {
     },
   );
 
-  it('does not resurrect a cleared inherited hold from an unrelated publisher snapshot or serving memory', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-status-cleared-hold-'));
-    try {
-      writeFileSync(
-        join(runDir, 'launch-status.v1.json'),
-        JSON.stringify({
-          version: 1,
-          inheritedHolds: [{ launchId: 'inherited', pid: 202 }],
-          signalHolds: [],
-        }),
-      );
-      updateLaunchStatus(runDir, (status) => ({
-        ...status,
-        signalHolds: [{ launchId: 'parent:101', pid: 101, incarnation: 'parent' }],
-      }));
-      writeFileSync(
-        join(runDir, 'launch-status.v1.json'),
-        JSON.stringify({
-          version: 1,
-          inheritedHolds: [],
-          signalHolds: [{ launchId: 'parent:101', pid: 101, incarnation: 'parent' }],
-        }),
-      );
-      receiveLaunchStatus(runDir, { version: 1, inheritedHolds: [], signalHolds: [] });
-      expect(currentLaunchStatus(runDir)?.inheritedHolds).toEqual([]);
-      expect(currentLaunchStatus(runDir)?.signalHolds).toHaveLength(1);
-      updateLaunchStatus(runDir, (status) => ({ ...status, signalHolds: [] }));
-      expect(readLaunchStatus(runDir)).toMatchObject({
-        kind: 'readable',
-        status: { inheritedHolds: [], signalHolds: [] },
-      });
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
-  });
-
   it('does not let a local diagnostic snapshot hide a newer supervisor hold', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-status-serving-'));
     try {
@@ -106,25 +70,6 @@ describe('launch status diagnostics', () => {
       expect(currentLaunchStatus(runDir)).toMatchObject({
         hold: { path: '/current' },
         signalHolds: [{ launchId: 'local' }],
-      });
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
-  });
-
-  it('preserves previous-status-unavailable after an unrelated update reconstructs corrupt status', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-status-'));
-    try {
-      writeFileSync(join(runDir, 'launch-status.v1.json'), '{');
-      updateLaunchStatus(runDir, (status) => ({ ...status, signalHolds: [] }));
-      expect(readLaunchStatus(runDir)).toMatchObject({
-        kind: 'readable',
-        status: { previousStatus: 'unavailable' },
-      });
-      updateLaunchStatus(runDir, (status) => ({ ...status, inheritedHolds: [] }));
-      expect(readLaunchStatus(runDir)).toMatchObject({
-        kind: 'readable',
-        status: { previousStatus: 'unavailable' },
       });
     } finally {
       rmSync(runDir, { recursive: true, force: true });

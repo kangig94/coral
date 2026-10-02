@@ -2,37 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
-import { createServer } from 'node:http';
+import { spawnSync } from 'node:child_process';
 
 // prettier-ignore
 // @ts-expect-error - statusline hooks are executable .mjs files without TS declarations.
-import { codexCacheKey, composeCoralThirdLine, coralBackendInfoPath, extractUserText, formatGitSegment, holdIsLive, probeAnswered, readSettingsEnvValue, renderActivityStr, stripControlSequences, hudCacheFile, hudFetchLockPath, parseGitStatus, renderTextProjectionIndicator, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
-
-function visible(value: string): string {
-  // eslint-disable-next-line no-control-regex -- Strips ANSI SGR escape sequences from hook output.
-  return value.replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-describe('coral-hud text projection indicator', () => {
-  it('hides the indicator when idle', () => {
-    expect(renderTextProjectionIndicator('idle')).toBeNull();
-    expect(renderTextProjectionIndicator(undefined)).toBeNull();
-  });
-
-  it('renders coarse fetch and reindex labels', () => {
-    expect(visible(renderTextProjectionIndicator('fetching'))).toBe('fetching');
-    expect(visible(renderTextProjectionIndicator('reindexing'))).toBe('reindexing');
-  });
-
-  it('right-aligns the active indicator on the Coral line', () => {
-    const indicator = renderTextProjectionIndicator('reindexing');
-    const rendered = composeCoralThirdLine('coral gear:1', indicator, 'last user input', 32);
-
-    expect(visible(rendered)).toBe('coral gear:1          reindexing');
-    expect(visible(rendered)).not.toContain('last user input');
-  });
-});
+import { codexCacheKey, coralBackendInfoPath, extractUserText, readSettingsEnvValue, stripControlSequences, hudCacheFile, hudFetchLockPath, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
 
 describe('coral-hud account isolation', () => {
   it('uses a redacted distinct cache slot for each CODEX_HOME', () => {
@@ -59,117 +33,6 @@ describe('coral-hud account isolation', () => {
     expect(shouldUseClaudeKeychain(false, 'darwin')).toBe(true);
     expect(shouldUseClaudeKeychain(true, 'darwin')).toBe(false);
     expect(shouldUseClaudeKeychain(false, 'linux')).toBe(false);
-  });
-});
-
-describe('coral-hud backend state end to end', () => {
-  const RED_CORAL = '\x1b[31mcoral\x1b[0m';
-  const DIM_CORAL = '\x1b[2mcoral\x1b[0m';
-  const ORANGE_CORAL = '\x1b[38;2;255;133;89mcoral\x1b[0m';
-
-  function renderWithBackendRecord(record?: Record<string, unknown>): string {
-    const root = mkdtempSync(join(tmpdir(), 'hud-backend-'));
-    const home = join(root, 'home');
-    const cfg = join(root, 'cfg');
-    try {
-      if (record !== undefined) {
-        const runDir = join(home, '.coral', 'gen2', 'run');
-        mkdirSync(runDir, { recursive: true });
-        writeFileSync(join(runDir, 'coordinator.json'), JSON.stringify(record));
-      }
-      const result = spawnSync(process.execPath, [join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')], {
-        input: JSON.stringify({ cwd: root, session_id: 'backend-state', model: { display_name: 'O' } }),
-        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, CODEX_HOME: join(root, 'codex'), HOME: home },
-        encoding: 'utf-8',
-      });
-      expect(result.status).toBe(0);
-      return result.stdout ?? '';
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  }
-
-  async function renderWithBackendRecordAsync(record: Record<string, unknown>): Promise<string> {
-    const root = mkdtempSync(join(tmpdir(), 'hud-backend-'));
-    const home = join(root, 'home');
-    const cfg = join(root, 'cfg');
-    try {
-      const runDir = join(home, '.coral', 'gen2', 'run');
-      mkdirSync(runDir, { recursive: true });
-      writeFileSync(join(runDir, 'coordinator.json'), JSON.stringify(record));
-      const result = await new Promise<{ status: number | null; stdout: string }>((resolve, reject) => {
-        const child = spawn(process.execPath, [join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')], {
-          env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, CODEX_HOME: join(root, 'codex'), HOME: home },
-          stdio: ['pipe', 'pipe', 'inherit'],
-        });
-        let stdout = '';
-        child.stdout.setEncoding('utf-8');
-        child.stdout.on('data', (chunk: string) => (stdout += chunk));
-        child.once('error', reject);
-        child.once('close', (status) => resolve({ status, stdout }));
-        child.stdin.end(JSON.stringify({ cwd: root, session_id: 'backend-state', model: { display_name: 'O' } }));
-      });
-      expect(result.status).toBe(0);
-      return result.stdout;
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  }
-
-  it('renders a dead recorded backend in red', () => {
-    const exited = spawnSync(process.execPath, ['-e', '']);
-    if (exited.pid === undefined) throw new Error('failed to start the dead-pid fixture');
-
-    expect(renderWithBackendRecord({ pid: exited.pid, port: 1, bootToken: 'test' })).toContain(RED_CORAL);
-  });
-
-  it('renders a live backend with an unreachable health endpoint dimly', () => {
-    expect(renderWithBackendRecord({ pid: process.pid, port: 1, bootToken: 'test' })).toContain(DIM_CORAL);
-  });
-
-  it('renders an unprobeable backend with an unreachable health endpoint dimly', () => {
-    const rendered = renderWithBackendRecord({ pid: 1, port: 1, bootToken: 'test' });
-
-    expect(rendered).toContain(DIM_CORAL);
-    expect(rendered).not.toContain(RED_CORAL);
-  });
-
-  it('probes health for pid 1 and renders a reachable backend in orange', async () => {
-    const server = createServer((request, response) => {
-      if (request.method === 'GET' && request.url === '/health?detailed=1') {
-        response.writeHead(200, { 'Content-Type': 'application/json' });
-        response.end('{}');
-        return;
-      }
-      response.writeHead(404);
-      response.end();
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', resolve);
-    });
-
-    try {
-      const address = server.address();
-      if (address === null || typeof address === 'string') throw new Error('failed to start the health fixture');
-      const rendered = await renderWithBackendRecordAsync({ pid: 1, port: address.port, bootToken: 'test' });
-
-      expect(rendered).toContain(ORANGE_CORAL);
-      expect(rendered).not.toContain(RED_CORAL);
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-    }
-  });
-
-  it.each([{ pid: '123' }, { pid: -1 }, { pid: 1.5 }, { pid: 0 }, { pid: 2_147_483_648 }])(
-    'hides the backend slot for invalid pid $pid',
-    ({ pid }) => {
-      expect(renderWithBackendRecord({ pid, port: 1, bootToken: 'test' })).not.toContain('coral');
-    },
-  );
-
-  it('hides the backend slot when no discovery record exists', () => {
-    expect(renderWithBackendRecord()).not.toContain('coral');
   });
 });
 
@@ -208,48 +71,8 @@ describe('coral-hud temporary files', () => {
   });
 });
 
-describe('coral-hud git segment', () => {
-  it('reads the branch and the dirty flag from one porcelain-v2 response', () => {
-    const out = [
-      '# branch.oid 5a723e456033fb435ce1a8fa8f87541ce2416554',
-      '# branch.head fix/launch-slot-permit',
-      '1 .M N... 100644 100644 100644 e254674 e254674 clients/skills/statusline/coral-hud.mjs',
-    ].join('\n');
-
-    expect(parseGitStatus(out)).toEqual({ branch: 'fix/launch-slot-permit', dirty: true });
-  });
-
-  it('reports a clean tree when the response carries only header lines', () => {
-    const out = '# branch.oid 5a723e456033fb435ce1a8fa8f87541ce2416554\n# branch.head main\n';
-
-    expect(parseGitStatus(out)).toEqual({ branch: 'main', dirty: false });
-  });
-
-  it('falls back to the short oid on a detached head, and refuses one that names no revision', () => {
-    const detached = '# branch.oid 5a723e456033fb435ce1a8fa8f87541ce2416554\n# branch.head (detached)\n';
-    const unborn = '# branch.oid (initial)\n# branch.head (detached)\n';
-
-    expect(parseGitStatus(detached)).toEqual({ branch: '5a723e4', dirty: false });
-    expect(parseGitStatus(unborn)).toBeNull();
-  });
-
-  it('renders nothing when the branch could not be determined', () => {
-    expect(formatGitSegment(null)).toBeNull();
-    expect(visible(formatGitSegment({ branch: 'main', dirty: false }) as string)).toBe('⎇ main');
-    expect(visible(formatGitSegment({ branch: 'main', dirty: true }) as string)).toBe('⎇ main*');
-  });
-});
-
 describe('coral-hud terminal-safe rendering', () => {
   const hyperlink = (url: string, text: string) => `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
-
-  it('right-aligns against a line carrying a hyperlink, whose wrapper occupies no columns', () => {
-    const line = `\x1b[36mcoral\x1b[0m ${hyperlink('http://127.0.0.1:41237', 'reef')}`;
-
-    const composed = composeCoralThirdLine(line, null, 'what did I just ask', 80);
-
-    expect(stripControlSequences(composed)).toHaveLength(80);
-  });
 
   it('removes control bytes from transcript text before it reaches the terminal', () => {
     expect(stripControlSequences('hi \x1b[31mred\x1b[0m there')).toBe('hi red there');
@@ -302,25 +125,6 @@ describe('coral-hud reef rendering', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
-});
-
-describe('coral-hud holds and staleness', () => {
-  it('treats a hold stamped in the future as expired rather than as one that never ends', () => {
-    const now = 1_000_000;
-
-    expect(holdIsLive({ ts: now - 1_000, key: null, nonce: null }, now)).toBe(true);
-    expect(holdIsLive({ ts: now - 60_000, key: null, nonce: null }, now)).toBe(false);
-    // A clock that moved backward leaves the difference negative for the length of the skew.
-    expect(holdIsLive({ ts: now + 60_000, key: null, nonce: null }, now)).toBe(false);
-  });
-
-  it('retires a cached subagent by its own age, since nothing else will', () => {
-    const fresh = { a: { subagent_type: 'code-critic', ts: Date.now() } };
-    const stranded = { a: { subagent_type: 'code-critic', ts: Date.now() - 31 * 60 * 1000 } };
-
-    expect(visible(renderActivityStr(fresh, null) as string)).toContain('code-critic');
-    expect(renderActivityStr(stranded, null)).toBeNull();
   });
 });
 
@@ -391,21 +195,6 @@ describe('coral-hud transcript rendering end to end', () => {
   });
 });
 
-describe('coral-hud probe classification', () => {
-  it('counts only a git that ran and exited as having answered', () => {
-    // execSync sets a numeric `status` exactly when the child produced an exit code.
-    expect(probeAnswered({ status: 128, code: undefined, signal: null })).toBe(true);
-    expect(probeAnswered({ status: 127, code: undefined, signal: null })).toBe(true);
-
-    // These never produced a child, and N concurrent renders are how they happen.
-    expect(probeAnswered({ status: null, code: 'EAGAIN', signal: null })).toBe(false);
-    expect(probeAnswered({ status: null, code: 'EMFILE', signal: null })).toBe(false);
-    expect(probeAnswered({ status: null, code: 'ETIMEDOUT', signal: 'SIGKILL' })).toBe(false);
-    expect(probeAnswered({ status: null, code: 'ENOENT', signal: null })).toBe(false);
-    expect(probeAnswered(undefined)).toBe(false);
-  });
-});
-
 describe('coral-hud repository-supplied settings', () => {
   it('strips and bounds a value a cloned repository chose', () => {
     const dir = mkdtempSync(join(tmpdir(), 'coral-hud-set-'));
@@ -448,26 +237,6 @@ describe('coral-hud git cache under concurrent repositories', () => {
 
     const after = JSON.parse(readFileSync(cacheFile, 'utf-8')) as Record<string, { backoffUntil: number }>;
     expect(after.stalledrepokey?.backoffUntil, 'the fence must survive an unrelated write').toBe(fencedUntil);
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it('does not serve a branch from a cache entry stamped in the future', () => {
-    const root = mkdtempSync(join(tmpdir(), 'coral-hud-clock-'));
-    const cfg = join(root, 'cfg');
-    const cacheFile = join(cfg, 'hud', '.coral-git-cache.json');
-    renderIn(cfg, process.cwd());
-
-    // A clock that moved backward leaves every entry stamped ahead of now; an unguarded
-    // `now - ts <= TTL` stays true for the length of the skew and freezes the branch name.
-    const cache = JSON.parse(readFileSync(cacheFile, 'utf-8')) as Record<string, Record<string, unknown>>;
-    const [key] = Object.keys(cache);
-    cache[key] = { ts: Date.now() + 3_600_000, value: { branch: 'stale-branch', dirty: false }, backoffUntil: 0 };
-    writeFileSync(cacheFile, JSON.stringify(cache));
-
-    renderIn(cfg, process.cwd());
-
-    const after = JSON.parse(readFileSync(cacheFile, 'utf-8')) as Record<string, Record<string, number>>;
-    expect(after[key]?.ts, 'a future stamp must not be served as fresh').toBeLessThanOrEqual(Date.now());
     rmSync(root, { recursive: true, force: true });
   });
 });

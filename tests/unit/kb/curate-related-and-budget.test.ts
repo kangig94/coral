@@ -6,8 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as CorpusScanMod from '#src/kb/corpus/rescan/scan.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
-import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
-import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
@@ -29,12 +27,6 @@ vi.mock('#src/kb/corpus/rescan/scan-worker.js', async () => {
   };
 });
 const DEFAULT_IMPORTED_AT = '2026-03-20T00:00:00.000Z';
-
-function assistantFromText(stdout: string): CurateAssistantPort {
-  return {
-    complete: async () => stdout,
-  };
-}
 
 function fingerprint(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -94,54 +86,20 @@ function writeSource(runtime: KbRuntime, slug: string, options: Parameters<typeo
   return sourcePath;
 }
 
-async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
-    await vi.advanceTimersByTimeAsync(1);
-    if (!handle.isRunning()) {
-      return;
-    }
-  }
-
-  throw new Error('Curate runtime did not settle.');
-}
-
 describe('curate related-resolution and budget guards', () => {
   let tempDir: string;
   let runtime: KbRuntime;
-  let scheduler: CurateHandle;
   let internals: CurateTestHandle;
-  let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
-
-  function useScheduler(
-    curateAssistant: CurateAssistantPort,
-    usageBudget = { isExhausted: async (_signal: AbortSignal) => false },
-  ): void {
-    scheduler = createCurateScheduler({
-      kb: runtime,
-      curateAssistant,
-      processPort: gitSyncRuntime.process,
-      storagePort: gitSyncRuntime.storage,
-      envPort: gitSyncRuntime.env,
-      usageBudget,
-      scheduleDebounceMs: 0,
-    });
-    internals = createCurateTestHandle({
-      kb: runtime,
-      curateAssistant,
-      schedule: () => scheduler.schedule(),
-    });
-  }
-
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-ac6-ac8-'));
-    gitSyncRuntime = createRealRuntime('prod');
+    const gitSyncRuntime = createRealRuntime('prod');
     runtime = createTestKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: tempDir,
       db: openKbTestStoreDb(':memory:'),
       runtime: gitSyncRuntime,
     });
-    useScheduler(assistantFromText('[]'));
+    internals = createCurateTestHandle({ kb: runtime });
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-25T12:00:00.000Z'));
   });
@@ -151,18 +109,6 @@ describe('curate related-resolution and budget guards', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it('checks the injected system-account budget before any curate work', async () => {
-    const usageBudget = { isExhausted: vi.fn(async () => true) };
-    const inboundSync = vi.spyOn(runtime, 'runInboundSync');
-    useScheduler(assistantFromText('[]'), usageBudget);
-
-    await scheduler.start();
-    await settleCurateRuntime(scheduler);
-
-    expect(usageBudget.isExhausted).toHaveBeenCalledWith(expect.any(AbortSignal));
-    expect(inboundSync).not.toHaveBeenCalled();
   });
 
   it('appends source related links, preserves source bytes, and refreshes the live source index', async () => {

@@ -1,3 +1,4 @@
+import { decodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
@@ -121,6 +122,26 @@ describe('provider operation journal', () => {
       });
     } finally {
       db.close();
+    }
+  });
+});
+
+describe('provider operation durability', () => {
+  it('rejects a pending prepare without its prepare source', () => {
+    const candidate = { ...providerOperationRecord('prepare-pending') } as Record<string, unknown>;
+    delete candidate.prepareSource;
+
+    expect(() => decodeProviderOperationRecord(JSON.stringify(candidate))).toThrow(/prepareSource/u);
+  });
+
+  it('rejects an activation receipt bound to another job or locator', () => {
+    const executing = providerOperationRecord('executing');
+    if (executing.phase !== 'executing') throw new Error('expected executing fixture');
+    const hostRef = executing.activationAck.hostRef;
+    const mismatch = { ...hostRef, fingerprint: 'd'.repeat(64) };
+    {
+      const candidate = { ...executing, activationAck: { ...executing.activationAck, hostRef: mismatch } };
+      expect(() => decodeProviderOperationRecord(JSON.stringify(candidate))).toThrow();
     }
   });
 });

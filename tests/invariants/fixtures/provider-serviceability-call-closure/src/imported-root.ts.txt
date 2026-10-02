@@ -1,5 +1,0 @@
-import { importedDecisionHelper } from './imported-helper.js';
-
-export function importedRoot(): boolean {
-  return importedDecisionHelper();
-}

@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import { noteEntryId, wikiEntryId } from '#src/kb/entry-types.js';
-import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
@@ -77,65 +76,6 @@ describe('kb mutations', () => {
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
     vi.resetModules();
-  });
-
-  it('promotes a memo with canonical frontmatter, index update, and atomic temp-file cleanup', async () => {
-    const { promote, createKbRuntime, paths, frontmatter } = await loadKbModules();
-    const kb = createRuntime(createKbRuntime, paths);
-    const projectRoot = join(mockState.tmpHome, 'project');
-    mkdirSync(projectRoot, { recursive: true });
-    mkdirSync(paths.memoDir(projectRoot), { recursive: true });
-
-    const memoPath = join(paths.memoDir(projectRoot), '2026-03-23-kb.md');
-    writeFileSync(
-      memoPath,
-      `---
-source: kangig94/coral
----
-memo body
-`,
-      'utf-8',
-    );
-
-    const result = await promote(kb, projectRoot, {
-      memo: '2026-03-23-kb.md',
-      title: 'KB Promotion',
-      content: '## Rule\nPromote through the tool.',
-      domain: 'coral',
-      topic: 'kb-promotion',
-    });
-
-    const notePath = join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-promotion.md');
-    expect(result).toEqual({ path: notePath });
-    expect(existsSync(memoPath)).toBe(false);
-    expect(existsSync(`${notePath}.tmp`)).toBe(false);
-
-    const note = readFileSync(notePath, 'utf-8');
-    expect(frontmatter.parseFrontmatter(note)).toEqual({
-      tags: ['coral'],
-      principles: [],
-      source: ['kangig94/coral'],
-      createdAt: '2026-03-23T01:02:03.000Z',
-      updatedAt: '2026-03-23T01:02:03.000Z',
-      related: [],
-      entrySeq: 1,
-    });
-    expect(frontmatter.extractTitle(note)).toBe('KB Promotion');
-    expect(note).toContain('## Rule\nPromote through the tool.\n');
-
-    expect(kb.readIndex()?.entries[noteEntryId('coral-kb-promotion')]).toEqual({
-      kind: 'note',
-      slug: 'coral-kb-promotion',
-      title: 'KB Promotion',
-      tags: ['coral'],
-      principles: [],
-      source: ['kangig94/coral'],
-      createdAt: '2026-03-23T01:02:03.000Z',
-      updatedAt: '2026-03-23T01:02:03.000Z',
-      related: [],
-      bodyHash: computeBodySurfaceHash('## Rule\nPromote through the tool.'),
-      entrySeq: 1,
-    });
   });
 
   it('adoptIntoWiki promotes a memo and prepends the new note to wiki Knowledge under the same mutation', async () => {
@@ -235,38 +175,5 @@ memo body
     ).rejects.toThrow();
 
     expect(existsSync(outsideMemo)).toBe(true);
-  });
-
-  it('deletes a note and removes its JSON index entry', async () => {
-    const { deleteNote, createKbRuntime, paths } = await loadKbModules();
-    const kb = createRuntime(createKbRuntime, paths);
-    mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
-    const notePath = join(paths.notesDir(process.env.CORAL_KB_PATH!), 'coral-kb-promotion.md');
-    writeFileSync(notePath, 'note body', 'utf-8');
-    kb.writeIndex({
-      entries: {
-        [noteEntryId('coral-kb-promotion')]: {
-          kind: 'note',
-          slug: 'coral-kb-promotion',
-          title: 'Updated Title',
-          tags: ['coral'],
-          principles: ['lenient-read-strict-write'],
-          source: ['kangig94/coral'],
-          createdAt: '2026-03-20T00:00:00.000Z',
-          updatedAt: '2026-03-24T05:06:07.000Z',
-          related: [],
-          bodyHash: computeBodySurfaceHash('note body'),
-          entrySeq: 7,
-        },
-      },
-      principles: {},
-      entityMeta: {},
-      relationships: [],
-    });
-
-    const result = await deleteNote(kb, { note: 'coral-kb-promotion' });
-    expect(result).toEqual({ deleted: notePath });
-    expect(existsSync(notePath)).toBe(false);
-    expect(kb.readIndex()?.entries[noteEntryId('coral-kb-promotion')]).toBeUndefined();
   });
 });

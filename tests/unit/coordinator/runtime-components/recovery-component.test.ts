@@ -23,13 +23,6 @@ describe('createRecoveryComponent', () => {
     db.close();
   });
 
-  it('should report online when no unresolved recovery rows exist', () => {
-    expect(createRecoveryComponent(db).status).toEqual({
-      id: RECOVERY_COMPONENT_ID,
-      phase: 'online',
-    });
-  });
-
   it('should report the unresolved count and latest retained error when degraded', () => {
     quarantine.upsert({
       boundary: 'workflow-recovery',

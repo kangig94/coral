@@ -20,7 +20,6 @@ const FLAVOR_SEPARATED_FAMILIES = [
   'kbRuntime',
   'projects',
 ] as const;
-const FAMILIES = ['generation', ...FLAVOR_SEPARATED_FAMILIES] as const;
 const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const EXPLICIT_BASE_DIR = join(REPO_ROOT, '.ac2-explicit-base');
@@ -196,11 +195,6 @@ function allLeafPaths(record: Record<string, unknown>, prefix = ''): { key: stri
 describe('flavor path separation', () => {
   const prod = composeCoralPaths(PROD_FLAVOR);
   const dev = composeCoralPaths(DEV_FLAVOR);
-
-  it('flavor-bound path bundle exposes exactly the declared families', () => {
-    expect(Object.keys(prod).sort()).toEqual([...FAMILIES].sort());
-    expect(Object.keys(dev).sort()).toEqual([...FAMILIES].sort());
-  });
 
   it('does not expose dormant legacy equipment content as a live path family', () => {
     expect(prod).not.toHaveProperty('equipment');

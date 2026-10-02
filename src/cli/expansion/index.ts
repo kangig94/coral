@@ -136,8 +136,7 @@ function unknownExpansionResponse(name: string) {
  * `unavailable` as a *disposition* still renders: no coordinator recorded itself, or a recorded coordinator's
  * pid was observed decisively gone, is an answer — nothing is equipped, and `localCatalogStatus` derives the
  * rest from local files. `unreadable` and `unreachable` get their own documented codes rather than a shared
- * one — both are codes this run could not observe an answer for, so both sit in
- * `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` — and each remediation names the discovery record path itself
+ * one — both document their observation as `not_observed`, and each remediation names the discovery record path itself
  * instead of deferring to `backend status`.
  *
  * A `switch` with `assertNever` rather than sequential `if`s: this function returns `void`, so a refusal

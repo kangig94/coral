@@ -1,289 +1,53 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
-import type { Database } from '#src/store/db.js';
-import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import type { CoralEventInput } from '#src/store/envelope.js';
-import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import type { StoreReadContext } from '#src/store/body-codec.js';
-import { applyBundledStoreSchema } from '#src/store/db.js';
-import { listJobs } from '#src/jobs/read-queries.js';
-import { composeReducers } from '#src/store/reducers.js';
-import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { seedTestSessionProjection } from '#tests/helpers/session.js';
-import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
+import { listJobs } from '#src/jobs/read-queries.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 describe('jobs queries', () => {
-  let db: Database;
-  let readCtx: StoreReadContext;
-
-  beforeEach(() => {
-    db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db, currentCoralStoreFormat());
-
-    const reducers = composeReducers(jobsRegistry);
-    const bodyCodec = createEventBodyCodec();
-    readCtx = {
-      schemas: reducers.schemas,
-      streamKinds: reducers.streamKinds,
-      bodyCodec,
-    };
-
-    for (const [sessionId, projectRoot] of [
-      ['session-completed', '/workspace/coral'],
-      ['session-rejected', '/workspace/coral'],
-      ['session-queued', '/workspace/coral'],
-      ['session-descendant', '/workspace/coral'],
-      ['session-other', '/workspace/other-project'],
-    ] as const) {
-      seedTestSessionProjection(db, {
-        sessionId,
-        provider: 'codex',
-        projectRoot,
-        backendNamespace: 'tests',
-      });
-    }
-
-    const inputs: CoralEventInput[] = [
-      {
-        type: 'job.launch.requested',
-        stream: { kind: 'job', id: 'job-completed' },
-        refs: { sessionId: 'session-completed' },
-        body: {
-          owner: { kind: 'provider-session', id: 'session-completed' },
-          sessionId: 'session-completed',
-          provider: 'codex',
-          providerAction: 'resume',
-          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
-          backendNamespace: 'tests',
-          bundleHash: 'bundle-completed',
-          jobKind: 'provider',
-          pool: 'default',
-          enqueueSequence: 1,
-          request: {
-            prompt: 'Continue from the prior run.',
-            name: 'architect',
-            model: 'gpt-5.4',
-            cwd: '/workspace/coral',
-            effort: 'high',
-            bypassPermissions: false,
-            systemPrompt: 'Be precise.',
-            instruction: {
-              content: 'Write the patch.',
-              channel: 'system',
-            },
-            coralEnv: { CORAL_ENV: 'test' },
-          },
-          createdAt: '2026-04-20T00:00:00.000Z',
-        },
-      },
-      {
-        type: 'job.runtime.started',
-        stream: { kind: 'job', id: 'job-completed' },
-        refs: { sessionId: 'session-completed' },
-        body: {
-          transport: 'app-server',
-          startedAt: '2026-04-20T00:00:05.000Z',
-          providerMeta: {
-            provider: 'codex',
-            leaseState: 'acquired',
-            hostRef: {
-              provider: 'codex',
-              fingerprint: '0'.repeat(64),
-              instanceId: 'instance-1',
-              leaseMode: 'shared',
-            },
-          },
-        },
-      },
-      {
-        type: 'job.terminal.recorded',
-        stream: { kind: 'job', id: 'job-completed' },
-        refs: { sessionId: 'session-completed' },
-        body: {
-          terminal: {
-            outcome: { kind: 'completed' },
-            durationMs: 3210,
-            content: 'done',
-          },
-          diagnostics: {
-            warnings: ['soft warning'],
-            usage: {
-              inputTokens: 12,
-              outputTokens: 34,
-              costUsd: 0.56,
-            },
-          },
-        },
-      },
-      {
-        type: 'job.launch.requested',
-        stream: { kind: 'job', id: 'job-rejected' },
-        refs: { sessionId: 'session-rejected' },
-        body: {
-          owner: { kind: 'provider-session', id: 'session-rejected' },
-          sessionId: 'session-rejected',
-          provider: 'codex',
-          providerAction: 'exec',
-          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
-          backendNamespace: 'tests',
-          jobKind: 'provider',
-          pool: 'default',
-          enqueueSequence: 2,
-          request: {
-            prompt: 'Launch me.',
-            cwd: '/workspace/coral',
-            bypassPermissions: false,
-            coralEnv: {},
-          },
-          createdAt: '2026-04-20T00:01:00.000Z',
-        },
-      },
-      {
-        type: 'job.launch.rejected',
-        stream: { kind: 'job', id: 'job-rejected' },
-        refs: { sessionId: 'session-rejected' },
-        body: {
-          reason: 'busy',
-          message: 'Provider queue is full.',
-          provider: 'codex',
-          globalActive: 7,
-          globalLimit: 10,
-        },
-      },
-      {
-        type: 'job.launch.requested',
-        stream: { kind: 'job', id: 'job-queued' },
-        refs: { sessionId: 'session-queued' },
-        body: {
-          owner: { kind: 'provider-session', id: 'session-queued' },
-          sessionId: 'session-queued',
-          provider: 'codex',
-          providerAction: 'exec',
-          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
-          backendNamespace: 'tests',
-          jobKind: 'provider',
-          pool: 'default',
-          enqueueSequence: 3,
-          request: {
-            prompt: 'Queue me.',
-            cwd: '/workspace/coral',
-            bypassPermissions: true,
-            coralEnv: {},
-          },
-          createdAt: '2026-04-20T00:02:00.000Z',
-        },
-      },
-      {
-        type: 'job.queue.queued',
-        stream: { kind: 'job', id: 'job-queued' },
-        refs: { sessionId: 'session-queued' },
-        body: {
-          queuePosition: 1,
-          runningJobIds: ['job-completed'],
-        },
-      },
-      {
-        type: 'job.launch.requested',
-        stream: { kind: 'job', id: 'job-descendant-work-dir' },
-        refs: { sessionId: 'session-descendant' },
-        body: {
-          owner: { kind: 'provider-session', id: 'session-descendant' },
-          sessionId: 'session-descendant',
-          provider: 'codex',
-          providerAction: 'exec',
-          projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
-          backendNamespace: 'tests',
-          jobKind: 'provider',
-          pool: 'default',
-          enqueueSequence: 4,
-          request: {
-            prompt: 'Run below the ambient work directory.',
-            cwd: '/workspace/coral/sub',
-            bypassPermissions: false,
-            coralEnv: {},
-          },
-          createdAt: '2026-04-20T00:02:20.000Z',
-        },
-      },
-      {
-        type: 'job.launch.requested',
-        stream: { kind: 'job', id: 'job-kb-global' },
-        refs: {},
-        body: {
-          owner: { kind: 'system-task', id: 'kb.reindex:job-kb-global' },
-          projectRoot: '/workspace/other-project',
-          backendNamespace: 'tests',
-          bundleHash: 'bundle-kb',
-          jobKind: 'kb',
-          pool: 'default',
-          enqueueSequence: 4,
-          operation: 'kb.reindex',
-          request: {},
-          createdAt: '2026-04-20T00:02:30.000Z',
-        },
-      },
-      {
-        type: 'job.launch.requested',
-        stream: { kind: 'job', id: 'job-other-project' },
-        refs: { sessionId: 'session-other' },
-        body: {
-          owner: { kind: 'provider-session', id: 'session-other' },
-          sessionId: 'session-other',
-          provider: 'codex',
-          providerAction: 'exec',
-          projectRoot: '/workspace/other-project',
-          backendNamespace: 'tests',
-          bundleHash: 'bundle-other',
-          jobKind: 'provider',
-          pool: 'default',
-          enqueueSequence: 5,
-          request: {
-            prompt: 'Run in another project.',
-            cwd: '/workspace/other-project',
-            bypassPermissions: false,
-            coralEnv: {},
-          },
-          createdAt: '2026-04-20T00:02:40.000Z',
-        },
-      },
-    ];
-
-    commitInputs(db, inputs, {
-      now: () => new Date('2026-04-20T00:03:00.000Z'),
-      reducers,
-      bodyCodec,
-      providers: permissiveProviderLookupPort,
-    });
-  });
-
-  afterEach(() => {
-    db.close();
-  });
-
-  it('decodes complete projection rows before applying list filters', () => {
-    const prepareSpy = vi.spyOn(db, 'prepare');
-
-    const jobs = listJobs(
-      db,
-      {
+  it('rejects a corrupt projection row outside the requested project and phase', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      db.prepare(
+        `INSERT INTO projection_jobs (
+           job_id, execution_owner, phase, diagnostics, session_id, provider,
+           project_root, work_dir, backend_namespace, job_kind, created_at, last_seq
+         ) VALUES (?, ?, 'running', '{"progressFaults":[]}', ?, 'codex',
+                   ?, ?, 'tests', 'provider', ?, 1)`,
+      ).run(
+        'job-other-project',
+        JSON.stringify({ kind: 'provider-session', id: 'session-other-project' }),
+        'session-other-project',
+        '/workspace/other-project',
+        '/workspace/other-project',
+        '2026-04-20T00:00:00.000Z',
+      );
+      const reducers = composeReducers(jobsRegistry);
+      const readCtx = {
+        schemas: reducers.schemas,
+        streamKinds: reducers.streamKinds,
+        bodyCodec: createEventBodyCodec(),
+      };
+      const filters = {
         projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
-        phase: 'queued',
-        provider: 'codex',
-      },
-      readCtx,
-    );
+        phase: 'queued' as const,
+      };
+      expect(listJobs(db, filters, readCtx)).toEqual([]);
 
-    expect(jobs.map((entry) => entry.jobId)).toEqual(['job-queued']);
+      db.prepare('UPDATE projection_jobs SET diagnostics = ? WHERE job_id = ?').run(
+        'invalid-json',
+        'job-other-project',
+      );
 
-    const projectionQuery = prepareSpy.mock.calls
-      .map(([sql]) => sql)
-      .find((sql) => sql.includes('FROM projection_jobs'));
-
-    expect(projectionQuery).not.toContain('WHERE');
-    expect(projectionQuery).toContain('execution_owner');
-    expect(projectionQuery).toContain('workflow_slot_generation');
+      expect(() => listJobs(db, filters, readCtx)).toThrow();
+    } finally {
+      db.close();
+    }
   });
 });

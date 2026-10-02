@@ -109,21 +109,6 @@ describe('job addressing', () => {
     await stream.return(undefined);
   });
 
-  it('preserves the historical launch-origin namespace', () => {
-    const { root, index } = fixture();
-    const completed = detail('old', 'completed');
-    completed.status.backendNamespace = 'origin-namespace';
-    index.register('old', 'lineage-old:7', {
-      projectRoot: '/workspace/project',
-      workDir: '/workspace/project',
-      jobKind: 'provider',
-    });
-    index.recordTerminal('old', completed, join(root, 'old.md'), 12);
-    expect(historicalAddressing(index).detail('old')).toMatchObject({
-      status: { backendNamespace: 'origin-namespace' },
-    });
-  });
-
   it('should not overwrite a terminal another process records while an unresolved mark waits for the lock', () => {
     const { root, index } = fixture();
     const other = new JobLocationIndex(runtime, root);

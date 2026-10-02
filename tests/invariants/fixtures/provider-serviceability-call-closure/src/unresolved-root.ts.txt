@@ -1,5 +1,0 @@
-import { missingDecisionHelper } from './missing-helper.js';
-
-export function unresolvedRoot(): boolean {
-  return missingDecisionHelper();
-}

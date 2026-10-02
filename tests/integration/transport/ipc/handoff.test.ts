@@ -18,38 +18,6 @@ afterEach(async () => {
 });
 
 describe('probeIncumbent', () => {
-  it('reads health without sending transport.shutdown, even with an older incumbent', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'coral-ipc-probe-'));
-    roots.push(root);
-    const socketPath = join(root, 'incumbent.sock');
-    const methods: string[] = [];
-    const server = createServer((socket) => {
-      socket.on('data', (data) => {
-        const request = decode(data.toString().trim());
-        if (request.kind !== 'request') return;
-        methods.push(request.method);
-        socket.end(
-          `${encode({
-            kind: 'response',
-            id: request.id,
-            result: {
-              version: '0.10.13',
-              bundleHash: 'old',
-              flavor: 'prod',
-              namespace: 'old',
-              status: 'ok',
-            },
-          })}\n`,
-        );
-      });
-    });
-    servers.push(server);
-    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
-
-    expect((await probeIncumbent({ socketPath, timeoutMs: 1_000 }))?.version).toBe('0.10.13');
-    expect(methods).toEqual(['transport.ping']);
-  });
-
   it('preserves an explicit IPC connection-cap refusal as an answer', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-ipc-probe-'));
     roots.push(root);

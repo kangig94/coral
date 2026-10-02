@@ -7,12 +7,6 @@ import type { OramaEntryManifest, OramaProjectionMetadata, OramaProjectionMetada
 
 export const ORAMA_SNAPSHOT_SERIALIZE_WORKER_TIMEOUT_MS = 60_000;
 
-export type SerializedOramaSnapshotArtifact = {
-  readonly artifactRaw: string;
-  readonly artifactDigest: string;
-  readonly entryManifest: OramaEntryManifest;
-};
-
 export type SerializedOramaProjectionArtifact = {
   readonly artifactRaw: string;
   readonly metadataRaw: string;
@@ -192,21 +186,6 @@ async function runOramaSnapshotSerializeWorker(
       }
     });
   });
-}
-
-export async function serializeOramaSnapshotArtifactInWorker(
-  snapshot: RawData,
-  options: SerializeOramaSnapshotArtifactOptions = {},
-): Promise<SerializedOramaSnapshotArtifact> {
-  const message = await runOramaSnapshotSerializeWorker(snapshot, options);
-  if (message.entryManifest === undefined) {
-    throw new Error('Orama snapshot serialization worker returned no entry manifest');
-  }
-  return {
-    artifactRaw: message.artifactRaw,
-    artifactDigest: message.artifactDigest,
-    entryManifest: message.entryManifest,
-  };
 }
 
 export async function serializeOramaProjectionArtifactInWorker(

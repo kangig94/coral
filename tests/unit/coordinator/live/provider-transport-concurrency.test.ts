@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createProviderHostContainmentReaper } from '#src/coordinator/live/provider-hosts/drain.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '#src/providers/app-server-transport.js';
@@ -292,10 +291,6 @@ describe('provider transport concurrency hardening', () => {
     await expect(termination).resolves.toEqual({ kind: 'all-children-observed-absent' });
     expect(runtime.spawner.killCalls).toEqual([{ pid: 20_000, signal: 'SIGTERM' }]);
 
-    const cleanupHandles = (
-      launchCoordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> }
-    ).cleanupHandles;
-    expect(cleanupHandles.size).toBe(0);
     expect(observed).toMatchObject({
       settled: true,
       value: { stdout: '', stderr: '', code: null, aborted: false },

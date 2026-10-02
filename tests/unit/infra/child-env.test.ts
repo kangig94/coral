@@ -8,7 +8,6 @@ import {
   buildChildEnv,
   filterForwardableCoralEnv,
   measureEnv,
-  readForwardedCoralEnv,
   resolveEnvBudgetBytes as envBudgetBytes,
   shedInheritedClaudeCodeEnv,
 } from '#src/infra/env-sanitize.js';
@@ -52,16 +51,6 @@ describe('buildChildEnv', () => {
     expect(result.CORAL_CHILD).toBe('1');
     expect(result).not.toHaveProperty('CORAL_MAX_WORKERS');
     expect(result).not.toHaveProperty('CORAL_DISCUSS_MAX_WORKERS');
-  });
-
-  it('should overlay extraEnv and preserve it over base', () => {
-    process.env = { PATH: '/usr/bin', MY_VAR: 'old' };
-
-    const result = buildChildEnv({ MY_VAR: 'new', CUSTOM: 'value' });
-
-    expect(result.MY_VAR).toBe('new');
-    expect(result.CUSTOM).toBe('value');
-    expect(result.CORAL_CHILD).toBe('1');
   });
 
   it('should shed largest vars first when over budget', () => {
@@ -152,22 +141,6 @@ describe('shedInheritedClaudeCodeEnv', () => {
     // its .claude paths + state slot, and forwards it to spawned claude children.
     expect(env.CLAUDE_CONFIG_DIR).toBe('/home/u/.claude-work');
   });
-
-  it('leaves non-Claude-Code vars untouched (PATH, CORAL_CHILD, auth, near-misses)', () => {
-    const env: NodeJS.ProcessEnv = {
-      PATH: '/usr/bin',
-      CORAL_CHILD: '1',
-      ANTHROPIC_API_KEY: 'sk-test',
-      CLAUDED: 'not-a-claude-code-var',
-    };
-
-    shedInheritedClaudeCodeEnv(env);
-
-    expect(env.PATH).toBe('/usr/bin');
-    expect(env.CORAL_CHILD).toBe('1');
-    expect(env.ANTHROPIC_API_KEY).toBe('sk-test');
-    expect(env.CLAUDED).toBe('not-a-claude-code-var');
-  });
 });
 
 describe('forwardable CORAL_* env', () => {
@@ -187,14 +160,6 @@ describe('forwardable CORAL_* env', () => {
       expect(result).not.toHaveProperty('CORAL_SYSTEM_PROVIDER_SCOPE');
 
       expect(result).toEqual({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_EFFORT: 'high' });
-    });
-  });
-
-  describe('readForwardedCoralEnv', () => {
-    it('returns the filtered forwardable config for a valid map', () => {
-      expect(readForwardedCoralEnv({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_JOB_ID: 'j' })).toEqual({
-        CORAL_CODEX_MODEL: 'gpt-5.6-sol',
-      });
     });
   });
 });

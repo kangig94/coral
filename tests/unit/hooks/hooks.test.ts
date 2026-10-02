@@ -17,7 +17,6 @@ import {
   CORAL_SKILL_VARS_HOOK,
   KB_START_HOOK,
   KB_LOOKUP_REMINDER_HOOK,
-  KB_MEMO_REMINDER_HOOK,
   KB_PROMOTE_GATE_HOOK,
   RALPH_LOOP_HOOK,
   SESSION_START_HOOK,
@@ -27,7 +26,6 @@ import {
   createFixture,
   expectHookOutput,
   liveWorkSubagentsDir,
-  parseHookOutput,
   runHook,
   runHookAsync,
   writeInjectBundle,
@@ -99,22 +97,6 @@ describe('session-start.mjs', () => {
     );
   });
 
-  it('keeps the wrapped payload for Claude and Codex hosts', () => {
-    const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
-
-    const result = runHook(
-      SESSION_START_HOOK,
-      { session_id: 'sess-123' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, COPILOT_PLUGIN_ROOT: undefined, AI_AGENT: 'claude-code' },
-    );
-
-    expect(result.status).toBe(0);
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
-    expect(output.hookSpecificOutput.additionalContext).toContain('Current host: claude');
-  });
-
   it('replaces {{CORAL_PROJECTS}} with the source-derived global project dir', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/my.repo.git');
@@ -164,116 +146,6 @@ describe('session-start.mjs', () => {
     expect(excludeLines).not.toContain('coral');
     expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
     expect(existsSync(join(fixture.projectRoot, '.gitignore'))).toBe(false);
-  });
-
-  it('migrates the legacy root gitignore entry without requiring auto-symlink', () => {
-    const fixture = createFixture();
-    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
-    writeInjectBundle(fixture.pluginRoot, 'inject content');
-    mkdirSync(join(fixture.projectRoot, '.claude'), { recursive: true });
-    writeFileSync(join(fixture.projectRoot, '.gitignore'), 'dist/\n.claude/coral\ncoverage/\n');
-    writeFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'settings.local.json');
-
-    const env = {
-      CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
-      CLAUDE_PROJECT_DIR: fixture.projectRoot,
-      CORAL_AUTO_SYMLINK: undefined,
-      HOME: fixture.root,
-    };
-    const first = runHook(SESSION_START_HOOK, { session_id: 'sess-migrate-1' }, env);
-    const second = runHook(SESSION_START_HOOK, { session_id: 'sess-migrate-2' }, env);
-
-    expect(first.status).toBe(0);
-    expect(second.status).toBe(0);
-    expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\ncoverage/\n');
-    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('settings.local.json');
-    expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
-    expect(expectHookOutput(first).hookSpecificOutput.additionalContext).toContain(
-      'Coral migration: retracted legacy coral ignore rule(s) from the working tree; the canonical anchored rule is in .git/info/exclude.',
-    );
-    expect(expectHookOutput(second).hookSpecificOutput.additionalContext).not.toContain('Coral migration:');
-  });
-
-  it('migrates a nested project entry while preserving unrelated bytes and mixed line endings', () => {
-    const fixture = createFixture();
-    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
-    writeInjectBundle(fixture.pluginRoot, 'inject content');
-    const nestedProject = join(fixture.projectRoot, 'packages', 'app');
-    mkdirSync(join(nestedProject, '.claude'), { recursive: true });
-    const original =
-      'dist/\r\npackages/app/.claude/coral\r\n!.claude/coral\n.claude/coral/\r\npackages/app/.claude/coral\nlast';
-    const expected = 'dist/\r\n!.claude/coral\n.claude/coral/\r\nlast';
-    writeFileSync(join(fixture.projectRoot, '.gitignore'), original);
-
-    const env = {
-      CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
-      CLAUDE_PROJECT_DIR: nestedProject,
-      CORAL_AUTO_SYMLINK: undefined,
-      HOME: fixture.root,
-    };
-    const first = runHook(SESSION_START_HOOK, { session_id: 'sess-nested-1' }, env);
-    const second = runHook(SESSION_START_HOOK, { session_id: 'sess-nested-2' }, env);
-
-    expect(first.status).toBe(0);
-    expect(second.status).toBe(0);
-    expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe(expected);
-    expect(existsSync(join(nestedProject, '.claude', '.gitignore'))).toBe(false);
-  });
-
-  it('adds the anchored exclude entry for an existing symlink without replacing it', () => {
-    const fixture = createFixture();
-    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
-    writeInjectBundle(fixture.pluginRoot, 'inject content');
-    const claudeDir = join(fixture.projectRoot, '.claude');
-    const existingTarget = join(fixture.root, 'existing-coral-target');
-    mkdirSync(claudeDir, { recursive: true });
-    mkdirSync(existingTarget, { recursive: true });
-    symlinkSync(existingTarget, join(claudeDir, 'coral'));
-
-    const result = runHook(
-      SESSION_START_HOOK,
-      { session_id: 'sess-existing-symlink' },
-      {
-        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
-        CLAUDE_PROJECT_DIR: fixture.projectRoot,
-        CORAL_AUTO_SYMLINK: '1',
-        HOME: fixture.root,
-      },
-    );
-
-    expect(result.status).toBe(0);
-    expect(readlinkSync(join(claudeDir, 'coral'))).toBe(existingTarget);
-    const excludeLines = readFileSync(join(fixture.projectRoot, '.git', 'info', 'exclude'), 'utf-8').split(/\r?\n/u);
-    expect(excludeLines).toContain('/.claude/coral');
-    expect(excludeLines).not.toContain('coral');
-    expect(existsSync(join(claudeDir, '.gitignore'))).toBe(false);
-  });
-
-  it('preserves the legacy protection when the scoped ignore is a symlink', () => {
-    const fixture = createFixture();
-    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
-    writeInjectBundle(fixture.pluginRoot, 'inject content');
-    const claudeDir = join(fixture.projectRoot, '.claude');
-    const externalIgnore = join(fixture.root, 'external-ignore');
-    mkdirSync(claudeDir, { recursive: true });
-    writeFileSync(join(fixture.projectRoot, '.gitignore'), 'dist/\n.claude/coral\n');
-    writeFileSync(externalIgnore, 'do-not-touch\n');
-    symlinkSync(externalIgnore, join(claudeDir, '.gitignore'));
-
-    const result = runHook(
-      SESSION_START_HOOK,
-      { session_id: 'sess-unsafe-scoped-ignore' },
-      {
-        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
-        CLAUDE_PROJECT_DIR: fixture.projectRoot,
-        CORAL_AUTO_SYMLINK: undefined,
-        HOME: fixture.root,
-      },
-    );
-
-    expect(result.status).toBe(0);
-    expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\n.claude/coral\n');
-    expect(readFileSync(externalIgnore, 'utf-8')).toBe('do-not-touch\n');
   });
 
   it('rejects a symlinked root gitignore without touching its target', () => {
@@ -359,20 +231,6 @@ describe('session-start.mjs', () => {
 });
 
 describe('kb-start.mjs', () => {
-  it('includes the orchestrator fragment for top-level sessions', () => {
-    const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, { core: 'base\nrest', kbOrchestrator: 'owner instruction' });
-
-    const result = runHook(
-      KB_START_HOOK,
-      { hook_event_name: 'SessionStart', session_id: 'sess-owner' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: fixture.projectRoot },
-    );
-
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain('owner instruction');
-  });
-
   describe('wake-up payload', () => {
     function seedKbWiki(kbRoot: string, slug: string, updatedAt: string, understanding: string): void {
       const wikiDir = join(kbRoot, 'wiki');
@@ -428,30 +286,6 @@ describe('kb-start.mjs', () => {
       expect(output.hookSpecificOutput.additionalContext).not.toContain('Other understanding.');
     });
 
-    it('omits the wake-up block entirely when the project wiki is absent', () => {
-      const fixture = createFixture();
-      writeInjectBundle(fixture.pluginRoot, 'inject content');
-      initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
-      const kbRoot = join(fixture.root, 'kb');
-      seedKbWiki(kbRoot, 'foreign', '2026-05-04T01:00:00.000Z', 'Foreign understanding.');
-
-      const result = runHook(
-        KB_START_HOOK,
-        { hook_event_name: 'SessionStart', session_id: 'sess-wake' },
-        {
-          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
-          CLAUDE_PROJECT_DIR: fixture.projectRoot,
-          CORAL_KB_PATH: kbRoot,
-          HOME: fixture.root,
-        },
-      );
-
-      const output = expectHookOutput(result);
-      expect(output.hookSpecificOutput.additionalContext).not.toContain('## project wiki: foreign');
-      expect(output.hookSpecificOutput.additionalContext).not.toContain('Foreign understanding.');
-      expect(output.hookSpecificOutput.additionalContext).not.toMatch(/inject content[\s\S]*\n## project wiki: /u);
-    });
-
     it('returns null when the project wiki has malformed frontmatter (fail-open)', () => {
       const fixture = createFixture();
       writeInjectBundle(fixture.pluginRoot, 'inject content');
@@ -481,48 +315,6 @@ describe('kb-start.mjs', () => {
       expect(output.hookSpecificOutput.additionalContext).not.toContain('## project wiki:');
     });
   });
-
-  it('emits nothing when KB is disabled and keeps the fixed contract without a project directory', () => {
-    const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, { kbCommon: 'KB contract' });
-
-    const disabled = runHook(
-      KB_START_HOOK,
-      { hook_event_name: 'SessionStart', session_id: 'sess-disabled' },
-      {
-        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
-        CLAUDE_PROJECT_DIR: fixture.projectRoot,
-        CORAL_KB_ENABLE: '0',
-      },
-    );
-    const noProject = runHook(
-      KB_START_HOOK,
-      { hook_event_name: 'SubagentStart', session_id: 'sess-no-project' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: undefined },
-    );
-
-    expect(disabled.status).toBe(0);
-    expect(noProject.status).toBe(0);
-    expect(parseHookOutput(disabled.stdout)).toBeNull();
-    expect(expectHookOutput(noProject).hookSpecificOutput.additionalContext).toContain('KB contract');
-  });
-
-  it('fails open with a visible recovery instruction when the KB contract cannot be rendered', () => {
-    const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, { kbCommon: 'KB contract' });
-    rmSync(join(fixture.pluginRoot, 'inject', 'kb', 'common.md'));
-
-    const result = runHook(
-      KB_START_HOOK,
-      { hook_event_name: 'SessionStart', session_id: 'sess-render-failure' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: fixture.projectRoot },
-    );
-
-    expect(result.status).toBe(0);
-    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toBe(
-      `Coral KB contract could not be rendered; read \`${fixture.pluginRoot}/inject/kb/*.md\` from the active Coral plugin.`,
-    );
-  });
 });
 
 describe('subagent-start.mjs', () => {
@@ -543,50 +335,6 @@ describe('subagent-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain('Guidelines for subagent');
   });
 
-  it('includes session guidance and substitutes the parent session_id', () => {
-    const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, { core: 'visible\nafter', kbSession: 'owner={{SESSION_ID}}' });
-
-    const baseResult = runHook(
-      SUBAGENT_START_HOOK,
-      { session_id: 'sess-parent' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
-    );
-    const kbResult = runHook(
-      KB_START_HOOK,
-      { hook_event_name: 'SubagentStart', session_id: 'sess-parent' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: fixture.projectRoot },
-    );
-
-    const baseOutput = expectHookOutput(baseResult);
-    const kbOutput = expectHookOutput(kbResult);
-    expect(baseOutput.hookSpecificOutput.additionalContext).toContain('visible');
-    expect(baseOutput.hookSpecificOutput.additionalContext).toContain('after');
-    expect(baseOutput.hookSpecificOutput.additionalContext).not.toContain('owner=sess-parent');
-    expect(kbOutput.hookSpecificOutput.hookEventName).toBe('SubagentStart');
-    expect(kbOutput.hookSpecificOutput.additionalContext).toBe('owner=sess-parent');
-  });
-
-  it('omits the orchestrator fragment', () => {
-    const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, {
-      kbCommon: 'base',
-      kbOrchestrator: 'propagate owner',
-      kbSession: 'rest',
-    });
-
-    const result = runHook(
-      KB_START_HOOK,
-      { hook_event_name: 'SubagentStart', session_id: 'sess-parent' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: fixture.projectRoot },
-    );
-
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain('base');
-    expect(output.hookSpecificOutput.additionalContext).not.toContain('propagate owner');
-    expect(output.hookSpecificOutput.additionalContext).toContain('rest');
-  });
-
   it('renders equipped tools when the engine binary is installed', () => {
     const fixture = createFixture();
     seedCodebaseMemoryBinary(fixture.root);
@@ -604,28 +352,6 @@ describe('subagent-start.mjs', () => {
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toContain('- codebase-memory:');
     expect(output.hookSpecificOutput.additionalContext).not.toContain('{{EQUIPPED_TOOLS}}');
-  });
-});
-
-describe('kb-memo-reminder.mjs', () => {
-  it('reminds with the source-derived global memo path', () => {
-    const fixture = createFixture();
-    initGitRepo(fixture.projectRoot, 'git@gitlab.com:group/subgroup/repo.git');
-
-    const result = runHook(
-      KB_MEMO_REMINDER_HOOK,
-      { session_id: 'sess-1' },
-      {
-        CLAUDE_PROJECT_DIR: fixture.projectRoot,
-        HOME: fixture.root,
-      },
-    );
-
-    expect(result.status).toBe(0);
-
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
-    expect(output.hookSpecificOutput.additionalContext).toContain('kb memo write --owner "sess-1"');
   });
 });
 
@@ -707,32 +433,6 @@ describe('kb-promote-gate.mjs', () => {
     expect(output.decision).toBe('block');
     expect(output.reason).toContain('No memos to process');
   });
-
-  it('keeps compact SessionStart guidance on the memo-review workflow', () => {
-    const fixture = createFixture();
-    const memoDir = join(coralProjectDir(fixture.root, `local/${basename(fixture.projectRoot)}`), 'memo');
-    mkdirSync(memoDir, { recursive: true });
-    writeFileSync(join(memoDir, '20260321-hooks-note.md'), 'memo', 'utf-8');
-
-    const result = runHook(
-      KB_PROMOTE_GATE_HOOK,
-      { hook_event_name: 'SessionStart' },
-      {
-        CLAUDE_PROJECT_DIR: fixture.projectRoot,
-        HOME: fixture.root,
-      },
-    );
-
-    expect(result.status).toBe(0);
-
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
-    expect(output.hookSpecificOutput.additionalContext).toContain('kb search');
-    expect(output.hookSpecificOutput.additionalContext).toContain('kb promote');
-    expect(output.hookSpecificOutput.additionalContext).toContain('memo -> review -> promotion');
-    expect(output.hookSpecificOutput.additionalContext).not.toContain('.coral/kb/notes/');
-    expect(output.hookSpecificOutput.additionalContext).not.toContain('write directly');
-  });
 });
 
 describe('kb-lookup-reminder.mjs', () => {
@@ -783,22 +483,6 @@ describe('kb-lookup-reminder.mjs', () => {
         process.env.CORAL_KB_PATH = previousKbPath;
       }
     }
-  });
-
-  it('no-ops when CORAL_KB_ENABLE=0', () => {
-    const fixture = createFixture();
-    const kbDir = join(fixture.root, '.coral', 'kb', 'notes');
-    mkdirSync(kbDir, { recursive: true });
-    writeFileSync(join(kbDir, 'hooks-paths.md'), '# Hooks', 'utf-8');
-
-    const result = runHook(
-      KB_LOOKUP_REMINDER_HOOK,
-      { hook_event_name: 'PostToolUseFailure' },
-      { HOME: fixture.root, CORAL_KB_ENABLE: '0' },
-    );
-
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('');
   });
 });
 

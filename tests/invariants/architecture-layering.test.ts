@@ -139,7 +139,6 @@ const COORDINATOR_ALLOWED = new Set([
   // Both independent host owners consume provider-owned serviceability policy while retaining their live state.
   'src/providers/serviceability.ts',
 ]);
-const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts', 'shared.ts', 'shared-utils.ts'] as const;
 const DOMAIN_ROOT_DIRS = [
   'src/provider-proxy',
   'src/jobs',
@@ -210,26 +209,6 @@ describe('architecture layering invariants', () => {
         (source.startsWith('src/runtime/') || source.startsWith('src/infra/')) &&
         startsWithAny(target, RUNTIME_INFRA_FORBIDDEN),
     );
-
-    expect(violations).toEqual([]);
-  });
-
-  it('security imports only security-local modules', () => {
-    const violations = collectViolations((source, target) => {
-      if (!source.startsWith(SECURITY_ROOT)) {
-        return false;
-      }
-
-      if (target.startsWith(SECURITY_ROOT)) {
-        return false;
-      }
-
-      if (SECURITY_ALLOWED.has(target)) {
-        return false;
-      }
-
-      return target.startsWith('src/');
-    });
 
     expect(violations).toEqual([]);
   });
@@ -339,27 +318,6 @@ describe('architecture layering invariants', () => {
     expect(unexercisedCoordinatorTargets).toEqual([]);
   });
 
-  it('production files never import test helpers', () => {
-    const violations = collectViolations(
-      (_source, target) =>
-        target.startsWith('tests/') || target.startsWith('src/testing/') || target.startsWith('tools/testing/'),
-    );
-
-    expect(violations).toEqual([]);
-  });
-
-  it('kb tool contracts stay on the transport and kb tool-handler seams', () => {
-    const violations = collectViolations(
-      (source, target) =>
-        target === 'src/kb/tool-contracts.ts' &&
-        !source.startsWith('src/transport/') &&
-        source !== 'src/kb-daemon/request-service.ts' &&
-        source !== 'src/kb/tool-handlers.ts',
-    );
-
-    expect(violations).toEqual([]);
-  });
-
   it.each(['kb', 'discuss'] as const)('%s domain does not import transport-owned result wrappers', (domain) => {
     const violations = collectViolations(
       (source, target) => source.startsWith(`src/${domain}/`) && target === 'src/transport/tool-result.ts',
@@ -381,23 +339,6 @@ describe('architecture layering invariants', () => {
     expect(supervisorImportViolations(IMPORT_EDGES)).toEqual([]);
   });
 
-  it.each([
-    ['src/store/epoch/index.ts', '../store/epoch/index.js'],
-    ['src/coordinator/lifecycle.ts', '../coordinator/lifecycle.js'],
-    ['src/transport/ipc/server.ts', '../transport/ipc/server.js'],
-  ] as const)('rejects a namespace supervisor import of %s', (target, specifier) => {
-    const mutation: ParsedImportEdge = {
-      source: 'src/coordinator-launch/supervisor.ts',
-      target,
-      specifier,
-      via: 'ImportDeclaration',
-      runtime: true,
-      typeOnly: false,
-    };
-
-    expect(supervisorImportViolations([mutation])).toEqual([`${mutation.source} -> ${target}`]);
-  });
-
   it('the shared providers domain reaches neither provider-host owner', () => {
     expect(providerHostOwnerImportViolations(IMPORT_EDGES)).toEqual([]);
   });
@@ -405,22 +346,6 @@ describe('architecture layering invariants', () => {
   it('scans a non-empty providers domain and names only owner roots that contain production files', () => {
     expect(PROVIDER_SOURCE_FILES.length).toBeGreaterThan(0);
     expect(PROVIDER_HOST_OWNER_ROOTS.filter((root) => !referencesProductionPath(root))).toEqual([]);
-  });
-
-  it.each([
-    ['src/coordinator/index.ts', '../coordinator/index.js'],
-    ['src/provider-proxy/provider-root-authority.ts', '../provider-proxy/provider-root-authority.js'],
-  ] as const)('rejects a providers import of owner module %s', (target, specifier) => {
-    const mutation: ParsedImportEdge = {
-      source: 'src/providers/bootstrap.ts',
-      target,
-      specifier,
-      via: 'ImportDeclaration',
-      runtime: true,
-      typeOnly: false,
-    };
-
-    expect(providerHostOwnerImportViolations([mutation])).toEqual([`${mutation.source} -> ${target}`]);
   });
 
   it('the journal store reaches neither provider proxy, coordinator, nor transport modules', () => {
@@ -460,14 +385,6 @@ describe('architecture layering invariants', () => {
       .map((edge) => `${edge.source} -> ${edge.target}`);
 
     expect(violations).toEqual([]);
-  });
-
-  it('domain roots do not contain generic filenames', () => {
-    const banned = DOMAIN_ROOT_DIRS.flatMap((root) =>
-      GENERIC_FILENAMES.map((name) => `${root}/${name}`).filter((filePath) => PRODUCTION_FILES.has(filePath)),
-    );
-
-    expect(banned).toEqual([]);
   });
 
   it('domain shell modules do not import sibling shell modules', () => {

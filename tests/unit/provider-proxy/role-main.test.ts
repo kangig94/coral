@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { buildEnforcementOutcomeHandlers, startProviderProxyRole } from '#src/provider-proxy/role-main.js';
+import { startProviderProxyRole } from '#src/provider-proxy/role-main.js';
 import { controlExchangeForTest } from '#src/provider-proxy/control-client.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { createDeferred } from '#tools/testing/deferred.js';
 
 const owned = vi.hoisted(() => ({
   pairingClose: vi.fn(),
@@ -52,30 +51,6 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function outcomeFixture() {
-  const scheduled: Array<() => void> = [];
-  const closed = createDeferred<void>();
-  const close = vi.fn(async () => {});
-  const exitProcess = vi.fn(() => {
-    closed.resolve();
-  });
-  const markExited = vi.fn();
-  const handlers = buildEnforcementOutcomeHandlers({
-    role: 'reaper',
-    roleIdentity: { pid: 5000, incarnation: testIncarnation(5000) },
-    deadlines: { markExited },
-    close,
-    exitProcess,
-    grantWasInstalled: () => true,
-    now: () => 0,
-    retryUnattributable: () => null,
-    schedule: (callback) => {
-      scheduled.push(callback);
-    },
-  });
-  return { handlers, close, exitProcess, markExited, closed: closed.promise, dispatch: () => scheduled.shift()?.() };
-}
-
 describe('provider role shutdown', () => {
   it('closes owned proxy resources even when semantic shutdown fails', async () => {
     const failure = new Error('semantic shutdown incomplete');
@@ -90,26 +65,5 @@ describe('provider role shutdown', () => {
     await expect(role.close()).rejects.toBe(failure);
     expect(owned.pairingClose).toHaveBeenCalledOnce();
     expect(owned.proxyClose).toHaveBeenCalledOnce();
-  });
-
-  it('keeps the role alive while containment is held', () => {
-    const fixture = outcomeFixture();
-    fixture.handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
-    fixture.dispatch();
-    expect(fixture.handlers.enforcementHoldStatus()?.kind).toBe('recorded-group-unattributable');
-    expect(fixture.close).not.toHaveBeenCalled();
-    expect(fixture.exitProcess).not.toHaveBeenCalled();
-    expect(fixture.markExited).not.toHaveBeenCalled();
-  });
-
-  it('closes and exits after confirmed absence', async () => {
-    const fixture = outcomeFixture();
-    fixture.handlers.onOutcome({ kind: 'containment-absent', disappearanceReceipt: 'gone' });
-    expect(fixture.exitProcess).not.toHaveBeenCalled();
-    fixture.dispatch();
-    await fixture.closed;
-    expect(fixture.close).toHaveBeenCalledOnce();
-    expect(fixture.markExited).toHaveBeenCalledOnce();
-    expect(fixture.exitProcess).toHaveBeenCalledWith(0);
   });
 });

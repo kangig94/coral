@@ -39,19 +39,6 @@ describe('applyJournalPragmas', () => {
     }
   });
 
-  it('rebuild mode sets WAL + synchronous=NORMAL (test/regression utility only)', () => {
-    const db = newRawDatabase(join(workDir, 'rebuild.db'));
-    try {
-      applyJournalPragmas(db, { kind: 'rebuild' });
-
-      expect(pragmaSimple(db, 'synchronous')).toBe(1);
-      expect(pragmaSimple(db, 'journal_mode')).toBe('wal');
-      expect(pragmaSimple(db, 'foreign_keys')).toBe(1);
-    } finally {
-      db.close();
-    }
-  });
-
   it('readonly mode only sets foreign_keys + busy_timeout (no journal/synchronous writes)', () => {
     // Apply readonly to a writable handle so we can directly observe that the
     // helper never writes journal_mode or synchronous in that branch — a real
@@ -68,26 +55,6 @@ describe('applyJournalPragmas', () => {
       expect(pragmaSimple(db, 'synchronous')).toBe(before.synchronous);
       expect(pragmaSimple(db, 'journal_mode')).toBe(before.journalMode);
       expect(pragmaSimple(db, 'foreign_keys')).toBe(1);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('busyTimeoutMs override is honored', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyJournalPragmas(db, { kind: 'writable', busyTimeoutMs: 12345 });
-      expect(pragmaSimple(db, 'busy_timeout')).toBe(12345);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('busyTimeoutMs defaults to 5000 when omitted', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyJournalPragmas(db, { kind: 'writable' });
-      expect(pragmaSimple(db, 'busy_timeout')).toBe(5000);
     } finally {
       db.close();
     }

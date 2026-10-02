@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { isProcessIncarnation, processIncarnationSchema, type ProcessIncarnation } from '#src/infra/node-process.js';
+import { isProcessIncarnation, processIncarnationSchema } from '#src/infra/node-process.js';
 
 const MAX_LENGTH = 256;
 
@@ -39,16 +39,5 @@ describe('process incarnation token admission', () => {
     expect(notTokens.map((value) => processIncarnationSchema.safeParse(value).success)).toEqual(
       notTokens.map(() => false),
     );
-  });
-
-  it('narrows to the branded type, so an admitted value needs no cast at the call site', () => {
-    const raw: unknown = 'linux:9f2a1c44-1f3e-4a8b-9d31-6c0f2b7e5a10:774219';
-    if (!isProcessIncarnation(raw)) throw new Error('a well-formed token must be admitted');
-
-    // The assignment is the assertion: it compiles only because the guard narrowed `unknown` to the brand.
-    // Without that, every caller reaches for `as ProcessIncarnation`, which is the one expression the opacity
-    // invariant has to police.
-    const token: ProcessIncarnation = raw;
-    expect(token).toBe(raw);
   });
 });

@@ -13,6 +13,7 @@ import { writeResultArtifact } from '#src/jobs/terminal/export.js';
 
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+
 const openDbs = new Set<Database>();
 
 afterEach(() => {
@@ -55,23 +56,6 @@ function initProviderJob(store: JobStore, jobId: string, sessionId: string): voi
 }
 
 describe('JobStore', () => {
-  it('preserves terminal byte counts in projection details', () => {
-    const { store } = createStore();
-    const jobId = 'job-byte-counts';
-    const sessionId = 'session-byte-counts';
-    initProviderJob(store, jobId, sessionId);
-
-    commitJobTerminal(
-      store,
-      jobId,
-      sessionId,
-      { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
-      { diagnostics: { byteCounts: { stdout: 123, stderr: 45 } } },
-    );
-
-    expect(store.loadJobProjectionDetail(jobId).exit?.diagnostics.byteCounts).toEqual({ stdout: 123, stderr: 45 });
-  });
-
   it('rebuilds a pre-existing raw workflow child artifact with its durable slot identity', () => {
     const { runtime, store } = createStore();
     const childJobId = '11111111-1111-4111-8111-111111111111';

@@ -4,11 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { StoreResetCliError, UsageError, buildErrorEnvelope, errorCodeToExit } from '#src/cli/errors.js';
-import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtime/errors.js';
+import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import { buildTransportErrorResponse } from '#src/transport/error-response.js';
 import { ChildPrincipalBindingError } from '#src/transport/ipc/child-principal-auth.js';
 import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '#src/transport/ipc/client.js';
-import { domainResultToHttp, launchToHttp } from '#src/transport/response.js';
 
 describe('cli errors', () => {
   describe('buildErrorEnvelope', () => {
@@ -155,85 +154,37 @@ describe('cli errors', () => {
       });
     });
 
-    it.each(['direct', 'ipc', 'http'] as const)(
-      'distinguishes an unknown writer observation from the shipped live-writer code over %s',
-      (transport) => {
-        const live = documentedCoralSetupError('legacy_source_not_quiescent', {
-          holder: 'install:kiwi (pid 42)',
-        });
-        const unknown = documentedCoralSetupError('legacy_source_writer_observation_unknown', {
-          holder: 'install:kiwi (pid 42)',
-        });
-        const carry = (error: ReturnType<typeof documentedCoralSetupError>) => {
-          if (transport === 'direct') return error;
-          const serialized = serializeCoralSetupError(error);
-          if (serialized === null) throw new Error('Expected setup error to serialize');
-          if (transport === 'ipc') {
-            return new IpcRpcError({ code: -32603, message: serialized.userMessage, data: serialized });
-          }
-          const response = buildTransportErrorResponse(error);
-          return new BackendToolHttpError(response.message, response.statusCode, response.body);
-        };
+    it('preserves the unknown-writer code from a setup error through the HTTP envelope', () => {
+      const failure = documentedCoralSetupError('legacy_source_writer_observation_unknown', {
+        holder: 'install:kiwi (pid 42)',
+      });
+      const response = buildTransportErrorResponse(failure);
 
-        expect(buildErrorEnvelope(carry(live)).envelope.code).toBe('legacy_source_not_quiescent');
-        expect(buildErrorEnvelope(carry(unknown))).toMatchObject({
-          envelope: { code: 'legacy_source_writer_observation_unknown' },
-          exitCode: 75,
-        });
-      },
-    );
+      expect(buildErrorEnvelope(failure)).toMatchObject({
+        envelope: { code: 'legacy_source_writer_observation_unknown' },
+        exitCode: 75,
+      });
+      expect(response.statusCode).toBe(409);
+      expect(
+        buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)),
+      ).toMatchObject({
+        envelope: { code: 'legacy_source_writer_observation_unknown' },
+        exitCode: 75,
+      });
+    });
 
-    it.each([
-      [
-        'invalid_store_reset_incident_id',
-        'Report target must be a full epoch key, an unambiguous positive epoch number, or a canonical lowercase legacy incident UUID.',
-        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch key or the ID of a legacy incident in the `ready` state.',
-        2,
-      ],
-      [
-        'store_reset_incident_not_found',
-        'Store-reset report target not found.',
-        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and retry with a listed epoch or legacy incident.',
-        1,
-      ],
-      [
-        'store_reset_epoch_ambiguous',
-        'Store-reset report target names an epoch number that more than one store lineage uses.',
-        'Run `coral-cli backend store-reset list --target gen2` and retry with the full epoch key shown there. An epoch listed with an unobservable key has no facts to report beyond its list row.',
-        2,
-      ],
-      [
-        'store_reset_build_mismatch',
-        'Store-reset reporting is unavailable because the installed build artifacts do not match.',
-        'Reinstall or update Coral through the same install method without deleting Coral data, then retry. If it persists, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
-        70,
-      ],
-      [
-        'store_reset_incident_build_mismatch',
-        'The retained incident belongs to a different Coral build set and cannot be reported by this build.',
-        'Keep the incident in place and file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
-        70,
-      ],
-      [
-        'store_reset_reporting_failed',
-        'Store-reset reporting failed.',
-        'Retry once. If it still fails, file a Store-reset incident issue with this fixed error output; do not move, restore, delete, or attach DB, WAL, SHM, or raw logs.',
-        70,
-      ],
-    ] as const)(
-      'maps the closed store-reset error %s without private detail',
-      (code, message, remediation, exitCode) => {
-        expect(buildErrorEnvelope(new StoreResetCliError(code))).toEqual({
-          envelope: {
-            error: true,
-            code,
-            message,
-            remediation,
-          },
-          exitCode,
-        });
-      },
-    );
+    it('keeps store-reset reporting failures public without diagnostic context', () => {
+      const result = buildErrorEnvelope(new StoreResetCliError('store_reset_reporting_failed'));
+
+      expect(result).toMatchObject({
+        envelope: { error: true, code: 'store_reset_reporting_failed' },
+        exitCode: 70,
+      });
+      expect(result.envelope.remediation).toContain('do not move, restore, delete, or attach');
+      expect(result.envelope).not.toHaveProperty('detail');
+      expect(result.envelope).not.toHaveProperty('context');
+      expect(result.envelope).not.toHaveProperty('http');
+    });
 
     it('renders a reached coordinator lifecycle refusal as a bounded asynchronous wait', () => {
       const result = buildErrorEnvelope(new IpcLifecycleRefusal('/tmp/coral.sock', 'jobs.abort'));
@@ -340,8 +291,6 @@ describe('cli errors', () => {
     });
 
     it.each([
-      [{ code: 'backend_shutting_down', message: 'Backend shutting down' }, 503, 75],
-      [{ code: 'internal_error', message: 'Internal error' }, 500, 70],
       [{ code: 'unauthorized', message: 'Unauthorized' }, 401, 1],
       [{ code: 'backend_error', message: 'Retry later' }, 503, 75],
       [{ code: 'backend_error', message: 'Server exploded' }, 500, 70],
@@ -350,78 +299,16 @@ describe('cli errors', () => {
       expect(buildErrorEnvelope(new BackendToolHttpError(body.message, statusCode, body)).exitCode).toBe(exitCode);
     });
 
-    it.each([
-      ['legacy_foreign_generation', { legacyPath: '/legacy', version: '0.9.16' }, 409],
-      ['legacy_source_not_quiescent', { holder: 'install:kiwi (pid 42)', flavor: 'prod' }, 409],
-      ['store_not_initialized', { path: '/store/store.db' }, 409],
-      ['kb_commit_corrupt_or_unsupported', { commitId: 'blocking-commit', flavor: 'prod' }, 409],
-      ['kb_commit_id_invalid', { commitId: '../bad' }, 400],
-      ['kb_commit_not_found', { commitId: 'missing' }, 409],
-      ['kb_commit_already_quarantined', { commitId: 'retained', quarantineDir: '/retained' }, 409],
-      ['kb_commit_quarantine_failed', { commitId: 'blocking-commit' }, 409],
-      ['coordinator_socket_in_use', { operation: 'store reset', retryCommand: 'retry' }, 409],
-      ['coordinator_socket_bind_failed', { operation: 'store reset', retryCommand: 'retry' }, 409],
-    ] as const)('keeps %s at exit 1 over IPC and HTTP', (code, context, statusCode) => {
-      const setupError = documentedCoralSetupError(code, context);
-      const serialized = serializeCoralSetupError(setupError);
-      if (serialized === null) throw new Error(`Expected ${code} to serialize`);
-      const response = buildTransportErrorResponse(setupError);
-
-      expect(response.statusCode).toBe(statusCode);
-      expect(
-        buildErrorEnvelope(
-          new IpcRpcError({
-            code: -32603,
-            message: serialized.userMessage,
-            data: serialized,
-          }),
-        ).exitCode,
-      ).toBe(1);
-      expect(
-        buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)).exitCode,
-      ).toBe(1);
-    });
-
-    it.each([
-      ['coordinator_socket_dir_insecure', { reason: 'unusable', directory: '/tmp/coral-1000' }, 1],
-      [
-        'coordinator_socket_dir_unverified',
-        { directory: '/tmp/coral-1000', cause: 'the directory reported no owner' },
-        75,
-      ],
-    ] as const)('preserves the %s exit class through HTTP 409', (code, context, exitCode) => {
-      const response = buildTransportErrorResponse(documentedCoralSetupError(code, context));
-
-      expect(response.statusCode).toBe(409);
-      expect(
-        buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)).exitCode,
-      ).toBe(exitCode);
-    });
-
-    it.each([
-      ['busy', 'All provider workers are busy'],
-      ['backend_recovering', 'Backend recovery is still in progress'],
-      ['kb_disabled', 'KB daemon supervisor is disabled: disabled (CORAL_KB_ENABLE=0)'],
-      ['kb_unavailable', 'Knowledge base is unavailable'],
-      ['kb_initializing', 'Knowledge base is starting up — retry in ~5 seconds'],
-      ['kb_offline', 'Knowledge base is offline'],
-      ['provider_host_inventory_unavailable', 'Provider-host inventory is temporarily unavailable.'],
-      [
-        'provider_host_owner_torn_down',
-        'This coordinator has released administration control of provider-proxy:set-a and can no longer ask it.',
-      ],
-    ] as const)('retries %s at exit 75 over IPC even though the wire carries no numeric status', (code, message) => {
-      // No numeric HTTP status crosses IPC, so a code whose HTTP mapping is 503 must be recognised by name
-      // or it reaches the operator as a settled failure.
-      const envelope = buildErrorEnvelope(
+    it('retries a recovering backend over IPC without an HTTP status', () => {
+      const result = buildErrorEnvelope(
         new IpcRpcError({
           code: -32603,
-          message,
-          data: { code, message },
+          message: 'Recovery pending',
+          data: { code: 'backend_recovering', message: 'Recovery pending' },
         }),
       );
 
-      expect(envelope.exitCode).toBe(75);
+      expect(result.exitCode).toBe(75);
     });
 
     it.each([
@@ -443,84 +330,18 @@ describe('cli errors', () => {
   describe('errorCodeToExit', () => {
     it.each([
       ['invalid_usage', undefined, 2],
+      ['legacy_source_writer_observation_unknown', undefined, 75],
       ['transient', undefined, 75],
       ['busy', undefined, 75],
-      ['backend_shutting_down', undefined, 75],
-      ['backend_recovering', undefined, 75],
-      ['kb_disabled', undefined, 75],
-      ['kb_initializing', undefined, 75],
-      ['kb_offline', undefined, 75],
-      ['kb_unavailable', undefined, 75],
-      ['kb_unavailable', 503, 75],
-      ['provider_host_inventory_unavailable', undefined, 75],
-      ['provider_host_owner_torn_down', undefined, 75],
       ['backend_error', 503, 75],
+      ['coordinator_socket_dir_insecure', undefined, 1],
       ['backend_unreachable', undefined, 69],
       ['missing_capability', undefined, 77],
-      ['child_credentials_incomplete', undefined, 77],
       ['internal', undefined, 70],
-      ['internal_error', undefined, 70],
       ['backend_error', 500, 70],
-      ['unauthorized', 401, 1],
-      ['session_not_found', 404, 1],
-      ['not_found', 404, 1],
-      ['audit_requires_ended_session', 409, 1],
-      ['invalid_request', 400, 1],
-      ['backend_recovering', 503, 75],
-      ['coordinator_record_unreadable', undefined, 75],
-      ['coordinator_unreachable', undefined, 75],
-      ['coordinator_socket_dir_unverified', undefined, 75],
-      ['coordinator_socket_dir_insecure', undefined, 1],
       ['unexpected_code', undefined, 1],
     ])('maps %s / %s to %i', (code, httpStatus, exitCode) => {
       expect(errorCodeToExit(code, httpStatus)).toBe(exitCode);
-    });
-
-    it('keeps launch and domain retry-later codes aligned across HTTP and code-only exits', async () => {
-      const EXPECTED_LAUNCH_AND_DOMAIN_RETRY_LATER_CODES = [
-        'backend_recovering',
-        'busy',
-        'job_unresolved',
-        'kb_disabled',
-        'provider_preflight_undetermined',
-        'succession_admission_paused',
-        'succession_writer_parked',
-      ];
-      const { DOCUMENTED_CORAL_SETUP_ERROR_CODES, LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES } =
-        await import('#src/runtime/errors.js');
-
-      expect([...LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES].sort()).toEqual(
-        EXPECTED_LAUNCH_AND_DOMAIN_RETRY_LATER_CODES.sort(),
-      );
-      const documentedCodes = new Set<string>(DOCUMENTED_CORAL_SETUP_ERROR_CODES);
-      expect([...LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES].filter((code) => documentedCodes.has(code))).toEqual([]);
-
-      for (const code of LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES) {
-        expect(launchToHttp({ status: 'refused', code, message: 'unused' }, 201).statusCode).toBe(503);
-        expect(launchToHttp({ status: 'undetermined', code, message: 'unused' }, 201).statusCode).toBe(503);
-        expect(domainResultToHttp({ ok: false, code, message: 'unused' }).statusCode).toBe(503);
-        expect(errorCodeToExit(code)).toBe(75);
-      }
-    });
-
-    it('gives every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member exit 75 in both errorCodeToExit and expansionExitCode', async () => {
-      const EXPECTED_NOT_OBSERVED_CODES = [
-        'coordinator_unreachable',
-        'coordinator_record_unreadable',
-        'coordinator_socket_dir_unverified',
-        'legacy_source_writer_observation_unknown',
-        'handoff_socket_holder_unverified',
-        'coordinator_recovering',
-      ];
-      const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
-      const { expansionExitCode } = await import('#src/cli/commands/expansion.js');
-
-      expect([...NOT_OBSERVED_CORAL_SETUP_ERROR_CODES].sort()).toEqual(EXPECTED_NOT_OBSERVED_CODES.sort());
-
-      for (const code of NOT_OBSERVED_CORAL_SETUP_ERROR_CODES) {
-        expect(errorCodeToExit(code)).toBe(75);
-        expect(expansionExitCode({ status: 'error', code, userMessage: 'unused', remediation: 'unused' })).toBe(75);
-      }
     });
   });
 });

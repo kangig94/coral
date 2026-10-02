@@ -1,5 +1,0 @@
-import { publishImportedTransportFact } from './transport-fact-imported-helper.js';
-
-export function handleImportedProviderServerResponse(): Readonly<{ ok: true }> {
-  return publishImportedTransportFact();
-}

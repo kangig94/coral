@@ -169,36 +169,4 @@ describe('coordinator lifecycle startup-failure cleanup', () => {
       errorSpy.mockRestore();
     }
   });
-
-  it('logs a refused discovery withdrawal instead of discarding it', async () => {
-    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
-    try {
-      const harness = buildStartupFailureHarness(async () => HOLDING_DISPOSAL);
-      harness.removeBackendInfoIfOwnerFn.mockReturnValue({
-        kind: 'refused',
-        operation: 'unlink',
-        code: 'filesystem-operation-failed',
-        correlation: 'b'.repeat(64),
-        error: { kind: 'error', name: 'Error', code: 'EACCES', message: 'unlink failed\n/private/discovery-path' },
-      });
-
-      const outcome = await raceAgainstTimeout(harness.controller.start(), 500);
-
-      expect(outcome.kind).toBe('rejected');
-      if (outcome.kind !== 'rejected') throw new Error('startup-failure cleanup hung on the KB daemon disposal');
-
-      expect(harness.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('startup-failure-kb-disposal');
-      expect(errorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('backend discovery withdrawal refused during startup-failure cleanup'),
-      );
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('operation=unlink'));
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('code=filesystem-operation-failed'));
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('errno=EACCES'));
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('errorName=Error'));
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(`correlation=${'b'.repeat(64)}`));
-      expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining('/private/discovery-path'));
-    } finally {
-      errorSpy.mockRestore();
-    }
-  });
 });

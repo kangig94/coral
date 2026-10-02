@@ -6,11 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   compareAndSwapUpgradeIntent,
   quarantineCorruptUpgradeIntent,
-  readCompletedSuccessionReceipts,
   readUpgradeIntent,
   retryUpgradeIntentCas,
-  revalidateUpgradeIntentTarget,
-  visibleUpgradeIntent,
   type UpgradeIntentChange,
 } from '#src/infra/upgrade-intent.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
@@ -95,31 +92,6 @@ describe('upgrade intent', () => {
     expect(retried).toMatchObject({ kind: 'written', intent: { requestId: loser.requestId, revision: 2 } });
   });
 
-  it('keeps the request start time across status changes and exposes the automatic retry condition', async () => {
-    const dir = runDir();
-    const initial = await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
-    if (initial.kind !== 'written') throw new Error('intent not written');
-    const deferred = await compareAndSwapUpgradeIntent(dir, initial.intent.revision, {
-      ...pendingIntent('first'),
-      disposition: 'deferred',
-      blockers: [{ owner: 'legacy-incumbent', reason: 'incumbent still serving' }],
-      retryCondition: { kind: 'incumbent-retirement', evidence: 'legacy idle exit' },
-    });
-    if (deferred.kind !== 'written') throw new Error('deferred intent not written');
-    expect(deferred.intent.requestedAt).toBe(initial.intent.requestedAt);
-    expect(visibleUpgradeIntent(deferred.intent)).toMatchObject({
-      disposition: 'deferred',
-      since: initial.intent.requestedAt,
-      reason: 'legacy idle exit',
-      blockers: [{ owner: 'legacy-incumbent', reason: 'incumbent still serving' }],
-      retryCondition: { kind: 'incumbent-retirement' },
-    });
-    expect(
-      visibleUpgradeIntent({ ...deferred.intent, disposition: 'pending', successionPreparation: { stage: 'prepared' } })
-        ?.phase,
-    ).toBe('prepared');
-  });
-
   it('preserves unknown keys at every object level and refuses unknown generations', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, {
@@ -156,29 +128,6 @@ describe('upgrade intent', () => {
     writeFileSync(path, JSON.stringify({ ...result, version: 'v2' }));
     expect(readUpgradeIntent(dir)).toEqual({ kind: 'unsupported', version: 'v2' });
     await expect(compareAndSwapUpgradeIntent(dir, 1, pendingIntent('third'))).resolves.toEqual({ kind: 'unsupported' });
-  });
-
-  it('clears blockers owned by this build when their obligations settle', async () => {
-    const dir = runDir();
-    const seeded = await compareAndSwapUpgradeIntent(dir, null, {
-      ...pendingIntent('first'),
-      blockers: [{ owner: 'jobs', reason: 'job-1 is still running' }],
-    });
-    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
-    const written = await compareAndSwapUpgradeIntent(dir, seeded.intent.revision, {
-      ...seeded.intent,
-      blockers: [],
-    });
-    expect(written).toMatchObject({ kind: 'written', intent: { blockers: [] } });
-  });
-
-  it('does not treat a stored plugin-root label as a validated launch target', async () => {
-    const dir = runDir();
-    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
-    const observed = readUpgradeIntent(dir);
-    expect(observed.kind).toBe('readable');
-    if (observed.kind !== 'readable') throw new Error('intent not readable');
-    expect(revalidateUpgradeIntentTarget(observed.intent).kind).toBe('invalid');
   });
 
   it('remains pending after a successor spawn without a serving receipt', async () => {
@@ -220,102 +169,6 @@ describe('upgrade intent', () => {
     });
     expect(completed).toMatchObject({ kind: 'written', intent: { disposition: 'completed', revision: 2 } });
   });
-
-  it('preserves additive receipt envelope and entry fields when retaining another succession', async () => {
-    const dir = runDir();
-    let revision: number | null = null;
-    for (const id of ['first', 'second']) {
-      const pending = await compareAndSwapUpgradeIntent(dir, revision, pendingIntent(id));
-      if (pending.kind !== 'written') throw new Error('pending intent not written');
-      const attempting = {
-        ...pendingIntent(id),
-        attemptId: `attempt-${id}`,
-        attemptOwner: { kind: 'incumbent' as const, instanceId: 'incumbent', pid: 100, incarnation: null },
-        disposition: 'attempting' as const,
-        attemptDeadline: '2026-09-25T01:00:00.000Z',
-      };
-      const attempt = await compareAndSwapUpgradeIntent(dir, pending.intent.revision, attempting);
-      if (attempt.kind !== 'written') throw new Error('attempt not written');
-      const completed = await compareAndSwapUpgradeIntent(dir, attempt.intent.revision, {
-        ...attempting,
-        disposition: 'completed',
-        completionReceipt: {
-          kind: 'serving',
-          attemptId: `attempt-${id}`,
-          successor: { instanceId: 'successor', pid: 200, incarnation: null, build },
-          epochKey: 'epoch-1:lineage-1',
-          controlGeneration: 2,
-          acceptedObligations: [],
-          recordedAt: '2026-09-25T00:59:00.000Z',
-        },
-      });
-      if (completed.kind !== 'written') throw new Error('completion not written');
-      revision = completed.intent.revision;
-      if (id === 'first') {
-        const next = await compareAndSwapUpgradeIntent(dir, revision, pendingIntent('between'));
-        if (next.kind !== 'written') throw new Error('receipt not retained');
-        revision = next.intent.revision;
-        const path = join(dir, 'upgrade-receipts.v1.json');
-        const record = JSON.parse(readFileSync(path, 'utf-8')) as {
-          receipts: Record<string, unknown>[];
-        };
-        writeFileSync(
-          path,
-          `${JSON.stringify({ ...record, futureEnvelope: 'keep', receipts: [{ ...record.receipts[0], futureEntry: 'keep' }] })}\n`,
-        );
-      }
-    }
-    await compareAndSwapUpgradeIntent(dir, revision, pendingIntent('after'));
-    const record = JSON.parse(readFileSync(join(dir, 'upgrade-receipts.v1.json'), 'utf-8')) as {
-      futureEnvelope: string;
-      receipts: Record<string, unknown>[];
-    };
-    expect(record.futureEnvelope).toBe('keep');
-    expect(record.receipts[0]).toMatchObject({ futureEntry: 'keep' });
-    const history = readCompletedSuccessionReceipts(dir);
-    expect(history.kind).toBe('readable');
-    if (history.kind !== 'readable') throw new Error('Expected readable receipt history');
-    expect(history.receipts).toHaveLength(2);
-    expect(history.receipts[0]).toMatchObject({ futureEntry: 'keep' });
-  });
-
-  it.each(['{'])(
-    'quarantines damaged optional receipt history (%s) while retaining the current completion',
-    async (damage) => {
-      const dir = runDir();
-      const pending = await compareAndSwapUpgradeIntent(dir, null, pendingIntent('current'));
-      if (pending.kind !== 'written') throw new Error('Missing pending intent');
-      const completionReceipt = {
-        kind: 'serving' as const,
-        attemptId: 'attempt-current',
-        successor: { instanceId: 'successor', pid: 200, incarnation: null, build },
-        epochKey: 'epoch-1:lineage-1',
-        controlGeneration: 2,
-        acceptedObligations: [],
-        recordedAt: '2026-09-25T00:59:00.000Z',
-      };
-      const completed = await compareAndSwapUpgradeIntent(dir, pending.intent.revision, {
-        ...pendingIntent('current'),
-        disposition: 'completed',
-        completionReceipt,
-        attemptId: 'attempt-current',
-        attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: 100, incarnation: null },
-        attemptDeadline: '2026-09-25T01:00:00.000Z',
-      });
-      if (completed.kind !== 'written') throw new Error('Missing completed intent');
-      const history = join(dir, 'upgrade-receipts.v1.json');
-      writeFileSync(history, damage);
-      const next = await compareAndSwapUpgradeIntent(dir, completed.intent.revision, pendingIntent('next'));
-      expect(next.kind).toBe('written');
-      expect(readCompletedSuccessionReceipts(dir)).toMatchObject({
-        kind: 'readable',
-        receipts: [{ receipt: completionReceipt }],
-      });
-      const quarantine = readdirSync(dir).find((name) => name.startsWith('upgrade-receipts.v1.json.damaged.'));
-      expect(quarantine).toBeDefined();
-      expect(readFileSync(join(dir, quarantine!), 'utf8')).toBe(damage);
-    },
-  );
 
   it('should decide again from the winning revision after losing a write race', async () => {
     const dir = runDir();

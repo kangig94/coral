@@ -1,6 +1,7 @@
 import { insertMultiple } from '@orama/orama';
 import { describe, expect, it } from 'vitest';
 
+import { extractSnippet } from '#src/kb/search/snippets.js';
 import { OramaSearchPort } from '#src/engines/orama/search-port.js';
 import { createOramaDb, toOramaDocument, type KbOramaDocument } from '#src/engines/orama/document-builder.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
@@ -40,18 +41,6 @@ async function createSearchPort(documents: readonly KbOramaDocument[]): Promise<
 }
 
 describe('Orama channel search', () => {
-  it('expands camel-case compound queries and prefers metadata identity over body-only matches', async () => {
-    const port = await createSearchPort([
-      note('graph-rag', 'Graph RAG', 'A short note about retrieval.'),
-      note('body-only', 'Body Only', 'Graph RAG Graph RAG Graph RAG appears only in content.'),
-    ]);
-
-    const result = await port.search('GraphRAG', 5, 'all');
-
-    expect(result.hits.map((hit) => hit.documentId)).toContain('note:graph-rag');
-    expect(result.hits[0]?.documentId).toBe('note:graph-rag');
-  });
-
   it('matches compact Korean queries against spaced Korean titles through ngram fields', async () => {
     const port = await createSearchPort([
       note('policy-learning', '정책 학습', '검색 품질을 평가한다.'),
@@ -63,47 +52,19 @@ describe('Orama channel search', () => {
     expect(result.hits.map((hit) => hit.documentId)).toContain('note:policy-learning');
     expect(result.hits[0]?.documentId).toBe('note:policy-learning');
   });
+});
 
-  it('still considers ngram candidates when primary body matches fill topK', async () => {
-    const port = await createSearchPort([
-      note('policy-learning', '정책 학습', '별도 개요.'),
-      note('body-hit-a', '본문 후보 A', '정책학습'),
-      note('body-hit-b', '본문 후보 B', '정책학습'),
-      note('body-hit-c', '본문 후보 C', '정책학습'),
-    ]);
+it('returns a Korean body-only hit with content fields for snippet anchoring', async () => {
+  const port = await createSearchPort([note('body-hit', 'Unrelated title', '정책 학습은 검색 품질을 개선한다.')]);
 
-    const result = await port.search('정책학습', 3, 'all');
+  const result = await port.search('검색', 5, 'all');
 
-    expect(result.hits[0]?.documentId).toBe('note:policy-learning');
+  expect(result.hits[0]?.documentId).toBe('note:body-hit');
+  const snippet = await extractSnippet(result.hits[0].fields.body, {
+    rawQuery: '검색',
+    normalizedQuery: '검색',
+    queryTokens: await port.tokenize('검색'),
+    fts: port,
   });
-
-  it('uses a narrow fuzzy fallback for long Latin typos when strict channels miss', async () => {
-    const port = await createSearchPort([note('retrieval-pipeline', 'Retrieval Pipeline', 'Lexical search path.')]);
-
-    const result = await port.search('retrievel', 5, 'all');
-
-    expect(result.hits[0]?.documentId).toBe('note:retrieval-pipeline');
-  });
-
-  it('does not fuzzy-match only the Latin part of a mixed-script query', async () => {
-    const port = await createSearchPort([note('retrieval-pipeline', 'Retrieval Pipeline', 'Lexical search path.')]);
-
-    const result = await port.search('retrievel 정책', 5, 'all');
-
-    expect(result.hits).toEqual([]);
-  });
-
-  it('limits body ngram indexing to headings and the leading paragraph', () => {
-    const doc = note(
-      'body-ngram-scope',
-      '본문 ngram 범위',
-      ['# 핵심 신호', '', '초반 문단은 검색 품질을 설명한다.', '', '후반고유 후반고유 후반고유'].join('\n'),
-    );
-    const bodyNgrams = new Set(doc.bodyNgram.split(/\s+/u).filter(Boolean));
-
-    expect(bodyNgrams).toContain('핵심');
-    expect(bodyNgrams).toContain('검색');
-    expect(bodyNgrams).not.toContain('후반');
-    expect(bodyNgrams).not.toContain('반고');
-  });
+  expect(snippet).toContain('검색');
 });

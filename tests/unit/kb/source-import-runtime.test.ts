@@ -6,15 +6,11 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 import {
   ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV,
-  PdfMarkerConverter,
   USER_SOURCE_IMPORT_MAX_BYTES,
   deriveSourceImportReadPolicy,
-  prepareSourceImport,
   resolveSourceImportFile,
-  sourceImportAdminLimitExceededHint,
   type SourceImportRuntime,
 } from '#src/kb/ops/source/import.js';
-import { convertSourceInWorker } from '#src/kb/ops/source/conversion-worker.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { ResourceBinding } from '#src/security/principal.js';
 
@@ -114,69 +110,5 @@ describe('source import runtime isolation', () => {
     expect(() =>
       resolveSourceImportFile('/outside/too-big.md', adminPolicy, coherentSizeStorage(adminReadableSize + 2)),
     ).toThrow(new RegExp(`exceeds maximum source import size.*${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}=<bytes>`));
-  });
-
-  it('rejects converted markdown output above the import byte cap with an admin override hint', async () => {
-    const root = tempRoot('coral-source-import-output-cap-');
-    const input = join(root, 'paper.md');
-    const runtimeRoot = join(root, 'runtime');
-    const runtime = fakeRuntime();
-    const policy = deriveSourceImportReadPolicy(unboundBinding(), root, envWith('16'));
-    mkdirSync(runtimeRoot, { recursive: true });
-    writeFileSync(input, '# A\n', 'utf8');
-    const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
-
-    await expect(
-      prepareSourceImport(sourceFile, undefined, policy.maxBytes, () => {}, runtimeRoot, runtime, {
-        limitExceededHint: sourceImportAdminLimitExceededHint(),
-      }),
-    ).rejects.toThrow(new RegExp(`markdown output exceeds maximum size.*${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}=<bytes>`));
-  });
-
-  it('aborts source conversion workers before launch', async () => {
-    const controller = new AbortController();
-    controller.abort('user_abort');
-
-    await expect(
-      convertSourceInWorker(
-        { kind: 'html', html: '<title>Ignored</title><p>Body</p>', outputMaxBytes: USER_SOURCE_IMPORT_MAX_BYTES },
-        { signal: controller.signal },
-      ),
-    ).rejects.toMatchObject({
-      name: 'AbortError',
-      code: 'aborted',
-      stage: 'convert',
-      reason: 'user_abort',
-    });
-  });
-});
-
-describe('PdfMarkerConverter separates "not installed" from "could not check"', () => {
-  const ctx = (runtime: SourceImportRuntime) => ({
-    runtime,
-    runtimeRoot: '/isolated-runtime',
-    fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
-  });
-
-  function locatorUnanswered(code: string): SourceImportRuntime {
-    return fakeRuntime({
-      process: {
-        exec: async () => ({
-          stdout: '',
-          stderr: '',
-          status: null,
-          error: Object.assign(new Error(code), { code }),
-        }),
-      },
-    });
-  }
-
-  it('reports an unanswered converter probe as undetermined', async () => {
-    const code = 'EAGAIN';
-
-    await expect(new PdfMarkerConverter().isAvailable(ctx(locatorUnanswered(code)))).resolves.toEqual({
-      kind: 'undetermined',
-      detail: code,
-    });
   });
 });

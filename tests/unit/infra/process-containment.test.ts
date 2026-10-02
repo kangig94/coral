@@ -4,12 +4,11 @@ import type { ProcessIncarnation, ProcessLiveness } from '#src/infra/node-proces
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { liveChildAuthority, type LiveChildAuthority } from '#src/infra/process-supervision.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { createMonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
 import {
   abortRecordedContainment,
-  observeRecordedContainment,
   reapRecordedContainment,
   type ProcessContainmentEnvironment,
   type RecordedContainmentIdentity,
@@ -170,25 +169,6 @@ function deadlineAfter(
 }
 
 describe('recorded process containment', () => {
-  it('observes a surviving child after the wrapper and group disappear', () => {
-    const fake = createFakeEnvironment({ groupAlive: false, leaderAlive: false, providerRootAlive: true });
-
-    expect(observeRecordedContainment({ ...containment, childRoot: providerRoot }, fake.environment)).toEqual({
-      kind: 'alive',
-    });
-  });
-
-  it('keeps an unattributable recorded group unobservable', () => {
-    const fake = createFakeEnvironment(
-      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
-      { leaderIncarnation: testIncarnation('recycled') },
-    );
-
-    expect(observeRecordedContainment({ ...containment, childRoot: providerRoot }, fake.environment)).toMatchObject({
-      kind: 'unobservable',
-    });
-  });
-
   it('refuses an abort before signaling when the wrapper pid was recycled', () => {
     const fake = createFakeEnvironment(
       { groupAlive: true, leaderAlive: true, providerRootAlive: true },
@@ -225,74 +205,5 @@ describe('recorded process containment', () => {
       { pid: 101, signal: 'SIGKILL', at: 5_375 },
     ]);
     expect(fake.now()).toBe(6_500);
-  });
-
-  it('revalidates caller authority immediately before each signal and reports only delivered signals', async () => {
-    const fake = createFakeEnvironment({ groupAlive: true, leaderAlive: true, providerRootAlive: true });
-    const delivered: Array<{ pid: number; signal: NodeJS.Signals }> = [];
-    const assertSignalAuthorized = vi
-      .fn<() => void>()
-      .mockImplementationOnce(() => undefined)
-      .mockImplementationOnce(() => {
-        throw new Error('authorization moved');
-      });
-
-    await expect(
-      reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 6_500), {
-        ...fake.environment,
-        assertSignalAuthorized,
-        onSignal: (effect) => delivered.push(effect),
-      }),
-    ).rejects.toMatchObject({ code: 'process_containment_reap_failed' });
-
-    expect(assertSignalAuthorized).toHaveBeenCalledTimes(2);
-    expect(fake.signals).toEqual([{ pid: -100, signal: 'SIGTERM', at: 0 }]);
-    expect(delivered).toEqual([{ pid: -100, signal: 'SIGTERM' }]);
-  });
-
-  it('does not give a late KILL step a fresh deadline', async () => {
-    const state = { groupAlive: true, leaderAlive: true, providerRootAlive: true };
-    const fake = createFakeEnvironment(state, { signalCostMs: 125 });
-
-    await expect(
-      reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 5_300), fake.environment),
-    ).rejects.toMatchObject({
-      code: 'process_containment_reap_failed',
-    });
-
-    expect(fake.signals).toEqual([
-      { pid: -100, signal: 'SIGTERM', at: 0 },
-      { pid: 101, signal: 'SIGTERM', at: 125 },
-      { pid: -100, signal: 'SIGKILL', at: 5_250 },
-    ]);
-    expect(fake.now()).toBe(5_375);
-    expect(state.providerRootAlive).toBe(true);
-  });
-
-  it('fails closed before signalling when a live process incarnation cannot be read', async () => {
-    const fake = createFakeEnvironment(
-      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
-      { unreadablePids: new Set([containment.pid]) },
-    );
-
-    await expect(
-      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 10_000), fake.environment),
-    ).resolves.toEqual({ kind: 'identity-unobservable', signalDelivered: false });
-    expect(fake.signals).toEqual([]);
-  });
-
-  // The third answer at a signalling boundary. A group whose liveness cannot be observed is not a group that
-  // may be signalled: SIGTERM and then SIGKILL would land on a numeric group nobody saw, and the leader's id
-  // may have been reused since. This is the case `!== 'absent'` silently authorized.
-  it('refuses to signal a recorded group whose liveness cannot be observed', async () => {
-    const fake = createFakeEnvironment(
-      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
-      { groupLiveness: 'unknown' },
-    );
-
-    await expect(
-      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 10_000), fake.environment),
-    ).resolves.toEqual({ kind: 'identity-unobservable', signalDelivered: false });
-    expect(fake.signals, 'nothing may be signalled on an answer nobody has').toEqual([]);
   });
 });

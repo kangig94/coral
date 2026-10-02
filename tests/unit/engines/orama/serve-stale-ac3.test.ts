@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   ORAMA_PROJECTION_IDENTITY_HASH,
@@ -21,7 +21,6 @@ import { noteEntryId } from '#src/kb/entry-types.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -151,19 +150,6 @@ function createManager(analyzer: OramaTokenizerAnalyzer | null, effectiveKo: boo
   };
 }
 
-function createLeaseOnlyManager(analyzer: OramaTokenizerAnalyzer, effectiveKo: boolean): OramaAnalyzerManager {
-  return {
-    withAnalyzerLease: async (_runtime, declaredAnalyzers, run) =>
-      run({
-        analyzer,
-        activeAnalyzers: effectiveKo ? declaredAnalyzers : [],
-      }),
-    effectiveDeclaredAnalyzers: (declaredAnalyzers) => (effectiveKo ? declaredAnalyzers : []),
-    currentAnalyzer: () => null,
-    isTerminalLoadError: () => false,
-  };
-}
-
 async function installProjection(kb: KbRuntime, manager: OramaAnalyzerManager, runtime: Runtime): Promise<void> {
   const projection = new OramaBaseProjection(kb, createSnapshotStore(kb), {
     analyzerManager: manager,
@@ -194,20 +180,6 @@ function createSearchPort(
       ),
     requestProjectionReconcile,
   });
-}
-
-function currentApplyContext(kb: KbRuntime): CorpusConsumerApplyContext {
-  const snapshot = kb.captureCorpusSnapshot();
-  return {
-    snapshot,
-    journalReader: { readCursor: () => 0 },
-    corpusStateReader: {
-      readConsumerCursor: () => snapshot,
-      readCurrentSnapshot: () => snapshot,
-    },
-    projectionInput: createKbProjectionInput(kb),
-    signal: new AbortController().signal,
-  };
 }
 
 function readMetadata(kb: KbRuntime): OramaProjectionMetadata {
@@ -268,66 +240,6 @@ describe('Orama AC3 serve-stale read path', () => {
     expect(port.warnings()).not.toContain('fts_index_stale_tier');
   });
 
-  it('applies a Kiwi delta when the persisted base analyzer is only available from the active lease', async () => {
-    const { kb, runtime } = createKbFixture();
-    await installProjection(kb, createManager(createKiwiAnalyzer(), true), runtime);
-    const kiwiIdentity = ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], ['ko']));
-    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
-
-    const updatedBody = 'AC3 searchable marker text after lease delta. 갱신검색 토큰';
-    writeFileSync(
-      kb.notePath(NOTE_SLUG),
-      [
-        '---',
-        'tags: [orama]',
-        'principles: []',
-        'source:',
-        '  - kangig94/coral',
-        'createdAt: 2026-06-20T00:00:00.000Z',
-        'updatedAt: 2026-06-20T00:00:00.000Z',
-        'entrySeq: 2',
-        '---',
-        '# Orama Serve Stale AC3',
-        '',
-        updatedBody,
-        '',
-      ].join('\n'),
-      'utf-8',
-    );
-    kb.writeIndex({
-      entries: {
-        [NOTE_ENTRY_ID]: buildNoteIndexEntry({
-          slug: NOTE_SLUG,
-          title: 'Orama Serve Stale AC3',
-          tags: ['orama'],
-          principles: [],
-          source: ['kangig94/coral'],
-          createdAt: '2026-06-20T00:00:00.000Z',
-          updatedAt: '2026-06-20T00:00:00.000Z',
-          body: updatedBody,
-          entrySeq: 2,
-        }),
-      },
-      principles: {},
-      entityMeta: {},
-      relationships: [],
-    });
-    kb.recordMutationCommitted('both', 'update Orama AC3 corpus');
-
-    const projection = new OramaBaseProjection(kb, createSnapshotStore(kb), {
-      analyzerManager: createLeaseOnlyManager(createKiwiAnalyzer(), true),
-      kiwiRuntime: runtime,
-    });
-    const fullInstallSpy = vi.spyOn(projection, 'installFullSnapshot');
-
-    await projection.apply(currentApplyContext(kb));
-    const result = await projection.search('갱신검색', 5, 'all');
-
-    expect(fullInstallSpy).not.toHaveBeenCalled();
-    expect(result.hits.map((hit) => hit.documentId)).toContain(NOTE_ENTRY_ID);
-    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
-  });
-
   it('handles a terminal analyzer load error by requesting reconcile and retrying through the serve guard', async () => {
     const { kb, runtime } = createKbFixture();
     await installProjection(kb, createManager(createKiwiAnalyzer(), true), runtime);
@@ -360,4 +272,14 @@ describe('Orama AC3 serve-stale read path', () => {
     expect(port.warnings()).toContain('fts_index_uninitialized');
     expect(requestedReasons).toEqual(['terminal-analyzer-failure', 'incompatible']);
   });
+});
+
+it('refuses a cold Kiwi artifact without a live analyzer lease', async () => {
+  const { kb, runtime } = createKbFixture();
+  await installProjection(kb, createManager(createKiwiAnalyzer(), true), runtime);
+  const identity = readMetadata(kb).projectionIdentityHash;
+  const port = createSearchPort(kb, runtime, createManager(null, true), () => {});
+
+  expect((await port.search('검색', 5, 'all')).hits).toEqual([]);
+  expect(readMetadata(kb).projectionIdentityHash).toBe(identity);
 });

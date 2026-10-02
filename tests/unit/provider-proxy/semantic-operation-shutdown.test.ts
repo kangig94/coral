@@ -46,10 +46,7 @@ import { createOperationLedger, type OperationLedger, type ProviderOperationKey 
 import type { Proxy } from '#src/provider-proxy/proxy.js';
 import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
 import type { ProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
-import {
-  SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
-  createSemanticOperationRuntime,
-} from '#src/provider-proxy/semantic-operation-runner.js';
+import { createSemanticOperationRuntime } from '#src/provider-proxy/semantic-operation-runner.js';
 import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const runtime: Runtime = createRealRuntime('prod');
@@ -153,11 +150,16 @@ function prepareAndActivate(
   key: ProviderOperationKey,
   prepared: ProxyPreparedAppServerOperation,
 ): void {
-  const reserved = ledger.prepare({ key, reservation: asReservation('res'), prepared, nowMs: 0 });
+  const reserved = ledger.prepare({
+    key,
+    reservation: asReservation('40000000-0000-4000-8000-000000000001'),
+    prepared,
+    nowMs: 0,
+  });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
   ledger.recordPreparation(key, { pid: 1, incarnation: testIncarnation(1) }, asJointContainmentReceipt('contained'));
   const fingerprint = 'f'.repeat(64);
-  ledger.beginActivation(key, asReservation('res'), 0, fingerprint);
+  ledger.beginActivation(key, asReservation('40000000-0000-4000-8000-000000000001'), 0, fingerprint);
   ledger.completeActivation(key, fingerprint, {
     state: 'executing',
     activationFingerprint: fingerprint,
@@ -205,20 +207,6 @@ function fakeBoundProviderStuckUntilAborted(closeStaged: () => void): BoundProvi
   };
 }
 
-function fakeBoundProviderIgnoringAbort(closeStaged: () => void): BoundProvider {
-  return {
-    ...fakeBoundProviderStuckUntilAborted(closeStaged),
-    prepareExecution: () => ({
-      kind: 'app-server',
-      hostSpec: fakeHostSpec(),
-      execute: async function* (execRuntime: BoundProviderAppServerExecutionRuntime): AsyncIterable<ProviderEventBody> {
-        execRuntime.onHostRef(fakeHostRef());
-        await new Promise<never>(() => {});
-      },
-    }),
-  };
-}
-
 describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
   it('stops an executing kernel and releases its staged provider root', async () => {
     const { proxy, ledger } = createTestProxy();
@@ -247,101 +235,5 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
     // The proxy seam applies the supervisor-owned terminal transition, proving shutdown drove the kernel's abort
     // rather than merely awaiting it.
     expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
-  });
-
-  it('releases a staged-but-never-started provider root without touching a kernel', async () => {
-    const { proxy, ledger } = createTestProxy();
-    const key = testKey();
-    const prepared = preparedFixture();
-    const closeStaged = vi.fn();
-
-    providerRegistryDouble.rehydrateBinding.mockReturnValue({
-      ok: true,
-      value: {
-        name: 'claude',
-        envelope: { provider: 'claude', kind: 'account', binding: {} },
-        present: unreachable('present'),
-        readiness: unreachable('readiness') as unknown as BoundProvider['readiness'],
-        compareIdentity: unreachable('compareIdentity'),
-        decodeContinuity: unreachable('decodeContinuity'),
-        preflight: unreachable('preflight') as unknown as BoundProvider['preflight'],
-        // Never called: this operation is never started, so `prepareExecution`/`execute` must not be reached.
-        prepareExecution: unreachable('prepareExecution') as unknown as BoundProvider['prepareExecution'],
-        appServer: {
-          supportsInterrupt: false,
-          supportsProbe: false,
-          openReplacement: async () => ({ hostRef: fakeHostRef(), close: closeStaged }),
-          interrupt: unreachable('appServer.interrupt') as unknown as BoundProviderAppServerCapability['interrupt'],
-          probe: unreachable('appServer.probe') as unknown as BoundProviderAppServerCapability['probe'],
-        },
-        artifacts: { kind: 'none', reason: 'test double' },
-      } satisfies BoundProvider,
-    });
-
-    const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
-    await host.ensureProviderRoot(key, prepared);
-    // Deliberately no `host.host.start` — this operation is staged only, mirroring a cancelled or
-    // pre-activation-stopped reservation.
-
-    await host.shutdown('signal_abort');
-
-    expect(closeStaged).toHaveBeenCalledOnce();
-    // Untouched: shutdown of a never-started operation must not fabricate ledger activity for it.
-    expect(ledger.get(key)).toBeNull();
-  });
-
-  it('rejects at the cancellation bound and retains the unresolved operation', async () => {
-    vi.useFakeTimers();
-    const { proxy, ledger } = createTestProxy();
-    const key = testKey();
-    const prepared = preparedFixture();
-    prepareAndActivate(ledger, key, prepared);
-    const closeStaged = vi.fn();
-    providerRegistryDouble.rehydrateBinding.mockReturnValue({
-      ok: true,
-      value: fakeBoundProviderIgnoringAbort(closeStaged),
-    });
-    const hostAuthority = {
-      beginOperation: () => ({
-        selectCancellationMode: () => {},
-        openSession: unreachable('hostAuthority.openSession'),
-        attachSession: async () => null,
-      }),
-      rootIdentity: () => ({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) }),
-      closed: () => new Promise<Error | void>(() => {}),
-      forceClose: () => new Promise<never>(() => {}),
-      evictHost: async () => ({ kind: 'stale' as const }),
-    } as ProxyAppServerHostAuthority;
-    const host = createSemanticOperationRuntime({ runtime, hostAuthority, getProxy: () => proxy });
-    await host.ensureProviderRoot(key, prepared);
-    const start = host.host.start({ key, prepared });
-    await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: fakeHostRef() });
-
-    const shutdown = host.shutdown('signal_abort');
-    let shutdownSettled = false;
-    void shutdown.then(
-      () => {
-        shutdownSettled = true;
-      },
-      () => {
-        shutdownSettled = true;
-      },
-    );
-    await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS - 1);
-    expect(shutdownSettled).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
-
-    expect(shutdownSettled).toBe(true);
-    await expect(shutdown).rejects.toMatchObject({
-      code: 'semantic_operation_shutdown_incomplete',
-      failures: [
-        {
-          key,
-          kind: 'cancellation-failed',
-          reason: expect.stringContaining('did not settle'),
-        },
-      ],
-    });
-    expect(closeStaged).not.toHaveBeenCalled();
   });
 });

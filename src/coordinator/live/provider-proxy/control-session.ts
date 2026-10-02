@@ -79,11 +79,6 @@ export type ProviderProxyAcquisitionSessionClosed = Readonly<{
   reason: string;
 }>;
 
-export type ProviderProxyAcquisitionSessionDisposition<Owner extends ProviderProxyControlSessionOwner> =
-  | ProviderProxyAcquisitionSessionEstablished
-  | ProviderProxyAcquisitionSessionHandedOver<Owner>
-  | ProviderProxyAcquisitionSessionClosed;
-
 export type ProviderProxyAcquisitionSessionDescriptor = Readonly<{
   setIdentity: ProviderProxySetIdentity;
   capsulePath: string;

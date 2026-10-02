@@ -2,7 +2,6 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import {
   providerOperationRecordSchema,
   PROVIDER_OPERATION_RECORD_VERSION,
-  type ProviderOperationPhase,
   type ProviderOperationRecord,
 } from '#src/store/provider-operation-record.js';
 
@@ -23,7 +22,7 @@ export type ProviderOperationFixtureOptions = Readonly<{
 }>;
 
 export function providerOperationRecord(
-  phase: ProviderOperationPhase,
+  phase: ProviderOperationRecord['phase'],
   options: ProviderOperationFixtureOptions = {},
 ): ProviderOperationRecord {
   const proxyInstanceId = options.operation?.proxyInstanceId ?? uuid(3);

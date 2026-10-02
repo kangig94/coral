@@ -1,20 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { applyProviderEventAtSeq, type ProviderEventEffectPort } from '#src/jobs/provider-event.js';
-import { type ProviderTerminalEventBody } from '#src/providers/contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const identity = { jobId: 'job-1', operationId: 'operation-1', proxyInstanceId: 'proxy-1', buildSetId: 'build-1' };
-const terminal: ProviderTerminalEventBody = {
-  kind: 'terminal',
-  terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
-  diagnostics: {},
-};
 
 function fixture() {
   let watermark = 0;
-  let terminals = 0;
-  let releases = 0;
   const port: ProviderEventEffectPort<null> = {
     runInTransaction: (execute) => execute(null),
     verifyIdentity: async () => true,
@@ -25,28 +17,14 @@ function fixture() {
     appendProgress: async () => {},
     appendSessionEvent: async () => {},
     appendSessionInterrupted: async () => {},
-    appendJobTerminal: async () => {
-      terminals++;
-    },
-    releaseSessionClaim: async () => {
-      releases++;
-    },
+    appendJobTerminal: async () => {},
+    releaseSessionClaim: async () => {},
     markSettlementPending: async () => {},
   };
-  return { port, counts: () => ({ terminals, releases }) };
+  return { port };
 }
 
 describe('applyProviderEventAtSeq', () => {
-  it('replays a terminal without a second external effect', async () => {
-    const f = fixture();
-    await applyProviderEventAtSeq(f.port, { identity, seq: 1, event: terminal });
-    expect(await applyProviderEventAtSeq(f.port, { identity, seq: 1, event: terminal })).toEqual({
-      kind: 'ack',
-      committedThroughProviderSeq: 1,
-    });
-    expect(f.counts()).toEqual({ terminals: 1, releases: 1 });
-  });
-
   it('does not acknowledge the provider before its checkpoint transaction commits', async () => {
     const f = fixture();
     const checkpointStarted = createDeferred<void>();

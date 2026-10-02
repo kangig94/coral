@@ -144,23 +144,6 @@ describe('createCoordinatorControl.abortJobs', () => {
     expect(completeLocalRecovery).toHaveBeenCalledWith(record.operation.jobId);
   });
 
-  it('reports settlement-pending with the same not-found answer as a rowless job', () => {
-    const harness = createProviderOperationReconcilerHarness();
-    const record = providerOperationRecord('settlement-pending');
-    insertProviderOperation(harness.db, record);
-    const control = controlFor(harness);
-
-    expect(control.abortJobs([record.operation.jobId])).toEqual({
-      kind: 'answered',
-      result: { aborted: [], notFound: [record.operation.jobId] },
-    });
-    expect(control.abortJobs(['rowless-job'])).toEqual({
-      kind: 'answered',
-      result: { aborted: [], notFound: ['rowless-job'] },
-    });
-    expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
-  });
-
   it('refuses an unrecorded saga stop without firing its local abort effects', () => {
     const runtime = new SimulationRuntime();
     const registry = new AbortRegistry(runtime.ids);

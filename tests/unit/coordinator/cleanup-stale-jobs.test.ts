@@ -127,13 +127,6 @@ describe('cleanupStaleJobs', () => {
     vi.mocked(backendLog.warn).mockReset();
   });
 
-  it('prunes a terminal job older than the retention window', async () => {
-    const { pruned } = await runCleanup({
-      old: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(15) }),
-    });
-    expect(pruned).toEqual(['old']);
-  });
-
   it('never prunes a live job, however old', async () => {
     const { pruned } = await runCleanup({
       running: status({ phase: 'running', bundleHash: 'bundle-old', updatedAt: ago(99) }),

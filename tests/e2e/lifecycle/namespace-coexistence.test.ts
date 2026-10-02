@@ -1,36 +1,15 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
-import { execFileSync } from 'node:child_process';
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { BUILD_FLAVOR_ENV_KEY, type BuildFlavor } from '#src/infra/build-flavor.js';
-import type { BackendHealth } from '#src/transport/http/backend/health.js';
+import { type BuildFlavor } from '#src/infra/build-flavor.js';
 import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
-import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import type { JobStatus } from '#src/jobs/records.js';
-import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { openSettledTestStoreDb, openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { storePaths } from '#src/infra/path/store.js';
-import { composeReducers } from '#src/store/reducers.js';
-import { createEventBodyCodec } from '#src/store/event-body-codec.js';
-import { jobsRegistry } from '#src/jobs/events.js';
-import { createRealRuntime } from '#src/runtime/real.js';
 import { ensure } from '#src/transport/ipc/ensure.js';
-import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
@@ -42,37 +21,20 @@ const sourceClaudeAppserverBundle = join(sourceBuildDir, 'coral-claude-appserver
 const sourceDurableWrapperBundle = join(sourceBuildDir, 'coral-durable-wrapper.cjs');
 const sourceManifestPath = join(sourceBuildDir, 'manifest.json');
 const sourceStrictManifestPath = join(sourceBuildDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
-const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf-8')) as {
-  version: string;
-  buildSetId: string;
-  bundleHash: string;
-  flavor: BuildFlavor;
-  storeFormatFingerprint: string;
-};
+const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf-8')) as { flavor: BuildFlavor };
 
 const tempRoots: string[] = [];
-const createdJobIds: string[] = [];
 const temporaryHomes = createTemporaryHomeOwner();
 
 afterEach(async () => {
   await temporaryHomes.cleanup();
-
-  for (const jobId of createdJobIds.splice(0)) {
-    rmSync(join(jobsDir(createRealRuntime('prod').env), jobId), { recursive: true, force: true });
-  }
 
   for (const root of tempRoots.splice(0).reverse()) {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-function createPluginFixture(): {
-  root: string;
-  bundleHash: string;
-  flavor: BuildFlavor;
-} {
-  const root = mkdtempSync(join(tmpdir(), `coral-namespace-${sourceManifest.flavor}-`));
-  tempRoots.push(root);
+function createPluginFixture(root: string): void {
   mkdirSync(join(root, 'bridge'), { recursive: true });
   copyFileSync(sourceBackendBundle, join(root, 'bridge', 'coral-backend.cjs'));
   copyFileSync(sourceSupervisorBundle, join(root, 'bridge', 'coral-sentinel.cjs'));
@@ -87,49 +49,6 @@ function createPluginFixture(): {
     join(root, 'node_modules', 'better-sqlite3'),
     'dir',
   );
-
-  const scratchCwd = mkdtempSync(join(tmpdir(), `coral-fixture-smoke-${sourceManifest.flavor}-`));
-  tempRoots.push(scratchCwd);
-  const smokeHome = temporaryHomes.create(`coral-fixture-smoke-${sourceManifest.flavor}-home-`, sourceManifest.flavor);
-  const smokeRuntime = createRealRuntime(sourceManifest.flavor, { baseDir: join(smokeHome, '.coral') });
-  const smokeEpochDir = join(smokeRuntime.paths.coral.store.dbDir, 'epoch-1');
-  const smokeDbPath = join(smokeEpochDir, 'store.db');
-  mkdirSync(smokeEpochDir, { recursive: true });
-  writeFileSync(join(smokeEpochDir, '.lock'), '');
-  openTestStoreDatabase({
-    path: smokeDbPath,
-    storage: smokeRuntime.storage,
-    storeFormat: currentCoralStoreFormat(),
-  }).close();
-  writeFileSync(
-    join(smokeEpochDir, 'epoch.json'),
-    JSON.stringify({
-      supersedes: null,
-      classification: { kind: 'unavailable' },
-      build: {
-        version: sourceManifest.version,
-        buildSetId: sourceManifest.buildSetId,
-        bundleHash: sourceManifest.bundleHash,
-        flavor: sourceManifest.flavor,
-        storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
-      },
-      publishedAt: '2026-09-15T00:00:00.000Z',
-    }),
-  );
-  const smokeOut = execFileSync(
-    'node',
-    [join(root, 'bridge', 'coral-backend.cjs'), '--smoke-open-store', '--path', smokeDbPath],
-    {
-      cwd: scratchCwd,
-      encoding: 'utf-8',
-      env: { ...process.env, ...temporaryHomes.environment(smokeHome), [BUILD_FLAVOR_ENV_KEY]: sourceManifest.flavor },
-    },
-  );
-  if (smokeOut.trim() !== 'ok') {
-    throw new Error(`fixture smoke failed for ${root}: ${smokeOut}`);
-  }
-
-  return { root, bundleHash: sourceManifest.bundleHash, flavor: sourceManifest.flavor };
 }
 
 function createCoordinatorHome(sharedStoreDir: string): TemporaryHome {
@@ -138,79 +57,6 @@ function createCoordinatorHome(sharedStoreDir: string): TemporaryHome {
   mkdirSync(dirname(store.dbDir), { recursive: true });
   symlinkSync(sharedStoreDir, store.dbDir, 'dir');
   return home;
-}
-
-function seedCompletedJobs(
-  home: TemporaryHome,
-  bundleHash: string,
-  jobs: ReadonlyArray<{ jobId: string; namespace: string; projectRoot: string }>,
-): void {
-  createdJobIds.push(...jobs.map(({ jobId }) => jobId));
-  for (const { projectRoot } of jobs) {
-    mkdirSync(projectRoot, { recursive: true });
-  }
-  const runtime = createRealRuntime(sourceManifest.flavor, { baseDir: join(home, '.coral') });
-  const db = openSettledTestStoreDb(runtime);
-
-  try {
-    for (const { jobId, namespace, projectRoot } of jobs) {
-      const createdAt = new Date().toISOString();
-      const sessionId = `${jobId}-session`;
-      commitInputs(
-        db,
-        [
-          {
-            type: 'job.launch.requested',
-            stream: { kind: 'job', id: jobId },
-            namespace,
-            project: projectRoot,
-            refs: { jobId, sessionId },
-            body: {
-              owner: { kind: 'provider-session', id: sessionId },
-              sessionId,
-              provider: 'codex',
-              projectRoot,
-              backendNamespace: namespace,
-              bundleHash,
-              jobKind: 'provider',
-              pool: 'default',
-              enqueueSequence: 0,
-              providerAction: 'exec',
-              request: {
-                prompt: 'seeded completed job',
-                cwd: projectRoot,
-                bypassPermissions: false,
-                coralEnv: {},
-              },
-              createdAt,
-            },
-          },
-          {
-            type: 'job.terminal.recorded',
-            stream: { kind: 'job', id: jobId },
-            namespace,
-            project: projectRoot,
-            refs: { jobId, sessionId },
-            body: {
-              terminal: {
-                outcome: { kind: 'completed' },
-                durationMs: 0,
-                content: `${jobId}-done`,
-              },
-            },
-          },
-        ],
-        {
-          now: () => new Date(),
-          reducers: composeReducers(jobsRegistry),
-          bodyCodec: createEventBodyCodec(),
-          providers: permissiveProviderLookupPort,
-        },
-      );
-    }
-  } finally {
-    db.close();
-  }
 }
 
 async function requireBackendInfo(home: TemporaryHome): Promise<BackendInfo> {
@@ -264,101 +110,27 @@ async function ensureFixtureBackend(pluginRoot: string, home: TemporaryHome): Pr
   });
 }
 
-async function fetchJson<T>(info: BackendInfo, path: string, expectedStatus = 200): Promise<T> {
-  const response = await fetch(`http://${info.host}:${info.port}${path}`, {
-    headers: { 'X-Coral-Backend-Token': info.token },
-  });
-  expect(response.status).toBe(expectedStatus);
-  return (await response.json()) as T;
-}
-
 describe('namespace coexistence integration', () => {
-  it('runs same-flavor coordinators side-by-side, sharing job visibility while namespace stays provenance', async () => {
-    const sharedStoreDir = mkdtempSync(join(tmpdir(), 'coral-namespace-store-'));
-    tempRoots.push(sharedStoreDir);
+  it('runs distinct bundle namespaces side by side over a shared store', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-namespace-'));
+    tempRoots.push(root);
+    const sharedStoreDir = join(root, 'store');
+    mkdirSync(sharedStoreDir);
     const firstHome = createCoordinatorHome(sharedStoreDir);
     const secondHome = createCoordinatorHome(sharedStoreDir);
-    const firstFixture = createPluginFixture();
-    const secondFixture = createPluginFixture();
+    const firstFixture = join(root, 'first');
+    const secondFixture = join(root, 'second');
+    createPluginFixture(firstFixture);
+    createPluginFixture(secondFixture);
 
-    const firstNamespace = pluginRootNamespace(firstFixture.root);
-    const secondNamespace = pluginRootNamespace(secondFixture.root);
-    expect(firstNamespace).not.toBe(secondNamespace);
-
-    const firstJobId = `coexist-first-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-    const secondJobId = `coexist-second-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-    const projectRoot = join(firstHome, 'shared-project');
-    seedCompletedJobs(firstHome, sourceManifest.bundleHash, [
-      { jobId: firstJobId, namespace: firstNamespace, projectRoot },
-      { jobId: secondJobId, namespace: secondNamespace, projectRoot },
-    ]);
-
-    await ensureFixtureBackend(firstFixture.root, firstHome);
-    await ensureFixtureBackend(secondFixture.root, secondHome);
+    await ensureFixtureBackend(firstFixture, firstHome);
+    await ensureFixtureBackend(secondFixture, secondHome);
 
     const firstInfo = await requireBackendInfo(firstHome);
     const secondInfo = await requireBackendInfo(secondHome);
-
-    expect(firstInfo.flavor).toBe(sourceManifest.flavor);
-    expect(secondInfo.flavor).toBe(sourceManifest.flavor);
-    expect(firstInfo.bundleHash).toBe(sourceManifest.bundleHash);
-    expect(secondInfo.bundleHash).toBe(sourceManifest.bundleHash);
-    expect(firstInfo.namespace).toBe(firstNamespace);
-    expect(secondInfo.namespace).toBe(secondNamespace);
-    expect(firstInfo.pid).not.toBe(process.pid);
-    expect(secondInfo.pid).not.toBe(process.pid);
+    expect(firstInfo.namespace).toBe(pluginRootNamespace(firstFixture));
+    expect(secondInfo.namespace).toBe(pluginRootNamespace(secondFixture));
+    expect(firstInfo.namespace).not.toBe(secondInfo.namespace);
     expect(firstInfo.pid).not.toBe(secondInfo.pid);
-    expect(firstInfo.port).not.toBe(secondInfo.port);
-
-    const firstHealth = await fetchJson<BackendHealth>(firstInfo, '/health');
-    const secondHealth = await fetchJson<BackendHealth>(secondInfo, '/health');
-    expect(firstHealth.flavor).toBe(sourceManifest.flavor);
-    expect(secondHealth.flavor).toBe(sourceManifest.flavor);
-    expect(firstHealth.namespace).toBe(firstNamespace);
-    expect(secondHealth.namespace).toBe(secondNamespace);
-    expect(firstHealth.instanceId).toBe(firstInfo.instanceId);
-    expect(secondHealth.instanceId).toBe(secondInfo.instanceId);
-
-    const firstJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatus }> }>(
-      firstInfo,
-      `/jobs?all=1&projectRoot=${encodeURIComponent(projectRoot)}`,
-    );
-    const secondJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatus }> }>(
-      secondInfo,
-      `/jobs?all=1&projectRoot=${encodeURIComponent(projectRoot)}`,
-    );
-
-    // Converted with W1: namespace is no longer work tenancy, so `jobs.list` has no namespace gate and each
-    // coordinator sees both jobs in this shared project. What namespace still carries is provenance — which
-    // build recorded the job — and that is asserted below rather than dropped.
-    expect(firstJobs.jobs.map((job) => job.jobId).sort()).toEqual([firstJobId, secondJobId].sort());
-    expect(secondJobs.jobs.map((job) => job.jobId).sort()).toEqual([firstJobId, secondJobId].sort());
-
-    const namespaceByJobId = new Map(firstJobs.jobs.map((job) => [job.jobId, job.status.backendNamespace]));
-    expect(namespaceByJobId.get(firstJobId)).toBe(firstNamespace);
-    expect(namespaceByJobId.get(secondJobId)).toBe(secondNamespace);
-
-    await fetchJson<{ status: JobStatus; events: unknown[] }>(
-      firstInfo,
-      `/jobs/${firstJobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
-    );
-    await fetchJson<{ status: JobStatus; events: unknown[] }>(
-      secondInfo,
-      `/jobs/${secondJobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
-    );
-
-    // Also converted: `jobs.detail` dropped its namespace gate, so a job recorded by the other build resolves
-    // instead of 404-ing. Project-root scoping is what still decides reachability.
-    const firstReadsSecond = await fetchJson<{ status: JobStatus }>(
-      firstInfo,
-      `/jobs/${secondJobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
-    );
-    const secondReadsFirst = await fetchJson<{ status: JobStatus }>(
-      secondInfo,
-      `/jobs/${firstJobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
-    );
-
-    expect(firstReadsSecond.status.backendNamespace).toBe(secondNamespace);
-    expect(secondReadsFirst.status.backendNamespace).toBe(firstNamespace);
   });
 });

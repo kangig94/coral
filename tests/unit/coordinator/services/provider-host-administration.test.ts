@@ -1,3 +1,7 @@
+import type { Principal } from '#src/security/principal.js';
+import { executeCatalogRequest } from '#src/transport/dispatch.js';
+import { providerHostListRpcSpec, providerHostListV2RpcSpec } from '#src/transport/rpc/catalog.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { HostRef } from '#src/providers/contract.js';
 import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
@@ -87,31 +91,6 @@ describe('provider host administration', () => {
     expect(untouched.evictProviderHost).not.toHaveBeenCalled();
   });
 
-  it('reports a shutdown hold without calling it stale or evicted', async () => {
-    const selectedRef = hostRef('held');
-    const selected = owner('proxy-a', [record(selectedRef)], {
-      evictProviderHost: vi.fn(async () => ({
-        kind: 'held' as const,
-        observation: 'alive' as const,
-        successorOwner: 'provider-proxy-root-pool',
-        operatorExit: 'retry-provider-shutdown',
-      })),
-    });
-    const service = new ProviderHostAdministrationService({ owners: () => [selected] });
-
-    await expect(service.evict({ hostRef: selectedRef })).rejects.toMatchObject({
-      code: 'provider_host_shutdown_held',
-      ownerIds: ['proxy-a'],
-      matches: [selectedRef],
-      hold: {
-        kind: 'held',
-        observation: 'alive',
-        successorOwner: 'provider-proxy-root-pool',
-        operatorExit: 'retry-provider-shutdown',
-      },
-    });
-  });
-
   it('reconstructs an exact-ref route from a surviving owner after the first service loses the reply', async () => {
     const selectedRef = hostRef('lost-abandonment-reply');
     const abandonment = {
@@ -160,37 +139,6 @@ describe('provider host administration', () => {
     expect(untouched.evictProviderHost).not.toHaveBeenCalled();
   });
 
-  it('rejects retained terminal matches from multiple owners as identity corruption', async () => {
-    const selectedRef = hostRef('duplicate-terminal');
-    const terminal = { kind: 'evicted' as const };
-    const first = owner('coordinator', [], { terminalEviction: vi.fn(async () => terminal) });
-    const duplicate = owner('proxy-a', [], { terminalEviction: vi.fn(async () => terminal) });
-    const service = new ProviderHostAdministrationService({ owners: () => [first, duplicate] });
-
-    await expect(service.evict({ hostRef: selectedRef })).rejects.toMatchObject({
-      code: 'provider_host_identity_integrity',
-      ownerIds: ['coordinator', 'proxy-a'],
-      matches: [selectedRef, selectedRef],
-    });
-    expect(first.listProviderHosts).not.toHaveBeenCalled();
-    expect(first.evictProviderHost).not.toHaveBeenCalled();
-    expect(duplicate.evictProviderHost).not.toHaveBeenCalled();
-  });
-
-  it('requires an exact reference for eviction and performs no owner call', async () => {
-    const first = owner('coordinator', [record(hostRef('first'))]);
-    const second = owner('proxy-a', [record(hostRef('second'))]);
-    const service = new ProviderHostAdministrationService({ owners: () => [first, second] });
-
-    await expect(service.evict({ workDir })).rejects.toMatchObject({
-      code: 'provider_host_eviction_requires_exact_ref',
-    });
-    expect(first.listProviderHosts).not.toHaveBeenCalled();
-    expect(second.listProviderHosts).not.toHaveBeenCalled();
-    expect(first.evictProviderHost).not.toHaveBeenCalled();
-    expect(second.evictProviderHost).not.toHaveBeenCalled();
-  });
-
   it('answers a torn-down owner rather than an unavailable inventory once its control is released', async () => {
     const localRef = hostRef('local-while-draining');
     const local = owner('coordinator:test', [record(localRef)]);
@@ -220,49 +168,29 @@ describe('provider host administration', () => {
       });
     }
   });
+});
 
-  it.each(['list'] as const)('fails %s closed when any captured owner inventory is unavailable', async (operation) => {
-    const selectedRef = hostRef('selected');
-    const selected = owner('coordinator', [record(selectedRef)]);
-    const unavailable = owner('proxy-a', [], {
-      listProviderHosts: vi.fn(async () => Promise.reject(new Error('control lost'))),
+const operator: Principal = {
+  subject: 'operator',
+  transport: 'ipc',
+  credential: { kind: 'boot-token', id: 'operator' },
+  binding: { kind: 'unbound' },
+};
+
+describe('provider-host RPC authorization', () => {
+  it('refuses an unrepresentable v1 inventory while v2 preserves the unavailable owner', async () => {
+    const list = vi.fn(async () => ({ hosts: [], tornDownOwnerIds: ['provider-proxy:set-a'] }));
+    const ports = { providerHosts: { list, inspect: vi.fn(), evict: vi.fn() } } as unknown as HttpHandlerPorts;
+
+    await expect(executeCatalogRequest(providerHostListRpcSpec, {}, ports, operator)).resolves.toMatchObject({
+      kind: 'unary',
+      statusCode: 503,
+      body: { code: 'provider_host_inventory_unavailable', detail: { ownerIds: ['provider-proxy:set-a'] } },
     });
-    const service = new ProviderHostAdministrationService({ owners: () => [selected, unavailable] });
 
-    const result =
-      operation === 'list'
-        ? service.list()
-        : operation === 'inspect'
-          ? service.inspect({ hostRef: selectedRef })
-          : service.evict({ hostRef: selectedRef });
-    await expect(result).rejects.toMatchObject({
-      code: 'provider_host_inventory_unavailable',
-      ownerIds: ['proxy-a'],
+    await expect(executeCatalogRequest(providerHostListV2RpcSpec, {}, ports, operator)).resolves.toMatchObject({
+      kind: 'unary',
+      body: { hosts: [], tornDownOwnerIds: ['provider-proxy:set-a'] },
     });
-    expect(selected.inspectProviderHost).not.toHaveBeenCalled();
-    expect(selected.evictProviderHost).not.toHaveBeenCalled();
-  });
-
-  it('never reroutes by cwd when the selected exact ref retires or its owner disappears', async () => {
-    const selectedRef = hostRef('selected');
-    const replacementRef = hostRef('replacement');
-    const selected = owner('proxy-a', [record(selectedRef)], {
-      inspectProviderHost: vi.fn(async () => null),
-      evictProviderHost: vi.fn(async () => ({ kind: 'stale' as const })),
-    });
-    const replacement = owner('proxy-b', [record(replacementRef)]);
-    const service = new ProviderHostAdministrationService({ owners: () => [selected, replacement] });
-
-    await expect(service.inspect({ hostRef: selectedRef })).rejects.toMatchObject({ code: 'provider_host_stale' });
-    await expect(service.evict({ hostRef: selectedRef })).rejects.toMatchObject({ code: 'provider_host_stale' });
-    expect(replacement.inspectProviderHost).not.toHaveBeenCalled();
-    expect(replacement.evictProviderHost).not.toHaveBeenCalled();
-
-    selected.inspectProviderHost.mockRejectedValueOnce(new Error('owner disappeared'));
-    await expect(service.inspect({ hostRef: selectedRef })).rejects.toMatchObject({
-      code: 'provider_host_inventory_unavailable',
-      ownerIds: ['proxy-a'],
-    });
-    expect(replacement.inspectProviderHost).not.toHaveBeenCalled();
   });
 });

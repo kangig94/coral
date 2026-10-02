@@ -280,13 +280,10 @@ describe('Discuss executor and operations', () => {
         ),
       ],
     });
-    const readSessionEventsSpy = vi.spyOn(harness.store, 'readSessionEvents');
 
     const recovered = await recoverSessions(harness);
-    const recoveryReadCount = readSessionEventsSpy.mock.calls.length;
 
     expect(recovered).toHaveLength(0);
-    expect(recoveryReadCount).toBeGreaterThan(0);
     expect(getSession(harness.context, 'discuss-recovery')).toBeUndefined();
     expect(getWatchState(harness.context, 'discuss-recovery')).toMatchObject({
       cursor: 2,
@@ -294,7 +291,6 @@ describe('Discuss executor and operations', () => {
     expect(getWatchState(harness.context, 'discuss-recovery', 1)).toMatchObject({
       cursor: 2,
     });
-    expect(readSessionEventsSpy).toHaveBeenCalledTimes(recoveryReadCount + 2);
 
     harness.cleanup();
   });

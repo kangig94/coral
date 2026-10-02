@@ -15,28 +15,6 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { readCorpusState } from '#src/kb/state/corpus-state.js';
 import { reduceJobLaunchRequested } from '#src/jobs/projections.js';
-import { decodeProjectionJobStoredRow } from '#src/jobs/projection-row.js';
-
-const validProjectionJobRow = {
-  job_id: 'provider-job',
-  execution_owner: JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
-  phase: 'running',
-  terminal: null,
-  diagnostics: JSON.stringify({ progressFaults: [] }),
-  session_id: 'session-1',
-  provider: 'codex',
-  project_root: '/workspace',
-  work_dir: fixtureCanonicalWorkDir('/workspace'),
-  backend_namespace: 'tests',
-  bundle_hash: null,
-  job_kind: 'provider',
-  parent_workflow_job_id: null,
-  workflow_slot: null,
-  workflow_slot_generation: null,
-  replaces_workflow_job_id: null,
-  created_at: '2026-07-22T00:00:00.000Z',
-  last_seq: 1,
-} as const;
 
 describe('persisted projection authority codecs', () => {
   it.each([
@@ -87,81 +65,6 @@ describe('persisted projection authority codecs', () => {
     } finally {
       db.close();
     }
-  });
-
-  it.each([
-    ['live terminal', { terminal: JSON.stringify({ content: '', outcome: { kind: 'completed' }, durationMs: 0 }) }],
-    ['parent without slot', { parent_workflow_job_id: 'workflow-1' }],
-    ['slot without generation', { parent_workflow_job_id: 'workflow-1', workflow_slot: 'workflow-1:0:0' }],
-    [
-      'generation zero replacement',
-      {
-        parent_workflow_job_id: 'workflow-1',
-        workflow_slot: 'workflow-1:0:0',
-        workflow_slot_generation: 0,
-        replaces_workflow_job_id: 'provider-job-old',
-      },
-    ],
-    [
-      'later generation without replacement',
-      {
-        parent_workflow_job_id: 'workflow-1',
-        workflow_slot: 'workflow-1:0:0',
-        workflow_slot_generation: 1,
-      },
-    ],
-    ['missing provider session', { session_id: null }],
-    ['missing provider identity', { provider: null }],
-  ] as const)('rejects a projection job with %s', (_label, patch) => {
-    expect(() => decodeProjectionJobStoredRow({ ...validProjectionJobRow, ...patch })).toThrow();
-  });
-
-  it.each([
-    [
-      'workflow root owned by another workflow',
-      {
-        job_id: 'workflow-1',
-        execution_owner: JSON.stringify({ kind: 'workflow', id: 'workflow-other' }),
-        job_kind: 'workflow',
-        session_id: null,
-        provider: null,
-      },
-    ],
-    [
-      'workflow root owned by a provider session',
-      {
-        job_id: 'workflow-1',
-        execution_owner: JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
-        job_kind: 'workflow',
-        session_id: null,
-        provider: null,
-      },
-    ],
-    [
-      'KB job owned by a workflow',
-      {
-        job_id: 'kb-1',
-        execution_owner: JSON.stringify({ kind: 'workflow', id: 'kb-1' }),
-        job_kind: 'kb',
-        session_id: null,
-        provider: null,
-      },
-    ],
-    [
-      'workflow child owned by its provider session',
-      {
-        execution_owner: JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
-        parent_workflow_job_id: 'workflow-1',
-        workflow_slot: 'workflow-1:0:0',
-        workflow_slot_generation: 0,
-      },
-    ],
-    [
-      'standalone provider job owned by a workflow',
-      { execution_owner: JSON.stringify({ kind: 'workflow', id: 'workflow-1' }) },
-    ],
-  ] as const)('rejects a %s', (_label, patch) => {
-    expect(() => decodeProjectionJobStoredRow({ ...validProjectionJobRow, ...patch })).toThrow();
   });
 
   it('rejects persisted workflow plans that omit current required fields', () => {

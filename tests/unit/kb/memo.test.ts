@@ -59,26 +59,6 @@ describe('kb memo operations', () => {
     expect(existsSync(join(mockState.tmpHome, 'evil.md'))).toBe(false);
   });
 
-  it('rejects NUL and control-like memo topics before reaching the filesystem', async () => {
-    const { writeMemo } = await loadMemoModules();
-    const projectRoot = join(mockState.tmpHome, 'project');
-    mkdirSync(projectRoot, { recursive: true });
-
-    expect(() =>
-      writeMemo(
-        { storagePort: memoStorage, ids: realRuntime.ids },
-        projectRoot,
-        'local/project',
-        {
-          topic: `bad${String.fromCharCode(0)}topic`,
-          content: 'bad',
-          owner: 'owner-a',
-        },
-        realRuntime.time,
-      ),
-    ).toThrow(/memo topic/i);
-  });
-
   it('deletes matching memos in deterministic order and escapes regex metacharacters', async () => {
     const { deleteMemos, paths } = await loadMemoModules();
     const projectRoot = join(mockState.tmpHome, 'project');

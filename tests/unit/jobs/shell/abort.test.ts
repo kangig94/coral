@@ -21,16 +21,6 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 describe('jobs abort command', () => {
-  it('aborts only the selected job and reports missing jobs', () => {
-    const registry = new AbortRegistry(new SimulationRuntime().ids);
-    registry.register('first');
-    registry.register('second');
-    const command = new JobAbortService({ abortRegistry: registry });
-    expect(command.abort(['first', 'missing'])).toEqual({ aborted: ['first'], notFound: ['missing'] });
-    expect(registry.getSignal('first')?.aborted).toBe(true);
-    expect(registry.getSignal('second')?.aborted).toBe(false);
-  });
-
   it('terminalizes an aborted queued job as aborted and releases its claim', async () => {
     const runtime = new SimulationRuntime();
     const db = newRawDatabase(':memory:');

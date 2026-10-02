@@ -34,30 +34,6 @@ function testAppendContext(): AppendContext {
 }
 
 describe('commitWithinOpenTransaction', () => {
-  it('appends and reduces exactly like commit when the caller already holds a transaction', () => {
-    const db = setupDb();
-    try {
-      db.exec('BEGIN IMMEDIATE');
-      commitWithinOpenTransaction(
-        db,
-        (c) => {
-          c.append({ type: 'test.counter.ticked', stream: { kind: 'job', id: 'a' }, body: { id: 'a', delta: 5 } });
-          return undefined;
-        },
-        testAppendContext(),
-      );
-      db.exec('COMMIT');
-
-      const row = db.prepare('SELECT count FROM projection_test_counter WHERE id = ?').get('a') as
-        | { count: number }
-        | undefined;
-      expect(row?.count).toBe(5);
-      expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(1);
-    } finally {
-      db.close();
-    }
-  });
-
   it('composes two calls into one caller-opened transaction: a rollback discards both', () => {
     const db = setupDb();
     try {

@@ -111,12 +111,6 @@ export const kbSearchQuerySchema = z
   })
   .strict();
 
-export const kbReadSchema = z
-  .object({
-    note: slugSchema,
-  })
-  .strict();
-
 export const kbPromoteSchema = z
   .object({
     memo: z.string().min(1),

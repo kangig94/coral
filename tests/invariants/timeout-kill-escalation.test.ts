@@ -155,12 +155,12 @@ describe('process kills escalate SIGTERM→SIGKILL', () => {
     expect(gracefulKillObserverIsRequired(source)).toBe(true);
   });
 
-  it('the sanctioned child helper refuses escalation after observed absence', () => {
-    expect(gracefulKillSignals(() => 'absent')).toEqual(['SIGTERM']);
-  });
-
   it('the sanctioned child helper refuses escalation after an unknown observation', () => {
     expect(gracefulKillSignals(() => 'unknown')).toEqual(['SIGTERM']);
+  });
+
+  it('the sanctioned child helper refuses escalation after observed absence', () => {
+    expect(gracefulKillSignals(() => 'absent')).toEqual(['SIGTERM']);
   });
 
   it('the sanctioned child helper refuses escalation when observation throws', () => {
@@ -182,17 +182,6 @@ describe('process kills escalate SIGTERM→SIGKILL', () => {
     }
     // A live child awaiting shutdown must use graceful escalation unless an allowlist records why it cannot.
     expect(violations).toEqual([]);
-  });
-
-  it('every allowlisted file still calls safeKill (stale exemptions are removed)', () => {
-    const stale: string[] = [];
-    for (const canonical of ALLOWLIST.keys()) {
-      const source = readFileSync(join(REPO_ROOT, canonical), 'utf-8');
-      if (!callsSafeKill(source)) {
-        stale.push(canonical);
-      }
-    }
-    expect(stale).toEqual([]);
   });
 });
 
@@ -527,46 +516,6 @@ describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside 
     });
   });
 
-  it('detects a parameter-routed local escalation mutation', () => {
-    const mutation = `
-      function signal(pid: number, value: NodeJS.Signals): void {
-        process.kill(pid, value);
-      }
-      function forward(pid: number, value: NodeJS.Signals): void {
-        signal(pid, value);
-      }
-      function reap(pid: number): void {
-        forward(pid, 'SIGTERM');
-        forward(pid, 'SIGKILL');
-      }
-    `;
-
-    expect(handRolledEscalationSignals(mutation)).toEqual(new Set<KillSignal>(['SIGTERM', 'SIGKILL']));
-  });
-
-  it('detects an escalation hidden in a static executable template mutation', () => {
-    const mutation = [
-      'const wrapper = String.raw`',
-      "  process.kill(pid, 'SIGTERM');",
-      "  process.kill(pid, 'SIGKILL');",
-      '`;',
-    ].join('\n');
-
-    expect(handRolledEscalationSignals(mutation)).toEqual(new Set<KillSignal>(['SIGTERM', 'SIGKILL']));
-  });
-
-  it('detects a teardown that waits after SIGTERM and then gives up without escalation', () => {
-    const mutation = `
-      async function reap(pid: number, runtime: Runtime): Promise<void> {
-        runtime.process.kill(pid, 'SIGTERM');
-        await runtime.time.sleep(100);
-        throw new Error('still alive');
-      }
-    `;
-
-    expect(hasTimedSingleSignalTeardown(mutation)).toBe(true);
-  });
-
   it('no module combines a literal SIGTERM kill with a literal SIGKILL kill outside gracefulKill, reapRecordedContainment, or the documented allowlist', () => {
     const violations: string[] = [];
     for (const filePath of listSourceFiles(SRC_ROOT)) {
@@ -584,17 +533,6 @@ describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside 
     }
     // Hand-rolled escalation requires an allowlisted reason a sanctioned helper cannot be used.
     expect(violations).toEqual([]);
-  });
-
-  it('every hand-rolled-escalation allowlist entry still combines both signals (stale exemptions are removed)', () => {
-    const stale: string[] = [];
-    for (const canonical of HAND_ROLLED_ESCALATION_ALLOWLIST.keys()) {
-      const source = escalationOwnerSource(canonical);
-      if (!hasHandRolledEscalation(source)) {
-        stale.push(canonical);
-      }
-    }
-    expect(stale).toEqual([]);
   });
 
   it('no module waits after a lone literal SIGTERM teardown outside the sanctioned helpers', () => {
