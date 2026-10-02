@@ -346,7 +346,7 @@ export function resolveCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>,
       const addressedPath = runtime.storage.realpathSync(path);
       epochCandidate = storeEpochAtPath(storeRoot, addressedPath) !== null;
     } catch {
-      /* unresolved path accepted */
+      // A path that cannot be resolved is not an epoch candidate.
     }
     return { path, epoch: null, epochCandidate };
   }

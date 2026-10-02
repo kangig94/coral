@@ -76,6 +76,6 @@ export function assertProvenStoreOpenable(storage: StoragePort, path: string): v
   try {
     storage.closeSync(descriptor);
   } catch {
-    /* best-effort probe cleanup */
+    // Openability is decided by the open; closing the probe descriptor cannot revoke it.
   }
 }

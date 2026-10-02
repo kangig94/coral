@@ -426,7 +426,7 @@ function createSemanticTerminalEvents(getProxy: SemanticOperationRuntimeOptions[
     try {
       proxy.emitProviderEvent(key, event);
     } catch {
-      /* the ledger entry is gone (already released); nothing left to notify */
+      // Failure reporting must not throw out of the request-failure path.
     }
   };
 

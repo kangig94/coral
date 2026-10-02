@@ -131,7 +131,7 @@ export function registerStoreEpochHolder(
           runtime.storage.unlinkSync(holderPath);
           runtime.storage.syncDirectoryDurableSync(resolved.storeRoot);
         } catch {
-          /* best-effort holder cleanup */
+          // A failed holder-file removal must not keep the store lease held.
         } finally {
           lease();
         }
