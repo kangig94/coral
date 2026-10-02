@@ -2,7 +2,7 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
-import { createRealRuntime } from '#src/runtime/real.js';
+import { createDurableTestRuntime } from '#tests/helpers/durable-runtime.js';
 import {
   LaunchCoordinator,
   SUCCESSION_PAUSE_ATTEMPT_MS,
@@ -60,7 +60,7 @@ describe('succession admission pause', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     now = 0;
-    const runtime = createRealRuntime('prod');
+    const runtime = createDurableTestRuntime();
     coordinator = new LaunchCoordinator({
       runtime: {
         ...runtime,
@@ -223,7 +223,7 @@ describe('succession admission pause', () => {
   });
 
   it('should settle cancellation of an accepted queued launch during a commit window', async () => {
-    const runtime = createRealRuntime('prod');
+    const runtime = createDurableTestRuntime();
     coordinator = new LaunchCoordinator({
       runtime: {
         ...runtime,
@@ -302,7 +302,7 @@ function testSignalAuthority(pid: number, hasExited: () => boolean, requestTermi
 }
 
 function createCoordinator(): LaunchCoordinator {
-  return new LaunchCoordinator({ runtime: createRealRuntime('prod') });
+  return new LaunchCoordinator({ runtime: createDurableTestRuntime() });
 }
 
 function createProviderProcessRuntime(
@@ -349,7 +349,7 @@ function createProviderProcessRuntime(
     on: events.on.bind(events),
     kill: childKill,
   } as unknown as ChildProcessLike;
-  const base = createRealRuntime('prod');
+  const base = createDurableTestRuntime();
   const spawn = vi.fn<ProcessPort['spawn']>((_options: RuntimeSpawnOptions) => child);
   const processKill = vi.fn<ProcessPort['kill']>((_pid, signal) => {
     if (signal === 0) return _pid < 0 ? groupAlive : processAlive;
@@ -963,7 +963,7 @@ describe('launch admission', () => {
 
   it('reclaims a terminal proxy permit only with exact operation absence evidence', async () => {
     let now = 10_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -1021,7 +1021,7 @@ describe('launch admission', () => {
 
   it('does not reclaim a young permit during the reserve-before-journal window', () => {
     let now = 20_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -1060,7 +1060,7 @@ describe('launch admission', () => {
 
   it('retains queue-handoff permits after the reclamation age floor', () => {
     let now = 22_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -1095,7 +1095,7 @@ describe('launch admission', () => {
 
   it('retains undecided provider-operation ownership until every named record is absent', async () => {
     let now = 25_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -1162,7 +1162,7 @@ describe('launch admission', () => {
 
   it('retains permits when an oracle throws or a holder kind has no registered oracle', () => {
     let now = 30_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -1201,7 +1201,7 @@ describe('launch admission', () => {
 
   it('never reclaims a permit for a live job', () => {
     let now = 40_000;
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
@@ -1240,7 +1240,7 @@ describe('launch admission', () => {
   });
 
   it('rejects a synthetic durable reservation that collides across pools', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const uuid = vi.fn().mockReturnValueOnce('existing-reservation').mockReturnValueOnce('collision');
     const localCoordinator = new LaunchCoordinator({ runtime: { ...base, ids: { ...base.ids, uuid } } });
     const existing = localCoordinator.requestLaunch(
@@ -1821,7 +1821,7 @@ describe('launch admission', () => {
   });
 
   it('bounds a pending wrapper join and reports the retained launch identity', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const runtime: Runtime = {
       ...base,
       process: {
@@ -1855,7 +1855,7 @@ describe('launch admission', () => {
   });
 
   it('notifies succession when a pending durable launch settles after its wrapper joins', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     let settleWrapper!: () => void;
     const wrapperSettlement = new Promise<void>((resolve) => {
       settleWrapper = resolve;
@@ -1902,7 +1902,7 @@ describe('launch admission', () => {
   });
 
   it('closes the pending launch snapshot at the synchronous registration boundary', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const controller = new AbortController();
     // eslint-disable-next-line prefer-const -- circular: the launch stub closes over localCoordinator, but localCoordinator is constructed from a runtime that carries that stub
     let localCoordinator!: LaunchCoordinator;
@@ -1954,7 +1954,7 @@ describe('launch admission', () => {
   });
 
   it('retains a held durable launch until its join settles before propagating failure', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     let observeLaunch!: () => void;
     const launchObserved = new Promise<void>((resolve) => {
       observeLaunch = resolve;
@@ -2009,7 +2009,7 @@ describe('launch admission', () => {
 
   it('keeps a caller-owned launch slot while an aborted wrapper remains unsettled', async () => {
     process.env.CORAL_MAX_WORKERS = '1';
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const requestTermination = vi.fn(() => ({
       kind: 'signal-failed' as const,
       pid: TEST_PROVIDER_PID,
@@ -2134,7 +2134,7 @@ describe('launch admission', () => {
   });
 
   it('keeps the launch slot while an aborted pending wrapper termination has not settled', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     let acceptWrapper!: () => void;
     const wrapperAccepted = new Promise<void>((resolve) => {
       acceptWrapper = resolve;
@@ -2203,7 +2203,7 @@ describe('launch admission', () => {
   });
 
   it('reaps a live Darwin wrapper before propagating a readiness rejection', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_001);
     let elapsedMs = 0n;
     let exited = false;
@@ -2280,7 +2280,7 @@ describe('launch admission', () => {
   });
 
   it('publishes and abandons an incarnation-bound wrapper hold after readiness rejects', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_002);
     let elapsedMs = 0n;
     const requestTermination = vi.fn();
@@ -2373,7 +2373,7 @@ describe('launch admission', () => {
   });
 
   it('does not mint absence from an abruptly dead wrapper while its recorded child remains alive', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     let rejectLaunch!: (error: Error) => void;
     const incarnation = testIncarnation(7_001);
     const childPid = TEST_PROVIDER_PID + 1;
@@ -2468,7 +2468,7 @@ describe('launch admission', () => {
   });
 
   it('releases cleanup ownership before propagating a wrapper crash', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_002);
     const childRoot = { pid: TEST_PROVIDER_PID + 1, incarnation };
     const runtimeRecord = {
@@ -2533,7 +2533,7 @@ describe('launch admission', () => {
   });
 
   it('lets the reported synthetic holder abort a stuck containment and release its exact permit', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_002);
     const childRoot = { pid: TEST_PROVIDER_PID + 1, incarnation };
     const runtimeRecord = {
@@ -2637,7 +2637,7 @@ describe('launch admission', () => {
   });
 
   it('retains cleanup ownership and settlement when absence publication fails', async () => {
-    const base = createRealRuntime('prod');
+    const base = createDurableTestRuntime();
     const incarnation = testIncarnation(7_003);
     const childRoot = { pid: TEST_PROVIDER_PID + 1, incarnation };
     const runtimeRecord = {

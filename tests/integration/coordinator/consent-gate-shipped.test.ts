@@ -13,6 +13,7 @@ import {
   spawnCoordinator,
   stopCoordinator,
   waitForDiscoveryRecord,
+  waitForProcessExit,
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
@@ -36,7 +37,7 @@ describe('AC1 consent gate against shipped v0.10.13', () => {
     const discovery = await waitForDiscoveryRecord(home, 'prod', 15_000);
     expect(discovery.version).toBe('0.10.13');
 
-    const contender = spawnCoordinator({ fixture: branch, home, tempRoots: roots, supervised: true });
+    const contender = spawnCoordinator({ fixture: branch, home, tempRoots: roots });
     coordinators.push(contender);
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     const record = new SupervisorEvidence(runDir);
@@ -48,6 +49,7 @@ describe('AC1 consent gate against shipped v0.10.13', () => {
             .requests.some((request) => request.incumbent?.version === '0.10.13' && request.status === 'accepted'),
         15_000,
       );
+      await waitForCondition(() => record.lockHolder() !== null, 15_000);
     } finally {
       record.close();
     }
@@ -57,6 +59,6 @@ describe('AC1 consent gate against shipped v0.10.13', () => {
     expect(await probeCoordinatorSocket(discovery.socketPath)).toBe('accepting');
     expect(existsSync(join(runDir, 'handoff-signal.json'))).toBe(false);
     expect(existsSync(join(runDir, 'handoff-signal.v2.json'))).toBe(false);
-    expect(contender.child.exitCode).toBeNull();
+    expect(await waitForProcessExit(contender, 15_000), contender.output()).toEqual({ code: 0, signal: null });
   }, 30_000);
 });

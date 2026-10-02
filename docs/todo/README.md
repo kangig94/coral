@@ -91,7 +91,6 @@ release and code-warmth ordering above remains the record of why the previous ta
 | 2 | `local-app-server-stream-has-no-inactivity-bound` | A stalled Codex/local stream can hold a launch permit indefinitely. Instrument the idle case and choose a provider-safe inactivity disposition. |
 | 3 | `provider-operation-startup-reconciliation-unbounded` | `awaitStartup` in `src/coordinator/services/provider-operation-reconciler.ts` has no elapsed-time bound, so one unsettled recovery can keep the whole coordinator in `starting`. Give expiry a retry owner. |
 | 4 | `coordinator-process-disposition` | `RecoveryRegistry.abort` in `src/jobs/reconcile/registry.ts` can release custody before process absence. Audit runtime-bearing terminal paths and retain custody until absence or transfer is proved. |
-| 5 | `hook-unit-tests-reach-the-real-coral-home` | `runHook` in `tests/unit/hooks/_helpers.ts` inherits the developer's `HOME`; a test spawn can reach a live coordinator. Isolate the fixture home. |
 
 `proxy-set-acquisition`'s clock-drift symptom
 closed with #324, the same fix that closed the coordinator's own paths; what is left is a narrower
@@ -105,8 +104,8 @@ and the rest is a port-shape decision that would be the first of its kind, so it
 misfiled memo, or a discuss continuation that stopped matching its source, or a general ruling on dispositions
 in `RuntimePaths`.
 `run-directory-residue` now holds only the unbound provider-socket observation. Its separate test-shaped
-backend-spawn symptom is explained by `hook-unit-tests-reach-the-real-coral-home`; attribution of the
-provider-socket lifecycle remains open.
+backend-spawn symptom was closed by isolating the unit suite's HOME; attribution of the provider-socket
+lifecycle remains open.
 
 ---
 
@@ -226,7 +225,6 @@ session abort.
 | [`ensure-waits-less-than-the-drain-it-waits-for.md`](./ensure-waits-less-than-the-drain-it-waits-for.md) | The old budget mismatch is gone: the current handoff ledger and socket-release wait both use 30 s. Administrative ensure still times out on elapsed time without an address-turnover verdict; design its observation and retained-build supervision response. |
 | [`a-lifecycle-refusal-rides-a-success-envelope.md`](./a-lifecycle-refusal-rides-a-success-envelope.md) | **Older than the branch that named it.** A request refused for a draining lifecycle is answered as a JSON-RPC success whose body carries the refusal; only a client that tests the body sees it. `main` did this at two sites, and the drain branch gave it one home and a tolerant matcher rather than changing it. Moving to an error envelope is a decision every released CLI meets. |
 | [`provider-operation-terminalization-failure-classification.md`](./provider-operation-terminalization-failure-classification.md) | **Filed, not implemented here.** The existing terminalization catch can preserve three observable answers: journal corruption, a store refusal carrying `errcode`, and a terminal this build's own validators reject. `withImmediate` already exposes entry lock refusal because `BEGIN IMMEDIATE` is outside its `try`; `validateJobTerminalOrder` is the reachable deterministic member, and `local-recovery-pending` is its already-named successor. |
-| [`hook-unit-tests-reach-the-real-coral-home.md`](./hook-unit-tests-reach-the-real-coral-home.md) | **`npm test` is not side-effect-free here.** `runHook` copies `process.env` and deletes six variables but not `HOME`, so hook fixtures spawn backends against the developer's own `~/.coral`; 108 of their `MODULE_NOT_FOUND` crashes were found in the live coordinator's log. The crashes are harmless — the spawn that does not crash is the hazard. |
 | [`representation-release-notice-as-a-durable-phase.md`](./representation-release-notice-as-a-durable-phase.md) | Abandonment remains a durable-decision design; disappearance is re-observed. Generation 3 shipped in v0.10.10 through v0.10.13, so a new `controlIntent` kind requires generation 4 at a new address under principle 10. |
 | [`agent-attempts-ignore-the-session-abort.md`](./agent-attempts-ignore-the-session-abort.md) | **Bounded by the same round's fix, which is why it is an entry.** `executeAgentAttempt` never reads the live controller's signal — the module contains no `aborted` at all — and an abort does not remove the snapshot its guards test, so a drain still buys one job launch per session whose result `commitDecision` then refuses. Where the check belongs is the decision: the function takes a session id, not a controller, and its existing snapshot guard already answers a different disposition through the same value. |
 

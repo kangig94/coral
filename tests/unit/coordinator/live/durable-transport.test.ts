@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createRealRuntime } from '#src/runtime/real.js';
+import { createDurableTestRuntime } from '#tests/helpers/durable-runtime.js';
 import type { JobRuntime } from '#src/jobs/records.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { PROVIDER_SERVER_MAX_JSONL_LINE_BYTES } from '#src/providers/app-server-transport.js';
@@ -48,13 +48,13 @@ async function waitForValue<T>(read: () => T | null, timeoutMs = 2_000): Promise
 
 describe('durable transport', () => {
   let coordinator: LaunchCoordinator;
-  let runtime: ReturnType<typeof createRealRuntime>;
+  let runtime: ReturnType<typeof createDurableTestRuntime>;
   let tmpRoot: string;
 
   beforeEach(() => {
     process.env.CORAL_MAX_WORKERS = '1';
     process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
-    runtime = createRealRuntime('prod');
+    runtime = createDurableTestRuntime();
     coordinator = new LaunchCoordinator({ runtime });
     tmpRoot = mkdtempSync(join(tmpdir(), 'coral-live-durable-'));
   });
