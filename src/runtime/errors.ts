@@ -479,7 +479,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
    * remediation replaces with the record path and its actual clearing step. Exit 75, not 1: a coordinator can
    * be running fine behind a discovery record this build simply cannot read (wrong permissions, a truncated
    * write), so this run has not observed whether one exists — the same axis `coordinator_unreachable` sits on,
-   * and the reason both belong in `NOT_OBSERVED_CORAL_SETUP_ERROR_CODES` together.
+   * and the reason both document their observation as `not_observed`.
    */
   coordinator_record_unreadable: {
     userMessage: (context) =>
@@ -826,21 +826,6 @@ function documentedCoralSetupErrorSpec(
   }
   return DOCUMENTED_CORAL_SETUP_ERRORS[code as DocumentedCoralSetupErrorCode];
 }
-
-/**
- * Any documented code may be recorded in a coordinator startup diagnostic and re-rendered from this registry
- * by `backend status`, so a consumer that must decide about every remediation cannot enumerate them itself.
- */
-export const DOCUMENTED_CORAL_SETUP_ERROR_CODES: readonly DocumentedCoralSetupErrorCode[] = Object.freeze(
-  Object.keys(DOCUMENTED_CORAL_SETUP_ERRORS) as DocumentedCoralSetupErrorCode[],
-);
-
-/** Exit 75 must not be read as a settled negative verdict or as a promise that retrying will resolve it. */
-export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>(
-  DOCUMENTED_CORAL_SETUP_ERROR_CODES.filter(
-    (code) => documentedCoralSetupErrorSpec(code)?.observation === 'not_observed',
-  ),
-);
 
 /** Launch and domain retry-later codes must not duplicate documented setup-error policy. */
 export const LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES: ReadonlySet<string> = new Set([

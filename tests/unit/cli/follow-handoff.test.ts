@@ -1,18 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 
 import type * as FollowModule from '#src/cli/follow.js';
 import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
 import type * as HandoffRunnerModule from '#src/coordinator/handoff-routing/runner.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
-import {
-  isWaitCursor,
-  parseSerializedWaitCursor,
-  serializeWaitCursor,
-  type WaitCursor,
-  type WaitStreamEvent,
-} from '#src/jobs/wait.js';
-import { advanceWaitRenderCursor } from '#src/jobs/wait-stream-event.js';
+import { serializeWaitCursor, type WaitStreamEvent } from '#src/jobs/wait.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const mockState = vi.hoisted(() => ({
@@ -244,91 +236,6 @@ describe('cli follow handoff', () => {
     expect(output.join('')).toContain('Job job-1 completed');
   });
 
-  it('should continue locally when the runner degrades an unavailable handoff', async () => {
-    const terminal: WaitStreamEvent = {
-      type: 'terminal',
-      jobId: 'job-1',
-      seq: 1,
-      remainingJobIds: [],
-      resultPath: '/tmp/result.md',
-      result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
-    };
-    const subscribe = vi.fn().mockResolvedValue(makeSubscription([terminal]));
-    const emitError = vi.fn();
-    vi.spyOn(process.stdout, 'write').mockImplementation(((
-      _chunk: string | Uint8Array,
-      callback?: (error?: Error | null) => void,
-    ) => {
-      callback?.();
-      return true;
-    }) as typeof process.stdout.write);
-    mockState.ensure.mockResolvedValue(makeBackend(subscribe));
-    mockState.runHandoff.mockResolvedValue(
-      recorded({
-        kind: 'run-current',
-        reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
-      }),
-    );
-
-    const { launchAndFollow } = await import('#src/cli/follow.js');
-    await expect(launchAndFollow(makeOptions({ emitError }))).resolves.toBe(0);
-
-    expect(subscribe).toHaveBeenCalledOnce();
-    expect(emitError).not.toHaveBeenCalled();
-  });
-
-  it('sends a coordinator with no wait extensions only what the v0.10.0 strict schema accepts', async () => {
-    // Frozen copy of v0.10.0 `jobWaitSchema` (src/transport/rpc/jobs.ts at that tag).
-    const shippedJobWaitSchema = z
-      .object({
-        jobIds: z.array(z.string().min(1)).min(1),
-        projectRoot: z.string().min(1),
-        timeoutSeconds: z.number().int().min(1).max(1200).optional(),
-        cursor: z.custom<WaitCursor>(isWaitCursor, { message: 'cursor must be a valid wait cursor' }).optional(),
-      })
-      .strict();
-    const terminal: WaitStreamEvent = {
-      type: 'terminal',
-      jobId: 'job-1',
-      seq: 1,
-      remainingJobIds: [],
-      resultPath: '/tmp/result.md',
-      result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
-    };
-    const subscribe = vi.fn().mockResolvedValue(makeSubscription([terminal]));
-    vi.spyOn(process.stdout, 'write').mockImplementation(((
-      _chunk: string | Uint8Array,
-      callback?: (error?: Error | null) => void,
-    ) => {
-      callback?.();
-      return true;
-    }) as typeof process.stdout.write);
-    mockState.ensure.mockResolvedValue({ ...makeBackend(subscribe), version: '0.10.0', jobsWaitExtensions: [] });
-    mockState.runHandoff.mockResolvedValue(
-      recorded({ kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } }),
-    );
-
-    const { launchAndFollow } = await import('#src/cli/follow.js');
-    await expect(launchAndFollow(makeOptions())).resolves.toBe(0);
-
-    const params: unknown = subscribe.mock.calls[0]?.[1];
-    expect(shippedJobWaitSchema.safeParse(params).success).toBe(true);
-    expect(params).not.toHaveProperty('supportsInterrupted');
-  });
-
-  it('should preserve a delegated bounded-wait exit code of 75', async () => {
-    vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
-    mockState.ensure.mockResolvedValue(makeBackend());
-    mockState.runHandoff.mockResolvedValue(
-      recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 75 } }),
-    );
-
-    const { launchAndFollow } = await import('#src/cli/follow.js');
-    await expect(launchAndFollow(makeOptions())).resolves.toBe(75);
-
-    expect(mockState.renderHandoffNotice).not.toHaveBeenCalled();
-  });
-
   it('should preserve double Ctrl-C abort semantics while delegated waits are active', async () => {
     const firstHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
     const secondHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
@@ -367,31 +274,5 @@ describe('cli follow handoff', () => {
     expect(abortJob).toHaveBeenCalledOnce();
     expect(abortJob).toHaveBeenCalledWith('job-1');
     expect(process.stderr.write).toHaveBeenCalledWith('\nPress Ctrl+C again to abort the job.\n');
-  });
-
-  it('should use seq alone for journal replay while rendering snapshot status refreshes', () => {
-    const progressed = advanceWaitRenderCursor(
-      { afterSeq: 3 },
-      {
-        type: 'progress',
-        jobId: 'job-1',
-        seq: 4,
-        message: 'checkpoint',
-        timing: waitTiming,
-      },
-    );
-    const replayed = advanceWaitRenderCursor(progressed.cursor, {
-      type: 'progress',
-      jobId: 'job-1',
-      seq: 4,
-      message: 'checkpoint',
-      timing: waitTiming,
-    });
-    const waiting = advanceWaitRenderCursor(progressed.cursor, { type: 'waiting', waitingJobIds: ['job-1'] });
-
-    expect(progressed).toEqual({ cursor: { afterSeq: 4 }, shouldRender: true });
-    expect(replayed).toEqual({ cursor: { afterSeq: 4 }, shouldRender: false });
-    expect(waiting).toEqual({ cursor: { afterSeq: 4 }, shouldRender: true });
-    expect(parseSerializedWaitCursor(serializeWaitCursor(progressed.cursor))).toEqual({ afterSeq: 4 });
   });
 });

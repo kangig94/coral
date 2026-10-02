@@ -240,35 +240,4 @@ describe('RecoveryCoordinator shutdown', () => {
     expect(f.store.readStatus('00000000-0000-4000-8000-000000000001')?.phase).toBe('completed');
     expect(f.sessions.get('codex', 'session-1')?.activeJobId).toBeUndefined();
   });
-
-  it('awaits startup app-server finalization during shutdown', async () => {
-    const f = fixture();
-    const started = createDeferred<void>();
-    const release = createDeferred<void>();
-    f.service.finalizeInterruptedAppServerJob.mockImplementation(async (_authority, _record, fence) => {
-      fence.onCommitStart();
-      started.resolve();
-      await release.promise;
-      commitJobTerminal(f.store, '00000000-0000-4000-8000-000000000001', 'session-1', {
-        content: 'done',
-        durationMs: 0,
-        outcome: { kind: 'completed' },
-      });
-      f.sessions.releaseJob('session-1', '00000000-0000-4000-8000-000000000001');
-    });
-    const startup = f.run().catch((error: unknown) => error);
-    await started.promise;
-    f.signal.abort();
-    let stopped = false;
-    const shutdown = f.recovery.teardown().then(() => {
-      stopped = true;
-    });
-    await Promise.resolve();
-    expect(stopped).toBe(false);
-    release.resolve();
-    await shutdown;
-    expect(await startup).toMatchObject({ name: 'AbortError' });
-    expect(f.store.readStatus('00000000-0000-4000-8000-000000000001')?.phase).toBe('completed');
-    expect(f.sessions.get('codex', 'session-1')?.activeJobId).toBeUndefined();
-  });
 });

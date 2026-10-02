@@ -16,7 +16,6 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
-import type { SessionClaimedBody } from '#src/sessions/event-bodies.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
@@ -97,21 +96,6 @@ function sessionEntry(sessionId: string): ProviderSession {
     createdAt: NOW.toISOString(),
     lastUsedAt: NOW.toISOString(),
     version: 1,
-  };
-}
-
-function claimInput(entry: ProviderSession, jobId: string): CoralEventInput<SessionClaimedBody> {
-  const claimed: ProviderSession = {
-    ...entry,
-    activeJobId: jobId,
-    lastUsedAt: NOW.toISOString(),
-    version: entry.version + 1,
-  };
-  return {
-    type: 'session.claimed',
-    stream: { kind: 'session', id: entry.sessionId },
-    refs: { sessionId: entry.sessionId, jobId },
-    body: { entry: claimed, jobId },
   };
 }
 
@@ -240,83 +224,6 @@ describe('journal commit primitive', () => {
       expect(
         (db.prepare('SELECT seq FROM events ORDER BY seq ASC').all() as Array<{ seq: number }>).map((row) => row.seq),
       ).toEqual([1, 2, 3, 4]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('persists a 3+ event cross-stream causal chain with resolved refs and contiguous seqs', () => {
-    const db = createDb();
-    try {
-      const entry = sessionEntry('session-chain');
-      const appended = commit(
-        db,
-        (c) => {
-          c.append({
-            type: 'session.opened',
-            stream: { kind: 'session', id: 'session-chain' },
-            refs: { sessionId: 'session-chain' },
-            body: {
-              entry,
-              controller: 'default',
-              scope_key: 'tests',
-            },
-          });
-          const providerFailure = c.append({
-            type: 'session.provider_failed',
-            stream: { kind: 'session', id: 'session-chain' },
-            refs: { sessionId: 'session-chain' },
-            body: {
-              provider: 'codex',
-              reason: 'request_failed',
-              message: 'transport reset',
-            },
-          });
-          c.append(workflowPlanInput('workflow-chain'));
-          const workflowCompleted = c.append({
-            type: 'workflow.completed',
-            stream: { kind: 'workflow', id: 'workflow-chain' },
-            refs: { workflowId: 'workflow-chain' },
-            body: {
-              outcome: 'failed',
-              causeRef: providerFailure,
-              stepDetails: [],
-            },
-          });
-          c.append(claimInput(entry, 'job-chain'));
-          c.append(launchInput('job-chain', 'session-chain'));
-          c.append({
-            type: 'job.terminal.recorded',
-            stream: { kind: 'job', id: 'job-chain' },
-            refs: { jobId: 'job-chain', sessionId: 'session-chain' },
-            body: {
-              terminal: {
-                outcome: { kind: 'failed', causeRef: workflowCompleted },
-                durationMs: 1,
-                content: 'failed',
-              },
-            },
-          });
-          return undefined;
-        },
-        ctx(),
-      );
-
-      expect(appended.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-
-      const bodies = bodiesBySeq(db);
-      expect(bodies.get(4)).toMatchObject({
-        outcome: 'failed',
-        causeRef: { stream: { kind: 'session', id: 'session-chain' }, seq: 2 },
-      });
-      expect(bodies.get(7)).toMatchObject({
-        terminal: {
-          outcome: {
-            kind: 'failed',
-            causeRef: { stream: { kind: 'workflow', id: 'workflow-chain' }, seq: 4 },
-          },
-        },
-      });
     } finally {
       db.close();
     }

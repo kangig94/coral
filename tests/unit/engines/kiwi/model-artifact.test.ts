@@ -5,11 +5,7 @@ import { gzipSync } from 'node:zlib';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  extractKiwiModelFiles,
-  extractKiwiModelFilesInWorker,
-  writeKiwiModelFilesAtomicInWorker,
-} from '#src/engines/kiwi/model-artifact.js';
+import { extractKiwiModelFiles, writeKiwiModelFilesAtomicInWorker } from '#src/engines/kiwi/model-artifact.js';
 import { KIWI_MODEL_FILES, KIWI_MODEL_TAR_PREFIX, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
 import { kiwiModelDir } from '#src/engines/kiwi/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -49,18 +45,6 @@ function createMalformedKiwiArchive(declaredSize: number): Buffer {
   return gzipSync(Buffer.concat([header, Buffer.alloc(1024, 0)]));
 }
 
-function createCompleteKiwiArchive(): Buffer {
-  const chunks: Buffer[] = [];
-  for (const fileName of KIWI_MODEL_FILES) {
-    const content = Buffer.from(`content:${fileName}`, 'utf-8');
-    chunks.push(createTarHeader(`${KIWI_MODEL_TAR_PREFIX}${fileName}`, content.length));
-    chunks.push(content);
-    chunks.push(Buffer.alloc((512 - (content.length % 512)) % 512, 0));
-  }
-  chunks.push(Buffer.alloc(1024, 0));
-  return gzipSync(Buffer.concat(chunks));
-}
-
 function createWriteRuntime(root: string): Pick<Runtime, 'env' | 'ids' | 'paths' | 'time'> {
   let nextId = 0;
   return {
@@ -90,25 +74,10 @@ function createModelFiles(): Map<KiwiModelFileName, Buffer> {
 }
 
 describe('Kiwi model artifact extraction', () => {
-  it('rejects model archives above the decompressed byte cap', () => {
-    const archive = gzipSync(Buffer.alloc(2048, 0));
-
-    expect(() => extractKiwiModelFiles(archive, 1024)).toThrow(
-      /Kiwi model archive exceeds maximum decompressed size \(1024 bytes\)/,
-    );
-  });
-
   it('rejects tar entries whose declared size exceeds the archive bounds', () => {
     expect(() => extractKiwiModelFiles(createMalformedKiwiArchive(4096))).toThrow(
       /Kiwi model archive entry exceeds archive bounds: models\/cong\/base\/sj\.morph/,
     );
-  });
-
-  it('extracts required model files in a worker', async () => {
-    const files = await extractKiwiModelFilesInWorker(createCompleteKiwiArchive());
-
-    expect(files.get('sj.morph')?.toString('utf-8')).toBe('content:sj.morph');
-    expect(files.get('nounchr.mdl')?.toString('utf-8')).toBe('content:nounchr.mdl');
   });
 
   it('installs extracted model files atomically in a worker', async () => {

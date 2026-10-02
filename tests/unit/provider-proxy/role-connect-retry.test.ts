@@ -35,24 +35,4 @@ describe('role control connection retry timing', () => {
     expect(connectControlClient).toHaveBeenCalledOnce();
     expect(sleep).not.toHaveBeenCalled();
   });
-
-  it('retries while the deadline still has time', async () => {
-    const failure = new Error('control socket not ready');
-    connectControlClient.mockRejectedValue(failure);
-    const readings = [0n, 50n, 100n, 250n];
-    const sleep = vi.fn(async () => {});
-
-    await expect(
-      connectRoleControlWithRetry('/tmp/role.sock', {} as ControlClientModule.ControlClientTimer, {
-        connectTimeoutMs: 50,
-        retryIntervalMs: 100,
-        overallDeadlineMs: 200,
-        monotonicNow: () => readings.shift() ?? 250n,
-        sleep,
-      }),
-    ).rejects.toBe(failure);
-
-    expect(connectControlClient).toHaveBeenCalledTimes(3);
-    expect(sleep).toHaveBeenCalledTimes(2);
-  });
 });

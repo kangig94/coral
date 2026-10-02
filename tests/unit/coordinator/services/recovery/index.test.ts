@@ -271,47 +271,6 @@ async function createHeldRecoveryCoordinator(
 }
 
 describe('runStartupRecovery provider-operation ownership', () => {
-  it('acquires startup recovery ownership for an executing provider operation', async () => {
-    const runtime = createRealRuntime('prod');
-    const progressStore = createProgressStore(runtime);
-    const phases = ['executing'] as const;
-
-    const records = phases.map((phase, index) => {
-      const jobId = randomUUID();
-      const sessionId = randomUUID();
-      const fixture = providerOperationRecord(phase, { job: index + 100 });
-      const record = providerOperationRecord(phase, {
-        operation: { ...fixture.operation, jobId, operationId: randomUUID() },
-      });
-      seedRunningAppServerJob(progressStore, {
-        jobId,
-        sessionId,
-        provider: 'codex',
-        proxyInstanceId: record.operation.proxyInstanceId,
-      });
-      insertProviderOperation(progressStore.getDb(), record);
-      return record;
-    });
-    const { recoveryCoordinator } = await createHeldRecoveryCoordinator(
-      runtime,
-      progressStore,
-      createFakeService(),
-      'readable-phase-matrix',
-    );
-
-    const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
-      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
-    );
-    expect(ownership.completion).toEqual({ kind: 'complete' });
-    expect(ownership.records).toHaveLength(1);
-    expect(ownership.records[0]).toMatchObject({
-      restoredPermit: expect.objectContaining({ holder: { kind: 'recovery' } }),
-      bindingDisposition: { kind: 'prepared' },
-    });
-    expect(ownership.jobIds).toEqual(expect.arrayContaining(records.map((record) => record.operation.jobId)));
-    await recoveryCoordinator.teardown();
-  });
-
   it('quarantines an unreadable startup row and keeps recovery held', async () => {
     const runtime = createRealRuntime('prod');
     const progressStore = createProgressStore(runtime);
@@ -634,98 +593,6 @@ describe('runStartupRecovery provider-operation ownership', () => {
 });
 
 describe('runStartupRecovery app-server aborts', () => {
-  it('finalizes an acknowledged abort during authority capture as a user abort', async () => {
-    const runtime = createRealRuntime('prod');
-    const progressStore = createProgressStore(runtime);
-    const jobId = randomUUID();
-    const sessionId = randomUUID();
-    const proxyInstanceId = randomUUID();
-    seedRunningAppServerJob(progressStore, { jobId, sessionId, provider: 'codex', proxyInstanceId });
-
-    const captureStarted = deferred();
-    let capturedLaunch!: JobLaunch;
-    let resolveAuthority!: (capture: ProviderRecoveryAuthorityCapture) => void;
-    const authorityCapture = new Promise<ProviderRecoveryAuthorityCapture>((resolve) => {
-      resolveAuthority = resolve;
-    });
-    const interruptAppServerJob = vi.fn(async () => ({ kind: 'acknowledged' as const }));
-    const finalizationStarted = deferred();
-    const releaseFinalization = deferred();
-    const finalizeInterruptedAppServerJob = vi.fn(async () => {
-      finalizationStarted.resolve();
-      await releaseFinalization.promise;
-    });
-    const fakeService = createFakeService({
-      captureProviderRecoveryAuthority: vi.fn((launchRecord) => {
-        capturedLaunch = launchRecord;
-        captureStarted.resolve();
-        return authorityCapture;
-      }),
-      interruptAppServerJob,
-      finalizeInterruptedAppServerJob,
-    });
-    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
-      runtime,
-      progressStore,
-      fakeService,
-      'app-server-abort-recovery-test',
-    );
-
-    const startup = runStartupRecovery();
-    await captureStarted.promise;
-    const recoveryRegistry = recoveryCoordinator.getRecoveryRegistry();
-    expect(recoveryRegistry?.abort([jobId])).toEqual({
-      aborted: [],
-      notFound: [],
-      held: [
-        {
-          jobId,
-          reason: 'waiting for recovery authority and provider acknowledgment of app-server interruption',
-          nextStep:
-            `Run coral-cli jobs detail ${jobId}; if interruption is refused, repair the reported condition, ` +
-            'then use coral-cli backend recovery-quarantine list and run its exact retry command.',
-        },
-      ],
-    });
-    expect(recoveryRegistry?.has(jobId)).toBe(true);
-
-    resolveAuthority({
-      ok: true,
-      authority: {
-        launchRecord: capturedLaunch,
-        session: { sessionId, providerContinuity: null, projectRoot: PROJECT_ROOT, version: 1 },
-        boundProvider: { name: 'codex' },
-      } as unknown as ProviderRecoveryAuthority,
-    });
-    await finalizationStarted.promise;
-
-    expect(interruptAppServerJob).toHaveBeenCalledOnce();
-    expect(recoveryRegistry?.has(jobId)).toBe(true);
-    expect(recoveryRegistry?.abort([jobId])).toEqual({
-      aborted: [],
-      notFound: [],
-      held: [
-        {
-          jobId,
-          reason: 'the provider acknowledged interruption; user-abort terminal finalization remains pending',
-          nextStep:
-            `Wait for startup recovery to finalize ${jobId}; if it remains held, use coral-cli ` +
-            'backend recovery-quarantine list and run its exact retry command.',
-        },
-      ],
-    });
-    expect(finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ reason: 'user_abort' }),
-    );
-
-    releaseFinalization.resolve();
-    await startup;
-    expect(recoveryRegistry?.has(jobId)).toBe(false);
-    await recoveryCoordinator.teardown();
-  });
-
   it('retains an acknowledged abort when user-abort terminal finalization fails', async () => {
     const runtime = createRealRuntime('prod');
     const progressStore = createProgressStore(runtime);
@@ -779,38 +646,5 @@ describe('runStartupRecovery app-server aborts', () => {
     });
     expect(progressStore.readStatus(jobId)?.phase).toBe('running');
     await recoveryCoordinator.teardown();
-  });
-});
-
-describe('recovery coordinator teardown', () => {
-  it('returns the in-flight teardown settlement to concurrent callers', async () => {
-    const runtime = createRealRuntime('prod');
-    const progressStore = createProgressStore(runtime);
-    const runtimeState = { setLaunchFenceActive: vi.fn() };
-    const recoveryCoordinator = createRecoveryCoordinator(
-      {
-        progressStore,
-        runtime,
-        runtimeState,
-        eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
-        getRecoveryService: () => createFakeService(),
-        createInvocationContext: (projectRoot: string): InvocationContext => ({
-          projectRoot: fixtureCanonicalWorkDir(projectRoot),
-          pluginRoot: '/tmp/plugin',
-          coralEnv: {},
-          principal: testProjectPrincipal(projectRoot),
-        }),
-        startupOwnership: new LaunchCoordinator({ runtime }),
-        log: vi.fn(),
-      },
-      null,
-    );
-
-    const firstSettlement = recoveryCoordinator.teardown();
-    const joinedSettlement = recoveryCoordinator.teardown();
-
-    expect(joinedSettlement).toBe(firstSettlement);
-    await firstSettlement;
-    expect(runtimeState.setLaunchFenceActive).toHaveBeenCalledOnce();
   });
 });

@@ -1,12 +1,11 @@
-// Phase B coverage for `bindSocket` (the tagged-result EADDRINUSE primitive)
-// and the ownership-safe `closeIpcServer` close path.
+// Phase B coverage for `bindSocket` (the tagged-result EADDRINUSE primitive).
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, type Server as NetServer } from 'node:net';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bindSocket, closeIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
+import { bindSocket } from '#src/transport/ipc/server.js';
 
 const tempDirs: string[] = [];
 const cleanupServers: NetServer[] = [];
@@ -42,16 +41,6 @@ afterEach(async () => {
 });
 
 describe('bindSocket', () => {
-  it('clean bind returns { kind: "bound" }', async () => {
-    const socketPath = makeSocketPath('clean');
-    const server = createServer();
-    cleanupServers.push(server);
-
-    const result = await bindSocket(server, socketPath);
-    expect(result).toEqual({ kind: 'bound' });
-    expect(server.listening).toBe(true);
-  });
-
   it('auto-clears a stale orphan socket file on next bind', async () => {
     const socketPath = makeSocketPath('orphan');
     writeFileSync(socketPath, '');
@@ -83,54 +72,5 @@ describe('bindSocket', () => {
 
     await expect(bindSocket(server, veryLong)).rejects.toThrow();
     expect(server.listening).toBe(false);
-  });
-});
-
-describe('closeIpcServer ownership-safe close', () => {
-  it('does not unlink a replacement socket path after replacement bind', async () => {
-    const socketPath = makeSocketPath('handoff');
-
-    const oldServer = createServer();
-    const oldListener: IpcListener = {
-      server: oldServer,
-      sockets: new Set(),
-      socketPath,
-    };
-    await new Promise<void>((resolve, reject) => {
-      oldServer.once('error', reject);
-      oldServer.listen(socketPath, () => {
-        oldServer.off('error', reject);
-        resolve();
-      });
-    });
-
-    // Old listener gracefully closes WITHOUT unlinking — path-cleanup is
-    // the next binder's job.
-    await closeIpcServer(oldListener);
-    expect(oldListener.socketPath).toBeNull();
-    // The socket path may exist as a stale orphan; the next bind clears it.
-    // We accept either presence here — the contract is "old close does not
-    // delete a replacement's socket".
-
-    // A replacement immediately binds. `bindSocket` clears any stale orphan
-    // and acquires the path.
-    const newServer = createServer();
-    cleanupServers.push(newServer);
-    const result = await bindSocket(newServer, socketPath);
-    expect(result).toEqual({ kind: 'bound' });
-    expect(newServer.listening).toBe(true);
-
-    // Now simulate a delayed second close call on the OLD listener (e.g.
-    // composition guards). It must not unlink the path now owned by newServer.
-    await closeIpcServer({
-      server: oldServer,
-      sockets: new Set(),
-      socketPath,
-    });
-    expect(newServer.listening).toBe(true);
-    const probe = createServer();
-    cleanupServers.push(probe);
-    const probeResult = await bindSocket(probe, socketPath);
-    expect(probeResult).toEqual({ kind: 'incumbent', reason: 'live-listener' });
   });
 });

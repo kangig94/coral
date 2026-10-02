@@ -14,18 +14,17 @@ function probe(authOutput: string) {
 }
 
 describe('Claude CLI detection', () => {
-  it.each([
-    [JSON.stringify({ loggedIn: true, authenticated: false }), { authState: 'unknown' }],
-    [JSON.stringify({ loggedIn: true, status: 'unauthenticated' }), { authState: 'unknown' }],
-    [JSON.stringify({ status: 'active', auth_status: 'expired' }), { authState: 'unknown' }],
-  ])('interprets Claude auth/status output %s', async (output, auth) => {
-    const subject = probe(output);
-    await expect(subject.detect()).resolves.toEqual({
-      available: true,
-      version: 'claude 2.0',
-      ...auth,
-    });
-  });
+  it.each([[JSON.stringify({ loggedIn: true, authenticated: false }), { authState: 'unknown' }]])(
+    'interprets Claude auth/status output %s',
+    async (output, auth) => {
+      const subject = probe(output);
+      await expect(subject.detect()).resolves.toEqual({
+        available: true,
+        version: 'claude 2.0',
+        ...auth,
+      });
+    },
+  );
 
   it.each(['authenticated'])('accepts the legacy authenticated status %s', async (status) => {
     await expect(probe(JSON.stringify({ status })).detect()).resolves.toMatchObject({

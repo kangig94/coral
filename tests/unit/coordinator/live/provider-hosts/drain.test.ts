@@ -1,3 +1,9 @@
+import {
+  StubbedContainmentProviderHostManager,
+  noCarrierBlocksRetirement,
+  createSharedSpec,
+  createSpawnProviderServerMock,
+} from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -13,7 +19,6 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import {
   createEntry,
   createFakeProviderServerHandle,
-  createSharedSpec,
   runtime,
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
@@ -137,104 +142,6 @@ describe('provider host drain properties', () => {
     expect(server.closeMock, 'child-only gracefulKill teardown was used').not.toHaveBeenCalled();
   });
 
-  it('uses the retained provider child to authorize Darwin teardown', async () => {
-    let elapsedMs = 0;
-    let groupAlive = true;
-    const signals: Array<readonly [number, NodeJS.Signals | 0]> = [];
-    const clock = createMonotonicClock(Symbol('darwin-provider-host-reaper-test'), {
-      readMilliseconds: () => BigInt(elapsedMs),
-      sleep: async (milliseconds) => {
-        elapsedMs += milliseconds;
-      },
-    });
-    const server = createFakeProviderServerHandle({
-      generation: containment.pid,
-      containmentIdentity: containment,
-    });
-    Object.assign(server.handle.child, { exitCode: null, signalCode: null });
-    const readProcessIncarnation = vi.fn(() => null);
-    const reaper = createProviderHostContainmentReaper(
-      {
-        env: { ...runtime.env, platform: () => 'darwin' },
-        process: {
-          ...runtime.process,
-          observeLiveness: (pid) => (pid === -containment.processGroupId && groupAlive ? 'alive' : 'absent'),
-          observeRecordedProcessAsync: async () => (groupAlive ? 'unknown' : 'absent'),
-          kill: (pid, signal) => {
-            signals.push([pid, signal]);
-            groupAlive = false;
-            server.resolveClosed();
-            return true;
-          },
-        },
-      },
-      { clock, readProcessIncarnation },
-    );
-
-    expect(server.handle.isClosed()).toBe(false);
-    await shutdownHandle(server.handle, createSharedSpec(), containment, runtime.time, reaper);
-
-    expect(signals).toEqual([[-containment.processGroupId, 'SIGTERM']]);
-    expect(readProcessIncarnation).not.toHaveBeenCalled();
-    expect(server.finishCloseAfterReapMock).toHaveBeenCalledOnce();
-  });
-
-  it('does not treat an open transport as live-child authority after the leader exit was collected', async () => {
-    const recording = createRecordingReaper(containment.incarnation, false);
-    const server = createFakeProviderServerHandle({ containmentIdentity: containment });
-    Object.assign(server.handle.child, { exitCode: 0, signalCode: null });
-
-    expect(server.handle.isClosed()).toBe(false);
-    await expect(
-      shutdownHandle(server.handle, createSharedSpec(), containment, runtime.time, recording.reaper),
-    ).rejects.toMatchObject({ code: 'process_identity_unverified' });
-    expect(recording.signals).toEqual([]);
-    expect(server.finishCloseAfterReapMock).not.toHaveBeenCalled();
-  });
-
-  it('retains a broker shutdown hold until its retry reports child cleanup absent', async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: false,
-        disposition: 'held-unobservable',
-        observation: 'unobservable',
-        subjects: [{ kind: 'claude-child', controller: 'print', generation: 1 }],
-        successor: { kind: 'accepted', owner: 'broker-session-pool' },
-        operatorExit: { kind: 'retry-broker-shutdown' },
-      })
-      .mockResolvedValueOnce({ ok: true, disposition: 'observed-absent' });
-    const server = createFakeProviderServerHandle({ containmentIdentity: containment, request });
-    const reaper = vi.fn(async () => undefined);
-    const spec = createSharedSpec({
-      shutdownCapability: {
-        method: 'broker/shutdown',
-        timeoutMs: 1_000,
-        resultDisposition: {
-          kind: 'provider-server-shutdown-v1',
-          successorOwner: 'broker-session-pool',
-          operatorExit: 'retry-broker-shutdown',
-        },
-      },
-    });
-
-    const held = await shutdownHandle(server.handle, spec, containment, runtime.time, reaper);
-    expect(held).toMatchObject({
-      kind: 'provider-shutdown-held-unobservable',
-      obligations: [{ kind: 'claude-child', controller: 'print', generation: 1 }],
-      successor: { kind: 'accepted', owner: 'broker-session-pool' },
-      operatorExit: { kind: 'retry-broker-shutdown', retry: expect.any(Function) },
-    });
-    expect(reaper).not.toHaveBeenCalled();
-    expect(server.finishCloseAfterReapMock).not.toHaveBeenCalled();
-    if (held.kind === 'observed-absent') throw new Error('Expected a retained broker shutdown hold.');
-
-    await expect(held.operatorExit.retry()).resolves.toEqual({ kind: 'observed-absent' });
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(reaper).toHaveBeenCalledOnce();
-    expect(server.finishCloseAfterReapMock).toHaveBeenCalledOnce();
-  });
-
   it('refuses to signal a recycled recorded process group without retained child authority', async () => {
     const recording = createRecordingReaper(testIncarnation('recycled'));
 
@@ -300,4 +207,41 @@ describe('provider host drain properties', () => {
     await Promise.resolve();
     expect(signals).toEqual([[-containment.processGroupId, 'SIGTERM']]);
   });
+});
+
+it('refuses admission while idle reclamation awaits close, then admits a fresh host', async () => {
+  vi.useFakeTimers();
+  const closeWindow = createDeferred<void>();
+  const closingServer = createFakeProviderServerHandle({ generation: 811 });
+  const freshServer = createFakeProviderServerHandle({ generation: 812 });
+  const spawnProviderServer = createSpawnProviderServerMock(closingServer.handle, freshServer.handle);
+  const manager = new StubbedContainmentProviderHostManager({
+    carrierBlocksRetirement: noCarrierBlocksRetirement,
+    runtime,
+    spawnProviderServer,
+    idleTimeoutMs: 10,
+    reapContainment: async (identity) => {
+      if (identity === closingServer.handle.containmentIdentity) await closeWindow.promise;
+    },
+  });
+  try {
+    const spec = createSharedSpec({ idleRetirement: 'unleased' });
+    const first = await manager.openSession(spec);
+    first.close();
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(manager.openSession(spec)).rejects.toThrow(/^provider_host_draining:/u);
+    expect(spawnProviderServer).toHaveBeenCalledOnce();
+
+    closeWindow.resolve();
+    await vi.waitFor(() => expect(manager.admissionSnapshot().state.size).toBe(0));
+    const fresh = await manager.openSession(spec);
+    expect(fresh.hostRef).not.toEqual(first.hostRef);
+    expect(spawnProviderServer).toHaveBeenCalledTimes(2);
+    fresh.close();
+  } finally {
+    closeWindow.resolve();
+    await manager.shutdown();
+    vi.useRealTimers();
+  }
 });

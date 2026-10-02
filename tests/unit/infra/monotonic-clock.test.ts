@@ -1,12 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import {
-  createMonotonicClock,
-  createObservedDuration,
-  type MonotonicClock,
-  type MonotonicInstant,
-} from '#src/infra/monotonic-clock.js';
-import type { TimePort } from '#src/infra/port-types.js';
+import { createMonotonicClock, createObservedDuration, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
 
 describe('monotonic clock', () => {
   it('keeps instants opaque while exposing exact elapsed arithmetic', () => {
@@ -47,10 +41,6 @@ describe('monotonic clock', () => {
     expect(() =>
       guardianClock.compare(guardianNow, reaperNow as unknown as MonotonicInstant<typeof guardianScope>),
     ).toThrow('different clock');
-  });
-
-  it('cannot be substituted with the wall-clock TimePort shape', () => {
-    expectTypeOf<Pick<TimePort, 'now'>>().not.toMatchTypeOf<MonotonicClock<symbol>>();
   });
 
   it('does not charge scheduler lateness to the observed subject', () => {

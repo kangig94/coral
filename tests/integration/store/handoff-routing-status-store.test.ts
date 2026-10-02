@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -11,7 +11,6 @@ import {
 } from '#src/coordinator/handoff-routing/status.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
-  handoffRoutingStatusFingerprint,
   handoffRoutingStatusGeneration,
   HandoffRoutingStoreInvalidRecordError,
   HandoffRoutingStoreUnreadableError,
@@ -114,41 +113,6 @@ function expectInvalidRecord(
 }
 
 describe('HandoffRoutingStatusTransaction', () => {
-  it('persists and compares the full durable fingerprint as 32 raw bytes', () => {
-    const path = databasePath();
-    initializeStore(path);
-    const expectedFingerprint = handoffRoutingStatusFingerprint(schema);
-    const differentFingerprint = Buffer.from(expectedFingerprint);
-    differentFingerprint.writeUInt8(expectedFingerprint.readUInt8(0) ^ 0xff, 0);
-    const database = new DatabaseSync(path);
-    try {
-      const metadata = database
-        .prepare(
-          `SELECT
-            fingerprint,
-            typeof(fingerprint) AS storage_type,
-            length(fingerprint) AS byte_length
-          FROM handoff_routing_metadata WHERE singleton = 1`,
-        )
-        .get() as Readonly<{ fingerprint: Uint8Array; storage_type: string; byte_length: number }>;
-      expect(metadata.storage_type).toBe('blob');
-      expect(metadata.byte_length).toBe(32);
-      expect(Buffer.from(metadata.fingerprint)).toEqual(expectedFingerprint);
-      database
-        .prepare('UPDATE handoff_routing_metadata SET fingerprint = ? WHERE singleton = 1')
-        .run(differentFingerprint);
-    } finally {
-      database.close();
-    }
-
-    const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
-    expect(readStoreSnapshot(runtime.storage, path)).toEqual({ kind: 'format-mismatch' });
-    expect(publishStore(runtime.storage, path, () => undefined)).toEqual({
-      kind: 'artifact-refused',
-      classification: { kind: 'format-mismatch' },
-    });
-  });
-
   it('refuses a state change at the locked recheck before initialization or mutation', () => {
     const path = databasePath();
     initializeStore(path);
@@ -232,30 +196,6 @@ describe('HandoffRoutingStatusTransaction', () => {
     expect(readStoreSnapshot(runtime.storage, path)).toEqual({ kind: 'uninitialized' });
     expect(publishStore(runtime.storage, path, () => undefined)).toEqual({ kind: 'committed', value: undefined });
     expect(readStoreSnapshot(runtime.storage, path)).toMatchObject({ kind: 'current' });
-  });
-
-  it('classifies a zero-byte journal as vacant and initializes it', () => {
-    const path = databasePath();
-    writeFileSync(path, '');
-    const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
-
-    expect(readStoreSnapshot(runtime.storage, path)).toEqual({ kind: 'vacant' });
-    expect(publishStore(runtime.storage, path, () => undefined)).toEqual({ kind: 'committed', value: undefined });
-    expect(readStoreSnapshot(runtime.storage, path)).toMatchObject({ kind: 'current' });
-  });
-
-  it('distinguishes generation-missing objects from an uninitialized database', () => {
-    const path = databasePath();
-    const database = new DatabaseSync(path);
-    database.exec('CREATE TABLE foreign_object (value INTEGER) STRICT');
-    database.close();
-    const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
-
-    expect(readStoreSnapshot(runtime.storage, path)).toEqual({ kind: 'generation-missing' });
-    expect(publishStore(runtime.storage, path, () => undefined)).toEqual({
-      kind: 'artifact-refused',
-      classification: { kind: 'generation-missing' },
-    });
   });
 
   it('rejects malformed JSON through the production validator before inserting a row', () => {

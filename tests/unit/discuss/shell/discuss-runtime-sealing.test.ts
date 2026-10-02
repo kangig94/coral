@@ -11,23 +11,17 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
-import {
-  createDiscussContextRegistry,
-  getOrCreate as getOrCreateDiscussContext,
-  type DiscussContextRegistry,
-} from '#src/discuss/shell/live-registry.js';
-import type { AgentConfig, DiscussContext } from '#src/discuss/shell/types.js';
+import { createDiscussContextRegistry, type DiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
+import type { AgentConfig } from '#src/discuss/shell/types.js';
 import { runPlainTurn } from '#src/discuss/shell/runtime-build.js';
 import { startDiscussSession, submitManualBid } from '#src/discuss/shell/operations.js';
 import { readSessionEvents } from '#src/discuss/shell/persistence.js';
 import * as discussSessionRegistry from '#src/discuss/shell/registry.js';
 import * as discussRecovery from '#src/discuss/shell/recovery.js';
 import { createDiscussRuntime } from '#src/discuss/shell/runtime-services.js';
-import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
 import { discussRegistry, toJournalInput } from '#src/discuss/event-registry.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
-import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createSimulationBackend, type SimulationBackend } from '#tools/simulation/core/backend.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '#tools/simulation/scenario-http.js';
@@ -39,7 +33,12 @@ import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
+import {
+  cleanupDiscussHarnesses,
+  createDiscussHarness,
+  createExecutionServiceStub,
+  type DiscussHarness,
+} from './discuss-test-helpers.js';
 
 const TOPIC = 'Should the city pedestrianize the downtown core?';
 const PROJECT_ROOT = '/virtual/ac7/project';
@@ -53,19 +52,6 @@ function resolveBackendNamespace(runtime: SimulationRuntime, pluginRoot: string)
 }
 const START_TS = '2035-04-15T01:02:03.000Z';
 
-type SimulationDiscussHarness = {
-  runtime: SimulationRuntime;
-  projectRoot: string;
-  pluginRoot: string;
-  source: string;
-  store: DiscussSessionStore;
-  progressStore: JobStore;
-  registry: DiscussContextRegistry;
-  context: DiscussContext;
-  invocationCtx: InvocationContext;
-  service: ExecutionService;
-};
-
 type PersistedRecoveryHarness = {
   runtime: SimulationRuntime;
   projectRoot: string;
@@ -76,14 +62,11 @@ type PersistedRecoveryHarness = {
   services: ReturnType<typeof createDiscussRuntime>;
 };
 
-const activeStores: DiscussSessionStore[] = [];
 const activeBackends: SimulationBackend[] = [];
 const originalTz = process.env.TZ;
 
 afterEach(async () => {
-  for (const store of activeStores.splice(0)) {
-    store.dispose();
-  }
+  cleanupDiscussHarnesses();
   while (activeBackends.length > 0) {
     const world = activeBackends.pop();
     if (!world) {
@@ -108,23 +91,9 @@ function unwrap<T>(result: Result<T>): T {
   throw new Error(result.error);
 }
 
-function createExecutionServiceStub(overrides: Partial<ExecutionService> = {}): ExecutionService {
-  return {
-    start: vi.fn(),
-    resume: vi.fn(),
-    coralDispatch: vi.fn(),
-    executeWorkflow: vi.fn(),
-    list: vi.fn(() => ({ sessions: [] })),
-    abort: vi.fn(() => ({ aborted: [], notFound: [] })),
-    waitStream: vi.fn(async function* () {}),
-    waitStreamOnce: vi.fn(),
-    ...overrides,
-  } as unknown as ExecutionService;
-}
-
 function manualAgents(): AgentConfig[] {
   return [
-    { name: 'bot', persona: '# Bot', provider: 'codex' },
+    { name: 'bot', persona: '# Bot', provider: 'codex', model: 'gpt-5' },
     { name: 'alpha', persona: '# Alpha', participation: 'observer' },
   ];
 }
@@ -135,59 +104,6 @@ function manualInputAgents(): DiscussCreateInput['agents'] {
     persona: agent.persona,
     participation: agent.participation ?? 'required',
   }));
-}
-
-function createHarness(options: { epochMs?: number; projectRoot?: string } = {}): SimulationDiscussHarness {
-  const runtime = new SimulationRuntime({ epochMs: options.epochMs ?? Date.parse(START_TS) });
-  const projectRoot = options.projectRoot ?? PROJECT_ROOT;
-  const pluginRoot = PLUGIN_ROOT;
-  runtime.storage.mkdirSync(projectRoot, { recursive: true });
-  runtime.storage.mkdirSync(pluginRoot, { recursive: true });
-  const source = runtime.paths.projectSource(projectRoot);
-  const progressStore = new JobStore(resolveBackendNamespace(runtime, pluginRoot), runtime, createEventBodyCodec(), {
-    db: openTestStoreDb(runtime, ':memory:'),
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
-    providers: permissiveProviderLookupPort,
-  });
-  const store = new DiscussSessionStore(source, {
-    journal: createInMemoryDiscussJournal(),
-  });
-  activeStores.push(store);
-  const service = createExecutionServiceStub();
-  const registry = createDiscussContextRegistry();
-  const providerRegistry = new ProviderRegistry();
-  registerBuiltInProviders(providerRegistry);
-  const canonicalProjectRoot = fixtureCanonicalWorkDir(projectRoot);
-  const context = getOrCreateDiscussContext(registry, canonicalProjectRoot, service, store, {
-    runtime: {
-      ids: runtime.ids,
-      env: runtime.env,
-      time: runtime.time,
-      storage: runtime.storage,
-      projectData: (projectRoot: string) => runtime.paths.projectData(projectRoot),
-    },
-    jobStatusReader: {
-      read: (jobId) => progressStore.readStatus(jobId),
-      readExit: () => null,
-      listOwned: (discussionId) =>
-        progressStore
-          .listJobProjections()
-          .filter(({ status }) => status.owner.kind === 'discussion' && status.owner.id === discussionId)
-          .flatMap(({ jobId, status }) => {
-            const launch = progressStore.loadJobProjectionDetail(jobId).launch;
-            return launch === null ? [] : [{ launch, status }];
-          }),
-    },
-    providerRegistry,
-  });
-  const invocationCtx: InvocationContext = {
-    projectRoot: canonicalProjectRoot,
-    pluginRoot,
-    coralEnv: {},
-    principal: testProjectPrincipal(projectRoot),
-    providerScope: TEST_PROVIDER_SCOPE,
-  };
-  return { runtime, projectRoot, pluginRoot, source, store, progressStore, registry, context, invocationCtx, service };
 }
 
 function createPersistedRecoveryHarness(): PersistedRecoveryHarness {
@@ -262,7 +178,7 @@ async function runPersistedDiscussionRecovery(harness: PersistedRecoveryHarness)
 }
 
 async function appendCreatedSession(
-  harness: Pick<SimulationDiscussHarness, 'store' | 'projectRoot'>,
+  harness: Pick<DiscussHarness, 'store' | 'projectRoot'>,
   sessionId: string,
   ts = START_TS,
 ): Promise<PersistedDiscussSnapshot> {
@@ -448,12 +364,13 @@ describe('runtime-sealed discuss behavior', () => {
   });
 
   it('recovers an active discuss executor job from runtime storage only', async () => {
-    const harness = createHarness();
+    const harness = createDiscussHarness(createExecutionServiceStub(), {
+      runtime: new SimulationRuntime({ epochMs: Date.parse(START_TS) }),
+      tmpRoot: '/virtual/ac7',
+      projectRoot: process.cwd(),
+      pluginRoot: PLUGIN_ROOT,
+    });
     const created = await appendCreatedSession(harness, 'executor-recovery');
-    commitJobInputs(
-      harness.progressStore,
-      readSessionEvents(harness.context, 'executor-recovery').map((event) => toJournalInput(event)),
-    );
     const jobId = 'runtime-only-job-ac7';
     const activeEvents: DiscussDomainEvent[] = [
       makeEvent(
@@ -461,6 +378,15 @@ describe('runtime-sealed discuss behavior', () => {
         harness.projectRoot,
         TOPIC,
         created.lastAppliedSeq + 1,
+        'agent.run.bound',
+        '2035-04-15T01:02:04.000Z',
+        { agent: 'bot', executionSessionId: 'execution-session-1' },
+      ),
+      makeEvent(
+        'executor-recovery',
+        harness.projectRoot,
+        TOPIC,
+        created.lastAppliedSeq + 2,
         'agent.job.started',
         '2035-04-15T01:02:04.000Z',
         {
@@ -471,7 +397,6 @@ describe('runtime-sealed discuss behavior', () => {
         },
       ),
     ];
-    await harness.store.append('executor-recovery', created.lastAppliedSeq, activeEvents);
     seedTestJobSession(harness.progressStore, {
       jobId,
       sessionId: 'execution-session-1',
@@ -500,6 +425,7 @@ describe('runtime-sealed discuss behavior', () => {
       },
       createdAt: '2035-04-15T01:02:05.000Z',
     });
+    await harness.store.append('executor-recovery', created.lastAppliedSeq, activeEvents);
     commitJobTerminal(harness.progressStore, jobId, 'execution-session-1', {
       content: 'Recovered content from runtime storage',
       durationMs: 1_000,
@@ -523,7 +449,7 @@ describe('runtime-sealed discuss behavior', () => {
       prompt: 'Recover the active job.',
       instruction: 'Use recovered output.',
       cwd: fixtureCanonicalWorkDir(harness.projectRoot),
-      invocationCtx: harness.invocationCtx,
+      invocationCtx: harness.ctx,
       purpose: 'bid',
     });
 
@@ -534,7 +460,13 @@ describe('runtime-sealed discuss behavior', () => {
   it('uses virtual runtime time for deterministic discuss event timestamps', async () => {
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
     const epochMs = Date.parse('2044-05-06T07:08:09.000Z');
-    const harness = createHarness({ epochMs });
+    const runtime = new SimulationRuntime({ epochMs });
+    const harness = createDiscussHarness(createExecutionServiceStub(), {
+      runtime,
+      tmpRoot: '/virtual/ac7',
+      projectRoot: process.cwd(),
+      pluginRoot: PLUGIN_ROOT,
+    });
     vi.mocked(harness.service.start).mockResolvedValueOnce({
       kind: 'provider-session',
       status: 'running',
@@ -546,22 +478,15 @@ describe('runtime-sealed discuss behavior', () => {
       continuity: null,
     });
 
-    await startDiscussSession(
-      harness.context,
-      'virtual-time-session',
-      TOPIC,
-      manualAgents(),
-      {},
-      harness.invocationCtx,
-    );
-    harness.runtime.time.tick(1_234);
+    await startDiscussSession(harness.context, 'virtual-time-session', TOPIC, manualAgents(), {}, harness.ctx);
+    runtime.time.tick(1_234);
     await submitManualBid(
       harness.context,
       'virtual-time-session',
       'alpha',
       77,
       'This bid timestamp comes from virtual time.',
-      harness.invocationCtx,
+      harness.ctx,
     );
 
     const events = readSessionEvents(harness.context, 'virtual-time-session');

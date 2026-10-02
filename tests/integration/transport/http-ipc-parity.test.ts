@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createHttpHandler } from '#src/transport/http/handler.js';
+import { createHttpHandler, sendJson } from '#src/transport/http/handler.js';
+import { buildTransportErrorResponse } from '#src/transport/error-response.js';
+import { generationNotQuiescentError } from '#src/store/generation-mutation-coordination.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
@@ -164,8 +166,16 @@ function createPorts(): HttpHandlerPorts {
 }
 
 async function startHttpServer(ports: HttpHandlerPorts): Promise<{ server: Server; baseUrl: string }> {
+  const handler = createHttpHandler(ports);
   const server = createServer((req, res) => {
-    void createHttpHandler(ports)(req, res);
+    void handler(req, res).catch((error) => {
+      if (!res.headersSent) {
+        const response = buildTransportErrorResponse(error);
+        sendJson(res, response.statusCode, response.body);
+        return;
+      }
+      res.destroy();
+    });
   });
   httpServers.push(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
@@ -189,6 +199,46 @@ afterEach(async () => {
 });
 
 describe('http/ipc parity', () => {
+  it('carries the store-owned unobservable-writer code through HTTP and IPC', async () => {
+    const ports = createPorts();
+    ports.expansion.equipExpansion = vi.fn(async () => {
+      throw generationNotQuiescentError(
+        { flavor: 'prod' },
+        'install:kiwi (pid 42), process identity unobservable',
+        'writer-unobservable',
+      );
+    });
+    const socketPath = makeSocketPath();
+    const ipcListener = createIpcServer(ports);
+    const { baseUrl } = await startHttpServer(ports);
+
+    await listenIpcServer(ipcListener, socketPath);
+    try {
+      const response = await fetch(`${baseUrl}/coordinator/expansion`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': ports.identity.token,
+        },
+        body: JSON.stringify({ name: 'vector' }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'legacy_source_writer_observation_unknown' });
+
+      const ipcError = await requestIpcMethod(
+        socketPath,
+        'coordinator.equipExpansion',
+        { name: 'vector' },
+        { auth: { kind: 'boot', token: ports.identity.bootToken } },
+      ).catch((error: unknown) => error);
+
+      expect(ipcError).toBeInstanceOf(IpcRpcError);
+      expect(ipcError).toMatchObject({ data: { code: 'legacy_source_writer_observation_unknown' } });
+    } finally {
+      await closeIpcServer(ipcListener);
+    }
+  });
+
   it('carries an undetermined preflight error body through HTTP and IPC without an IPC status', async () => {
     const ports = createPorts();
     const errorBody = {

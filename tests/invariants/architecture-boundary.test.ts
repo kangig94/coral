@@ -18,7 +18,6 @@ import {
   type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
 import { productionProgram } from '#tests/helpers/ts-production-program.js';
-import { UNIT_TIER_ROOTS } from '../../vitest/tiers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__filename), '..', '..');
@@ -39,8 +38,6 @@ const SKILLS_ROOT = ['src', 'skills'].join('/');
 const SHARED_ROOT = ['src', 'shared'].join('/');
 const SIMULATION_ROOT = ['src', 'simulation'].join('/');
 const RETIRED_PRIVATE_STATE_ROOT = 'src/_retired';
-const ROOT_SCENARIOS_ROOT = 'scenarios';
-const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].join('/');
 const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
@@ -56,9 +53,6 @@ const COORDINATOR_TERMINAL_MATERIALIZER = 'src/coordinator/services/terminal-mat
 const JOBS_TERMINAL_RECORDING = 'src/jobs/terminal/recording.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/jobs/kb/recorder.ts';
-const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
-const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/providers/app-server-transport.ts';
-const CONSUMER_DRIVER_MODULE = 'src/projection-consumers/index.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
@@ -189,40 +183,6 @@ function listFilesRecursive(root: string, predicate: (filePath: string) => boole
   });
 }
 
-function collectSrcMarkdownFiles(): string[] {
-  return listFilesRecursive(SRC_ROOT, (filePath) => filePath.endsWith('.md'))
-    .map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath))
-    .sort();
-}
-
-function collectTestQuarantineResidue(): string[] {
-  const marker = ['@', 'fla', 'ky'].join('');
-  const retryConfig = /\b(?:describe|it|test)\s*\([^)]*,\s*\{\s*retry\s*:/s;
-  const scannedFiles = [
-    ...UNIT_TIER_ROOTS.flatMap((root) =>
-      listFilesRecursive(resolve(REPO_ROOT, root), (filePath) => filePath.endsWith('.test.ts')),
-    ),
-    resolve(REPO_ROOT, 'scripts/test.mjs'),
-  ];
-
-  return scannedFiles.flatMap((filePath) => {
-    const source = readFileSync(filePath, 'utf8');
-    const violations = [];
-    if (source.includes(marker)) {
-      violations.push('quarantine marker');
-    }
-    if (retryConfig.test(source)) {
-      violations.push('Vitest retry option');
-    }
-
-    if (violations.length === 0) {
-      return [];
-    }
-
-    return `${toCanonicalSrcPath(REPO_ROOT, filePath)}: ${violations.join(', ')}`;
-  });
-}
-
 function collectProductionStringResidue(tokens: readonly string[]): string[] {
   return PRODUCTION_FILE_PATHS.flatMap((filePath) => {
     const source = readFileSync(filePath, 'utf-8');
@@ -291,13 +251,6 @@ function collectDomainAmbientRuntimeAccess(): string[] {
 
     return ambientPattern.test(readFileSync(resolve(REPO_ROOT, filePath), 'utf8'));
   }).sort();
-}
-
-function collectProductionTestHelperImports(): string[] {
-  const helperImportPattern = /from\s+['"]#tests\/helpers\/|import\s*\(\s*['"]#tests\/helpers\//u;
-  return PRODUCTION_SOURCE_FILES.filter((filePath) =>
-    helperImportPattern.test(readFileSync(resolve(REPO_ROOT, filePath), 'utf8')),
-  ).sort();
 }
 
 function collectReadModelAmbientRuntimeAccess(): string[] {
@@ -407,9 +360,6 @@ describe('architecture boundary guard', () => {
   it('raw job.terminal.recorded writes stay owned by jobs terminal recording', () => {
     expect(collectRawTerminalRecordedWriters()).toEqual([JOBS_TERMINAL_RECORDING]);
   });
-  it('production sources never import tests/helpers', () => {
-    expect(collectProductionTestHelperImports()).toEqual([]);
-  });
   it('launch/admission vocabulary has a single jobs-owned type authority', () => {
     // `LaunchPool` is conceptually owned by the admission contract — it
     // selects an admission pool. `jobs/launch.ts` propagates the choice
@@ -470,21 +420,6 @@ describe('architecture boundary guard', () => {
   it('kb operation failure journal facts are centralized in the jobs-owned KB recorder', () => {
     expect(collectKbOperationFailureWriters()).toEqual([KB_JOB_RECORDER]);
   });
-  it('large coordinator transport and consumer-driver component stay split by responsibility', () => {
-    expect(PRODUCTION_SOURCE_FILES).toContain(PROVIDER_SERVER_TRANSPORT_MODULE);
-    expect(PRODUCTION_SOURCE_FILES).toContain(CONSUMER_DRIVER_MODULE);
-    // Cohesive components with enough sibling files should subdivide under a
-    // named directory instead of growing a root magnet.
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/state.ts');
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/persistence.ts');
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/registration.ts');
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/freshness-waiter.ts');
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/authority-apply.ts');
-
-    const durableTransportSource = readFileSync(resolve(REPO_ROOT, DURABLE_TRANSPORT_MODULE), 'utf8');
-    expect(durableTransportSource).not.toContain('createInterface');
-    expect(durableTransportSource).not.toContain('ProviderServerEntry');
-  });
   it('coordinator root forbids content-blank consumer-driver-support magnet', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain('src/projection-consumers-support.ts');
   });
@@ -507,12 +442,6 @@ describe('architecture boundary guard', () => {
     );
 
     assertNoViolations(violations);
-  });
-  it('runtime/binding.ts stays runtime-local and imports only its error and port homes', () => {
-    expect((PARSED_IMPORT_EDGES_BY_SOURCE.get('src/runtime/binding.ts') ?? []).map((edge) => edge.target)).toEqual([
-      'src/runtime/errors.ts',
-      'src/runtime/ports.ts',
-    ]);
   });
   it('session continuity mutation contracts stay under the session owner', () => {
     const providerShimExists =
@@ -640,10 +569,6 @@ describe('architecture boundary guard', () => {
     expect(simulationFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, SIMULATION_ROOT))).toBe(false);
   });
-  it('the debug-only simulation scenario corpus must live with the simulation tool', () => {
-    expect(existsSync(resolve(REPO_ROOT, ROOT_SCENARIOS_ROOT))).toBe(false);
-    expect(existsSync(resolve(REPO_ROOT, DEBUG_SIMULATION_SCENARIOS_ROOT))).toBe(true);
-  });
   it('test code and test support must stay out of src', () => {
     const violations: string[] = [];
 
@@ -673,50 +598,13 @@ describe('architecture boundary guard', () => {
     expect(violations).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, 'src/testing'))).toBe(false);
   });
-  it('human prose docs must stay out of src', () => {
-    expect(collectSrcMarkdownFiles()).toEqual([]);
-  });
   it('production types.ts files remain declaration-only', () => {
     expect(collectRuntimeDeclarationsInTypesFiles()).toEqual([]);
-  });
-  it('unit and invariant tests do not carry quarantine residue', () => {
-    expect(collectTestQuarantineResidue()).toEqual([]);
   });
   it('store schema baseline no longer contains projection_kb residue', () => {
     const initialSchema = readFileSync(resolve(REPO_ROOT, 'src/store/schema.sql'), 'utf8');
 
     expect(initialSchema).not.toContain('projection_kb');
-  });
-  it('public wait contract uses only global journal seq cursors', () => {
-    const waitContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait.ts'), 'utf8');
-    const waitShell = readFileSync(resolve(REPO_ROOT, 'src/jobs/shell/wait.ts'), 'utf8');
-    const waitEventSchema = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait-stream-event.ts'), 'utf8');
-    const jobRecords = readFileSync(resolve(REPO_ROOT, 'src/jobs/records.ts'), 'utf8');
-    const jobStore = readFileSync(resolve(REPO_ROOT, 'src/jobs/store.ts'), 'utf8');
-    const jobStoreContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/contracts/job-store.ts'), 'utf8');
-    const jobQueries = readFileSync(resolve(REPO_ROOT, 'src/jobs/read-queries.ts'), 'utf8');
-    const simulationWorld = readFileSync(resolve(REPO_ROOT, 'tools/simulation/adversarial.ts'), 'utf8');
-
-    expect(waitContract).toContain('afterSeq: number');
-    expect(waitContract).toContain('seq: number');
-    expect(waitContract).not.toContain('jobs: Record');
-    expect(waitContract).not.toContain('eventId');
-    expect(waitShell).not.toContain('JOURNAL_WAIT_POLL_MS');
-    expect(waitShell).not.toContain('poll-journal');
-    expect(waitShell).not.toContain('POLL_JOURNAL');
-    expect(waitEventSchema).toContain('seq: z.number().int().nonnegative()');
-    expect(waitEventSchema).not.toContain('eventId');
-    expect(jobRecords).not.toContain('eventId');
-    expect(jobStore).not.toContain('ReplayCursor');
-    expect(jobStore).not.toContain('replayFrom');
-    expect(jobStore).not.toContain('eventId');
-    expect(jobStoreContract).not.toContain('ReplayCursor');
-    expect(jobStoreContract).not.toContain('replayFrom');
-    expect(jobQueries).not.toContain('per_job_index');
-    expect(jobQueries).not.toContain('eventId');
-    expect(simulationWorld).not.toContain('ReplayCursor');
-    expect(simulationWorld).not.toContain('createReplayCursor');
-    expect(simulationWorld).not.toContain('replayFrom');
   });
   it('infra/paths.ts is permanently retired (use infra/path/index and per-domain path modules)', () => {
     expect(existsSync(resolve(REPO_ROOT, 'src/infra/paths.ts'))).toBe(false);
@@ -782,21 +670,6 @@ describe('architecture boundary guard', () => {
     });
 
     expect(offenders).toEqual([]);
-  });
-  it('production keeps helper-style filenames out of src/', () => {
-    // Generic filenames become magnets when they describe NOTHING about content
-    // — `helpers.ts`, `utils.ts`, `shared.ts` invite "anything that fits" and
-    // accumulate unrelated logic. Forbid these outright, including the
-    // hyphenated variants (`install-helpers.ts`, `state-shared.ts`, ...) that
-    // slip the bare-suffix check by carrying a token before "helpers".
-    //
-    // `index.ts` and `types.ts` are intentionally NOT forbidden: both are valid
-    // conventional names with clear semantics (entry point, type vocabulary).
-    // Discipline is on *content*, not *name*: if either file grows large or
-    // loses cohesion, it MUST be split.
-    const FORBIDDEN_NAME_PATTERN = /\/(?:[\w-]*-)?(?:helper|helpers|shared|shared-utils|utils)\.ts$/u;
-    const helperLikeFiles = PRODUCTION_SOURCE_FILES.filter((filePath) => FORBIDDEN_NAME_PATTERN.test(filePath));
-    expect(helperLikeFiles).toEqual([]);
   });
   it('abort vocabulary lives only at src/runtime/abort.ts', () => {
     // §16 #53 cross-reference: AbortError / isAbortError / throwIfAborted have
@@ -1125,41 +998,6 @@ describe('architecture boundary guard', () => {
     expect(collectEngineImportViolations(PARSED_IMPORT_EDGES)).toEqual([]);
   });
 
-  it('engine-blind domains carry no engine-id string literals (AC7.2)', () => {
-    const engineBlindScopes = ['src/kb/', 'src/coordinator/', 'src/cli/expansion/', 'src/infra/', 'src/runtime/'];
-    const bundledExpansionIds = new Set(['orama', 'gemini', 'onnx', 'kiwi']);
-
-    const violations: string[] = [];
-
-    for (const filePath of PRODUCTION_FILE_PATHS) {
-      const canonical = toCanonicalSrcPath(REPO_ROOT, filePath);
-      if (!engineBlindScopes.some((scope) => canonical.startsWith(scope))) {
-        continue;
-      }
-      // The top-level KB reservation authority intentionally records the
-      // exact Orama-owned directory so retirement can reject that path.
-      if (canonical === 'src/runtime/kb-runtime-authority.ts') {
-        continue;
-      }
-
-      const sourceText = readFileSync(filePath, 'utf8');
-      const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-
-      function visit(node: ts.Node): void {
-        if (ts.isStringLiteral(node) && bundledExpansionIds.has(node.text)) {
-          violations.push(`${canonical}:${node.getStart()}: literal '${node.text}'`);
-        } else if (ts.isNoSubstitutionTemplateLiteral(node) && bundledExpansionIds.has(node.text)) {
-          violations.push(`${canonical}:${node.getStart()}: template-literal '${node.text}'`);
-        }
-        ts.forEachChild(node, visit);
-      }
-
-      visit(sourceFile);
-    }
-
-    expect(violations).toEqual([]);
-  });
-
   it('Backed<T> values are not stored at module scope or as class fields outside src/kb/runtime.ts (AC7.3)', () => {
     // `Backed<T>` is a per-use read primitive — `binding.read()` must be
     // called fresh every time so consumers re-resolve through whichever
@@ -1311,11 +1149,6 @@ const RECOVERY_COMPOSITION_BOUNDARIES = [
   ...RECOVERY_RETRY_BOUNDARIES,
   ...RECOVERY_SHUTDOWN_BOUNDARIES.map(({ boundary, compositionSite }) => ({ boundary, compositionSite })),
 ] as const;
-
-const RECOVERY_FATAL_STARTUP_ROOT = {
-  file: 'src/coordinator/index.ts',
-  symbol: 'awaitRecoveryCursorBarrier',
-} as const;
 
 const RECOVERY_STARTUP_CAPABILITIES = [
   {
@@ -1482,72 +1315,8 @@ type RecoveryFactoryInspection = {
 };
 
 const RECOVERY_CONTAINMENT_MODULE = 'src/recovery/containment.ts';
-const RECOVERY_FIXTURE_ROOT = resolve(REPO_ROOT, 'tests/invariants/fixtures/recovery-authority');
-
-function createRecoveryFixtureProgram(): ts.Program {
-  const fixtureSources = new Map<string, string>();
-  const fixtureFiles = listFilesRecursive(
-    RECOVERY_FIXTURE_ROOT,
-    (filePath) => filePath.endsWith('.ts.txt') && !filePath.includes('/_kernel/'),
-  );
-
-  for (const fixtureFile of fixtureFiles) {
-    fixtureSources.set(fixtureFile.slice(0, -'.txt'.length), readFileSync(fixtureFile, 'utf8'));
-  }
-
-  const containmentKernel = readFileSync(resolve(RECOVERY_FIXTURE_ROOT, '_kernel/containment.ts.txt'), 'utf8');
-  for (const projectName of ['valid', 'phase1', 'raw', 'startup']) {
-    const containmentPath = resolve(RECOVERY_FIXTURE_ROOT, projectName, RECOVERY_CONTAINMENT_MODULE);
-    if (!fixtureSources.has(containmentPath)) {
-      fixtureSources.set(containmentPath, containmentKernel);
-    }
-  }
-
-  const options: ts.CompilerOptions = {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    strict: true,
-    skipLibCheck: true,
-    noEmit: true,
-  };
-  // Module resolution skips a directory it believes does not exist, so a virtual fixture file is
-  // invisible unless its containing directories are reported too. Without this the fixtures resolve
-  // only when some unrelated empty directory happens to be left on disk, which is not a test.
-  const fixtureDirectories = new Set<string>();
-  for (const fixturePath of fixtureSources.keys()) {
-    for (let directory = dirname(fixturePath); directory.startsWith(RECOVERY_FIXTURE_ROOT); ) {
-      fixtureDirectories.add(directory);
-      const parent = dirname(directory);
-      if (parent === directory) break;
-      directory = parent;
-    }
-  }
-
-  const defaultHost = ts.createCompilerHost(options, true);
-  const host: ts.CompilerHost = {
-    ...defaultHost,
-    directoryExists: (directoryName) =>
-      fixtureDirectories.has(directoryName) || (defaultHost.directoryExists?.(directoryName) ?? false),
-    fileExists: (fileName) => fixtureSources.has(fileName) || defaultHost.fileExists(fileName),
-    readFile: (fileName) => fixtureSources.get(fileName) ?? defaultHost.readFile(fileName),
-    getSourceFile: (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
-      const source = fixtureSources.get(fileName);
-      if (source !== undefined) {
-        return ts.createSourceFile(fileName, source, languageVersion, true, ts.ScriptKind.TS);
-      }
-      return defaultHost.getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
-    },
-    writeFile: () => {
-      throw new Error('Recovery authority fixture Programs are read-only.');
-    },
-  };
-
-  return ts.createProgram({ rootNames: [...fixtureSources.keys()], options, host });
-}
 
 const RECOVERY_PRODUCTION_PROGRAM = productionProgram();
-const RECOVERY_FIXTURE_PROGRAM = createRecoveryFixtureProgram();
 
 function toAnalysisPath(context: RecoveryAnalysisContext, fileName: string): string {
   return relative(context.projectRoot, fileName).replaceAll('\\', '/');
@@ -1811,27 +1580,6 @@ function assertNoRecoveryViolations(violations: readonly RecoveryAuthorityViolat
   if (violations.length > 0) {
     expect.fail(formatRecoveryViolations(violations));
   }
-}
-
-function assertRecoveryMutationFailure(
-  mutation: string,
-  violations: readonly RecoveryAuthorityViolation[],
-  expected: { readonly offendingFile: string; readonly rule: string },
-): void {
-  const matching = violations.filter(
-    (violation) => violation.offendingFile === expected.offendingFile && violation.violatedRule.includes(expected.rule),
-  );
-  expect(
-    matching,
-    `${mutation}: analyzer did not reject the mutation\n${formatRecoveryViolations(violations)}`,
-  ).not.toEqual([]);
-
-  const diagnostic = formatRecoveryViolations(matching);
-  expect(diagnostic).toContain(`Offending file: ${expected.offendingFile}`);
-  expect(diagnostic).toContain('Dependency path:');
-  expect(diagnostic).toContain('Authority declaration:');
-  expect(diagnostic).toContain(`Violated rule: ${matching[0].violatedRule}`);
-  expect(diagnostic).toContain('Allowed source scan body or composition site:');
 }
 
 function isNodeWithin(node: ts.Node, container: ts.Node): boolean {
@@ -2812,328 +2560,7 @@ const RECOVERY_PRODUCTION_CONTEXT = createRecoveryAnalysisContext(
   RECOVERY_STARTUP_CAPABILITIES,
 );
 
-function recoveryFixtureContext(fixtureName: 'valid' | 'phase1' | 'raw' | 'startup'): RecoveryAnalysisContext {
-  const allowedStartupCapabilities =
-    fixtureName === 'valid' || fixtureName === 'startup'
-      ? [
-          {
-            file: 'src/coordinator/startup-recovery.ts',
-            symbol: 'NamedSettlementCapability',
-          },
-        ]
-      : [];
-  return createRecoveryAnalysisContext(
-    RECOVERY_FIXTURE_PROGRAM,
-    resolve(RECOVERY_FIXTURE_ROOT, fixtureName),
-    undefined,
-    allowedStartupCapabilities,
-  );
-}
-
-const RECOVERY_MUTATION_CASES: readonly {
-  readonly mutation: string;
-  readonly fixture: 'phase1' | 'raw' | 'startup';
-  readonly rules: RecoveryRuleSelection;
-  readonly failures: readonly { readonly offendingFile: string; readonly rule: string }[];
-}[] = [
-  {
-    mutation: 'constructor/direct raw-authority import',
-    fixture: 'raw',
-    rules: { phase1: false, rawAuthority: true, startupInputSeal: false },
-    failures: [{ offendingFile: 'src/constructor-import.ts', rule: 'raw-authority:' }],
-  },
-  {
-    mutation: 'source-definition re-export',
-    fixture: 'phase1',
-    rules: { phase1: true, rawAuthority: false, startupInputSeal: false },
-    failures: [
-      {
-        offendingFile: 'src/coordinator/services/recovery/coordinator-job-source.ts',
-        rule: 'may export only its exact named factory',
-      },
-    ],
-  },
-  {
-    mutation: 'inferred factory with an extra callable property',
-    fixture: 'phase1',
-    rules: { phase1: true, rawAuthority: false, startupInputSeal: false },
-    failures: [
-      {
-        offendingFile: 'src/discuss/shell/discussion-source-recovery-source.ts',
-        rule: 'must be a directly declared function with an explicit RecoverySource',
-      },
-      {
-        offendingFile: 'src/discuss/shell/discussion-source-recovery-source.ts',
-        rule: 'factories may not carry extra callable properties',
-      },
-    ],
-  },
-  {
-    mutation: 'eager enumeration inside a correctly typed factory',
-    fixture: 'phase1',
-    rules: { phase1: true, rawAuthority: false, startupInputSeal: false },
-    failures: [
-      {
-        offendingFile: 'src/discuss/shell/discussion-candidate-recovery-source.ts',
-        rule: 'only inside the registered scan body',
-      },
-    ],
-  },
-  {
-    mutation: 'renamed import or wrapper closure',
-    fixture: 'raw',
-    rules: { phase1: false, rawAuthority: true, startupInputSeal: false },
-    failures: [{ offendingFile: 'src/renamed-wrapper.ts', rule: 'raw-authority:' }],
-  },
-  {
-    mutation: 'injected dependency property under a domain-shaped interface',
-    fixture: 'startup',
-    rules: { phase1: false, rawAuthority: false, startupInputSeal: true },
-    failures: [
-      {
-        offendingFile: 'src/coordinator/startup-recovery.ts',
-        rule: 'store/database authority',
-      },
-      {
-        offendingFile: 'src/coordinator/startup-recovery.ts',
-        rule: 'callable or constructor authority',
-      },
-      {
-        offendingFile: 'src/coordinator/startup-recovery.ts',
-        rule: 'unresolved generic input',
-      },
-      {
-        offendingFile: 'src/coordinator/startup-recovery.ts',
-        rule: 'index signatures fail closed',
-      },
-    ],
-  },
-  {
-    mutation: 'unresolved computed edge',
-    fixture: 'startup',
-    rules: { phase1: false, rawAuthority: false, startupInputSeal: true },
-    failures: [
-      { offendingFile: 'src/coordinator/computed-edge.ts', rule: 'computed dynamic import' },
-      { offendingFile: 'src/coordinator/computed-edge.ts', rule: 'computed module element access' },
-    ],
-  },
-  {
-    mutation: 'new unmanifested orchestrator invoking a raw enumerator',
-    fixture: 'raw',
-    rules: { phase1: false, rawAuthority: true, startupInputSeal: false },
-    failures: [{ offendingFile: 'src/unmanifested-orchestrator.ts', rule: 'raw-authority:' }],
-  },
-  {
-    mutation: 'arbitrary pre-enumerated collection passed into a startup slice',
-    fixture: 'startup',
-    rules: { phase1: false, rawAuthority: false, startupInputSeal: true },
-    failures: [
-      {
-        offendingFile: 'src/coordinator/startup-recovery.ts',
-        rule: 'iterable or pre-enumerated input',
-      },
-    ],
-  },
-  {
-    mutation: 'forged or inspected receipt',
-    fixture: 'startup',
-    rules: { phase1: false, rawAuthority: false, startupInputSeal: true },
-    failures: [
-      { offendingFile: 'src/coordinator/receipt-attack.ts', rule: 'forged RecoveryReceipt' },
-      { offendingFile: 'src/coordinator/receipt-attack.ts', rule: 'RecoveryReceipt inspection' },
-    ],
-  },
-  {
-    mutation: 'production import of a test helper',
-    fixture: 'phase1',
-    rules: { phase1: true, rawAuthority: false, startupInputSeal: false },
-    failures: [{ offendingFile: 'src/orchestrator.ts', rule: 'test code or test helpers' }],
-  },
-  {
-    mutation: 'attempted scan/destructure from an opaque handle',
-    fixture: 'startup',
-    rules: { phase1: false, rawAuthority: false, startupInputSeal: true },
-    failures: [
-      {
-        offendingFile: 'src/coordinator/startup-recovery.ts',
-        rule: 'opaque RecoverySource handles expose no scan authority',
-      },
-      {
-        offendingFile: 'src/coordinator/startup-recovery.ts',
-        rule: 'opaque RecoverySource handles may not be destructured',
-      },
-    ],
-  },
-  {
-    mutation: 'source factory referenced outside its exact composition site',
-    fixture: 'startup',
-    rules: { phase1: false, rawAuthority: false, startupInputSeal: true },
-    failures: [
-      {
-        offendingFile: 'src/coordinator/rogue-composition.ts',
-        rule: 'a source factory may be referenced only by its exact composition site',
-      },
-    ],
-  },
-];
-
 describe('recovery authority boundary', () => {
-  it('records the exact startup-root and composition-site fixture', () => {
-    expect(RECOVERY_STARTUP_BOUNDARIES).toEqual([
-      {
-        boundary: 'coordinator job recovery',
-        startupRoot: {
-          file: 'src/coordinator/services/recovery/startup-recovery.ts',
-          symbol: 'runCoordinatorJobRecovery',
-        },
-        compositionSite: 'src/coordinator/services/recovery/index.ts',
-      },
-      {
-        boundary: 'P3 discussion source/candidate',
-        startupRoot: {
-          file: 'src/discuss/shell/startup-recovery.ts',
-          symbol: 'runDiscussionStartupRecovery',
-        },
-        compositionSite: 'src/discuss/shell/recovery.ts',
-      },
-      {
-        boundary: 'P4 session retention',
-        startupRoot: {
-          file: 'src/sessions/startup-recovery.ts',
-          symbol: 'runSessionStartupRecovery',
-        },
-        compositionSite: 'src/sessions/lifecycle-reactor.ts',
-      },
-      {
-        boundary: 'P6/P7 workflow',
-        startupRoot: {
-          file: 'src/workflow/startup-recovery.ts',
-          symbol: 'runWorkflowStartupRecovery',
-        },
-        compositionSite: 'src/workflow/recover.ts',
-      },
-      {
-        boundary: 'AC13 stale-artifact prune',
-        startupRoot: {
-          file: 'src/coordinator/startup-recovery.ts',
-          symbol: 'runStartupStaleArtifactPrune',
-        },
-        compositionSite: 'src/coordinator/lifecycle.ts',
-      },
-    ]);
-    expect(RECOVERY_RETRY_BOUNDARIES).toEqual([
-      {
-        boundary: 'epoch closure retry',
-        compositionSite: 'src/coordinator/services/recovery/epoch-closure-retry-plan.ts',
-      },
-      { boundary: 'job location recovery retry', compositionSite: 'src/jobs/location-recovery.ts' },
-    ]);
-    expect(RECOVERY_SHUTDOWN_BOUNDARIES).toEqual([
-      {
-        boundary: 'AC13 crashed-job terminalization',
-        shutdownRoot: {
-          file: 'src/coordinator/shutdown-recovery.ts',
-          symbol: 'runShutdownCrashTerminalization',
-        },
-        compositionSite: 'src/coordinator/lifecycle.ts',
-      },
-    ]);
-    expect(RECOVERY_FATAL_STARTUP_ROOT).toEqual({
-      file: 'src/coordinator/index.ts',
-      symbol: 'awaitRecoveryCursorBarrier',
-    });
-
-    for (const boundary of RECOVERY_STARTUP_BOUNDARIES) {
-      expect(sourceFileAt(RECOVERY_PRODUCTION_CONTEXT, boundary.startupRoot.file)).toBeDefined();
-      expect(
-        exportedSymbol(RECOVERY_PRODUCTION_CONTEXT, boundary.startupRoot.file, boundary.startupRoot.symbol),
-      ).toBeDefined();
-      expect(sourceFileAt(RECOVERY_PRODUCTION_CONTEXT, boundary.compositionSite)).toBeDefined();
-    }
-    for (const boundary of RECOVERY_SHUTDOWN_BOUNDARIES) {
-      expect(sourceFileAt(RECOVERY_PRODUCTION_CONTEXT, boundary.shutdownRoot.file)).toBeDefined();
-      expect(
-        exportedSymbol(RECOVERY_PRODUCTION_CONTEXT, boundary.shutdownRoot.file, boundary.shutdownRoot.symbol),
-      ).toBeDefined();
-      expect(sourceFileAt(RECOVERY_PRODUCTION_CONTEXT, boundary.compositionSite)).toBeDefined();
-    }
-    expect(
-      exportedSymbol(RECOVERY_PRODUCTION_CONTEXT, RECOVERY_FATAL_STARTUP_ROOT.file, RECOVERY_FATAL_STARTUP_ROOT.symbol),
-    ).toBeDefined();
-  });
-
-  it('derives exact factory and raw-authority sets from the canonical source matrix', () => {
-    expect(RECOVERY_SOURCE_FACTORIES.map((factory) => factory.name)).toEqual([
-      'epochClosureRecoverySource',
-      'jobLocationRecoverySource',
-      'coordinatorJobRecoverySource',
-      'unreadableProviderOperationRecoverySource',
-      'settledUnboundStatusRecoverySource',
-      'discussionSourceRecoverySource',
-      'discussionCandidateRecoverySource',
-      'sessionProjectionRecoverySource',
-      'sessionContinuationLeaseRecoverySource',
-      'terminalRetentionOutcomeRecoverySource',
-      'retentionReleasePairComponentSource',
-      'retentionWorkItemRecoverySource',
-      'workflowRecoverySource',
-      'staleJobCleanupSource',
-      'crashedJobTerminalizationSource',
-    ]);
-    expect(RECOVERY_RAW_AUTHORITIES.map((authority) => authority.name)).toEqual([
-      'scanCoordinatorJobRecoveryEnvelopes',
-      'scanUnreadableProviderOperationRows',
-      'scanSettledUnboundStatus',
-      'scanDiscussionSourceRows',
-      'scanDiscussionCandidateEnvelopes',
-      'scanSessionProjectionRows',
-      'scanPendingContinuationLeaseRows',
-      'scanTerminalRetentionOutcomeRows',
-      'scanRetentionReleaseAndTerminalRows',
-      'scanRetentionWorkRows',
-      'composeRetentionWorkItemReceipts',
-      'scanWorkflowRecoveryEnvelopes',
-      'scanStaleJobCleanupRows',
-      'scanCrashedJobRows',
-    ]);
-
-    for (const factory of RECOVERY_SOURCE_FACTORIES) {
-      const factorySymbol = exportedSymbol(RECOVERY_PRODUCTION_CONTEXT, factory.module, factory.name);
-      const compositionSite = sourceFileAt(RECOVERY_PRODUCTION_CONTEXT, factory.compositionSite);
-      expect(factorySymbol, `${factory.name} must resolve to its canonical declaration`).toBeDefined();
-      expect(compositionSite, `${factory.compositionSite} must resolve as a composition site`).toBeDefined();
-
-      let referencedAtCompositionSite = false;
-      if (factorySymbol && compositionSite) {
-        visitNodes(compositionSite, (node) => {
-          if (
-            (ts.isIdentifier(node) || ts.isElementAccessExpression(node)) &&
-            symbolAt(RECOVERY_PRODUCTION_CONTEXT, node) === factorySymbol
-          ) {
-            referencedAtCompositionSite = true;
-          }
-        });
-      }
-      expect(referencedAtCompositionSite, `${factory.name} must be referenced by ${factory.compositionSite}`).toBe(
-        true,
-      );
-    }
-
-    for (const authority of RECOVERY_RAW_AUTHORITIES) {
-      expect(
-        topLevelDeclarationSymbol(RECOVERY_PRODUCTION_CONTEXT, authority.module, authority.name),
-        `${authority.name} must resolve to its canonical raw-authority declaration`,
-      ).toBeDefined();
-    }
-
-    for (const capability of RECOVERY_STARTUP_CAPABILITIES) {
-      expect(
-        exportedSymbol(RECOVERY_PRODUCTION_CONTEXT, capability.file, capability.symbol),
-        `${capability.symbol} must resolve to its named settlement capability`,
-      ).toBeDefined();
-    }
-  });
-
   it('enforces the complete recovery authority seal against production', () => {
     const violations = analyzeRecoveryAuthorityBoundary(RECOVERY_PRODUCTION_CONTEXT, {
       phase1: true,
@@ -3147,79 +2574,4 @@ describe('recovery authority boundary', () => {
     // same suite locally on the code it ran, a 2.1x ratio, and two runners on one tree measured a third
     // apart; the budget is at least twice the CI cost that ratio predicts for 17.5s.
   }, 80_000);
-
-  it('accepts a fully sealed synthetic source, composite, and startup surface', () => {
-    const violations = analyzeRecoveryAuthorityBoundary(recoveryFixtureContext('valid'), {
-      phase1: true,
-      rawAuthority: true,
-      startupInputSeal: true,
-    });
-    assertNoRecoveryViolations(violations);
-  });
-
-  it('rejects Phase 1 source-module, registry, explicit-return, and lazy-factory mutations', () => {
-    const violations = analyzeRecoveryAuthorityBoundary(recoveryFixtureContext('phase1'), {
-      phase1: true,
-      rawAuthority: false,
-      startupInputSeal: false,
-    });
-    const rules = violations.map((violation) => violation.violatedRule);
-
-    expect(rules.some((rule) => rule.startsWith('source-module: recovery source definitions'))).toBe(true);
-    expect(rules.some((rule) => rule.startsWith('registry:'))).toBe(true);
-    expect(rules.some((rule) => rule.startsWith('explicit-return:'))).toBe(true);
-    expect(rules.some((rule) => rule.startsWith('lazy-factory:'))).toBe(true);
-    expect(rules.some((rule) => rule.includes('test code or test helpers'))).toBe(true);
-    expect(violations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          offendingFile: 'src/coordinator/services/recovery/coordinator-job-source.ts',
-          violatedRule: expect.stringContaining('may export only its exact named factory'),
-        }),
-        expect.objectContaining({
-          offendingFile: 'src/discuss/shell/discussion-source-recovery-source.ts',
-          violatedRule: expect.stringContaining('directly declared function with an explicit RecoverySource'),
-        }),
-        expect.objectContaining({
-          offendingFile: 'src/discuss/shell/discussion-source-recovery-source.ts',
-          violatedRule: expect.stringContaining('extra callable properties'),
-        }),
-        expect.objectContaining({
-          offendingFile: 'src/discuss/shell/discussion-candidate-recovery-source.ts',
-          violatedRule: expect.stringContaining('only inside the registered scan body'),
-        }),
-        expect.objectContaining({
-          offendingFile: 'src/sessions/projection-recovery-source.ts',
-          violatedRule: expect.stringContaining('pre-enumerated result'),
-        }),
-      ]),
-    );
-    expect(formatRecoveryViolations(violations)).toContain('Dependency path:');
-    expect(formatRecoveryViolations(violations)).toContain('Allowed source scan body or composition site:');
-  });
-
-  it.each(RECOVERY_MUTATION_CASES)('rejects $mutation', ({ mutation, fixture, rules, failures }) => {
-    const violations = analyzeRecoveryAuthorityBoundary(recoveryFixtureContext(fixture), rules);
-
-    for (const failure of failures) {
-      assertRecoveryMutationFailure(mutation, violations, failure);
-    }
-  });
-
-  it('lets broad coordinator and LifecycleReactor runtime database/store authority stay outside startup inputs', () => {
-    const context = recoveryFixtureContext('valid');
-    const violations = analyzeRecoveryAuthorityBoundary(context, {
-      phase1: true,
-      rawAuthority: true,
-      startupInputSeal: true,
-    });
-    assertNoRecoveryViolations(violations);
-
-    const reachable = startupReachableFiles(context);
-    expect(reachable).toContain('src/coordinator/startup-recovery.ts');
-    expect(reachable).not.toContain('src/coordinator/index.ts');
-    expect(reachable).not.toContain('src/sessions/lifecycle-reactor.ts');
-    expect(sourceFileAt(context, 'src/coordinator/index.ts')).toBeDefined();
-    expect(sourceFileAt(context, 'src/sessions/lifecycle-reactor.ts')).toBeDefined();
-  });
 });

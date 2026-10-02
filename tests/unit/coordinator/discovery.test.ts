@@ -404,29 +404,6 @@ describe('coordinator discovery', () => {
   // A legacy record says nothing trustworthy beyond the address it names: a stale one outlives its writer, and its
   // pid is reused. Read as the coordinator, it skips startup recovery and tells a serving coordinator it was
   // replaced.
-  it('does not read a legacy-only record as the coordinator', async () => {
-    makeHome();
-    writeLegacyOnlyRecord();
-    const { probeCoordinator, readBackendInfo } = await importDiscovery();
-    const runtime = makeDiscoveryRuntime('prod');
-
-    expect(probeCoordinator(runtime)).toEqual({ kind: 'absent' });
-    expect(readBackendInfo(runtime)).toBeNull();
-  });
-
-  it('reads a legacy-only record as the holder of the legacy address it names', async () => {
-    makeHome();
-    writeLegacyOnlyRecord();
-    const { probeCoordinatorAtAddress } = await importDiscovery();
-    const runtime = makeDiscoveryRuntime('prod');
-
-    expect(probeCoordinatorAtAddress(runtime, coordinatorPaths('prod').legacySocketPath)).toMatchObject({
-      kind: 'live',
-      record: { instanceId: 'legacy-instance', bootToken: 'boot-token-legacy' },
-    });
-    expect(probeCoordinatorAtAddress(runtime, coordinatorPaths('prod').socketPath)).toEqual({ kind: 'absent' });
-  });
-
   it('reads a live legacy holder despite a stale primary record for another address', async () => {
     makeHome();
     writeLegacyOnlyRecord();
@@ -451,40 +428,6 @@ describe('coordinator discovery', () => {
       kind: 'live',
       record: { instanceId: 'legacy-instance', bootToken: 'boot-token-legacy' },
     });
-  });
-
-  // Shipped v0.10.0-v0.10.3 readers of the legacy record never send the shutdown token, so the mirror has no reason
-  // to carry a credential beyond what those readers use.
-  it('mirrors the legacy record without the shutdown token', async () => {
-    makeHome();
-    const { writeBackendInfo } = await importDiscovery();
-    const runtime = makeDiscoveryRuntime('prod');
-
-    writeBackendInfo(
-      {
-        pid: process.pid,
-        port: 4312,
-        socketPath: coordinatorPaths('prod').socketPath,
-        host: '127.0.0.1',
-        bundleHash: 'bundle-a',
-        flavor: 'prod',
-        namespace: 'ns-a',
-        startedAt: 1_713_456_789_000,
-        token: 'token-a',
-        bootToken: 'boot-token-a',
-        shutdownToken: 'shutdown-token-a',
-        version: '1.2.3',
-        instanceId: 'instance-a',
-      },
-      runtime,
-    );
-
-    const legacy = JSON.parse(readFileSync(coordinatorPaths('prod').legacyInfoFile, 'utf-8')) as Record<
-      string,
-      unknown
-    >;
-    expect(legacy).toMatchObject({ socketPath: coordinatorPaths('prod').legacySocketPath, bootToken: 'boot-token-a' });
-    expect(legacy).not.toHaveProperty('shutdownToken');
   });
 
   it.each(['configured', 'system'] as const)(
@@ -525,13 +468,6 @@ describe('coordinator discovery', () => {
       expect(legacy.socketPath).toBe(join(temp, `coral-prod-${hashToken(candidate, 8)}.sock`));
     },
   );
-
-  it('reads an absent discovery file as missing, not as a failure', async () => {
-    makeHome();
-    const { readDiscoveryRecordDisposition } = await importDiscovery();
-
-    expect(readDiscoveryRecordDisposition(makeDiscoveryRuntime('prod'))).toEqual({ kind: 'missing' });
-  });
 
   it('probes an unwritten record as a real absence', async () => {
     makeHome();

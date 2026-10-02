@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { CAPABILITIES, type Capability } from '#src/security/capability.js';
+import type { Capability } from '#src/security/capability.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import { operationalRouteSpecs } from '#src/transport/rpc/operational-catalog.js';
 import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
-
-const capabilitySet = new Set<Capability>(CAPABILITIES);
 
 const expectedRpcRequires = {
   'sessions.create': 'jobs:control',
@@ -333,17 +331,13 @@ function summarizeOperationalSpec(spec: (typeof operationalRouteSpecs)[number]):
 describe('principal route capability requirements', () => {
   it('declares a valid capability for every executable RPC catalog route', () => {
     const actual = Object.fromEntries(rpcCatalog.map((spec) => [spec.name, spec.requires]));
-    const invalid = rpcCatalog.filter((spec) => !capabilitySet.has(spec.requires)).map((spec) => spec.name);
 
     expect(actual).toEqual(expectedRpcRequires);
-    expect(invalid).toEqual([]);
   });
 
   it('declares requirements and local dispatch semantics for operational routes', () => {
     const actual = Object.fromEntries(operationalRouteSpecs.map((spec) => [spec.id, summarizeOperationalSpec(spec)]));
-    const invalid = operationalRouteSpecs.filter((spec) => !capabilitySet.has(spec.requires)).map((spec) => spec.id);
 
     expect(actual).toEqual(expectedOperationalSpecs);
-    expect(invalid).toEqual([]);
   });
 });

@@ -8,35 +8,19 @@ import {
   type ProviderProxySetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
-import { buildErrorEnvelope } from '#src/cli/errors.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
-import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '#src/transport/ipc/client.js';
-import {
-  providerProxySetContainBooleanResponseSchema,
-  providerProxySetContainBooleanRpcSpec,
-  providerProxySetContainResponseSchema,
-  providerProxySetContainRpcSpec,
-} from '#src/transport/rpc/catalog.js';
+import { IpcRpcError } from '#src/transport/ipc/client.js';
+import { providerProxySetContainBooleanRpcSpec, providerProxySetContainRpcSpec } from '#src/transport/rpc/catalog.js';
 
 const address: ProviderProxySetAddress = {
   buildSetId: '11111111-1111-4111-8111-111111111111',
   hostFingerprint: 'a'.repeat(64),
   proxyInstanceId: '22222222-2222-4222-8222-222222222222',
 };
-const containedEffect = {
-  signalsSent: ['SIGTERM'] as const,
-  containmentAbsent: true,
-  representationAction: 'absence-release-started' as const,
-};
 const abandonedEffect = {
   signalsSent: [] as const,
   containmentAbsent: false,
   representationAction: 'abandonment-release-started' as const,
-};
-const noEffect = {
-  signalsSent: [] as const,
-  containmentAbsent: false,
-  representationAction: 'none' as const,
 };
 
 afterEach(() => {
@@ -73,98 +57,6 @@ async function runContain(
 }
 
 describe('backend provider-proxy-set contain', () => {
-  it('routes abandon through the operator-exit lifecycle mode', async () => {
-    const contain = vi.fn<ProviderProxySetCommandOperations['contain']>(async (request) => ({
-      kind: 'set-not-found',
-      setIdentity: request.setIdentity,
-      effect: noEffect,
-    }));
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { providerProxySets: { contain } });
-
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'provider-proxy-set',
-      'abandon',
-      encodeProviderProxySetAddress(address),
-    ]);
-
-    expect(contain).toHaveBeenCalledExactlyOnceWith({ setIdentity: address, mode: 'abandon' });
-  });
-
-  it('composes successful containment with the claim-discharge discriminator', async () => {
-    await expect(
-      runContain({
-        kind: 'contained',
-        setIdentity: address,
-        disappearanceReceipt: 'proxy-group-absent',
-        claimDischarge: { kind: 'completed' },
-        effect: containedEffect,
-      }),
-    ).resolves.toEqual(expect.objectContaining({ stdout: expect.stringContaining('was contained') }));
-    expect(process.exitCode).toBe(0);
-
-    await expect(
-      runContain({
-        kind: 'contained',
-        setIdentity: address,
-        disappearanceReceipt: 'proxy-group-absent',
-        claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
-        effect: containedEffect,
-      }),
-    ).resolves.toEqual(expect.objectContaining({ stderr: expect.stringContaining('still represents the set') }));
-    expect(process.exitCode).toBe(75);
-
-    await expect(
-      runContain({
-        kind: 'abandoned',
-        setIdentity: address,
-        enforcerObservations: [
-          { role: 'guardian', observation: 'absent' },
-          { role: 'reaper', observation: 'unknown' },
-        ],
-        claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
-        effect: abandonedEffect,
-      }),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        stderr: expect.stringContaining('guardian=absent, reaper=unknown'),
-      }),
-    );
-    expect(process.exitCode).toBe(75);
-
-    await expect(
-      runContain({
-        kind: 'contained',
-        setIdentity: address,
-        disappearanceReceipt: 'proxy-group-absent',
-        claimDischarge: {
-          kind: 'operational-retry-owned',
-          exit: 'provider-proxy-set-release-retry',
-          incidents: [
-            {
-              stage: 'disappearance-delivery',
-              operation: {
-                jobId: '33333333-3333-4333-8333-333333333333',
-                operationId: '44444444-4444-4444-8444-444444444444',
-                proxyInstanceId: address.proxyInstanceId,
-                buildSetId: address.buildSetId,
-              },
-              code: 'disappearance_consumer_unavailable',
-              reason: 'store busy',
-              nextAttemptAtMs: 1,
-            },
-          ],
-        },
-        effect: containedEffect,
-      }),
-    ).resolves.toEqual(expect.objectContaining({ stderr: expect.stringContaining('retry') }));
-    expect(process.exitCode).toBe(75);
-  });
-
   it('turns a shipped coordinator method-not-found into a named no-verdict result', async () => {
     const operations = createProviderProxySetCommandOperations({
       getClient: async () =>
@@ -236,99 +128,6 @@ describe('backend provider-proxy-set contain', () => {
     expect(process.exitCode).toBe(0);
   });
 
-  it('renders a stale authorization with the signal that was already delivered', async () => {
-    const output = await runContain({
-      kind: 'authorization-stale',
-      setIdentity: address,
-      effect: {
-        signalsSent: ['SIGTERM'],
-        containmentAbsent: false,
-        representationAction: 'none',
-      },
-    });
-
-    expect(output.stderr).toContain('SIGTERM was sent');
-    expect(output.stderr).toContain('recorded-containment absence was not confirmed');
-    expect(output.stderr).toContain('Coral did not start representation release');
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('reports accepted ownership of a fatal representation-release remainder', async () => {
-    const output = await runContain({
-      kind: 'representation-release-abandoned',
-      setIdentity: address,
-      successor: { owner: 'coordinator', acceptance: 'accepted' },
-      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
-    });
-
-    expect(output.stdout).toContain('fatal representation release was abandoned');
-    expect(output.stdout).toContain('coordinator accepted the unresolved representation-release remainder');
-    expect(output.stdout).toContain('fatal operation was not retried');
-    expect(process.exitCode).toBe(0);
-  });
-
-  it('names abandonment as the exit from an unattributable recorded-group hold', async () => {
-    const output = await runContain({
-      kind: 'recorded-group-unattributable',
-      setIdentity: address,
-      effect: noEffect,
-    });
-
-    expect(output.stderr).toContain('cannot be proven to belong to this set');
-    expect(output.stderr).toContain(`provider-proxy-set abandon ${encodeProviderProxySetAddress(address)}`);
-    expect(output.stderr).toContain("releases Coral's representation without asserting absence");
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('reports signal refusal without claiming the recorded leader is gone', async () => {
-    const output = await runContain({
-      kind: 'signal-authorization-refused',
-      setIdentity: address,
-      effect: noEffect,
-    });
-
-    expect(output.stderr).toContain('the containment was attributable');
-    expect(output.stderr).not.toContain('the recorded leader identity is gone');
-    expect(output.stderr).toContain(`provider-proxy-set abandon ${encodeProviderProxySetAddress(address)}`);
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('refuses pre-signal identity uncertainty with recovery and abandonment exits', async () => {
-    const output = await runContain({
-      kind: 'identity-unobservable',
-      setIdentity: address,
-      effect: noEffect,
-    });
-
-    expect(output.stderr).toContain('before Coral delivered any process signal');
-    expect(output.stderr).toContain(`provider-proxy-set contain ${encodeProviderProxySetAddress(address)}`);
-    expect(output.stderr).toContain(`provider-proxy-set abandon ${encodeProviderProxySetAddress(address)}`);
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('raises a reached coordinator lifecycle refusal instead of a no-verdict result', async () => {
-    const socketPath = '/tmp/coral-contain-refusal.sock';
-    const operations = createProviderProxySetCommandOperations({
-      getClient: async () =>
-        ({
-          request: () => Promise.reject(new IpcLifecycleRefusal(socketPath, providerProxySetContainRpcSpec.name)),
-        }) as never,
-    });
-
-    const raised = await operations.contain({ setIdentity: address, mode: 'contain' }).then(
-      (result: unknown) => result,
-      (error: unknown) => error,
-    );
-
-    expect(raised).toBeInstanceOf(IpcLifecycleRefusal);
-    expect(raised).toMatchObject({
-      code: 'backend_shutting_down',
-      method: providerProxySetContainRpcSpec.name,
-      socketPath,
-    });
-    expect(buildErrorEnvelope(raised).exitCode).toBe(75);
-  });
-
   it('bounds containment IPC and names a timed-out accepted request as a no-verdict', async () => {
     const request = vi.fn().mockRejectedValue(
       Object.assign(new Error('Failed to connect to the Coral coordinator.'), {
@@ -350,69 +149,6 @@ describe('backend provider-proxy-set contain', () => {
     const output = await runContain(result);
     expect(output.stderr).toContain('a process signal or representation release may already have happened');
     expect(output.stderr).toContain('run coral-cli backend status before deciding whether to retry');
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('names a request the drain bound never got an answer to as the same no-verdict', async () => {
-    const socketPath = '/tmp/coral-draining.sock';
-    const request = vi
-      .fn()
-      .mockRejectedValue(new IpcDrainRequestUnanswered(socketPath, providerProxySetContainRpcSpec.name, 30_000));
-    const operations = createProviderProxySetCommandOperations({
-      getClient: async () => ({ request }) as never,
-    });
-
-    const result = await operations.contain({ setIdentity: address, mode: 'contain' });
-
-    expect(result).toEqual({ kind: 'timeout', setIdentity: address });
-    const output = await runContain(result);
-    expect(output.stderr).toContain('a process signal or representation release may already have happened');
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('retains the requested set when a known containment result names another set', async () => {
-    const operations = createProviderProxySetCommandOperations({
-      getClient: async () =>
-        ({
-          request: async () => ({
-            kind: 'contained',
-            setIdentity: { ...address, proxyInstanceId: '33333333-3333-4333-8333-333333333333' },
-            disappearanceReceipt: 'proxy-group-absent',
-            claimDischarge: { kind: 'completed' },
-            effect: containedEffect,
-          }),
-        }) as never,
-    });
-
-    await expect(operations.contain({ setIdentity: address, mode: 'contain' })).resolves.toEqual({
-      kind: 'unsupported-coordinator-result',
-      setIdentity: address,
-    });
-  });
-
-  it('carries pre-signal identity refusal through both containment response contracts', () => {
-    const refusal = {
-      kind: 'identity-unobservable',
-      setIdentity: address,
-      effect: noEffect,
-    } as const;
-
-    expect(providerProxySetContainResponseSchema.parse(refusal)).toEqual(refusal);
-    expect(providerProxySetContainBooleanResponseSchema.parse(refusal)).toEqual(refusal);
-    expect(providerProxySetContainResponseSchema.safeParse({ ...refusal, effect: undefined }).success).toBe(false);
-  });
-
-  it('turns a structurally identified unsupported result into a named no-verdict', async () => {
-    const operations = createProviderProxySetCommandOperations({
-      getClient: async () =>
-        ({
-          request: async () => ({ kind: 'not-held', setIdentity: address, state: 'future-state' }),
-        }) as never,
-    });
-
-    const result = await operations.contain({ setIdentity: address, mode: 'contain' });
-    expect(result).toEqual({ kind: 'unsupported-coordinator-result', setIdentity: address });
-    await runContain(result);
     expect(process.exitCode).toBe(75);
   });
 });

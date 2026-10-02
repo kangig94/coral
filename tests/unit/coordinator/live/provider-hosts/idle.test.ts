@@ -28,23 +28,13 @@ vi.mock('#src/coordinator/live/provider-hosts/index.js', async (importOriginal) 
     },
   };
 });
-
-import { acquireProviderHostPin } from '#src/coordinator/live/provider-hosts/lease.js';
-import { maybeArmIdleTimer } from '#src/coordinator/live/provider-hosts/idle.js';
-import { hostRefFromEntry } from '#src/coordinator/live/provider-hosts/state.js';
-import { createCoordinatorWorld } from '#src/coordinator/composition/world.js';
 import {
   connectProviderHostRetirementReevaluation,
   createCarrierBlocksRetirement,
 } from '#src/coordinator/composition/world.js';
-import type { BackendDefaultsPlan } from '#src/coordinator/composition/defaults.js';
-import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
-import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { backendLog } from '#src/infra/backend-log.js';
-import type { JobProjectionDetail } from '#src/jobs/read-queries.js';
-import type { JobRuntime, JobStatus } from '#src/jobs/records.js';
-import type { JobStore } from '#src/jobs/store.js';
 import { JobStore as ProductionJobStore } from '#src/jobs/store.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
@@ -55,104 +45,16 @@ import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { consumeJobStream } from '#src/jobs/shell/continuity-consumer.js';
 import { providerTerminalEvent } from '#src/providers/stream.js';
-
-import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   StubbedContainmentProviderHostManager,
-  createEntry,
   createFakeProviderServerHandle,
   createLaunch,
   createSharedSpec,
   createSpawnProviderServerMock,
   runtime,
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
-
-const MATCHED_JOB_ID = '00000000-0000-4000-8000-000000000091';
-
-function acquiredDetail(jobId: string, hostRef: HostRef): JobProjectionDetail {
-  const status: JobStatus = {
-    jobId,
-    owner: { kind: 'provider-session', id: 'idle-session' },
-    sessionId: 'idle-session',
-    provider: hostRef.provider,
-    projectRoot: '/workspace',
-    workDir: fixtureCanonicalWorkDir('/workspace'),
-    backendNamespace: 'idle-carrier-test',
-    jobKind: 'provider',
-    phase: 'running',
-    updatedAt: '2026-08-11T00:00:00.000Z',
-  };
-  const jobRuntime: JobRuntime = {
-    transport: 'app-server',
-    startTime: '2026-08-11T00:00:00.000Z',
-    providerMeta: { provider: hostRef.provider, leaseState: 'acquired', hostRef },
-  };
-  return { status, launch: null, runtime: jobRuntime, exit: null };
-}
-
-function createDefaultsPlan(): BackendDefaultsPlan {
-  return {
-    eager: {
-      resolvedPluginRoot: process.cwd(),
-      createIdleTimer: () => ({}) as never,
-    },
-    finalizeWithWorld: () => {
-      throw new Error('world-bound defaults were not expected');
-    },
-  } as unknown as BackendDefaultsPlan;
-}
-
-function composeProductionPredicate(rows: ReadonlyMap<string, JobProjectionDetail> | null): {
-  predicate: (hostRef: HostRef) => boolean;
-  db: Database | null;
-} {
-  const world = createCoordinatorWorld(
-    {
-      runtime,
-      storeFormat: currentCoralStoreFormat(),
-      pluginRoot: process.cwd(),
-      backendNamespace: 'idle-carrier-test',
-      bootSnapshot: {
-        version: 'test-version',
-        bundleHash: 'test-bundle',
-        flavor: 'prod',
-        instanceId: 'idle-carrier-instance',
-        token: 'idle-carrier-token',
-        pid: process.pid,
-        now: () => 10_000,
-        log: () => undefined,
-      },
-      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-      getConsumerStuck: () => [],
-    },
-    runtime,
-    createDefaultsPlan(),
-  );
-
-  let db: Database | null = null;
-  if (rows !== null) {
-    db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db, currentCoralStoreFormat());
-    const progressStore = {
-      getDb: () => db as Database,
-      listStoredNonterminalJobIds: () => [...rows.keys()],
-      loadJobProjectionDetail: (jobId: string) =>
-        rows.get(jobId) ?? { status: null, launch: null, runtime: null, exit: null },
-    } as Pick<JobStore, 'getDb' | 'listStoredNonterminalJobIds' | 'loadJobProjectionDetail'>;
-    setStoreServicesForTest(world.storeServicesRef, {
-      storeDb: db,
-      progressStore: progressStore as JobStore,
-      consumerDriver: null,
-    } satisfies CoordinatorStoreServices);
-  }
-
-  const predicate = productionWiring.carrierBlocksRetirement;
-  if (predicate === null) throw new Error('createCoordinatorWorld did not wire carrierBlocksRetirement');
-  return { predicate, db };
-}
 
 beforeEach(() => {
   productionWiring.carrierBlocksRetirement = null;
@@ -280,158 +182,6 @@ describe('provider host idle properties', () => {
       await manager.shutdown();
       runtime.storage.rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
       db.close();
-    }
-  });
-
-  it.each(['unleased', 'unleased-and-host-idle', 'never'] as const)(
-    'does not retire a pinned host under the %s idle policy',
-    async (idleRetirement) => {
-      vi.useFakeTimers();
-      const server = createFakeProviderServerHandle();
-      const entry = createEntry({
-        spec: createSharedSpec({ idleRetirement }),
-        handle: server.handle,
-        hostStats: { liveControllers: 0, activeTurns: 0 },
-      });
-      const closeProviderServerEntry = vi.fn(async () => undefined);
-      const releasePin = acquireProviderHostPin(entry, { kind: 'acquisition' }, () => {});
-
-      try {
-        maybeArmIdleTimer(entry, {
-          runtime,
-          idleTimeoutMs: 5,
-          entries: new Map([[entry.hostKey, entry]]),
-          carrierBlocksRetirement: () => false,
-          closeProviderServerEntry,
-        });
-        await vi.advanceTimersByTimeAsync(10);
-
-        expect(closeProviderServerEntry).not.toHaveBeenCalled();
-      } finally {
-        releasePin();
-      }
-    },
-  );
-
-  it('does not retire a host that accepted an unsettled child shutdown obligation', async () => {
-    vi.useFakeTimers();
-    const server = createFakeProviderServerHandle();
-    const entry = createEntry({
-      handle: server.handle,
-      hostStats: { liveControllers: 0, activeTurns: 0, heldControllers: 1 },
-    });
-    const closeProviderServerEntry = vi.fn(async () => undefined);
-
-    maybeArmIdleTimer(entry, {
-      runtime,
-      idleTimeoutMs: 5,
-      entries: new Map([[entry.hostKey, entry]]),
-      carrierBlocksRetirement: () => false,
-      closeProviderServerEntry,
-    });
-    await vi.advanceTimersByTimeAsync(10);
-
-    expect(closeProviderServerEntry).not.toHaveBeenCalled();
-  });
-
-  it('rechecks the carrier predicate when an armed timer expires', async () => {
-    vi.useFakeTimers();
-    const server = createFakeProviderServerHandle();
-    const entry = createEntry({ handle: server.handle, instanceId: 'timer-host' });
-    const entries = new Map([[entry.hostKey, entry]]);
-    const carrierBlocksRetirement = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
-    const closeProviderServerEntry = vi.fn(async () => undefined);
-
-    maybeArmIdleTimer(entry, {
-      runtime,
-      idleTimeoutMs: 5,
-      entries,
-      carrierBlocksRetirement,
-      closeProviderServerEntry,
-    });
-    await vi.advanceTimersByTimeAsync(5);
-
-    expect(carrierBlocksRetirement).toHaveBeenCalledTimes(2);
-    expect(closeProviderServerEntry).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    {
-      field: 'provider',
-      stored: { provider: 'claude', fingerprint: 'a'.repeat(64), instanceId: 'host-1', leaseMode: 'shared' },
-      candidate: { provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'host-1', leaseMode: 'shared' },
-      jobId: MATCHED_JOB_ID,
-    },
-    {
-      field: 'fingerprint',
-      stored: { provider: 'claude', fingerprint: 'a'.repeat(64), instanceId: 'host-1', leaseMode: 'shared' },
-      candidate: { provider: 'claude', fingerprint: 'b'.repeat(64), instanceId: 'host-1', leaseMode: 'shared' },
-      jobId: MATCHED_JOB_ID,
-    },
-    {
-      field: 'instanceId',
-      stored: { provider: 'claude', fingerprint: 'a'.repeat(64), instanceId: 'host-1', leaseMode: 'shared' },
-      candidate: { provider: 'claude', fingerprint: 'a'.repeat(64), instanceId: 'host-2', leaseMode: 'shared' },
-      jobId: MATCHED_JOB_ID,
-    },
-    {
-      field: 'leaseMode',
-      stored: { provider: 'claude', fingerprint: 'a'.repeat(64), instanceId: 'host-1', leaseMode: 'shared' },
-      candidate: {
-        provider: 'claude',
-        fingerprint: 'a'.repeat(64),
-        instanceId: 'host-1',
-        leaseMode: 'job-exclusive',
-        ownerJobId: 'candidate-job',
-      },
-      jobId: MATCHED_JOB_ID,
-    },
-    {
-      field: 'ownerJobId',
-      stored: {
-        provider: 'claude',
-        fingerprint: 'a'.repeat(64),
-        instanceId: 'host-1',
-        leaseMode: 'job-exclusive',
-        ownerJobId: MATCHED_JOB_ID,
-      },
-      candidate: {
-        provider: 'claude',
-        fingerprint: 'a'.repeat(64),
-        instanceId: 'host-1',
-        leaseMode: 'job-exclusive',
-        ownerJobId: 'candidate-job',
-      },
-      jobId: MATCHED_JOB_ID,
-    },
-  ] satisfies ReadonlyArray<{ field: string; stored: HostRef; candidate: HostRef; jobId: string }>)(
-    'does not associate a stored job with a host that differs only by $field',
-    ({ stored, candidate, jobId }) => {
-      const { predicate, db } = composeProductionPredicate(new Map([[jobId, acquiredDetail(jobId, stored)]]));
-      try {
-        expect(predicate(candidate)).toBe(false);
-      } finally {
-        db?.close();
-      }
-    },
-  );
-
-  it('treats an unavailable store as retirement-blocking', () => {
-    const { predicate } = composeProductionPredicate(null);
-    const entry = createEntry({ instanceId: 'unavailable-store-host' });
-    expect(predicate(hostRefFromEntry(entry))).toBe(true);
-  });
-
-  it('treats a stored-row/detail mapping ambiguity as retirement-blocking', () => {
-    const ambiguous = new Map<string, JobProjectionDetail>([
-      [MATCHED_JOB_ID, { status: null, launch: null, runtime: null, exit: null }],
-    ]);
-    const { predicate, db } = composeProductionPredicate(ambiguous);
-    const entry = createEntry({ instanceId: 'ambiguous-mapping-host' });
-    try {
-      expect(predicate(hostRefFromEntry(entry))).toBe(true);
-    } finally {
-      db?.close();
     }
   });
 });

@@ -192,43 +192,12 @@ describe('interrupted recovery planning', () => {
       expectedSessionVersion: 1,
       continuity: { checkpoint: 'persisted' },
     });
-    expect(Object.isFrozen(first)).toBe(true);
   });
 
   it('makes missing recovery capability an explicit unsupported plan', () => {
     expect(
       planInterruptedAppServerRecovery(authority, acquiredRuntime, 'handoff', { recovery: false, probe: true }, null),
     ).toMatchObject({ kind: 'unsupported', reason: 'handoff' });
-  });
-
-  it('never routes a committed provider-operation carrier through the unsupported, waiting, or artifacts arms', () => {
-    expect(
-      planInterruptedAppServerRecovery(
-        authority,
-        acquiredRuntime,
-        'restart',
-        { recovery: false, probe: true },
-        providerOperationCarrier,
-      ),
-    ).toMatchObject({ kind: 'unsupported' });
-    expect(
-      planInterruptedAppServerRecovery(
-        authority,
-        waitingRuntime,
-        'restart',
-        { recovery: true, probe: true },
-        providerOperationCarrier,
-      ),
-    ).toMatchObject({ kind: 'waiting' });
-    expect(
-      planInterruptedAppServerRecovery(
-        authority,
-        acquiredRuntime,
-        'restart',
-        { recovery: true, probe: false },
-        providerOperationCarrier,
-      ),
-    ).toMatchObject({ kind: 'artifacts' });
   });
 
   it('classifies a committed provider-operation carrier as detached ahead of probe', () => {

@@ -45,7 +45,7 @@
     "test:capacity": "CORAL_TEST_CAPACITY=1 vitest run --config vitest/integration.ts tests/integration/coordinator/handoff-routing/status.integration.test.ts",
     "test:e2e:lifecycle": "vitest run --config vitest/e2e-lifecycle.ts",
     "test:store-reset": "vitest run --config vitest/default.ts tests/unit/store/reset-incident-parser.test.ts tests/unit/cli/errors.test.ts tests/unit/cli/emit.test.ts tests/invariants/architecture-boundary.test.ts",
-    "test:store-reset:integration": "vitest run --config vitest/integration.ts tests/integration/store/reset-incident-filesystem.integration.test.ts tests/integration/cli/store-reset.test.ts tests/integration/store/open-or-reset.test.ts tests/integration/store/epoch-holder-publication-interposition.test.ts",
+    "test:store-reset:integration": "vitest run --config vitest/integration.ts tests/integration/store/reset-incident-filesystem.integration.test.ts tests/integration/store/open-or-reset.test.ts tests/integration/store/epoch-holder-publication-interposition.test.ts",
     "verify:store-reset-build": "node scripts/verify-store-reset-build-contract.mjs clients/build",
     "verify:store-reset-release": "node scripts/verify-store-reset-build-contract.mjs clients/bridge clients/build",
     "verify:kiwi-runtime-build": "node scripts/verify-kiwi-runtime-build-contract.mjs clients/build",

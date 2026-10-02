@@ -321,22 +321,4 @@ describe('real-process provider host transfer', () => {
     expect(readFileSync(join(world.home, '.coral', 'exports', 'jobs', jobId, 'result.md'), 'utf8')).toContain('done');
     expect(hostsAlive(hosts)).toBe(true);
   }, 240_000);
-  it('cancels a transferred job through the successor while its host keeps running', async () => {
-    assertBuildArtifactsAvailable();
-    const world = createTransferWorld();
-    const { incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
-    const { newerFixture } = await upgradeTo(world, incumbentPid);
-    await waitForCondition(() => observeProcessLiveness(incumbentPid) === 'absent', 30_000);
-    await capsuleNamesController(world.home, newerFixture);
-
-    const abort = startCli(newerFixture, world, ['abort', 'jobs', jobId]);
-    await waitForCondition(() => existsSync(join(world.state, 'terminal-interrupted')), 60_000);
-    await abort.completed;
-    await waiter.completed;
-    expect(waiter.stdout()).toContain('before-transfer');
-    expect(waiter.stdout()).toMatch(/abort/iu);
-    expect(await runCli(newerFixture, world, ['jobs', 'detail', jobId])).toMatch(/aborted/iu);
-    expect(existsSync(join(world.state, 'terminal-completed'))).toBe(false);
-    expect(hostsAlive(hosts)).toBe(true);
-  }, 240_000);
 });

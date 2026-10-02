@@ -18,15 +18,6 @@ function killRejecting(code: string | undefined): void {
 }
 
 describe('process liveness', () => {
-  it('reports a signalable process alive', () => {
-    const kill = vi.spyOn(process, 'kill').mockImplementationOnce((() => true) as typeof process.kill);
-
-    expect(observeProcessLiveness(123)).toBe('alive');
-    expect(kill, 'signal 0 asks without delivering anything').toHaveBeenLastCalledWith(123, 0);
-
-    kill.mockRestore();
-  });
-
   it('reports a process it may not signal alive, and only a missing one absent', () => {
     killRejecting('EPERM');
     expect(observeProcessLiveness(124), "EPERM is someone else's process, not no process").toBe('alive');

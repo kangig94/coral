@@ -9,7 +9,7 @@ import { createMockKbDaemonSupervisor, createOnlineKbDaemonHealth } from '#tools
 vi.mock('#src/jobs/reconcile/recovery-effects.js', () => ({ markJobAsError: vi.fn() }));
 
 describe('KB daemon exit settlement across succession', () => {
-  it.each(['reclaim', 'commit'] as const)('retains the exit settlement until writer %s', async (outcome) => {
+  it('records the exit only after the parked writer settles', async () => {
     let unpark!: () => void;
     const unparked = new Promise<void>((resolve) => {
       unpark = resolve;
@@ -44,14 +44,11 @@ describe('KB daemon exit settlement across succession', () => {
     vi.mocked(markJobAsError).mockClear();
     exited(createOnlineKbDaemonHealth({ phase: 'stopped', lastError: 'daemon exited' }));
     expect(markJobAsError).not.toHaveBeenCalled();
-    if (outcome === 'commit') tracking.disposeKbDaemonExitListener();
     parked = false;
     unpark();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    if (outcome === 'reclaim') {
-      expect(markJobAsError).toHaveBeenCalledOnce();
-      tracking.disposeKbDaemonExitListener();
-    } else expect(markJobAsError).not.toHaveBeenCalled();
+    await unparked;
+    expect(markJobAsError).toHaveBeenCalledOnce();
+    tracking.disposeKbDaemonExitListener();
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 });

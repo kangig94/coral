@@ -7,6 +7,8 @@
     "src/coordinator-launch/main.ts",
     "src/coordinator/admission-main.ts",
     "src/cli/bootstrap.ts",
+    // The build imports this generator through dist/; declare its source so CI needs no compiled tree.
+    "src/store/epoch/hook-source.ts",
     "src/providers/claude/appserver/server.ts",
     // Engine expansions are loaded dynamically by string specifier via src/expansion/bundled.ts,
     // which knip's static graph cannot follow — declare them as entrypoints.

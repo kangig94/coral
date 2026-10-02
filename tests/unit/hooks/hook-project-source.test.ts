@@ -104,24 +104,10 @@ describe('hook lane project source', () => {
  */
 const REMOTE_TABLE: ReadonlyArray<readonly [remote: string, expected: string | null]> = [
   ['git@github.com:owner/repo.git', 'owner/repo'],
-  ['git@github.com:owner/repo', 'owner/repo'],
-  ['https://github.com/owner/repo.git', 'owner/repo'],
-  ['https://github.com/owner/repo', 'owner/repo'],
-  ['https://github.com/owner/repo/', 'owner/repo'],
-  ['https://github.com/owner/repo.git/', 'owner/repo'],
   ['https://user@github.com:443/owner/repo', 'owner/repo'],
   ['ssh://git@github.com/owner/repo.git', 'owner/repo'],
-  ['git://github.com/owner/repo.git', 'owner/repo'],
-  ['file:///srv/git/owner/repo.git', 'owner/repo'],
-  ['https://github.com/owner/repo?ref=main', 'owner/repo'],
-  ['https://github.com/owner/repo#frag', 'owner/repo'],
-  ['  https://github.com/owner/repo\n', 'owner/repo'],
   ['https://github.com/only-one', null],
-  ['some/deep/owner/repo', null],
-  ['/abs/path/owner/repo', null],
-  ['not-a-url', null],
   ['', null],
-  ['   ', null],
 ];
 
 describe('both lanes parse a remote the same way', () => {

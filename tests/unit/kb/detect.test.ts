@@ -1,12 +1,10 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
-import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
-import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 
 const mockState = vi.hoisted(() => ({
@@ -21,40 +19,6 @@ vi.mock('node:os', async () => {
   };
 });
 
-async function loadKbModules() {
-  vi.resetModules();
-  const [runtime, paths, oramaPaths, rootPaths] = await Promise.all([
-    import('#src/kb/runtime.js'),
-    import('#src/kb/paths.js'),
-    import('#src/engines/orama/paths.js'),
-    import('#src/infra/path/root.js'),
-  ]);
-  return {
-    createKbRuntime: runtime.createKbRuntime,
-    paths,
-    oramaPaths,
-    kbVaultRoot: rootPaths.kbVaultRoot,
-  };
-}
-
-function collectDirectoryPaths(root: string): string[] {
-  if (!existsSync(root)) {
-    return [];
-  }
-
-  const paths: string[] = [];
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-
-    const next = join(root, entry.name);
-    paths.push(next, ...collectDirectoryPaths(next));
-  }
-
-  return paths;
-}
-
 describe('kb detection and paths', () => {
   beforeEach(() => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-home-'));
@@ -68,34 +32,10 @@ describe('kb detection and paths', () => {
     vi.resetModules();
   });
 
-  it('uses Orama as the base retrieval backend and never creates vec/ anywhere under the machine-local runtime tree', async () => {
-    process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    const { oramaPaths } = await loadKbModules();
-    const db = openKbTestStoreDb(':memory:');
-    const { kb } = createKbTestRuntime({
-      markdownRoot: process.env.CORAL_KB_PATH,
-      runtimeDir: kbRuntimePaths('prod').root,
-      db,
-    });
-    const { bindOramaFtsForTest } = await import('#tests/unit/kb/expansion-test-helpers.js');
-    bindOramaFtsForTest(kb);
-
-    try {
-      const fts = kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read();
-
-      expect(fts.warnings()).toContain('fts_index_uninitialized');
-      expect(existsSync(oramaPaths.oramaSnapshotDir(kb.runtimeDir))).toBe(false);
-      expect(collectDirectoryPaths(join(mockState.tmpHome, '.coral')).some((path) => path.endsWith('/vec'))).toBe(
-        false,
-      );
-    } finally {
-      db.close();
-    }
-  });
-
   it('resolves configured-root markdown paths while keeping runtime artifacts machine-local', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    const { paths } = await loadKbModules();
+    vi.resetModules();
+    const paths = await import('#src/kb/paths.js');
     const { kb } = createKbTestRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: kbRuntimePaths('dev').root,

@@ -363,13 +363,7 @@ describe('execution discuss tools', () => {
     });
     expect(JSON.stringify(parsed)).not.toContain('thoughts');
 
-    harness.cleanup();
-  });
-
-  it('discuss_watch with cursor=N returns only incremental events', async () => {
-    const { harness, registry, stores } = await createWatchToolFixture();
-
-    const result = await callDiscussTool(
+    const incrementalResult = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'discuss-1', cursor: 1 },
@@ -378,7 +372,7 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    const parsed = parseToolBody<{
+    const incremental = parseToolBody<{
       session: string;
       status: string;
       topic: string;
@@ -386,9 +380,9 @@ describe('execution discuss tools', () => {
       step: number;
       events: Array<Record<string, unknown>>;
       cursor: number;
-    }>(result);
+    }>(incrementalResult);
 
-    expect(parsed).toMatchObject({
+    expect(incremental).toMatchObject({
       session: 'discuss-1',
       status: 'bidding',
       topic: DEFAULT_TOPIC,
@@ -396,7 +390,7 @@ describe('execution discuss tools', () => {
       step: 2,
       cursor: 2,
     });
-    expect(parsed.events).toEqual([
+    expect(incremental.events).toEqual([
       {
         type: 'speech_done',
         data: { speaker: 'alpha', content: 'Open the street to buses and bikes first.' },

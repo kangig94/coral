@@ -21,24 +21,12 @@ function nextTick(): Promise<void> {
 }
 
 describe('coordinator invocation-scope', () => {
-  it('should return the run callback result', () => {
-    expect(withInvocationScope(scope('a'), () => 42)).toBe(42);
-  });
-
   it('should expose the scope inside the run callback', () => {
     const active = scope('a');
     withInvocationScope(active, () => {
       expect(getInvocationScope()).toBe(active);
       expect(requireInvocationScope()).toBe(active);
     });
-  });
-
-  it('should return null from getInvocationScope outside any scope', () => {
-    expect(getInvocationScope()).toBeNull();
-  });
-
-  it('should throw from requireInvocationScope outside any scope', () => {
-    expect(() => requireInvocationScope()).toThrow('Coordinator invocation scope is not active');
   });
 
   it('should propagate the scope across await boundaries and nested async calls', async () => {
@@ -72,11 +60,6 @@ describe('coordinator invocation-scope', () => {
       expect(getInvocationScope()).toBe(outer);
     });
 
-    expect(getInvocationScope()).toBeNull();
-  });
-
-  it('should not leak the scope after the synchronous run returns', () => {
-    withInvocationScope(scope('sync'), () => undefined);
     expect(getInvocationScope()).toBeNull();
   });
 

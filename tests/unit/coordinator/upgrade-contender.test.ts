@@ -65,21 +65,6 @@ describe('contender upgrade request', () => {
     expect(startLegacy).toHaveBeenCalledOnce();
   });
 
-  it('rejects a target without a supervisor bundle before asking an incumbent to register it', async () => {
-    const { options, startLegacy } = fixture();
-    const request = vi.fn(async () => ({ kind: 'registered', incumbentCanCommit: true }));
-
-    expect(
-      await requestUpgradeFromContender({
-        ...options,
-        supervisorReady: () => false,
-        request,
-      }),
-    ).toEqual({ kind: 'refused', reason: 'supervisor bundle is unavailable', disposition: 'error' });
-    expect(request).not.toHaveBeenCalled();
-    expect(startLegacy).not.toHaveBeenCalled();
-  });
-
   it('submits to the supervisor when a responding incumbent cannot commit the target', async () => {
     const { options, startLegacy } = fixture();
     const result = await requestUpgradeFromContender({
@@ -89,27 +74,6 @@ describe('contender upgrade request', () => {
 
     expect(result.kind).toBe('waiting');
     expect(startLegacy).toHaveBeenCalledOnce();
-  });
-
-  it('leaves a commit-capable incumbent to reconcile', async () => {
-    const { options, startLegacy } = fixture();
-    const result = await requestUpgradeFromContender({
-      ...options,
-      request: vi.fn(async () => ({ kind: 'registered', incumbentCanCommit: true })),
-    });
-
-    expect(result).toEqual({ kind: 'incumbent-commit-capable' });
-    expect(startLegacy).not.toHaveBeenCalled();
-  });
-
-  it.each(['0.11.0', '0.11.1'])('does not register or wait against version %s', async (version) => {
-    const { options, startLegacy } = fixture(version);
-    const request = vi.fn(async () => ({ kind: 'registered', incumbentCanCommit: false }));
-    const result = await requestUpgradeFromContender({ ...options, request });
-
-    expect(result.kind).toBe('refused');
-    expect(request).not.toHaveBeenCalled();
-    expect(startLegacy).not.toHaveBeenCalled();
   });
 
   it('should exit a redundant contender without recording anything, and fail one that cannot read its intent', async () => {

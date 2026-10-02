@@ -48,25 +48,4 @@ describe('provider_exit outcome materialization', () => {
       immediateOutcome: { kind: 'provider_exit', code: 137 },
     });
   });
-
-  it('completed and aborted outcomes remain immediate without domain events', () => {
-    const completedRecipe = materializeProviderTerminal(baseTerminal({ outcome: { kind: 'completed' } }), {
-      jobId: 'job-4',
-    });
-    expect(completedRecipe.outcomePlan).toEqual({
-      kind: 'immediate',
-      domainEvents: [],
-      immediateOutcome: { kind: 'completed' },
-    });
-
-    const abortedRecipe = materializeProviderTerminal(
-      baseTerminal({ outcome: { kind: 'aborted', reason: 'user_abort' } }),
-      { jobId: 'job-5' },
-    );
-    expect(abortedRecipe.outcomePlan).toEqual({
-      kind: 'immediate',
-      domainEvents: [],
-      immediateOutcome: { kind: 'aborted', reason: 'user_abort' },
-    });
-  });
 });

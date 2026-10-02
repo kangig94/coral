@@ -119,9 +119,7 @@ async function runVitestStrict(configName) {
 // step (see typecheck:tests in .github/workflows/ci.yml) and must not run here; a local `npm test` has no
 // such step and still has to typecheck.
 //
-// `tests/types/tsconfig.json` is a strict subset of `tsconfig/typecheck.json`
-// (whole repo) — running both is redundant. The comprehensive typecheck covers
-// the .test-d.ts assertions too.
+// The comprehensive typecheck covers the .test-d.ts assertions too.
 //
 // GitHub gives a public repository's `ubuntu-latest` job 4 vCPU (GitHub Actions runner specification, read
 // 2026-09-17), and every entry of `tasks` runs on them at once. No pool may assume a dedicated core: each

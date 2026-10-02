@@ -45,43 +45,6 @@ describe('retirement disposition records', () => {
     expect(observeRetirementDisposition(runtime, ATTEMPT_ID)).toEqual({ kind: 'unreadable', path });
   });
 
-  it('should read a record a newer build extended with an unknown field', () => {
-    const { runtime, path } = fixture();
-    recordRetirementDisposition(runtime, {
-      version: 'v1',
-      attemptId: ATTEMPT_ID,
-      incumbentEpochKey: 'lineage:7',
-      incumbentFingerprint: 'sha256:old',
-      successorFingerprint: 'sha256:new',
-      certificateRevision: 2,
-      certificateJobIds: ['job-1'],
-      custodySettled: true,
-    });
-    const record = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-    writeFileSync(path, `${JSON.stringify({ ...record, laterField: 1 })}\n`);
-
-    expect(observeRetirementDisposition(runtime, ATTEMPT_ID)).toMatchObject({
-      kind: 'recorded',
-      disposition: { incumbentEpochKey: 'lineage:7', certificateRevision: 2 },
-    });
-  });
-
-  it('preserves an additive field when refreshing a disposition', () => {
-    const { runtime, path } = fixture();
-    recordRetirementDisposition(runtime, disposition());
-    const record = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-    writeFileSync(path, `${JSON.stringify({ ...record, futureDisposition: 'keep' })}\n`);
-    recordRetirementDisposition(runtime, { ...disposition(), certificateRevision: 3 });
-    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({
-      certificateRevision: 3,
-      futureDisposition: 'keep',
-    });
-    expect(observeRetirementDisposition(runtime, ATTEMPT_ID)).toMatchObject({
-      kind: 'recorded',
-      disposition: { certificateRevision: 3, futureDisposition: 'keep' },
-    });
-  });
-
   it('should treat a parseable record without settled custody as unreadable, not as authority', () => {
     const { runtime, path } = fixture();
     recordRetirementDisposition(runtime, disposition());

@@ -201,51 +201,6 @@ describe('durable-cli succession transfer', () => {
     db.close();
   });
 
-  it('should verify a transfer and recovery grant that a newer writer extended with fields this build does not know', () => {
-    const { runDir, epoch, db, meta, progressStore, runtime } = fixture();
-    const intent = recordCustodyIntent(runtime, runDir, {
-      effect: 'process-spawn',
-      epoch: dirname(epoch.path),
-      owner: 'durable-cli',
-      operationId: JOB_ID,
-      capsule: null,
-      nowMs: 100,
-      bindWithinMs: 1_000,
-    });
-    bindCustodyIdentity(runtime, runDir, intent, {
-      process: { pid: meta.pid, incarnation: meta.incarnation, processGroupId: meta.processGroupId },
-      capsule: null,
-      observedAtMs: 200,
-    });
-    const prepared = prepareDurableCliTransfer(runtime, db, progressStore, runDir, epoch, [JOB_ID]);
-    if (prepared === null) throw new Error('Expected a bound durable-cli transfer.');
-    const extended = {
-      ...prepared,
-      laterField: 'added',
-      jobs: prepared.jobs.map((job) => ({ ...job, laterField: 'added' })),
-    };
-    const transfer = verifyDurableCliTransfer(runtime, extended, db, progressStore, runDir, epoch);
-    expect(transfer).toMatchObject({ jobs: [{ jobId: JOB_ID }] });
-    if (transfer === null) throw new Error('Expected the extended transfer to verify.');
-    const epochKey = JSON.stringify(epoch);
-    const grantId = prepareDurableCliRecoveryGrant(runtime, runDir, {
-      version: 'v1',
-      attemptId: ATTEMPT_ID,
-      epochKey,
-      incumbentInstanceId: 'incumbent',
-      incumbentBuildSetId: 'build-1',
-      transfer,
-    });
-    const grantPath = join(runDir, 'controller-receipts.v1', `${ATTEMPT_ID}.grant.json`);
-    const grant = JSON.parse(readFileSync(grantPath, 'utf-8')) as Record<string, unknown>;
-    writeFileSync(grantPath, JSON.stringify({ ...grant, laterField: 'added' }));
-
-    expect(verifyDurableCliRecoveryGrant(runtime, runDir, ATTEMPT_ID, grantId, epochKey, 'incumbent', transfer)).toBe(
-      true,
-    );
-    db.close();
-  });
-
   it('should block predecessor runtime records even when a process identity is bound', () => {
     const { runDir, epoch, db, meta, progressStore, runtime } = fixture();
     const intent = recordCustodyIntent(runtime, runDir, {

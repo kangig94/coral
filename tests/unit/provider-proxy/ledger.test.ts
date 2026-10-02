@@ -1,3 +1,8 @@
+import {
+  MAX_EMERGENCY_COMPLETION_FRAME_BYTES,
+  MAX_PROXY_COMPLETION_RESERVE_BYTES,
+  MAX_PROXY_SHARED_REPLAY_BYTES,
+} from '#src/provider-proxy/ledger.js';
 import type * as MockedReplayBudgetModule from '#src/provider-proxy/replay-budget.js';
 vi.mock('#src/provider-proxy/replay-budget.js', async (importOriginal) => {
   const actual = await importOriginal<typeof MockedReplayBudgetModule>();
@@ -55,7 +60,12 @@ function wireLedger(): OperationLedger {
 }
 
 function reserved(ledger: OperationLedger, key = KEY, nowMs = 0): void {
-  const result = ledger.prepare({ key, reservation: asReservation('res-1'), prepared: {}, nowMs });
+  const result = ledger.prepare({
+    key,
+    reservation: asReservation('40000000-0000-4000-8000-000000000001'),
+    prepared: {},
+    nowMs,
+  });
   if (result.kind !== 'reserved') throw new Error('expected a reservation');
   ledger.recordPreparation(key, { pid: 1, incarnation: testIncarnation(1) }, asJointContainmentReceipt('contained'));
 }
@@ -67,7 +77,7 @@ function executing(ledger: OperationLedger, key = KEY, nowMs = 0): void {
 
 function activate(ledger: OperationLedger, key = KEY, nowMs = 0): void {
   const fingerprint = 'f'.repeat(64);
-  ledger.beginActivation(key, asReservation('res-1'), nowMs, fingerprint);
+  ledger.beginActivation(key, asReservation('40000000-0000-4000-8000-000000000001'), nowMs, fingerprint);
   ledger.completeActivation(key, fingerprint, {
     state: 'executing',
     activationFingerprint: fingerprint,
@@ -136,5 +146,43 @@ describe('provider-proxy operation ledger', () => {
     const entry = ledger.get(WIRE_KEY);
     expect(entry?.bufferedEvents).toHaveLength(1);
     expect(Buffer.byteLength(entry?.bufferedEvents[0]?.frame ?? '', 'utf8')).toBeLessThanOrEqual(641);
+  });
+});
+
+describe('provider-proxy replay budget', () => {
+  it('charges a large completion to its slot first and only its remainder to shared replay', async () => {
+    const { ReplayBudget } = await vi.importActual<typeof MockedReplayBudgetModule>(
+      '#src/provider-proxy/replay-budget.js',
+    );
+    const budget = new ReplayBudget(MAX_PROXY_SHARED_REPLAY_BYTES, MAX_PROXY_COMPLETION_RESERVE_BYTES);
+    const charge = budget.commit({
+      kind: 'completion',
+      frameBytes: MAX_EMERGENCY_COMPLETION_FRAME_BYTES + 10,
+      completionSlotLimitBytes: MAX_EMERGENCY_COMPLETION_FRAME_BYTES,
+    });
+
+    expect(charge).toEqual({ sharedBytes: 10, completionSlotBytes: MAX_EMERGENCY_COMPLETION_FRAME_BYTES });
+    expect(budget.usage()).toEqual({
+      sharedBytes: 10,
+      completionSlotBytes: MAX_EMERGENCY_COMPLETION_FRAME_BYTES,
+      totalBytes: MAX_EMERGENCY_COMPLETION_FRAME_BYTES + 10,
+    });
+  });
+
+  it('releases the stored charge without recomputing its lane split', async () => {
+    const { ReplayBudget } = await vi.importActual<typeof MockedReplayBudgetModule>(
+      '#src/provider-proxy/replay-budget.js',
+    );
+    const budget = new ReplayBudget(MAX_PROXY_SHARED_REPLAY_BYTES, MAX_PROXY_COMPLETION_RESERVE_BYTES);
+    const charge = budget.commit({
+      kind: 'completion',
+      frameBytes: MAX_EMERGENCY_COMPLETION_FRAME_BYTES + 17,
+      completionSlotLimitBytes: MAX_EMERGENCY_COMPLETION_FRAME_BYTES,
+    });
+
+    budget.release(charge);
+
+    expect(budget.usage()).toEqual({ sharedBytes: 0, completionSlotBytes: 0, totalBytes: 0 });
+    expect(() => budget.release(charge)).toThrow(RangeError);
   });
 });

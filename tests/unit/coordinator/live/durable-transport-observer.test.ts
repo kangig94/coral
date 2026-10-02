@@ -181,53 +181,39 @@ describe('durable transport observer timing and cleanup ownership', () => {
     await expect(rejection).resolves.toBe(publicationError);
   });
 
-  it.each([
-    {
-      label: 'retained',
-      publishIdentity: () => ({ kind: 'retained' as const, reason: 'synthetic identity retention' }),
-      expectedError: 'durable process identity publication retained: synthetic identity retention',
-    },
-    {
-      label: 'throwing',
-      publishIdentity: () => {
-        throw new Error('synthetic identity publication failure');
-      },
-      expectedError: 'synthetic identity publication failure',
-    },
-  ])(
-    'keeps a $label identity publication durably published and releases the pending launch',
-    async ({ publishIdentity, expectedError }) => {
-      const fixture = startWrapperPublication({
-        onRuntimeRecord: vi.fn(),
-        onDurableProcessIdentity: publishIdentity,
-      });
-      const rejection = fixture.result.catch((error: unknown) => error);
+  it('keeps a retained identity publication durably published and releases the pending launch', async () => {
+    const fixture = startWrapperPublication({
+      onRuntimeRecord: vi.fn(),
+      onDurableProcessIdentity: () => ({ kind: 'retained' as const, reason: 'synthetic identity retention' }),
+    });
+    const rejection = fixture.result.catch((error: unknown) => error);
 
-      await vi.waitFor(() => expect(reapRecordedContainment).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(reapRecordedContainment).toHaveBeenCalledOnce());
 
-      expect(fixture.pendingLaunches.size).toBe(0);
-      expect(fixture.cleanupHandles.size).toBe(1);
-      expect([...fixture.cleanupRetentions.values()]).toEqual([
-        expect.objectContaining({
-          publication: {
-            kind: 'durably-published',
-            owner: 'successor-recovery',
-            evidence: {
-              kind: 'durable-cli-runtime',
-              jobId: 'observer-job',
-              pid: fixture.launched.runtimeRecord.pid,
-              leaderIncarnation: fixture.launched.processSubject.incarnation,
-            },
+    expect(fixture.pendingLaunches.size).toBe(0);
+    expect(fixture.cleanupHandles.size).toBe(1);
+    expect([...fixture.cleanupRetentions.values()]).toEqual([
+      expect.objectContaining({
+        publication: {
+          kind: 'durably-published',
+          owner: 'successor-recovery',
+          evidence: {
+            kind: 'durable-cli-runtime',
+            jobId: 'observer-job',
+            pid: fixture.launched.runtimeRecord.pid,
+            leaderIncarnation: fixture.launched.processSubject.incarnation,
           },
-        }),
-      ]);
+        },
+      }),
+    ]);
 
-      fixture.cleanup.resolve({ kind: 'containment-absent' });
-      const error = await rejection;
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toBe(expectedError);
-    },
-  );
+    fixture.cleanup.resolve({ kind: 'containment-absent' });
+    const error = await rejection;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      'durable process identity publication retained: synthetic identity retention',
+    );
+  });
 
   it('keeps an absent runtime callback observed and names the missing proof', async () => {
     const fixture = startWrapperPublication({

@@ -2,11 +2,10 @@ import { createRecoveryQuarantineRetryService } from '#src/recovery/source-regis
 import { createRecoverySourceRegistry } from '#src/recovery/source-registry.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createUnreadableProviderOperationRetryPlan } from '#src/coordinator/services/recovery/index.js';
 import { quarantineUnreadableProviderOperations } from '#src/coordinator/services/recovery/retry-plans.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
-import type { RecoveryQuarantinePort } from '#src/recovery/containment.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
@@ -14,7 +13,6 @@ import {
   readProviderOperations,
 } from '#src/store/provider-operation-journal.js';
 import {
-  encodeProviderOperationRecord,
   PROVIDER_OPERATION_RECORD_VERSION,
   type ProviderOperationRecord,
 } from '#src/store/provider-operation-record.js';
@@ -41,127 +39,6 @@ describe('unreadable provider operation recovery quarantine', () => {
   });
 
   afterEach(() => db.close());
-
-  it('adopts a repaired row before removing its quarantine', async () => {
-    const repaired = providerOperationRecord('executing');
-    const key = recordKey(repaired);
-    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(key, 'not-json');
-    const scan = readProviderOperations(db);
-    await quarantineUnreadableProviderOperations(
-      quarantine,
-      attributeUnreadableProviderOperations(db, scan.unreadableKeys),
-    );
-
-    const entry = quarantine.list()[0];
-    expect(entry).toEqual(
-      expect.objectContaining({
-        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
-        subject: {
-          key,
-          revision: { kind: 'fingerprint', value: expect.stringMatching(/^sha256:/u) },
-        },
-        state: 'active',
-      }),
-    );
-    if (entry === undefined || entry.subject.revision.kind !== 'fingerprint') {
-      throw new Error('expected unreadable provider operation quarantine entry');
-    }
-
-    const sources = createRecoverySourceRegistry();
-    const acceptForDrive = vi.fn(async (record: ProviderOperationRecord) => {
-      expect(record).toEqual(repaired);
-      expect(quarantine.list()).toHaveLength(1);
-    });
-    sources.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (subject) =>
-      createUnreadableProviderOperationRetryPlan(db, subject, async (record) => {
-        await acceptForDrive(record);
-        return { kind: 'accepted', owner: 'provider-operation-reconciler' };
-      }),
-    );
-    const retry = createRecoveryQuarantineRetryService({
-      instanceId: 'coordinator-1',
-      ids: { uuid: () => randomUUID() },
-      quarantine,
-      sources,
-    });
-    const request = {
-      boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
-      key,
-      revision: entry.subject.revision.value,
-    };
-
-    await expect(retry.clear(request)).resolves.toEqual({ ...request, disposition: 'quarantined' });
-    db.prepare<[string, string]>('UPDATE meta SET value = ? WHERE key = ?').run(
-      encodeProviderOperationRecord(repaired),
-      key,
-    );
-    const dueRows = db
-      .prepare<[string], { count: number }>('SELECT COUNT(*) AS count FROM meta WHERE key LIKE ?')
-      .get(`provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:due:%`)?.count;
-    expect(dueRows).toBe(0);
-    await expect(retry.clear(request)).resolves.toEqual({ ...request, disposition: 'advanced' });
-    expect(acceptForDrive).toHaveBeenCalledExactlyOnceWith(repaired);
-    expect(quarantine.list()).toEqual([]);
-  });
-
-  it('advances an absent row without offering it for adoption', async () => {
-    const record = providerOperationRecord('executing');
-    const key = recordKey(record);
-    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(key, 'not-json');
-    const scan = readProviderOperations(db);
-    await quarantineUnreadableProviderOperations(
-      quarantine,
-      attributeUnreadableProviderOperations(db, scan.unreadableKeys),
-    );
-    const entry = quarantine.list()[0];
-    if (entry === undefined || entry.subject.revision.kind !== 'fingerprint') {
-      throw new Error('expected unreadable provider operation quarantine entry');
-    }
-
-    const sources = createRecoverySourceRegistry();
-    sources.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (subject) =>
-      createUnreadableProviderOperationRetryPlan(db, subject, () => {
-        throw new Error('an absent row cannot be adopted');
-      }),
-    );
-    const retry = createRecoveryQuarantineRetryService({
-      instanceId: 'coordinator-1',
-      ids: { uuid: () => randomUUID() },
-      quarantine,
-      sources,
-    });
-    const request = {
-      boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
-      key,
-      revision: entry.subject.revision.value,
-    };
-
-    db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(key);
-    await expect(retry.clear(request)).resolves.toEqual({ ...request, disposition: 'advanced' });
-    expect(quarantine.list()).toEqual([]);
-  });
-
-  it('reports only the unreadable keys whose quarantine status could not be materialized', async () => {
-    const firstKey = recordKey(providerOperationRecord('executing'));
-    const secondKey = `${firstKey}:failed`;
-    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(firstKey, 'not-json-1');
-    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(secondKey, 'not-json-2');
-    const rows = attributeUnreadableProviderOperations(db, readProviderOperations(db).unreadableKeys);
-    const materialization: RecoveryQuarantinePort = {
-      read: () => null,
-      upsert: (write) => {
-        if (write.subject.key === secondKey) throw new Error('quarantine storage unavailable');
-        return true;
-      },
-      delete: () => false,
-    };
-
-    const report = await quarantineUnreadableProviderOperations(materialization, rows);
-
-    expect(report.materialized).toBe(1);
-    expect(report.retained).toBe(0);
-    expect(report.failed.map(({ key }) => key)).toEqual([secondKey]);
-  });
 
   it('atomically moves retry ownership to the current raw fingerprint', async () => {
     const record = providerOperationRecord('executing');

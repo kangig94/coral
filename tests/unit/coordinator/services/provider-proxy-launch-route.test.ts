@@ -112,20 +112,6 @@ function authority(): DurableProviderProxyOperationAuthority {
 }
 
 describe('createAppServerProxyRoute', () => {
-  it('authorizes local placement before creating an operation when no live set exists', async () => {
-    const begin = vi.fn();
-    const route = createAppServerProxyRoute({
-      hostManager: { routeAppServerOperation: () => null },
-      reconciler: { begin },
-      now: () => 10,
-    });
-
-    await expect(route.activate(request, new AbortController().signal)).resolves.toMatchObject({
-      kind: 'local-authorized',
-    });
-    expect(begin).not.toHaveBeenCalled();
-  });
-
   it('fails closed when a selected set lacks durable replay operations', async () => {
     const set = authority();
     const { prepareOperation: _prepare, ...legacy } = set;

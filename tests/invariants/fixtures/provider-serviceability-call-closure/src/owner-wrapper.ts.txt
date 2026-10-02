@@ -1,3 +1,0 @@
-export function wrapperToPhysicalClose(handle: { close(): void }, _fact: unknown): void {
-  handle.close();
-}

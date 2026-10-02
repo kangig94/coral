@@ -80,29 +80,6 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('rewriteWikiUnderstanding', () => {
-  it('replaces the Understanding section, leaves Knowledge intact, and bumps updatedAt', async () => {
-    const { createWiki, linkWikiKnowledge, rewriteWikiUnderstanding, paths, frontmatter } = await loadModules();
-    const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge' });
-    await linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['note:alpha', 'note:beta'] });
-    const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
-    const knowledgeBefore = readBody(wikiPath, frontmatter).knowledge;
-    const sourceFile = join(mockState.tmpHome, 'understanding.md');
-    writeFileSync(sourceFile, '  External understanding source.\n  ', 'utf-8');
-
-    vi.setSystemTime(new Date('2026-04-20T08:00:00.000Z'));
-    await rewriteWikiUnderstanding(kb, { slug: 'living-knowledge', understandingFile: sourceFile });
-
-    const sections = readBody(wikiPath, frontmatter);
-    expect(sections.understanding).toBe('External understanding source.');
-    expect(sections.knowledge).toBe(knowledgeBefore);
-    expect(frontmatter.parseWikiFrontmatter(readFileSync(wikiPath, 'utf-8')).updatedAt).toBe(
-      '2026-04-20T08:00:00.000Z',
-    );
-  });
-});
-
 describe('wiki Knowledge lifecycle', () => {
   it('persists linked references and citations and removes their evidence when unlinked', async () => {
     const { createWiki, linkWikiKnowledge, citeWikiKnowledge, unlinkWikiKnowledge, paths, frontmatter } =

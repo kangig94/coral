@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import type * as NodeOs from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
-import { wikiEntryId } from '#src/kb/entry-types.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
@@ -76,26 +75,6 @@ describe('rewriteWiki kernel', () => {
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
     vi.resetModules();
-  });
-
-  it('rewrites the Knowledge section through rewriteWiki and updates the index knowledge field', async () => {
-    const modules = await loadModules();
-    const { rewriteWiki, paths, frontmatter } = modules;
-    const kb = createRuntime(paths);
-    await seedWiki(modules, kb, 'living-knowledge', ['note:alpha', 'note:beta']);
-
-    await rewriteWiki(kb, 'living-knowledge', () => ({
-      sections: { knowledge: '- [[notes/gamma]]\n- [[notes/alpha]]' },
-    }));
-
-    const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
-    const raw = readFileSync(wikiPath, 'utf-8');
-    expect(frontmatter.parseWikiBody(frontmatter.extractBody(raw)).knowledge).toBe(
-      '- [[notes/gamma]]\n- [[notes/alpha]]',
-    );
-    expect(kb.readIndex()?.entries[wikiEntryId('living-knowledge')]).toMatchObject({
-      knowledge: ['note:gamma', 'note:alpha'],
-    });
   });
 
   describe('bubbleUpWikiKnowledge (transposition heuristic)', () => {

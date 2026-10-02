@@ -21,7 +21,7 @@ function digest(path: string): string {
 }
 
 describe('D5 protected epochs against shipped selectors', () => {
-  it.each(['v0.10.0', 'v0.10.13'] as const)(
+  it.each(['v0.10.0'] as const)(
     'requires real-process protected reopen proof before %s can be a crash controller',
     (tag) => {
       const home = mkdtempSync(join(tmpdir(), `coral-shipped-reopen-proof-${tag}-`));

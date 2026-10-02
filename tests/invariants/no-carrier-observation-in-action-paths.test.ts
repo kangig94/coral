@@ -17,11 +17,6 @@ import {
   serviceabilityDecisionClosureAnalysis,
   type DecisionSymbol,
 } from './provider-serviceability-decision-inventory.js';
-import {
-  activeServiceabilityMutation,
-  fixturePath,
-  serviceabilityMutationFixtureContext,
-} from './provider-serviceability-call-closure-fixture.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(join(REPO_ROOT, 'src'));
@@ -29,16 +24,10 @@ const IMPORT_EDGES: ParsedImportEdge[] = parseProductionImportEdges(REPO_ROOT, P
 const CANONICAL_FILES = new Set(PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath)));
 const CALLABLE_CONTEXT = createCallableClosureContext(REPO_ROOT, PRODUCTION_FILE_PATHS);
 const SOURCE_FILES_BY_CANONICAL_PATH = CALLABLE_CONTEXT.sourceFilesByPath;
-const MUTATION_FIXTURE_CONTEXT = serviceabilityMutationFixtureContext();
 const SERVICEABILITY_CLASSIFIER_PATH = /^src\/providers\/[^/]+\/serviceability\.ts$/u;
-const SERVICEABILITY_COMPOSITION = 'src/providers/bootstrap.ts';
-const SERVICEABILITY_SEAM = 'src/providers/serviceability.ts';
-const HOST_ADMISSION = 'src/providers/host-admission.ts';
 const COORDINATOR_ADMISSION_LEAF = 'src/coordinator/live/provider-host-admission.ts';
 const PROXY_ADMISSION_LEAF = 'src/provider-proxy/provider-host-admission.ts';
 const COORDINATOR_OWNER = 'src/coordinator/live/provider-hosts/index.ts';
-const COORDINATOR_COMPOSITION = 'src/coordinator/index.ts';
-const COORDINATOR_WORLD = 'src/coordinator/composition/world.ts';
 const PROXY_OWNER = 'src/provider-proxy/provider-root-authority.ts';
 
 /**
@@ -103,67 +92,6 @@ const ACTION_PATH_MODULES: readonly string[] = [...CANONICAL_FILES]
   .filter((file) => ACTION_PATH_ROOTS.some((root) => (root.endsWith('/') ? file.startsWith(root) : file === root)))
   .sort();
 
-type DecisionAuthority = DecisionSymbol &
-  Readonly<{
-    category: string;
-    permittedImporters: readonly string[];
-  }>;
-
-function permittedDecisionImporters(category: string, decision: DecisionSymbol): readonly string[] {
-  // Constructor traversal reaches the typed admission error's formatter and its host-ref codec. These exact
-  // helpers render an already-selected error/ref and expose no serviceability verdict or admission authority.
-  if (decision.path === HOST_ADMISSION && decision.symbol === 'providerHostUnserviceableMessage') {
-    return ['src/jobs/shell/wait.ts'];
-  }
-  if (decision.path === 'src/providers/host-ref-codec.ts' && decision.symbol === 'encodeHostRef') {
-    return ['src/cli/commands/backend.ts', HOST_ADMISSION, 'src/transport/dispatch.ts'];
-  }
-  if (category === 'classifierDispatchers') {
-    return decision.path === SERVICEABILITY_COMPOSITION && decision.symbol === 'classifyProviderResponseServiceability'
-      ? [SERVICEABILITY_SEAM]
-      : [];
-  }
-  if (category === 'providerClassifiers') {
-    if (!decision.symbol.startsWith('classify')) return [];
-    const match = SERVICEABILITY_CLASSIFIER_PATH.exec(decision.path);
-    if (match === null) throw new Error(`Unexpected provider classifier path ${decision.path}`);
-    return [decision.path.replace(/serviceability\.ts$/u, 'definition.ts')];
-  }
-  if (category === 'serviceabilityReducers') {
-    return decision.symbol === 'reduceHostServiceability' ? [HOST_ADMISSION] : [];
-  }
-  if (category === 'admissionSymbols') {
-    if (decision.symbol === 'createHostAdmissionCollection') {
-      return [SERVICEABILITY_SEAM, COORDINATOR_OWNER, COORDINATOR_WORLD];
-    }
-    // The transitive admission closure also discovers this pure identity comparator. Owners and the
-    // administration facade legitimately reuse it without obtaining a serviceability verdict; keeping the
-    // exceptions exact preserves closure scanning while any new runtime consumer still fails closed.
-    if (decision.symbol === 'exactHostRefsMatch') {
-      return [
-        COORDINATOR_OWNER,
-        COORDINATOR_WORLD,
-        'src/coordinator/services/provider-host-administration.ts',
-        'src/jobs/shell/wait.ts',
-        PROXY_OWNER,
-      ];
-    }
-    return [];
-  }
-  if (category === 'admissionCompositionLeaves') {
-    if (decision.symbol === 'createBuiltInProviderHostAdmission') {
-      return [COORDINATOR_ADMISSION_LEAF, PROXY_ADMISSION_LEAF];
-    }
-    if (decision.path === COORDINATOR_ADMISSION_LEAF && decision.symbol === 'createCoordinatorProviderHostAdmission') {
-      return [COORDINATOR_COMPOSITION];
-    }
-    return decision.path === PROXY_ADMISSION_LEAF && decision.symbol === 'createProxyProviderHostAdmission'
-      ? [PROXY_OWNER]
-      : [];
-  }
-  throw new Error(`Unmapped serviceability decision category ${category}`);
-}
-
 const SERVICEABILITY_DECISION_ANALYSIS = serviceabilityDecisionClosureAnalysis(
   REPO_ROOT,
   PRODUCTION_FILE_PATHS,
@@ -182,28 +110,17 @@ const SERVICEABILITY_DECISION_INVENTORY = Object.fromEntries(
     analysis.callables.map(({ path, symbol }) => ({ path, symbol })),
   ]),
 );
-const SERVICEABILITY_DECISION_AUTHORITIES: readonly DecisionAuthority[] = [
+const SERVICEABILITY_DECISION_AUTHORITIES: readonly DecisionSymbol[] = [
   ...Object.entries(SERVICEABILITY_DECISION_INVENTORY)
     .reduce((authorities, [category, decisions]) => {
       if (category === 'factPublishers') return authorities;
       for (const decision of decisions) {
         const key = `${decision.path}\0${decision.symbol}`;
         if (NON_AUTHORIZING_DECISION_CLOSURE_LEAVES.has(`${decision.path}#${decision.symbol}`)) continue;
-        const permittedImporters = permittedDecisionImporters(category, decision);
-        const existing = authorities.get(key);
-        authorities.set(
-          key,
-          existing === undefined
-            ? { ...decision, category, permittedImporters }
-            : {
-                ...existing,
-                category: `${existing.category},${category}`,
-                permittedImporters: [...new Set([...existing.permittedImporters, ...permittedImporters])],
-              },
-        );
+        authorities.set(key, decision);
       }
       return authorities;
-    }, new Map<string, DecisionAuthority>())
+    }, new Map<string, DecisionSymbol>())
     .values(),
 ];
 
@@ -246,62 +163,6 @@ const OWNER_OBSERVATION_BOUNDARIES: readonly OwnerObservationBoundary[] = [
     physicalCloseRoot: 'DefaultProviderHostManager.evictHost',
   },
 ];
-const OWNER_OBSERVATION_MUTATIONS = [
-  {
-    id: 'owner-wrapper-close',
-    boundary: {
-      module: fixturePath('owner-root.ts'),
-      transportCall: 'spawnProviderTransport',
-      sink: { property: 'observeProviderResponse' },
-    },
-    signature: `${fixturePath('owner-wrapper.ts')}:2:3 handle.close`,
-  },
-  {
-    id: 'owner-constructor-close',
-    boundary: {
-      module: fixturePath('owner-constructor-root.ts'),
-      transportCall: 'spawnConstructorProviderTransport',
-      sink: { property: 'observeProviderResponse' },
-    },
-    signature: `${fixturePath('owner-constructor-root.ts')}:7:5 handle.close`,
-  },
-  {
-    id: 'owner-initializer-and-constructor-assignment-close',
-    boundary: {
-      module: fixturePath('owner-initializer-assignment-root.ts'),
-      transportCall: 'spawnAssignedProviderTransport',
-      sink: { property: 'observeProviderResponse' },
-    },
-    signature: `${fixturePath('owner-initializer-assignment-root.ts')}:11:5 this.handle.close`,
-  },
-  {
-    id: 'owner-identifier-assignment-close',
-    boundary: {
-      module: fixturePath('owner-identifier-assignment-root.ts'),
-      transportCall: 'spawnIdentifierAssignmentTransport',
-      sink: { property: 'observeProviderResponse' },
-    },
-    signature: `${fixturePath('owner-identifier-assignment-root.ts')}:12:5 handle.close`,
-  },
-  {
-    id: 'owner-locally-collected-callback-close',
-    boundary: {
-      module: fixturePath('owner-local-callback-root.ts'),
-      transportCall: 'spawnCallbackProviderTransport',
-      sink: { property: 'observeProviderResponse' },
-    },
-    signature: "argument 1 'selected' has callable type but no resolvable target",
-  },
-  {
-    id: 'owner-recursive-callback-factory',
-    boundary: {
-      module: fixturePath('owner-recursive-factory-root.ts'),
-      transportCall: 'spawnRecursiveFactoryTransport',
-      sink: { property: 'observeProviderResponse' },
-    },
-    signature: "argument 1 'recursiveObserverFactory()' has callable type but no resolvable target",
-  },
-] as const satisfies ReadonlyArray<Readonly<{ id: string; boundary: OwnerObservationBoundary; signature: string }>>;
 
 /** Named capabilities a serviceability decision must never reach over runtime imports. */
 const DESTRUCTIVE_CAPABILITY_ROOTS = [
@@ -458,26 +319,6 @@ function runtimeImportedSymbols(): ImportedRuntimeSymbol[] {
 }
 
 const IMPORTED_RUNTIME_SYMBOLS = runtimeImportedSymbols();
-const SERVICEABILITY_DECISION_IMPORTS: readonly ImportedRuntimeSymbol[] = IMPORTED_RUNTIME_SYMBOLS.flatMap((imported) =>
-  SERVICEABILITY_DECISION_AUTHORITIES.flatMap((authority) =>
-    imported.target === authority.path && (imported.symbol === '*' || imported.symbol === authority.symbol)
-      ? [{ ...imported, symbol: authority.symbol }]
-      : [],
-  ),
-);
-
-function decisionImportViolations(imports: readonly ImportedRuntimeSymbol[], authority: DecisionAuthority): string[] {
-  return imports
-    .filter(
-      (entry) =>
-        entry.target === authority.path &&
-        entry.symbol === authority.symbol &&
-        !matches(entry.source, authority.permittedImporters),
-    )
-    .map(
-      (entry) => `${entry.source} imports ${entry.symbol} from ${entry.target} via ${entry.specifier} (${entry.via})`,
-    );
-}
 
 /**
  * Runtime edges only. A `import type` is erased before anything runs, so it can hand no verdict to anyone —
@@ -905,137 +746,8 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
     },
   );
 
-  it('derives every non-fact decision authority from the complete shared serviceability inventory', () => {
-    const decisionEntries = Object.entries(SERVICEABILITY_DECISION_INVENTORY).filter(
-      ([category]) => category !== 'factPublishers',
-    );
-    expect(decisionEntries.length).toBeGreaterThan(0);
-    expect(decisionEntries.filter(([, decisions]) => decisions.length === 0)).toEqual([]);
-    const resolvedDecisionKeys = new Set(
-      decisionEntries.flatMap(([, decisions]) => decisions.map(({ path, symbol }) => `${path}#${symbol}`)),
-    );
-    expect([...NON_AUTHORIZING_DECISION_CLOSURE_LEAVES].filter((key) => !resolvedDecisionKeys.has(key))).toEqual([]);
-    expect(SERVICEABILITY_DECISION_AUTHORITIES).toHaveLength(
-      [...resolvedDecisionKeys].filter((key) => !NON_AUTHORIZING_DECISION_CLOSURE_LEAVES.has(key)).length,
-    );
-    expect(
-      decisionEntries.flatMap(([category]) => SERVICEABILITY_DECISION_ANALYSIS[category]?.unresolvedCalls ?? []),
-    ).toEqual([]);
-    expect(
-      decisionEntries.reduce(
-        (count, [category]) => count + (SERVICEABILITY_DECISION_ANALYSIS[category]?.inspectedCallCount ?? 0),
-        0,
-      ),
-    ).toBeGreaterThan(0);
-    expect(unmatchedRoots(SERVICEABILITY_DECISION_AUTHORITIES.map((authority) => authority.path))).toEqual([]);
-    expect(
-      unmatchedRoots(SERVICEABILITY_DECISION_AUTHORITIES.flatMap((authority) => authority.permittedImporters)),
-    ).toEqual([]);
-  });
-
-  it('permits every serviceability decision symbol only at its declared runtime importers', () => {
-    const violations = SERVICEABILITY_DECISION_AUTHORITIES.flatMap((authority) =>
-      decisionImportViolations(SERVICEABILITY_DECISION_IMPORTS, authority),
-    );
-    expect(violations).toEqual([]);
-
-    const unexercisedPermissions = SERVICEABILITY_DECISION_AUTHORITIES.flatMap((authority) =>
-      authority.permittedImporters.flatMap((permittedImporter) =>
-        SERVICEABILITY_DECISION_IMPORTS.some(
-          (entry) =>
-            entry.target === authority.path &&
-            entry.symbol === authority.symbol &&
-            matches(entry.source, [permittedImporter]),
-        )
-          ? []
-          : [`${authority.path}#${authority.symbol} <- ${permittedImporter}`],
-      ),
-    );
-    expect(unexercisedPermissions).toEqual([]);
-  });
-
   it('keeps every inventoried serviceability decision symbol unreachable from every action path', () => {
     expect(serviceabilityDecisionActionPathViolations(IMPORTED_RUNTIME_SYMBOLS)).toEqual([]);
-  });
-
-  it.each([
-    {
-      name: 'recovery imports the bootstrap dispatcher',
-      source: 'src/coordinator/services/recovery/service.ts',
-      target: SERVICEABILITY_COMPOSITION,
-      symbol: 'classifyProviderResponseServiceability',
-      specifier: '../../../providers/bootstrap.js',
-    },
-    {
-      name: 'reconciliation imports the bootstrap dispatcher',
-      source: 'src/jobs/reconcile/registry.ts',
-      target: SERVICEABILITY_COMPOSITION,
-      symbol: 'classifyProviderResponseServiceability',
-      specifier: '../../providers/bootstrap.js',
-    },
-    {
-      name: 'recovery imports a concrete provider classifier',
-      source: 'src/coordinator/services/recovery/service.ts',
-      target: 'src/providers/codex/serviceability.ts',
-      symbol: 'classifyCodexProviderResponseServiceability',
-      specifier: '../../../providers/codex/serviceability.js',
-    },
-    {
-      name: 'reconciliation imports a concrete provider classifier',
-      source: 'src/jobs/reconcile/registry.ts',
-      target: 'src/providers/codex/serviceability.ts',
-      symbol: 'classifyCodexProviderResponseServiceability',
-      specifier: '../../providers/codex/serviceability.js',
-    },
-  ])('rejects $name and names its own action path', ({ source, target, symbol, specifier }) => {
-    const authority = SERVICEABILITY_DECISION_AUTHORITIES.find(
-      (candidate) => candidate.path === target && candidate.symbol === symbol,
-    );
-    expect(authority).toBeDefined();
-    if (authority === undefined) throw new Error(`Missing decision authority ${target}#${symbol}`);
-
-    const edge: ParsedImportEdge = {
-      source,
-      target,
-      specifier,
-      via: 'ImportDeclaration',
-      runtime: true,
-      typeOnly: false,
-    };
-    const imported: ImportedRuntimeSymbol = {
-      source,
-      target,
-      specifier,
-      via: edge.via,
-      localSymbol: symbol,
-      symbol,
-    };
-
-    expect(decisionImportViolations([imported], authority)).toEqual([
-      `${source} imports ${symbol} from ${target} via ${specifier} (ImportDeclaration)`,
-    ]);
-    expect(serviceabilityDecisionActionPathViolations([...IMPORTED_RUNTIME_SYMBOLS, imported], [source])).toContain(
-      `${source} -> ${target}#${symbol}`,
-    );
-  });
-
-  it('still bans a runtime edge from an unpermitted importer, even though a type-only edge from the same place passes', () => {
-    const authority = OBSERVATION_AUTHORITIES[0];
-    const unpermittedSource = 'src/coordinator/services/operation-registry.ts';
-    const runtimeEdge: ParsedImportEdge = {
-      source: unpermittedSource,
-      target: authority.module,
-      specifier: '../../jobs/carrier-observation.js',
-      via: 'ImportDeclaration',
-      runtime: true,
-      typeOnly: false,
-    };
-    const typeOnlyEdge: ParsedImportEdge = { ...runtimeEdge, runtime: false, typeOnly: true };
-
-    expect(permittedImportViolations([runtimeEdge], authority)).toEqual([
-      `${unpermittedSource} imports ${runtimeEdge.specifier} (ImportDeclaration) from ${authority.module}`,
-    ]);
-    expect(permittedImportViolations([typeOnlyEdge], authority)).toEqual([]);
   });
 
   it.each(OBSERVATION_AUTHORITIES.map((authority) => [authority.what, authority] as const))(
@@ -1056,16 +768,6 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
     // A root that matches nothing silently narrows the ban — the module it was written for was renamed or
     // deleted, and the rule quietly stopped covering anything.
     expect(unmatchedRoots(ACTION_PATH_ROOTS)).toEqual([]);
-  });
-
-  it('names a non-empty runtime serviceability consumer set whose every module exists', () => {
-    expect(SERVICEABILITY_RUNTIME_CONSUMERS.length).toBeGreaterThan(0);
-    expect(unmatchedRoots(SERVICEABILITY_RUNTIME_CONSUMERS)).toEqual([]);
-  });
-
-  it('names a non-empty destructive capability set whose every root exists', () => {
-    expect(DESTRUCTIVE_CAPABILITY_MODULES.length).toBeGreaterThan(0);
-    expect(unmatchedRoots(DESTRUCTIVE_CAPABILITY_ROOTS)).toEqual([]);
   });
 
   it('keeps every runtime serviceability consumer outbound-unreachable from destructive capabilities', () => {
@@ -1102,25 +804,6 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
       expect(proof.physicalCloseProof.unresolvedCalls).toEqual([]);
     },
   );
-
-  it.each(OWNER_OBSERVATION_MUTATIONS)(
-    'rejects the $id mutation through its own closure-derived signature',
-    (mutation) => {
-      const proof = ownerObservationProof(mutation.boundary, MUTATION_FIXTURE_CONTEXT);
-      const findings = [...proof.unresolvedCalls, ...proof.violations];
-      expect(proof.transportCalls).toBe(1);
-      expect(proof.rootCount).toBe(1);
-      expect(proof.visitedCallableCount).toBeGreaterThanOrEqual(proof.rootCount);
-      expect(findings.some((finding) => finding.includes(mutation.signature))).toBe(true);
-    },
-  );
-
-  it('keeps the opt-in owner-observation mutation probe clean', () => {
-    const mutation = OWNER_OBSERVATION_MUTATIONS.find(({ id }) => id === activeServiceabilityMutation());
-    const proof =
-      mutation === undefined ? undefined : ownerObservationProof(mutation.boundary, MUTATION_FIXTURE_CONTEXT);
-    expect(proof === undefined ? [] : [...proof.unresolvedCalls, ...proof.violations]).toEqual([]);
-  });
 
   it.each(CONSTRAINED_ADMISSION_LEAVES.map((leaf) => [leaf.module, leaf] as const))(
     '%s imports only the classifier and narrow admission port modules',

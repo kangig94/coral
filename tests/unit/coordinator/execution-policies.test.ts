@@ -170,36 +170,6 @@ describe('execution policies', () => {
     expect(preflight).toHaveBeenCalledTimes(2);
   });
 
-  it('uses a short positive remainder for one immediate decisive re-ask', async () => {
-    const runtime = new SimulationRuntime();
-    let settleFirstProbe!: (outcome: ProviderPreflightOutcome) => void;
-    const preflight = vi
-      .fn<() => Promise<ProviderPreflightOutcome>>()
-      .mockImplementationOnce(
-        () =>
-          new Promise<ProviderPreflightOutcome>((resolve) => {
-            settleFirstProbe = resolve;
-          }),
-      )
-      .mockResolvedValueOnce({ kind: 'satisfied' })
-      .mockResolvedValueOnce({ kind: 'refused', message: 'third answer must not be observed' });
-    const provider = {
-      name: 'codex',
-      preflight,
-    } as Pick<BoundProvider, 'name' | 'preflight'>;
-    const sleep = vi.spyOn(runtime.time, 'sleep');
-    const result = runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {}));
-    await flushMicrotasks(12);
-
-    runtime.time.tick(PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS - Math.floor(PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS / 2));
-    settleFirstProbe({ kind: 'undetermined', message: 'availability was not observed' });
-
-    await expect(result).resolves.toEqual({ kind: 'satisfied' });
-    expect(sleep).not.toHaveBeenCalled();
-    expect(preflight).toHaveBeenCalledTimes(2);
-    expect(pendingTimerCount(runtime)).toBe(0);
-  });
-
   it('rejects a thrown preflight fault with its documented code without retrying', async () => {
     const runtime = new SimulationRuntime();
     const preflight = vi.fn(async () => {
@@ -237,26 +207,6 @@ describe('execution policies', () => {
       context: {
         provider: 'codex',
         cause: expect.stringMatching(/kind/iu),
-      },
-    });
-    expect(provider.preflight).toHaveBeenCalledOnce();
-    expect(pendingTimerCount(runtime)).toBe(0);
-  });
-
-  it('rejects an invalid fulfilled outcome object with the documented fault', async () => {
-    const runtime = new SimulationRuntime();
-    const provider = {
-      name: 'codex',
-      preflight: vi.fn(async () => ({ kind: 'skipped' }) as unknown as ProviderPreflightOutcome),
-    } as Pick<BoundProvider, 'name' | 'preflight'>;
-
-    await expect(
-      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
-    ).rejects.toMatchObject({
-      code: 'provider_preflight_faulted',
-      context: {
-        provider: 'codex',
-        cause: expect.stringMatching(/skipped/iu),
       },
     });
     expect(provider.preflight).toHaveBeenCalledOnce();

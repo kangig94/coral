@@ -3,11 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { extractBody, parseFrontmatter, serializeFrontmatter } from '#src/kb/corpus/frontmatter.js';
-import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
+import { serializeFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import {
   FrontmatterMergeUnavailableError,
-  mergeMarkdownRevisions,
   runFrontmatterMergeDriver,
   type FrontmatterMergeDriverHost,
 } from '#src/kb/curate/frontmatter-merge-driver.js';
@@ -60,123 +58,6 @@ describe('frontmatter merge driver', () => {
     } else {
       process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
     }
-  });
-
-  it('merges concurrent first-classification note frontmatter to sorted set unions with no conflict markers', () => {
-    const body = 'Stable note body for both machines.';
-    const inputFingerprint = computeBodySurfaceHash(body);
-    const base = renderNote(
-      {
-        tags: ['seed'],
-        principles: [],
-        source: ['kangig94/coral'],
-        createdAt: '2026-06-15T00:00:00.000Z',
-        updatedAt: '2026-06-15T00:00:00.000Z',
-      },
-      body,
-    );
-    const ours = renderNote(
-      {
-        tags: ['seed', 'ours-tag'],
-        principles: ['ours-principle'],
-        source: ['kangig94/coral'],
-        createdAt: '2026-06-15T00:00:00.000Z',
-        updatedAt: '2026-06-16T00:00:00.000Z',
-        inputFingerprint,
-        related: ['note:ours-related'],
-      },
-      body,
-    );
-    const theirs = renderNote(
-      {
-        tags: ['theirs-tag', 'seed'],
-        principles: ['theirs-principle'],
-        source: ['kangig94/coral'],
-        createdAt: '2026-06-15T00:00:00.000Z',
-        updatedAt: '2026-06-17T00:00:00.000Z',
-        inputFingerprint,
-        related: ['source:theirs-related'],
-      },
-      body,
-    );
-
-    const { content, result } = mergeMarkdownRevisions(
-      base,
-      ours,
-      theirs,
-      'notes/merge-note.md',
-      createFrontmatterMergeHost(root),
-    );
-    const merged = parseFrontmatter(content);
-
-    expect(result).toEqual({ status: 0, bodyConflict: false });
-    expect(content).not.toContain('<<<<<<<');
-    expect(merged.tags).toEqual(['ours-tag', 'seed', 'theirs-tag']);
-    expect(merged.principles).toEqual(['ours-principle', 'theirs-principle']);
-    expect(merged.related).toEqual(['note:ours-related', 'source:theirs-related']);
-    expect(merged.updatedAt).toBe('2026-06-17T00:00:00.000Z');
-    expect(merged.inputFingerprint).toBe(inputFingerprint);
-    expect(extractBody(content)).toBe(body);
-  });
-
-  it('returns nonzero and preserves both sides with conflict markers for same-region note body edits', () => {
-    const base = renderNote(
-      {
-        tags: ['seed'],
-        principles: [],
-        source: ['kangig94/coral'],
-        createdAt: '2026-06-15T00:00:00.000Z',
-        updatedAt: '2026-06-15T00:00:00.000Z',
-        inputFingerprint: computeBodySurfaceHash('The shared sentence.'),
-      },
-      'The shared sentence.',
-    );
-    const oursBody = 'The local machine rewrote this sentence.';
-    const theirsBody = 'The remote machine rewrote this sentence.';
-    const ours = renderNote(
-      {
-        tags: ['ours-tag'],
-        principles: ['ours-principle'],
-        source: ['kangig94/coral'],
-        createdAt: '2026-06-15T00:00:00.000Z',
-        updatedAt: '2026-06-16T00:00:00.000Z',
-        inputFingerprint: computeBodySurfaceHash(oursBody),
-      },
-      oursBody,
-    );
-    const theirs = renderNote(
-      {
-        tags: ['theirs-tag'],
-        principles: ['theirs-principle'],
-        source: ['kangig94/coral'],
-        createdAt: '2026-06-15T00:00:00.000Z',
-        updatedAt: '2026-06-17T00:00:00.000Z',
-        inputFingerprint: computeBodySurfaceHash(theirsBody),
-      },
-      theirsBody,
-    );
-
-    const { content, result } = mergeMarkdownRevisions(
-      base,
-      ours,
-      theirs,
-      'notes/merge-note.md',
-      createFrontmatterMergeHost(root),
-    );
-
-    expect(() => parseFrontmatter(content)).not.toThrow();
-    const merged = parseFrontmatter(content);
-
-    expect(result.bodyConflict).toBe(true);
-    expect(result.status).toBeGreaterThan(0);
-    expect(content).toContain('<<<<<<<');
-    expect(content).toContain('=======');
-    expect(content).toContain('>>>>>>>');
-    expect(content).toContain(oursBody);
-    expect(content).toContain(theirsBody);
-    expect(merged.tags.length).toBeGreaterThan(0);
-    expect(merged.tags).toEqual(['ours-tag', 'theirs-tag']);
-    expect(merged.principles).toEqual(['ours-principle', 'theirs-principle']);
   });
 
   // The git-facing half, and the highest-consequence property in this file. Git reads a merge driver's exit

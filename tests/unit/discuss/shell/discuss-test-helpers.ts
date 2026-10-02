@@ -520,23 +520,3 @@ export async function persistSession(
 
   return harness.store.load(sessionId) ?? snapshot;
 }
-
-export async function appendPersistedEvents(
-  harness: DiscussHarness,
-  sessionId: string,
-  buildTail: (snapshot: PersistedDiscussSnapshot) => DiscussDomainEvent[],
-): Promise<PersistedDiscussSnapshot> {
-  const snapshot = harness.store.load(sessionId);
-  if (!snapshot) {
-    throw new Error(`Session not found: ${sessionId}`);
-  }
-
-  const events = buildTail(snapshot);
-  if (events.length === 0) {
-    return snapshot;
-  }
-
-  seedTailJobLinks(harness, snapshot, events);
-  const result = await harness.store.append(sessionId, snapshot.lastAppliedSeq, events);
-  return result;
-}

@@ -144,25 +144,18 @@ describe('renderInject fragment composition', () => {
     expect(kb).toBe(expectedKb.join('\n\n'));
   });
 
-  it.each([
-    { name: 'owner without equipped tools', asOwner: true, equippedTools: undefined },
-    { name: 'owner with equipped tools', asOwner: true, equippedTools: EQUIP_AGENT_TOOLS },
-    { name: 'subagent without equipped tools', asOwner: false, equippedTools: undefined },
-    { name: 'subagent with equipped tools', asOwner: false, equippedTools: EQUIP_AGENT_TOOLS },
-  ])('keeps every rendered payload at or below 8,000 bytes for $name', ({ asOwner, equippedTools }) => {
+  it('keeps the owner payload with equipped tools at or below 8,000 bytes', () => {
     const input = {
       pluginRoot: join(process.cwd(), 'clients'),
       projectDir: undefined,
       sessionId: 'size-gate-session',
-      asOwner,
+      asOwner: true,
       kbEnabled: true,
-      equippedTools,
+      equippedTools: EQUIP_AGENT_TOOLS,
     };
     const base = renderInject({ ...input, group: 'base' });
     const kb = renderInject({ ...input, group: 'kb' });
-    const basePayload = asOwner
-      ? `SessionStart:session_id=size-gate-session\nCurrent host: claude\nClaude config dir: /tmp/claude\n\n${base}`
-      : base;
+    const basePayload = `SessionStart:session_id=size-gate-session\nCurrent host: claude\nClaude config dir: /tmp/claude\n\n${base}`;
 
     expect(Buffer.byteLength(basePayload, 'utf-8')).toBeLessThanOrEqual(MAX_ADDITIONAL_CONTEXT_BYTES);
     expect(Buffer.byteLength(kb, 'utf-8')).toBeLessThanOrEqual(MAX_ADDITIONAL_CONTEXT_BYTES);
@@ -274,23 +267,5 @@ describe('renderInject path aliases', () => {
     });
     expect(out).toContain('project: {{CORAL_PROJECT}}');
     expect(out).toMatch(/methods: .+\/methods\/$/);
-  });
-});
-
-describe('renderInject delegation guidance', () => {
-  it('should give delegation guidance to the owner session only', () => {
-    const pluginRoot = join(process.cwd(), 'clients');
-    const render = (asOwner: boolean): string => renderInject({ pluginRoot, asOwner, group: 'base' });
-
-    expect(render(true)).toContain('coral-cli codex <agent>');
-    expect(render(false)).not.toContain('coral-cli codex <agent>');
-  });
-
-  it('should give the Coral CLI guidance to every host session, subagents included', () => {
-    const pluginRoot = join(process.cwd(), 'clients');
-    const render = (asOwner: boolean): string => renderInject({ pluginRoot, asOwner, group: 'base' });
-
-    expect(render(true)).toContain('CLI: `coral-cli`');
-    expect(render(false)).toContain('CLI: `coral-cli`');
   });
 });

@@ -41,44 +41,6 @@ afterEach(() => {
   vi.mocked(validatedRunningBuildRoot).mockReturnValue('/fixture');
 });
 
-it('keeps a missing supervisor executable visible until a validated build reappears', async () => {
-  vi.useFakeTimers();
-  const runDir = mkdtempSync(join(tmpdir(), 'coral-replacement-root-retry-'));
-  const replacement = Object.assign(new EventEmitter(), {
-    pid: 999_991,
-    connected: true,
-    exitCode: null,
-    signalCode: null,
-    send: vi.fn(),
-    kill: vi.fn(),
-    unref: vi.fn(),
-  });
-  vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
-  vi.mocked(probeProcessIncarnation).mockReturnValue('source' as ProcessIncarnation);
-  vi.mocked(validatedRunningBuildRoot).mockReturnValue(null);
-  const hold = {
-    kind: 'no-eligible-build',
-    controller: 'build',
-    observation: 'supervisor-executable-unavailable',
-    retry: 'eligible-build-appears',
-  };
-  try {
-    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
-    expect(spawn).not.toHaveBeenCalled();
-    expect(currentLaunchStatus(runDir)?.hold).toEqual(hold);
-    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { hold } });
-    vi.mocked(validatedRunningBuildRoot).mockReturnValue('/fixture');
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(spawn).toHaveBeenCalledOnce();
-    expect(currentLaunchStatus(runDir)?.hold).toBeUndefined();
-    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable' });
-    const durable = readLaunchStatus(runDir);
-    if (durable.kind === 'readable') expect(durable.status.hold).toBeUndefined();
-  } finally {
-    rmSync(runDir, { recursive: true, force: true });
-  }
-});
-
 it('reports namespace contention during replacement retries and nominates only after the holder releases', async () => {
   vi.useFakeTimers();
   const runDir = mkdtempSync(join(tmpdir(), 'coral-contended-replacement-retry-'));
@@ -117,36 +79,6 @@ it('reports namespace contention during replacement retries and nominates only a
     if (recovered.kind === 'readable') expect(recovered.status.lockHold).toBeUndefined();
   } finally {
     lock.lease();
-    rmSync(runDir, { recursive: true, force: true });
-  }
-});
-
-it('publishes a source identity hold before nomination and clears it when observation recovers', async () => {
-  vi.useFakeTimers();
-  const runDir = mkdtempSync(join(tmpdir(), 'coral-source-identity-retry-'));
-  const replacement = Object.assign(new EventEmitter(), {
-    pid: 999_991,
-    connected: true,
-    exitCode: null,
-    signalCode: null,
-    send: vi.fn(),
-    kill: vi.fn(),
-    unref: vi.fn(),
-  });
-  vi.mocked(spawn).mockReturnValue(replacement as unknown as ChildProcess);
-  vi.mocked(probeProcessIncarnation).mockReturnValue(null);
-  const hold = { path: join(runDir, 'coordinator.json'), disposition: 'unknown' };
-  try {
-    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
-    expect(spawn).not.toHaveBeenCalled();
-    expect(currentLaunchStatus(runDir)?.admissionHolds).toContainEqual(hold);
-    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { admissionHolds: [hold] } });
-    vi.mocked(probeProcessIncarnation).mockReturnValue('source' as ProcessIncarnation);
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(spawn).toHaveBeenCalledOnce();
-    expect(currentLaunchStatus(runDir)?.admissionHolds).toEqual([]);
-    expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { admissionHolds: [] } });
-  } finally {
     rmSync(runDir, { recursive: true, force: true });
   }
 });

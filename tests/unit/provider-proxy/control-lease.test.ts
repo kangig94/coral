@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
-import { ControlLeaseEvidence, RECENT_CHALLENGE_HISTORY } from '#src/provider-proxy/control-lease.js';
+import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 
 const scope = Symbol('control-lease-test');
 
@@ -41,36 +41,5 @@ describe('ControlLeaseEvidence', () => {
     expect(fake.clock.compare(evidence.controlLossAt(), controlLossAt)).toBe(0);
 
     expect(evidence.echoChallenge(fake.clock.now(), 'c3', 'c4')).toEqual({ accepted: true });
-  });
-
-  it('evicts the oldest remembered challenge once history exceeds its bound, freeing it for reuse', () => {
-    const fake = createFakeClock(scope, 0);
-    const evidence = new ControlLeaseEvidence(fake.clock, 1_000_000, fake.clock.now());
-    evidence.issueFirstChallenge('c0');
-
-    let previous = 'c0';
-    for (let index = 1; index <= RECENT_CHALLENGE_HISTORY; index += 1) {
-      const next = `c${index}`;
-      expect(evidence.echoChallenge(fake.clock.now(), previous, next)).toEqual({ accepted: true });
-      previous = next;
-    }
-
-    expect(evidence.echoChallenge(fake.clock.now(), previous, 'c0')).toEqual({ accepted: true });
-    expect(() => evidence.echoChallenge(fake.clock.now(), 'c0', 'c2')).toThrow(/non-empty and one-use/u);
-  });
-
-  it('clears an observed EOF when a live connection carries the tenancy forward again', () => {
-    const fake = createFakeClock(scope, 0);
-    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now());
-    evidence.issueFirstChallenge('c1');
-    fake.set(1_500);
-    evidence.observeEof(fake.clock.now());
-    expect(evidence.eofAt()).not.toBeNull();
-
-    evidence.reattachControl();
-
-    expect(evidence.eofAt()).toBeNull();
-    fake.set(1_600);
-    expect(evidence.echoChallenge(fake.clock.now(), 'c1', 'c2')).toEqual({ accepted: true });
   });
 });

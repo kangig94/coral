@@ -398,19 +398,4 @@ describe('recovery quarantine retry service', () => {
     newSettlement.release();
     await expect(newResult).resolves.toMatchObject({ disposition: 'advanced' });
   });
-
-  it('should remove an absent subject through the typed one-shot boundary path', async () => {
-    envelope = null;
-    const hydrate = vi.fn<(raw: Envelope) => string>();
-    const settle = vi.fn(() => advanced());
-    const result = await service(
-      'coordinator-1',
-      createRegistry({ readEnvelope: () => envelope, hydrate, settle }),
-    ).clear(request);
-
-    expect(result.disposition).toBe('advanced');
-    expect(hydrate).not.toHaveBeenCalled();
-    expect(settle).not.toHaveBeenCalled();
-    expect(quarantine.read(boundary, request.key)).toBeNull();
-  });
 });

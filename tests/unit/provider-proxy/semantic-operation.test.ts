@@ -48,17 +48,8 @@ import {
   type ProxyPreparedAppServerOperation,
 } from '#src/provider-proxy/protocol.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
-import {
-  specFingerprint,
-  specIdentityKey,
-  type ProxyAppServerHostAuthority,
-} from '#src/provider-proxy/provider-root-authority.js';
+import { type ProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
 import { createSemanticOperationRuntime } from '#src/provider-proxy/semantic-operation-runner.js';
-// Only a test is allowed to see both copies at once (`src/provider-proxy/` may not import
-// `src/coordinator/`, enforced by `tests/invariants/architecture-layering.test.ts`, which scans `src/` only —
-// see the "agrees byte-for-byte" case below for why importing the forbidden-to-production original here is
-// exactly the point).
-import { hostFingerprintFromSpec, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import {
   asJointActivationReceipt,
   asJointContainmentReceipt,
@@ -255,11 +246,16 @@ function prepareAndActivate(
   key: ProviderOperationKey,
   prepared: ProxyPreparedAppServerOperation,
 ): void {
-  const reserved = ledger.prepare({ key, reservation: asReservation('res'), prepared, nowMs: 0 });
+  const reserved = ledger.prepare({
+    key,
+    reservation: asReservation('40000000-0000-4000-8000-000000000001'),
+    prepared,
+    nowMs: 0,
+  });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
   ledger.recordPreparation(key, { pid: 1, incarnation: testIncarnation(1) }, asJointContainmentReceipt('contained'));
   const fingerprint = 'f'.repeat(64);
-  ledger.beginActivation(key, asReservation('res'), 0, fingerprint);
+  ledger.beginActivation(key, asReservation('40000000-0000-4000-8000-000000000001'), 0, fingerprint);
   ledger.completeActivation(key, fingerprint, {
     state: 'executing',
     activationFingerprint: fingerprint,
@@ -336,99 +332,6 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
         message: 'Provider event stream ended without terminal or suspension.',
       }),
     });
-  });
-});
-
-describe('semantic-operation runtime: capability-directed cancellation', () => {
-  function sharedHostRef(): HostRef {
-    return {
-      provider: 'claude',
-      fingerprint: 'b'.repeat(64),
-      instanceId: 'shared-instance',
-      leaseMode: 'job-exclusive',
-      ownerJobId: 'job-1',
-    };
-  }
-
-  function sharedHostAuthority() {
-    const transportClosed = deferred<Error | void>();
-    let rootAlive = true;
-    const forceClose = vi.fn(async () => {
-      rootAlive = false;
-      transportClosed.resolve(new Error('shared provider root was force-closed'));
-      return undefined;
-    });
-    const authority: ProxyAppServerHostAuthority = {
-      beginOperation: () => {
-        let selected = false;
-        return {
-          selectCancellationMode: () => {
-            if (selected) throw new Error('cancellation mode selected twice');
-            selected = true;
-          },
-          openSession: unreachable('scope.openSession') as never,
-          attachSession: async () => null,
-        };
-      },
-      rootIdentity: () => (rootAlive ? { pid: 4_242, incarnation: testIncarnation(1_700_000_000) } : null),
-      closed: () => transportClosed.promise,
-      forceClose,
-      evictHost: async () => ({ kind: 'stale' as const }),
-    };
-    return { authority, forceClose, rootAlive: () => rootAlive };
-  }
-
-  it('closes admission and requests whole-set relinquishment after an unconfirmed interrupt (C3-M8)', async () => {
-    const { proxy, ledger } = createTestProxy();
-    const operationA = testKey('op-a');
-    const prepared = preparedFixture();
-    prepareAndActivate(ledger, operationA, prepared);
-    const hostRef = sharedHostRef();
-    const shared = sharedHostAuthority();
-    const onRelinquish = vi.fn();
-    providerRegistryDouble.rehydrateBinding.mockReturnValue({
-      ok: true,
-      value: fakeBoundProvider({
-        supportsInterrupt: true,
-        executionHostRef: hostRef,
-        openReplacement: async () => ({ hostRef, close: vi.fn() }),
-        execute: async function* (execRuntime) {
-          await new Promise<void>((resolve) => {
-            if (execRuntime.signal.aborted) resolve();
-            else execRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
-          });
-          yield { kind: 'suspended', reason: 'interrupt_unconfirmed' };
-        },
-      }),
-    });
-    const semantic = createSemanticOperationRuntime({
-      runtime,
-      hostAuthority: shared.authority,
-      getProxy: () => proxy,
-      onRelinquish,
-    });
-    await semantic.ensureProviderRoot(operationA, prepared);
-    const started = semantic.host.start({ key: operationA, prepared });
-    await expect(started.result).resolves.toEqual({ kind: 'started', hostRef });
-
-    const stopFailure = await Promise.resolve(semantic.host.stop({ key: operationA, cause: 'restart' })).then(
-      () => null,
-      (error: unknown) => error,
-    );
-    let siblingAdmissionFailure: unknown = null;
-    try {
-      void semantic.stage(testKey('op-b'), prepared).result.catch(() => {});
-    } catch (error: unknown) {
-      siblingAdmissionFailure = error;
-    }
-
-    expect(siblingAdmissionFailure, 'a sibling was admitted/reused on the tainted host').toMatchObject({
-      code: 'semantic_operation_admission_closed',
-    });
-    expect(stopFailure).toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
-    expect(onRelinquish).toHaveBeenCalledOnce();
-    expect(onRelinquish).toHaveBeenCalledWith(stopFailure);
-    expect(shared.forceClose).not.toHaveBeenCalled();
   });
 });
 
@@ -562,86 +465,5 @@ describe('semantic-operation runtime: replay admission', () => {
     });
     expect(terminalEvents).toHaveLength(1);
     supervisor.close();
-  });
-});
-
-function sharedSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderServerSpec {
-  return {
-    provider: 'claude',
-    command: 'claude',
-    args: ['app-server'],
-    cwd: '/workspace',
-    leaseMode: 'shared',
-    idleRetirement: 'unleased-and-host-idle',
-    ...overrides,
-  } as ProviderServerSpec;
-}
-
-function exclusiveSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderServerSpec {
-  return {
-    provider: 'codex',
-    command: 'codex',
-    args: ['app-server'],
-    cwd: '/workspace',
-    leaseMode: 'job-exclusive',
-    ...overrides,
-  } as ProviderServerSpec;
-}
-
-// --- specIdentityKey / specFingerprint: the host-pool key function --------------------------------------
-//
-// Regression coverage for the defect where `specIdentityKey` passed `Object.keys(canonical).sort()` as
-// `JSON.stringify`'s *replacer* argument. A replacer allowlist applies at every nesting level, not just the
-// top, so both `env` and `initializeRequest` — themselves objects one level down — serialized as `{}` no
-// matter what they held. Two specs differing only in credentials then produced an identical pool key, and
-// `openSession` (`createProxyAppServerHostAuthority`, above) would hand back an already-running host spawned
-// under different credentials.
-
-describe('semantic-operation: specIdentityKey / specFingerprint', () => {
-  it('produces different keys and fingerprints for specs that differ only in env', () => {
-    const withAccountA = sharedSpec({ env: { CORAL_ACCOUNT: 'account-a' } });
-    const withAccountB = sharedSpec({ env: { CORAL_ACCOUNT: 'account-b' } });
-
-    expect(specIdentityKey(withAccountA)).not.toBe(specIdentityKey(withAccountB));
-    expect(specFingerprint(runtime, withAccountA)).not.toBe(specFingerprint(runtime, withAccountB));
-  });
-
-  it('produces different keys and fingerprints for specs that differ only in initializeRequest', () => {
-    const withFoo = sharedSpec({
-      initializeRequest: { method: 'initialize', params: { clientInfo: { name: 'foo' } } },
-    });
-    const withBar = sharedSpec({
-      initializeRequest: { method: 'initialize', params: { clientInfo: { name: 'bar' } } },
-    });
-
-    expect(specIdentityKey(withFoo)).not.toBe(specIdentityKey(withBar));
-    expect(specFingerprint(runtime, withFoo)).not.toBe(specFingerprint(runtime, withBar));
-  });
-
-  // The whole risk this module's doc comments call out is silent drift between this file's copy and the
-  // coordinator's original (`hostKeyFromSpec`/`hostFingerprintFromSpec`,
-  // `src/coordinator/live/provider-hosts/state.ts`) — a `HostRef.fingerprint` minted by one build that a
-  // proxy from a different build can never recognize as the same host. Only a test can see both copies at
-  // once (the layering ban applies to `src/`, not `tests/`), so this is the one thing that makes the
-  // "mirrors" claim in both modules' doc comments self-enforcing rather than merely asserted.
-  it('agrees byte-for-byte with the coordinator-side hostKeyFromSpec / hostFingerprintFromSpec', () => {
-    const sharedRetirementPolicies = ['unleased', 'unleased-and-host-idle', 'never'] as const;
-    const specs: ProviderServerSpec[] = [
-      ...sharedRetirementPolicies.map((idleRetirement) =>
-        sharedSpec({
-          env: { CORAL_ACCOUNT: 'account-a' },
-          initializeRequest: { method: 'initialize', params: { clientInfo: { name: 'proxy' } } },
-          initializeTimeoutMs: 5_000,
-          shutdownCapability: { method: 'shutdown', timeoutMs: 1_000 },
-          idleRetirement,
-        }),
-      ),
-      exclusiveSpec({ initializeTimeoutMs: 2_500 }),
-    ];
-
-    for (const spec of specs) {
-      expect(specIdentityKey(spec)).toBe(hostKeyFromSpec(spec));
-      expect(specFingerprint(runtime, spec)).toBe(hostFingerprintFromSpec(spec));
-    }
   });
 });

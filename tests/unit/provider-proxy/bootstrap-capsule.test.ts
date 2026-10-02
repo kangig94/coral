@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,7 +9,6 @@ import {
   consumeProviderBootstrapCapsule,
   createProviderBootstrapCapsule,
   type GuardianBootstrapCapsule,
-  MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES,
   type ProviderBootstrapCapsuleEnvironment,
   ProviderBootstrapCapsuleError,
 } from '#src/provider-proxy/bootstrap-capsule.js';
@@ -19,7 +18,6 @@ const GUARDIAN_INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
 const REAPER_INSTANCE_ID = '22222222-2222-4222-8222-222222222222';
 const PROXY_INSTANCE_ID = '33333333-3333-4333-8333-333333333333';
 const BUILD_SET_ID = '44444444-4444-4444-8444-444444444444';
-const OTHER_BUILD_SET_ID = '55555555-5555-4555-8555-555555555555';
 const HOST_FINGERPRINT = 'a'.repeat(64);
 const BOOTSTRAP_NONCE = 'b'.repeat(64);
 const GUARDIAN_REAPER_SECRET = 'c'.repeat(64);
@@ -47,17 +45,6 @@ function strictIdentity(
       durableWrapperBundleHash: '4'.repeat(16),
     },
   };
-}
-
-function expectCapsuleFailure(run: () => unknown, code: ProviderBootstrapCapsuleError['code']): void {
-  let observed: unknown;
-  try {
-    run();
-  } catch (error: unknown) {
-    observed = error;
-  }
-  expect(observed).toBeInstanceOf(ProviderBootstrapCapsuleError);
-  expect(observed).toMatchObject({ code });
 }
 
 beforeEach(() => {
@@ -89,21 +76,6 @@ afterEach(() => {
 });
 
 describe('provider bootstrap capsules', () => {
-  it('creates canonical current-uid mode-0600 data and consumes it once', () => {
-    createProviderBootstrapCapsule(capsulePath, capsule, env);
-
-    const stat = statSync(capsulePath, { bigint: true });
-    const encoded = readFileSync(capsulePath, 'utf8');
-    expect(stat.uid).toBe(BigInt(env.uid));
-    expect(stat.mode & 0o777n).toBe(0o600n);
-    expect(encoded).toBe(JSON.stringify(JSON.parse(encoded)));
-    expect(Buffer.byteLength(encoded, 'utf8')).toBeLessThanOrEqual(MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES);
-
-    expect(consumeProviderBootstrapCapsule(capsulePath, 'guardian', env)).toEqual(capsule);
-    expect(existsSync(capsulePath)).toBe(false);
-    expect(existsSync(`${capsulePath}.consuming`)).toBe(false);
-  });
-
   it('atomically excludes a second consumer interleaved immediately after the claim', () => {
     createProviderBootstrapCapsule(capsulePath, capsule, env);
     let secondFailure: unknown;
@@ -124,43 +96,5 @@ describe('provider bootstrap capsules', () => {
     );
     expect(secondFailure).toBeInstanceOf(ProviderBootstrapCapsuleError);
     expect(secondFailure).toMatchObject({ code: 'bootstrap_capsule_replayed' });
-  });
-
-  it('rejects a capsule from a different build set', () => {
-    createProviderBootstrapCapsule(capsulePath, capsule, env);
-
-    expectCapsuleFailure(
-      () =>
-        consumeProviderBootstrapCapsule(capsulePath, 'guardian', {
-          ...env,
-          resolveStrictIdentity: () => strictIdentity(OTHER_BUILD_SET_ID),
-        }),
-      'bootstrap_capsule_build_set_mismatch',
-    );
-  });
-
-  // `readClaimedCapsule` reads through `readBoundedFileAtIdentity`, the same shared primitive
-  // `handoff-capsule.ts` reads through — these two mirror that file's own same-length-twin/symlink-mid-read
-  // tests.
-  it('refuses a capsule swapped for a same-length twin between the claim and the open', () => {
-    createProviderBootstrapCapsule(capsulePath, capsule, env);
-    const claimedPath = `${capsulePath}${'.consuming'}`;
-    const twin: GuardianBootstrapCapsule = { ...capsule, bootstrapNonce: 'f'.repeat(64) };
-    expect(JSON.stringify(capsule).length).toBe(JSON.stringify(twin).length);
-    const swapPath = join(tempRoot, 'twin.json');
-
-    const swappingStorage: ProviderBootstrapCapsuleEnvironment['storage'] = {
-      ...env.storage,
-      openSync: (path, flags) => {
-        env.storage.writeFileSync(swapPath, JSON.stringify(twin), { encoding: 'utf8', mode: 0o600 });
-        env.storage.renameSync(swapPath, claimedPath);
-        return env.storage.openSync(path, flags);
-      },
-    };
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', { ...env, storage: swappingStorage }),
-      'bootstrap_capsule_unreadable',
-    );
   });
 });

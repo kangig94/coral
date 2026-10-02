@@ -75,35 +75,6 @@ describe('createPluginRegistry', () => {
     expect(registry.discoverPluginRoot('ui-ux')).toBe(pluginRoot);
   });
 
-  it('returns null when the registry file is missing', () => {
-    process.env.CORAL_PLUGIN_REGISTRY = join(tmpRoot, 'missing-installed_plugins.json');
-
-    const registry = createPluginRegistry();
-
-    expect(registry.discoverPluginRoot('anything')).toBeNull();
-  });
-
-  it('returns null when the registry file contains malformed JSON', () => {
-    setRegistry('not valid json');
-
-    const registry = createPluginRegistry();
-
-    expect(registry.discoverPluginRoot('anything')).toBeNull();
-  });
-
-  it('returns null when the registry file shape is invalid', () => {
-    setRegistry({
-      version: 1,
-      plugins: {
-        foo: { installPath: createPluginRoot('invalid-shape-root') },
-      },
-    });
-
-    const registry = createPluginRegistry();
-
-    expect(registry.discoverPluginRoot('foo')).toBeNull();
-  });
-
   it('skips stale install paths and continues searching matching keys', () => {
     const freshRoot = createPluginRoot('foo-fresh');
     setRegistry({

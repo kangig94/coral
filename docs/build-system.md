@@ -185,9 +185,11 @@ npm run build
 npm run verify:store-reset-build
 ```
 
-The non-lifecycle e2e files were removed during test pruning, together with their build/release
-runner commands. Store-reset coverage remains in the unit and integration commands above and
-the build contract verifier. The shared simulation runtime still supports the retained tests.
+The non-lifecycle e2e files were removed during test pruning, together with `test:e2e:build` and
+the release runner command. The redundant CLI store-reset integration file was also removed;
+`test:store-reset:integration` now runs the filesystem incident, open-or-reset, and epoch-holder
+publication suites. Store-reset coverage remains in those integration tests, the unit command
+above, and the build contract verifier. The shared simulation runtime still supports the retained tests.
 
 Backend lifecycle end-to-end coverage is a separate suite again, unrelated to store-reset but also a CI step — it spawns long-lived backend subprocesses and waits through startup, the IPC handshake, and process death across namespace-isolation and child/no-handoff cold-start cases:
 

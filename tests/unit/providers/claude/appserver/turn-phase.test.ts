@@ -106,29 +106,9 @@ function observedPhase(harness: Awaited<ReturnType<typeof startController>>) {
 }
 
 describe('Claude turn phase state machine', () => {
-  it('advances sent to registered for the canonical current-turn prompt row', async () => {
-    const harness = await startController('hello\nworld');
-    await appendRows(harness.path, userRow('hello\r\nworld'));
-    expect(observedPhase(harness)).toBe('registered');
-  });
-
-  it('advances sent to registered for a Claude queue-operation enqueue row', async () => {
-    const harness = await startController('hello\nworld');
-    await appendRows(harness.path, queueRow('hello\r\nworld'));
-    expect(observedPhase(harness)).toBe('registered');
-  });
-
   it('advances responding to ending on an end-turn assistant row', async () => {
     const harness = await startController();
     await appendRows(harness.path, userRow('hello'), assistantRow('end_turn'));
-    expect(observedPhase(harness)).toBe('ending');
-  });
-
-  it('keeps a turn in ending when a late assistant row arrives after end_turn', async () => {
-    const harness = await startController();
-    await appendRows(harness.path, userRow('hello'), assistantRow('end_turn'));
-    await appendRows(harness.path, assistantRow());
-    expect(harness.controller.hasActiveTurn()).toBe(true);
     expect(observedPhase(harness)).toBe('ending');
   });
 

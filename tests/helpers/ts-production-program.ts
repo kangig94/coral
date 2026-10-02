@@ -123,15 +123,6 @@ export function createProductionProgram(overlays: Overlays = NO_OVERLAYS): ts.Pr
 }
 
 /**
- * A program whose roots are the overlays alone, so production reaches it only through what an overlay
- * imports. This is the shape a fixture wants: the question is about the fixture's own diagnostics or
- * call graph, and rooting all of `src/` in it pays for the whole tree to answer it.
- */
-export function createOverlayProgram(overlays: Overlays): ts.Program {
-  return buildProgram([], overlays);
-}
-
-/**
  * A program over a chosen root set. TypeScript pulls in each root's import closure, so a file reached
  * through an import need not be named — but a file neither rooted nor imported is absent from the
  * program, and `sourceFileDiagnostics` throws when asked about it.

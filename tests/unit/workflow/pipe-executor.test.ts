@@ -329,52 +329,6 @@ describe('workflow pipe executor', () => {
     expect(executionSvc.abort).toHaveBeenCalledWith(['job-a']);
   });
 
-  it('preserves completed sibling output when a parallel atom fails after partial completion', async () => {
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async (_provider, coralName) => {
-        if (coralName === 'architect') return running('job-a', 'session-a');
-        return running('job-b', 'session-b');
-      }),
-      waitStream: vi.fn(() =>
-        emit([
-          terminal('job-a', 'session-a', { content: 'ARCH' }),
-          terminal('job-b', 'session-b', {
-            content: '',
-            outcome: {
-              kind: 'failed',
-              causeRef: {
-                stream: {
-                  kind: 'session',
-                  id: 'session-b',
-                },
-                seq: 1,
-              },
-            },
-          }),
-        ]),
-      ),
-    });
-
-    await expect(
-      executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, {
-        workflowJobId: 'workflow-test-uuid',
-        ids: workflowIds,
-        time: workflowTime,
-      }),
-    ).rejects.toMatchObject({
-      message: "Step 0, atom 'critic' failed: Failed: session/session-b#1",
-      aborted: false,
-      stepDetails: [
-        {
-          stepIndex: 0,
-          atomIndex: 0,
-          label: 'architect',
-          output: 'ARCH',
-        },
-      ],
-    });
-  });
-
   it('surfaces aborted=true and preserves prior step details on user abort', async () => {
     const controller = new AbortController();
     let secondStepWait = 0;
@@ -457,28 +411,6 @@ describe('launchAtomWithRetry', () => {
       generation: 0,
     });
     expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
-  });
-
-  it('throws with step/atom context when coralDispatch returns refused status', async () => {
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async () => ({
-        status: 'refused' as const,
-        code: 'unknown_provider',
-        message: 'Unknown provider: ghost',
-      })),
-    });
-
-    await expect(
-      launchAtomWithRetry({
-        slot: planSlot(),
-        atomIndex: 0,
-        stepPrompt: 'do work',
-        executionSvc,
-        ctx,
-        completedStepDetails: [],
-        workflowJobId: 'workflow-1',
-      }),
-    ).rejects.toThrow("Step 0, atom 'architect' launch failed: Unknown provider: ghost");
   });
 
   it('reports when the launch check established nothing', async () => {

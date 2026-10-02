@@ -429,7 +429,6 @@ export type ProviderOperationTerminalDirective = Extract<
   { kind: 'terminal-failed' | 'terminal-aborted' }
 >;
 export type ProviderOperationRecord = Readonly<z.infer<typeof providerOperationRecordSchema>>;
-export type ProviderOperationPhase = ProviderOperationRecord['phase'];
 
 export class ProviderOperationRecordCodecError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {

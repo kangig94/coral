@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ExistingGeneratedCommunity } from '#src/kb/curate/community/contracts.js';
-import type { KbIndex } from '#src/kb/entry-types.js';
 
 async function loadCommunityDetectionWithMock(
   mockDetailed?: () => {
@@ -122,73 +121,5 @@ describe('entity-community', () => {
         children: ['community:alpha-beta-retained', 'community:gamma-omega-retained'],
       }),
     ]);
-  });
-
-  it('invalidates leaf fingerprints on entity metadata changes and parent fingerprints on child summary changes', async () => {
-    const { computeCommunitySummaryInputFingerprints } = await loadCommunityDetectionWithMock();
-    const kb = {
-      notePath(slug: string) {
-        return `/tmp/${slug}.md`;
-      },
-      sourcePath(slug: string) {
-        return `/tmp/${slug}.md`;
-      },
-      storagePort: { readFileSync: () => '' } as never,
-    };
-    const communities = [
-      {
-        slug: 'leaf',
-        title: 'Leaf',
-        level: 0,
-        members: ['graph-rag'],
-        summary: 'Leaf summary.',
-      },
-      {
-        slug: 'parent',
-        title: 'Parent',
-        level: 1,
-        members: ['graph-rag'],
-        children: ['community:leaf'],
-        summary: 'Parent summary.',
-      },
-    ];
-    const index: KbIndex = {
-      entries: {},
-      principles: {},
-      entityMeta: {
-        'graph-rag': {
-          type: 'concept',
-          description: 'Graph-backed retrieval.',
-        },
-      },
-      relationships: [],
-    };
-
-    const baseline = computeCommunitySummaryInputFingerprints(communities, kb, index);
-    const changedLeaf = computeCommunitySummaryInputFingerprints(communities, kb, {
-      ...index,
-      entityMeta: {
-        'graph-rag': {
-          type: 'concept',
-          description: 'Updated graph-backed retrieval description.',
-        },
-      },
-    });
-    const changedParent = computeCommunitySummaryInputFingerprints(
-      [
-        {
-          ...communities[0],
-          summary: 'Leaf summary changed.',
-        },
-        communities[1],
-      ],
-      kb,
-      index,
-    );
-
-    expect(changedLeaf.leaf).not.toBe(baseline.leaf);
-    expect(changedLeaf.parent).toBe(baseline.parent);
-    expect(changedParent.leaf).toBe(baseline.leaf);
-    expect(changedParent.parent).not.toBe(baseline.parent);
   });
 });

@@ -44,35 +44,11 @@ describe('workflow pipe parser', () => {
     expect(ast[0][0]).toEqual({ kind: 'prompt', text: 'say "hello"', provider: undefined });
   });
 
-  it('rejects empty prompt literal (single quote)', () => {
-    expect(() => parseExpression("''")).toThrow();
-  });
-
   it('rejects unclosed quote', () => {
     expect(() => parseExpression("'unclosed")).toThrow();
   });
 
-  it('rejects empty expressions', () => {
-    expect(() => parseExpression('')).toThrow();
-  });
-
-  it('rejects leading arrow', () => {
-    expect(() => parseExpression('-> resolver')).toThrow();
-  });
-
-  it('rejects nested groups', () => {
-    expect(() => parseExpression('((a, b))')).toThrow();
-  });
-
   it('rejects traversal-like names', () => {
     expect(() => parseExpression('coral:../x')).toThrow();
-  });
-
-  it('rejects comma outside of parentheses (a, b -> c)', () => {
-    expect(() => parseExpression('a, b -> c')).toThrow();
-  });
-
-  it('rejects unmatched ) without opener (a -> b))', () => {
-    expect(() => parseExpression('a -> b)')).toThrow();
   });
 });

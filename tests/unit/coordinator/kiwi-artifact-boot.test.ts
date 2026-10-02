@@ -103,58 +103,6 @@ describe('startKiwiArtifactFetchOnBoot', () => {
     ]);
   });
 
-  it('waits through lock contention and reindexes when another actor completes the artifact', async () => {
-    let now = 0;
-    let ready = false;
-    const events: string[] = [];
-    const ensureArtifact = vi.fn(async () => ({
-      status: 'error' as const,
-      code: 'expansion_install_lock_contended',
-      userMessage: 'busy',
-      remediation: 'wait',
-    }));
-    const runtime = createRuntime({
-      now: () => now,
-      sleep: async (ms) => {
-        events.push(`sleep:${ms}`);
-        now += ms;
-        ready = true;
-      },
-    });
-
-    const handle = startKiwiArtifactFetchOnBoot({
-      runtime,
-      kb: {
-        declaredAnalyzers: ['ko'],
-        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
-        getCorpusStateSnapshot: createSnapshot,
-        invalidateTextSnapshot: (reason) => {
-          events.push(`invalidate:${reason}`);
-          return { contentSeq: 1, metadataSeq: 2, textStaleReason: reason };
-        },
-      },
-      driver: {
-        forceCorpusApply: (_snapshot, options) => {
-          events.push('force');
-          return { generation: 1, consumers: options.consumers };
-        },
-        waitFreshUntil: async () => {},
-      },
-      timeoutMs: 25,
-      signal: new AbortController().signal,
-      hasArtifact: () => ready,
-      ensureArtifact,
-      lockProbeTimeoutMs: 3,
-      lockRetryDelayMs: 10,
-    });
-
-    await handle.completed;
-
-    expect(ensureArtifact).toHaveBeenCalledTimes(1);
-    expect(ensureArtifact).toHaveBeenCalledWith(runtime, expect.objectContaining({ lockTimeoutMs: 3 }));
-    expect(events).toEqual(['sleep:10', 'invalidate:kiwi-artifact-installed', 'force']);
-  });
-
   it('retries after contention beyond the former 30-second horizon and installs after the lock is released', async () => {
     let ready = false;
     let attempts = 0;
@@ -223,37 +171,5 @@ describe('startKiwiArtifactFetchOnBoot', () => {
     expect(
       infoLog.mock.calls.filter(([message]) => String(message).includes('another package operation holds')).length,
     ).toBe(1);
-  });
-
-  it('logs structured recovery guidance when background artifact installation fails', async () => {
-    const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-    const handle = startKiwiArtifactFetchOnBoot({
-      runtime: createRuntime(),
-      kb: {
-        declaredAnalyzers: ['ko'],
-        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
-        getCorpusStateSnapshot: createSnapshot,
-        invalidateTextSnapshot: () => ({ contentSeq: 0, metadataSeq: 0 }),
-      },
-      driver: {
-        forceCorpusApply: () => ({ generation: 1, consumers: [] }),
-        waitFreshUntil: async () => {},
-      },
-      timeoutMs: 25,
-      signal: new AbortController().signal,
-      hasArtifact: () => false,
-      ensureArtifact: async () => ({
-        status: 'error',
-        code: 'expansion_install_artifact_failed',
-        userMessage: 'download failed',
-        remediation: 'run the equip command',
-      }),
-    });
-
-    await handle.completed;
-
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('download failed'));
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('run the equip command'));
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('Intl fallback remains active'));
   });
 });

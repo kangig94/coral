@@ -1,15 +1,10 @@
 import { dirname, join } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Database } from '#src/store/db.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import {
-  applyCommunitySummary,
-  listStaleCommunities,
-  readCommunitySummaryInput,
-} from '#src/kb/curate/community/summary-surface.js';
 import { captureIndexStateSnapshot } from '#src/kb/corpus/lanes.js';
 import { performRescan } from '#src/kb/corpus/rescan/index.js';
 import { communityEntryId, type EntityGraph } from '#src/kb/entry-types.js';
@@ -65,25 +60,23 @@ function writeEntityGraph(kb: KbRuntime, description = 'Generated community grap
   return graph;
 }
 
-function generatedCommunityRaw(summary?: string): string {
+function generatedCommunityRaw(): string {
   return [
     '---',
     'coralGeneratedCommunity: true',
     'createdAt: 2026-06-01',
     'updatedAt: 2026-06-01',
     'level: 1',
-    ...(summary === undefined ? [] : ['summaryInputFingerprint: seeded-fingerprint']),
     '---',
     '# Generated Fresh Community',
     '',
-    ...(summary === undefined ? [] : ['## Summary', '', summary, '']),
     '## Members',
     '- #fresh',
     '',
   ].join('\n');
 }
 
-function stageGeneratedCommunity(kb: KbRuntime, content = generatedCommunityRaw()) {
+function stageGeneratedCommunity(kb: KbRuntime) {
   return kb.generatedCommunityProjectionStore.stageGeneration({
     snapshot: kb.captureCorpusSnapshot(),
     topologyHash: 'topology-generated-fresh',
@@ -95,30 +88,19 @@ function stageGeneratedCommunity(kb: KbRuntime, content = generatedCommunityRaw(
         members: ['fresh'],
         createdAt: '2026-06-01',
         updatedAt: '2026-06-01',
-        content,
+        content: generatedCommunityRaw(),
       },
     ],
   });
 }
 
-async function adoptGeneratedCommunity(
-  kb: KbRuntime,
-  content = generatedCommunityRaw(),
-): Promise<{
-  readonly generation: number;
-  readonly generatedCommunityDocsHash: string;
-}> {
-  const staged = stageGeneratedCommunity(kb, content);
+function adoptGeneratedCommunity(kb: KbRuntime): void {
+  const staged = stageGeneratedCommunity(kb);
   const result = kb.generatedCommunityProjectionStore.adoptStagedGeneration(staged, kb.captureCorpusSnapshot());
   expect(result.status).toBe('adopted');
-  if (result.status !== 'adopted') {
-    throw new Error('unreachable');
-  }
-  return result;
 }
 
 afterEach(() => {
-  vi.restoreAllMocks();
   for (const db of openDatabases.splice(0).reverse()) {
     db.close();
   }
@@ -128,11 +110,11 @@ afterEach(() => {
 });
 
 describe('generated community projection lifecycle', () => {
-  it('keeps generated docs out of corpus authority while feeding index, reads, Orama input, structural key, and summaries', async () => {
+  it('keeps adopted generated communities out of corpus authority and exposes them through index and direct reads', async () => {
     const { kb } = createHarness();
     writeNote(kb);
     writeEntityGraph(kb);
-    const firstGenerated = await adoptGeneratedCommunity(kb);
+    adoptGeneratedCommunity(kb);
 
     await expect(performRescan(kb, captureIndexStateSnapshot(kb.readIndexState()))).resolves.toMatchObject({
       status: 'committed',
@@ -141,8 +123,6 @@ describe('generated community projection lifecycle', () => {
     const slug = 'generated-fresh';
     expect(existsSync(kb.communityPath(slug))).toBe(false);
     const index = kb.readIndex();
-    expect(index?.generatedCommunityGeneration).toBe(firstGenerated.generation);
-    expect(index?.generatedCommunityDocsHash).toBe(firstGenerated.generatedCommunityDocsHash);
     expect(index?.entries[communityEntryId(slug)]).toMatchObject({
       kind: 'community',
       slug,
@@ -167,32 +147,5 @@ describe('generated community projection lifecycle', () => {
       note: slug,
       members: ['fresh'],
     });
-
-    const projectionInput = await kb.corpusProjectionReader.prepareCurrentProjectionInput({ ensureFreshness: false });
-    expect(projectionInput.generatedCommunityGeneration).toBe(firstGenerated.generation);
-    expect(projectionInput.generatedCommunityDocsHash).toBe(firstGenerated.generatedCommunityDocsHash);
-    expect(projectionInput.records.some((record) => record.kind === 'community' && record.entry.slug === slug)).toBe(
-      true,
-    );
-
-    const structuralKey = kb.readCorpusStructuralKey(index!);
-    expect(index?.structuralKey?.communityDocsHash).toBe(structuralKey?.communityDocsHash);
-
-    const secondGenerated = await adoptGeneratedCommunity(kb);
-
-    expect(listStaleCommunities(kb)).toContainEqual({ slug, level: 1 });
-    expect(readCommunitySummaryInput(kb, slug)).toMatchObject({ slug, level: 1 });
-
-    const beforeSeq = captureIndexStateSnapshot(kb.readIndexState());
-    const publishSpy = vi.spyOn(kb, 'publishGeneratedCommunityProjection');
-    await expect(applyCommunitySummary(kb, slug, 'Generated summary.')).resolves.toEqual({ written: true });
-    const afterSeq = captureIndexStateSnapshot(kb.readIndexState());
-    expect(afterSeq).toEqual(beforeSeq);
-    expect(existsSync(kb.communityPath(slug))).toBe(false);
-    expect(publishSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        generatedCommunityGeneration: secondGenerated.generation + 1,
-      }),
-    );
   });
 });

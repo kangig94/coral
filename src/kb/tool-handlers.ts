@@ -11,7 +11,6 @@ import { linkWikiKnowledge } from './ops/wiki/link.js';
 import { rewriteWikiUnderstanding } from './ops/wiki/rewrite.js';
 import { unlinkWikiKnowledge } from './ops/wiki/unlink.js';
 import { applyCommunitySummary } from './curate/community/summary-surface.js';
-import { readEntry, type KbReadPathResolver } from './read.js';
 import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { assertOwnerId } from '../infra/identifiers.js';
@@ -22,7 +21,6 @@ import {
   kbMemoDeleteConsolidatedSchema,
   kbMemoSchema,
   kbPromoteSchema,
-  kbReadSchema,
   kbSourceDeleteSchema,
   kbUpdateSchema,
   kbWikiAdoptSchema,
@@ -80,60 +78,6 @@ function validateOwner(
     return { ok: true, owner: assertOwnerId(owner) };
   } catch (error: unknown) {
     return { ok: false, result: invalidRequestResult(error) };
-  }
-}
-
-function requireKbRuntime(kbRuntime: KnowledgeBaseRuntime | undefined): KnowledgeBaseRuntime {
-  if (kbRuntime === undefined) {
-    throw new Error('KB runtime is required.');
-  }
-  return kbRuntime;
-}
-
-function kbReadPaths(kbRuntime: KnowledgeBaseRuntime | undefined): KbReadPathResolver {
-  const required = requireKbRuntime(kbRuntime);
-  return {
-    notePath: (slug) => required.kb.notePath(slug),
-    wikiPath: (slug) => required.kb.wikiPath(slug),
-    sourcePath: (slug) => required.kb.sourcePath(slug),
-    communityPath: (slug) => required.kb.communityPath(slug),
-    principlePath: (slug) => required.kb.principlePath(slug),
-  };
-}
-
-export function handleKbRead(
-  args: KbArgs,
-  ctx: InvocationContext,
-  runtime: KbToolRuntime,
-  kbRuntime?: KnowledgeBaseRuntime,
-): KbToolResult {
-  const parsed = kbReadSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  try {
-    return kbSuccess(
-      readEntry(parsed.data, {
-        ...(ctx.projectRoot === undefined ? {} : { projectDataDir: runtime.paths.projectData(ctx.projectRoot) }),
-        storage: runtime.storage,
-        paths: kbReadPaths(kbRuntime),
-        ...(kbRuntime === undefined
-          ? {}
-          : {
-              communityDocumentProvider: {
-                readGeneratedCommunityDocument: (slug: string) =>
-                  kbRuntime.kb.generatedCommunityProjectionStore.readCommunityDocument(slug),
-              },
-            }),
-      }),
-    );
-  } catch (error: unknown) {
-    if (error instanceof Error && error.message === `KB entry not found: ${parsed.data.note}`) {
-      return kbError('not_found', error.message);
-    }
-
-    return invalidRequestResult(error);
   }
 }
 

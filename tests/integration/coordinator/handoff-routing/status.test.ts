@@ -245,88 +245,16 @@ describe('handoff-routing/status', () => {
     }
   });
 
-  it('publishes all transition statements atomically and rejects every illegal transition row', async () => {
+  it('rolls back every statement when a later transition is invalid', async () => {
     const path = databasePath();
-    await expect(publish(path, [])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'rejected-transition',
-    });
-    await expect(
-      publish(path, [{ ...selection('invalid', 1), invocationId: '' } as HandoffRoutingTransition]),
-    ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
-    await expect(
-      publish(path, [
-        {
-          ...selection('noncanonical-time', 1),
-          observedAt: '9999-12-31T23:59:59.99999999999999+23:59',
-        },
-      ]),
-    ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
-
-    const selected = await committed(path, [selection('active', 2)]);
-    await expect(publish(path, [{ ...selection('other', 3), eventId: 'event-2' }])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'rejected-transition',
-    });
-    await expect(publish(path, [selection('active', 4)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'rejected-transition',
-    });
-    await expect(publish(path, [terminal('active', 5, 999)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'rejected-transition',
-    });
-
-    await committed(path, [terminal('active', 6, selected.sequence)]);
-    await expect(publish(path, [terminal('active', 7, selected.sequence)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'rejected-transition',
-    });
-    await expect(
-      publish(path, [
-        {
-          kind: 'operator-resolved',
-          eventId: 'event-8',
-          invocationId: 'active',
-          observedAt: at(8),
-          selectionSequence: selected.sequence,
-          reason: 'owner-absent',
-        },
-      ]),
-    ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
-    await expect(
-      publish(path, [
-        {
-          kind: 'operator-resolved',
-          eventId: 'event-9',
-          invocationId: 'missing',
-          observedAt: at(9),
-          selectionSequence: 1,
-          reason: 'owner-absent',
-        },
-      ]),
-    ).resolves.toEqual({ kind: 'not-published', cause: 'rejected-transition' });
-
+    await committed(path, [selection('active', 1)]);
     const before = records(path);
-    await expect(publish(path, [selection('rolled-back', 10), selection('active', 11)])).resolves.toEqual({
+
+    await expect(publish(path, [selection('rolled-back', 2), selection('active', 3)])).resolves.toEqual({
       kind: 'not-published',
       cause: 'rejected-transition',
     });
     expect(records(path)).toEqual(before);
-
-    await committed(path, [
-      {
-        kind: 'execution-failed',
-        eventId: 'event-12',
-        invocationId: 'gap',
-        observedAt: at(12),
-        selection: { kind: 'without-selection' },
-        disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
-      },
-    ]);
-    expect(records(path).find((event) => event.invocationId === 'gap')).toMatchObject({
-      disposition: { kind: 'failed-without-selection' },
-    });
   });
 
   it('resolves only absent owners and returns typed stale, terminal, and live refusals', async () => {

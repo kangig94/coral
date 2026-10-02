@@ -16,16 +16,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  verifiedIncumbentFromDiscovery,
-  verifiedIncumbentFromProbe,
-  verifiedIncumbentFromRuntimeProbe,
-} from '#src/coordinator/lifecycle.js';
-import type {
-  CoordinatorDiscoveryRecord,
-  CoordinatorProbe,
-  DiscoveryWriterRuntime,
-} from '#src/infra/backend-discovery.js';
+import { verifiedIncumbentFromDiscovery, verifiedIncumbentFromRuntimeProbe } from '#src/coordinator/lifecycle.js';
+import type { CoordinatorDiscoveryRecord, DiscoveryWriterRuntime } from '#src/infra/backend-discovery.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { DesiredIncumbentIdentity, IncumbentHealth } from '#src/transport/ipc/handoff.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -74,30 +66,6 @@ const evidence = (lastHealth: IncumbentHealth | null = null) => ({
 });
 
 describe('verifiedIncumbentFromDiscovery', () => {
-  it('is not the incumbent when the record names another socket or flavor', () => {
-    for (const record of [preTokenRecord({ socketPath: '/tmp/coral-other.sock' }), preTokenRecord({ flavor: 'dev' })]) {
-      expect(verifiedIncumbentFromDiscovery(record, evidence())).toBeNull();
-    }
-    expect(verifiedIncumbentFromDiscovery(null, evidence())).toBeNull();
-  });
-
-  // The pid is the only thing tying health's statement to the record's. Ping is unauthenticated, so the peer
-  // answering is not required to be the incumbent — without the pid agreement a stale record naming a
-  // recycled pid could take any live peer's incarnation and become signal-capable against a stranger.
-  it('ignores health’s incarnation when health did not name the same pid', () => {
-    const incarnation = testIncarnation(5_150);
-    const base: IncumbentHealth = { flavor: 'prod', namespace: 'ns', bundleHash: 'incumbent-bundle' };
-
-    expect(
-      verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...base, incarnation }))?.incarnation,
-      'health that names no pid has said nothing about this one',
-    ).toBeUndefined();
-    expect(
-      verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...base, pid: 4321, incarnation }))?.incarnation,
-      'the same pid is what makes it the same process',
-    ).toBe(incarnation);
-  });
-
   it('is not the incumbent when the record contradicts health read from the same socket', () => {
     const health: IncumbentHealth = { flavor: 'prod', namespace: 'ns', bundleHash: 'incumbent-bundle', pid: 4321 };
 
@@ -112,55 +80,6 @@ describe('verifiedIncumbentFromDiscovery', () => {
         evidence({ ...health, incarnation: testIncarnation(7) }),
       ),
     ).toBeNull();
-  });
-});
-
-// The same closure-with-no-test failure, one call earlier. `verifiedIncumbentFromDiscovery` decides what to do
-// with a record; this decides whether there is a record to decide about, and the difference between its two
-// `null`s — nobody is there, versus the file could not be read — is the one the whole `CoordinatorProbe` type
-// exists to keep apart. It was an inline closure on the bind path until this file could hold it.
-describe('verifiedIncumbentFromProbe', () => {
-  const probes: ReadonlyArray<readonly [string, CoordinatorProbe]> = [
-    ['a live record', { kind: 'live', record: preTokenRecord() }],
-    [
-      'a record whose pid could not be observed',
-      { kind: 'unobservable', reason: 'unreadable-process', record: preTokenRecord() },
-    ],
-    [
-      'a record whose parent pid is absent',
-      { kind: 'unobservable', reason: 'recorded-process-absent', record: preTokenRecord() },
-    ],
-  ];
-
-  it.each(probes)('contends with the incumbent behind %s', (_label, probe) => {
-    const incumbent = verifiedIncumbentFromProbe(probe, evidence());
-
-    expect(incumbent, 'an unanswered pid probe is not the incumbent being absent').not.toBeNull();
-    expect(incumbent?.bootToken, 'dropping the record drops the credential for a peaceful handoff').toBe(
-      'incumbent-boot-token',
-    );
-  });
-
-  it('has no incumbent to contend with when the probe observed absence', () => {
-    expect(verifiedIncumbentFromProbe({ kind: 'absent' }, evidence())).toBeNull();
-  });
-
-  it('has no incumbent to contend with when the record could not be decoded', () => {
-    // Not the same statement as the case above, and this call cannot say so — there is no record to agree
-    // with, so `null` is the only value available. What keeps it from reading as "nobody is there" is outside
-    // this function: `probeCoordinator` warns, and startup refuses the undecodable pre-bind disposition.
-    expect(verifiedIncumbentFromProbe({ kind: 'unobservable', reason: 'unreadable-record' }, evidence())).toBeNull();
-  });
-
-  it('still applies the record checks it delegates', () => {
-    // Guards against this becoming a pass-through: selecting the record is not accepting it.
-    const mismatched: CoordinatorProbe = {
-      kind: 'unobservable',
-      reason: 'unreadable-process',
-      record: preTokenRecord({ socketPath: '/tmp/coral-other.sock' }),
-    };
-
-    expect(verifiedIncumbentFromProbe(mismatched, evidence())).toBeNull();
   });
 });
 

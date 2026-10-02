@@ -4,7 +4,6 @@ import {
   CORPUS_SCAN_MAX_FILE_BYTES_ENV,
   CorpusScanLimitError,
   buildCorpusScanView,
-  createCorpusMarkdownFileScan,
 } from '#src/kb/corpus/rescan/scan.js';
 import type { CorpusFileHandle, CorpusStorage } from '#src/kb/corpus/rescan/storage.js';
 
@@ -59,18 +58,5 @@ describe('corpus scan limits', () => {
       }),
     ).toThrow(CorpusScanLimitError);
     expect(read).not.toHaveBeenCalled();
-  });
-
-  it('records oversized unterminated frontmatter as a scan limit error', () => {
-    const file = createCorpusMarkdownFileScan({
-      kind: 'note',
-      path: '/vault/notes/unterminated.md',
-      content: ['---', 'x'.repeat(8), '# Missing close', ''].join('\n'),
-      frontmatterMaxBytes: 4,
-    });
-
-    expect(file.frontmatter.status).toBe('error');
-    expect(file.frontmatter.rawBlock).toBeNull();
-    expect(file.frontmatter.error).toBeInstanceOf(CorpusScanLimitError);
   });
 });

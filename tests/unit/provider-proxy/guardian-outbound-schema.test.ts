@@ -320,35 +320,6 @@ async function armGuardian(harness: GuardianHarness): Promise<void> {
 }
 
 describe('guardian outbound schemas', () => {
-  it('replays one stable activation receipt for the exact membership tuple', async () => {
-    const harness = await createGuardianHarness();
-    await armGuardian(harness);
-    const operation = harness.operation();
-    const reservation = randomUUID();
-    const staged = (await harness.call('guardian.register-provider-root.v1', {
-      proxy: harness.proxyIdentity,
-      operation,
-      reservation,
-      providerPid: ROOT.pid,
-      providerIncarnation: ROOT.incarnation,
-    })) as { jointContainmentReceipt: string };
-    harness.mintReceipt.mockClear();
-    harness.reaperExchange.mockClear();
-    const activation = {
-      operation,
-      reservation,
-      providerRoot: ROOT,
-      jointContainmentReceipt: staged.jointContainmentReceipt,
-    };
-
-    const first = await harness.call('guardian.operation-activate.v1', activation);
-    const replay = await harness.call('guardian.operation-activate.v1', activation);
-
-    expect(replay).toEqual(first);
-    expect(harness.mintReceipt).toHaveBeenCalledOnce();
-    expect(harness.reaperExchange).toHaveBeenCalledOnce();
-  });
-
   it('does not latch activation after active control changes during reaper confirmation', async () => {
     const harness = await createGuardianHarness();
     await armGuardian(harness);
@@ -382,25 +353,6 @@ describe('guardian outbound schemas', () => {
     await expect(harness.call('guardian.operation-activate.v1', activation)).rejects.toMatchObject({
       remoteFailure: { protocolCode: 'unauthorized_control' },
     });
-    expect(harness.mintReceipt).not.toHaveBeenCalled();
-  });
-
-  it('keeps an exchange rejection unknown because it carries no transport-owned delivery disposition', async () => {
-    const harness = await createGuardianHarness();
-    const publishRequest = {
-      guardian: harness.guardianIdentity,
-      reaper: harness.reaperIdentity,
-      proxy: harness.proxyIdentity,
-    };
-    harness.reaperExchange.mockRejectedValueOnce(new Error('reaper channel unavailable'));
-
-    const unconfirmed = (await harness.call('guardian.acquisition-publish.v1', publishRequest)) as {
-      state: string;
-      reason: string;
-    };
-
-    expect(unconfirmed.state).toBe('acquisition-publication-unknown');
-    expect(unconfirmed.reason).toEqual(expect.any(String));
     expect(harness.mintReceipt).not.toHaveBeenCalled();
   });
 });

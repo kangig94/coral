@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,35 +87,5 @@ describe('succession obligation change wiring', () => {
       reconciler.dispose();
       rmSync(runDir, { recursive: true, force: true });
     }
-  });
-
-  it('notifies on job terminal, launch settle, and recovery terminal events', () => {
-    const eventBus = new TypedEventBus();
-    let onLaunchSettled: (() => void) | undefined;
-    const unsubscribeLaunch = vi.fn();
-    const launchCoordinator = {
-      subscribeSuccessionObligationChanges: (notify: () => void) => {
-        onLaunchSettled = notify;
-        return unsubscribeLaunch;
-      },
-    };
-    const notify = vi.fn();
-    const unsubscribe = subscribeSuccessionObligationChanges(eventBus, launchCoordinator, notify);
-
-    eventBus.emit('job:phase_changed', { jobId: 'job-1', phase: 'running', previousPhase: 'launching' });
-    expect(notify).not.toHaveBeenCalled();
-
-    eventBus.emit('job:completed', {
-      jobId: 'job-1',
-      result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
-    });
-    onLaunchSettled?.();
-    eventBus.emit('job:phase_changed', { jobId: 'recovered-job', phase: 'completed', previousPhase: 'running' });
-    expect(notify).toHaveBeenCalledTimes(3);
-
-    unsubscribe();
-    eventBus.emit('job:phase_changed', { jobId: 'job-2', phase: 'error', previousPhase: 'running' });
-    expect(notify).toHaveBeenCalledTimes(3);
-    expect(unsubscribeLaunch).toHaveBeenCalledOnce();
   });
 });

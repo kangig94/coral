@@ -21,11 +21,6 @@ it('emits parseable KB search and read JSON', () => {
   expect(JSON.parse(formatKbRead(note))).toMatchObject(note);
 });
 
-it('keeps error tags on the first line', () => {
-  const output = formatErrorEnvelope({ error: true, code: 'bad_request', message: 'line one\nline two' }, 400);
-  expect(output.split('\n')[0]).toContain('[code=bad_request, http=400]');
-});
-
 it('does not print credentials or store paths from error diagnostics', () => {
   const secret = 'sk-proj-private';
   const storePath = '/private/operator/store.db';

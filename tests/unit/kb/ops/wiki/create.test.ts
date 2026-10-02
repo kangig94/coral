@@ -49,29 +49,6 @@ describe('createWiki', () => {
     vi.resetModules();
   });
 
-  it('creates an empty wiki with the canonical body shape and normalized frontmatter', async () => {
-    const { createWiki, paths, frontmatter } = await loadModules();
-    const kb = createRuntime(paths);
-
-    const result = await createWiki(kb, {
-      slug: 'living-knowledge',
-      title: 'Living Knowledge',
-      tags: ['kb'],
-    });
-
-    expect(result.slug).toBe('living-knowledge');
-    expect(result.path).toBe(paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!));
-    const raw = readFileSync(result.path, 'utf-8');
-    expect(frontmatter.parseWikiFrontmatter(raw)).toEqual({
-      tags: ['kb'],
-      createdAt: '2026-04-10T01:02:03.000Z',
-      updatedAt: '2026-04-10T01:02:03.000Z',
-    });
-    const sections = frontmatter.parseWikiBody(frontmatter.extractBody(raw));
-    expect(sections.understanding).toBe('');
-    expect(sections.knowledge).toBe('');
-  });
-
   it('rejects an already-existing wiki slug', async () => {
     const { createWiki, paths } = await loadModules();
     const kb = createRuntime(paths);
@@ -82,13 +59,5 @@ describe('createWiki', () => {
     await expect(createWiki(kb, { slug: 'living-knowledge' })).rejects.toThrow('KB wiki already exists');
     expect(existsSync(existing)).toBe(true);
     expect(readFileSync(existing, 'utf-8')).toBe('# already here\n');
-  });
-
-  it('rejects malformed wiki slugs before touching disk', async () => {
-    const { createWiki, paths } = await loadModules();
-    const kb = createRuntime(paths);
-
-    await expect(createWiki(kb, { slug: 'Invalid Slug' })).rejects.toThrow();
-    expect(existsSync(paths.wikiDir(process.env.CORAL_KB_PATH!))).toBe(false);
   });
 });

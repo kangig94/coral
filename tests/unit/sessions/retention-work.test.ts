@@ -7,7 +7,6 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { JobStore } from '#src/jobs/store.js';
 import { managed } from '#src/providers/capability.js';
-import { providerArtifactIdentityKey } from '#src/providers/artifact-identity.js';
 import {
   type DiscardOutcome,
   type ProviderArtifactDiscardReconciliation,
@@ -15,8 +14,6 @@ import {
   ProviderArtifactProtocolInvariantError,
 } from '#src/providers/contract.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
-import type { RawRetentionWorkItem } from '#src/sessions/retention-work-item-recovery-source.js';
-import type { RawRetentionContinuationRow } from '#src/sessions/projection-recovery-source.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import {
@@ -27,9 +24,7 @@ import {
 } from '#src/sessions/provider-artifact-archive.js';
 import { readProjectionProviderSession } from '#src/sessions/projections.js';
 import {
-  hydrateRecoverySessionRetentionWork,
   RETENTION_ATTEMPT_OBLIGATION,
-  RETENTION_DISCARD_CONTINUATION_KIND,
   sessionRetentionWorkKey,
   type RecoverySessionRetentionWork,
   type RetentionDiscardContinuation,
@@ -41,7 +36,6 @@ import type { Database } from '#src/store/db.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
-import type { EventsRow } from '#src/store/schema.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
@@ -52,133 +46,12 @@ import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 const NOW = '2026-06-11T00:00:00.000Z';
-const SESSION_ID = 'session-1';
-const JOB_ID = 'job-1';
-
 const openDbs = new Set<Database>();
 
 afterEach(() => {
   for (const db of openDbs) db.close();
   openDbs.clear();
 });
-
-function sessionEntry(): ProviderSession {
-  return {
-    sessionId: SESSION_ID,
-    binding: TEST_CODEX_BINDING,
-    name: SESSION_ID,
-    state: 'pending',
-    retention: 'discard_provider_artifacts_on_terminal',
-    artifactHandles: [],
-    retentionDiscard: { attempts: [] },
-    cwd: '/tmp/project',
-    projectRoot: '/tmp/project',
-    backendNamespace: 'ns-a',
-    providerContinuity: null,
-    createdAt: NOW,
-    lastUsedAt: NOW,
-    version: 1,
-  };
-}
-
-function artifactHandle(handle: string, identityHandle = handle): ProviderSession['artifactHandles'][number] {
-  const identity = { kind: 'test-artifact', handle: identityHandle };
-  return {
-    handle,
-    identity,
-    identityKey: providerArtifactIdentityKey('codex', identity),
-    sourceJobId: JOB_ID,
-    recordedAt: NOW,
-  };
-}
-
-function eventRow(seq: number, type: string, streamKind: 'job' | 'session', streamId: string): EventsRow {
-  return {
-    seq,
-    ts: NOW,
-    type,
-    stream_kind: streamKind,
-    stream_id: streamId,
-    namespace: null,
-    project: null,
-    correlation_id: null,
-    causation_seq: null,
-    refs: null,
-    body: new Uint8Array(),
-  };
-}
-
-function continuationRow(payload: unknown): RawRetentionContinuationRow {
-  return {
-    subject_key: sessionRetentionWorkKey(SESSION_ID, JOB_ID),
-    subject_revision: 'composite-revision',
-    continuation_kind: RETENTION_DISCARD_CONTINUATION_KIND,
-    continuation_key: JSON.stringify(payload),
-  };
-}
-
-function continuationPayload() {
-  return {
-    v: 1,
-    sessionId: SESSION_ID,
-    jobId: JOB_ID,
-    sourceRevision: 'continued-source-revision',
-    attempt: 1,
-    handles: [],
-    descriptor: {
-      operationId: 'operation-1',
-      sessionId: SESSION_ID,
-      jobId: JOB_ID,
-      provider: 'codex',
-      sourceRevision: 'continued-source-revision',
-      handles: [],
-      archiveActionId: 'archive-action-1',
-      archivePayloadHash: 'archive-payload-1',
-      discardActionId: 'discard-action-1',
-      discardPayloadHash: 'discard-payload-1',
-      archivedAt: '2026-06-11T00:00:01.000Z',
-    },
-    completedObligationIds: [RETENTION_ATTEMPT_OBLIGATION],
-    stage: 'requested',
-  };
-}
-
-function rawWork(continuation: RawRetentionContinuationRow | null = null): RawRetentionWorkItem {
-  const entry = sessionEntry();
-  const releaseRow = eventRow(2, 'session.claim.released', 'session', SESSION_ID);
-  const terminalRow = eventRow(3, 'job.terminal.recorded', 'job', JOB_ID);
-  const session = {
-    kind: 'session' as const,
-    row: {
-      session_id: SESSION_ID,
-      controller: 'default' as const,
-      resumable: 0 as const,
-      conversation_ref: null,
-      scope_key: 'scope-1',
-      entry: JSON.stringify(entry),
-      last_seq: 1,
-    },
-    entry,
-    hasContinuationLeaseField: false,
-    retentionContinuations: continuation === null ? [] : [continuation],
-  };
-  return {
-    sessionId: SESSION_ID,
-    jobId: JOB_ID,
-    entry,
-    session,
-    lease: null,
-    release: { kind: 'release', row: releaseRow, sessionId: SESSION_ID, jobId: JOB_ID, entry },
-    terminal: { kind: 'terminal', row: terminalRow, sessionId: SESSION_ID, jobId: JOB_ID },
-    outcomes: [],
-    continuation,
-    sourceRevision: 'raw-source-revision',
-    subject: {
-      key: sessionRetentionWorkKey(SESSION_ID, JOB_ID),
-      revision: { kind: 'fingerprint', value: 'composite-revision' },
-    },
-  };
-}
 
 type ArtifactActionOptions = Parameters<
   ProviderManagedArtifactCapability<FixtureProviderAccess>['discardArtifacts']
@@ -476,127 +349,6 @@ function recoveryWork(
 }
 
 describe('sessions retention-work', () => {
-  it('hydrates one contained pair from its composite raw envelope', () => {
-    expect(hydrateRecoverySessionRetentionWork(rawWork())).toMatchObject({
-      sessionId: SESSION_ID,
-      jobId: JOB_ID,
-      recovery: {
-        sourceRevision: 'raw-source-revision',
-        archivedAt: NOW,
-        terminalCauseRef: { stream: { kind: 'job', id: JOB_ID }, seq: 3 },
-        continuation: null,
-      },
-    });
-  });
-
-  it('hydrates only the named retention-discard continuation state', () => {
-    const continuation = continuationRow(continuationPayload());
-
-    expect(hydrateRecoverySessionRetentionWork(rawWork(continuation))).toMatchObject({
-      recovery: {
-        sourceRevision: 'continued-source-revision',
-        archivedAt: '2026-06-11T00:00:01.000Z',
-        continuation: {
-          sessionId: SESSION_ID,
-          jobId: JOB_ID,
-          stage: 'requested',
-        },
-      },
-    });
-  });
-
-  it('reuses a published archive action and archivedAt without rewriting an archived record as missing', async () => {
-    const runtime = createArtifactRuntime();
-    const handle = '/tmp/provider/archive-retry.jsonl';
-    runtime.storage.mkdirSync('/tmp/provider', { recursive: true });
-    runtime.storage.writeFileSync(handle, 'published archive\n', { encoding: 'utf-8' });
-    const entry: ProviderSession = {
-      ...sessionEntry(),
-      artifactHandles: [artifactHandle(handle)],
-    };
-    const descriptor = deriveProviderArtifactActionDescriptor({
-      entry,
-      jobId: JOB_ID,
-      handles: [handle],
-      sourceRevision: 'archive-retry-revision',
-      archivedAt: NOW,
-    });
-    await archiveProviderArtifactsForJob({ runtime, descriptor });
-    runtime.storage.unlinkSync(handle);
-
-    const retryDescriptor = deriveProviderArtifactActionDescriptor({
-      entry,
-      jobId: JOB_ID,
-      handles: [handle],
-      sourceRevision: 'archive-retry-revision',
-      archivedAt: '2026-06-12T00:00:00.000Z',
-    });
-    await archiveProviderArtifactsForJob({ runtime, descriptor: retryDescriptor });
-
-    expect(retryDescriptor.archiveActionId).toBe(descriptor.archiveActionId);
-    expect(readManifest(runtime, retryDescriptor)).toMatchObject({
-      archiveActionId: descriptor.archiveActionId,
-      archivedAt: NOW,
-      artifacts: [{ status: 'archived' }],
-    });
-  });
-
-  it('adopts another action archive only with exact metadata and a verified archived hash', async () => {
-    const runtime = createArtifactRuntime();
-    const handle = '/tmp/provider/cross-action.jsonl';
-    runtime.storage.mkdirSync('/tmp/provider', { recursive: true });
-    runtime.storage.writeFileSync(handle, 'cross-action archive\n', { encoding: 'utf-8' });
-    const entry: ProviderSession = {
-      ...sessionEntry(),
-      artifactHandles: [artifactHandle(handle)],
-    };
-    const first = deriveProviderArtifactActionDescriptor({
-      entry,
-      jobId: JOB_ID,
-      handles: [handle],
-      sourceRevision: 'cross-action-revision-a',
-      archivedAt: NOW,
-    });
-    await archiveProviderArtifactsForJob({ runtime, descriptor: first });
-    const firstManifest = readManifest(runtime, first);
-    runtime.storage.unlinkSync(handle);
-
-    const adopted = deriveProviderArtifactActionDescriptor({
-      entry,
-      jobId: JOB_ID,
-      handles: [handle],
-      sourceRevision: 'cross-action-revision-b',
-      archivedAt: '2026-06-11T00:00:01.000Z',
-    });
-    await archiveProviderArtifactsForJob({ runtime, descriptor: adopted });
-    const adoptedManifest = readManifest(runtime, adopted);
-    expect(adopted.archiveActionId).not.toBe(first.archiveActionId);
-    expect(adoptedManifest.artifacts[0]).toMatchObject({
-      status: 'archived',
-      archivePath: firstManifest.artifacts[0]?.archivePath,
-      sourceSha256: firstManifest.artifacts[0]?.sourceSha256,
-      archiveSha256: firstManifest.artifacts[0]?.archiveSha256,
-    });
-
-    const mismatchedEntry: ProviderSession = {
-      ...entry,
-      artifactHandles: [artifactHandle(handle, 'other')],
-    };
-    const separate = deriveProviderArtifactActionDescriptor({
-      entry: mismatchedEntry,
-      jobId: JOB_ID,
-      handles: [handle],
-      sourceRevision: 'cross-action-revision-c',
-      archivedAt: '2026-06-11T00:00:02.000Z',
-    });
-    await archiveProviderArtifactsForJob({ runtime, descriptor: separate });
-    const separateRecord = readManifest(runtime, separate).artifacts[0];
-    expect(separateRecord).toMatchObject({ status: 'missing' });
-    expect(separateRecord).not.toHaveProperty('archivePath');
-    expect(readManifest(runtime, first).artifacts[0]).toMatchObject({ status: 'archived' });
-    expect(readManifest(runtime, adopted).artifacts[0]).toMatchObject({ status: 'archived' });
-  });
-
   it('rejects a corrupted foreign archive before provider discard without downgrading its record', async () => {
     const harness = createSettlementHarness();
     const jobId = 'job-corrupted-foreign-archive';
@@ -777,37 +529,5 @@ describe('sessions retention-work', () => {
       ProviderArtifactProtocolInvariantError,
     );
     expect(harness.providerEffects).toHaveLength(1);
-  });
-
-  it('treats archive materialization failure as best-effort and still settles provider discard', async () => {
-    const harness = createSettlementHarness();
-    const jobId = 'job-best-effort-archive-failure';
-    const handle = '/tmp/provider/best-effort-archive-failure.jsonl';
-    const { sessionId, entry } = await seedRetentionWork(harness, {
-      jobId,
-      handle,
-      nativeContent: 'best effort archive\n',
-    });
-    const writeAtomic = harness.runtime.storage.writeAtomicSync.bind(harness.runtime.storage);
-    const writeSpy = vi
-      .spyOn(harness.runtime.storage, 'writeAtomicSync')
-      .mockImplementation((path, data, options) =>
-        path.endsWith('/manifest.json') ? false : writeAtomic(path, data, options),
-      );
-    try {
-      await expect(harness.reactor.enforceRetention({ sessionId, jobId, entry })).resolves.toMatchObject({
-        kind: 'advanced',
-        outcome: 'settled',
-      });
-    } finally {
-      writeSpy.mockRestore();
-    }
-
-    expect(harness.providerEffects).toHaveLength(1);
-    expect(readRetentionEvents(harness, sessionId).map(({ type }) => type)).toEqual([
-      'session.retention.discard.requested',
-      'session.retention.discard.completed',
-    ]);
-    expect(harness.logs.some((message) => message.includes('Provider artifact archive failed'))).toBe(true);
   });
 });

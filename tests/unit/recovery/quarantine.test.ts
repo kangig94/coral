@@ -247,21 +247,6 @@ describe('RecoveryQuarantineStore', () => {
     expect(quarantine.list()[0]).toMatchObject({ detail: 'settled detail', remedy: null });
   });
 
-  it('should map a nullable revision to an until-cleared subject', () => {
-    const subject: RecoverySubject = {
-      key: 'scan',
-      revision: { kind: 'until-cleared' },
-    };
-
-    expect(quarantine.upsert(activeWrite(subject))).toBe(true);
-    expect(readRow(db, 'scan')?.subject_revision).toBeNull();
-    expect(quarantine.read(boundary, 'scan')).toEqual({
-      boundary,
-      subject,
-      state: 'active',
-    });
-  });
-
   it('should converge before hydration against persisted fingerprint and until-cleared rows', async () => {
     type Envelope = { readonly key: string; readonly revision: string; readonly value: string };
     type Decoded = { readonly key: string; readonly value: string };

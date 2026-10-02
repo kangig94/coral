@@ -84,32 +84,6 @@ export function runFrontmatterMergeDriver(
   };
 }
 
-export function mergeMarkdownRevisions(
-  baseContent: string,
-  oursContent: string,
-  theirsContent: string,
-  filePath: string,
-  host: FrontmatterMergeDriverHost,
-): { content: string; result: FrontmatterMergeDriverResult } {
-  const tempDir = host.createTempDir('coral-frontmatter-driver-');
-  const basePath = join(tempDir, 'base.md');
-  const oursPath = join(tempDir, 'ours.md');
-  const theirsPath = join(tempDir, 'theirs.md');
-
-  try {
-    host.writeFileSync(basePath, baseContent, 'utf-8');
-    host.writeFileSync(oursPath, oursContent, 'utf-8');
-    host.writeFileSync(theirsPath, theirsContent, 'utf-8');
-    const result = runFrontmatterMergeDriver({ basePath, oursPath, theirsPath, filePath }, host);
-    return {
-      content: host.readFileSync(oursPath, 'utf-8'),
-      result,
-    };
-  } finally {
-    host.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
-
 function splitMarkdownDocument(content: string): MarkdownDocument {
   const match = content.match(FRONTMATTER_BLOCK_PATTERN);
   if (match === null) {

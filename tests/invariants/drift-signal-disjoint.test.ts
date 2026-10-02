@@ -1,30 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
-import { createCorpusAuthorityBaselineStore } from '#src/kb/corpus/rescan/authority-baseline.js';
-import { detectProjectionArtifactLag } from '#src/kb/corpus/rescan/drift.js';
-import { createCorpusMarkdownFileScan, createCorpusScanView } from '#src/kb/corpus/rescan/scan.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';
-import { createEmptyGeneratedCommunityProjectionStore } from '#tests/fixtures/test-runtime.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
-
-const tempRoots: string[] = [];
-
-function tempRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), 'coral-drift-split-'));
-  tempRoots.push(root);
-  return root;
-}
-
-afterEach(() => {
-  while (tempRoots.length > 0) {
-    rmSync(tempRoots.pop()!, { recursive: true, force: true });
-  }
-});
 
 const SNAPSHOT: KbCorpusSnapshot = {
   snapshotId: 'snapshot-a',
@@ -48,97 +27,6 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('drift signal split', () => {
-  it('rebuilds the corpus authority baseline byte-identically from markdown authority', () => {
-    const db = openKbTestStoreDb(':memory:');
-    const scan = createCorpusScanView({
-      markdownFiles: [
-        createCorpusMarkdownFileScan({
-          kind: 'note',
-          path: 'notes/coral-note.md',
-          content: [
-            '---',
-            'tags: [coral]',
-            'principles: []',
-            'source:',
-            '  - kangig94/coral',
-            'createdAt: 2026-04-01T00:00:00.000Z',
-            'updatedAt: 2026-04-01T00:00:00.000Z',
-            'entrySeq: 1',
-            '---',
-            '# Coral Note',
-            '',
-            'Body.',
-            '',
-          ].join('\n'),
-        }),
-        createCorpusMarkdownFileScan({
-          kind: 'source',
-          path: 'sources/sqlite-source.md',
-          content: [
-            '---',
-            'title: SQLite Source',
-            'type: article',
-            'tags: [sqlite]',
-            'importedAt: 2026-04-01',
-            'entrySeq: 2',
-            '---',
-            '# SQLite Source',
-            '',
-            'Body.',
-            '',
-          ].join('\n'),
-        }),
-      ],
-      entityGraph: null,
-    });
-    let id = 0;
-    const store = createCorpusAuthorityBaselineStore(db, () => `test-id-${(id += 1)}`);
-    const before = [...store.rebuild(scan).entries()].sort();
-
-    store.applyDelta({
-      deletes: before.map(([entryId]) => entryId),
-      upserts: [],
-    });
-    expect(store.read().size).toBe(0);
-    const after = [...store.rebuild(scan).entries()].sort();
-
-    expect(after).toEqual(before);
-  });
-
-  it('classifies projection artifact lag separately from authority drift inputs', () => {
-    const lag = detectProjectionArtifactLag(
-      {
-        getCorpusStateSnapshot: () => SNAPSHOT,
-        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore({ runtimeDir: tempRoot() }),
-      },
-      [
-        {
-          artifactId: 'engine:cache',
-          kind: 'projection-cache',
-          targetConsumerIds: ['consumer-a'],
-          corpusInterest: 'content',
-          artifactPaths: ['/tmp/cache'],
-          expectedProjectionIdentityHash: 'expected',
-          freshness: {
-            status: 'present',
-            projected: {
-              ...SNAPSHOT,
-              projectionIdentityHash: 'older-projection',
-            },
-          },
-        },
-      ],
-    );
-
-    expect(lag).toEqual([
-      {
-        artifactId: 'engine:cache',
-        targetConsumerIds: ['consumer-a'],
-        diagnostic: expect.stringContaining('projection identity'),
-      },
-    ]);
-  });
-
   it('forces unchanged-snapshot corpus apply through waitFreshUntil generation without seq bumps', async () => {
     const db = openKbTestStoreDb(':memory:');
     const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });

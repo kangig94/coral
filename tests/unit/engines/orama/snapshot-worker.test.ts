@@ -1,24 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-
-import type { RawData } from '@orama/orama';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  computeOramaArtifactDigest,
-  createOramaEntryManifestFromArtifact,
-  createOramaProjectionMetadataBase,
-  type OramaProjectionMetadata,
-} from '#src/engines/orama/artifact-port.js';
+import { computeOramaArtifactDigest, type OramaProjectionMetadata } from '#src/engines/orama/artifact-port.js';
 import { createOramaDb } from '#src/engines/orama/document-builder.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
-import {
-  serializeOramaSnapshotArtifactInWorker,
-  serializeOramaProjectionArtifactInWorker,
-  ORAMA_SNAPSHOT_SERIALIZE_WORKER_TIMEOUT_MS,
-} from '#src/engines/orama/snapshot-worker.js';
 
 const tempRoots: string[] = [];
 
@@ -33,23 +21,6 @@ afterEach(() => {
     rmSync(tempRoots.pop()!, { recursive: true, force: true });
   }
 });
-
-function fakeRawArtifact(): RawData {
-  return {
-    docs: {
-      docs: {
-        'note:graph-rag': {
-          id: 'note:graph-rag',
-          entryId: 'note:graph-rag',
-          contentHash: 'content-a',
-          metadataHash: 'metadata-a',
-          kind: 'note',
-          freshness: 'fresh',
-        },
-      },
-    },
-  } as unknown as RawData;
-}
 
 function filesPort() {
   const textWrites: string[] = [];
@@ -74,40 +45,6 @@ function filesPort() {
 }
 
 describe('Orama snapshot artifact worker', () => {
-  it('serializes artifact JSON, digest, and entry manifest off-thread', async () => {
-    const artifact = fakeRawArtifact();
-    const serialized = await serializeOramaSnapshotArtifactInWorker(artifact);
-    const expectedRaw = `${JSON.stringify(artifact, null, 2)}\n`;
-
-    expect(ORAMA_SNAPSHOT_SERIALIZE_WORKER_TIMEOUT_MS).toBe(60_000);
-    expect(serialized.artifactRaw).toBe(expectedRaw);
-    expect(serialized.artifactDigest).toBe(computeOramaArtifactDigest(expectedRaw));
-    expect(serialized.entryManifest).toEqual(createOramaEntryManifestFromArtifact(artifact));
-  });
-
-  it('serializes projection artifact metadata JSON off-thread when metadata base is provided', async () => {
-    const artifact = fakeRawArtifact();
-    const snapshot = {
-      snapshotId: 'snapshot-a',
-      contentSeq: 1,
-      metadataSeq: 2,
-      contentManifestHash: 'content-hash',
-      metadataManifestHash: 'metadata-hash',
-    };
-    const metadataBase = createOramaProjectionMetadataBase(snapshot, { tokenizerIdentity: 'intl-baseline' });
-    const serialized = await serializeOramaProjectionArtifactInWorker(artifact, metadataBase);
-    const artifactRaw = `${JSON.stringify(artifact, null, 2)}\n`;
-    const entryManifest = createOramaEntryManifestFromArtifact(artifact);
-
-    expect(serialized.artifactRaw).toBe(artifactRaw);
-    expect(serialized.metadata).toEqual({
-      ...metadataBase,
-      artifactDigest: computeOramaArtifactDigest(artifactRaw),
-      entryManifest,
-    });
-    expect(serialized.metadataRaw).toBe(`${JSON.stringify(serialized.metadata, null, 2)}\n`);
-  });
-
   it('persists snapshot artifact and metadata through the async worker path when text writes are available', async () => {
     const root = tempRoot();
     const files = filesPort();
