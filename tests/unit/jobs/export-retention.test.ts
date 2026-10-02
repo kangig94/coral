@@ -35,6 +35,8 @@ function exported(f: ReturnType<typeof fixture>, id: string): string {
   mkdirSync(join(path, 'provider-artifacts'), { recursive: true });
   writeFileSync(join(path, 'result.md'), 'durable result');
   writeFileSync(join(path, 'provider-artifacts', 'original.jsonl'), 'provider session');
+  for (const child of ['', 'result.md', 'provider-artifacts', 'provider-artifacts/original.jsonl'])
+    utimesSync(join(path, child), 1, 1);
   return path;
 }
 async function prune(
@@ -55,66 +57,155 @@ async function prune(
 }
 
 describe('export retention', () => {
-  it.each([false, true])(
-    'continues slow sorted top-level eligibility and restarts changed directories (%s)',
-    async (changed) => {
+  it('finishes a slow 320-entry eligibility scan in one slice, then deletes across retries', async () => {
+    const f = fixture();
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, 'wide-residue');
+    mkdirSync(path, { recursive: true });
+    for (let i = 0; i < 320; i += 1) {
+      const child = join(path, `old-${String(i).padStart(3, '0')}`);
+      writeFileSync(child, 'old');
+      utimesSync(child, 1, 1);
+    }
+    utimesSync(path, 1, 1);
+    const lstat = f.runtime.storage.lstatSync;
+    let elapsed = 0;
+    const checked = new Set<string>();
+    f.runtime.storage.lstatSync = ((...args: Parameters<typeof lstat>) => {
+      elapsed += 20;
+      if (String(args[0]) !== path) checked.add(String(args[0]));
+      return lstat(...args);
+    }) as typeof lstat;
+    const run = () =>
+      pruneJobExports({
+        db: f.db,
+        runtime: f.runtime,
+        cutoff: RETENTION_CUTOFF,
+        afterId: '',
+        budget: { canContinue: () => elapsed < 5000, record: f.budget.record },
+        jobState: () => ({ kind: 'absent' }),
+        resultHold: () => 'released',
+        mutate: (operation) => operation(),
+      });
+    await run();
+    expect(checked.size).toBe(320);
+    expect(readdirSync(path)).toHaveLength(320);
+    expect(
+      f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.eligibility.v1'),
+    ).toBeUndefined();
+    expect(
+      f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.admission.v1.wide-residue'),
+    ).toEqual({ value: String(RETENTION_CUTOFF) });
+    for (let cycle = 0; cycle < 5 && existsSync(path); cycle += 1) {
+      elapsed = 0;
+      await run();
+    }
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it.each([
+    ['file', 'absent'],
+    ['directory', 'absent'],
+    ['file', 'terminal'],
+    ['directory', 'terminal'],
+  ] as const)('keeps a top-level %s rewritten after eligibility (%s)', async (kind, state) => {
+    const f = fixture();
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, 'rewritten');
+    const child = join(path, 'old-000');
+    mkdirSync(path, { recursive: true });
+    if (kind === 'directory') mkdirSync(child);
+    else writeFileSync(child, 'old');
+    utimesSync(child, 1, 1);
+    utimesSync(path, 1, 1);
+    await pruneJobExports({
+      db: f.db,
+      runtime: f.runtime,
+      cutoff: RETENTION_CUTOFF,
+      afterId: '',
+      budget: f.budget,
+      jobState: () => (state === 'terminal' ? { kind: 'terminal', terminalAt: 1 } : { kind: 'absent' }),
+      resultHold: () => {
+        if (kind === 'directory') writeFileSync(join(child, 'new-result.md'), 'fresh');
+        else writeFileSync(child, 'fresh');
+        utimesSync(child, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+        return 'released';
+      },
+      mutate: (operation) => operation(),
+    });
+    expect(existsSync(child)).toBe(true);
+    if (kind === 'directory') expect(existsSync(join(child, 'new-result.md'))).toBe(true);
+    expect(f.outcomes).toContainEqual(
+      expect.objectContaining({ kind: 'kept', reason: 'residue-recent-or-unobservable' }),
+    );
+  });
+
+  it.each(['file', 'directory'])(
+    'ignores obsolete eligibility prefixes when a top-level %s was rewritten',
+    async (kind) => {
       const f = fixture();
-      const path = join(f.runtime.paths.coral.exports.jobsRoot, 'wide-residue');
+      const path = join(f.runtime.paths.coral.exports.jobsRoot, 'checkpoint-residue');
       mkdirSync(path, { recursive: true });
-      for (let i = 319; i >= 0; i -= 1) {
+      for (let i = 0; i < 320; i += 1) {
         const child = join(path, `old-${String(i).padStart(3, '0')}`);
-        writeFileSync(child, 'old');
+        if (kind === 'directory') mkdirSync(child);
+        else writeFileSync(child, 'old');
         utimesSync(child, 1, 1);
       }
       utimesSync(path, 1, 1);
-      const lstat = f.runtime.storage.lstatSync;
-      let elapsed = 0;
-      const checked: string[] = [];
-      f.runtime.storage.lstatSync = ((...args: Parameters<typeof lstat>) => {
-        elapsed += 20;
-        if (args[1]?.bigint && String(args[0]) !== path) checked.push(String(args[0]));
-        return lstat(...args);
-      }) as typeof lstat;
-      let afterId = '';
-      for (let cycle = 0; cycle < 4 && existsSync(path); cycle += 1) {
-        elapsed = 0;
-        checked.length = 0;
-        afterId = await pruneJobExports({
-          db: f.db,
-          runtime: f.runtime,
-          cutoff: RETENTION_CUTOFF + cycle * 86_400_000,
-          afterId,
-          budget: { canContinue: () => elapsed < 5000, record: f.budget.record },
-          jobState: () => ({ kind: 'absent' }),
-          resultHold: () => 'released',
-          mutate: (operation) => operation(),
-        });
-        if (cycle === 0) {
-          expect(checked).toEqual([...checked].sort());
-          const saved = f.db
-            .prepare<
-              [],
-              { value: string }
-            >("SELECT value FROM meta WHERE key = 'storage-retention.exports.eligibility.v1'")
-            .get();
-          expect(saved).toBeDefined();
-          expect(JSON.parse(saved!.value)).toMatchObject({
-            jobId: 'wide-residue',
-            lastEntry: 'old-255',
-            newestMtimeNs: '1000000000',
-          });
-          expect(readdirSync(path)).toHaveLength(320);
-          if (changed) {
-            utimesSync(join(path, 'old-000'), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
-            utimesSync(path, 2, 2);
-          }
-        }
-        if (cycle === 1) expect(checked[0]).toBe(join(path, changed ? 'old-000' : 'old-256'));
-      }
-      expect(existsSync(path)).toBe(changed);
-      if (changed) expect(readdirSync(path)).toHaveLength(320);
+      f.db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
+        'storage-retention.exports.eligibility.v1',
+        JSON.stringify({
+          jobId: 'checkpoint-residue',
+          lastEntry: 'old-255',
+          directoryMtimeNs: '1000000000',
+          newestMtimeNs: '1000000000',
+          admitted: false,
+        }),
+      );
+      const child = join(path, 'old-000');
+      if (kind === 'directory') writeFileSync(join(child, 'new-result.md'), 'fresh');
+      else writeFileSync(child, 'fresh');
+      utimesSync(child, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+      await prune(f, {});
+      expect(existsSync(child)).toBe(true);
+      expect(readdirSync(path)).toHaveLength(320);
+      expect(
+        f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.eligibility.v1'),
+      ).toBeUndefined();
     },
   );
+
+  it.each(['file', 'directory'])('rechecks a recently rewritten admitted top-level %s on retry', async (kind) => {
+    const f = fixture();
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, 'admitted');
+    const child = join(path, 'old-000');
+    mkdirSync(path, { recursive: true });
+    if (kind === 'directory') mkdirSync(child);
+    else writeFileSync(child, 'old');
+    utimesSync(child, 1, 1);
+    utimesSync(path, 1, 1);
+    f.db
+      .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+      .run('storage-retention.exports.admission.v1.admitted', String(RETENTION_CUTOFF));
+    if (kind === 'directory') writeFileSync(join(child, 'new-result.md'), 'fresh');
+    else writeFileSync(child, 'fresh');
+    utimesSync(child, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+    await prune(f, {});
+    expect(existsSync(child)).toBe(true);
+    expect(
+      f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.admission.v1.admitted'),
+    ).toBeUndefined();
+    await pruneJobExports({
+      db: f.db,
+      runtime: f.runtime,
+      cutoff: RETENTION_NOW + 1,
+      afterId: '',
+      budget: f.budget,
+      jobState: () => ({ kind: 'absent' }),
+      resultHold: () => 'released',
+      mutate: (operation) => operation(),
+    });
+    expect(existsSync(path)).toBe(false);
+  });
 
   it.each([false, true])('retries partial residue deletion without resetting age (new content: %s)', async (fresh) => {
     const f = fixture();
@@ -316,7 +407,6 @@ describe('export retention', () => {
         expect(unlinks).toBeGreaterThan(0);
         if (existsSync(path)) {
           utimesSync(path, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
-          utimesSync(nested, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
         }
       }
       expect(existsSync(path)).toBe(false);
@@ -441,7 +531,7 @@ describe('export retention', () => {
         await pruneJobExports({
           db: f.db,
           runtime: f.runtime,
-          cutoff: Date.now() - 14 * 86_400_000,
+          cutoff: RETENTION_CUTOFF,
           afterId: '',
           budget: { record: () => {}, canContinue: () => ++operations <= 20_000 },
           jobState: () => ({ kind: 'absent' }),
@@ -551,4 +641,34 @@ describe('export retention', () => {
     expect(locations.exportResultRetention('historical', 'another-active-epoch')).toBe('unknown');
     expect(existsSync(join(path, 'result.md'))).toBe(true);
   });
+});
+
+it('bounds export pending failures and reports overflow until failures clear', async () => {
+  const f = fixture();
+  const ids = Array.from({ length: 101 }, (_, i) => `overflow-${String(i).padStart(3, '0')}`);
+  const states: Record<string, ExportJobRetentionState> = {};
+  for (const id of ids) {
+    exported(f, id);
+    states[id] = { kind: 'terminal', terminalAt: 1 };
+  }
+  const unlink = f.runtime.storage.unlinkSync;
+  f.runtime.storage.unlinkSync = () => {
+    throw new Error('persistent export EACCES');
+  };
+  try {
+    await prune(f, states);
+    expect(f.outcomes).toContainEqual(expect.objectContaining({ reason: 'export-pending-overflow' }));
+    const saved = f.db
+      .prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?')
+      .get('storage-retention.exports.pending.v1');
+    expect(JSON.parse(saved!.value).subjects).toHaveLength(100);
+    f.runtime.storage.unlinkSync = unlink;
+    await prune(f, states);
+    expect(ids.some((id) => existsSync(join(f.runtime.paths.coral.exports.jobsRoot, id)))).toBe(false);
+    expect(
+      f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.pending.v1'),
+    ).toBeUndefined();
+  } finally {
+    f.runtime.storage.unlinkSync = unlink;
+  }
 });

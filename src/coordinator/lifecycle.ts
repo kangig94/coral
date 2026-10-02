@@ -1,8 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
-import { z } from 'zod';
-import type { RetentionRunBudget } from '../store/retention-outcome.js';
+import { createRetentionPendingSet, type RetentionRunBudget } from '../store/retention-outcome.js';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
 import { notifyLaunchDiscovery } from '../infra/coordinator-admission.js';
@@ -730,9 +729,6 @@ export function createCrashedJobTerminalizationRetryPlan(
   };
 }
 
-const scratchPendingKey = 'storage-retention.scratch.pending.v1';
-const scratchPendingSchema = z.object({ subjects: z.array(z.string()).max(100), overflow: z.boolean() });
-
 export async function cleanupStaleJobs(
   progressStore: JobStore,
   currentBundleHash: string,
@@ -748,19 +744,9 @@ export async function cleanupStaleJobs(
   staleJobCleanupRetryContexts.set(progressStore.getDb(), context);
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs });
   const db = progressStore.getDb();
-  const saved = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(scratchPendingKey);
-  const pendingState = saved ? scratchPendingSchema.parse(JSON.parse(saved.value)) : { subjects: [], overflow: false };
-  const pending = new Set(pendingState.subjects);
+  const pending = createRetentionPendingSet(db, 'storage-retention.scratch.pending.v1', (operation) => operation());
   const attempted = new Set<string>();
-  const savePending = (): void => {
-    if (pending.size === 0 && !pendingState.overflow)
-      db.prepare('DELETE FROM meta WHERE key = ?').run(scratchPendingKey);
-    else
-      db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
-        scratchPendingKey,
-        JSON.stringify({ subjects: [...pending], overflow: pendingState.overflow }),
-      );
-  };
+  let retrying = false;
   const clearSettlementQuarantine = (id: string): void => {
     const entry = quarantine.read('stale-job-cleanup', id);
     const stage = db
@@ -775,7 +761,7 @@ export async function cleanupStaleJobs(
   let interrupted = false;
   const canContinue = (): boolean => {
     signal.throwIfAborted();
-    if (interrupted) return false;
+    if (interrupted || (retrying && budget?.canRetry?.() === false)) return false;
     if (budget && !budget.canContinue()) {
       interrupted = true;
       budget.record({ kind: 'kept', subject: 'scratch-jobs', reason: 'scan-pending' });
@@ -789,7 +775,7 @@ export async function cleanupStaleJobs(
     quarantine,
     ...cleanupPolicy,
     settle: async (item) => {
-      if (!canContinue() || attempted.has(item.jobId))
+      if (!canContinue() || attempted.has(item.jobId) || (!retrying && pending.subjects.has(item.jobId)))
         return {
           kind: 'deferred',
           authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
@@ -798,8 +784,7 @@ export async function cleanupStaleJobs(
       attempted.add(item.jobId);
       const result = await cleanupPolicy.settle(item);
       if (result.kind === 'advanced') {
-        pending.delete(item.jobId);
-        savePending();
+        pending.remove(item.jobId);
       }
       return result;
     },
@@ -807,12 +792,7 @@ export async function cleanupStaleJobs(
       const disposition = cleanupPolicy.onFault(fault);
       failures.push(`${fault.subject.key}: ${errorMessage(fault.error)}`);
       if (fault.stage !== 'settle') return disposition;
-      if (pending.has(fault.subject.key) || pending.size < 100) pending.add(fault.subject.key);
-      else {
-        pendingState.overflow = true;
-        interrupted = true;
-      }
-      savePending();
+      if (!pending.add(fault.subject.key)) interrupted = true;
       return {
         kind: 'deferred',
         authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
@@ -823,8 +803,10 @@ export async function cleanupStaleJobs(
   const cursorKey = 'storage-retention.scratch.v1';
   let afterId =
     db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(cursorKey)?.value ?? '';
-  for (const id of [...pending]) {
+  retrying = true;
+  for (const id of pending.retryOrder()) {
     if (!canContinue()) break;
+    pending.advance(id);
     const candidate = db
       .prepare<
         [string],
@@ -832,8 +814,7 @@ export async function cleanupStaleJobs(
       >("SELECT job_id FROM projection_jobs WHERE job_id = ? AND phase NOT IN ('queued', 'launching', 'running')")
       .get(id);
     if (!candidate) {
-      pending.delete(id);
-      savePending();
+      pending.remove(id);
       continue;
     }
     clearSettlementQuarantine(id);
@@ -843,6 +824,7 @@ export async function cleanupStaleJobs(
     });
     await yieldToEventLoop();
   }
+  retrying = false;
   while (canContinue()) {
     let nextId: string | null = null;
     await runStartupStaleArtifactPrune({
@@ -859,17 +841,15 @@ export async function cleanupStaleJobs(
     if (interrupted) break;
     if (nextId === null) {
       db.prepare('DELETE FROM meta WHERE key = ?').run(cursorKey);
-      pendingState.overflow = false;
-      savePending();
+      pending.clearOverflow();
       break;
     }
     afterId = nextId;
     db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(cursorKey, afterId);
     await yieldToEventLoop();
   }
-  for (const id of pending) budget?.record({ kind: 'kept', subject: id, reason: 'scratch-cleanup-pending' });
-  if (pendingState.overflow)
-    budget?.record({ kind: 'kept', subject: 'scratch-jobs', reason: 'scratch-pending-overflow' });
+  for (const id of pending.subjects) budget?.record({ kind: 'kept', subject: id, reason: 'scratch-cleanup-pending' });
+  if (pending.overflow()) budget?.record({ kind: 'kept', subject: 'scratch-jobs', reason: 'scratch-pending-overflow' });
   const hydrationHolds = db
     .prepare<
       [],

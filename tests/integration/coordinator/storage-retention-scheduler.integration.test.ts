@@ -39,6 +39,7 @@ function finish(f: ReturnType<typeof fixture>, id: string) {
   const path = join(f.runtime.paths.coral.exports.jobsRoot, id);
   mkdirSync(path, { recursive: true });
   writeFileSync(join(path, 'result.md'), 'result');
+  utimesSync(join(path, 'result.md'), new Date(f.runtime.time.now()), new Date(f.runtime.time.now()));
   return path;
 }
 function scheduler(

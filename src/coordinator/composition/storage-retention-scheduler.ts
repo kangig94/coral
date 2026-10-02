@@ -62,6 +62,8 @@ export function createStorageRetentionScheduler(input: {
                 (other, otherIndex) => otherIndex !== index && other.kind === 'kept' && other.reason === entry.reason,
               ),
           );
+        if (replace < 0 && outcome.kind === 'kept')
+          replace = status.outcomes.findIndex((entry) => entry.kind === 'failed');
         if (replace >= 0) status.outcomes[replace] = outcome;
       }
     };
@@ -101,6 +103,8 @@ export function createStorageRetentionScheduler(input: {
             let operations = 0;
             const budget: RetentionRunBudget = {
               record,
+              canRetry: () =>
+                runtime.time.monotonicNow() < deadline - BigInt(OWNER_BUDGET_MS / 2) && operations < 10_000,
               canContinue: () => {
                 let allowed =
                   !abort.signal.aborted &&

@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { createRetentionFixture, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
@@ -215,6 +215,163 @@ it('bounds pending scratch failures and retains the cursor at overflow until fai
     ).toBeUndefined();
   } finally {
     f.runtime.storage.rmSync = rm;
+    await s.stop();
+    f.close();
+  }
+});
+
+it.each([5, 10])('rotates %i slow scratch failures while discovering unrelated expired artifacts', async (count) => {
+  const f = fixture();
+  openSettledTestStoreDb(f.runtime).close();
+  const bad = Array.from({ length: count }, (_, i) => `fairness-a-${i}`);
+  const good = 'fairness-z-good';
+  expiredJobs(f, [...bad, good]);
+  f.db
+    .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+    .run('storage-retention.scratch.pending.v1', JSON.stringify({ subjects: bad, overflow: false }));
+  const s = runner(f);
+  const rm = f.runtime.storage.rmSync;
+  const calls: string[] = [];
+  f.runtime.storage.rmSync = (path, options) => {
+    const id = [...bad, good].find((id) => f.store.jobDir(id) === String(path))!;
+    calls.push(id);
+    if (bad.includes(id)) {
+      s.advance(1000);
+      throw new Error('persistent EACCES');
+    }
+    return rm(path, options);
+  };
+  try {
+    for (let cycle = 0; cycle < Math.ceil(count / 3); cycle += 1) {
+      const start = calls.length;
+      const status = await s.run();
+      expect(status.phase).toBe('partial');
+      expect(calls.slice(start).filter((id) => bad.includes(id)).length).toBeLessThanOrEqual(3);
+      expect(existsSync(f.store.jobDir(good))).toBe(false);
+    }
+    expect(bad.every((id) => calls.includes(id))).toBe(true);
+    f.runtime.storage.rmSync = rm;
+    expect(await s.run()).toMatchObject({ phase: 'completed', deleted: count });
+  } finally {
+    f.runtime.storage.rmSync = rm;
+    await s.stop();
+    f.close();
+  }
+});
+
+it('keeps export failures visible beyond the main cursor and retries until cleared', async () => {
+  const f = fixture();
+  openSettledTestStoreDb(f.runtime).close();
+  const ids = ['export-a', 'export-b', 'export-c'];
+  expiredJobs(f, ids);
+  for (const id of ids) {
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, id);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'result.md'), 'old result');
+    utimesSync(join(path, 'result.md'), 1, 1);
+  }
+  const s = runner(f);
+  const unlink = f.runtime.storage.unlinkSync;
+  let failing = true;
+  f.runtime.storage.unlinkSync = (path) => {
+    if (String(path) === join(f.runtime.paths.coral.exports.jobsRoot, ids[0], 'result.md') && failing) {
+      s.advance(1000);
+      throw new Error('persistent export EACCES');
+    }
+    if (String(path) === join(f.runtime.paths.coral.exports.jobsRoot, ids[1], 'result.md')) s.advance(4000);
+    return unlink(path);
+  };
+  try {
+    expect((await s.run()).phase).toBe('partial');
+    const second = await s.run();
+    expect(second.phase).toBe('partial');
+    expect(second.outcomes).toContainEqual(
+      expect.objectContaining({ reason: 'export-cleanup-pending', subject: ids[0] }),
+    );
+    expect(existsSync(join(f.runtime.paths.coral.exports.jobsRoot, ids[2]))).toBe(false);
+    failing = false;
+    const final = await s.run();
+    expect(final.phase).toBe('completed');
+    expect(ids.some((id) => existsSync(join(f.runtime.paths.coral.exports.jobsRoot, id)))).toBe(false);
+  } finally {
+    f.runtime.storage.unlinkSync = unlink;
+    await s.stop();
+    f.close();
+  }
+});
+
+it('rotates slow export failures while the main scan reaches unrelated exports', async () => {
+  const f = fixture();
+  openSettledTestStoreDb(f.runtime).close();
+  const bad = Array.from({ length: 10 }, (_, i) => `export-fairness-${i}`);
+  const good = 'z-export-good';
+  expiredJobs(f, [...bad, good]);
+  for (const id of [...bad, good]) {
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, id);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'result.md'), 'old result');
+    utimesSync(join(path, 'result.md'), 1, 1);
+  }
+  f.db
+    .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+    .run('storage-retention.exports.pending.v1', JSON.stringify({ subjects: bad, overflow: false }));
+  const s = runner(f);
+  const unlink = f.runtime.storage.unlinkSync;
+  const calls: string[] = [];
+  f.runtime.storage.unlinkSync = (path) => {
+    const id = [...bad, good].find(
+      (id) => String(path) === join(f.runtime.paths.coral.exports.jobsRoot, id, 'result.md'),
+    );
+    if (id) calls.push(id);
+    if (id && bad.includes(id)) {
+      s.advance(1000);
+      throw new Error('persistent export EACCES');
+    }
+    return unlink(path);
+  };
+  try {
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      const start = calls.length;
+      const status = await s.run();
+      expect(status.phase).toBe('partial');
+      expect(calls.slice(start).filter((id) => bad.includes(id)).length).toBeLessThanOrEqual(3);
+      expect(existsSync(join(f.runtime.paths.coral.exports.jobsRoot, good))).toBe(false);
+    }
+    expect(bad.every((id) => calls.includes(id))).toBe(true);
+    f.runtime.storage.unlinkSync = unlink;
+    expect((await s.run()).phase).toBe('completed');
+  } finally {
+    f.runtime.storage.unlinkSync = unlink;
+    await s.stop();
+    f.close();
+  }
+});
+
+it('reports export pending overflow even when failure details fill the status limit', async () => {
+  const f = fixture();
+  openSettledTestStoreDb(f.runtime).close();
+  const ids = Array.from({ length: 101 }, (_, i) => `export-overflow-${String(i).padStart(3, '0')}`);
+  expiredJobs(f, ids);
+  for (const id of ids) {
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, id);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'result.md'), 'old result');
+    utimesSync(join(path, 'result.md'), 1, 1);
+  }
+  const s = runner(f);
+  const unlink = f.runtime.storage.unlinkSync;
+  f.runtime.storage.unlinkSync = (path) => {
+    throw new Error(`EACCES: ${String(path)}`);
+  };
+  try {
+    const status = await s.run();
+    expect(status.phase).toBe('partial');
+    expect(status.outcomes).toHaveLength(100);
+    expect(status.outcomes).toContainEqual(expect.objectContaining({ reason: 'export-pending-overflow' }));
+    f.runtime.storage.unlinkSync = unlink;
+    expect((await s.run()).phase).toBe('completed');
+  } finally {
+    f.runtime.storage.unlinkSync = unlink;
     await s.stop();
     f.close();
   }

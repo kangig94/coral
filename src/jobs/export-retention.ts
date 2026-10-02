@@ -1,8 +1,11 @@
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
-import { z } from 'zod';
 import type { Runtime } from '../runtime/ports.js';
-import type { RetentionOutcome, RetentionRunBudget } from '../store/retention-outcome.js';
+import {
+  createRetentionPendingSet,
+  type RetentionOutcome,
+  type RetentionRunBudget,
+} from '../store/retention-outcome.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { Database } from '../store/db.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
@@ -32,91 +35,14 @@ export function readExportJobState(db: Database, readCtx: StoreReadContext, jobI
   }
 }
 
-const eligibilityKey = 'storage-retention.exports.eligibility.v1';
-const eligibilitySchema = z.object({
-  jobId: z.string(),
-  lastEntry: z.string(),
-  directoryMtimeNs: z.string().regex(/^-?\d+$/),
-  newestMtimeNs: z.string().regex(/^-?\d+$/),
-  admitted: z.boolean(),
-});
-
-async function exportTreeExpired(input: {
-  db: Database;
-  runtime: Runtime;
-  jobId: string;
-  path: string;
-  cutoff: number;
-  budget: RetentionRunBudget;
-  admitted: boolean;
-  mutate<T>(operation: () => T): T;
-}): Promise<'expired' | 'recent' | 'pending'> {
-  const { db, runtime, jobId, path, cutoff, budget, admitted, mutate } = input;
-  if (!budget.canContinue()) return 'pending';
+async function exportTreeExpired(runtime: Runtime, path: string, cutoff: number): Promise<boolean> {
   const cutoffNs = BigInt(Math.floor(cutoff)) * 1_000_000n;
   const directory = runtime.storage.lstatSync(path, { bigint: true });
-  let checkpoint: z.infer<typeof eligibilitySchema> | null = null;
-  const saved = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(eligibilityKey);
-  if (saved) {
-    try {
-      checkpoint = eligibilitySchema.parse(JSON.parse(saved.value));
-    } catch {
-      checkpoint = null;
-    }
+  if (directory.mtimeNs >= cutoffNs) return false;
+  for (const child of await runtime.storage.readdir(path)) {
+    if (runtime.storage.lstatSync(join(path, child), { bigint: true }).mtimeNs >= cutoffNs) return false;
   }
-  if (
-    checkpoint?.jobId !== jobId ||
-    checkpoint.directoryMtimeNs !== String(directory.mtimeNs) ||
-    checkpoint.admitted !== admitted
-  )
-    checkpoint = {
-      jobId,
-      lastEntry: '',
-      directoryMtimeNs: String(directory.mtimeNs),
-      newestMtimeNs: String(admitted ? cutoffNs - 1n : directory.mtimeNs),
-      admitted,
-    };
-  const clear = (): void => {
-    mutate(() => db.prepare('DELETE FROM meta WHERE key = ?').run(eligibilityKey));
-  };
-  const save = (): void => {
-    mutate(() =>
-      db
-        .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
-        .run(eligibilityKey, JSON.stringify(checkpoint)),
-    );
-  };
-  if (BigInt(checkpoint.newestMtimeNs) >= cutoffNs) {
-    clear();
-    return 'recent';
-  }
-  const children = (await runtime.storage.readdir(path)).sort();
-  let batchRemaining = 0;
-  for (const child of children) {
-    if (child <= checkpoint.lastEntry) continue;
-    if (batchRemaining === 0) {
-      save();
-      if (!budget.canContinue()) return 'pending';
-      await setImmediate();
-      if (!budget.canContinue()) return 'pending';
-      batchRemaining = 64;
-    }
-    batchRemaining -= 1;
-    const entry = runtime.storage.lstatSync(join(path, child), { bigint: true });
-    if ((!admitted || !entry.isDirectory()) && entry.mtimeNs > BigInt(checkpoint.newestMtimeNs))
-      checkpoint.newestMtimeNs = String(entry.mtimeNs);
-    checkpoint.lastEntry = child;
-    if (BigInt(checkpoint.newestMtimeNs) >= cutoffNs) {
-      clear();
-      return 'recent';
-    }
-  }
-  save();
-  if (runtime.storage.lstatSync(path, { bigint: true }).mtimeNs !== directory.mtimeNs) {
-    clear();
-    return 'pending';
-  }
-  return 'expired';
+  return runtime.storage.lstatSync(path, { bigint: true }).mtimeNs === directory.mtimeNs;
 }
 
 async function deleteExportTree(
@@ -124,12 +50,24 @@ async function deleteExportTree(
   path: string,
   budget: RetentionRunBudget,
   mutate: <T>(operation: () => T) => T,
-): Promise<void> {
+  topLevelCutoff?: number,
+): Promise<boolean> {
   if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
   const entry = runtime.storage.lstatSync(path);
   if (entry.isDirectory() && !entry.isSymbolicLink()) {
-    for await (const child of runtime.storage.iterateDirectory(path)) {
-      await deleteExportTree(runtime, join(path, child), budget, mutate);
+    const children =
+      topLevelCutoff === undefined
+        ? runtime.storage.iterateDirectory(path)
+        : (await runtime.storage.readdir(path)).sort();
+    for await (const child of children) {
+      const childPath = join(path, child);
+      if (
+        topLevelCutoff !== undefined &&
+        runtime.storage.lstatSync(childPath, { bigint: true }).mtimeNs >=
+          BigInt(Math.floor(topLevelCutoff)) * 1_000_000n
+      )
+        return false;
+      await deleteExportTree(runtime, childPath, budget, mutate);
       await setImmediate();
     }
   }
@@ -138,6 +76,7 @@ async function deleteExportTree(
     if (entry.isDirectory() && !entry.isSymbolicLink()) runtime.storage.rmdirSync(path);
     else runtime.storage.unlinkSync(path);
   });
+  return true;
 }
 
 /** A retained epoch's independent result proof must outlive the epoch itself. */
@@ -167,10 +106,13 @@ export async function pruneJobExports(input: {
     return '';
   }
   const ids = (await runtime.storage.readdir(root)).sort();
-  let cursor = input.afterId;
-  for (const id of ids) {
-    if (id <= input.afterId) continue;
-    if (!budget.canContinue()) return cursor;
+  input.mutate(() =>
+    input.db.prepare('DELETE FROM meta WHERE key = ?').run('storage-retention.exports.eligibility.v1'),
+  );
+  const pending = createRetentionPendingSet(input.db, 'storage-retention.exports.pending.v1', input.mutate);
+  const attempted = new Set<string>();
+  const process = async (id: string, deletionBudget: RetentionRunBudget): Promise<boolean> => {
+    attempted.add(id);
     const path = join(root, id);
     let outcome: RetentionOutcome;
     let deleting = false;
@@ -192,24 +134,9 @@ export async function pruneJobExports(input: {
       else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))
         outcome = { kind: 'kept', subject: path, reason: 'terminal-not-expired-or-unknown' };
       else {
-        const eligibility =
-          state.kind === 'absent'
-            ? await exportTreeExpired({
-                db: input.db,
-                runtime,
-                jobId: id,
-                path,
-                cutoff: admittedCutoff ?? cutoff,
-                budget,
-                admitted: admittedCutoff !== null,
-                mutate: input.mutate,
-              })
-            : 'expired';
-        if (eligibility === 'pending') {
-          budget.record({ kind: 'kept', subject: path, reason: 'eligibility-scan-pending' });
-          return cursor;
-        }
-        if (eligibility === 'recent') {
+        const expired =
+          state.kind !== 'absent' || admittedCutoff !== null || (await exportTreeExpired(runtime, path, cutoff));
+        if (!expired) {
           input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey));
           outcome = { kind: 'kept', subject: path, reason: 'residue-recent-or-unobservable' };
         } else if (input.resultHold(id) !== 'released')
@@ -221,22 +148,57 @@ export async function pruneJobExports(input: {
                 .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
                 .run(admissionKey, String(cutoff)),
             );
-          input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(eligibilityKey));
-          if (!budget.canContinue()) return cursor;
+          if (!deletionBudget.canContinue()) return false;
           deleting = true;
-          await deleteExportTree(runtime, path, budget, input.mutate);
+          const deleted = await deleteExportTree(runtime, path, deletionBudget, input.mutate, admittedCutoff ?? cutoff);
           input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey));
-          outcome = { kind: 'deleted', subject: path, count: 1 };
+          outcome = deleted
+            ? { kind: 'deleted', subject: path, count: 1 }
+            : { kind: 'kept', subject: path, reason: 'residue-recent-or-unobservable' };
         }
       }
     } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !deleting) {
+        pending.remove(id);
+        input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey));
+        return true;
+      }
       outcome = { kind: deleting ? 'failed' : 'kept', subject: path, reason: errorMessage(error) };
     }
+    if (outcome.kind === 'failed') {
+      if (!pending.add(id)) {
+        budget.record(outcome);
+        return false;
+      }
+    } else if (outcome.kind === 'deleted' || outcome.pending === false) pending.remove(id);
     budget.record(outcome);
-    cursor = id;
-    input.checkpoint?.(cursor);
-    await setImmediate();
+    return true;
+  };
+  let cursor = input.afterId;
+  try {
+    const retryBudget: RetentionRunBudget = {
+      ...budget,
+      canContinue: () => (budget.canRetry?.() ?? true) && budget.canContinue(),
+    };
+    for (const id of pending.retryOrder()) {
+      if (!retryBudget.canContinue()) break;
+      pending.advance(id);
+      await process(id, retryBudget);
+      await setImmediate();
+    }
+    for (const id of ids) {
+      if (id <= input.afterId) continue;
+      if (!budget.canContinue()) return cursor;
+      if (!attempted.has(id) && !pending.subjects.has(id) && !(await process(id, budget))) return cursor;
+      cursor = id;
+      input.checkpoint?.(cursor);
+      await setImmediate();
+    }
+    pending.clearOverflow();
+    input.checkpoint?.('');
+    return '';
+  } finally {
+    for (const id of pending.subjects) budget.record({ kind: 'kept', subject: id, reason: 'export-cleanup-pending' });
+    if (pending.overflow()) budget.record({ kind: 'kept', subject: 'exports', reason: 'export-pending-overflow' });
   }
-  input.checkpoint?.('');
-  return '';
 }
