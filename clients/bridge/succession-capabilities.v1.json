@@ -1,0 +1,1 @@
+{"version":"v1","buildSetId":"e2af5cf4-1f4a-48bc-8947-24656c2eaa5e","bundleHash":"51d1181d3574451e","protocols":["prepare","commit"],"accepts":[{"owner":"durable-cli","generation":1},{"owner":"provider-operations","generation":1},{"owner":"provider-proxy-sets","generation":1}]}
