@@ -1,5 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import type { RetentionRunBudget } from '../store/retention-outcome.js';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
 import { notifyLaunchDiscovery } from '../infra/coordinator-admission.js';
@@ -726,21 +728,37 @@ export async function cleanupStaleJobs(
   nowMs: number,
   retentionMs: number,
   signal: AbortSignal,
+  budget?: RetentionRunBudget,
 ): Promise<void> {
   signal.throwIfAborted();
   const context = { progressStore, currentBundleHash, log, storage, nowMs, retentionMs };
   staleJobCleanupRetryContexts.set(progressStore.getDb(), context);
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs });
-  for (const entry of quarantine.list()) {
-    if (entry.boundary === 'stale-job-cleanup' && entry.stage === 'settle' && entry.state === 'active')
-      quarantine.delete({ boundary: entry.boundary, subject: entry.subject });
-  }
+  let interrupted = false;
+  const canContinue = (): boolean => {
+    signal.throwIfAborted();
+    if (interrupted) return false;
+    if (budget && !budget.canContinue()) {
+      interrupted = true;
+      budget.record({ kind: 'kept', subject: 'scratch-jobs', reason: 'scan-pending' });
+    }
+    return !interrupted;
+  };
   const cleanupPolicy = createStaleJobCleanupPolicy(context);
   const failures: string[] = [];
   const policy: RecoveryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> = {
     signal,
     quarantine,
     ...cleanupPolicy,
+    settle: (item) => {
+      if (!canContinue())
+        return {
+          kind: 'deferred',
+          authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
+          detail: 'scratch cleanup budget exhausted; retry next cycle',
+        };
+      return cleanupPolicy.settle(item);
+    },
     onFault: (fault) => {
       const disposition = cleanupPolicy.onFault(fault);
       failures.push(`${fault.subject.key}: ${errorMessage(fault.error)}`);
@@ -752,10 +770,48 @@ export async function cleanupStaleJobs(
       };
     },
   };
-  await runStartupStaleArtifactPrune({
-    source: staleJobCleanupSource(progressStore.getDb()),
-    policy,
-  });
+  const db = progressStore.getDb();
+  const cursorKey = 'storage-retention.scratch.v1';
+  let afterId =
+    db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(cursorKey)?.value ?? '';
+  while (canContinue()) {
+    let nextId: string | null = null;
+    await runStartupStaleArtifactPrune({
+      source: staleJobCleanupSource(db, undefined, {
+        afterId,
+        canContinue,
+        scanned: (id) => {
+          nextId = id;
+          const entry = quarantine.read('stale-job-cleanup', id);
+          const stage = db
+            .prepare<
+              [string],
+              { stage: string }
+            >("SELECT stage FROM recovery_quarantine WHERE boundary_id = 'stale-job-cleanup' AND subject_key = ?")
+            .get(id)?.stage;
+          if (stage === 'settle' && entry?.state === 'active')
+            quarantine.delete({ boundary: entry.boundary, subject: entry.subject });
+        },
+      }),
+      policy,
+    });
+    if (interrupted) break;
+    if (nextId === null) {
+      db.prepare('DELETE FROM meta WHERE key = ?').run(cursorKey);
+      break;
+    }
+    afterId = nextId;
+    db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(cursorKey, afterId);
+    await yieldToEventLoop();
+  }
+  const hydrationHolds = db
+    .prepare<
+      [],
+      { subject_key: string; error_message: string }
+    >("SELECT subject_key, error_message FROM recovery_quarantine WHERE boundary_id = 'stale-job-cleanup' AND stage = 'hydrate' AND state = 'active' LIMIT 100")
+    .all();
+  for (const held of hydrationHolds)
+    budget?.record({ kind: 'kept', subject: held.subject_key, reason: `hydration-quarantine: ${held.error_message}` });
   if (failures.length > 0) throw new Error(`Scratch cleanup failed: ${failures.join('; ')}`);
 }
 

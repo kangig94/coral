@@ -207,7 +207,8 @@ export function createCoordinatorLifecycleAssembly(input: LifecycleAssemblyInput
     publish: (status) => {
       state.retentionStatus = { ...status, outcomes: [...status.outcomes] };
     },
-    cleanupScratch: (signal) => input.execution.defaults.cleanupStaleJobsFn(core.identity.bundleHash, signal),
+    cleanupScratch: (signal, budget) =>
+      input.execution.defaults.cleanupStaleJobsFn(core.identity.bundleHash, signal, budget),
   });
   const lifecycleDeps = createCoordinatorLifecycleDeps(input, storeEpochSweep, storageRetention);
   state.lifecycleController = createLifecycle(lifecycleDeps, runStartupRecovery);

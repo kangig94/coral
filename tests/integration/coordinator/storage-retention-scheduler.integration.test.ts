@@ -8,7 +8,7 @@ import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import { createRetentionFixture, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
-import type { RetentionRunStatus } from '#src/store/retention-outcome.js';
+import type { RetentionRunBudget, RetentionRunStatus } from '#src/store/retention-outcome.js';
 import { cleanupStaleJobs } from '#src/coordinator/lifecycle.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
@@ -43,7 +43,7 @@ function finish(f: ReturnType<typeof fixture>, id: string) {
 }
 function scheduler(
   f: ReturnType<typeof fixture>,
-  cleanupScratch: (signal: AbortSignal) => void | Promise<void> = () => {},
+  cleanupScratch: (signal: AbortSignal, budget: RetentionRunBudget) => void | Promise<void> = () => {},
 ) {
   let monotonic = 0n;
   let scheduled: (() => void) | undefined;
@@ -79,6 +79,9 @@ function scheduler(
   s.start();
   return {
     stop: s.stop,
+    advance: (ms: number) => {
+      monotonic += BigInt(ms);
+    },
     run: async (elapsed = 0) => {
       monotonic = BigInt(elapsed);
       const status = new Promise<RetentionRunStatus>((resolve) => {
@@ -181,8 +184,17 @@ describe('storage retention scheduler owner composition', () => {
         return rm(path, options);
       };
       f.setNow(RETENTION_NOW);
-      const s = scheduler(f, (signal) =>
-        cleanupStaleJobs(f.store, 'test-bundle', () => {}, f.runtime.storage, f.runtime.time.now(), 14 * DAY, signal),
+      const s = scheduler(f, (signal, budget) =>
+        cleanupStaleJobs(
+          f.store,
+          'test-bundle',
+          () => {},
+          f.runtime.storage,
+          f.runtime.time.now(),
+          14 * DAY,
+          signal,
+          budget,
+        ),
       );
       try {
         const status = await s.run();
@@ -201,6 +213,203 @@ describe('storage retention scheduler owner composition', () => {
       }
     },
   );
+
+  it.each([
+    [3, 3000, 2],
+    [10, 1000, 5],
+  ])(
+    'stops scratch settlement between subjects at its deadline (%i jobs, %i ms/delete)',
+    async (jobs, cost, expectedDeletes) => {
+      const f = fixture();
+      f.setNow(1);
+      const scratchPaths: string[] = [];
+      for (let i = 0; i < jobs; i += 1) {
+        const id = `scratch-budget-${i}`;
+        launch(f, id);
+        finish(f, id);
+        const path = f.store.jobDir(id);
+        scratchPaths.push(path);
+        mkdirSync(path, { recursive: true });
+        writeFileSync(join(path, 'result.md'), 'result');
+      }
+      f.setNow(RETENTION_NOW);
+      const s = scheduler(f, (signal, budget) =>
+        cleanupStaleJobs(
+          f.store,
+          'test-bundle',
+          () => {},
+          f.runtime.storage,
+          f.runtime.time.now(),
+          14 * DAY,
+          signal,
+          budget,
+        ),
+      );
+      const rm = f.runtime.storage.rmSync;
+      let calls = 0;
+      f.runtime.storage.rmSync = (path, options) => {
+        if (scratchPaths.includes(String(path))) {
+          calls += 1;
+          s.advance(cost);
+        }
+        rm(path, options);
+      };
+      try {
+        const status = await s.run();
+        expect(calls).toBe(expectedDeletes);
+        expect(status.phase).toBe('partial');
+        expect(status.outcomes).toContainEqual(
+          expect.objectContaining({ kind: 'kept', subject: 'scratch-jobs', reason: 'scan-pending' }),
+        );
+        expect(scratchPaths.filter((path) => existsSync(path))).toHaveLength(jobs - expectedDeletes);
+      } finally {
+        await s.stop();
+      }
+    },
+  );
+
+  it('bounds scratch discovery before another settlement and resumes from its saved cursor', async () => {
+    const f = fixture();
+    f.setNow(1);
+    const scratchPaths: string[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      const id = `scratch-scan-${i}`;
+      launch(f, id);
+      finish(f, id);
+      const path = f.store.jobDir(id);
+      scratchPaths.push(path);
+      mkdirSync(path, { recursive: true });
+      writeFileSync(join(path, 'result.md'), 'result');
+    }
+    f.setNow(RETENTION_NOW);
+    const s = scheduler(f, (signal, budget) =>
+      cleanupStaleJobs(
+        f.store,
+        'test-bundle',
+        () => {},
+        f.runtime.storage,
+        f.runtime.time.now(),
+        14 * DAY,
+        signal,
+        budget,
+      ),
+    );
+    let reads = 0;
+    const prepare = f.db.prepare.bind(f.db);
+    const scan = vi.spyOn(f.db, 'prepare').mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (sql.includes('FROM events') && sql.includes("'job.launch.rejected'")) {
+        const all = statement.all.bind(statement);
+        statement.all = (...args) => {
+          reads += 1;
+          s.advance(3000);
+          return all(...args);
+        };
+      }
+      return statement;
+    });
+    try {
+      const status = await s.run();
+      expect(reads).toBe(2);
+      expect(status.phase).toBe('partial');
+      expect(scratchPaths.filter((path) => existsSync(path))).toHaveLength(9);
+      expect(f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.scratch.v1')).toEqual({
+        value: 'scratch-scan-0',
+      });
+      scan.mockRestore();
+      f.setNow(RETENTION_NOW + DAY);
+      const retry = await s.run(DAY);
+      expect(scratchPaths.some((path) => existsSync(path))).toBe(false);
+      expect(retry.failed).toBe(0);
+    } finally {
+      scan.mockRestore();
+      await s.stop();
+    }
+  });
+
+  it('yields between scratch subjects so cancellation stops the next deletion', async () => {
+    const f = fixture();
+    f.setNow(1);
+    for (const id of ['scratch-yield-a', 'scratch-yield-b', 'scratch-yield-c']) {
+      launch(f, id);
+      finish(f, id);
+      mkdirSync(f.store.jobDir(id), { recursive: true });
+    }
+    const abort = new AbortController();
+    const rm = f.runtime.storage.rmSync;
+    let calls = 0;
+    f.runtime.storage.rmSync = (path, options) => {
+      calls += 1;
+      setImmediate(() => abort.abort());
+      rm(path, options);
+    };
+    await expect(
+      cleanupStaleJobs(
+        f.store,
+        'test-bundle',
+        () => {},
+        f.runtime.storage,
+        RETENTION_NOW,
+        14 * DAY,
+        abort.signal,
+        f.budget,
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toBe(1);
+    expect(existsSync(f.store.jobDir('scratch-yield-b'))).toBe(true);
+  });
+
+  it('keeps scratch hydration quarantine visible on every cycle until the projection is repaired', async () => {
+    const f = fixture();
+    f.setNow(1);
+    launch(f, 'scratch-corrupt');
+    finish(f, 'scratch-corrupt');
+    const scratch = f.store.jobDir('scratch-corrupt');
+    mkdirSync(scratch, { recursive: true });
+    writeFileSync(join(scratch, 'result.md'), 'result');
+    const valid = f.db.prepare<[], { diagnostics: string }>('SELECT diagnostics FROM projection_jobs').get()!
+      .diagnostics;
+    f.db.prepare('UPDATE projection_jobs SET diagnostics = ?').run('{');
+    f.setNow(RETENTION_NOW);
+    const s = scheduler(f, (signal, budget) =>
+      cleanupStaleJobs(
+        f.store,
+        'test-bundle',
+        () => {},
+        f.runtime.storage,
+        f.runtime.time.now(),
+        14 * DAY,
+        signal,
+        budget,
+      ),
+    );
+    try {
+      expect((await s.run()).failed).toBe(1);
+      for (let cycle = 1; cycle <= 2; cycle += 1) {
+        f.setNow(RETENTION_NOW + cycle * DAY);
+        const status = await s.run(cycle * DAY);
+        expect(status.phase).toBe('partial');
+        expect(status.outcomes).toContainEqual(
+          expect.objectContaining({
+            kind: 'kept',
+            subject: 'scratch-corrupt',
+            reason: expect.stringContaining('hydration-quarantine'),
+          }),
+        );
+        expect(existsSync(scratch)).toBe(true);
+      }
+      f.db.prepare('UPDATE projection_jobs SET diagnostics = ?').run(valid);
+      f.setNow(RETENTION_NOW + 3 * DAY);
+      const repaired = await s.run(3 * DAY);
+      expect(existsSync(scratch)).toBe(false);
+      expect(new RecoveryQuarantineStore(f.db, f.runtime.time).list()).toEqual([]);
+      expect(
+        repaired.outcomes.some((outcome) => outcome.kind === 'kept' && outcome.subject === 'scratch-corrupt'),
+      ).toBe(false);
+    } finally {
+      await s.stop();
+    }
+  });
 
   it('keeps a terminal regression witnessed by any preceding event of that job between daily samples', async () => {
     const f = fixture();

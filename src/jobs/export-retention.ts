@@ -36,25 +36,25 @@ async function exportTreeExpired(
   path: string,
   cutoff: number,
   budget: RetentionRunBudget,
+  admitted: boolean,
 ): Promise<boolean> {
   if (!budget.canContinue()) return false;
   const cutoffNs = BigInt(Math.floor(cutoff)) * 1_000_000n;
+  const directory = runtime.storage.lstatSync(path, { bigint: true });
+  if (!admitted && directory.mtimeNs >= cutoffNs) return false;
   let batchRemaining = 0;
-  const expired = async (entryPath: string): Promise<boolean> => {
+  for await (const child of runtime.storage.iterateDirectory(path)) {
     if (batchRemaining === 0) {
+      if (!budget.canContinue()) return false;
+      await setImmediate();
       if (!budget.canContinue()) return false;
       batchRemaining = 64;
     }
     batchRemaining -= 1;
-    const entry = runtime.storage.lstatSync(entryPath, { bigint: true });
-    if (!entry.isDirectory()) return entry.mtimeNs < cutoffNs;
-    for await (const child of runtime.storage.iterateDirectory(entryPath)) {
-      if (!(await expired(join(entryPath, child)))) return false;
-      await setImmediate();
-    }
-    return true;
-  };
-  return expired(path);
+    const entry = runtime.storage.lstatSync(join(path, child), { bigint: true });
+    if ((!admitted || !entry.isDirectory()) && entry.mtimeNs >= cutoffNs) return false;
+  }
+  return true;
 }
 
 async function deleteExportTree(
@@ -80,6 +80,7 @@ async function deleteExportTree(
 
 /** A retained epoch's independent result proof must outlive the epoch itself. */
 export async function pruneJobExports(input: {
+  db: Database;
   runtime: Runtime;
   cutoff: number;
   afterId: string;
@@ -111,6 +112,12 @@ export async function pruneJobExports(input: {
     const path = join(root, id);
     let outcome: RetentionOutcome;
     let deleting = false;
+    const admissionKey = `storage-retention.exports.admission.v1.${id}`;
+    const saved = input.db
+      .prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?')
+      .get(admissionKey);
+    const admission = saved === undefined ? null : Number(saved.value);
+    const admittedCutoff = admission !== null && Number.isFinite(admission) && admission <= cutoff ? admission : null;
     try {
       const entry = await runtime.storage.lstat(path);
       const state = input.jobState(id);
@@ -122,14 +129,24 @@ export async function pruneJobExports(input: {
         outcome = { kind: 'kept', subject: path, reason: state.kind, pending: state.kind === 'unknown' };
       else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))
         outcome = { kind: 'kept', subject: path, reason: 'terminal-not-expired-or-unknown' };
-      else if (state.kind === 'absent' && !(await exportTreeExpired(runtime, path, cutoff, budget)))
+      else if (
+        state.kind === 'absent' &&
+        !(await exportTreeExpired(runtime, path, admittedCutoff ?? cutoff, budget, admittedCutoff !== null))
+      ) {
+        if (budget.canContinue())
+          input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey));
         outcome = { kind: 'kept', subject: path, reason: 'residue-recent-or-unobservable' };
-      else if (input.resultHold(id) !== 'released')
+      } else if (input.resultHold(id) !== 'released')
         outcome = { kind: 'kept', subject: path, reason: 'epoch-result-proof-required-or-unknown' };
       else if (!budget.canContinue()) return cursor;
       else {
+        if (state.kind === 'absent' && admittedCutoff === null)
+          input.mutate(() =>
+            input.db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(admissionKey, String(cutoff)),
+          );
         deleting = true;
         await deleteExportTree(runtime, path, budget, input.mutate);
+        input.mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey));
         outcome = { kind: 'deleted', subject: path, count: 1 };
       }
     } catch (error: unknown) {

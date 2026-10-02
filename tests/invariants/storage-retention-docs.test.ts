@@ -14,8 +14,16 @@ describe('storage retention documentation', () => {
     expect(todo).toContain('retention decided; restore design remains open');
     expect(todo).toContain('Expired exports');
     expect(todo).toContain('collision rule');
-    expect(todo).toContain('newest content-file mtime across its tree');
-    expect(todo).toContain('directory mtimes are excluded');
+    expect(todo).toContain('top-level entries, including directories');
+    expect(todo).toContain('deletion admission persists the cutoff in meta');
+  });
+
+  it('has no unused exclusive connection option or fixed owner count after legacy removal', () => {
+    const lock = readFileSync(new URL('../../src/infra/fs-lock.ts', import.meta.url), 'utf-8');
+    expect(lock).not.toContain('exclusiveConnection');
+    const architecture = readFileSync(new URL('../../docs/architecture.md', import.meta.url), 'utf-8');
+    expect(architecture).not.toMatch(/Each of the \w+ owners/);
+    expect(architecture).toContain('Each owner receives its own 5-second cooperative budget');
   });
 
   it('records domain owners and coordinator scheduling in both architecture guides', () => {

@@ -43,6 +43,7 @@ async function prune(
   holds: Record<string, 'released' | 'required' | 'unknown'> = {},
 ) {
   return pruneJobExports({
+    db: f.db,
     runtime: f.runtime,
     cutoff: RETENTION_CUTOFF,
     afterId: '',
@@ -57,7 +58,7 @@ describe('export retention', () => {
   it.each([false, true])('retries partial residue deletion without resetting age (new content: %s)', async (fresh) => {
     const f = fixture();
     const path = join(f.runtime.paths.coral.exports.jobsRoot, 'residue');
-    const cutoff = Date.now() - 14 * 86_400_000;
+    const cutoff = RETENTION_CUTOFF;
     mkdirSync(path, { recursive: true });
     for (let i = 0; i < 10; i += 1) {
       const child = join(path, `old-${i}`);
@@ -69,6 +70,7 @@ describe('export retention', () => {
     f.budget.canContinue = () => ++operations <= 18;
     const run = (when: number) =>
       pruneJobExports({
+        db: f.db,
         runtime: f.runtime,
         cutoff: when,
         afterId: '',
@@ -82,13 +84,21 @@ describe('export retention', () => {
     expect(remaining.length).toBeGreaterThan(0);
     expect(remaining.length).toBeLessThan(10);
     expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'failed' }));
+    expect(
+      f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.admission.v1.residue'),
+    ).toEqual({ value: String(cutoff) });
+    utimesSync(path, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
     if (fresh) {
       writeFileSync(join(path, 'new-content'), 'new activity');
-      utimesSync(join(path, 'new-content'), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+      const contentTime = new Date(cutoff + 43_200_000);
+      utimesSync(join(path, 'new-content'), contentTime, contentTime);
     }
     f.budget.canContinue = () => true;
     await run(cutoff + 86_400_000);
     expect(existsSync(path)).toBe(fresh);
+    expect(
+      f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.admission.v1.residue'),
+    ).toBeUndefined();
     if (fresh) expect(readdirSync(path).sort()).toEqual([...remaining, 'new-content'].sort());
   });
 
@@ -104,6 +114,7 @@ describe('export retention', () => {
     for (let cycle = 0; cycle < 3; cycle += 1) {
       let operations = 0;
       afterId = await pruneJobExports({
+        db: f.db,
         runtime: f.runtime,
         cutoff: RETENTION_CUTOFF,
         afterId,
@@ -129,6 +140,7 @@ describe('export retention', () => {
     let operations = 0;
     const visited: string[] = [];
     const next = await pruneJobExports({
+      db: f.db,
       runtime: f.runtime,
       cutoff: RETENTION_CUTOFF,
       afterId: 'b-cursor',
@@ -167,7 +179,7 @@ describe('export retention', () => {
     expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'deleted', count: 1 }));
   });
 
-  it('checks content file ages through nested directories and never follows a job symlink', async () => {
+  it('checks top-level activity ages and never follows a job symlink', async () => {
     const f = fixture();
     const old = exported(f, 'old');
     const changed = exported(f, 'changed');
@@ -175,13 +187,81 @@ describe('export retention', () => {
       for (const child of ['result.md', 'provider-artifacts/original.jsonl', 'provider-artifacts', ''])
         utimesSync(join(path, child), 1, 1);
     }
-    utimesSync(join(changed, 'provider-artifacts', 'original.jsonl'), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+    utimesSync(join(changed, 'provider-artifacts'), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
     symlinkSync(changed, join(f.runtime.paths.coral.exports.jobsRoot, 'link'));
     await prune(f, {});
     expect(existsSync(old)).toBe(false);
     expect(existsSync(changed)).toBe(true);
     expect(existsSync(join(f.runtime.paths.coral.exports.jobsRoot, 'link'))).toBe(true);
   });
+
+  it.each(['', 'provider-artifacts'])(
+    'keeps residue with recent directory activity and old content (%s)',
+    async (changedDirectory) => {
+      const f = fixture();
+      const path = exported(f, 'recent-residue');
+      for (const child of ['', 'result.md', 'provider-artifacts', 'provider-artifacts/original.jsonl'])
+        utimesSync(join(path, child), 1, 1);
+      utimesSync(join(path, changedDirectory), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+      await prune(f, {});
+      expect(existsSync(join(path, 'provider-artifacts/original.jsonl'))).toBe(true);
+      expect(f.outcomes).toContainEqual(
+        expect.objectContaining({ kind: 'kept', reason: 'residue-recent-or-unobservable' }),
+      );
+    },
+  );
+
+  it.each([
+    [320, 20],
+    [6000, 1],
+  ])(
+    'starts bounded eligibility and completes slow residue deletion across cycles (%i files, %i ms/stat)',
+    async (files, cost) => {
+      const f = fixture();
+      const path = join(f.runtime.paths.coral.exports.jobsRoot, 'slow-residue');
+      const nested = join(path, 'provider-artifacts');
+      mkdirSync(nested, { recursive: true });
+      for (let i = 0; i < files; i += 1) {
+        const child = join(nested, `old-${i}`);
+        writeFileSync(child, 'old');
+        utimesSync(child, 1, 1);
+      }
+      for (const directory of [path, nested]) utimesSync(directory, 1, 1);
+      const lstat = f.runtime.storage.lstatSync;
+      let elapsed = 0;
+      let unlinks = 0;
+      f.runtime.storage.lstatSync = ((...args: Parameters<typeof lstat>) => {
+        elapsed += cost;
+        return lstat(...args);
+      }) as typeof lstat;
+      const unlink = f.runtime.storage.unlinkSync;
+      f.runtime.storage.unlinkSync = (child) => {
+        unlinks += 1;
+        unlink(child);
+      };
+      let afterId = '';
+      for (let cycle = 0; cycle < 3 && existsSync(path); cycle += 1) {
+        elapsed = 0;
+        afterId = await pruneJobExports({
+          db: f.db,
+          runtime: f.runtime,
+          cutoff: RETENTION_CUTOFF + cycle * 86_400_000,
+          afterId,
+          budget: { canContinue: () => elapsed < 5000, record: f.budget.record },
+          jobState: () => ({ kind: 'absent' }),
+          resultHold: () => 'released',
+          mutate: (operation) => operation(),
+        });
+        expect(unlinks).toBeGreaterThan(0);
+        if (existsSync(path)) {
+          utimesSync(path, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+          utimesSync(nested, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+        }
+      }
+      expect(existsSync(path)).toBe(false);
+      expect(unlinks).toBe(files);
+    },
+  );
 
   it('keeps interrupted work and reports deletion failure for automatic retry', async () => {
     const f = fixture();
@@ -200,6 +280,7 @@ describe('export retention', () => {
       },
     };
     await pruneJobExports({
+      db: f.db,
       runtime,
       cutoff: RETENTION_CUTOFF,
       afterId: '',
@@ -267,6 +348,7 @@ describe('export retention', () => {
     writeFileSync(join(path, 'result.md'), 'old');
     for (const p of [path, join(path, 'result.md')]) utimesSync(p, 1, 1);
     await pruneJobExports({
+      db: f.db,
       runtime: f.runtime,
       cutoff: RETENTION_CUTOFF,
       afterId: '',
@@ -296,6 +378,7 @@ describe('export retention', () => {
       while (existsSync(path)) {
         let operations = 0;
         await pruneJobExports({
+          db: f.db,
           runtime: f.runtime,
           cutoff: Date.now() - 14 * 86_400_000,
           afterId: '',

@@ -158,11 +158,7 @@ export function acquireSharedFileLockSync(path: string, busyTimeoutMs = 5_000): 
   return openSharedFileLockSync(path, true, busyTimeoutMs);
 }
 
-export function attemptExclusiveFileLockSync(
-  path: string,
-  busyTimeoutMs = 0,
-  exclusiveConnection = false,
-): ExclusiveFileLockAttempt {
+export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): ExclusiveFileLockAttempt {
   let entry: ReturnType<typeof lstatSync>;
   try {
     entry = lstatSync(path);
@@ -178,7 +174,6 @@ export function attemptExclusiveFileLockSync(
     return { kind: 'unobservable', cause };
   }
   try {
-    if (exclusiveConnection) db.exec('PRAGMA locking_mode = EXCLUSIVE');
     db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN EXCLUSIVE`);
     return { kind: 'acquired', lease: sqliteLockLease(db) };
   } catch (error: unknown) {

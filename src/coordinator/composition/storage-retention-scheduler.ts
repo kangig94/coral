@@ -24,7 +24,7 @@ export function createStorageRetentionScheduler(input: {
   jobLocations: JobLocationIndex;
   log(message: string): void;
   publish(status: RetentionRunStatus): void;
-  cleanupScratch(signal: AbortSignal): void | Promise<void>;
+  cleanupScratch(signal: AbortSignal, budget: RetentionRunBudget): void | Promise<void>;
 }): Readonly<{ start(): void; stop(): Promise<void> }> {
   const { runtime } = input;
   const abort = new AbortController();
@@ -144,6 +144,7 @@ export function createStorageRetentionScheduler(input: {
           await step('exports', async (budget, signal) => {
             mutate(() => db.prepare('DELETE FROM meta WHERE key = ?').run('storage-retention.legacy.v1'));
             const next = await pruneJobExports({
+              db,
               runtime,
               cutoff,
               afterId: readCursor('exports'),
@@ -172,7 +173,7 @@ export function createStorageRetentionScheduler(input: {
             if (!signal.aborted) saveCursor('holders', next ?? '');
             if (next) record({ kind: 'kept', subject: 'epoch-holders', reason: 'scan-pending' });
           });
-          await step('scratch-jobs', (_budget, signal) => input.cleanupScratch(signal));
+          await step('scratch-jobs', (budget, signal) => input.cleanupScratch(signal, budget));
         }
       }
     } catch (error: unknown) {
