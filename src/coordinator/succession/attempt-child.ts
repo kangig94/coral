@@ -1,5 +1,6 @@
 import type { Server as NetServer, Socket } from 'node:net';
 
+import { closeHandle } from '../../infra/ipc-handle.js';
 import { withValidatedHandoffTarget } from '../../infra/handoff-target.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { revalidateUpgradeIntentTarget, type UpgradeIntent } from '../../infra/upgrade-intent.js';
@@ -310,7 +311,11 @@ export async function createSuccessionAttemptChannel(
   child.on('exit', () => fail('Succession attempt child exited before listener handover completed'));
   child.on('disconnect', () => fail('Succession attempt channel disconnected'));
   child.on('message', (message: unknown, handle: unknown) => {
-    if (!isAttemptMessage(message) || message.attemptId !== attemptId) return;
+    if (!isAttemptMessage(message) || message.attemptId !== attemptId) {
+      closeHandle(handle);
+      return;
+    }
+    if (message.kind !== 'connection') closeHandle(handle);
     if (message.kind === 'release-request') {
       channelState.releaseRequested = true;
       channelState.stopForwarding?.();
@@ -553,7 +558,11 @@ function handleAttemptChildMessage(
   message: unknown,
   handle: unknown,
 ): void {
-  if (!isAttemptMessage(message) || message.attemptId !== attemptId) return;
+  if (!isAttemptMessage(message) || message.attemptId !== attemptId) {
+    closeHandle(handle);
+    return;
+  }
+  if (message.kind !== 'listener' && message.kind !== 'connection') closeHandle(handle);
   if (message.kind === 'release-ready' && state.releasing && !state.releaseTimedOut) {
     state.releaseReadyCallback?.();
     state.releaseReadyCallback = null;
@@ -597,15 +606,18 @@ function handleAttemptChildMessage(
   }
   if (message.kind === 'listener' && state.listener !== null && handle !== undefined) {
     if (!state.socketPaths.includes(message.socketPath) || state.adopted.has(message.socketPath)) {
+      closeHandle(handle);
       fail('Succession attempt received an unclaimed IPC listener');
       return;
     }
     const next = state.adopted.size === 0 ? state.listener : state.listener.createCompatibilityListener?.();
     if (next === undefined) {
+      closeHandle(handle);
       fail('Succession attempt cannot adopt compatibility listener');
       return;
     }
     if (next.forwardConnections === undefined) {
+      closeHandle(handle);
       fail('Succession attempt cannot park connections on an adopted listener');
       return;
     }
@@ -627,8 +639,13 @@ function handleAttemptChildMessage(
   }
 
   if (message.kind === 'connection' && handle !== undefined && state.adopted.has(message.socketPath)) {
-    state.adopted.get(message.socketPath)?.acceptSocket?.(handle as Socket, message.pendingFrameBase64);
+    const listener = state.adopted.get(message.socketPath);
+    if (listener?.acceptSocket !== undefined) {
+      listener.acceptSocket(handle as Socket, message.pendingFrameBase64);
+      return;
+    }
   }
+  if (message.kind === 'listener' || message.kind === 'connection') closeHandle(handle);
 }
 
 export async function receiveSuccessionAttemptChild(

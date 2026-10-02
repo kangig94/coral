@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { closeHandle } from '../infra/ipc-handle.js';
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
 import { currentLaunchStatus, receiveLaunchStatus, updateLaunchStatus } from '../infra/launch-status.js';
@@ -376,7 +377,18 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
       replacementHold(attempt, true);
     }
   });
-  supervisor.on('message', (message: unknown) => receiveReplacementMessage(attempt, message));
+  supervisor.on('message', (message: unknown, handle: unknown) => {
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      'kind' in message &&
+      (String(message.kind).startsWith('coral-recovery-') ||
+        message.kind === 'coral-repair-bridge-ready' ||
+        message.kind === 'coral-launch-status')
+    )
+      closeHandle(handle);
+    receiveReplacementMessage(attempt, message);
+  });
   supervisor.once('exit', (code, signal) => {
     replacementHold(attempt, false);
     if (!attempt.settled)
@@ -479,7 +491,8 @@ export async function resumeLegacyUpgradeObservation(
         };
         const exited = (): void => finish('observer-exited-before-acknowledgement');
         const disconnected = (): void => finish('observer-disconnected-before-acknowledgement');
-        const acknowledged = (message: unknown): void => {
+        const acknowledged = (message: unknown, handle: unknown): void => {
+          closeHandle(handle);
           if (
             typeof message === 'object' &&
             message !== null &&

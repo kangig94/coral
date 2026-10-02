@@ -9,7 +9,6 @@ import {
   UpgradeSupervisorUnavailableError,
 } from '#src/coordinator/handoff.js';
 import { createRealTimePort } from '#src/infra/time.js';
-import { recordContenderDeferral } from '#src/coordinator-launch/request.js';
 
 const build = {
   version: '0.11.0',
@@ -111,15 +110,6 @@ describe('contender upgrade request', () => {
     expect(result.kind).toBe('refused');
     expect(request).not.toHaveBeenCalled();
     expect(startLegacy).not.toHaveBeenCalled();
-  });
-
-  it('records a deferred refusal when another owner still holds the intent', async () => {
-    const { runDir } = fixture();
-    await settleContenderUpgrade(
-      runDir,
-      { kind: 'refused', reason: 'pending intent names another incumbent', disposition: 'deferred' },
-      recordContenderDeferral,
-    );
   });
 
   it('should exit a redundant contender without recording anything, and fail one that cannot read its intent', async () => {

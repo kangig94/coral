@@ -16,7 +16,7 @@ import { providerHandoffCapsulePath } from '#src/infra/path/provider-proxy.js';
 import { handoffCapsuleV1Schema } from '#src/provider-proxy/handoff-capsule.js';
 import { createPluginFixture, createShippedPluginFixture } from '#tests/integration/coordinator/helpers.js';
 import { validatedBuild } from '#src/coordinator-launch/selection.js';
-import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
+import { controllerBuild } from '#src/coordinator-launch/controller-build.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {

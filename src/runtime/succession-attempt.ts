@@ -2,6 +2,7 @@ import { type ChildProcess, type SendHandle } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Socket } from 'node:net';
 
+import { closeHandle } from '../infra/ipc-handle.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { createRealTimePort } from '../infra/time.js';
 import type { TimePort } from '../infra/port-types.js';
@@ -78,8 +79,17 @@ function requestSupervisedAttempt(bundleDir: string, attemptId: string): Success
       !('kind' in message) ||
       !('attemptId' in message) ||
       message.attemptId !== attemptId
-    )
+    ) {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'kind' in message &&
+        String(message.kind).startsWith('coral-supervisor-attempt-')
+      )
+        closeHandle(handle);
       return;
+    }
+    if (message.kind !== 'coral-supervisor-attempt-message') closeHandle(handle);
     switch (message.kind) {
       case 'coral-supervisor-attempt-spawned':
         if ('pid' in message && typeof message.pid === 'number') {
@@ -89,7 +99,8 @@ function requestSupervisedAttempt(bundleDir: string, attemptId: string): Success
         }
         break;
       case 'coral-supervisor-attempt-message':
-        processView.emit('message', 'message' in message ? message.message : undefined, handle);
+        if (!processView.emit('message', 'message' in message ? message.message : undefined, handle))
+          closeHandle(handle);
         break;
       case 'coral-supervisor-attempt-exit':
         connected = false;
@@ -167,13 +178,14 @@ export function createRealSuccessionAttemptPorts(): SuccessionAttemptPorts {
         if (event === 'message') process.on('message', listener);
         else {
           process.on('disconnect', listener);
-          process.on('message', (message: unknown) => {
+          process.on('message', (message: unknown, handle: unknown) => {
             if (
               typeof message === 'object' &&
               message !== null &&
               'kind' in message &&
               message.kind === 'coral-sentinel-upstream-disconnected'
             ) {
+              closeHandle(handle);
               upstreamConnected = false;
               (listener as () => void)();
             }

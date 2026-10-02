@@ -170,7 +170,7 @@ describe.runIf(process.platform === 'linux')('supervisor database removal recove
           {
             name: 'transient-retirement-observation',
             setup(builder) {
-              builder.onLoad({ filter: /\/coordinator-launch\/supervisor\.ts$/ }, ({ path }) => ({
+              builder.onLoad({ filter: /\/coordinator-launch\/child-watch\.ts$/ }, ({ path }) => ({
                 contents:
                   `import { writeFileSync as fixtureWrite } from 'node:fs';\n` +
                   readFileSync(path, 'utf8')
@@ -640,6 +640,7 @@ it.each([
       else if (artifact === 'credential') {
         const db = new DatabaseSync(storeDbPathForHome(home, 'prod'));
         try {
+          db.exec('PRAGMA busy_timeout = 5000');
           db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('child_principal_credential.v1:damaged', '{');
         } finally {
           db.close();
@@ -796,36 +797,40 @@ it('repairs after an inherited child stops, holds with refused-only termination,
       {
         name: 'inherited-child-refusal-and-observation',
         setup(builder) {
-          builder.onLoad({ filter: /\/coordinator-launch\/supervisor\.ts$/ }, ({ path }) => {
+          builder.onLoad({ filter: /\/coordinator-launch\/(ownership|child-process)\.ts$/ }, ({ path }) => {
             let contents = readFileSync(path, 'utf8');
-            contents = contents.replace(
-              "if (replacement) process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });",
-              `if (replacement) {
-              process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });
-              process.kill(sourcePid, 'SIGSTOP');
-              fixtureWrite(process.env.CORAL_FIXTURE_STOP_MARKER!, JSON.stringify({ pid: process.pid, child: sourcePid }));
-            }`,
-            );
-            contents = contents.replace(
-              'const { record, owner, incarnation, replacement, recoveryChallenge } = acquisition;',
-              `const { record, owner, incarnation, replacement, recoveryChallenge } = acquisition;
-            const fixtureObservation = setInterval(() => fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG!,
-              JSON.stringify({ pid: process.pid, state: record.read() }) + '\\n'), 50);
-            fixtureObservation.unref();`,
-            );
-            const start = contents.indexOf('function signalInheritedChild(');
-            const end = contents.indexOf('function spawnAdmittedChild(', start);
-            const signalling = contents.slice(start, end);
-            const refused =
-              process.platform === 'darwin'
-                ? signalling
-                : signalling.replace(
-                    '!incarnationMayAuthorizeSignal(process.platform)',
-                    'true || !incarnationMayAuthorizeSignal(process.platform)',
-                  );
-            if (start < 0 || end < 0 || (process.platform !== 'darwin' && refused === signalling))
-              throw new Error('Missing inherited signal fixture target');
-            contents = contents.slice(0, start) + refused + contents.slice(end);
+            if (path.endsWith('/ownership.ts')) {
+              contents = contents.replace(
+                "if (replacement) process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });",
+                `if (replacement) {
+                const sourcePid = Number(process.env.CORAL_RECOVERY_SOURCE_PID);
+                process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });
+                process.kill(sourcePid, 'SIGSTOP');
+                fixtureWrite(process.env.CORAL_FIXTURE_STOP_MARKER!, JSON.stringify({ pid: process.pid, child: sourcePid }));
+              }`,
+              );
+              contents = contents.replace(
+                'const record = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, manifest.buildSetId);',
+                `const record = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, manifest.buildSetId);
+              const fixtureObservation = setInterval(() => fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG!,
+                JSON.stringify({ pid: process.pid, state: record.read() }) + '\\n'), 50);
+              fixtureObservation.unref();`,
+              );
+            } else {
+              const start = contents.indexOf('function signalInheritedChild(');
+              const end = contents.indexOf('function spawnAdmittedChild(', start);
+              const signalling = contents.slice(start, end);
+              const refused =
+                process.platform === 'darwin'
+                  ? signalling
+                  : signalling.replace(
+                      '!incarnationMayAuthorizeSignal(process.platform)',
+                      'true || !incarnationMayAuthorizeSignal(process.platform)',
+                    );
+              if (start < 0 || end < 0 || (process.platform !== 'darwin' && refused === signalling))
+                throw new Error('Missing inherited signal fixture target');
+              contents = contents.slice(0, start) + refused + contents.slice(end);
+            }
             return {
               contents: `import { writeFileSync as fixtureWrite, appendFileSync as fixtureAppend } from 'node:fs';\n${contents}`,
               loader: 'ts',

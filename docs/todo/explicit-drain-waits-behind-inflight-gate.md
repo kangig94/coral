@@ -10,4 +10,4 @@
 
 Give listener close its own ordering after the in-flight wait, or decide explicitly that administrative drain stops answering new requests immediately. Include the abandoned-request-recording failure in that decision: elapsed lease time alone does not establish that the request's continuation has a durable owner.
 
-`watchChild` in `src/coordinator-launch/supervisor.ts` provides independent current-build supervision if the coordinator stops making progress. It does not choose when a responsive coordinator should close its listener.
+`watchChild` in `src/coordinator-launch/child-watch.ts` provides independent current-build supervision if the coordinator stops making progress. It does not choose when a responsive coordinator should close its listener.

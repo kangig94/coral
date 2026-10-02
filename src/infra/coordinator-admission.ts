@@ -1,3 +1,4 @@
+import { closeHandle } from './ipc-handle.js';
 import { receiveLaunchStatus } from './launch-status.js';
 import { publishLaunchAdmission, readLaunchAdmission, removeOwnLaunchAdmission } from './launch-admission-record.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from './node-process.js';
@@ -37,7 +38,14 @@ export async function claimCoordinatorLaunch(): Promise<boolean> {
       process.off('message', acknowledged);
       if (admitted) {
         const abortBeforeArm = (): void => process.exit(1);
-        const armed = (message: unknown): void => {
+        const armed = (message: unknown, handle: unknown): void => {
+          if (
+            typeof message === 'object' &&
+            message !== null &&
+            'kind' in message &&
+            message.kind === 'coral-sentinel-armed'
+          )
+            closeHandle(handle);
           if (typeof message !== 'object' || message === null || !('kind' in message)) return;
           if (message.kind !== 'coral-sentinel-armed') return;
           process.off('disconnect', abortBeforeArm);
@@ -49,7 +57,14 @@ export async function claimCoordinatorLaunch(): Promise<boolean> {
       resolve(admitted);
     };
     const disconnected = (): void => finish(false);
-    const acknowledged = (message: unknown): void => {
+    const acknowledged = (message: unknown, handle: unknown): void => {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'kind' in message &&
+        message.kind === 'coral-launch-acknowledged'
+      )
+        closeHandle(handle);
       if (
         typeof message === 'object' &&
         message !== null &&
@@ -60,7 +75,8 @@ export async function claimCoordinatorLaunch(): Promise<boolean> {
       )
         finish(true);
     };
-    const receiveAdmission = (message: unknown): void => {
+    const receiveAdmission = (message: unknown, handle: unknown): void => {
+      closeHandle(handle);
       if (!admissionMessage(message) || process.ppid !== message.parent.pid) return finish(false);
       const parentIncarnation = probeProcessIncarnation(message.parent.pid);
       const childIncarnation = probeProcessIncarnation(process.pid);
@@ -68,7 +84,9 @@ export async function claimCoordinatorLaunch(): Promise<boolean> {
         return finish(false);
       authenticatedParent = Object.freeze({ ...message.parent });
       runDir = message.runDir;
-      process.on('message', (value: unknown) => {
+      process.on('message', (value: unknown, handle: unknown) => {
+        if (typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'coral-launch-status')
+          closeHandle(handle);
         if (
           typeof value === 'object' &&
           value !== null &&

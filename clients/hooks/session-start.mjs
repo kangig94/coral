@@ -61,11 +61,6 @@ function coordinatorRunDir(flavor = buildFlavor(), stateRoot = coralStateRoot())
 }
 
 function spawnBackend(pluginRoot) {
-  // Match `src/infra/path/coordinator.ts:coordinatorPaths(...)`: the daemon
-  // reads/writes coordinator.json here, so its stderr log belongs alongside
-  // the same runDir. Sharing the path with `src/transport/ipc/ensure.ts`'s
-  // CLI-side spawn keeps logs unified across both spawn entry points and
-  // benefits from the same rotation discipline.
   const runDir = coordinatorRunDir();
 
   const backendBin = join(pluginRoot, 'bridge', 'coral-backend.cjs');
@@ -114,23 +109,6 @@ function recordsCauseAndNextStep(error) {
   );
 }
 
-// The spawn above is detached, so this hook never learns whether it worked, and a
-// failure has until now been invisible: the daemon writes a diagnostic and exits,
-// the hook fails open, and the session proceeds as if Coral were healthy.
-//
-// The notice deliberately does not claim the backend is currently down. It cannot
-// know: the spawn issued moments ago has not had time to bind, so no daemon is
-// answering yet on every session start, and nothing ever deletes the diagnostic.
-// Predicting from those signals is wrong exactly on the recovery path — someone
-// who just fixed the cause would be told it is still broken.
-//
-// The recency and liveness filters remain, as noise control rather than proof: an
-// answering daemon or an old diagnostic means the report is not worth making.
-//
-// The notice may point only at what this hook itself observed: the diagnostic file, and the fields it
-// read out of that file. Naming a command instead promises an answer that depends on evidence this hook
-// does not have. The same rule bounds the pointer's own claim — the file is said to hold a cause and a
-// next step only because both were observed in it, and a record missing either is not reported at all.
 function readRecentStartupFailureNotice(runDir) {
   const diagnosticFile = join(runDir, 'startup-diagnostic.json');
   try {

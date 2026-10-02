@@ -108,33 +108,35 @@ async function buildObservedSupervisor(outfile: string): Promise<void> {
       {
         name: 'observe-recovery-transitions',
         setup(builder) {
-          builder.onLoad({ filter: /\/coordinator-launch\/(state|supervisor)\.ts$/ }, ({ path }) => {
-            let source = readFileSync(path, 'utf8');
-            const log = `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'memory', pid: process.pid, authority: this.#authority, state: this.#state }) + '\\n');`;
-            if (path.endsWith('/state.ts')) {
-              source = source
-                .replace('return this.#state;', `${log} return this.#state;`)
-                .replace(
-                  'const reservation: LaunchReservation = {',
-                  `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'reservation', pid: process.pid, authority: this.#authority, state: this.#state }) + '\\n'); const reservation: LaunchReservation = {`,
-                );
-            } else {
-              source = source
-                .replace(
-                  "process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });",
-                  "process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge }, () => fixtureFreeze('owned'));",
-                )
-                .replace(
-                  "process.send?.({ kind: 'coral-repair-bridge-ready', challenge: recoveryChallenge });",
-                  "process.send?.({ kind: 'coral-repair-bridge-ready', challenge: recoveryChallenge }, () => fixtureFreeze('bridge', record));",
-                )
-                .replace(
-                  'process.kill(child.pid, signal);',
-                  `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'signal', pid: child.pid, signal }) + '\\n'); process.kill(child.pid, signal);`,
-                );
-              source += `\nfunction fixtureFreeze(phase: string, record?: SupervisorLaunchMemory): void {
+          builder.onLoad(
+            { filter: /\/coordinator-launch\/(state|ownership|inherited-children|child-process)\.ts$/ },
+            ({ path }) => {
+              let source = readFileSync(path, 'utf8');
+              const log = `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'memory', pid: process.pid, authority: this.#authority, state: this.#state }) + '\\n');`;
+              if (path.endsWith('/state.ts')) {
+                source = source
+                  .replace('return this.#state;', `${log} return this.#state;`)
+                  .replace(
+                    'const reservation: LaunchReservation = {',
+                    `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'reservation', pid: process.pid, authority: this.#authority, state: this.#state }) + '\\n'); const reservation: LaunchReservation = {`,
+                  );
+              } else {
+                source = source
+                  .replace(
+                    "process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge });",
+                    "process.send?.({ kind: 'coral-recovery-owned', challenge: recoveryChallenge }, () => fixtureFreeze('owned'));",
+                  )
+                  .replace(
+                    "process.send?.({ kind: 'coral-repair-bridge-ready', challenge: recoveryChallenge });",
+                    "process.send?.({ kind: 'coral-repair-bridge-ready', challenge: recoveryChallenge }, () => fixtureFreeze('bridge', record));",
+                  )
+                  .replace(
+                    'process.kill(child.pid, signal);',
+                    `if (process.env.CORAL_FIXTURE_MEMORY_LOG) fixtureAppend(process.env.CORAL_FIXTURE_MEMORY_LOG, JSON.stringify({ kind: 'signal', pid: child.pid, signal }) + '\\n'); process.kill(child.pid, signal);`,
+                  );
+                source += `\nfunction fixtureFreeze(phase: string, record?: import('#src/coordinator-launch/state.js').SupervisorLaunchMemory): void {
               const marker = process.env.CORAL_FIXTURE_FREEZE_MARKER;
-              if (marker && phase === process.env.CORAL_FIXTURE_RECOVERY_FREEZE && !existsSync(marker)) {
+              if (marker && phase === process.env.CORAL_FIXTURE_RECOVERY_FREEZE && !fixtureExists(marker)) {
                 if (phase === 'bridge' && record?.read().attempt?.admissionProven !== true) {
                   setTimeout(() => fixtureFreeze(phase, record), 20);
                   return;
@@ -143,12 +145,13 @@ async function buildObservedSupervisor(outfile: string): Promise<void> {
                 process.kill(process.pid, 'SIGSTOP');
               }
             }`;
-            }
-            return {
-              contents: `import { appendFileSync as fixtureAppend, writeFileSync as fixtureWrite } from 'node:fs';\n${source}`,
-              loader: 'ts',
-            };
-          });
+              }
+              return {
+                contents: `import { appendFileSync as fixtureAppend, writeFileSync as fixtureWrite, existsSync as fixtureExists } from 'node:fs';\n${source}`,
+                loader: 'ts',
+              };
+            },
+          );
         },
       },
     ],
@@ -549,18 +552,21 @@ describe('namespace supervisor recovery', () => {
           {
             name: 'observe-supervision-memory',
             setup(builder) {
-              builder.onLoad({ filter: /\/coordinator-launch\/(state|supervisor)\.ts$/ }, ({ path }) => ({
-                contents: readFileSync(path, 'utf8')
-                  .replace(
-                    'return this.#state;',
-                    "process.send?.({ kind: 'fixture-memory', state: this.#state }); return this.#state;",
-                  )
-                  .replace(
-                    'process.kill(child.pid, signal);',
-                    "process.send?.({ kind: 'fixture-signal', pid: child.pid, signal }); process.kill(child.pid, signal);",
-                  ),
-                loader: 'ts',
-              }));
+              builder.onLoad(
+                { filter: /\/coordinator-launch\/(state|ownership|inherited-children|child-process)\.ts$/ },
+                ({ path }) => ({
+                  contents: readFileSync(path, 'utf8')
+                    .replace(
+                      'return this.#state;',
+                      "process.send?.({ kind: 'fixture-memory', state: this.#state }); return this.#state;",
+                    )
+                    .replace(
+                      'process.kill(child.pid, signal);',
+                      "process.send?.({ kind: 'fixture-signal', pid: child.pid, signal }); process.kill(child.pid, signal);",
+                    ),
+                  loader: 'ts',
+                }),
+              );
             },
           },
         ],

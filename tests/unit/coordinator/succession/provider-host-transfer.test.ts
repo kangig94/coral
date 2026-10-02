@@ -33,7 +33,7 @@ import type { ProviderOperationPhase, ProviderOperationRecord } from '#src/store
 import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { successionPreparationSchema, type SuccessionPreparation } from '#src/coordinator/succession/protocol.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
+import { controllerBuild } from '#src/coordinator-launch/controller-build.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';

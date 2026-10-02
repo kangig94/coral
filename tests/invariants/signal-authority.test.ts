@@ -797,34 +797,38 @@ describe('coordinator retirement of its own replacement supervisor', () => {
 
 describe('namespace supervisor signal sender table', () => {
   it('signals its own children only from the enumerated committed, freshly verified retirement paths', () => {
-    const canonical = 'src/coordinator-launch/supervisor.ts';
-    const raw = readFileSync(join(REPO_ROOT, canonical), 'utf8');
-    const parsed = ts.createSourceFile(canonical, raw, ts.ScriptTarget.Latest, true);
+    const canonicalFiles = ['src/coordinator-launch/child-process.ts', 'src/coordinator-launch/child-watch.ts'];
+    const parsedFiles = canonicalFiles.map((canonical) =>
+      ts.createSourceFile(canonical, readFileSync(join(REPO_ROOT, canonical), 'utf8'), ts.ScriptTarget.Latest, true),
+    );
     const senders: string[] = [];
-    const visit = (node: ts.Node): void => {
-      if (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        node.expression.name.text === 'kill' &&
-        node.arguments.length === 1
-      ) {
-        const scope = enclosingSignallingFunction(node)!;
-        senders.push(signallingFunctionName(scope, parsed));
-        const code = codeTextOnly(scope.getText(parsed));
-        expect(code).toContain('record.commitTermination(');
-        expect(code).toContain('terminationCommitted(');
-        expect(code).toContain('probeProcessIncarnation(');
-        expect(code).toMatch(/(?:!==|===)\s*(?:identity|running.identity)\.incarnation/u);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(parsed);
+    for (const parsed of parsedFiles) {
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === 'kill' &&
+          node.arguments.length === 1
+        ) {
+          const scope = enclosingSignallingFunction(node)!;
+          senders.push(signallingFunctionName(scope, parsed));
+          const code = codeTextOnly(scope.getText(parsed));
+          expect(code).toContain('record.commitTermination(');
+          expect(code).toContain('terminationCommitted(');
+          expect(code).toContain('probeProcessIncarnation(');
+          expect(code).toMatch(/(?:!==|===)\s*(?:identity|running.identity)\.incarnation/u);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
     expect(senders.sort()).toEqual([
       'escalateWatchedChild',
       'monitorChildHeartbeat',
       'retireOwnedChild',
       'retireUnidentifiedChild',
     ]);
+    const parsed = parsedFiles[0];
     const inherited = parsed.statements.find(
       (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === 'signalInheritedChild',
     )!;

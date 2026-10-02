@@ -34,7 +34,7 @@ import type { ControlTenancyHolder } from '#src/provider-proxy/control-endpoint.
 import type { ControllerBuild } from '#src/provider-proxy/controller-succession.js';
 import type { OperationIdentity } from '#src/provider-proxy/protocol.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { controllerBuild } from '#src/coordinator-launch/supervisor.js';
+import { controllerBuild } from '#src/coordinator-launch/controller-build.js';
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 

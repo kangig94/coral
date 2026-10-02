@@ -2,8 +2,10 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 declare const __PLUGIN_ROOT__: string | undefined;
 
 import { resolve } from 'node:path';
+
 import { z } from 'zod';
 
+import { closeHandle } from '../infra/ipc-handle.js';
 import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSentinel } from './bootstrap-diagnostics.js';
 import { BackendAlreadyRunningError } from './handoff.js';
 import {
@@ -421,7 +423,14 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
     supervisorMonitor.unref();
     sentinelArm = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Coordinator sentinel did not arm before startup')), 30_000);
-      const onArm = (message: unknown): void => {
+      const onArm = (message: unknown, handle: unknown): void => {
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          'kind' in message &&
+          message.kind === 'coral-sentinel-armed'
+        )
+          closeHandle(handle);
         if (
           typeof message === 'object' &&
           message !== null &&
@@ -438,7 +447,14 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
       process.on('message', onArm);
       process.send?.({ kind: 'coral-sentinel-hello', id: sentinelId });
     });
-    process.on('message', (message: unknown) => {
+    process.on('message', (message: unknown, handle: unknown) => {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'kind' in message &&
+        message.kind === 'coral-sentinel-challenge'
+      )
+        closeHandle(handle);
       if (
         typeof message === 'object' &&
         message !== null &&
