@@ -450,13 +450,7 @@ export class InMemoryStorage implements StoragePort {
 
     for (const [path, node] of movedDirectories) {
       const nextPath = replacePathPrefix(path, from, to) ?? to;
-      this.directories.set(nextPath, {
-        kind: 'dir',
-        mode: node.mode,
-        dev: node.dev,
-        ino: node.ino,
-        ...this.nextStamps(),
-      });
+      this.directories.set(nextPath, { ...node });
       this.registerDirectory(nextPath);
     }
     for (const [path, identity] of movedFiles) {

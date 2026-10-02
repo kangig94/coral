@@ -274,11 +274,11 @@ it('keeps export failures visible beyond the main cursor and retries until clear
   const unlink = f.runtime.storage.unlinkSync;
   let failing = true;
   f.runtime.storage.unlinkSync = (path) => {
-    if (String(path) === join(f.runtime.paths.coral.exports.jobsRoot, ids[0], 'result.md') && failing) {
+    if (String(path).includes(`/.retiring-${ids[0]}-`) && failing) {
       s.advance(1000);
       throw new Error('persistent export EACCES');
     }
-    if (String(path) === join(f.runtime.paths.coral.exports.jobsRoot, ids[1], 'result.md')) s.advance(4000);
+    if (String(path).includes(`/.retiring-${ids[1]}-`)) s.advance(4000);
     return unlink(path);
   };
   try {
@@ -286,7 +286,10 @@ it('keeps export failures visible beyond the main cursor and retries until clear
     const second = await s.run();
     expect(second.phase).toBe('partial');
     expect(second.outcomes).toContainEqual(
-      expect.objectContaining({ reason: 'export-cleanup-pending', subject: ids[0] }),
+      expect.objectContaining({
+        reason: 'export-cleanup-pending',
+        subject: expect.stringMatching(/^\.retiring-export-a-/),
+      }),
     );
     expect(existsSync(join(f.runtime.paths.coral.exports.jobsRoot, ids[2]))).toBe(false);
     failing = false;
@@ -319,9 +322,7 @@ it('rotates slow export failures while the main scan reaches unrelated exports',
   const unlink = f.runtime.storage.unlinkSync;
   const calls: string[] = [];
   f.runtime.storage.unlinkSync = (path) => {
-    const id = [...bad, good].find(
-      (id) => String(path) === join(f.runtime.paths.coral.exports.jobsRoot, id, 'result.md'),
-    );
+    const id = [...bad, good].find((id) => String(path).includes(`/.retiring-${id}-`));
     if (id) calls.push(id);
     if (id && bad.includes(id)) {
       s.advance(1000);

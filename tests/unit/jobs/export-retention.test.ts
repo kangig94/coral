@@ -13,7 +13,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { pruneJobExports, readExportJobState, type ExportJobRetentionState } from '#src/jobs/export-retention.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRetentionFixture, RETENTION_CUTOFF, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
@@ -38,6 +38,11 @@ function exported(f: ReturnType<typeof fixture>, id: string): string {
   for (const child of ['', 'result.md', 'provider-artifacts', 'provider-artifacts/original.jsonl'])
     utimesSync(join(path, child), 1, 1);
   return path;
+}
+function remainingExport(f: ReturnType<typeof fixture>, id: string): string | undefined {
+  const root = f.runtime.paths.coral.exports.jobsRoot;
+  const name = readdirSync(root).find((name) => name === id || name.startsWith(`.retiring-${id}-`));
+  return name === undefined ? undefined : join(root, name);
 }
 async function prune(
   f: ReturnType<typeof fixture>,
@@ -232,24 +237,29 @@ describe('export retention', () => {
         mutate: (operation) => operation(),
       });
     await run(cutoff);
-    const remaining = readdirSync(path);
+    const retired = remainingExport(f, 'residue')!;
+    expect(retired).not.toBe(path);
+    const remaining = readdirSync(retired);
     expect(remaining.length).toBeGreaterThan(0);
     expect(remaining.length).toBeLessThan(10);
     expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'failed' }));
     expect(
-      f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.admission.v1.residue'),
+      f.db
+        .prepare('SELECT value FROM meta WHERE key = ?')
+        .get(`storage-retention.exports.admission.v1.${basename(retired)}`),
     ).toEqual({ value: String(cutoff) });
-    utimesSync(path, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
     if (fresh) {
-      writeFileSync(join(path, 'new-content'), 'new activity');
+      writeFileSync(join(retired, 'new-content'), 'new activity');
       const contentTime = new Date(cutoff + 43_200_000);
-      utimesSync(join(path, 'new-content'), contentTime, contentTime);
+      utimesSync(join(retired, 'new-content'), contentTime, contentTime);
     }
     f.budget.canContinue = () => true;
     await run(cutoff + 86_400_000);
-    expect(existsSync(path)).toBe(fresh);
+    expect(remainingExport(f, 'residue') !== undefined).toBe(fresh);
     expect(
-      f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.admission.v1.residue'),
+      f.db
+        .prepare('SELECT value FROM meta WHERE key = ?')
+        .get(`storage-retention.exports.admission.v1.${basename(retired)}`),
     ).toBeUndefined();
     if (fresh) expect(readdirSync(path).sort()).toEqual([...remaining, 'new-content'].sort());
   });
@@ -392,7 +402,7 @@ describe('export retention', () => {
         unlink(child);
       };
       let afterId = '';
-      for (let cycle = 0; cycle < 3 && existsSync(path); cycle += 1) {
+      for (let cycle = 0; cycle < 10 && remainingExport(f, 'slow-residue') !== undefined; cycle += 1) {
         elapsed = 0;
         afterId = await pruneJobExports({
           db: f.db,
@@ -405,11 +415,8 @@ describe('export retention', () => {
           mutate: (operation) => operation(),
         });
         expect(unlinks).toBeGreaterThan(0);
-        if (existsSync(path)) {
-          utimesSync(path, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
-        }
       }
-      expect(existsSync(path)).toBe(false);
+      expect(remainingExport(f, 'slow-residue')).toBeUndefined();
       expect(unlinks).toBe(files);
     },
   );
@@ -526,7 +533,7 @@ describe('export retention', () => {
       for (const p of [path, descendants]) utimesSync(p, 1, 1);
       let cycles = 0;
       let previousRemaining = 20_001;
-      while (existsSync(path)) {
+      while (remainingExport(f, 'large') !== undefined) {
         let operations = 0;
         await pruneJobExports({
           db: f.db,
@@ -538,13 +545,19 @@ describe('export retention', () => {
           resultHold: () => 'released',
           mutate: (operation) => operation(),
         });
-        const remaining = existsSync(descendants) ? readdirSync(descendants).length : 0;
+        const current = remainingExport(f, 'large');
+        const currentDescendants =
+          current === undefined ? undefined : layout === 'nested' ? join(current, 'provider-artifacts') : current;
+        const remaining =
+          currentDescendants !== undefined && existsSync(currentDescendants)
+            ? readdirSync(currentDescendants).length
+            : 0;
         expect(remaining).toBeLessThan(previousRemaining);
         previousRemaining = remaining;
         expect(++cycles).toBeLessThan(10);
       }
       expect(cycles).toBeGreaterThan(1);
-      expect(existsSync(path)).toBe(false);
+      expect(remainingExport(f, 'large')).toBeUndefined();
     },
   );
 
