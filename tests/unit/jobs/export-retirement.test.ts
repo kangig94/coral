@@ -2,6 +2,8 @@ import { afterEach, expect, it } from 'vitest';
 import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { utimesSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { pruneJobExports } from '#src/jobs/export-retention.js';
 import { createRetentionFixture, RETENTION_CUTOFF, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
@@ -10,6 +12,113 @@ const fixtures: ReturnType<typeof createRetentionFixture>[] = [];
 afterEach(() => {
   for (const f of fixtures.splice(0)) f.close();
 });
+
+for (const access of ['cwd', 'directory-handle'] as const) {
+  for (const state of ['absent', 'terminal'] as const) {
+    for (const timing of ['before-prune', 'during-enumeration', 'after-first-delete', 'no-write'] as const) {
+      it.skipIf(access === 'directory-handle' && process.platform !== 'linux')(
+        `preserves an existing ${access} writer (${state}, ${timing})`,
+        async () => {
+          const f = createRetentionFixture();
+          fixtures.push(f);
+          const storage = f.runtime.storage;
+          const root = f.runtime.paths.coral.exports.jobsRoot;
+          const original = join(root, 'existing-writer');
+          const top = join(original, 'provider-artifacts');
+          storage.mkdirSync(top, { recursive: true });
+          for (const name of ['first.jsonl', 'second.jsonl']) storage.writeFileSync(join(top, name), 'old');
+          for (const path of [original, top, join(top, 'first.jsonl'), join(top, 'second.jsonl')])
+            utimesSync(path, 1, 1);
+          const writer = spawn(
+            process.execPath,
+            [
+              '-e',
+              `const fs = require('node:fs');
+               const prefix = ${access === 'cwd' ? "'.'" : "'/proc/self/fd/' + fs.openSync('.', 'r')"};
+               ${access === 'directory-handle' ? "process.chdir('/');" : ''}
+               process.stdin.once('data', () => {
+                 fs.writeFileSync(prefix + '/fresh.jsonl', 'fresh content');
+                 fs.utimesSync(prefix + '/fresh.jsonl', ${RETENTION_NOW / 1000}, ${RETENTION_NOW / 1000});
+                 fs.utimesSync(prefix, ${RETENTION_NOW / 1000}, ${RETENTION_NOW / 1000});
+                 console.log('written');
+               });
+               console.log('ready');`,
+            ],
+            { cwd: top, stdio: ['pipe', 'pipe', 'pipe'] },
+          );
+          const closed = once(writer, 'close');
+          let injected = false;
+          let retired = '';
+          const write = async () => {
+            const written = once(writer.stdout, 'data');
+            writer.stdin.end('write');
+            await written;
+            expect((await closed)[0]).toBe(0);
+            injected = true;
+          };
+          const iterate = storage.iterateDirectory.bind(storage);
+          storage.iterateDirectory = async function* (directory) {
+            if (basename(directory) !== 'provider-artifacts') {
+              yield* iterate(directory);
+              return;
+            }
+            retired = directory;
+            if (timing === 'during-enumeration') await write();
+            for await (const child of iterate(directory)) {
+              yield child;
+              if (timing === 'after-first-delete' && !injected) {
+                expect(storage.existsSync(join(directory, child))).toBe(false);
+                await write();
+                storage.mkdirSync(original);
+                storage.writeFileSync(join(original, 'writer.md'), 'new writer');
+              }
+            }
+          };
+          try {
+            await Promise.race([
+              once(writer.stdout, 'data'),
+              closed.then(([code]) => {
+                throw new Error(`writer exited before readiness: ${code}`);
+              }),
+            ]);
+            if (timing === 'before-prune') await write();
+            await pruneJobExports({
+              db: f.db,
+              runtime: f.runtime,
+              cutoff: RETENTION_CUTOFF,
+              afterId: '',
+              budget: f.budget,
+              jobState: () => (state === 'absent' ? { kind: 'absent' } : { kind: 'terminal', terminalAt: 1 }),
+              resultHold: () => 'released',
+              mutate: (operation) => operation(),
+            });
+            if (timing === 'no-write') {
+              expect(storage.existsSync(original)).toBe(false);
+              expect(storage.existsSync(retired)).toBe(false);
+              expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'deleted' }));
+            } else {
+              const kept =
+                timing === 'after-first-delete'
+                  ? join(root, basename(join(retired, '..')).replace('.retiring-', 'kept-retiring-'))
+                  : original;
+              expect(injected).toBe(true);
+              expect(storage.readFileSync(join(kept, 'provider-artifacts', 'fresh.jsonl'), 'utf-8')).toBe(
+                'fresh content',
+              );
+              expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', subject: kept }));
+              expect(f.outcomes.some((outcome) => outcome.kind === 'failed' || outcome.kind === 'deleted')).toBe(false);
+              if (timing === 'after-first-delete')
+                expect(storage.readFileSync(join(original, 'writer.md'), 'utf-8')).toBe('new writer');
+            }
+          } finally {
+            if (writer.exitCode === null) writer.kill();
+            await closed;
+          }
+        },
+      );
+    }
+  }
+}
 
 for (const backend of ['filesystem', 'memory'] as const) {
   for (const state of ['absent', 'terminal'] as const) {

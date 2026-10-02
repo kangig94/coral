@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { setImmediate } from 'node:timers/promises';
@@ -48,6 +48,7 @@ async function exportTreeExpired(
   cutoff: number,
   mtimes: Record<string, string> = {},
   directoryCutoff = cutoff,
+  directories = new Map<string, bigint>(),
 ): Promise<boolean> {
   const cutoffNs = BigInt(Math.floor(cutoff)) * 1_000_000n;
   const directory = runtime.storage.lstatSync(path, { bigint: true });
@@ -56,9 +57,12 @@ async function exportTreeExpired(
     directory.mtimeNs.toString() !== mtimes['']
   )
     return false;
+  directories.set(path, directory.mtimeNs);
   for (const child of await runtime.storage.readdir(path)) {
-    const mtime = runtime.storage.lstatSync(join(path, child), { bigint: true }).mtimeNs;
-    if (mtime >= cutoffNs && mtime.toString() !== mtimes[child]) return false;
+    const childPath = join(path, child);
+    const entry = runtime.storage.lstatSync(childPath, { bigint: true });
+    if (entry.mtimeNs >= cutoffNs && entry.mtimeNs.toString() !== mtimes[child]) return false;
+    if (entry.isDirectory()) directories.set(childPath, entry.mtimeNs);
   }
   return runtime.storage.lstatSync(path, { bigint: true }).mtimeNs === directory.mtimeNs;
 }
@@ -69,21 +73,35 @@ async function deleteExportTree(
   budget: RetentionRunBudget,
   mutate: <T>(operation: () => T) => T,
   changed: (top: string) => void,
+  directories: Map<string, bigint>,
   top = '',
-): Promise<void> {
+): Promise<boolean> {
   if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
   const entry = runtime.storage.lstatSync(path);
   if (entry.isDirectory() && !entry.isSymbolicLink()) {
+    if (!directories.has(path)) directories.set(path, runtime.storage.lstatSync(path, { bigint: true }).mtimeNs);
     for await (const child of runtime.storage.iterateDirectory(path)) {
-      await deleteExportTree(runtime, join(path, child), budget, mutate, changed, top || child);
+      if (!(await deleteExportTree(runtime, join(path, child), budget, mutate, changed, directories, top || child)))
+        return false;
       await setImmediate();
     }
   }
   if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
-  mutate(() => {
+  return mutate(() => {
+    for (
+      let directory = entry.isDirectory() ? path : dirname(path);
+      directories.has(directory);
+      directory = dirname(directory)
+    ) {
+      if (runtime.storage.lstatSync(directory, { bigint: true }).mtimeNs !== directories.get(directory)) return false;
+    }
     if (entry.isDirectory() && !entry.isSymbolicLink()) runtime.storage.rmdirSync(path);
     else runtime.storage.unlinkSync(path);
+    directories.delete(path);
+    const parent = dirname(path);
+    if (directories.has(parent)) directories.set(parent, runtime.storage.lstatSync(parent, { bigint: true }).mtimeNs);
     changed(top);
+    return true;
   });
 }
 
@@ -202,8 +220,9 @@ export async function pruneJobExports(input: {
         if (recovering && evidence !== null && evidence.cutoff <= cutoff) admittedCutoff = evidence.cutoff;
         const ageCutoff = admittedCutoff ?? cutoff;
         const mtimes = evidence !== null && evidence.cutoff === ageCutoff ? evidence.mtimes : {};
+        const directories = new Map<string, bigint>();
         const expired = recovering
-          ? await exportTreeExpired(runtime, path, ageCutoff, mtimes)
+          ? await exportTreeExpired(runtime, path, ageCutoff, mtimes, ageCutoff, directories)
           : state.kind !== 'absent' || admittedCutoff !== null || (await exportTreeExpired(runtime, path, cutoff));
         if (!expired) {
           const kept = recovering ? keepRetirement() : path;
@@ -234,7 +253,14 @@ export async function pruneJobExports(input: {
             path = retired;
             pending.remove(id);
             const unchanged = runtime.storage.lstatSync(path, { bigint: true }).mtimeNs === directoryMtime;
-            const expiredAfterRename = await exportTreeExpired(runtime, path, ageCutoff, mtimes, renameTime);
+            const expiredAfterRename = await exportTreeExpired(
+              runtime,
+              path,
+              ageCutoff,
+              mtimes,
+              renameTime,
+              directories,
+            );
             if (!unchanged || !expiredAfterRename) {
               outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };
               budget.record(outcome);
@@ -253,16 +279,28 @@ export async function pruneJobExports(input: {
               .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
               .run(`storage-retention.exports.admission.v1.${workId}`, String(ageCutoff));
           });
-          await deleteExportTree(runtime, path, deletionBudget, input.mutate, (top) => {
-            if (runtime.storage.existsSync(path)) {
-              mtimes[''] = runtime.storage.lstatSync(path, { bigint: true }).mtimeNs.toString();
-              const child = join(path, top);
-              if (top && runtime.storage.existsSync(child))
-                mtimes[top] = runtime.storage.lstatSync(child, { bigint: true }).mtimeNs.toString();
-              else delete mtimes[top];
-              saveEvidence();
-            }
-          });
+          const deleted = await deleteExportTree(
+            runtime,
+            path,
+            deletionBudget,
+            input.mutate,
+            (top) => {
+              const rootMtime = directories.get(path);
+              if (rootMtime !== undefined) {
+                mtimes[''] = rootMtime.toString();
+                const childMtime = directories.get(join(path, top));
+                if (top && childMtime !== undefined) mtimes[top] = childMtime.toString();
+                else delete mtimes[top];
+                saveEvidence();
+              }
+            },
+            directories,
+          );
+          if (!deleted) {
+            outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };
+            budget.record(outcome);
+            return true;
+          }
           clearAdmission();
           outcome = { kind: 'deleted', subject: path, count: 1 };
         }
