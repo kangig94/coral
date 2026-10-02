@@ -41,69 +41,176 @@ function fixture(): ReturnType<typeof createRetentionFixture> & { runtime: Runti
   return { ...f, runtime, legacy };
 }
 
-describe('legacy store retention', () => {
-  it('removes precisely the legacy store family under proven current selection and exclusive lock', () => {
+describe('legacy store retention', async () => {
+  it('proves the selected writer epoch without enumerating the entire store root', async () => {
+    const f = fixture();
+    const scan = vi.spyOn(f.runtime.storage, 'readdirSync');
+    expect(
+      (
+        await removeLegacyStore(
+          f.runtime,
+          () => true,
+          () => true,
+          (operation) => operation(),
+        )
+      ).kind,
+    ).toBe('deleted');
+    expect(scan).not.toHaveBeenCalled();
+  });
+  it.each(['linux', 'darwin'] as const)(
+    'retires by namespace authority on %s without observing other users descriptors',
+    async (platform) => {
+      const f = fixture();
+      const runtime = {
+        ...f.runtime,
+        env: { ...f.runtime.env, platform: () => platform },
+        storage: {
+          ...f.runtime.storage,
+          readDirectoryBoundedSync: ((...args: Parameters<Runtime['storage']['readDirectoryBoundedSync']>) => {
+            if (args[0] === '/proc')
+              throw Object.assign(new Error('other users fd directories are inaccessible'), { code: 'EACCES' });
+            return f.runtime.storage.readDirectoryBoundedSync(...args);
+          }) as Runtime['storage']['readDirectoryBoundedSync'],
+        },
+      };
+      expect(
+        (
+          await removeLegacyStore(
+            runtime,
+            () => true,
+            () => true,
+            (operation) => operation(),
+          )
+        ).kind,
+      ).toBe('deleted');
+      expect(existsSync(f.legacy)).toBe(false);
+    },
+  );
+
+  it('quarantines the pathname before deletion and leaves an already-open reader usable', async () => {
+    const f = fixture();
+    const reader = newRawDatabase(f.legacy, { readonly: true });
+    let quarantined = false;
+    const runtime = {
+      ...f.runtime,
+      storage: {
+        ...f.runtime.storage,
+        unlinkSync: (path: string | Buffer) => {
+          if (String(path).includes('store.db')) {
+            expect(String(path)).toContain('.legacy-retention-');
+            expect(existsSync(f.legacy)).toBe(false);
+            quarantined = true;
+          }
+          f.runtime.storage.unlinkSync(path);
+        },
+      },
+    };
+    try {
+      expect(
+        (
+          await removeLegacyStore(
+            runtime,
+            () => true,
+            () => true,
+            (operation) => operation(),
+          )
+        ).kind,
+      ).toBe('deleted');
+      expect(quarantined).toBe(true);
+      expect(reader.prepare('SELECT * FROM legacy_fixture').all()).toEqual([]);
+      const rollback = newRawDatabase(f.legacy);
+      expect(rollback.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
+      rollback.close();
+    } finally {
+      reader.close();
+    }
+  });
+  it('removes precisely the legacy store family under proven current selection and exclusive lock', async () => {
     const f = fixture();
     const unrelated = join(f.runtime.paths.coral.store.dbDir, 'unrelated.bak');
     writeFileSync(unrelated, 'keep');
-    expect(removeLegacyStore(f.runtime, () => true)).toEqual({ kind: 'deleted', subject: f.legacy, count: 6 });
+    expect(
+      await removeLegacyStore(
+        f.runtime,
+        () => true,
+        () => true,
+        (operation) => operation(),
+      ),
+    ).toEqual({ kind: 'deleted', subject: f.legacy, count: 6 });
     for (const suffix of ['', '-wal', '-shm', '.format', '.bak', '.timestamp.bak'])
       expect(existsSync(f.legacy + suffix)).toBe(false);
     expect(existsSync(unrelated)).toBe(true);
     expect(existsSync(join(f.runtime.paths.coral.store.dbDir, 'epoch-1', 'store.db'))).toBe(true);
   });
 
-  it('keeps unknown selection, unproven epoch, interrupted work and unobservable holders', () => {
+  it('keeps unknown selection, unproven epoch, interrupted work and missing namespace authority', async () => {
     const f = fixture();
     selection.kind = 'rejected';
-    expect(removeLegacyStore(f.runtime, () => true).kind).toBe('kept');
+    expect(
+      (
+        await removeLegacyStore(
+          f.runtime,
+          () => true,
+          () => true,
+          (operation) => operation(),
+        )
+      ).kind,
+    ).toBe('kept');
     selection.kind = 'valid';
-    expect(removeLegacyStore(f.runtime, () => false).kind).toBe('kept');
-    const runtime = {
-      ...f.runtime,
-      storage: {
-        ...f.runtime.storage,
-        readDirectoryBoundedSync: ((...args: Parameters<Runtime['storage']['readDirectoryBoundedSync']>) => {
-          if (args[0] === '/proc') throw new Error('unobservable proc');
-          return f.runtime.storage.readDirectoryBoundedSync(...args);
-        }) as Runtime['storage']['readDirectoryBoundedSync'],
-      },
-    };
-    expect(removeLegacyStore(runtime, () => true).kind).toBe('kept');
+    expect(
+      (
+        await removeLegacyStore(
+          f.runtime,
+          () => false,
+          () => true,
+          (operation) => operation(),
+        )
+      ).kind,
+    ).toBe('kept');
+    expect(
+      (
+        await removeLegacyStore(
+          f.runtime,
+          () => true,
+          () => false,
+          (operation) => operation(),
+        )
+      ).kind,
+    ).toBe('kept');
     expect(existsSync(f.legacy)).toBe(true);
     f.runtime.storage.unlinkSync(join(f.runtime.paths.coral.store.dbDir, 'epoch-1', 'epoch.json'));
-    expect(removeLegacyStore(f.runtime, () => true).kind).toBe('kept');
+    expect(
+      (
+        await removeLegacyStore(
+          f.runtime,
+          () => true,
+          () => true,
+          (operation) => operation(),
+        )
+      ).kind,
+    ).toBe('kept');
     expect(existsSync(f.legacy)).toBe(true);
   });
 
-  it('keeps a SQLite reader and retries once its exclusive lock is released', () => {
-    const f = fixture();
-    const db = newRawDatabase(f.legacy);
-    db.exec('BEGIN; SELECT * FROM legacy_fixture');
-    try {
-      expect(removeLegacyStore(f.runtime, () => true)).toEqual({
-        kind: 'kept',
-        subject: f.legacy,
-        reason: 'legacy-lock-contended',
-      });
-      expect(existsSync(f.legacy)).toBe(true);
-    } finally {
-      db.close();
-    }
-    expect(removeLegacyStore(f.runtime, () => true).kind).toBe('deleted');
-  });
-
-  it('keeps an idle WAL reader because transaction exclusivity alone cannot prove absence', () => {
+  it('lets existing rollback and WAL readers finish on the retired inode', async () => {
     const f = fixture();
     for (const suffix of ['-wal', '-shm']) f.runtime.storage.unlinkSync(f.legacy + suffix);
-    const db = newRawDatabase(f.legacy);
-    db.exec('PRAGMA journal_mode=WAL; SELECT * FROM legacy_fixture');
+    const reader = newRawDatabase(f.legacy);
+    reader.exec('PRAGMA journal_mode=WAL; SELECT * FROM legacy_fixture');
     try {
-      expect(removeLegacyStore(f.runtime, () => true).kind).toBe('kept');
-      expect(existsSync(f.legacy)).toBe(true);
+      expect(
+        (
+          await removeLegacyStore(
+            f.runtime,
+            () => true,
+            () => true,
+            (operation) => operation(),
+          )
+        ).kind,
+      ).toBe('deleted');
+      expect(reader.prepare('SELECT * FROM legacy_fixture').all()).toEqual([]);
     } finally {
-      db.close();
+      reader.close();
     }
-    expect(removeLegacyStore(f.runtime, () => true).kind).toBe('deleted');
   });
 });

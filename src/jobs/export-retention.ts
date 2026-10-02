@@ -18,7 +18,7 @@ export function readExportJobState(db: Database, readCtx: StoreReadContext, jobI
       .prepare<
         [string],
         EventsRow
-      >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
+      >("SELECT * FROM events INDEXED BY events_retention_stream WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
       .get(jobId);
     if (latest === undefined) return { kind: 'absent' };
     if (latest.type !== 'job.terminal.recorded') return { kind: 'nonterminal' };
@@ -36,17 +36,14 @@ async function exportTreeExpired(
   cutoff: number,
   budget: RetentionRunBudget,
 ): Promise<boolean> {
-  const pending = [path];
-  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
-    if (!budget.canContinue()) return false;
-    const entry = runtime.storage.lstatSync(current, { bigint: true });
-    if (entry.mtimeNs >= BigInt(Math.floor(cutoff)) * 1_000_000n) return false;
-    if (entry.isDirectory()) {
-      const children = runtime.storage.readDirectoryBoundedSync(current, 20_000);
-      if (children.overflow) return false;
-      pending.push(...children.entries.map((child) => join(current, child)));
+  if (!budget.canContinue()) return false;
+  const entry = runtime.storage.lstatSync(path, { bigint: true });
+  if (entry.mtimeNs >= BigInt(Math.floor(cutoff)) * 1_000_000n) return false;
+  if (entry.isDirectory()) {
+    for await (const child of runtime.storage.iterateDirectory(path)) {
+      if (!budget.canContinue() || !(await exportTreeExpired(runtime, join(path, child), cutoff, budget))) return false;
+      await setImmediate();
     }
-    await setImmediate();
   }
   return true;
 }
@@ -57,23 +54,19 @@ async function deleteExportTree(
   budget: RetentionRunBudget,
   mutate: <T>(operation: () => T) => T,
 ): Promise<void> {
-  const pending: Array<{ path: string; visited: boolean }> = [{ path, visited: false }];
-  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
-    if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
-    const entry = runtime.storage.lstatSync(current.path);
-    if (entry.isDirectory() && !entry.isSymbolicLink() && !current.visited) {
-      const children = runtime.storage.readDirectoryBoundedSync(current.path, 20_000);
-      if (children.overflow) throw new Error('export-directory-entry-bound');
-      pending.push({ ...current, visited: true });
-      pending.push(...children.entries.map((child) => ({ path: join(current.path, child), visited: false })));
-    } else {
-      mutate(() => {
-        if (entry.isDirectory() && !entry.isSymbolicLink()) runtime.storage.rmdirSync(current.path);
-        else runtime.storage.unlinkSync(current.path);
-      });
+  if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
+  const entry = runtime.storage.lstatSync(path);
+  if (entry.isDirectory() && !entry.isSymbolicLink()) {
+    for await (const child of runtime.storage.iterateDirectory(path)) {
+      await deleteExportTree(runtime, join(path, child), budget, mutate);
+      await setImmediate();
     }
-    await setImmediate();
   }
+  if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
+  mutate(() => {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) runtime.storage.rmdirSync(path);
+    else runtime.storage.unlinkSync(path);
+  });
 }
 
 /** A retained epoch's independent result proof must outlive the epoch itself. */
@@ -85,54 +78,69 @@ export async function pruneJobExports(input: {
   jobState(jobId: string): ExportJobRetentionState;
   resultHold(jobId: string): 'released' | 'required' | 'unknown';
   mutate<T>(operation: () => T): T;
+  checkpoint?(nextId: string): void;
 }): Promise<string> {
   const { runtime, cutoff, budget } = input;
   const root = runtime.paths.coral.exports.jobsRoot;
-  let entries: string[];
+  if (!budget.canContinue()) return input.afterId;
   try {
     const rootEntry = await runtime.storage.lstat(root);
     if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
       budget.record({ kind: 'kept', subject: root, reason: 'export-root-unproven' });
       return '';
     }
-    entries = (await runtime.storage.readdir(root)).sort();
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
       budget.record({ kind: 'kept', subject: root, reason: errorMessage(error) });
     return '';
   }
-  let afterId = input.afterId;
-  for (const id of entries) {
-    if (id <= afterId) continue;
-    if (!budget.canContinue()) return afterId;
-    const path = join(root, id);
-    let outcome: RetentionOutcome;
-    let deleting = false;
-    try {
-      const entry = await runtime.storage.lstat(path);
-      const state = input.jobState(id);
-      if (!entry.isDirectory() || entry.isSymbolicLink())
-        outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
-      else if (state.kind === 'unknown' || state.kind === 'nonterminal')
-        outcome = { kind: 'kept', subject: path, reason: state.kind };
-      else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))
-        outcome = { kind: 'kept', subject: path, reason: 'terminal-not-expired-or-unknown' };
-      else if (state.kind === 'absent' && !(await exportTreeExpired(runtime, path, cutoff, budget)))
-        outcome = { kind: 'kept', subject: path, reason: 'residue-recent-or-unobservable' };
-      else if (input.resultHold(id) !== 'released')
-        outcome = { kind: 'kept', subject: path, reason: 'epoch-result-proof-required-or-unknown' };
-      else if (!budget.canContinue()) return afterId;
-      else {
-        deleting = true;
-        await deleteExportTree(runtime, path, budget, input.mutate);
-        outcome = { kind: 'deleted', subject: path, count: 1 };
+  let resume = input.afterId !== '';
+  const iterator = runtime.storage.iterateDirectory(root)[Symbol.asyncIterator]();
+  try {
+    let current = await iterator.next();
+    while (!current.done) {
+      const id = current.value;
+      if (!budget.canContinue()) return id;
+      if (resume && id !== input.afterId) {
+        current = await iterator.next();
+        await setImmediate();
+        continue;
       }
-    } catch (error: unknown) {
-      outcome = { kind: deleting ? 'failed' : 'kept', subject: path, reason: errorMessage(error) };
+      resume = false;
+      const path = join(root, id);
+      let outcome: RetentionOutcome;
+      let deleting = false;
+      try {
+        const entry = await runtime.storage.lstat(path);
+        const state = input.jobState(id);
+        if (!entry.isDirectory() || entry.isSymbolicLink())
+          outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
+        else if (state.kind === 'unknown' || state.kind === 'nonterminal')
+          outcome = { kind: 'kept', subject: path, reason: state.kind };
+        else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))
+          outcome = { kind: 'kept', subject: path, reason: 'terminal-not-expired-or-unknown' };
+        else if (state.kind === 'absent' && !(await exportTreeExpired(runtime, path, cutoff, budget)))
+          outcome = { kind: 'kept', subject: path, reason: 'residue-recent-or-unobservable' };
+        else if (input.resultHold(id) !== 'released')
+          outcome = { kind: 'kept', subject: path, reason: 'epoch-result-proof-required-or-unknown' };
+        else if (!budget.canContinue()) return id;
+        else {
+          deleting = true;
+          await deleteExportTree(runtime, path, budget, input.mutate);
+          outcome = { kind: 'deleted', subject: path, count: 1 };
+        }
+      } catch (error: unknown) {
+        outcome = { kind: deleting ? 'failed' : 'kept', subject: path, reason: errorMessage(error) };
+      }
+      budget.record(outcome);
+      current = await iterator.next();
+      input.checkpoint?.(current.done ? '' : current.value);
+      await setImmediate();
     }
-    budget.record(outcome);
-    afterId = id;
-    await setImmediate();
+    if (resume) budget.record({ kind: 'kept', subject: root, reason: 'scan-pending' });
+    input.checkpoint?.('');
+    return '';
+  } finally {
+    await iterator.return?.();
   }
-  return '';
 }

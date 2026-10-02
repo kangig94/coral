@@ -46,9 +46,8 @@ afterEach(async () => {
   for (const f of fixtures.splice(0)) f.close();
   vi.useRealTimers();
 });
-function fixture() {
-  const f = createRetentionFixture();
-  fixtures.push(f);
+function fixture(f = createRetentionFixture()) {
+  if (!fixtures.includes(f)) fixtures.push(f);
   const statuses: RetentionRunStatus[] = [];
   const scheduler = createStorageRetentionScheduler({
     runtime: f.runtime,
@@ -59,6 +58,7 @@ function fixture() {
       path: '/tmp/fixture/epoch-1/store.db',
     }),
     activeEpochKey: () => 'active',
+    hasNamespaceAuthority: () => true,
     jobLocations: new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot),
     log: vi.fn(),
     publish: (status) => statuses.push({ ...status, outcomes: [...status.outcomes] }),
@@ -69,6 +69,72 @@ function fixture() {
 }
 
 describe('storage retention schedule', () => {
+  it('requires pre-boot journal age when a clock correction happened before restart', async () => {
+    const { f, scheduler } = fixture();
+    f.db
+      .prepare(
+        "INSERT INTO events(ts, type, stream_kind, stream_id, body) VALUES (?, 'job.progress.emitted', 'job', 'preboot', ?)",
+      )
+      .run(new Date(1).toISOString(), Buffer.from('{}'));
+    f.runtime.time.monotonicNow = () => 0n;
+    f.setNow(f.runtime.time.now() + 15 * 86_400_000);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(owners.exports).toHaveBeenCalledWith(expect.objectContaining({ cutoff: 1 - 14 * 86_400_000 }));
+    expect(owners.progress).toHaveBeenCalledWith(expect.objectContaining({ cutoff: 1 - 14 * 86_400_000 }));
+  });
+
+  it('persists the export continuation across scheduler instances', async () => {
+    owners.exports.mockResolvedValueOnce('next-export');
+    const first = fixture();
+    first.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await first.scheduler.stop();
+    const second = fixture(first.f);
+    second.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(owners.exports).toHaveBeenLastCalledWith(expect.objectContaining({ afterId: 'next-export' }));
+  });
+  it('skips deletion after a forward wall-clock jump with no corresponding elapsed time', async () => {
+    const { f, scheduler, statuses } = fixture();
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    owners.exports.mockClear();
+    owners.progress.mockClear();
+    f.setNow(f.runtime.time.now() + 15 * 86_400_000);
+    await vi.advanceTimersByTimeAsync(86_400_000);
+    expect(owners.exports).not.toHaveBeenCalled();
+    expect(owners.progress).not.toHaveBeenCalled();
+    expect(statuses.at(-1)?.phase).toBe('partial');
+  });
+
+  it('reports an unfinished scan as partial with pending work', async () => {
+    owners.progress.mockResolvedValueOnce(1002);
+    const { scheduler, statuses } = fixture();
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses.at(-1)?.phase).toBe('partial');
+    expect(statuses.at(-1)?.outcomes).toContainEqual(
+      expect.objectContaining({ subject: 'journal-progress', reason: 'scan-pending' }),
+    );
+  });
+
+  it('gives later owners their own turn after exports exhaust their slice', async () => {
+    const { f, scheduler, statuses } = fixture();
+    let monotonic = 0n;
+    f.runtime.time.monotonicNow = () => monotonic;
+    owners.exports.mockImplementationOnce(async () => {
+      monotonic = 6000n;
+      return 'prefix';
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(owners.progress).toHaveBeenCalledOnce();
+    expect(owners.vacuum).toHaveBeenCalledOnce();
+    expect(owners.legacy).toHaveBeenCalledOnce();
+    expect(owners.holders).toHaveBeenCalledOnce();
+    expect(statuses.at(-1)?.phase).toBe('partial');
+  });
   it('starts without waiting, runs once at startup and retries after exactly 24 hours', async () => {
     const { scheduler, statuses } = fixture();
     scheduler.start();
@@ -122,14 +188,14 @@ describe('storage retention schedule', () => {
     expect(statuses.at(-1)?.phase).toBe('running');
     await vi.advanceTimersByTimeAsync(30_000);
     expect(statuses.at(-1)?.phase).toBe('partial');
-    expect(owners.progress).not.toHaveBeenCalled();
+    expect(owners.progress).toHaveBeenCalled();
     await scheduler.stop();
   });
 
   it('honors an injected monotonic deadline before scheduling any deletion', async () => {
     const { f, scheduler, statuses } = fixture();
     let calls = 0;
-    f.runtime.time.monotonicNow = () => BigInt(++calls <= 2 ? 0 : 30_000);
+    f.runtime.time.monotonicNow = () => BigInt(++calls * 6000);
     scheduler.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(owners.exports).not.toHaveBeenCalled();

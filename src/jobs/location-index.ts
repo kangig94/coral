@@ -15,6 +15,7 @@ import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.j
 import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
 import { observeResolvedStoreEpoch } from '../store/epoch/observation.js';
 import { observeStorePath } from '../store/path-observation.js';
+import { protectedStoreEpochRoot } from '../store/epoch/protection.js';
 
 const subjectSchema = z
   .object({
@@ -544,19 +545,21 @@ export class JobLocationIndex {
         if (observeStorePath(this.runtime.storage, this.jobPath(jobId)) !== 'absent') return 'unknown';
         const epochs = join(this.root, 'epochs');
         if (observeStorePath(this.runtime.storage, epochs) === 'absent') return 'released';
-        const entries = this.runtime.storage.readDirectoryBoundedSync(epochs, 1000);
-        if (entries.overflow) return 'unknown';
-        return entries.entries.some(
-          (entry) =>
-            observeStorePath(this.runtime.storage, join(epochs, entry, 'unknown-locations.v1.json')) !== 'absent',
-        )
-          ? 'unknown'
-          : 'released';
+        return 'unknown';
       }
       if (location.epochKey === activeEpochKey) return 'released';
       const epoch = observeResolvedStoreEpoch(this.runtime, location.epochKey);
       if (epoch === undefined) return 'unknown';
-      return observeStorePath(this.runtime.storage, dirname(epoch.path)) === 'absent' ? 'released' : 'required';
+      const storeRoot = epoch.canonicalStoreRoot ?? epoch.storeRoot;
+      const paths = [dirname(epoch.path), join(storeRoot, `epoch-${epoch.epoch}`)];
+      if (epoch.lineageKey === undefined) paths.push(protectedStoreEpochRoot(storeRoot));
+      else {
+        if (!/^[0-9a-f-]{36}:[1-9]\d*$/u.test(epoch.lineageKey)) return 'unknown';
+        const lineageRoot = join(protectedStoreEpochRoot(storeRoot), epoch.lineageKey.split(':')[0]);
+        paths.push(join(lineageRoot, `epoch-${epoch.epoch}`), join(lineageRoot, `.reaping-epoch-${epoch.epoch}`));
+      }
+      const observations = paths.map((path) => observeStorePath(this.runtime.storage, path));
+      return observations.every((observation) => observation === 'absent') ? 'released' : 'required';
     } catch {
       return 'unknown';
     }

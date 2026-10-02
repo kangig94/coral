@@ -120,6 +120,7 @@ function createCoordinatorLifecycleDeps(
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
     scheduleStoreEpochSweepFn: storeEpochSweep.schedule,
     startStorageRetentionFn: storageRetention.start,
+    prepareStorageRetentionFn: storageRetention.prepare,
     stopStoreEpochSweepFn: async () => {
       await storageRetention.stop();
       await storeEpochSweep.stop();
@@ -202,6 +203,7 @@ export function createCoordinatorLifecycleAssembly(input: LifecycleAssemblyInput
     getProgressStore: () => core.storeServicesRef.tryGet()?.progressStore ?? null,
     openEpoch: () => state.openedStoreEpoch,
     activeEpochKey: () => state.selectedJobEpochKey,
+    hasNamespaceAuthority: () => core.runtimeState.getLifecycle() === 'running' && ipcServer !== undefined,
     jobLocations: jobLocationIndex,
     log: world.log,
     publish: (status) => {

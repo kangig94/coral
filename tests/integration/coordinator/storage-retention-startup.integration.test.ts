@@ -52,15 +52,19 @@ describe('retention startup composition', () => {
           log: () => {},
         },
         kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-        createStoreServicesFromDbFn: (db) => ({
-          storeDb: db,
-          progressStore: new JobStore('retention-startup', f.runtime, createEventBodyCodec(), {
-            db,
-            reducers: f.reducers,
-            providers: permissiveProviderLookupPort,
-          }),
-          consumerDriver: null,
-        }),
+        createStoreServicesFromDbFn: (db) => {
+          db.exec('PRAGMA auto_vacuum=NONE');
+          db.exec('VACUUM');
+          return {
+            storeDb: db,
+            progressStore: new JobStore('retention-startup', f.runtime, createEventBodyCodec(), {
+              db,
+              reducers: f.reducers,
+              providers: permissiveProviderLookupPort,
+            }),
+            consumerDriver: null,
+          };
+        },
         createServerFn: (handler) => createServer(handler),
         listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
         closeServerFn: async () => {},
@@ -74,8 +78,15 @@ describe('retention startup composition', () => {
       },
       async () => [],
     );
+    const spawn = f.runtime.process.spawn;
+    const conversion = vi.fn((options: Parameters<typeof spawn>[0]) => {
+      expect(core.runtimeState.getLifecycle()).toBe('starting');
+      return spawn(options);
+    });
+    f.runtime.process.spawn = conversion;
     try {
       await core.lifecycleController.start();
+      expect(conversion).toHaveBeenCalledOnce();
       expect(core.runtimeState.getLifecycle()).toBe('running');
       expect(cleanup).not.toHaveBeenCalled();
       serving = true;

@@ -1,87 +1,89 @@
 import { join } from 'node:path';
-import { attemptExclusiveFileLockSync } from '../../infra/fs-lock.js';
+import { setImmediate } from 'node:timers/promises';
 import { errorMessage } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { readActiveStoreSelectionForCoordination } from '../active-store-selection.js';
 import { readSuccessionWriterGeneration } from '../succession-writer-generation.js';
 import type { RetentionOutcome } from '../retention-outcome.js';
-import { inspectCurrentStore, resolveCurrentStore } from './observation.js';
+import { observeStoreEpoch } from './observation.js';
 
-/** Idle SQLite handles may hold no transaction lock; absence also requires a complete descriptor observation. */
-function legacyHandlesAbsent(runtime: Runtime, paths: readonly string[], canContinue: () => boolean): boolean {
-  if (runtime.env.platform() !== 'linux') return false;
-  const identities = paths.map((path) => runtime.storage.lstatSync(path, { bigint: true }));
-  const processes = runtime.storage.readDirectoryBoundedSync('/proc', 20_000);
-  if (processes.overflow) return false;
-  for (const pid of processes.entries.filter((entry) => /^\d+$/u.test(entry))) {
-    if (!canContinue()) return false;
-    try {
-      const root = `/proc/${pid}/fd`;
-      const fds = runtime.storage.readDirectoryBoundedSync(root, 20_000);
-      if (fds.overflow) return false;
-      for (const fd of fds.entries) {
-        if (!canContinue()) return false;
-        try {
-          const identity = runtime.storage.statSync(join(root, fd), { bigint: true });
-          if (identities.some(({ dev, ino }) => dev === identity.dev && ino === identity.ino)) return false;
-        } catch (error: unknown) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
-        }
-      }
-    } catch {
-      if (runtime.process.observeLiveness(Number(pid)) !== 'absent') return false;
-    }
-  }
-  return true;
-}
-
-export function removeLegacyStore(runtime: Runtime, canContinue: () => boolean): RetentionOutcome {
+/** Serving owns every shipped namespace socket; a pre-epoch coordinator cannot also serve or write. */
+export async function removeLegacyStore(
+  runtime: Runtime,
+  canContinue: () => boolean,
+  hasNamespaceAuthority: () => boolean,
+  mutate: <T>(operation: () => T) => T,
+  afterName = '',
+  checkpoint: (nextName: string) => void = () => {},
+): Promise<RetentionOutcome> {
   const root = runtime.paths.coral.store.dbDir;
   const subject = join(root, 'store.db');
   const keep = (reason: string): RetentionOutcome => ({ kind: 'kept', subject, reason });
   let deleting = false;
   try {
     if (!canContinue()) return keep('run-interrupted');
-    const current = inspectCurrentStore(runtime);
-    const active = resolveCurrentStore(runtime);
+    if (!hasNamespaceAuthority()) return keep('namespace-authority-unproven');
     const selection = readActiveStoreSelectionForCoordination(runtime);
     const writer = readSuccessionWriterGeneration(runtime);
-    if (current.kind !== 'current' || active.epoch === null || active.path !== current.epoch.path)
-      return keep('current-epoch-unproven');
-    if (
-      selection.kind !== 'valid' ||
-      writer.kind !== 'recorded' ||
-      writer.record.epoch !== current.epoch.epoch ||
-      writer.record.storeRoot !== current.epoch.storeRoot
-    )
+    const storeRoot = runtime.storage.realpathSync(root);
+    if (selection.kind !== 'valid' || writer.kind !== 'recorded' || writer.record.storeRoot !== storeRoot)
       return keep('active-selection-unknown-or-legacy');
-    const entries = runtime.storage.readDirectoryBoundedSync(root, 10_000);
-    if (entries.overflow) return keep('legacy-enumeration-bound');
-    const paths = entries.entries
-      .filter((name) => /^store\.db(?:-wal|-shm|\.format|(?:\..*)?\.bak)?$/u.test(name))
-      .map((name) => join(root, name));
-    if (paths.length === 0) return keep('legacy-absent');
-    if (
-      paths.some((path) => {
-        const entry = runtime.storage.lstatSync(path);
-        return !entry.isFile() || entry.isSymbolicLink();
-      })
-    )
-      return keep('legacy-files-unproven');
-    if (!legacyHandlesAbsent(runtime, paths, canContinue)) return keep('legacy-holder-alive-or-unknown');
-    const lock = attemptExclusiveFileLockSync(subject, 0, true);
-    if (lock.kind !== 'acquired') return keep(`legacy-lock-${lock.kind}`);
-    try {
-      if (!canContinue()) return keep('run-interrupted');
+    if (observeStoreEpoch(runtime.storage, storeRoot, `epoch-${writer.record.epoch}`)?.proof.kind !== 'proven')
+      return keep('current-epoch-unproven');
+    const family = /^store\.db(?:-wal|-shm|\.format|(?:\..*)?\.bak)?$/u;
+    const prefix = '.legacy-retention-';
+    let count = 0;
+    const retire = (name: string): void => {
+      if (!canContinue() || !hasNamespaceAuthority()) throw new Error('scan-pending');
+      const path = join(root, name);
+      const entry = runtime.storage.lstatSync(path);
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('legacy-files-unproven');
       deleting = true;
-      for (const path of paths.filter((path) => path !== subject)) runtime.storage.unlinkSync(path);
-      runtime.storage.unlinkSync(subject);
-      if (!runtime.storage.syncDirectoryDurableSync(root))
-        return { kind: 'failed', subject, reason: 'legacy-directory-sync-failed' };
-      return { kind: 'deleted', subject, count: paths.length };
-    } finally {
-      lock.lease();
+      mutate(() => {
+        const quarantine = name.startsWith(prefix) ? path : join(root, prefix + name);
+        if (quarantine !== path) runtime.storage.renameSync(path, quarantine);
+        if (!runtime.storage.syncDirectoryDurableSync(root)) throw new Error('legacy-quarantine-sync-failed');
+        runtime.storage.unlinkSync(quarantine);
+        if (!runtime.storage.syncDirectoryDurableSync(root)) throw new Error('legacy-directory-sync-failed');
+      });
+      count += 1;
+    };
+    // The main pathname is retired before any sibling or yield, including after an interrupted scan.
+    for (const name of [prefix + 'store.db', 'store.db']) {
+      try {
+        retire(name);
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
     }
+    let resume = afterName !== '';
+    const iterator = runtime.storage.iterateDirectory(root)[Symbol.asyncIterator]();
+    try {
+      let currentEntry = await iterator.next();
+      while (!currentEntry.done) {
+        const name = currentEntry.value;
+        if (!canContinue()) {
+          checkpoint(name);
+          return keep('scan-pending');
+        }
+        if (resume && name !== afterName) {
+          currentEntry = await iterator.next();
+          await setImmediate();
+          continue;
+        }
+        resume = false;
+        const originalName = name.startsWith(prefix) ? name.slice(prefix.length) : name;
+        if (originalName !== 'store.db' && family.test(originalName)) retire(name);
+        currentEntry = await iterator.next();
+        checkpoint(currentEntry.done ? '' : currentEntry.value);
+        await setImmediate();
+      }
+      checkpoint('');
+      if (resume) return keep('scan-pending');
+    } finally {
+      await iterator.return?.();
+    }
+    return count > 0 ? { kind: 'deleted', subject, count } : keep('legacy-absent');
   } catch (error: unknown) {
     return { kind: deleting ? 'failed' : 'kept', subject, reason: errorMessage(error) };
   }

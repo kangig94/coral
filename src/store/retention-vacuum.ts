@@ -14,35 +14,26 @@ export async function vacuumRetainedJournal(
     if (!budget.canContinue()) return { kind: 'kept', subject, reason: 'run-interrupted' };
     const free = db.prepare<[], { freelist_count: number }>('PRAGMA freelist_count').get()?.freelist_count;
     const mode = db.prepare<[], { auto_vacuum: number }>('PRAGMA auto_vacuum').get()?.auto_vacuum;
-    const pages = db.prepare<[], { page_count: number }>('PRAGMA page_count').get()?.page_count;
-    const pageSize = db.prepare<[], { page_size: number }>('PRAGMA page_size').get()?.page_size;
-    if (free === undefined || pages === undefined || pageSize === undefined || mode === undefined) {
+    if (free === undefined || mode === undefined) {
       return { kind: 'kept', subject, reason: 'vacuum-metadata-unknown' };
     }
     if (free === 0) return { kind: 'kept', subject, reason: 'no-free-pages' };
     if (db.isTransaction) return { kind: 'kept', subject, reason: 'writer-transaction-active' };
-    if (mode !== 2 && pages * pageSize > 320 * 1024 * 1024) {
-      return { kind: 'kept', subject, reason: 'full-vacuum-size-bound' };
-    }
+    if (mode !== 2) return { kind: 'kept', subject, reason: 'startup-conversion-required' };
     const timeout = db.prepare<[], { timeout: number }>('PRAGMA busy_timeout').get()?.timeout;
     if (timeout === undefined) return { kind: 'kept', subject, reason: 'busy-timeout-unknown' };
     try {
       db.exec('PRAGMA busy_timeout = 25');
-      if (mode === 2) {
-        let remaining = free;
-        while (remaining > 0 && budget.canContinue()) {
-          db.exec('PRAGMA incremental_vacuum(256)');
-          const next =
-            db.prepare<[], { freelist_count: number }>('PRAGMA freelist_count').get()?.freelist_count ?? remaining;
-          if (next >= remaining) break;
-          remaining = next;
-          await setImmediate();
-        }
-      } else {
-        db.exec('PRAGMA auto_vacuum = INCREMENTAL');
-        db.exec('VACUUM');
+      let remaining = free;
+      while (remaining > 0 && budget.canContinue()) {
+        db.exec('PRAGMA incremental_vacuum(32)');
+        const next =
+          db.prepare<[], { freelist_count: number }>('PRAGMA freelist_count').get()?.freelist_count ?? remaining;
+        if (next >= remaining) break;
+        remaining = next;
+        await setImmediate();
       }
-      db.exec('PRAGMA wal_checkpoint(PASSIVE)');
+      if (budget.canContinue()) db.exec('PRAGMA wal_checkpoint(PASSIVE)');
     } finally {
       db.exec(`PRAGMA busy_timeout = ${timeout}`);
     }

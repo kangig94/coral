@@ -16,6 +16,7 @@ import {
   type StoreFormatFingerprint,
 } from './format-fingerprint.js';
 import { observeStorePath } from './path-observation.js';
+import { ensureRetentionIndexes } from './retention-indexes.js';
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 
@@ -434,10 +435,12 @@ export function applyBundledStoreSchema(
   beforeOperation?: BeforeDatabaseOperation,
 ): void {
   beforeOperation?.();
+  if (!hasUserTable(db)) db.exec('PRAGMA auto_vacuum = INCREMENTAL');
   db.exec('BEGIN IMMEDIATE');
   try {
     beforeOperation?.();
     db.exec(storeFormat.manifest.ddl);
+    ensureRetentionIndexes(db);
     const existing = stringMetadataValue(
       readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY, beforeOperation),
     );
@@ -544,6 +547,8 @@ function openPhysicalWritableStoreDatabase(
       return { kind: 'opened', db };
     }
     if (!reclaim && (classification.kind === 'fresh' || classification.kind === 'absent')) {
+      beforeOperation?.();
+      db.exec('PRAGMA auto_vacuum = INCREMENTAL');
       applyJournalPragmas(
         db,
         {
@@ -647,7 +652,7 @@ function reopenableWritableStoreDatabase(
     parkedUntil = null;
     parked?.resolve();
   });
-  return new Proxy(target as unknown as Database, {
+  const database = new Proxy(target as unknown as Database, {
     get(object, property, receiver) {
       if (property in object) return Reflect.get(object, property, receiver);
       if (active === null) throw unavailable();
@@ -655,6 +660,29 @@ function reopenableWritableStoreDatabase(
       return typeof value === 'function' ? value.bind(active) : value;
     },
   });
+  Object.defineProperty(database, maintenanceRefreshSymbol, {
+    value: () => {
+      if (active === null || active.isTransaction) throw unavailable();
+      active.close();
+      const reopened = openPhysicalWritableStoreDatabase(options, true);
+      if (reopened.kind !== 'opened') throw new Error('Maintenance cannot reopen the selected store.');
+      active = reopened.db;
+      revision += 1;
+    },
+  });
+  return database;
+}
+
+const maintenanceRefreshSymbol = Symbol('StoreMaintenanceRefresh');
+
+/** VACUUM in another connection changes header flags that SQLite caches until reopen. */
+export function refreshStoreDatabaseAfterMaintenance(db: Database): void {
+  const refresh: unknown = Reflect.get(db, maintenanceRefreshSymbol);
+  if (typeof refresh === 'function') refresh();
+  else {
+    db.close();
+    db.open();
+  }
 }
 
 export function openWritableStoreDatabase(options: AuthorizedWritableStoreOptions): WritableStoreOpenDecision {
