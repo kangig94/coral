@@ -63,7 +63,7 @@ export interface SuccessionWriterEntitlement {
   unpark(): void;
 }
 
-const GUARD_FILE = 'succession-writer-guard.db';
+const GUARD_FILE = 'succession-writer.lock';
 const RECORD_FILE = 'succession-writer-generation.v1.json';
 const GUARD_WAIT_MS = 5_000;
 /** Covers every attempt one commit supervision can fail, its same-build recoveries included. */

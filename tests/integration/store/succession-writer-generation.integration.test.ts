@@ -270,7 +270,7 @@ describe('succession writer generation', () => {
     const { runtime, store } = fixture();
     const vanishedWriter = joinSuccessionWriterGeneration(runtime, store);
     vanishedWriter.park();
-    const guard = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-guard.db');
+    const guard = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer.lock');
     const child = spawnSync(
       process.execPath,
       [

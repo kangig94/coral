@@ -9,7 +9,7 @@ import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { createPluginFixture, spawnCoordinator, stopCoordinator, waitForDiscoveryRecord } from './helpers.js';
 
 it.each([
-  ['succession-writer-guard.db', Buffer.from('garbage'), false],
+  ['succession-writer.lock', Buffer.from('garbage'), false],
   ['succession-writer-generation.v1.json', Buffer.from('garbage'), false],
   ['succession-writer-generation.v1.json', Buffer.from([0xff, 0x00, 0x80]), false],
   ['succession-writer-generation.v1.json', Buffer.from('garbage'), true],
