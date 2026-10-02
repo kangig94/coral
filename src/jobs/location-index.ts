@@ -13,6 +13,8 @@ import { jobLaunchRequestBodySchema } from './launch.js';
 import { isTerminalPhase, jobPhaseSchema } from './phase.js';
 import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
+import { observeResolvedStoreEpoch } from '../store/epoch/observation.js';
+import { observeStorePath } from '../store/path-observation.js';
 
 const subjectSchema = z
   .object({
@@ -533,5 +535,30 @@ export class JobLocationIndex {
         return false;
       }
     });
+  }
+
+  exportResultRetention(jobId: string, activeEpochKey: string | null): 'released' | 'required' | 'unknown' {
+    try {
+      const location = this.read(jobId);
+      if (location === null) {
+        if (observeStorePath(this.runtime.storage, this.jobPath(jobId)) !== 'absent') return 'unknown';
+        const epochs = join(this.root, 'epochs');
+        if (observeStorePath(this.runtime.storage, epochs) === 'absent') return 'released';
+        const entries = this.runtime.storage.readDirectoryBoundedSync(epochs, 1000);
+        if (entries.overflow) return 'unknown';
+        return entries.entries.some(
+          (entry) =>
+            observeStorePath(this.runtime.storage, join(epochs, entry, 'unknown-locations.v1.json')) !== 'absent',
+        )
+          ? 'unknown'
+          : 'released';
+      }
+      if (location.epochKey === activeEpochKey) return 'released';
+      const epoch = observeResolvedStoreEpoch(this.runtime, location.epochKey);
+      if (epoch === undefined) return 'unknown';
+      return observeStorePath(this.runtime.storage, dirname(epoch.path)) === 'absent' ? 'released' : 'required';
+    } catch {
+      return 'unknown';
+    }
   }
 }

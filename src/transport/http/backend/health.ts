@@ -1,3 +1,4 @@
+import { retentionRunStatusSchema, type RetentionRunStatus } from '../../../store/retention-outcome.js';
 import { parseLaunchStatus, type LaunchStatus } from '../../../infra/launch-status.js';
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { assertNever, serializedThrownIdentifierSchema } from '../../../infra/error-format.js';
@@ -113,6 +114,7 @@ type BackendShutdownRemainderProjection =
   | Readonly<{ kind: 'unreadable' }>;
 
 export interface BackendHealth {
+  retention?: RetentionRunStatus;
   /**
    * Strict-enum status field for clients that validate
    * `'starting' | 'ok' | 'draining'`. Consumers that need the full lifecycle
@@ -889,9 +891,11 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     succession: rawSuccession,
     successionProblem: rawSuccessionProblem,
     launchStatus: rawLaunchStatus,
+    retention: rawRetention,
     ...reported
   } = value;
   const succession = rawSuccession === undefined ? null : parseVisibleUpgradeIntent(rawSuccession);
+  const retention = retentionRunStatusSchema.safeParse(rawRetention);
   const successionProblem =
     rawSuccessionProblem === 'unreadable' ||
     rawSuccessionProblem === 'corrupt' ||
@@ -903,6 +907,7 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     health: {
       ...reported,
       launchStatus: parseLaunchStatus(rawLaunchStatus),
+      ...(retention.success ? { retention: retention.data } : {}),
       ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
       ...(shutdown === null ? {} : { shutdown }),
       ...(succession === null ? {} : { succession }),

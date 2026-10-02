@@ -1,3 +1,4 @@
+import type { RetentionRunStatus } from '../../store/retention-outcome.js';
 import { currentLaunchStatus } from '../../infra/launch-status.js';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
@@ -237,6 +238,7 @@ export function createCoordinatorHealthReader({
   readIpcOpenSockets,
   eventStreamResponseCount,
   launchPermitReportAgeMs,
+  retentionStatus,
 }: {
   runtime: Runtime;
   world: ReturnType<typeof createCoordinatorWorld>;
@@ -258,6 +260,7 @@ export function createCoordinatorHealthReader({
   readIpcOpenSockets: () => number;
   eventStreamResponseCount: () => number;
   launchPermitReportAgeMs: number;
+  retentionStatus?: () => RetentionRunStatus | null;
 }): () => HealthSnapshot {
   const identity = world.identity;
   const storeServicesRef = world.storeServicesRef;
@@ -299,8 +302,10 @@ export function createCoordinatorHealthReader({
     });
 
     const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
+    const retention = retentionStatus?.() ?? null;
     return {
       status: coarseStatus,
+      ...(retention === null ? {} : { retention }),
       launchStatus: currentLaunchStatus(runtime.paths.coral.coordinator.runDir),
       ...(succession === null ? {} : { succession }),
       ...(successionProblem === null ? {} : { successionProblem }),

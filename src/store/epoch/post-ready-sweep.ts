@@ -302,10 +302,7 @@ async function cleanPostReadyStoreEpochHolders(
       continue;
     }
     if (!entry.endsWith('.json')) {
-      mutations.pending = true;
-      const removed = await removeDuringPostReadySweep(runtime.storage, dbDir, join(dbDir, entry));
-      deletionFailed ||= !removed;
-      await yieldSweepTurn();
+      unobservableHolder = true;
       continue;
     }
     const holder = await inspectStoreEpochHolderAsync(runtime, dbDir, entry);

@@ -1,13 +1,9 @@
-# TODO — give job exports a retention owner and a restore path
+# TODO — restore archived provider sessions
 
-**Status**: open for two ordered decisions. Epoch deletion now requires an independently readable result, but no policy expires exported results.
+**Status**: retention decided; restore design remains open.
 
-`createStaleJobCleanupPolicy` in `src/coordinator/lifecycle.ts` removes `progressStore.jobDir(jobId)` and the durable CLI metadata row when a terminal scratch artifact is old or from an older bundle. `jobsDir` in `src/jobs/paths.ts` places that scratch under the system temporary root. Exported results and archived provider artifacts live under `runtime.paths.coral.exports.jobsRoot`, a separate tree. The scratch policy does not prune that tree, and no export-prune owner is established.
+`CORAL_JOBS_RETENTION_DAYS` (default 14) governs terminal scratch, whole export directories including `provider-artifacts/`, and journal progress retention. The coordinator schedules retention after startup serves and every 24 h. Live and unknown jobs stay. A directory unknown to the current journal expires only when every descendant is older than the cutoff. A superseded epoch's independent result proof stays until that epoch is gone. Progress fault diagnostics and causal evidence remain for projection replay and shipped readers. Unknown deletion evidence keeps the subject for a later retry; backend status reports the last outcome.
 
-The epoch closure gate in `src/jobs/location-index.ts` protects result availability while a superseded store may be deleted. It does not set an expiry for user content. Decide whether `CORAL_JOBS_RETENTION_DAYS` includes exports or whether exports get their own policy, whether terminal state is required before pruning, and whether archived provider artifacts share the result's lifetime. Update the operator documentation with that decision.
+Expired exports lose their preserved provider originals, so sessions older than the retention period cannot be resumed. Coral preserves these originals before removing the native copy from the provider's interactive resume picker.
 
-Coral preserves a provider session file before removing the provider's native copy, avoiding pollution of the provider's interactive resume picker. There is still no restore command that places a preserved file back. Restore must follow the export-lifetime decision so its re-created file has a clear owner and end. It also needs a user-facing identity and a collision rule when the provider already has the same session id.
-
-## Start condition
-
-Set export retention first, then design archived-session restore. The retained-result gate is not a substitute for either decision.
+A restore command is still open: it needs a user-facing session identity, a collision rule when the provider already has the same session id, and ownership and expiry for the recreated native file. Restoration must respect the settled export lifetime.

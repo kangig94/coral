@@ -1,3 +1,4 @@
+import type { RetentionRunStatus } from '../store/retention-outcome.js';
 import type { LaunchStatus } from '../infra/launch-status.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { UpgradeIntentProblem, UpgradeIntentVisibility } from '../infra/upgrade-intent.js';
@@ -319,6 +320,7 @@ export const launchPermitDiagnosticsSchema = z
 export type LaunchPermitDiagnostics = z.infer<typeof launchPermitDiagnosticsSchema>;
 
 export type HealthSnapshot = {
+  retention?: RetentionRunStatus;
   /**
    * Coarse lifecycle visibility surface for clients that validate the strict
    * `'starting' | 'ok' | 'draining'` enum. Consumers that need the full

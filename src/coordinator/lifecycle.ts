@@ -882,6 +882,7 @@ export type LifecycleDeps = {
     incumbentInstanceId: string,
   ) => ValidatedHandoffTarget | null;
   readonly onRetiredEpochOpened?: (epoch: ResolvedStoreEpoch, disposition: RetirementDisposition) => void;
+  readonly startStorageRetentionFn?: () => void;
   readonly stopStoreEpochSweepFn?: () => Promise<void>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
@@ -2382,7 +2383,7 @@ async function runStartupRecoveryAndServe(
   recoveredDiscussResumes = adoption.recoveredDiscussResumes;
   startupRecoveryBarrierPublisher?.publish();
   startProviderOperationReconciler?.();
-  await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
+  if (deps.startStorageRetentionFn === undefined) await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
   signal.throwIfAborted();
   await publishStartupServing({
     deps,
@@ -2404,6 +2405,7 @@ async function runStartupRecoveryAndServe(
     publishLegacyDiscovery,
     legacySupervisedChild,
   });
+  deps.startStorageRetentionFn?.();
   if (runtimeState.getLaunchFenceActive()) {
     runtimeState.setLaunchFenceActive(false);
   }

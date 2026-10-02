@@ -311,6 +311,7 @@ type OperatorFacingLiveShutdown =
     }>;
 
 type BackendStatus = {
+  retention?: BackendHealth['retention'];
   status: BackendHealth['status'];
   version: string;
   bundleHash: string;

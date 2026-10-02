@@ -2398,6 +2398,14 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
   const showOperatorCommands = health.status !== 'draining';
   return [
     ...formatRunningOverviewLines(health),
+    ...(health.retention === undefined
+      ? []
+      : [
+          `  Storage retention: ${health.retention.phase}, deleted=${health.retention.deleted}, kept=${health.retention.kept}, failed=${health.retention.failed}; next retry within 24h.`,
+          ...health.retention.outcomes
+            .filter((outcome) => outcome.kind !== 'deleted')
+            .map((outcome) => `    ${outcome.subject}: ${outcome.reason}`),
+        ]),
     ...formatLaunchPermitLines(health.diagnostics?.launchPermits ?? []),
     ...formatLaunchReleaseDispositionLines(health.diagnostics?.launchReleaseDispositions ?? []),
     ...formatProviderOperationAdoptionRefusalLines(

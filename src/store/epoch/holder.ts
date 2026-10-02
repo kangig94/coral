@@ -25,6 +25,7 @@ import {
 } from './constants.js';
 import { isRecord } from './metadata.js';
 import { errorCode } from './classification.js';
+import type { RetentionRunBudget } from '../retention-outcome.js';
 
 export function parkableEpochReadLease(
   runtime: Pick<Runtime, 'storage'>,
@@ -159,8 +160,8 @@ function observeStoreEpochHolder(runtime: Runtime, dbDir: string, entry: string)
   });
   try {
     const proof = observeContainedRegularFile(runtime.storage, dbDir, path, { kind: 'proven' });
-    if (proof.kind !== 'proven') return unobservable(proof.kind === 'disproven');
-    if (runtime.storage.statSync(path).size > MAX_STORE_EPOCH_HOLDER_BYTES) return unobservable(true);
+    if (proof.kind !== 'proven') return unobservable(false);
+    if (runtime.storage.statSync(path).size > MAX_STORE_EPOCH_HOLDER_BYTES) return unobservable(false);
     const value: unknown = JSON.parse(runtime.storage.readFileSync(path, 'utf-8'));
     if (
       !isRecord(value) ||
@@ -169,17 +170,15 @@ function observeStoreEpochHolder(runtime: Runtime, dbDir: string, entry: string)
       !Number.isSafeInteger(value.pid) ||
       Number(value.pid) <= 0
     ) {
-      return unobservable(true);
+      return unobservable(false);
     }
     const pid = Number(value.pid);
     const directory = epochDirectory(dbDir, value.epoch);
     const rootProof = observeContainedDirectory(runtime.storage, dbDir, directory);
     const lockProof = observeStoreEpochLock(runtime.storage, dbDir, value.epoch, rootProof);
 
-    if (lockProof.kind === 'disproven') {
-      return { id, entry, path, epoch: value.epoch, pid, state: 'stale', removable: true, proof: null };
-    }
-    if (lockProof.kind !== 'proven') return unobservable(false);
+    if (lockProof.kind !== 'proven')
+      return { id, entry, path, epoch: value.epoch, pid, state: 'unobservable', removable: false, proof: null };
     return {
       id,
       entry,
@@ -192,20 +191,23 @@ function observeStoreEpochHolder(runtime: Runtime, dbDir: string, entry: string)
     };
   } catch (error: unknown) {
     if (errorCode(error) === 'ENOENT') return null;
-    return unobservable(error instanceof SyntaxError);
+    return unobservable(false);
   }
 }
 
 function inspectStoreEpochHolder(runtime: Runtime, dbDir: string, entry: string): StoreEpochHolderObservation | null {
   const holder = observeStoreEpochHolder(runtime, dbDir, entry);
-  if (holder?.epoch === null || holder === null) return holder;
-  const attempt = attemptExclusiveFileLockSync(storeEpochLockPath(dbDir, holder.epoch));
-  if (attempt.kind === 'unobservable') return holder;
+  if (holder === null || holder.pid === null) return holder;
+  const owner = runtime.process.observeLiveness(holder.pid);
+  const attempt =
+    owner === 'absent' && holder.epoch !== null
+      ? attemptExclusiveFileLockSync(storeEpochLockPath(dbDir, holder.epoch))
+      : null;
   return {
     ...holder,
-    state: attempt.kind === 'contended' ? 'live' : 'stale',
-    removable: true,
-    proof: attempt.kind === 'acquired' ? attempt.lease : null,
+    state: owner === 'absent' ? 'stale' : owner === 'alive' ? 'live' : 'unobservable',
+    removable: owner === 'absent',
+    proof: attempt?.kind === 'acquired' ? attempt.lease : null,
   };
 }
 
@@ -271,9 +273,9 @@ async function observeStoreEpochHolderAsync(
   });
   try {
     const proof = await observeContainedRegularFileAsync(runtime.storage, dbDir, path, { kind: 'proven' });
-    if (proof.kind !== 'proven') return unobservable(proof.kind === 'disproven');
+    if (proof.kind !== 'proven') return unobservable(false);
     const kind = await runtime.storage.lstat(path);
-    if (kind.size > MAX_STORE_EPOCH_HOLDER_BYTES) return unobservable(true);
+    if (kind.size > MAX_STORE_EPOCH_HOLDER_BYTES) return unobservable(false);
     const value: unknown = JSON.parse(await runtime.storage.readFile(path, 'utf-8'));
     if (
       !isRecord(value) ||
@@ -282,13 +284,14 @@ async function observeStoreEpochHolderAsync(
       !Number.isSafeInteger(value.pid) ||
       Number(value.pid) <= 0
     ) {
-      return unobservable(true);
+      return unobservable(false);
     }
     const pid = Number(value.pid);
     const directory = epochDirectory(dbDir, value.epoch);
     const rootProof = await observeContainedDirectoryAsync(runtime.storage, dbDir, directory);
     const lockProof = await observeStoreEpochLockAsync(runtime.storage, dbDir, value.epoch, rootProof);
-    if (lockProof.kind !== 'proven') return unobservable(lockProof.kind === 'disproven');
+    if (lockProof.kind !== 'proven')
+      return { id, entry, path, epoch: value.epoch, pid, state: 'unobservable', removable: false, proof: null };
     return {
       id,
       entry,
@@ -301,7 +304,7 @@ async function observeStoreEpochHolderAsync(
     };
   } catch (error: unknown) {
     if (errorCode(error) === 'ENOENT') return null;
-    return unobservable(error instanceof SyntaxError);
+    return unobservable(false);
   }
 }
 
@@ -311,13 +314,49 @@ export async function inspectStoreEpochHolderAsync(
   entry: string,
 ): Promise<StoreEpochHolderObservation | null> {
   const holder = await observeStoreEpochHolderAsync(runtime, dbDir, entry);
-  if (holder === null || holder.epoch === null) return holder;
-  const attempt = attemptExclusiveFileLockSync(storeEpochLockPath(dbDir, holder.epoch));
-  if (attempt.kind === 'unobservable') return holder;
+  if (holder === null || holder.pid === null) return holder;
+  const owner = runtime.process.observeLiveness(holder.pid);
+  const attempt =
+    owner === 'absent' && holder.epoch !== null
+      ? attemptExclusiveFileLockSync(storeEpochLockPath(dbDir, holder.epoch))
+      : null;
   return {
     ...holder,
-    state: attempt.kind === 'contended' ? 'live' : 'stale',
-    removable: true,
-    proof: attempt.kind === 'acquired' ? attempt.lease : null,
+    state: owner === 'absent' ? 'stale' : owner === 'alive' ? 'live' : 'unobservable',
+    removable: owner === 'absent',
+    proof: attempt?.kind === 'acquired' ? attempt.lease : null,
   };
+}
+
+export async function pruneStoreEpochHolders(
+  runtime: Runtime,
+  budget: RetentionRunBudget,
+  mutate: <T>(operation: () => T) => T,
+): Promise<void> {
+  const root = runtime.paths.coral.store.dbDir;
+  const entries = await runtime.storage.readdir(root);
+  for (const entry of entries) {
+    if (!budget.canContinue()) return;
+    if (!entry.startsWith(EPOCH_HOLDER_PREFIX)) continue;
+    const subject = join(root, entry);
+    try {
+      const holder = entry.endsWith('.json') ? await inspectStoreEpochHolderAsync(runtime, root, entry) : null;
+      if (holder?.state !== 'stale' || !holder.removable) {
+        budget.record({ kind: 'kept', subject, reason: 'holder-alive-or-unknown' });
+        continue;
+      }
+      try {
+        if (!budget.canContinue()) return;
+        mutate(() => {
+          runtime.storage.unlinkSync(subject);
+          if (!runtime.storage.syncDirectoryDurableSync(root)) throw new Error('holder-directory-sync-failed');
+        });
+        budget.record({ kind: 'deleted', subject, count: 1 });
+      } finally {
+        holder.proof?.();
+      }
+    } catch (error: unknown) {
+      budget.record({ kind: 'failed', subject, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
 }
