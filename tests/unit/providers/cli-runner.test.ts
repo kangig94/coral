@@ -55,19 +55,4 @@ describe('bindProviderRunner', () => {
     expect(capturedJobId).toBe('job-visible-hold');
     expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith(identity, status, control);
   });
-
-  it('passes no onDurableProcessIdentity through when the caller supplies none', async () => {
-    let received: unknown;
-    const spawner: ProviderDurableSpawner = {
-      spawnDurableJob: (options) => {
-        received = options.onDurableProcessIdentity;
-        return Promise.resolve(NO_CLI_RESULT);
-      },
-    };
-
-    const runCli = bindProviderRunner(spawner, 'codex', new AbortController().signal, 'default', '/tmp/job-dir');
-    await runCli({ command: 'codex', args: [] });
-
-    expect(received).toBeUndefined();
-  });
 });

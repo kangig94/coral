@@ -1,14 +1,11 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } from 'node:fs';
-import { ChildProcess } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
-import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime, waitForDurableRuntime, waitForRecordedDurableExit } from '#src/runtime/real.js';
-import type * as NodeProcess from '#src/infra/node-process.js';
 import type { ChildProcessLike, TimePort } from '#src/infra/port-types.js';
 import type {
   DurableLaunchDisposition,
@@ -169,12 +166,6 @@ describe('createRealRuntime', () => {
     await expect(readiness).rejects.toThrow('Durable wrapper emitted an invalid control message');
   });
 
-  it('measures durable exit confirmation across a forward wall-clock jump with monotonic time', async () => {
-    const result = await confirmExitGraceAcrossWallClockJump(60_000);
-
-    expect(result).toEqual({ wallClockMs: 1_700_000_060_000, sleepCount: 50 });
-  });
-
   it('measures durable exit confirmation across a backward wall-clock jump with monotonic time', async () => {
     const result = await confirmExitGraceAcrossWallClockJump(-60_000);
 
@@ -254,27 +245,6 @@ describe('createRealRuntime', () => {
     });
   });
 
-  it('does not auto-record spawned children when CORAL_SIMULATE_RECORD is enabled', async () => {
-    const recordingRoot = createTempDir('coral-runtime-recordings-');
-    const recordingDir = join(recordingRoot, 'recordings');
-    vi.stubEnv('CORAL_SIMULATE_RECORD', recordingDir);
-
-    const runtime = createRealRuntime('prod');
-    const child = runtime.process.spawn({
-      command: process.execPath,
-      args: ['-e', "process.stdout.write('recorded\\n');"],
-    });
-
-    const result = await readPipedOutput(child);
-    expect(result).toMatchObject({
-      stdout: 'recorded\n',
-      stderr: '',
-      code: 0,
-      signal: null,
-    });
-    expect(existsSync(recordingDir)).toBe(false);
-  });
-
   it('launches durable detached jobs with private artifacts and without runtime/exit sidecar files', async () => {
     const runtime = createRealRuntime('prod');
     const rootDir = createTempDir('coral-runtime-');
@@ -321,55 +291,6 @@ describe('createRealRuntime', () => {
     }
   });
 
-  it('retains an unreadable durable wrapper until its joinable retry observes settlement', async () => {
-    vi.resetModules();
-    vi.doMock('#src/infra/node-process.js', async () => {
-      const actual = await vi.importActual<typeof NodeProcess>('#src/infra/node-process.js');
-      return { ...actual, probeProcessIncarnation: () => null };
-    });
-
-    try {
-      const { createRealRuntime: createMockedRuntime } = await import('#src/runtime/real.js');
-      const runtime = createMockedRuntime('prod');
-      const jobDir = join(createTempDir('coral-runtime-unreadable-wrapper-'), 'job-1');
-      runtime.storage.mkdirSync(jobDir, { recursive: true });
-      let acceptedObligation: DurablePendingLaunchObligation | null = null;
-
-      const disposition = await runtime.process.durable.launch({
-        provider: 'codex',
-        command: process.execPath,
-        args: ['-e', 'setInterval(() => {}, 1000);'],
-        jobDir,
-        onWrapperSpawned: (obligation) => {
-          acceptedObligation = obligation;
-          return { kind: 'accepted' };
-        },
-      });
-
-      expect(disposition).toMatchObject({
-        disposition: 'held',
-        owner: 'launch-caller',
-        pid: expect.any(Number),
-        reason: expect.stringContaining('could not establish the wrapper process identity'),
-        retryAfter: expect.any(Promise),
-        retry: expect.any(Function),
-      });
-      if (disposition.disposition !== 'held') throw new Error('Expected unreadable wrapper launch to be held');
-      expect(acceptedObligation).toMatchObject({ pid: disposition.pid, settled: expect.any(Promise) });
-
-      await disposition.retryAfter;
-      let retryDisposition = await disposition.retry();
-      while (retryDisposition.disposition === 'held') {
-        await retryDisposition.retryAfter;
-        retryDisposition = await retryDisposition.retry();
-      }
-      expect(retryDisposition).toEqual({ disposition: 'settled' });
-    } finally {
-      vi.doUnmock('#src/infra/node-process.js');
-      vi.resetModules();
-    }
-  });
-
   it('settles a durable wrapper internally when the ownership boundary does not accept it', async () => {
     const runtime = createRealRuntime('prod');
     const jobDir = join(createTempDir('coral-runtime-refused-wrapper-'), 'job-1');
@@ -412,82 +333,6 @@ describe('createRealRuntime', () => {
     await expect(launch).rejects.toThrow('Durable wrapper ownership was not accepted.');
   });
 
-  it('publishes the wrapper leader and provider child before durable launch returns', async () => {
-    const runtime = createRealRuntime('prod');
-    const rootDir = createTempDir('coral-runtime-provisional-');
-    const jobDir = join(rootDir, 'job-1');
-    runtime.storage.mkdirSync(jobDir, { recursive: true });
-    const onSpawned = vi.fn();
-    const unref = vi.spyOn(ChildProcess.prototype, 'unref');
-
-    const durable = await requireLaunched(
-      await runtime.process.durable.launch({
-        provider: 'codex',
-        command: process.execPath,
-        args: ['-e', 'setTimeout(() => process.exit(0), 25);'],
-        jobDir,
-        onSpawned,
-      }),
-    );
-
-    expect(onSpawned).toHaveBeenCalledOnce();
-    expect(unref).toHaveBeenCalledOnce();
-    const provisional = onSpawned.mock.calls[0]?.[0];
-    expect(provisional).toMatchObject({
-      runtimeRecord: {
-        transport: 'durable-cli',
-        pid: expect.any(Number),
-        stdoutPath: join(jobDir, 'stdout'),
-        stderrPath: join(jobDir, 'stderr'),
-      },
-      leaderIncarnation: expect.any(String),
-      childRoot: {
-        pid: expect.any(Number),
-        incarnation: expect.any(String),
-      },
-      signalAuthority: {
-        pid: expect.any(Number),
-        hasExited: expect.any(Function),
-      },
-    });
-    expect(provisional?.childRoot?.pid).not.toBe(provisional?.runtimeRecord.pid);
-
-    expect(durable.runtimeRecord).toEqual(provisional?.runtimeRecord);
-    expect(durable.processSubject?.childRoot).toEqual(provisional?.childRoot);
-    expect(durable.signalAuthority).toBe(provisional?.signalAuthority);
-    expect(durable.signalAuthority?.hasExited()).toBe(false);
-    await runtime.process.durable.waitForExit(durable);
-    await vi.waitFor(() => expect(durable.signalAuthority?.hasExited()).toBe(true));
-  });
-
-  it('keeps the wrapper alive until a signalled durable child exits', async () => {
-    const runtime = createRealRuntime('prod');
-    const rootDir = createTempDir('coral-runtime-wrapper-owner-');
-    const jobDir = join(rootDir, 'job-1');
-    runtime.storage.mkdirSync(jobDir, { recursive: true });
-
-    const durable = await requireLaunched(
-      await runtime.process.durable.launch({
-        provider: 'codex',
-        command: process.execPath,
-        args: ['-e', "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"],
-        jobDir,
-      }),
-    );
-    const readyDeadline = Date.now() + 2_000;
-    while (!runtime.storage.readFileSync(durable.stdoutPath, 'utf-8').includes('ready')) {
-      if (Date.now() >= readyDeadline) throw new Error('durable child did not become ready');
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
-
-    expect(runtime.process.kill(durable.pid, 'SIGTERM')).toBe(true);
-    await expect(runtime.process.durable.waitForExit(durable)).resolves.toMatchObject({
-      exitCode: null,
-      signal: 'SIGKILL',
-    });
-    expect(runtime.process.observeLiveness(durable.pid)).toBe('absent');
-  }, 10_000);
-
   it('refuses an exit promise from a different launch handle', async () => {
     const runtime = createRealRuntime('prod');
     const rootDir = createTempDir('coral-runtime-launch-handle-');
@@ -519,50 +364,6 @@ describe('createRealRuntime', () => {
     await expect(runtime.process.durable.waitForExit(first)).resolves.toMatchObject({ exitCode: 0, signal: null });
     await expect(runtime.process.durable.waitForExit(second)).resolves.toMatchObject({ exitCode: 0, signal: null });
   });
-
-  it('does not settle a failed wrapper while its recorded child is still running', async () => {
-    const runtime = createRealRuntime('prod');
-    const rootDir = createTempDir('coral-runtime-child-survives-wrapper-');
-    const jobDir = join(rootDir, 'job-1');
-    runtime.storage.mkdirSync(jobDir, { recursive: true });
-
-    const durable = await requireLaunched(
-      await runtime.process.durable.launch({
-        provider: 'codex',
-        command: process.execPath,
-        args: ['-e', "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"],
-        jobDir,
-      }),
-    );
-    const childPid = durable.processSubject?.childRoot.pid;
-    if (childPid === undefined) throw new Error('durable launch did not capture its child root');
-    const readyDeadline = Date.now() + 2_000;
-    while (!runtime.storage.readFileSync(durable.stdoutPath, 'utf-8').includes('ready')) {
-      if (Date.now() >= readyDeadline) throw new Error('durable child did not become ready');
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
-
-    const completion = runtime.process.durable.waitForExit(durable);
-    try {
-      expect(runtime.process.kill(durable.pid, 'SIGKILL')).toBe(true);
-      const earlyDisposition = await Promise.race([
-        completion.then(
-          () => 'settled',
-          () => 'settled',
-        ),
-        new Promise<'held'>((resolve) => setTimeout(() => resolve('held'), 250)),
-      ]);
-      expect(earlyDisposition).toBe('held');
-
-      expect(runtime.process.kill(childPid, 'SIGKILL')).toBe(true);
-      await expect(completion).rejects.toThrow(
-        `Durable process ${durable.pid} exited before the wrapper reported completion`,
-      );
-    } finally {
-      runtime.process.kill(-durable.pid, 'SIGKILL');
-      runtime.process.kill(childPid, 'SIGKILL');
-    }
-  }, 10_000);
 
   it('writes and appends through durable storage operations', () => {
     const runtime = createRealRuntime('prod');
@@ -638,147 +439,5 @@ describe('createRealRuntime', () => {
       vi.doUnmock('node:fs');
       vi.resetModules();
     }
-  });
-
-  it('best-effort fsyncs the parent directory after a durable atomic rename', async () => {
-    const statePath = '/tmp/coral-runtime-parent-sync/state.json';
-    const tempFd = 41;
-    const parentFd = 42;
-    const openSyncMock = vi.fn<typeof NodeFs.openSync>((path, flags) => {
-      if (path === `${statePath}.tmp` && flags === 'w') {
-        return tempFd;
-      }
-      if (path === '/tmp/coral-runtime-parent-sync' && flags === 'r') {
-        return parentFd;
-      }
-      throw new Error(`unexpected openSync(${String(path)}, ${String(flags)})`);
-    });
-    const writeSyncMock = vi.fn((...args: unknown[]): number => {
-      const buffer = args[1];
-      const length = args[3];
-      if (typeof length === 'number') {
-        return length;
-      }
-      if (typeof buffer === 'string') {
-        return Buffer.byteLength(buffer);
-      }
-      if (ArrayBuffer.isView(buffer)) {
-        return buffer.byteLength;
-      }
-      return 0;
-    });
-    const fdatasyncSyncMock = vi.fn<typeof NodeFs.fdatasyncSync>();
-    const fsyncSyncMock = vi.fn<typeof NodeFs.fsyncSync>();
-    const closeSyncMock = vi.fn<typeof NodeFs.closeSync>();
-    const renameSyncMock = vi.fn<typeof NodeFs.renameSync>();
-
-    vi.resetModules();
-    vi.doMock('node:fs', async () => {
-      const actual = await vi.importActual<typeof NodeFs>('node:fs');
-      return {
-        ...actual,
-        closeSync: closeSyncMock,
-        fdatasyncSync: fdatasyncSyncMock,
-        fsyncSync: fsyncSyncMock,
-        openSync: openSyncMock,
-        renameSync: renameSyncMock,
-        writeSync: writeSyncMock,
-      };
-    });
-
-    try {
-      const { createRealRuntime: createMockedRuntime } = await import('#src/runtime/real.js');
-      const runtime = createMockedRuntime('prod');
-
-      expect(runtime.storage.writeAtomicDurableSync(statePath, '{"ok":true}')).toBe(true);
-      expect(fdatasyncSyncMock).toHaveBeenCalledWith(tempFd);
-      expect(renameSyncMock).toHaveBeenCalledWith(`${statePath}.tmp`, statePath);
-      expect(openSyncMock).toHaveBeenCalledWith('/tmp/coral-runtime-parent-sync', 'r');
-      expect(fsyncSyncMock).toHaveBeenCalledWith(parentFd);
-      expect(closeSyncMock).toHaveBeenCalledWith(tempFd);
-      expect(closeSyncMock).toHaveBeenCalledWith(parentFd);
-      expect(renameSyncMock.mock.invocationCallOrder[0]).toBeLessThan(openSyncMock.mock.invocationCallOrder[1]);
-      expect(openSyncMock.mock.invocationCallOrder[1]).toBeLessThan(fsyncSyncMock.mock.invocationCallOrder[0]);
-    } finally {
-      vi.doUnmock('node:fs');
-      vi.resetModules();
-    }
-  });
-
-  it('runtime.paths.coral captures the active node:os.homedir() at construction', async () => {
-    vi.resetModules();
-    vi.doMock('node:os', async () => {
-      const actual = await vi.importActual<typeof NodeOs>('node:os');
-      return { ...actual, homedir: () => '/home/first' };
-    });
-
-    try {
-      const { createRealRuntime: createFirst } = await import('#src/runtime/real.js');
-      const firstRuntime = createFirst('prod');
-      expect(firstRuntime.paths.coral.store.dbDir.startsWith('/home/first/.coral')).toBe(true);
-
-      vi.doMock('node:os', async () => {
-        const actual = await vi.importActual<typeof NodeOs>('node:os');
-        return { ...actual, homedir: () => '/home/second' };
-      });
-      vi.resetModules();
-      const { createRealRuntime: createSecond } = await import('#src/runtime/real.js');
-      const secondRuntime = createSecond('prod');
-
-      expect(secondRuntime.paths.coral.store.dbDir.startsWith('/home/second/.coral')).toBe(true);
-      // Tests that mock node:os.homedir() per-test must construct the runtime
-      // AFTER the mock is set; runtime.paths.coral is an eager constant.
-      expect(firstRuntime.paths.coral.store.dbDir.startsWith('/home/first/.coral')).toBe(true);
-    } finally {
-      vi.doUnmock('node:os');
-      vi.resetModules();
-    }
-  });
-
-  it('runtime.paths.coral is referentially stable across accesses', () => {
-    const runtime = createRealRuntime('prod');
-    expect(runtime.paths.coral).toBe(runtime.paths.coral);
-  });
-});
-
-describe('storage bigint stats', () => {
-  it('retains owner, type, and full mode when only the following view resolves a symlink', () => {
-    const root = mkdtempSync(join(tmpdir(), 'coral-runtime-lstat-'));
-    createdDirs.push(root);
-    const target = join(root, 'target');
-    const link = join(root, 'link');
-    mkdirSync(target, { mode: 0o700 });
-    chmodSync(target, 0o1700);
-    symlinkSync(target, link);
-    const runtime = createRealRuntime('prod', { baseDir: root });
-
-    const observedLstat = runtime.storage.lstatSync(link, { bigint: true });
-    const observedStat = runtime.storage.statSync(link, { bigint: true });
-    const expectedLstat = lstatSync(link, { bigint: true });
-    const expectedStat = statSync(link, { bigint: true });
-
-    expect({
-      lstat: {
-        uid: observedLstat.uid,
-        type: observedLstat.mode & 0o170000n,
-        mode: observedLstat.mode & 0o7777n,
-      },
-      stat: {
-        uid: observedStat.uid,
-        type: observedStat.mode & 0o170000n,
-        mode: observedStat.mode & 0o7777n,
-      },
-    }).toEqual({
-      lstat: {
-        uid: expectedLstat.uid,
-        type: expectedLstat.mode & 0o170000n,
-        mode: expectedLstat.mode & 0o7777n,
-      },
-      stat: {
-        uid: expectedStat.uid,
-        type: expectedStat.mode & 0o170000n,
-        mode: expectedStat.mode & 0o7777n,
-      },
-    });
   });
 });

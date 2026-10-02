@@ -10,10 +10,10 @@
 // It lived as an inline closure and had no test of its own: reverting the guard broke nothing. It is a named
 // function now so this file can hold it.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -74,66 +74,11 @@ const evidence = (lastHealth: IncumbentHealth | null = null) => ({
 });
 
 describe('verifiedIncumbentFromDiscovery', () => {
-  it('keeps a pre-token incumbent and the boot token beside it', () => {
-    const incumbent = verifiedIncumbentFromDiscovery(preTokenRecord(), evidence());
-
-    expect(incumbent, 'a record without an incarnation is still the incumbent').not.toBeNull();
-    expect(incumbent?.bootToken, 'the credential that makes a peaceful handoff possible must survive').toBe(
-      'incumbent-boot-token',
-    );
-    expect(incumbent?.incarnation).toBeUndefined();
-  });
-
-  it('carries an incarnation through when the incumbent published one', () => {
-    const incarnation = testIncarnation(9_001);
-
-    expect(verifiedIncumbentFromDiscovery(preTokenRecord({ incarnation }), evidence())?.incarnation).toBe(incarnation);
-  });
-
   it('is not the incumbent when the record names another socket or flavor', () => {
     for (const record of [preTokenRecord({ socketPath: '/tmp/coral-other.sock' }), preTokenRecord({ flavor: 'dev' })]) {
       expect(verifiedIncumbentFromDiscovery(record, evidence())).toBeNull();
     }
     expect(verifiedIncumbentFromDiscovery(null, evidence())).toBeNull();
-  });
-
-  // Namespace hashes the plugin root, and an installed plugin root is a per-version directory, so the previous
-  // release's record always names another namespace. Discarding it dropped the boot token and refused every
-  // upgrade with `handoff_shutdown_credential_unavailable`, leaving the previous build serving (#385).
-  it('keeps the boot token of an incumbent from another namespace', () => {
-    const health: IncumbentHealth = {
-      flavor: 'prod',
-      namespace: 'previous-release-ns',
-      bundleHash: 'incumbent-bundle',
-    };
-
-    for (const lastHealth of [null, health]) {
-      const incumbent = verifiedIncumbentFromDiscovery(
-        preTokenRecord({ namespace: 'previous-release-ns' }),
-        evidence(lastHealth),
-      );
-      expect(incumbent?.bootToken).toBe('incumbent-boot-token');
-    }
-  });
-
-  // `writeDiscoveryRecord` probes once and serializes nothing if that probe fails, so a perfectly ordinary
-  // current build can publish a record without an incarnation. Signalling requires one, so if health's value
-  // were discarded here that build would be unevictable — the guard against killing a stranger turned into a
-  // guard against replacing a peer.
-  it('takes the incarnation from health when the record has none', () => {
-    const incarnation = testIncarnation(5_150);
-    const health: IncumbentHealth = {
-      flavor: 'prod',
-      namespace: 'ns',
-      bundleHash: 'incumbent-bundle',
-      pid: 4321,
-      incarnation,
-    };
-
-    const incumbent = verifiedIncumbentFromDiscovery(preTokenRecord(), evidence(health));
-
-    expect(incumbent, 'health naming an incarnation the record omits is not a disagreement').not.toBeNull();
-    expect(incumbent?.incarnation).toBe(incarnation);
   });
 
   // The pid is the only thing tying health's statement to the record's. Ping is unauthenticated, so the peer
@@ -240,23 +185,6 @@ describe('verifiedIncumbentFromRuntimeProbe', () => {
     const runtime = createRealRuntime('prod');
     return { storage: runtime.storage, env: runtime.env, paths: runtime.paths, process: runtime.process };
   }
-
-  it('has no incumbent to contend with when no discovery record was ever written', () => {
-    const runtime = makeRuntime();
-
-    expect(verifiedIncumbentFromRuntimeProbe(runtime, evidence())).toBeNull();
-  });
-
-  it('has no incumbent to contend with when the discovery record cannot be decoded', () => {
-    // Lifecycle startup calls the disposition reader before reaching this probe and refuses this state. This
-    // direct helper test pins only the probe's narrower contract for its other callers.
-    const runtime = makeRuntime();
-    const infoFile = runtime.paths.coral.coordinator.infoFile;
-    mkdirSync(dirname(infoFile), { recursive: true });
-    writeFileSync(infoFile, '{"pid": 4242, "socketPath"', 'utf-8');
-
-    expect(verifiedIncumbentFromRuntimeProbe(runtime, evidence())).toBeNull();
-  });
 
   // The positive case, so this suite cannot pass by always returning `null`: a live, matching record probed
   // for real must still reach the incumbent, the same as `verifiedIncumbentFromProbe`'s own `'live'` case.

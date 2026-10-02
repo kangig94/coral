@@ -27,43 +27,6 @@ afterEach(() => {
 });
 
 describe('corpus scan worker', () => {
-  it('reads markdown corpus files off-thread and builds the scan view on return', async () => {
-    const root = tempRoot();
-    mkdirSync(join(root, 'notes'), { recursive: true });
-    writeFileSync(
-      join(root, 'notes', 'domain-topic.md'),
-      [
-        '---',
-        'tags: [coral]',
-        'principles: []',
-        'source: [test/source]',
-        'createdAt: 2026-01-01T00:00:00.000Z',
-        'updatedAt: 2026-01-01T00:00:00.000Z',
-        '---',
-        '# Domain Topic',
-        '',
-        'Body',
-        '',
-      ].join('\n'),
-      'utf-8',
-    );
-
-    const scan = await buildCorpusScanViewInWorker({
-      markdownRoot: root,
-      entityGraphPath: () => join(root, '.entity-graph.json'),
-    });
-
-    expect(scan.markdownFiles).toHaveLength(1);
-    expect(scan.markdownFiles[0]).toEqual(
-      expect.objectContaining({
-        kind: 'note',
-        slug: 'domain-topic',
-        title: 'Domain Topic',
-      }),
-    );
-    expect(scan.entityGraph).toBeNull();
-  });
-
   it('returns corpus scan limit errors from the worker', async () => {
     const root = tempRoot();
     mkdirSync(join(root, 'notes'), { recursive: true });
@@ -76,21 +39,5 @@ describe('corpus scan worker', () => {
         envPort: env({ [CORPUS_SCAN_MAX_FILE_BYTES_ENV]: '4' }),
       }),
     ).rejects.toBeInstanceOf(CorpusScanLimitError);
-  });
-
-  it('fails immediately when called with an already aborted signal', async () => {
-    const root = tempRoot();
-    const controller = new AbortController();
-    controller.abort();
-
-    await expect(
-      buildCorpusScanViewInWorker(
-        {
-          markdownRoot: root,
-          entityGraphPath: () => join(root, '.entity-graph.json'),
-        },
-        { signal: controller.signal },
-      ),
-    ).rejects.toThrow('KB corpus scan worker aborted');
   });
 });

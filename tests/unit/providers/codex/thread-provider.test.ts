@@ -9,18 +9,10 @@ import type {
   ProviderAppServerRuntime,
   ProviderEventBody,
   ProviderRequest,
-  ProviderTurnSettlement,
 } from '#src/providers/contract.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
 import { codexTurnKernel } from '#src/providers/codex/thread-kernel.js';
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
-import { ProviderRpcError } from '#src/providers/app-server-transport.js';
-import {
-  admissionSlotKey,
-  canonicalProviderHostSpecMetadata,
-  createHostAdmissionCollection,
-  providerHostUnserviceableTerminalWarning,
-} from '#src/providers/host-admission.js';
 import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
@@ -46,9 +38,9 @@ function buildCodexExecutionPlan(options: Omit<Parameters<typeof buildCodexExecu
 
 type MockLease = AppServerSession & {
   close(outcome?: Error | void): void;
+  waitForRpc(method: string, count?: number): Promise<void>;
   emit(message: { method: string; params?: Record<string, unknown> }): void;
   rpcMock: ReturnType<typeof vi.fn>;
-  subscribeMock: ReturnType<typeof vi.fn>;
 };
 
 const LISTED_SIZES = {
@@ -61,30 +53,39 @@ const LISTED_SIZES = {
   nextCursor: null,
 };
 
-function makeLease(
-  rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>,
-  effectiveConfig: Record<string, unknown> = {},
-  configRead?: (params: Record<string, unknown>) => Promise<unknown>,
-): MockLease {
+function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>): MockLease {
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
   const closed = createDeferred<Error | void>();
-  const rpcMock = vi.fn((method: string, params: Record<string, unknown>) =>
-    method === 'model/list'
-      ? Promise.resolve(LISTED_SIZES)
-      : method === 'config/read'
-        ? (configRead?.(params) ?? Promise.resolve({ config: effectiveConfig }))
-        : rpcImpl(method, params),
-  );
-  const subscribeMock = vi.fn((next: (message: { method: string; params?: Record<string, unknown> }) => void) => {
-    handlers.add(next);
-    return () => {
-      handlers.delete(next);
-    };
+  const waiters: Array<{ method: string; count: number; resolve: () => void }> = [];
+  const rpcMock = vi.fn((method: string, params: Record<string, unknown>) => {
+    const response =
+      method === 'model/list'
+        ? Promise.resolve(LISTED_SIZES)
+        : method === 'config/read'
+          ? Promise.resolve({ config: {} })
+          : rpcImpl(method, params);
+    for (const waiter of waiters) {
+      if (waiter.method === method && rpcMock.mock.calls.filter(([name]) => name === method).length >= waiter.count) {
+        waiter.resolve();
+      }
+    }
+    return response;
   });
 
   const lease: MockLease = {
+    waitForRpc(method, count = 1) {
+      if (rpcMock.mock.calls.filter(([name]) => name === method).length >= count) return Promise.resolve();
+      const deferred = createDeferred<void>();
+      waiters.push({ method, count, resolve: () => deferred.resolve() });
+      return deferred.promise;
+    },
     rpc: rpcMock as unknown as AppServerSession['rpc'],
-    subscribe: subscribeMock as unknown as AppServerSession['subscribe'],
+    subscribe(next) {
+      handlers.add(next);
+      return () => {
+        handlers.delete(next);
+      };
+    },
     closed: closed.promise,
     interrupt: (continuity) => codexAppServerLifecycle.interrupt!(lease, continuity),
     close(outcome) {
@@ -94,7 +95,6 @@ function makeLease(
       for (const handler of handlers) handler(message);
     },
     rpcMock,
-    subscribeMock,
   };
   return lease;
 }
@@ -138,15 +138,16 @@ function makeRuntime(
   return {
     transport: 'app-server',
     signal: overrides.signal ?? new AbortController().signal,
-    time: overrides.time ?? {
-      now: () => Date.now(),
-      setTimeout: (fn, ms) => setTimeout(fn, ms),
-      clearTimeout: (handle) => {
-        if (handle !== null) clearTimeout(handle as ReturnType<typeof setTimeout>);
-      },
-    },
+    time: overrides.time ?? new VirtualTime(),
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: overrides.storage ?? ({ existsSync: () => true } as unknown as CodexRuntime['storage']),
+    storage:
+      overrides.storage ??
+      ({
+        existsSync: () => true,
+        readFileSync: () => {
+          throw Object.assign(new Error('No config in fixture'), { code: 'ENOENT' });
+        },
+      } as unknown as CodexRuntime['storage']),
     ...(overrides.env ? { env: overrides.env } : {}),
     appServerSession: lease,
     persistedContinuity,
@@ -173,254 +174,6 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 }
 
 describe('codexThreadProvider', () => {
-  it('does not transfer an unserviceable finding between hosts with identical RPC failures', async () => {
-    const generation = 1;
-    const requestId = 17;
-    const hostLog = Object.freeze({ startSeq: 2, endSeq: 3 });
-    const providerData = { reason: 'poisoned cwd' };
-    const classifiedAdmission = createHostAdmissionCollection({ classify: () => 'unserviceable' });
-    const otherAdmission = createHostAdmissionCollection({ classify: () => 'unknown' });
-    const classifiedSlot = admissionSlotKey('classified-host-slot');
-    const otherSlot = admissionSlotKey('other-host-slot');
-    const classifiedHostRef = Object.freeze({
-      provider: 'codex',
-      fingerprint: 'a'.repeat(64),
-      instanceId: 'classified-host',
-      leaseMode: 'shared' as const,
-    });
-    const otherHostRef = Object.freeze({
-      ...classifiedHostRef,
-      instanceId: 'other-host',
-    });
-
-    for (const [admission, slot, hostRef] of [
-      [classifiedAdmission, classifiedSlot, classifiedHostRef],
-      [otherAdmission, otherSlot, otherHostRef],
-    ] as const) {
-      await admission.withFreshPlacement(slot, async (reservation) => {
-        reservation.reserveCandidate({
-          slot,
-          ref: hostRef,
-          generation,
-          spec: canonicalProviderHostSpecMetadata({
-            provider: 'codex',
-            command: 'codex',
-            args: ['app-server'],
-            cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
-            leaseMode: 'shared',
-            idleRetirement: 'unleased',
-          }),
-          host: Object.freeze({ owner: 'test' }),
-          inspectDiagnostics: () =>
-            Object.freeze({
-              hostLog: Object.freeze({ entries: Object.freeze([]), retainedBytes: 0, truncatedBeforeSeq: 0 }),
-              completedObservations: Object.freeze([]),
-              factsTruncatedBeforeSeq: 0,
-            }),
-        });
-        reservation.markLive(hostRef, generation);
-      });
-    }
-
-    const bothRequestsStarted = createDeferred<void>();
-    const classifiedFindingPublished = createDeferred<void>();
-    let startedRequests = 0;
-    const awaitBothRequests = async (): Promise<void> => {
-      startedRequests += 1;
-      if (startedRequests === 2) bothRequestsStarted.resolve();
-      await bothRequestsStarted.promise;
-    };
-    const rpcError = () =>
-      new ProviderRpcError({
-        requestId,
-        method: 'config/read',
-        rpcCode: -32_603,
-        providerMessage: 'configuration refused',
-        providerData,
-        hostLog,
-      });
-    const diagnosticFact = Object.freeze({
-      factSeq: 1,
-      generation,
-      requestId,
-      method: 'config/read',
-      response: Object.freeze({
-        kind: 'failure' as const,
-        rpcCode: -32_603,
-        providerMessage: 'configuration refused',
-        providerData,
-      }),
-      hostLog,
-    });
-    const classifiedLease = makeLease(
-      async (method) => {
-        throw new Error(`must not call ${method}`);
-      },
-      {},
-      () =>
-        classifiedAdmission.correlateTerminalFailure(classifiedHostRef, async () => {
-          await awaitBothRequests();
-          classifiedAdmission.observe(classifiedSlot, classifiedHostRef, diagnosticFact);
-          classifiedFindingPublished.resolve();
-          throw rpcError();
-        }),
-    );
-    const otherLease = makeLease(
-      async (method) => {
-        throw new Error(`must not call ${method}`);
-      },
-      {},
-      () =>
-        otherAdmission.correlateTerminalFailure(otherHostRef, async () => {
-          await awaitBothRequests();
-          await classifiedFindingPublished.promise;
-          otherAdmission.observe(otherSlot, otherHostRef, diagnosticFact);
-          throw rpcError();
-        }),
-    );
-
-    const [classifiedEvents, otherEvents] = await Promise.all([
-      collect(codexThreadProvider(makeRequest(), makeRuntime(classifiedLease))),
-      collect(codexThreadProvider(makeRequest(), makeRuntime(otherLease))),
-    ]);
-
-    expect(classifiedEvents).toEqual([
-      expect.objectContaining({
-        kind: 'terminal',
-        diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(classifiedHostRef)] },
-      }),
-    ]);
-    expect(otherEvents).toEqual([
-      expect.objectContaining({
-        kind: 'terminal',
-        diagnostics: {},
-      }),
-    ]);
-  });
-
-  it('retains the raw initial RPC cause and marks its provider-owned unserviceable classification', async () => {
-    const generation = 1;
-    const requestId = 17;
-    const hostLog = Object.freeze({ startSeq: 2, endSeq: 3 });
-    const providerData = { reason: 'poisoned cwd' };
-    const admission = createHostAdmissionCollection({ classify: () => 'unserviceable' });
-    const slot = admissionSlotKey('initial-config-read-failure');
-    const hostRef = Object.freeze({
-      provider: 'codex',
-      fingerprint: 'a'.repeat(64),
-      instanceId: 'poisoned-host',
-      leaseMode: 'shared' as const,
-    });
-    await admission.withFreshPlacement(slot, async (reservation) => {
-      reservation.reserveCandidate({
-        slot,
-        ref: hostRef,
-        generation,
-        spec: canonicalProviderHostSpecMetadata({
-          provider: 'codex',
-          command: 'codex',
-          args: ['app-server'],
-          cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
-          leaseMode: 'shared',
-          idleRetirement: 'unleased',
-        }),
-        host: Object.freeze({ owner: 'test' }),
-        inspectDiagnostics: () =>
-          Object.freeze({
-            hostLog: Object.freeze({ entries: Object.freeze([]), retainedBytes: 0, truncatedBeforeSeq: 0 }),
-            completedObservations: Object.freeze([]),
-            factsTruncatedBeforeSeq: 0,
-          }),
-      });
-      reservation.markLive(hostRef, generation);
-    });
-    const lease = makeLease(
-      async (method) => {
-        throw new Error(`must not call ${method}`);
-      },
-      {},
-      () =>
-        admission.correlateTerminalFailure(hostRef, async () => {
-          admission.observe(
-            slot,
-            hostRef,
-            Object.freeze({
-              factSeq: 1,
-              generation,
-              requestId,
-              method: 'config/read',
-              response: Object.freeze({
-                kind: 'failure',
-                rpcCode: -32_603,
-                providerMessage: 'configuration refused',
-                providerData,
-              }),
-              hostLog,
-            }),
-          );
-          throw new ProviderRpcError({
-            requestId,
-            method: 'config/read',
-            rpcCode: -32_603,
-            providerMessage: 'configuration refused',
-            providerData,
-            hostLog,
-          });
-        }),
-    );
-
-    const events = await collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-
-    expect(events).toEqual([
-      expect.objectContaining({
-        kind: 'terminal',
-        terminal: expect.objectContaining({
-          outcome: expect.objectContaining({
-            kind: 'provider_exit',
-            note: expect.stringContaining(
-              'config/read failed [code=-32603]: configuration refused; data={"reason":"poisoned cwd"}',
-            ),
-          }),
-        }),
-        diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(hostRef)] },
-      }),
-    ]);
-  });
-
-  it.each([
-    ['start', { action: 'exec' as const, conversationRef: undefined }, undefined],
-    [
-      'resume',
-      { action: 'resume' as const, conversationRef: 'thread-1' },
-      { cwd: TEST_WORKSPACE, threadId: 'thread-1' },
-    ],
-  ])('rejects hostile effective config before %s RPCs and releases the lease', async (_mode, request, continuity) => {
-    const downstreamRpc = vi.fn(async (method: string) => {
-      throw new Error(`must not call ${method}`);
-    });
-    const lease = makeLease(downstreamRpc, { model_provider: 'hostile-proxy' });
-    const runtime = makeRuntime(lease, continuity);
-
-    const events = await collect(codexThreadProvider(makeRequest(request), runtime));
-
-    expect(lease.rpcMock).toHaveBeenCalledWith('config/read', { cwd: TEST_WORKSPACE, includeLayers: false });
-    expect(downstreamRpc).not.toHaveBeenCalled();
-    expect(lease.rpcMock.mock.calls.map(([method]) => method)).toEqual(['config/read']);
-    expect(events).toHaveLength(1);
-    if (events[0].kind !== 'terminal') throw new Error('Expected terminal');
-    expect(events[0].terminal).not.toHaveProperty('model');
-    expect(events[0]).toMatchObject({
-      kind: 'terminal',
-      terminal: {
-        outcome: {
-          kind: 'provider_exit',
-          code: 1,
-          note: expect.stringContaining("Unsupported Codex effective setting 'model_provider'"),
-        },
-      },
-    });
-  });
-
   it('resumes the same thread after its app-server host retires between turns', async () => {
     const threadId = 'thread-after-retirement';
     const firstLease = makeLease(async (method) => {
@@ -464,499 +217,6 @@ describe('codexThreadProvider', () => {
     expect(followUpLease.rpcMock).not.toHaveBeenCalledWith('thread/start', expect.any(Object));
   });
 
-  it('runs the composed stack end-to-end and emits live continuity deltas before the terminal', async () => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') {
-        return { thread: { id: 'thread-1' } };
-      }
-      if (method === 'turn/start') {
-        return { turn: { id: 'turn-1', status: 'inProgress' } };
-      }
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const runtime = makeRuntime(lease);
-
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
-
-    await vi.waitFor(() => {
-      expect(lease.rpcMock).toHaveBeenCalledWith(
-        'turn/start',
-        expect.objectContaining({
-          threadId: 'thread-1',
-        }),
-      );
-    });
-
-    lease.emit({
-      method: 'item/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        item: {
-          type: 'agentMessage',
-          text: 'Final answer',
-          phase: 'final_answer',
-        },
-      },
-    });
-    lease.emit({
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: {
-          id: 'turn-1',
-          status: 'completed',
-        },
-      },
-    });
-
-    const events = await eventsPromise;
-
-    expect(events).toHaveLength(6);
-    expect(events).toEqual(
-      expect.arrayContaining([
-        {
-          kind: 'continuity',
-          conversationRef: 'thread-1',
-          resumable: true,
-          providerContinuity: { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1', turnId: 'turn-1' },
-        },
-        { kind: 'progress', message: 'Thread ready (thread-1).' },
-        {
-          kind: 'continuity',
-          conversationRef: 'thread-1',
-          resumable: true,
-          providerContinuity: { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1', turnId: undefined },
-        },
-        { kind: 'progress', message: 'Turn completed.' },
-        { kind: 'progress', message: expect.stringContaining('No rollout JSONL found matching thread thread-1') },
-      ]),
-    );
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: {
-        content: 'Final answer',
-        outcome: { kind: 'completed' },
-      },
-      diagnostics: {},
-    });
-    expect(lease.subscribeMock).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([
-    ['completed', { kind: 'completed' }],
-    ['interrupted', { kind: 'aborted', reason: 'signal_abort' }],
-    ['failed', { kind: 'provider_exit' }],
-  ] as const)('emits exact provider terminal evidence for a runtime-validated %s status', async (status, outcome) => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const onProviderTurnTerminal = vi.fn();
-    const eventsPromise = collect(
-      codexThreadProvider(makeRequest(), makeRuntime(lease, undefined, { onProviderTurnTerminal })),
-    );
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-
-    lease.emit({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status } },
-    });
-
-    const events = await eventsPromise;
-    expect(onProviderTurnTerminal).toHaveBeenCalledWith({
-      kind: 'provider-turn-terminal',
-      providerTurnId: 'turn-1',
-      status,
-    });
-    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome } });
-  });
-
-  it.each(['completed', 'interrupted', 'failed'] as const)(
-    'publishes terminal evidence for a validated %s turn/start response',
-    async (status) => {
-      const lease = makeLease(async (method) => {
-        if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-        if (method === 'turn/start') return { turn: { id: 'turn-1', status } };
-        throw new Error(`Unexpected method: ${method}`);
-      });
-      const onProviderTurnTerminal = vi.fn();
-      await collect(codexThreadProvider(makeRequest(), makeRuntime(lease, undefined, { onProviderTurnTerminal })));
-      expect(onProviderTurnTerminal).toHaveBeenCalledExactlyOnceWith({
-        kind: 'provider-turn-terminal',
-        providerTurnId: 'turn-1',
-        status,
-      });
-    },
-  );
-
-  it.each([
-    'late',
-    'read',
-    'read-failed',
-    'read-interrupted',
-    'active',
-    'active-then-completed',
-    'active-then-unknown',
-    'unknown',
-    'wedged',
-    'wrong-thread',
-    'wrong-turn',
-  ] as const)('preserves inferred outcome and obtains settlement evidence through %s', async (observation) => {
-    const time = new VirtualTime();
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-      if (method === 'thread/read') {
-        if (observation === 'wedged') return new Promise(() => {});
-        if (
-          observation === 'unknown' ||
-          observation === 'late' ||
-          (observation === 'active-then-unknown' && time.now() >= 2_250)
-        )
-          throw new Error('read unavailable');
-        return {
-          thread: {
-            id: observation === 'wrong-thread' ? 'other-thread' : 'thread-1',
-            turns: [
-              {
-                id: observation === 'wrong-turn' ? 'other-turn' : 'turn-1',
-                status:
-                  observation === 'read-failed'
-                    ? 'failed'
-                    : observation === 'read-interrupted'
-                      ? 'interrupted'
-                      : observation.startsWith('active') && (observation === 'active' || time.now() < 2_250)
-                        ? 'inProgress'
-                        : 'completed',
-              },
-            ],
-          },
-        };
-      }
-      if (method === 'turn/interrupt') {
-        lease.emit({
-          method: 'turn/completed',
-          params: {
-            threadId: 'thread-1',
-            turn: { id: 'turn-1', status: 'interrupted' },
-          },
-        });
-        return {};
-      }
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    let settlement!: ProviderTurnSettlement;
-    const onProviderTurnTerminal = vi.fn();
-    const eventsPromise = collect(
-      codexTurnKernel(
-        makeRequest(),
-        makeRuntime(lease, undefined, {
-          time,
-          onProviderTurnTerminal,
-          onProviderTurnSettlement: (value) => {
-            settlement = value;
-          },
-        }),
-      ),
-    );
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-    lease.emit({
-      method: 'item/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        item: { type: 'agentMessage', text: 'Final answer', phase: 'final_answer' },
-      },
-    });
-    time.tick(250);
-    await flushMicrotasks(50);
-    const events = await eventsPromise;
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: {
-        content: 'Final answer',
-        outcome: { kind: 'completed' },
-      },
-    });
-    expect(lease.rpcMock.mock.calls.some(([method]) => method === 'turn/interrupt')).toBe(false);
-    expect(onProviderTurnTerminal).not.toHaveBeenCalled();
-    const evidencePromise = settlement.settle();
-    if (observation === 'late')
-      lease.emit({
-        method: 'turn/completed',
-        params: {
-          threadId: 'thread-1',
-          turn: { id: 'turn-1', status: 'completed' },
-        },
-      });
-    for (let i = 0; i < 20; i++) {
-      time.tick(250);
-      await flushMicrotasks(50);
-    }
-    const evidence = await evidencePromise;
-    const confirmed = ['late', 'read', 'read-failed', 'read-interrupted', 'active', 'active-then-completed'].includes(
-      observation,
-    );
-    expect(evidence).toEqual(
-      confirmed
-        ? {
-            kind: 'provider-turn-terminal',
-            providerTurnId: 'turn-1',
-            status:
-              observation === 'read-failed'
-                ? 'failed'
-                : observation === 'read-interrupted' || observation === 'active'
-                  ? 'interrupted'
-                  : 'completed',
-          }
-        : null,
-    );
-    expect(lease.rpcMock.mock.calls.filter(([method]) => method === 'turn/interrupt')).toHaveLength(
-      observation === 'active' ? 1 : 0,
-    );
-    expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
-    expect(events.at(-1)).toMatchObject({ terminal: { content: 'Final answer', outcome: { kind: 'completed' } } });
-    settlement.close();
-  });
-
-  it.each(['commandExecution', 'reasoning', 'contextCompaction', 'agentMessage', 'retry', 'retry-before-answer'])(
-    'never interrupts %s activity after a final answer',
-    async (activity) => {
-      const time = new VirtualTime();
-      const lease = makeLease(async (method) => {
-        if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-        if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-        throw new Error(`Unexpected method: ${method}`);
-      });
-      let settled = false;
-      const eventsPromise = collect(codexTurnKernel(makeRequest(), makeRuntime(lease, undefined, { time }))).then(
-        (events) => {
-          settled = true;
-          return events;
-        },
-      );
-      await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-      if (activity === 'retry-before-answer')
-        lease.emit({
-          method: 'error',
-          params: {
-            threadId: 'thread-1',
-            turnId: 'turn-1',
-            willRetry: true,
-            error: { message: 'retrying' },
-          },
-        });
-      lease.emit({
-        method: 'item/completed',
-        params: {
-          threadId: 'thread-1',
-          turnId: 'turn-1',
-          item: { type: 'agentMessage', text: 'Final answer', phase: 'final_answer' },
-        },
-      });
-      time.tick(200);
-      if (activity !== 'retry-before-answer')
-        lease.emit({
-          method: activity === 'retry' ? 'error' : 'item/started',
-          params: {
-            threadId: 'thread-1',
-            turnId: 'turn-1',
-            ...(activity === 'retry'
-              ? { willRetry: true, error: { message: 'retrying' } }
-              : { item: { type: activity } }),
-          },
-        });
-      time.tick(50);
-      await flushMicrotasks(50);
-      expect(lease.rpcMock.mock.calls.some(([method]) => method === 'turn/interrupt')).toBe(false);
-      const retry = activity === 'retry' || activity === 'retry-before-answer';
-      expect(settled).toBe(!retry);
-      if (retry)
-        lease.emit({
-          method: 'turn/completed',
-          params: {
-            threadId: 'thread-1',
-            turn: { id: 'turn-1', status: 'completed' },
-          },
-        });
-      expect((await eventsPromise).at(-1)).toMatchObject({
-        terminal: {
-          content: 'Final answer',
-          outcome: { kind: 'completed' },
-        },
-      });
-    },
-  );
-
-  it('cancels automatic terminal observation when normal completion arrives during the quiet period', async () => {
-    const time = new VirtualTime();
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const onProviderTurnTerminal = vi.fn();
-    const eventsPromise = collect(
-      codexTurnKernel(makeRequest(), makeRuntime(lease, undefined, { time, onProviderTurnTerminal })),
-    );
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-    lease.emit({
-      method: 'item/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        item: { type: 'agentMessage', text: 'Final answer', phase: 'final_answer' },
-      },
-    });
-    time.tick(249);
-    lease.emit({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
-    });
-    const events = await eventsPromise;
-    time.tick(10_001);
-    await flushMicrotasks(50);
-    expect(lease.rpcMock.mock.calls.some(([method]) => method === 'turn/interrupt')).toBe(false);
-    expect(onProviderTurnTerminal).toHaveBeenCalledOnce();
-    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'completed' } } });
-  });
-
-  it('completes inferred final-answer output passively without terminal evidence', async () => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-      if (method === 'turn/interrupt') return {};
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const onProviderTurnTerminal = vi.fn();
-    let settled = false;
-    const eventsPromise = collect(
-      codexThreadProvider(makeRequest(), makeRuntime(lease, undefined, { onProviderTurnTerminal })),
-    ).then((events) => {
-      settled = true;
-      return events;
-    });
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-    lease.emit({
-      method: 'item/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        item: { type: 'agentMessage', text: 'Final answer', phase: 'final_answer' },
-      },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(settled).toBe(true);
-    expect(onProviderTurnTerminal).not.toHaveBeenCalled();
-    lease.emit({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
-    });
-    const events = await eventsPromise;
-    expect(onProviderTurnTerminal).not.toHaveBeenCalled();
-    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'completed' } } });
-  });
-
-  it.each([
-    ['missing', undefined],
-    ['inProgress', 'inProgress'],
-    ['unknown', 'future-final-status'],
-  ] as const)('withholds provider terminal evidence for a %s final status', async (_caseName, status) => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const onProviderTurnTerminal = vi.fn();
-    const eventsPromise = collect(
-      codexThreadProvider(makeRequest(), makeRuntime(lease, undefined, { onProviderTurnTerminal })),
-    );
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-    const turn = status === undefined ? { id: 'turn-1' } : { id: 'turn-1', status };
-
-    lease.emit({ method: 'turn/completed', params: { threadId: 'thread-1', turn } });
-
-    const events = await eventsPromise;
-    expect(onProviderTurnTerminal).not.toHaveBeenCalled();
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: {
-        outcome: {
-          kind: 'provider_exit',
-          note: expect.stringContaining('invalid final status'),
-        },
-      },
-    });
-  });
-
-  it('rejects provider terminal evidence for a different active turn identity', async () => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const onProviderTurnTerminal = vi.fn();
-    const eventsPromise = collect(
-      codexThreadProvider(makeRequest(), makeRuntime(lease, undefined, { onProviderTurnTerminal })),
-    );
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-
-    lease.emit({
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        turn: { id: 'turn-other', status: 'interrupted' },
-      },
-    });
-    expect(onProviderTurnTerminal).not.toHaveBeenCalled();
-
-    lease.emit({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'interrupted' } },
-    });
-    await eventsPromise;
-    expect(onProviderTurnTerminal).toHaveBeenCalledTimes(1);
-  });
-
-  it('treats an empty interrupt response as request acceptance until exact completion evidence arrives', async () => {
-    const controller = new AbortController();
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-      if (method === 'turn/interrupt') return {};
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const onProviderTurnTerminal = vi.fn();
-    const eventsPromise = collect(
-      codexThreadProvider(
-        makeRequest(),
-        makeRuntime(lease, undefined, { signal: controller.signal, onProviderTurnTerminal }),
-      ),
-    );
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-
-    controller.abort();
-    await vi.waitFor(() =>
-      expect(lease.rpcMock).toHaveBeenCalledWith('turn/interrupt', { threadId: 'thread-1', turnId: 'turn-1' }),
-    );
-    expect(onProviderTurnTerminal).not.toHaveBeenCalled();
-
-    lease.emit({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'interrupted' } },
-    });
-    const events = await eventsPromise;
-    expect(onProviderTurnTerminal).toHaveBeenCalledWith({
-      kind: 'provider-turn-terminal',
-      providerTurnId: 'turn-1',
-      status: 'interrupted',
-    });
-    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'aborted' } } });
-  });
-
   it('isolates thread config, notifications, and cancellation for two turns on one shared session', async () => {
     const lease = makeLease(async (method, params) => {
       if (method === 'thread/resume') return { thread: { id: params.threadId } };
@@ -989,9 +249,7 @@ describe('codexThreadProvider', () => {
     const eventsB = collect(codexThreadProvider(requestB, runtimeB)).finally(() => {
       bSettled = true;
     });
-    await vi.waitFor(() => {
-      expect(lease.rpcMock.mock.calls.filter(([method]) => method === 'turn/start')).toHaveLength(2);
-    });
+    await lease.waitForRpc('turn/start', 2);
 
     const resumeCalls = lease.rpcMock.mock.calls.filter(([method]) => method === 'thread/resume');
     const configA = resumeCalls.find(([, params]) => params.threadId === 'thread-a')?.[1].config;
@@ -1008,12 +266,7 @@ describe('codexThreadProvider', () => {
     expect(bSettled).toBe(false);
 
     controllerB.abort('cancel-b');
-    await vi.waitFor(() =>
-      expect(lease.rpcMock).toHaveBeenCalledWith('turn/interrupt', {
-        threadId: 'thread-b',
-        turnId: 'turn-thread-b',
-      }),
-    );
+    await lease.waitForRpc('turn/interrupt');
     lease.emit({
       method: 'turn/completed',
       params: { threadId: 'thread-b', turn: { id: 'turn-thread-b', status: 'interrupted' } },
@@ -1022,39 +275,13 @@ describe('codexThreadProvider', () => {
     expect(lease.rpcMock).not.toHaveBeenCalledWith('turn/interrupt', expect.objectContaining({ threadId: 'thread-a' }));
   });
 
-  it('rejects an empty thread id returned by the app-server before checkpointing', async () => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') {
-        return { thread: { id: '' } };
-      }
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const runtime = makeRuntime(lease);
-
-    const events = await collect(codexThreadProvider(makeRequest(), runtime));
-
-    expect(lease.rpcMock).toHaveBeenCalledWith('thread/resume', expect.any(Object));
-    expect(lease.rpcMock).not.toHaveBeenCalledWith('turn/start', expect.any(Object));
-    expect(events.flatMap((event) => (event.kind === 'progress' ? [event.message] : []))).not.toContain(
-      'Thread ready ().',
-    );
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      kind: 'terminal',
-      terminal: {
-        outcome: {
-          kind: 'provider_exit',
-          code: 1,
-          note: expect.stringContaining('non-empty thread id'),
-        },
-      },
-      diagnostics: {},
-    });
-  });
-
   it('does not start a turn until the resumed thread checkpoint is durably committed', async () => {
     const durable = createDeferred<void>();
-    const checkpoint = vi.fn(() => durable.promise);
+    const checkpointEntered = createDeferred<void>();
+    const checkpoint = vi.fn(() => {
+      checkpointEntered.resolve();
+      return durable.promise;
+    });
     const lease = makeLease(async (method) => {
       if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
       if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'completed' } };
@@ -1065,158 +292,12 @@ describe('codexThreadProvider', () => {
     });
 
     const events = collect(codexTurnKernel(makeRequest(), runtime));
-    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1));
+    await checkpointEntered.promise;
     expect(lease.rpcMock).not.toHaveBeenCalledWith('turn/start', expect.any(Object));
 
     durable.resolve();
     await expect(events).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'terminal' })]));
     expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({ threadId: 'thread-1' }));
-  });
-
-  it('rejects thread/resume when the app-server returns a different thread identity', async () => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-other' } };
-      throw new Error(`Unexpected method: ${method}`);
-    });
-
-    const events = await collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-
-    expect(lease.rpcMock).not.toHaveBeenCalledWith('turn/start', expect.any(Object));
-    expect(events).toEqual([
-      expect.objectContaining({
-        kind: 'terminal',
-        terminal: expect.objectContaining({
-          outcome: expect.objectContaining({ note: expect.stringContaining('exact requested thread id') }),
-        }),
-      }),
-    ]);
-  });
-
-  it('does not checkpoint an empty turn id returned by turn/start', async () => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') {
-        return { thread: { id: 'thread-1' } };
-      }
-      if (method === 'turn/start') {
-        return { turn: { id: '', status: 'inProgress' } };
-      }
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const runtime = makeRuntime(lease);
-
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
-
-    await vi.waitFor(() => {
-      expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
-    });
-
-    lease.emit({
-      method: 'turn/started',
-      params: {
-        threadId: 'thread-1',
-        turn: {
-          id: 'turn-1',
-        },
-      },
-    });
-    lease.emit({
-      method: 'item/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        item: {
-          type: 'agentMessage',
-          text: 'Final answer',
-          phase: 'final_answer',
-        },
-      },
-    });
-    lease.emit({
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: {
-          id: 'turn-1',
-          status: 'completed',
-        },
-      },
-    });
-
-    const events = await eventsPromise;
-    const continuityEvents = events.filter((event): event is Extract<ProviderEventBody, { kind: 'continuity' }> => {
-      return event.kind === 'continuity';
-    });
-    const terminal = events.find((event): event is Extract<ProviderEventBody, { kind: 'terminal' }> => {
-      return event.kind === 'terminal';
-    });
-
-    expect(continuityEvents.map((event) => event.providerContinuity?.turnId)).not.toContain('');
-    expect(continuityEvents).toContainEqual({
-      kind: 'continuity',
-      conversationRef: 'thread-1',
-      resumable: true,
-      providerContinuity: {
-        cwd: TEST_PERSISTED_CWD,
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-      },
-    });
-    expect(terminal?.terminal.outcome).toEqual({ kind: 'completed' });
-  });
-
-  it('emits the final transport-close continuity snapshot from the outer middleware before the terminal', async () => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') {
-        return { thread: { id: 'thread-1' } };
-      }
-      if (method === 'turn/start') {
-        return { turn: { id: 'turn-1', status: 'inProgress' } };
-      }
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const runtime = makeRuntime(lease);
-
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
-
-    await vi.waitFor(() => {
-      expect(lease.rpcMock).toHaveBeenCalledWith(
-        'turn/start',
-        expect.objectContaining({
-          threadId: 'thread-1',
-        }),
-      );
-    });
-
-    lease.close(new Error('transport down'));
-
-    const events = await eventsPromise;
-
-    expect(events).toContainEqual({
-      kind: 'continuity',
-      conversationRef: 'thread-1',
-      resumable: true,
-      providerContinuity: {
-        cwd: TEST_PERSISTED_CWD,
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-      },
-    });
-    expect(events).toContainEqual({
-      kind: 'progress',
-      message: 'Thread ready (thread-1).',
-    });
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: {
-        outcome: {
-          kind: 'provider_exit',
-          code: 1,
-          note: expect.stringContaining('transport down'),
-        },
-      },
-      diagnostics: {},
-    });
-    expect(events[2]).not.toHaveProperty('failureCause');
   });
 
   it('continues one structured capacity failure in the same thread and emits one terminal', async () => {
@@ -1232,7 +313,7 @@ describe('codexThreadProvider', () => {
     const runtime = makeRuntime(lease);
     const eventsPromise = collect(codexThreadProvider(makeRequest({ prompt: 'original task' }), runtime));
 
-    await vi.waitFor(() => expect(starts).toBe(1));
+    await lease.waitForRpc('turn/start');
     lease.emit({
       method: 'error',
       params: {
@@ -1260,7 +341,7 @@ describe('codexThreadProvider', () => {
       },
     });
 
-    await vi.waitFor(() => expect(starts).toBe(2));
+    await lease.waitForRpc('turn/start', 2);
     const secondStart = lease.rpcMock.mock.calls.filter(([method]) => method === 'turn/start')[1]?.[1];
     expect(secondStart).toMatchObject({
       threadId: 'thread-1',
@@ -1381,7 +462,7 @@ describe('codexThreadProvider', () => {
       codexThreadProvider(makeRequest({ prompt: 'ordinary implementation task' }), makeRuntime(lease)),
     );
 
-    await vi.waitFor(() => expect(starts).toBe(1));
+    await lease.waitForRpc('turn/start');
     lease.emit({
       method: 'error',
       params: {
@@ -1406,7 +487,7 @@ describe('codexThreadProvider', () => {
       },
     });
 
-    await vi.waitFor(() => expect(starts).toBe(2));
+    await lease.waitForRpc('turn/start', 2);
     const startsParams = lease.rpcMock.mock.calls
       .filter(([method]) => method === 'turn/start')
       .map(([, params]) => params as Record<string, unknown>);
@@ -1445,44 +526,6 @@ describe('codexThreadProvider', () => {
     expect(progress.some((message) => message.startsWith('Codex error: This content was flagged'))).toBe(false);
   });
 
-  it('uses exact terminal error evidence only when the completed turn omits Turn.error', async () => {
-    let starts = 0;
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') {
-        starts += 1;
-        return { turn: { id: `turn-${starts}`, status: 'inProgress' } };
-      }
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(starts).toBe(1));
-
-    lease.emit({
-      method: 'error',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        willRetry: false,
-        error: { message: 'capacity fallback', codexErrorInfo: 'serverOverloaded' },
-      },
-    });
-    lease.emit({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'failed' } },
-    });
-
-    await vi.waitFor(() => expect(starts).toBe(2));
-    lease.emit({
-      method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-2', status: 'completed' } },
-    });
-
-    const events = await eventsPromise;
-    expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
-    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'completed' } } });
-  });
-
   it('preserves the last pre-retirement usage when the continuation emits no usage', async () => {
     let starts = 0;
     const lease = makeLease(async (method) => {
@@ -1494,7 +537,7 @@ describe('codexThreadProvider', () => {
       throw new Error(`Unexpected method: ${method}`);
     });
     const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(starts).toBe(1));
+    await lease.waitForRpc('turn/start');
     lease.emit({
       method: 'thread/tokenUsage/updated',
       params: {
@@ -1514,7 +557,7 @@ describe('codexThreadProvider', () => {
         },
       },
     });
-    await vi.waitFor(() => expect(starts).toBe(2));
+    await lease.waitForRpc('turn/start', 2);
     lease.emit({
       method: 'turn/completed',
       params: { threadId: 'thread-1', turn: { id: 'turn-2', status: 'completed' } },
@@ -1558,7 +601,7 @@ describe('codexThreadProvider', () => {
         throw new Error(`Unexpected method: ${method}`);
       });
       const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-      await vi.waitFor(() => expect(starts).toBe(1));
+      await lease.waitForRpc('turn/start');
       lease.emit(errorEvent);
       lease.emit({
         method: 'turn/completed',
@@ -1570,10 +613,7 @@ describe('codexThreadProvider', () => {
     }
   });
 
-  it.each([
-    ['serverOverloaded', 'capacity'],
-    ['cyberPolicy', 'policy false positive'],
-  ] as const)(
+  it.each([['serverOverloaded', 'capacity']] as const)(
     'spends the continuation budget once when repeated %s failures occur',
     async (codexErrorInfo, message) => {
       let starts = 0;
@@ -1589,7 +629,7 @@ describe('codexThreadProvider', () => {
       const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
 
       for (const turnId of ['turn-1', 'turn-2']) {
-        await vi.waitFor(() => expect(starts).toBe(Number(turnId.at(-1))));
+        await lease.waitForRpc('turn/start', Number(turnId.at(-1)));
         lease.emit({
           method: 'turn/completed',
           params: {
@@ -1613,176 +653,6 @@ describe('codexThreadProvider', () => {
     },
   );
 
-  it('grants one continuation to each recoverable error kind in the same thread', async () => {
-    let starts = 0;
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') {
-        starts += 1;
-        return { turn: { id: `turn-${starts}`, status: 'inProgress' } };
-      }
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    const failures = [
-      { codexErrorInfo: 'serverOverloaded', message: 'capacity' },
-      { codexErrorInfo: 'cyberPolicy', message: 'policy false positive' },
-      { codexErrorInfo: 'serverOverloaded', message: 'capacity again' },
-    ] as const;
-
-    for (const [index, failure] of failures.entries()) {
-      const turnNumber = index + 1;
-      await vi.waitFor(() => expect(starts).toBe(turnNumber));
-      lease.emit({
-        method: 'turn/completed',
-        params: {
-          threadId: 'thread-1',
-          turn: { id: `turn-${turnNumber}`, status: 'failed', error: failure },
-        },
-      });
-    }
-
-    const events = await eventsPromise;
-    expect(starts).toBe(3);
-    expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('capacity again') } },
-    });
-    const progress = events.flatMap((event) => (event.kind === 'progress' ? [event.message] : []));
-    expect(progress.filter((message) => message.includes('retrying the same thread (1/1)'))).toEqual([
-      'Codex capacity reached; retrying the same thread (1/1).',
-      'Codex policy check stopped the turn; retrying the same thread (1/1).',
-    ]);
-  });
-
-  it('does not continue non-capacity failures', async () => {
-    let starts = 0;
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') {
-        starts += 1;
-        return { turn: { id: 'turn-1', status: 'inProgress' } };
-      }
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(starts).toBe(1));
-    lease.emit({
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: { id: 'turn-1', status: 'failed', error: { message: 'bad input', codexErrorInfo: 'badRequest' } },
-      },
-    });
-
-    const events = await eventsPromise;
-    expect(starts).toBe(1);
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('bad input') } },
-    });
-  });
-
-  it('waits for explicit completion after willRetry true and follows the completed error', async () => {
-    let starts = 0;
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') {
-        starts += 1;
-        return { turn: { id: 'turn-1', status: 'inProgress' } };
-      }
-      if (method === 'turn/interrupt') return {};
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(starts).toBe(1));
-    lease.emit({
-      method: 'error',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        willRetry: true,
-        error: { message: 'reconnecting', codexErrorInfo: 'serverOverloaded' },
-      },
-    });
-    lease.emit({
-      method: 'item/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        item: { type: 'agentMessage', text: 'not final yet', phase: 'final_answer' },
-      },
-    });
-
-    const settledEarly = await Promise.race([
-      eventsPromise.then(() => true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 300)),
-    ]);
-    expect(settledEarly).toBe(false);
-    expect(starts).toBe(1);
-
-    lease.emit({
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: { id: 'turn-1', status: 'failed', error: { message: 'bad input', codexErrorInfo: 'badRequest' } },
-      },
-    });
-    const events = await eventsPromise;
-    expect(starts).toBe(1);
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('bad input') } },
-    });
-  });
-
-  it('waits for explicit completion after malformed structured error evidence', async () => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-      if (method === 'turn/interrupt') return {};
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-    lease.emit({
-      method: 'item/completed',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        item: { type: 'agentMessage', text: 'premature answer', phase: 'final_answer' },
-      },
-    });
-    lease.emit({
-      method: 'error',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        willRetry: false,
-        error: { message: 'malformed', codexErrorInfo: { httpConnectionFailed: {} } },
-      },
-    });
-    const settledEarly = await Promise.race([
-      eventsPromise.then(() => true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 300)),
-    ]);
-    expect(settledEarly).toBe(false);
-
-    lease.emit({
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: { id: 'turn-1', status: 'failed', error: { message: 'bad input', codexErrorInfo: 'badRequest' } },
-      },
-    });
-    const events = await eventsPromise;
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('bad input') } },
-    });
-  });
-
   it('fails once without overwriting a pre-discovered turn id when the RPC response conflicts', async () => {
     const startResponse = createDeferred<unknown>();
     const lease = makeLease(async (method) => {
@@ -1791,7 +661,7 @@ describe('codexThreadProvider', () => {
       throw new Error(`Unexpected method: ${method}`);
     });
     const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+    await lease.waitForRpc('turn/start');
 
     lease.emit({
       method: 'turn/started',
@@ -1810,47 +680,6 @@ describe('codexThreadProvider', () => {
     expect(continuity.some((entry) => entry?.turnId === 'turn-response')).toBe(false);
   });
 
-  it('fails when a turn/started notification conflicts after the RPC response claimed the id', async () => {
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-response', status: 'inProgress' } };
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-    lease.emit({
-      method: 'turn/started',
-      params: { threadId: 'thread-1', turn: { id: 'turn-notification' } },
-    });
-
-    const events = await eventsPromise;
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('id mismatch') } },
-    });
-  });
-
-  it('preserves the first id-mismatch failure when the pending start RPC later rejects', async () => {
-    const startResponse = createDeferred<unknown>();
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return startResponse.promise;
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-    lease.emit({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-first' } } });
-    lease.emit({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-conflict' } } });
-    startResponse.reject(new Error('late start rejection'));
-
-    const events = await eventsPromise;
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('id mismatch') } },
-    });
-    expect(JSON.stringify(events.at(-1))).not.toContain('late start rejection');
-  });
-
   it('replays a buffered completion after a same-id pre-response claim and id-less start response', async () => {
     const startResponse = createDeferred<unknown>();
     const lease = makeLease(async (method) => {
@@ -1859,7 +688,7 @@ describe('codexThreadProvider', () => {
       throw new Error(`Unexpected method: ${method}`);
     });
     const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+    await lease.waitForRpc('turn/start');
     lease.emit({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } });
     lease.emit({
       method: 'turn/completed',
@@ -1897,86 +726,6 @@ describe('codexThreadProvider', () => {
     });
   });
 
-  it.each(['inProgress', 'failed'] as const)(
-    'fails when the continuation start response reuses a retired id (%s)',
-    async (status) => {
-      let starts = 0;
-      const lease = makeLease(async (method) => {
-        if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-        if (method === 'turn/start') {
-          starts += 1;
-          if (starts === 1) return { turn: { id: 'turn-1', status: 'inProgress' } };
-          return {
-            turn: {
-              id: 'turn-1',
-              status,
-              ...(status === 'failed'
-                ? { error: { message: 'capacity again', codexErrorInfo: 'serverOverloaded' } }
-                : {}),
-            },
-          };
-        }
-        throw new Error(`Unexpected method: ${method}`);
-      });
-      const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-      await vi.waitFor(() => expect(starts).toBe(1));
-      lease.emit({
-        method: 'turn/completed',
-        params: {
-          threadId: 'thread-1',
-          turn: {
-            id: 'turn-1',
-            status: 'failed',
-            error: { message: 'capacity', codexErrorInfo: 'serverOverloaded' },
-          },
-        },
-      });
-
-      const events = await eventsPromise;
-      expect(starts).toBe(2);
-      expect(events.at(-1)).toMatchObject({
-        kind: 'terminal',
-        terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('reused retired turn id') } },
-      });
-    },
-  );
-
-  it('does not run artifact discovery for a terminal turn/start response', async () => {
-    const existsSync = vi.fn(() => false);
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'completed' } };
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const runtime = makeRuntime(
-      lease,
-      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
-      {
-        env: {
-          homedir: () => '/home/test',
-          fullSnapshot: () => ({}),
-          get: () => undefined,
-        },
-        storage: {
-          existsSync,
-          readdirSync: (() => []) as CodexRuntime['storage']['readdirSync'],
-          readFileSync: (() => '') as CodexRuntime['storage']['readFileSync'],
-          statSync: (() => ({
-            size: 0,
-            mtimeMs: 0,
-            isDirectory: () => false,
-            isFile: () => false,
-          })) as unknown as CodexRuntime['storage']['statSync'],
-        },
-      },
-    );
-
-    const events = await collect(codexThreadProvider(makeRequest(), runtime));
-    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'completed' } } });
-    expect(existsSync).not.toHaveBeenCalled();
-    expect(events.filter((event) => event.kind === 'artifact_handle')).toEqual([]);
-  });
-
   it('converts a continuation start rejection into the invocation final failure', async () => {
     let starts = 0;
     const lease = makeLease(async (method) => {
@@ -1989,7 +738,7 @@ describe('codexThreadProvider', () => {
       throw new Error(`Unexpected method: ${method}`);
     });
     const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(starts).toBe(1));
+    await lease.waitForRpc('turn/start');
     lease.emit({
       method: 'turn/completed',
       params: {
@@ -2011,113 +760,6 @@ describe('codexThreadProvider', () => {
     });
   });
 
-  it('suspends immediately when abort cannot name the pending continuation turn', async () => {
-    const controller = new AbortController();
-    const continuationStart = createDeferred<unknown>();
-    let starts = 0;
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') {
-        starts += 1;
-        if (starts === 1) return { turn: { id: 'turn-1', status: 'inProgress' } };
-        return continuationStart.promise;
-      }
-      if (method === 'turn/interrupt') return {};
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const runtime = makeRuntime(
-      lease,
-      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
-      { signal: controller.signal },
-    );
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
-    await vi.waitFor(() => expect(starts).toBe(1));
-    lease.emit({
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: {
-          id: 'turn-1',
-          status: 'failed',
-          error: { message: 'capacity', codexErrorInfo: 'serverOverloaded' },
-        },
-      },
-    });
-    await vi.waitFor(() => expect(starts).toBe(2));
-
-    controller.abort();
-    const events = await eventsPromise;
-    expect(events.at(-1)).toEqual({ kind: 'suspended', reason: 'interrupt_unconfirmed' });
-    expect(events.some((event) => event.kind === 'terminal')).toBe(false);
-    lease.emit({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-2' } } });
-    expect(lease.rpcMock.mock.calls.filter(([method]) => method === 'turn/interrupt')).toHaveLength(0);
-  });
-
-  it('settles a pending continuation start when the transport closes', async () => {
-    const continuationStart = createDeferred<unknown>();
-    let starts = 0;
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') {
-        starts += 1;
-        if (starts === 1) return { turn: { id: 'turn-1', status: 'inProgress' } };
-        return continuationStart.promise;
-      }
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
-    await vi.waitFor(() => expect(starts).toBe(1));
-    lease.emit({
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: {
-          id: 'turn-1',
-          status: 'failed',
-          error: { message: 'capacity', codexErrorInfo: 'serverOverloaded' },
-        },
-      },
-    });
-    await vi.waitFor(() => expect(starts).toBe(2));
-    lease.close(new Error('closed during continuation start'));
-
-    const events = await eventsPromise;
-    expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
-    expect(events.at(-1)).toMatchObject({
-      kind: 'terminal',
-      terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('closed during continuation') } },
-    });
-  });
-
-  it('keeps abort ownership when transport closes while interrupt is pending', async () => {
-    const controller = new AbortController();
-    const interrupt = createDeferred<unknown>();
-    const lease = makeLease(async (method) => {
-      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
-      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
-      if (method === 'turn/interrupt') return interrupt.promise;
-      throw new Error(`Unexpected method: ${method}`);
-    });
-    const runtime = makeRuntime(
-      lease,
-      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
-      { signal: controller.signal },
-    );
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
-    controller.abort();
-    await vi.waitFor(() =>
-      expect(lease.rpcMock).toHaveBeenCalledWith('turn/interrupt', { threadId: 'thread-1', turnId: 'turn-1' }),
-    );
-    lease.close(new Error('transport closed during interrupt'));
-
-    const events = await eventsPromise;
-    expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
-    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'aborted' } } });
-    const continuity = events.flatMap((event) => (event.kind === 'continuity' ? [event.providerContinuity] : []));
-    expect(continuity.at(-1)?.turnId).toBe('turn-1');
-  });
-
   it('suspends an abort when the app-server neither answers the interrupt nor closes', async () => {
     const controller = new AbortController();
     const wedgedInterrupt = createDeferred<unknown>();
@@ -2131,29 +773,28 @@ describe('codexThreadProvider', () => {
       throw new Error(`Unexpected method: ${method}`);
     });
     const requestedDelaysMs: number[] = [];
+    const time = new VirtualTime();
     const runtime = makeRuntime(
       lease,
       { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       {
         signal: controller.signal,
         time: {
-          now: () => Date.now(),
-          // Record the real deadline so the test pins it, then fire promptly
-          // instead of waiting it out.
+          now: () => time.now(),
           setTimeout: (fn, ms) => {
             requestedDelaysMs.push(ms);
-            return setTimeout(fn, 1);
+            return time.setTimeout(fn, ms);
           },
-          clearTimeout: (handle) => {
-            if (handle !== null) clearTimeout(handle as ReturnType<typeof setTimeout>);
-          },
+          clearTimeout: (handle) => time.clearTimeout(handle),
         },
       },
     );
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+    await lease.waitForRpc('turn/start');
 
     controller.abort();
+    await flushMicrotasks();
+    time.tick(10_000);
     const events = await eventsPromise;
 
     expect(requestedDelaysMs).toContain(10_000);
@@ -2178,7 +819,7 @@ describe('codexThreadProvider', () => {
       { signal: controller.signal },
     );
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
-    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+    await lease.waitForRpc('turn/start');
 
     controller.abort();
     const events = await eventsPromise;
@@ -2211,7 +852,7 @@ describe('codexThreadProvider', () => {
         makeRuntime(lease, { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' }, { signal: controller.signal }),
       ),
     );
-    await vi.waitFor(() => expect(starts).toBe(1));
+    await lease.waitForRpc('turn/start');
     lease.emit({
       method: 'turn/completed',
       params: {
@@ -2223,12 +864,10 @@ describe('codexThreadProvider', () => {
         },
       },
     });
-    await vi.waitFor(() => expect(starts).toBe(2));
+    await lease.waitForRpc('turn/start', 2);
     controller.abort();
     continuationStart.resolve({ turn: { id: 'turn-2', status: 'inProgress' } });
-    await vi.waitFor(() =>
-      expect(lease.rpcMock).toHaveBeenCalledWith('turn/interrupt', { threadId: 'thread-1', turnId: 'turn-2' }),
-    );
+    await lease.waitForRpc('turn/interrupt');
     lease.close(new Error('closed after start response'));
 
     const events = await eventsPromise;

@@ -10,7 +10,8 @@ import type {
   ProviderResponseDiagnosticFact,
   ProviderResponseObservationSink,
 } from '#src/providers/host-diagnostics.js';
-import { createRealRuntime } from '#src/runtime/real.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { type MockChildProcess, type MockStdin } from '#tools/simulation/core/mock-process.js';
 
 const acceptCleanupHold: Parameters<ProviderServerHandle['close']>[0] = (hold) => ({
   kind: 'accepted',
@@ -27,10 +28,10 @@ describe('provider response silence', () => {
 
   it('publishes no observation or classifier finding while a request remains unsettled', async () => {
     const recorder = createCodexObservationRecorder();
-    const handle = await spawnScriptedServer(muteServerScript(), recorder.observe);
+    const handle = await spawnScriptedServer('mute', recorder.observe);
     const requestOutcome = rejectionOf(handle.rpc.request('config/read'));
 
-    await waitUntil(() => retainedText(handle).includes('request accepted\n'));
+    expect(handle.inspectDiagnostics().hostLog.entries[0]?.text).toBe('request accepted\n');
 
     expect(recorder.observations).toHaveLength(0);
     expect(recorder.findings).toHaveLength(0);
@@ -42,7 +43,7 @@ describe('provider response silence', () => {
 
   it('publishes no observation or classifier finding for a process fault', async () => {
     const recorder = createCodexObservationRecorder();
-    const handle = await spawnScriptedServer(processFaultScript(), recorder.observe);
+    const handle = await spawnScriptedServer('fault', recorder.observe);
 
     const requestOutcome = await rejectionOf(handle.rpc.request('config/read'));
     const closeOutcome = await handle.closePromise;
@@ -55,23 +56,26 @@ describe('provider response silence', () => {
   });
 
   async function spawnScriptedServer(
-    script: string,
+    mode: 'mute' | 'fault',
     observeProviderResponse: ProviderResponseObservationSink,
   ): Promise<ProviderServerHandle> {
-    const handle = await spawnProviderServerTransport({
-      runtime: createRealRuntime('prod'),
-      options: {
-        provider: 'codex',
-        command: process.execPath,
-        args: ['-e', script],
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueSpawn({
+      close: null,
+      onSpawn: (context) => {
+        const child = context.child as MockChildProcess;
+        (child.stdin as MockStdin).on('write', () => {
+          child.pushStderr('request accepted\n');
+          if (mode === 'fault') context.close({ code: 7 });
+        });
       },
+    });
+    const handle = await spawnProviderServerTransport({
+      runtime,
+      options: { provider: 'codex', command: 'controlled-server', args: [] },
       generation: 17,
       observeProviderResponse,
-      acceptFailedSpawnCleanup: (hold) => ({
-        kind: 'accepted',
-        owner: 'provider-proxy-root-pool',
-        settlement: hold.settled,
-      }),
+      acceptFailedSpawnCleanup: acceptCleanupHold,
     });
     if ('kind' in handle) throw handle.error;
     handles.push(handle);
@@ -96,23 +100,6 @@ function createCodexObservationRecorder(): {
   };
 }
 
-function muteServerScript(): string {
-  return [
-    "const { createInterface } = require('node:readline');",
-    'const lines = createInterface({ input: process.stdin });',
-    "lines.on('line', () => process.stderr.write('request accepted\\n'));",
-    "process.on('SIGTERM', () => process.exit(0));",
-  ].join('');
-}
-
-function processFaultScript(): string {
-  return [
-    "const { createInterface } = require('node:readline');",
-    'const lines = createInterface({ input: process.stdin });',
-    "lines.on('line', () => process.stderr.write('request accepted\\n', () => process.exit(7)));",
-  ].join('');
-}
-
 async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
   return promise.then(
     () => {
@@ -120,20 +107,4 @@ async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
     },
     (error: unknown) => error,
   );
-}
-
-function retainedText(handle: ProviderServerHandle): string {
-  return handle
-    .inspectDiagnostics()
-    .hostLog.entries.map((entry) => entry.text)
-    .join('');
-}
-
-async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`Timed out after ${timeoutMs}ms`);
 }

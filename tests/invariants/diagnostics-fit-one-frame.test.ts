@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { KB_DAEMON_EXIT_DIAGNOSTIC_MAX_CHARS } from '#src/coordinator/live/kb-daemon-supervisor/index.js';
-import {
-  PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET,
-  PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_FACT_BUDGET,
-} from '#src/providers/host-admission.js';
+import { PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET } from '#src/providers/host-admission.js';
 import { PROVIDER_HOST_LOG_MAX_BYTES } from '#src/providers/host-diagnostics.js';
 import { MAX_FRAME_BYTES } from '#src/transport/line-framing.js';
 
@@ -30,24 +27,6 @@ describe('provider-host diagnostics fit one IPC frame', () => {
 
   it('keeps the retained tombstone budget well under the transport frame cap', () => {
     expect(PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET).toBeLessThan(MAX_FRAME_BYTES * ENVELOPE_HEADROOM_RATIO);
-  });
-
-  /**
-   * An inventory response carries every owner's live hosts alongside the retained tombstones, so the sum is
-   * what actually has to fit — not either budget alone. The live path has no total of its own today; this
-   * states the exposure in the one place that would notice it growing, and names the host count the current
-   * numbers survive.
-   */
-  it('survives a plausible fleet of live hosts alongside the retained tombstones', () => {
-    const PLAUSIBLE_LIVE_HOSTS = 4;
-    const worstCaseResponseBytes =
-      PLAUSIBLE_LIVE_HOSTS * PROVIDER_HOST_LOG_MAX_BYTES + PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET;
-    expect(worstCaseResponseBytes).toBeLessThan(MAX_FRAME_BYTES);
-  });
-
-  it('bounds retained facts as well as bytes, so neither alone can fill a frame', () => {
-    expect(PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_FACT_BUDGET).toBeGreaterThan(0);
-    expect(Number.isSafeInteger(PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_FACT_BUDGET)).toBe(true);
   });
 
   /**

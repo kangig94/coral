@@ -27,13 +27,10 @@ export const sessionInterruptedFaultSchema = z
 export type SessionInterruptedFault = z.infer<typeof sessionInterruptedFaultSchema>;
 
 const sessionProviderFailureReasonSchema = z.enum(['session_unavailable', 'request_failed']);
-export type SessionProviderFailureReason = z.infer<typeof sessionProviderFailureReasonSchema>;
 
 export const sessionProviderFailureDiagnosticReasonSchema = turnFailureDiagnosticReasonSchema;
-export type SessionProviderFailureDiagnosticReason = z.infer<typeof sessionProviderFailureDiagnosticReasonSchema>;
 
 export const sessionProviderFailureDiagnosticPhaseSchema = turnFailureDiagnosticPhaseSchema;
-export type SessionProviderFailureDiagnosticPhase = z.infer<typeof sessionProviderFailureDiagnosticPhaseSchema>;
 
 export const sessionProviderFailureDiagnosticSchema = turnFailureDiagnosticSchema;
 export type SessionProviderFailureDiagnostic = z.infer<typeof sessionProviderFailureDiagnosticSchema>;

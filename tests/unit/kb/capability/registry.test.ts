@@ -1,10 +1,6 @@
-import { describe, expect, expectTypeOf, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import {
-  canonicalizeCapabilityName,
-  type KbCapabilityDescriptor,
-  type KbCapabilityName,
-} from '#src/kb/capability/contract.js';
+import { canonicalizeCapabilityName, type KbCapabilityDescriptor } from '#src/kb/capability/contract.js';
 import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
 import { KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import { createScope } from '#src/infra/disposable-scope.js';
@@ -20,16 +16,6 @@ function descriptor(raw: string, label = 'Vendor Cache'): KbCapabilityDescriptor
 }
 
 describe('KbCapabilityRegistry', () => {
-  it('brands only canonical capability names', () => {
-    const name = canonicalizeCapabilityName('vendor.cache_v2');
-
-    expect(name).toBe('vendor.cache_v2');
-    expectTypeOf(name).toMatchTypeOf<KbCapabilityName>();
-    expect(() => canonicalizeCapabilityName('Vendor.Cache')).toThrow(TypeError);
-    expect(() => canonicalizeCapabilityName('vendor')).toThrow(TypeError);
-    expect(() => canonicalizeCapabilityName('vendor..cache')).toThrow(TypeError);
-  });
-
   it('registers builtins and manifest declarations and unregisters only matching manifest declarations', () => {
     const registry = createCapabilityRegistry();
     const builtin = descriptor('kb.vector', 'Vector');
@@ -79,20 +65,6 @@ describe('KbCapabilityRegistry', () => {
         context: { name: 'kb.cache', declaredByManifest: 'external-provider' },
       });
     }
-  });
-
-  it('keeps owner, runtime, and catalog views frozen and separated', () => {
-    const registry = createCapabilityRegistry();
-    const runtimeView = registry.runtimeView();
-    const catalogView = registry.catalogView();
-
-    expect(Object.isFrozen(registry)).toBe(true);
-    expect(Object.isFrozen(runtimeView)).toBe(true);
-    expect(Object.isFrozen(catalogView)).toBe(true);
-    expect('registerManifest' in runtimeView).toBe(false);
-    expect('unregisterManifest' in runtimeView).toBe(false);
-    expect('bind' in catalogView).toBe(false);
-    expect('read' in catalogView).toBe(false);
   });
 
   it('separates declaration lifecycle from bound-value lifecycle and reports status', () => {

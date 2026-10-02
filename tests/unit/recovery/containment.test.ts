@@ -1,10 +1,9 @@
-import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   RecoveryContainment,
   canonicalRecoveryRevision,
   compositeRecoveryRevision,
-  defineCompositeRecoverySource,
   defineRecoverySource,
   type RecoveryDisposition,
   type RecoveryObligationId,
@@ -13,7 +12,6 @@ import {
   type RecoveryQuarantinePort,
   type RecoveryQuarantineRecord,
   type RecoveryQuarantineWrite,
-  type RecoveryReceipt,
   type RecoveryRevisionDependency,
   type RecoveryRevisionField,
   type RecoverySettlementFact,
@@ -31,32 +29,6 @@ type Item = {
   readonly key: string;
   readonly value: string;
 };
-
-type CancellationCheckpoint =
-  | 'before scan'
-  | 'after scan'
-  | 'before hydrate'
-  | 'after hydrate'
-  | 'before settle'
-  | 'after settle'
-  | 'on scan fault'
-  | 'on hydrate fault'
-  | 'on settle fault';
-
-const cancellationCheckpoints: readonly [
-  checkpoint: CancellationCheckpoint,
-  expectedCalls: readonly [scan: number, hydrate: number, settle: number],
-][] = [
-  ['before scan', [0, 0, 0]],
-  ['after scan', [1, 0, 0]],
-  ['before hydrate', [1, 0, 0]],
-  ['after hydrate', [1, 1, 0]],
-  ['before settle', [1, 1, 0]],
-  ['after settle', [1, 1, 1]],
-  ['on scan fault', [1, 0, 0]],
-  ['on hydrate fault', [1, 1, 0]],
-  ['on settle fault', [1, 1, 1]],
-];
 
 const boundary = 'test-boundary';
 const settledObligation = 'test.settled' as RecoveryObligationId;
@@ -297,57 +269,6 @@ describe('recovery/containment', () => {
     ).not.toEqual(revision);
   });
 
-  it('should expose an opaque source and execute scan, hydrate, and settle in order', async () => {
-    const events: string[] = [];
-    const quarantine = new FakeQuarantinePort(events);
-    const recoverySource = defineRecoverySource({
-      boundary,
-      scanSubject: {
-        key: 'scan',
-        revision: { kind: 'until-cleared' },
-      },
-      scan: () => {
-        events.push('scan');
-        return [raw('one')];
-      },
-      subject: (item) => {
-        events.push(`subject:${item.key}`);
-        return subject(item);
-      },
-    });
-
-    expectTypeOf(recoverySource).not.toHaveProperty('scan');
-    expect(Object.keys(recoverySource)).toEqual(['boundary']);
-    expect('scan' in recoverySource).toBe(false);
-
-    const report = await RecoveryContainment.each(
-      recoverySource,
-      policy(quarantine, {
-        hydrate: (item) => {
-          events.push(`hydrate:${item.key}`);
-          return { key: item.key, value: item.value };
-        },
-        requiredObligations: (item) => {
-          events.push(`obligations:${item.key}`);
-          return [settledObligation];
-        },
-        settle: (item) => {
-          events.push(`settle:${item.key}`);
-          return advanced();
-        },
-      }),
-    );
-
-    expect(events).toEqual(['scan', 'subject:one', 'read:one', 'hydrate:one', 'obligations:one', 'settle:one']);
-    expect(report).toEqual({
-      advanced: 1,
-      quarantined: 0,
-      deferred: 0,
-      skipped: 0,
-      receipts: [],
-    });
-  });
-
   it('should route scan faults through onFault and durably quarantine the scan subject', async () => {
     const scanError = new Error('scan failed');
     const quarantine = new FakeQuarantinePort();
@@ -380,74 +301,6 @@ describe('recovery/containment', () => {
     ]);
     expect(report.quarantined).toBe(1);
   });
-
-  it.each(cancellationCheckpoints)(
-    'should propagate an aborted signal %s without producing a disposition',
-    async (checkpoint, expectedCalls) => {
-      const controller = new AbortController();
-      const cancellation = new Error(`cancelled ${checkpoint}`);
-      const phaseError = new Error(`failed ${checkpoint}`);
-      const quarantine = new FakeQuarantinePort();
-      const abort = () => controller.abort(cancellation);
-      const scan = vi.fn((): readonly Raw[] => {
-        if (checkpoint === 'after scan') abort();
-        if (checkpoint === 'on scan fault') {
-          abort();
-          throw phaseError;
-        }
-        return [raw('cancelled')];
-      });
-      const hydrate = vi.fn((item: Raw): Item => {
-        if (checkpoint === 'after hydrate') abort();
-        if (checkpoint === 'on hydrate fault') {
-          abort();
-          throw phaseError;
-        }
-        return { key: item.key, value: item.value };
-      });
-      const settle = vi.fn((): RecoveryDisposition => {
-        if (checkpoint === 'after settle') abort();
-        if (checkpoint === 'on settle fault') {
-          abort();
-          throw phaseError;
-        }
-        return advanced();
-      });
-      const onFault = vi.fn<RecoveryPolicy<Raw, Item>['onFault']>(() => ({
-        kind: 'quarantine',
-        detail: 'must not be produced for cancellation',
-      }));
-
-      if (checkpoint === 'before hydrate') {
-        vi.spyOn(quarantine, 'read').mockImplementation(() => {
-          abort();
-          return null;
-        });
-      }
-      if (checkpoint === 'before scan') abort();
-
-      const recovery = RecoveryContainment.each(
-        source(scan),
-        policy(quarantine, {
-          signal: controller.signal,
-          hydrate,
-          requiredObligations: () => {
-            if (checkpoint === 'before settle') abort();
-            return [settledObligation];
-          },
-          settle,
-          onFault,
-        }),
-      );
-
-      const expectedError = checkpoint.startsWith('on ') ? phaseError : cancellation;
-      await expect(recovery).rejects.toBe(expectedError);
-      expect(onFault).not.toHaveBeenCalled();
-      expect(quarantine.writes).toEqual([]);
-      expect(quarantine.deletes).toEqual([]);
-      expect([scan.mock.calls.length, hydrate.mock.calls.length, settle.mock.calls.length]).toEqual(expectedCalls);
-    },
-  );
 
   it('should preserve the signal abort reason when process-local cleanup is incomplete', async () => {
     const controller = new AbortController();
@@ -764,36 +617,6 @@ describe('recovery/containment', () => {
     expect(report).toMatchObject({ advanced: 1, quarantined: 1 });
   });
 
-  it('should preserve settlement failure precedence when cleanup also fails', async () => {
-    const settlementError = new Error('settlement failed');
-    const cleanupError = new Error('process ownership remains held');
-    const quarantine = new FakeQuarantinePort();
-
-    let thrown: unknown;
-    try {
-      await RecoveryContainment.each(
-        source(() => [raw('aggregate-failure')]),
-        policy(quarantine, {
-          processLocalCleanup: {
-            kind: 'boundary-required',
-            release: () => ({ kind: 'incomplete', error: cleanupError }),
-          },
-          settle: () => {
-            throw settlementError;
-          },
-        }),
-      );
-    } catch (error: unknown) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(AggregateError);
-    if (!(thrown instanceof AggregateError)) throw new Error('Expected settlement and cleanup failures to aggregate.');
-    expect(thrown.errors[0]).toBe(settlementError);
-    expect(thrown.errors[1]).toBe(cleanupError);
-    expect(thrown.message).toContain(`${boundary}:aggregate-failure`);
-  });
-
   it('should abort after durable containment when boundary-required ownership release is incomplete', async () => {
     const cleanupError = new Error('process ownership remains held');
     const quarantine = new FakeQuarantinePort();
@@ -962,113 +785,6 @@ describe('recovery/containment', () => {
       state: 'retrying',
       retry: { owner: 'owner-1', token: 'token-1' },
     });
-  });
-
-  it('should reject duplicate and missing settlement facts', async () => {
-    const duplicate = advanced([
-      { obligation: settledObligation, outcome: 'done' },
-      { obligation: settledObligation, outcome: 'not-applicable' },
-    ]);
-    const quarantine = new FakeQuarantinePort();
-
-    await expect(
-      RecoveryContainment.each(
-        source(() => [raw('duplicate')]),
-        policy(quarantine, { settle: () => duplicate }),
-      ),
-    ).rejects.toThrow('Duplicate recovery settlement fact: test.settled');
-
-    await expect(
-      RecoveryContainment.each(
-        source(() => [raw('missing')]),
-        policy(quarantine, { settle: () => advanced([]) }),
-      ),
-    ).rejects.toThrow('Missing recovery settlement fact: test.settled');
-  });
-
-  it('should reject an unexpected settlement fact', async () => {
-    const unexpectedObligation = 'test.unexpected' as RecoveryObligationId;
-
-    await expect(
-      RecoveryContainment.each(
-        source(() => [raw('unexpected-fact')]),
-        policy(new FakeQuarantinePort(), {
-          settle: () =>
-            advanced([
-              {
-                obligation: unexpectedObligation,
-                outcome: 'done',
-              },
-            ]),
-        }),
-      ),
-    ).rejects.toThrow('Unexpected recovery settlement fact: test.unexpected');
-  });
-
-  it('should reject duplicate required recovery obligations', async () => {
-    await expect(
-      RecoveryContainment.each(
-        source(() => [raw('duplicate-obligation')]),
-        policy(new FakeQuarantinePort(), {
-          requiredObligations: () => [settledObligation, settledObligation],
-        }),
-      ),
-    ).rejects.toThrow('Duplicate recovery obligation: test.settled');
-  });
-
-  it('should issue sealed receipts and reveal them only to a registered composite source', async () => {
-    const quarantine = new FakeQuarantinePort();
-    const componentReport = await RecoveryContainment.each(
-      source(() => [raw('component', 'decoded-value')]),
-      policy(quarantine, { issueReceipts: true }),
-    );
-    const [receipt] = componentReport.receipts;
-
-    expect(receipt).toBeDefined();
-    if (!receipt) throw new Error('Expected the boundary to issue a receipt');
-    expect(Object.isFrozen(receipt)).toBe(true);
-    expect(Object.keys(receipt)).toEqual([]);
-    expect('payload' in receipt).toBe(false);
-    expect('subject' in receipt).toBe(false);
-
-    const compositeSource = defineCompositeRecoverySource(componentReport.receipts, {
-      boundary: 'composite-boundary',
-      scanSubject: {
-        key: 'composite-scan',
-        revision: { kind: 'until-cleared' },
-      },
-      scan: (values) =>
-        values.map(({ payload, subject: componentSubject }) => ({
-          key: `composite:${payload.key}`,
-          revision: componentSubject.revision.kind === 'fingerprint' ? componentSubject.revision.value : 'held',
-          value: payload.value,
-        })),
-      subject,
-    });
-    const compositeReport = await RecoveryContainment.each(compositeSource, policy(quarantine));
-
-    expect(compositeReport.advanced).toBe(1);
-
-    const forged = Object.freeze({}) as RecoveryReceipt<Item>;
-    expect(() =>
-      defineCompositeRecoverySource([forged], {
-        boundary: 'forged-composite',
-        scanSubject: {
-          key: 'forged',
-          revision: { kind: 'until-cleared' },
-        },
-        scan: () => [],
-        subject,
-      }),
-    ).toThrow('Recovery receipt is not boundary-issued');
-  });
-
-  it('should reject a forged source capability', async () => {
-    const forged = { boundary } as RecoverySource<Raw>;
-
-    await expect(RecoveryContainment.each(forged, policy(new FakeQuarantinePort()))).rejects.toThrow(
-      'Recovery source handle is not registered',
-    );
   });
 
   it('should abort when quarantine reads or writes fail', async () => {

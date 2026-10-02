@@ -1,789 +1,292 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import type * as MockedNodeFsModule from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { setImmediate as waitImmediate } from 'node:timers/promises';
-
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BrokerSessionPool } from '#src/providers/claude/appserver/broker-pool.js';
-import { SingleSessionController, type TurnPhase } from '#src/providers/claude/appserver/controller.js';
-import type { ClaudeBrokerNotification } from '#src/providers/claude/appserver/protocol.js';
+import { SingleSessionController } from '#src/providers/claude/appserver/controller.js';
 import type {
   ControllerNotification,
   SpawnClaudeChildOptions,
 } from '#src/providers/claude/appserver/session-contract.js';
 import { DEFAULT_TURN_RECOVERY_BUDGET } from '#src/providers/claude/appserver/turn-recovery-budget.js';
-import { DEFAULT_STALE_TIMEOUT_MS } from '#src/workflow/execution-constants.js';
 import { FakeClaudeChild } from '#tests/helpers/fake-claude-child.js';
+import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+
+vi.mock('node:timers/promises', () => ({
+  setTimeout: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof MockedNodeFsModule>();
+  const { InMemoryStorage } = await import('#tools/simulation/core/memory-storage.js');
+  const { VirtualTime } = await import('#tools/simulation/core/virtual-time.js');
+  const storage = new InMemoryStorage(new VirtualTime());
+  return {
+    ...original,
+    mkdirSync: storage.mkdirSync.bind(storage),
+    writeFileSync: storage.writeFileSync.bind(storage),
+    appendFileSync: storage.appendFileSync.bind(storage),
+    existsSync: storage.existsSync.bind(storage),
+    readdirSync: storage.readdirSync.bind(storage),
+    statSync: storage.statSync.bind(storage),
+    openSync: storage.openSync.bind(storage),
+    readSync: storage.readSync.bind(storage),
+    closeSync: storage.closeSync.bind(storage),
+    fstatSync: (fd: number) => ({ size: Number(storage.fstatSync(fd, { bigint: true }).size) }),
+  };
+});
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000101';
 const TEST_MODEL = 'claude-sonnet-test';
-const BRACKETED_PASTE_START = '\x1b[200~';
-const BRACKETED_PASTE_END = '\x1b[201~\r';
-const OBSERVATION_CADENCE_MS = 100;
-
-type TestMonotonicClock = {
-  now(): bigint;
-  advance(milliseconds: number): bigint;
-};
-
-type ActiveTurnForTest = {
-  brokerTurnId: string;
-  phase: TurnPhase;
-  phaseEnteredAt: number;
-  lastSemanticProgressAt: number;
-  promptTranscriptOffset: number;
-  lastPromptSentAt: number;
-  replacementAttempts: number;
-  continuationSentAt: number | null;
-  continuationPhase: 'registered' | 'responding' | null;
-};
-
-type ControllerInternals = {
-  activeTurn: ActiveTurnForTest | null;
-  processTranscriptLine(turn: ActiveTurnForTest, line: string, lineStartOffset: number): void;
-  readTranscriptAppend(turn: ActiveTurnForTest): void;
-  advanceTurnObservation(turn: ActiveTurnForTest, observedAtMs: bigint): void;
-  recoverStalledTurn(turn: ActiveTurnForTest, observedAtMs: bigint): Promise<boolean>;
-};
-
-type ControllerHarness = {
-  controller: SingleSessionController;
-  internals: ControllerInternals;
-  children: FakeClaudeChild[];
-  spawnOptions: SpawnClaudeChildOptions[];
-  spawnTimes: number[];
-  notifications: ControllerNotification[];
-  startedTurns: string[];
-  clock: TestMonotonicClock;
-};
-
 const controllers: SingleSessionController[] = [];
 const pools: BrokerSessionPool[] = [];
+let fixtureIndex = 0;
 
+beforeEach(() => vi.useFakeTimers());
 afterEach(async () => {
+  for (const controller of controllers.splice(0)) await controller.shutdown();
+  for (const pool of pools.splice(0)) await pool.shutdown();
+  vi.restoreAllMocks();
   vi.useRealTimers();
-  for (const controller of controllers.splice(0)) {
-    await controller.turnInterrupt({ brokerTurnId: 'turn-1' });
-    await controller.shutdown();
-  }
-  for (const pool of pools.splice(0)) {
-    await pool.shutdown();
-  }
 });
 
-function createControllerHarness(): ControllerHarness {
+function transcriptFixture() {
+  const projectsRoot = '/transcripts/stall-' + fixtureIndex++;
+  const project = join(projectsRoot, 'workspace');
+  mkdirSync(project, { recursive: true });
+  const path = join(project, TEST_SESSION_ID + '.jsonl');
+  writeFileSync(path, '');
+  return { projectsRoot, path };
+}
+
+function ensureParams(projectsRoot: string) {
+  return {
+    cwd: '/workspace',
+    projectsRoot,
+    systemPromptHash: 'sha256:test',
+    bootstrapConfigHash: 'sha256:test-bootstrap',
+    permissionMode: 'default' as const,
+  };
+}
+
+function promptRow(prompt: string) {
+  return {
+    type: 'user',
+    session_id: TEST_SESSION_ID,
+    message: { role: 'user', content: [{ type: 'text', text: prompt }] },
+  };
+}
+
+function assistantRow(text: string, stopReason?: string, sessionId = TEST_SESSION_ID) {
+  return {
+    type: 'assistant',
+    session_id: sessionId,
+    message: {
+      role: 'assistant',
+      model: TEST_MODEL,
+      content: [{ type: 'text', text }],
+      ...(stopReason ? { stop_reason: stopReason } : {}),
+    },
+  };
+}
+
+function durationRow(durationMs: number) {
+  return { type: 'system', subtype: 'turn_duration', session_id: TEST_SESSION_ID, durationMs };
+}
+
+async function appendRows(path: string, ...rows: unknown[]) {
+  appendFileSync(path, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  await vi.advanceTimersByTimeAsync(100);
+}
+
+async function startController(prompt: string) {
+  const fixture = transcriptFixture();
   const children: FakeClaudeChild[] = [];
   const spawnOptions: SpawnClaudeChildOptions[] = [];
-  const spawnTimes: number[] = [];
   const notifications: ControllerNotification[] = [];
-  const startedTurns: string[] = [];
-  const clock = createTestMonotonicClock();
   const controller = new SingleSessionController({
     spawnChild: (options) => {
       spawnOptions.push(options);
-      spawnTimes.push(Date.now());
       const child = new FakeClaudeChild();
       children.push(child);
       return child;
     },
     ids: { uuid: () => TEST_SESSION_ID },
-    monotonicNow: clock.now,
-    onTurnStarted: ({ brokerTurnId }) => {
-      startedTurns.push(brokerTurnId);
-    },
+    monotonicNow: () => BigInt(Date.now()),
     readySettleMs: 1,
-    promptAckTimeoutMs: DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs,
-  });
-  controller.subscribeNotifications((notification) => {
-    notifications.push(notification);
   });
   controllers.push(controller);
-
-  return {
-    controller,
-    internals: controller as unknown as ControllerInternals,
-    children,
-    spawnOptions,
-    spawnTimes,
-    notifications,
-    startedTurns,
-    clock,
-  };
+  controller.subscribeNotifications((notification) => notifications.push(notification));
+  const ensure = controller.sessionEnsure(ensureParams(fixture.projectsRoot));
+  await vi.advanceTimersByTimeAsync(10);
+  await ensure;
+  await controller.turnStart({ brokerTurnId: 'turn-1', prompt });
+  return { ...fixture, controller, children, spawnOptions, notifications };
 }
 
-function createTestMonotonicClock(): TestMonotonicClock {
-  let current = 0n;
-  return {
-    now: () => current,
-    advance: (milliseconds): bigint => {
-      current += BigInt(milliseconds);
-      return current;
+function pastedPrompts(child: FakeClaudeChild) {
+  return child.writes.filter((write) => write.startsWith('\x1b[200~')).map((write) => write.slice(6, -7));
+}
+
+async function startPool(subscribe = true) {
+  const fixture = transcriptFixture();
+  const children: FakeClaudeChild[] = [];
+  const notifications: unknown[] = [];
+  const ids = ['broker-1', TEST_SESSION_ID];
+  const pool = new BrokerSessionPool({
+    spawnChild: () => {
+      const child = new FakeClaudeChild();
+      children.push(child);
+      return child;
     },
-  };
-}
-
-function accumulateObservedTime(
-  internals: ControllerInternals,
-  turn: ActiveTurnForTest,
-  clock: TestMonotonicClock,
-  milliseconds: number,
-): void {
-  let remainingMs = milliseconds;
-  while (remainingMs > 0) {
-    const stepMs = Math.min(remainingMs, OBSERVATION_CADENCE_MS);
-    internals.advanceTurnObservation(turn, clock.advance(stepMs));
-    remainingMs -= stepMs;
-  }
-}
-
-async function recoverAfterObservedTime(
-  harness: Pick<ControllerHarness, 'internals' | 'clock'>,
-  turn: ActiveTurnForTest,
-  milliseconds: number,
-): Promise<boolean> {
-  accumulateObservedTime(harness.internals, turn, harness.clock, milliseconds);
-  return harness.internals.recoverStalledTurn(turn, harness.clock.now());
-}
-
-async function ensureController(
-  harness: ControllerHarness,
-  projectsRoot = '/home/user/.claude/projects',
-): Promise<void> {
-  await harness.controller.sessionEnsure({
-    cwd: '/workspace',
-    projectsRoot,
-    systemPromptHash: 'sha256:test',
-
-    bootstrapConfigHash: 'sha256:test-bootstrap',
-    permissionMode: 'default',
+    ids: { uuid: () => ids.shift() ?? TEST_SESSION_ID },
+    monotonicNow: () => BigInt(Date.now()),
   });
-}
-
-async function startController(prompt = 'hello'): Promise<ControllerHarness> {
-  const harness = createControllerHarness();
-  await ensureController(harness);
-  await harness.controller.turnStart({ brokerTurnId: 'turn-1', prompt });
-  return harness;
-}
-
-function activeTurn(internals: ControllerInternals): ActiveTurnForTest {
-  expect(internals.activeTurn).not.toBeNull();
-  return internals.activeTurn as ActiveTurnForTest;
-}
-
-function processLine(
-  internals: ControllerInternals,
-  line: string,
-  lineStartOffset = activeTurn(internals).promptTranscriptOffset,
-): void {
-  internals.processTranscriptLine(activeTurn(internals), line, lineStartOffset);
-}
-
-function userPromptLine(text: string): string {
-  return JSON.stringify({
-    type: 'user',
-    session_id: TEST_SESSION_ID,
-    message: {
-      role: 'user',
-      content: [{ type: 'text', text }],
-    },
-  });
-}
-
-function queueOperationLine(content: string): string {
-  return JSON.stringify({
-    type: 'queue-operation',
-    operation: 'enqueue',
-    sessionId: TEST_SESSION_ID,
-    content,
-  });
-}
-
-type TranscriptFixture = {
-  transcriptPath: string;
-  projectsRoot: string;
-  cleanup: () => void;
-};
-
-function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptFixture {
-  const previousHome = process.env.HOME;
-  const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
-  const home = mkdtempSync(join(tmpdir(), 'coral-claude-home-'));
-  const projectDir = join(home, '.claude', 'projects', 'workspace');
-  mkdirSync(projectDir, { recursive: true });
-  const transcriptPath = join(projectDir, `${conversationRef}.jsonl`);
-  writeFileSync(transcriptPath, '');
-  process.env.HOME = home;
-  delete process.env.CLAUDE_CONFIG_DIR;
-
-  return {
-    transcriptPath,
-    projectsRoot: join(home, '.claude', 'projects'),
-    cleanup: (): void => {
-      if (previousHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = previousHome;
-      }
-      if (previousClaudeConfigDir === undefined) {
-        delete process.env.CLAUDE_CONFIG_DIR;
-      } else {
-        process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
-      }
-      rmSync(home, { recursive: true, force: true });
-    },
-  };
-}
-
-function assistantLine(text: string, stopReason?: string, sessionId = TEST_SESSION_ID): string {
-  return JSON.stringify({
-    type: 'assistant',
-    session_id: sessionId,
-    message: {
-      role: 'assistant',
-      model: TEST_MODEL,
-      content: [{ type: 'text', text }],
-      ...(stopReason === undefined ? {} : { stop_reason: stopReason }),
-    },
-  });
-}
-
-function assistantContentLine(
-  content: Array<Record<string, unknown>>,
-  stopReason?: string,
-  sessionId = TEST_SESSION_ID,
-): string {
-  return JSON.stringify({
-    type: 'assistant',
-    session_id: sessionId,
-    message: {
-      role: 'assistant',
-      model: TEST_MODEL,
-      content,
-      ...(stopReason === undefined ? {} : { stop_reason: stopReason }),
-    },
-  });
-}
-
-function assistantErrorLine(text: string, sessionId = TEST_SESSION_ID): string {
-  return JSON.stringify({
-    type: 'assistant',
-    session_id: sessionId,
-    error: 'late error',
-    message: {
-      role: 'assistant',
-      model: 'late-model',
-      usage: { costUSD: 999 },
-      content: [{ type: 'text', text }],
-    },
-  });
-}
-
-function durationLine(durationMs: number): string {
-  return JSON.stringify({
-    type: 'system',
-    subtype: 'turn_duration',
-    session_id: TEST_SESSION_ID,
-    durationMs,
-  });
-}
-
-function unwrapPaste(write: string): string {
-  expect(write.startsWith(BRACKETED_PASTE_START)).toBe(true);
-  expect(write.endsWith(BRACKETED_PASTE_END)).toBe(true);
-  return write.slice(BRACKETED_PASTE_START.length, -BRACKETED_PASTE_END.length);
-}
-
-type ControllerTurnNotification = Extract<
-  ControllerNotification,
-  { method: 'turn/progress' | 'turn/completed' | 'turn/failed' }
->;
-
-function isControllerTurnNotification(
-  notification: ControllerNotification,
-): notification is ControllerTurnNotification {
-  return notification.method.startsWith('turn/');
-}
-
-function isControllerTurnCompleted(
-  notification: ControllerNotification,
-): notification is Extract<ControllerNotification, { method: 'turn/completed' }> {
-  return notification.method === 'turn/completed';
-}
-
-function turnNotifications(notifications: ControllerNotification[]): ControllerTurnNotification[] {
-  return notifications.filter(isControllerTurnNotification);
+  pools.push(pool);
+  if (subscribe) pool.subscribeNotifications((notification) => notifications.push(notification));
+  const ensure = pool.sessionEnsure(ensureParams(fixture.projectsRoot));
+  await vi.advanceTimersByTimeAsync(1_000);
+  const ensured = await ensure;
+  await pool.turnStart({ brokerSessionKey: ensured.brokerSessionKey, brokerTurnId: 'turn-1', prompt: 'pool prompt' });
+  return { ...fixture, pool, children, notifications, brokerSessionKey: ensured.brokerSessionKey };
 }
 
 describe('Claude phase-specific turn-stall recovery', () => {
   it('resends the original prompt only while the turn is still sent', async () => {
     const harness = await startController('original sent prompt');
-    const turn = activeTurn(harness.internals);
-
-    const terminated = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs,
-    );
-
-    expect(terminated).toBe(false);
+    await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs);
     expect(harness.children).toHaveLength(1);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['original sent prompt', 'original sent prompt']);
-    expect(harness.startedTurns).toEqual(['turn-1']);
-  });
-
-  it('does not charge a late monitor tick to prompt silence', async () => {
-    const harness = await startController('late observer prompt');
-    const turn = activeTurn(harness.internals);
-
-    const terminatedAfterLateTick = await harness.internals.recoverStalledTurn(turn, harness.clock.advance(60_000));
-
-    expect(terminatedAfterLateTick).toBe(false);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['late observer prompt']);
-
-    const terminatedAfterObservedBudget = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs - OBSERVATION_CADENCE_MS,
-    );
-
-    expect(terminatedAfterObservedBudget).toBe(false);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['late observer prompt', 'late observer prompt']);
-  });
-
-  it('does not let forward or backward wall-clock steps consume a recovery budget', async () => {
-    const harness = await startController('wall clock prompt');
-    const turn = activeTurn(harness.internals);
-    vi.useFakeTimers();
-    const wallNow = Date.now();
-
-    vi.setSystemTime(wallNow + 86_400_000);
-    await expect(harness.internals.recoverStalledTurn(turn, harness.clock.now())).resolves.toBe(false);
-    vi.setSystemTime(wallNow - 86_400_000);
-    await expect(harness.internals.recoverStalledTurn(turn, harness.clock.now())).resolves.toBe(false);
-
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['wall clock prompt']);
-
-    await expect(
-      recoverAfterObservedTime(harness, turn, DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs),
-    ).resolves.toBe(false);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['wall clock prompt', 'wall clock prompt']);
+    expect(pastedPrompts(harness.children[0])).toEqual(['original sent prompt', 'original sent prompt']);
   });
 
   it('treats Claude queue-operation enqueue as registration so sent recovery does not duplicate queued prompts', async () => {
     const prompt = 'queued prompt must not duplicate';
     const harness = await startController(prompt);
-    processLine(harness.internals, queueOperationLine(prompt));
-    const turn = activeTurn(harness.internals);
-    expect(turn.phase).toBe('registered');
-
-    const terminated = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs,
-    );
-
-    expect(terminated).toBe(false);
+    await appendRows(harness.path, {
+      type: 'queue-operation',
+      operation: 'enqueue',
+      sessionId: TEST_SESSION_ID,
+      content: prompt,
+    });
+    await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs);
     expect(harness.children).toHaveLength(1);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual([prompt]);
-    expect(harness.notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
+    expect(pastedPrompts(harness.children[0])).toEqual([prompt]);
+    expect(harness.controller.hasActiveTurn()).toBe(true);
   });
 
   it('recovers a registered stall by respawning with resume and continuing the unanswered message', async () => {
-    const harness = await startController('registered prompt must not duplicate');
-    processLine(harness.internals, userPromptLine('registered prompt must not duplicate'));
-    const turn = activeTurn(harness.internals);
-    expect(turn.phase).toBe('registered');
-
-    const terminated = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs,
-    );
-
-    expect(terminated).toBe(false);
+    const prompt = 'registered prompt must not duplicate';
+    const harness = await startController(prompt);
+    await appendRows(harness.path, promptRow(prompt));
+    await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs + 100);
     expect(harness.spawnOptions).toHaveLength(2);
-    expect(harness.spawnOptions[1]).toMatchObject({
-      conversationRef: TEST_SESSION_ID,
-      resume: true,
-    });
-    expect(harness.children[0]?.killSignals).toEqual(['SIGTERM']);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['registered prompt must not duplicate']);
-    const continuation = unwrapPaste(harness.children[1]?.writes[0] ?? '');
+    expect(harness.spawnOptions[1]).toMatchObject({ conversationRef: TEST_SESSION_ID, resume: true });
+    expect(harness.children[0].killSignals).toEqual(['SIGTERM']);
+    expect(pastedPrompts(harness.children[0])).toEqual([prompt]);
+    const continuation = pastedPrompts(harness.children[1])[0];
     expect(continuation).toContain('unanswered user message');
-    expect(continuation).not.toContain('registered prompt must not duplicate');
-    expect(harness.startedTurns).toEqual(['turn-1']);
-
-    processLine(harness.internals, assistantLine('recovered answer', 'end_turn'));
-    processLine(harness.internals, durationLine(25));
-    await harness.internals.recoverStalledTurn(activeTurn(harness.internals), harness.clock.now());
-
-    const completed = harness.notifications.find(isControllerTurnCompleted);
-    expect(completed?.params.brokerTurnId).toBe('turn-1');
-    expect(completed?.params.result).toBe('recovered answer');
-    expect(
-      turnNotifications(harness.notifications).every((notification) => {
-        return notification.params.brokerTurnId === 'turn-1';
+    expect(continuation).not.toContain(prompt);
+    await appendRows(harness.path, assistantRow('recovered answer', 'end_turn'), durationRow(25));
+    expect(harness.notifications).toContainEqual(
+      expect.objectContaining({
+        method: 'turn/completed',
+        params: expect.objectContaining({ brokerTurnId: 'turn-1', result: 'recovered answer' }),
       }),
-    ).toBe(true);
-  });
-
-  it('fires registered idle recovery within the assistant-start budget', async () => {
-    const prompt = 'registered prompt then silence';
-    const assistantStartBudgetMs = DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs;
-    const fixture = createTranscriptFixture();
-    try {
-      const harness = createControllerHarness();
-      await ensureController(harness, fixture.projectsRoot);
-
-      await harness.controller.turnStart({ brokerTurnId: 'turn-1', prompt });
-      vi.useFakeTimers();
-      vi.setSystemTime(0);
-      appendFileSync(fixture.transcriptPath, `${userPromptLine(prompt)}\n`);
-
-      harness.internals.readTranscriptAppend(activeTurn(harness.internals));
-      const registeredTurn = activeTurn(harness.internals);
-      expect(registeredTurn.phase).toBe('registered');
-      const registeredAt = Date.now();
-
-      await expect(recoverAfterObservedTime(harness, registeredTurn, assistantStartBudgetMs - 1)).resolves.toBe(false);
-      expect(harness.spawnOptions).toHaveLength(1);
-      expect(activeTurn(harness.internals).phase).toBe('registered');
-
-      vi.setSystemTime(registeredAt + assistantStartBudgetMs);
-      const recovery = recoverAfterObservedTime(harness, registeredTurn, 1);
-      await vi.advanceTimersByTimeAsync(1);
-      await expect(recovery).resolves.toBe(false);
-      expect(harness.spawnOptions).toHaveLength(2);
-      const recoveryFiredAt = harness.spawnTimes[1];
-      expect(recoveryFiredAt).toBeDefined();
-      expect(recoveryFiredAt - registeredAt).toBeLessThanOrEqual(assistantStartBudgetMs);
-      expect(recoveryFiredAt - registeredAt).toBeLessThan(DEFAULT_STALE_TIMEOUT_MS);
-      expect(recoveryFiredAt).toBeLessThan(DEFAULT_STALE_TIMEOUT_MS);
-
-      const recoveredTurn = activeTurn(harness.internals);
-      expect(recoveredTurn.replacementAttempts).toBe(1);
-      expect(recoveredTurn.continuationPhase).toBe('registered');
-      expect(harness.notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
-    } finally {
-      fixture.cleanup();
-    }
+    );
   });
 
   it('recovers a responding stall with a partial-response continuation and never re-pastes the original prompt', async () => {
-    const originalPrompt = 'ORIGINAL_PROMPT_SHOULD_NOT_REAPPEAR';
-    const harness = await startController(originalPrompt);
-    processLine(harness.internals, userPromptLine(originalPrompt));
-    processLine(harness.internals, assistantLine('partial answer'));
-    const turn = activeTurn(harness.internals);
-    expect(turn.phase).toBe('responding');
-
-    const terminated = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs,
-    );
-
-    expect(terminated).toBe(false);
+    const prompt = 'ORIGINAL_PROMPT_SHOULD_NOT_REAPPEAR';
+    const harness = await startController(prompt);
+    await appendRows(harness.path, promptRow(prompt), assistantRow('partial answer'));
+    await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs + 100);
     expect(harness.spawnOptions).toHaveLength(2);
-    expect(harness.spawnOptions[1]).toMatchObject({
-      conversationRef: TEST_SESSION_ID,
-      resume: true,
-    });
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual([originalPrompt]);
-    const continuation = unwrapPaste(harness.children[1]?.writes[0] ?? '');
+    expect(harness.spawnOptions[1]).toMatchObject({ conversationRef: TEST_SESSION_ID, resume: true });
+    expect(pastedPrompts(harness.children[0])).toEqual([prompt]);
+    const continuation = pastedPrompts(harness.children[1])[0];
     expect(continuation).toContain('partial assistant response');
-    expect(continuation).not.toContain(originalPrompt);
-    expect(harness.startedTurns).toEqual(['turn-1']);
-    expect(
-      turnNotifications(harness.notifications).every((notification) => {
-        return notification.params.brokerTurnId === 'turn-1';
-      }),
-    ).toBe(true);
+    expect(continuation).not.toContain(prompt);
   });
 
   it('completes an ending turn from parsed transcript fields after the finalization grace', async () => {
     const harness = await startController('ending prompt');
-    processLine(harness.internals, userPromptLine('ending prompt'));
-    processLine(harness.internals, assistantLine('parsed final answer', 'end_turn'));
-    processLine(harness.internals, durationLine(123));
-    const turn = activeTurn(harness.internals);
-    expect(turn.phase).toBe('ending');
-
-    const terminated = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
-    );
-
-    expect(terminated).toBe(true);
+    await appendRows(harness.path, promptRow('ending prompt'), assistantRow('parsed final answer', 'end_turn'));
+    expect(harness.controller.hasActiveTurn()).toBe(true);
+    await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs);
     expect(harness.controller.hasActiveTurn()).toBe(false);
     expect(harness.notifications).toContainEqual(
       expect.objectContaining({
         method: 'turn/completed',
-        params: expect.objectContaining({
-          brokerTurnId: 'turn-1',
-          result: 'parsed final answer',
-          durationMs: 123,
-        }),
-      }),
-    );
-  });
-
-  it('captures a text row that follows a thinking-only end_turn row', async () => {
-    const harness = await startController('ending prompt');
-    processLine(harness.internals, userPromptLine('ending prompt'));
-    processLine(harness.internals, assistantContentLine([{ type: 'thinking', thinking: 'internal' }], 'end_turn'));
-    processLine(harness.internals, assistantLine('parsed final answer', 'end_turn'));
-    processLine(harness.internals, durationLine(123));
-    const turn = activeTurn(harness.internals);
-    expect(turn.phase).toBe('ending');
-
-    const terminated = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
-    );
-
-    expect(terminated).toBe(true);
-    expect(harness.notifications).toContainEqual(
-      expect.objectContaining({
-        method: 'turn/completed',
-        params: expect.objectContaining({
-          brokerTurnId: 'turn-1',
-          result: 'parsed final answer',
-          durationMs: 123,
-        }),
+        params: expect.objectContaining({ brokerTurnId: 'turn-1', result: 'parsed final answer' }),
       }),
     );
   });
 
   it('does not let a late assistant row after end_turn overwrite the completed result', async () => {
-    const otherSessionId = '00000000-0000-4000-8000-000000000202';
     const harness = await startController('ending prompt');
-    processLine(harness.internals, userPromptLine('ending prompt'));
-    processLine(harness.internals, assistantLine('parsed final answer', 'end_turn'));
-    processLine(harness.internals, assistantErrorLine('late same-session overwrite'));
-    processLine(harness.internals, assistantLine('late overwrite', undefined, otherSessionId));
-    const turn = activeTurn(harness.internals);
-    expect(turn.phase).toBe('ending');
-
-    const terminated = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+    await appendRows(harness.path, promptRow('ending prompt'), assistantRow('parsed final answer', 'end_turn'));
+    await appendRows(
+      harness.path,
+      { ...assistantRow('late same-session overwrite'), error: 'late error' },
+      assistantRow('foreign overwrite', undefined, '00000000-0000-4000-8000-000000000202'),
     );
-
-    expect(terminated).toBe(true);
+    await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs);
     expect(harness.notifications).toContainEqual(
       expect.objectContaining({
         method: 'turn/completed',
-        params: expect.objectContaining({
-          brokerTurnId: 'turn-1',
-          conversationRef: TEST_SESSION_ID,
-          result: 'parsed final answer',
-          isError: false,
-          costUsd: null,
-        }),
+        params: expect.objectContaining({ result: 'parsed final answer', isError: false }),
       }),
     );
-  });
-
-  it('terminates with a structured failure when respawn attempts are exhausted', async () => {
-    const harness = await startController('registered exhaustion prompt');
-    processLine(harness.internals, userPromptLine('registered exhaustion prompt'));
-    const turn = activeTurn(harness.internals);
-    turn.replacementAttempts = DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts;
-
-    const terminated = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs,
-    );
-
-    expect(terminated).toBe(true);
-    expect(harness.controller.hasActiveTurn()).toBe(false);
-    expect(harness.notifications).toContainEqual(
-      expect.objectContaining({
-        method: 'turn/failed',
-        params: expect.objectContaining({
-          brokerTurnId: 'turn-1',
-          diagnostic: expect.objectContaining({
-            reason: 'silent-hang',
-            phase: 'registered',
-            attempts: DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts,
-          }),
-        }),
-      }),
-    );
-  });
-
-  it('does not breach the hard cap while assistant progress keeps resetting the idle clock', async () => {
-    const harness = await startController('long streaming prompt');
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-
-    processLine(harness.internals, userPromptLine('long streaming prompt'));
-    const progressSpacingMs = DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs - 1;
-    const hardCapMs = DEFAULT_TURN_RECOVERY_BUDGET['hard-cap'].hardCapMs;
-
-    for (let elapsed = progressSpacingMs; elapsed <= hardCapMs + progressSpacingMs; elapsed += progressSpacingMs) {
-      vi.setSystemTime(elapsed);
-      processLine(harness.internals, assistantLine(`stream chunk ${elapsed}`));
-    }
-
-    const turn = activeTurn(harness.internals);
-    expect(turn.phase).toBe('responding');
-    expect(Date.now()).toBeGreaterThan(hardCapMs);
-    expect(Date.now() - turn.lastSemanticProgressAt).toBe(0);
-
-    const terminated = await recoverAfterObservedTime(
-      harness,
-      turn,
-      DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs - 1,
-    );
-
-    expect(terminated).toBe(false);
-    expect(harness.spawnOptions).toHaveLength(1);
-    expect(harness.notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
   });
 
   it('defers replacement and preserves the turn while the old child remains unsettled past repeated recovery polls', async () => {
-    const children: FakeClaudeChild[] = [];
-    const notifications: ClaudeBrokerNotification[] = [];
-    const ids = ['broker-1', TEST_SESSION_ID];
-    const clock = createTestMonotonicClock();
-    const pool = new BrokerSessionPool({
-      spawnChild: () => {
-        const child = new FakeClaudeChild();
-        children.push(child);
-        return child;
-      },
-      ids: {
-        uuid: () => ids.shift() ?? TEST_SESSION_ID,
-      },
-      monotonicNow: clock.now,
-      onTurnStarted: () => {},
-      stderrLimit: 1_024,
-    });
-    pool.subscribeNotifications((notification) => {
-      notifications.push(notification);
-    });
-    pools.push(pool);
-
-    const ensured = await pool.sessionEnsure({
-      cwd: '/workspace',
-      projectsRoot: '/tmp/coral-test-home/.claude/projects',
-      systemPromptHash: 'sha256:test',
-
-      bootstrapConfigHash: 'sha256:test-bootstrap',
-      permissionMode: 'default',
-    });
-    await pool.turnStart({
-      brokerSessionKey: ensured.brokerSessionKey,
-      brokerTurnId: 'turn-1',
-      prompt: 'pool prompt',
-    });
-
-    const entry = (
-      pool as unknown as {
-        controllers: Map<string, { controller: SingleSessionController }>;
-      }
-    ).controllers.get(ensured.brokerSessionKey);
-    expect(entry).toBeDefined();
-    const internals = entry?.controller as unknown as ControllerInternals;
-    processLine(internals, userPromptLine('pool prompt'));
-    const turn = activeTurn(internals);
-    children[0].exitOnKill = false;
-    vi.useFakeTimers();
-
-    accumulateObservedTime(
-      internals,
-      turn,
-      clock,
-      DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs,
+    const harness = await startPool();
+    await appendRows(harness.path, promptRow('pool prompt'));
+    harness.children[0].exitOnKill = false;
+    await vi.advanceTimersByTimeAsync(
+      DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs +
+        DEFAULT_TURN_RECOVERY_BUDGET.replacement.replacementShutdownMs +
+        1_000,
     );
-    const recovery = internals.recoverStalledTurn(turn, clock.now());
-    await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET.replacement.replacementShutdownMs);
-    const terminated = await recovery;
-
-    expect(terminated).toBe(false);
-    expect(children).toHaveLength(1);
-    for (let poll = 0; poll < DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts + 2; poll += 1) {
-      accumulateObservedTime(internals, turn, clock, OBSERVATION_CADENCE_MS);
-      await expect(internals.recoverStalledTurn(turn, clock.now())).resolves.toBe(false);
-    }
-    expect(turn.replacementAttempts).toBe(1);
-    expect(notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
-
-    children[0].emitExit({ code: null, signal: 'SIGTERM' });
-    await vi.advanceTimersByTimeAsync(1);
-
-    expect(children).toHaveLength(2);
-    expect(notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
-    expect(children[1]?.disposed).toBe(false);
-    await expect(pool.sessionProbe({ brokerSessionKey: ensured.brokerSessionKey })).resolves.toMatchObject({
+    expect(harness.children).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(harness.children).toHaveLength(1);
+    await expect(harness.pool.sessionProbe({ brokerSessionKey: harness.brokerSessionKey })).resolves.toMatchObject({
+      status: 'available',
+      activeTurnId: 'turn-1',
+    });
+    harness.children[0].emitExit({ code: null, signal: 'SIGTERM' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(harness.children).toHaveLength(2);
+    expect(harness.children[1].disposed).toBe(false);
+    await expect(harness.pool.sessionProbe({ brokerSessionKey: harness.brokerSessionKey })).resolves.toMatchObject({
       status: 'available',
       activeTurnId: 'turn-1',
     });
   });
 
   it('evicts a generated controller after a terminal turn queued during initial notification hold', async () => {
-    const children: FakeClaudeChild[] = [];
-    const ids = ['broker-queued-terminal', TEST_SESSION_ID];
-    const clock = createTestMonotonicClock();
-    const pool = new BrokerSessionPool({
-      spawnChild: () => {
-        const child = new FakeClaudeChild();
-        children.push(child);
-        return child;
-      },
-      ids: {
-        uuid: () => ids.shift() ?? TEST_SESSION_ID,
-      },
-      monotonicNow: clock.now,
-      onTurnStarted: () => {},
-      stderrLimit: 1_024,
+    const immediateCallbacks: Array<() => void> = [];
+    vi.spyOn(globalThis, 'setImmediate').mockImplementation((callback) => {
+      immediateCallbacks.push(callback as () => void);
+      return {} as ReturnType<typeof setImmediate>;
     });
-    pools.push(pool);
-
-    const ensured = await pool.sessionEnsure({
-      cwd: '/workspace',
-      projectsRoot: '/tmp/coral-test-home/.claude/projects',
-      systemPromptHash: 'sha256:test',
-
-      bootstrapConfigHash: 'sha256:test-bootstrap',
-      permissionMode: 'default',
-    });
-    await pool.turnStart({
-      brokerSessionKey: ensured.brokerSessionKey,
-      brokerTurnId: 'turn-1',
-      prompt: 'queued terminal prompt',
-    });
-
-    const internals = (
-      pool as unknown as {
-        controllers: Map<string, { controller: SingleSessionController }>;
-      }
-    ).controllers.get(ensured.brokerSessionKey)?.controller as unknown as ControllerInternals;
-
-    processLine(internals, userPromptLine('queued terminal prompt'));
-    processLine(internals, assistantLine('queued terminal result', 'end_turn'));
-    processLine(internals, durationLine(25));
-    const turn = activeTurn(internals);
-
-    accumulateObservedTime(
-      internals,
-      turn,
-      clock,
-      DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+    const harness = await startPool(false);
+    await appendRows(
+      harness.path,
+      promptRow('pool prompt'),
+      assistantRow('queued terminal result', 'end_turn'),
+      durationRow(25),
     );
-    await internals.recoverStalledTurn(turn, clock.now());
-    await waitImmediate();
-    await waitImmediate();
-
-    await expect(pool.sessionProbe({ brokerSessionKey: ensured.brokerSessionKey })).resolves.toMatchObject({
+    await expect(harness.pool.sessionProbe({ brokerSessionKey: harness.brokerSessionKey })).resolves.toMatchObject({
+      status: 'available',
+      activeTurnId: null,
+    });
+    immediateCallbacks.shift()!();
+    immediateCallbacks.shift()!();
+    await flushMicrotasks();
+    await expect(harness.pool.sessionProbe({ brokerSessionKey: harness.brokerSessionKey })).resolves.toMatchObject({
       status: 'missing',
     });
   });

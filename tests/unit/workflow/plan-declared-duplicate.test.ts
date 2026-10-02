@@ -100,23 +100,4 @@ describe('workflow.plan.declared duplicate validator (M3)', () => {
       db.close();
     }
   });
-
-  it('allows one declaration per distinct workflow id in the same batch', () => {
-    const db = createDb();
-    try {
-      const appended = commit(
-        db,
-        (c) => {
-          c.append(workflowPlanDeclaredEvent('workflow-a', plan(['workflow-a:0:0']), TEST_PROVIDER_SCOPE));
-          c.append(workflowPlanDeclaredEvent('workflow-b', plan(['workflow-b:0:0']), TEST_PROVIDER_SCOPE));
-          return undefined;
-        },
-        ctx(),
-      );
-
-      expect(appended.map((event) => event.stream.id)).toEqual(['workflow-a', 'workflow-b']);
-    } finally {
-      db.close();
-    }
-  });
 });

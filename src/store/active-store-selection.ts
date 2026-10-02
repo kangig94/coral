@@ -1020,12 +1020,6 @@ function readActiveStoreTransitionWith(
   }
 }
 
-export function readActiveStoreTransition(
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
-): ActiveStoreTransitionReadResult {
-  return readActiveStoreTransitionWith(runtime, readBoundedRecord);
-}
-
 export function readActiveStoreTransitionForSettlement(
   runtime: Pick<Runtime, 'paths' | 'storage'>,
   actuator: StorageActuator,

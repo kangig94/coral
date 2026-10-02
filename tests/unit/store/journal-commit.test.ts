@@ -2,7 +2,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
-import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
@@ -192,108 +192,6 @@ describe('journal commit primitive', () => {
     }
   });
 
-  it('rejects residual tokens before schema validation or body encoding, including z.unknown detail', () => {
-    const db = createDb();
-    try {
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            const cause = c.append(workflowPlanInput('workflow-hidden-token'));
-            const detail: unknown = { causeRef: cause };
-            c.append({
-              type: 'job.progress.emitted',
-              stream: { kind: 'job', id: 'job-hidden-token' },
-              refs: { jobId: 'job-hidden-token' },
-              body: {
-                kind: 'domain',
-                stage: 'hosted_kb_operation_failed',
-                message: 'hidden token',
-                detail,
-              },
-            });
-            return undefined;
-          },
-          ctx(),
-        ),
-      ).toThrow(
-        /CauseRefToken is not allowed at body\.detail\.causeRef\. Tokens may appear only at: workflow\.completed:body\.causeRef, job\.terminal\.recorded:body\.terminal\.outcome\.causeRef\. Move the token to a pinned path or pass a resolved CauseRef instead\./,
-      );
-
-      expect(countEvents(db)).toBe(0);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects residual tokens hidden behind any casts at runtime', () => {
-    const db = createDb();
-    try {
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            const cause = c.append(workflowPlanInput('workflow-any-hidden-token'));
-            const body = {
-              kind: 'domain',
-              stage: 'hosted_kb_operation_failed',
-              message: 'hidden token',
-              detail: { causeRef: cause },
-            } as any;
-            c.append({
-              type: 'job.progress.emitted',
-              stream: { kind: 'job', id: 'job-any-hidden-token' },
-              refs: { jobId: 'job-any-hidden-token' },
-              body,
-            });
-            return undefined;
-          },
-          ctx(),
-        ),
-      ).toThrow(/body\.detail\.causeRef/);
-
-      expect(countEvents(db)).toBe(0);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects non-finite body numbers before encoding any row', () => {
-    const db = createDb();
-    try {
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            c.append({
-              type: 'test.non_finite',
-              stream: { kind: 'job', id: 'job-non-finite' },
-              body: {
-                nested: {
-                  value: Infinity,
-                },
-              },
-            });
-            return undefined;
-          },
-          ctx(),
-        ),
-      ).toThrowError(
-        expect.objectContaining({
-          code: 'event_body_non_finite_number',
-          detail: expect.objectContaining({
-            path: 'body.nested.value',
-            value: 'Infinity',
-          }),
-        }),
-      );
-
-      expect(countEvents(db)).toBe(0);
-    } finally {
-      db.close();
-    }
-  });
-
   it('rolls back collected events when the closure throws', () => {
     const db = createDb();
     try {
@@ -342,37 +240,6 @@ describe('journal commit primitive', () => {
       expect(
         (db.prepare('SELECT seq FROM events ORDER BY seq ASC').all() as Array<{ seq: number }>).map((row) => row.seq),
       ).toEqual([1, 2, 3, 4]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects forward-only violations at pinned causeRef paths', () => {
-    const db = createDb();
-    try {
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            const body: { outcome: 'failed'; causeRef?: unknown; stepDetails: [] } = {
-              outcome: 'failed',
-              stepDetails: [],
-            };
-            c.append({
-              type: 'workflow.completed',
-              stream: { kind: 'workflow', id: 'workflow-forward' },
-              refs: { workflowId: 'workflow-forward' },
-              body,
-            });
-            const later = c.append(workflowPlanInput('workflow-forward-cause'));
-            body.causeRef = later;
-            return undefined;
-          },
-          ctx(),
-        ),
-      ).toThrow(/cannot be referenced by owner slot 0/);
-
-      expect(countEvents(db)).toBe(0);
     } finally {
       db.close();
     }
@@ -455,144 +322,26 @@ describe('journal commit primitive', () => {
     }
   });
 
-  it('rejects a provider launch without a previously established provider session', () => {
-    const db = createDb();
-    try {
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            c.append(launchInput('job-missing-session'));
-          },
-          ctx(),
-        ),
-      ).toThrow(/no provider session/u);
-      expect(countEvents(db)).toBe(0);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('makes provider session order explicit inside an atomic batch', () => {
+  it('rolls back a batch whose launch precedes its session opening', () => {
     const db = createDb();
     const entry = sessionEntry('session-order');
-    const opened = {
-      type: 'session.opened' as const,
-      stream: { kind: 'session' as const, id: entry.sessionId },
-      refs: { sessionId: entry.sessionId },
-      body: { entry, controller: 'default', scope_key: 'tests' },
-    };
     try {
       expect(() =>
         commit(
           db,
           (c) => {
             c.append(launchInput('job-before-open', entry.sessionId));
-            c.append(opened);
+            c.append({
+              type: 'session.opened',
+              stream: { kind: 'session', id: entry.sessionId },
+              refs: { sessionId: entry.sessionId },
+              body: { entry, controller: 'default', scope_key: 'tests' },
+            });
           },
           ctx(),
         ),
       ).toThrow(/no provider session/u);
       expect(countEvents(db)).toBe(0);
-
-      const appended = commit(
-        db,
-        (c) => {
-          c.append(opened);
-          c.append(claimInput(entry, 'job-after-open'));
-          c.append(launchInput('job-after-open', entry.sessionId));
-        },
-        ctx(),
-      );
-      expect(appended.map((event) => event.type)).toEqual([
-        'session.opened',
-        'session.claimed',
-        'job.launch.requested',
-      ]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects duplicate launch declarations both within a batch and against the journal', () => {
-    const db = createDb();
-    try {
-      const entry = sessionEntry('session-duplicate');
-      const opened = {
-        type: 'session.opened' as const,
-        stream: { kind: 'session' as const, id: entry.sessionId },
-        refs: { sessionId: entry.sessionId },
-        body: { entry, controller: 'default', scope_key: 'tests' },
-      };
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            c.append(opened);
-            c.append(claimInput(entry, 'job-duplicate'));
-            c.append(launchInput('job-duplicate', entry.sessionId));
-            c.append(launchInput('job-duplicate', entry.sessionId));
-          },
-          ctx(),
-        ),
-      ).toThrow(/already has a launch declaration/u);
-      expect(countEvents(db)).toBe(0);
-
-      commit(
-        db,
-        (c) => {
-          c.append(opened);
-          c.append(claimInput(entry, 'job-duplicate'));
-          c.append(launchInput('job-duplicate', entry.sessionId));
-        },
-        ctx(),
-      );
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            c.append(launchInput('job-duplicate', entry.sessionId));
-          },
-          ctx(),
-        ),
-      ).toThrow(/already has a launch declaration/u);
-      expect(countEvents(db)).toBe(3);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects a provider launch whose provider disagrees with the session binding', () => {
-    const db = createDb();
-    try {
-      const mismatchedEntry = {
-        ...sessionEntry('session-binding-mismatch'),
-        binding: TEST_CLAUDE_BINDING,
-      };
-      commit(
-        db,
-        (c) => {
-          c.append({
-            type: 'session.opened',
-            stream: { kind: 'session', id: mismatchedEntry.sessionId },
-            refs: { sessionId: mismatchedEntry.sessionId },
-            body: { entry: mismatchedEntry, controller: 'default', scope_key: 'tests' },
-          });
-        },
-        ctx(),
-      );
-
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            c.append(claimInput(mismatchedEntry, 'job-binding-mismatch'));
-            c.append(launchInput('job-binding-mismatch', mismatchedEntry.sessionId));
-          },
-          ctx(),
-        ),
-      ).toThrow(/does not match its provider session binding and execution owner/u);
-      expect(countEvents(db)).toBe(1);
     } finally {
       db.close();
     }

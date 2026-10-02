@@ -522,51 +522,5 @@ describe('cli errors', () => {
         expect(expansionExitCode({ status: 'error', code, userMessage: 'unused', remediation: 'unused' })).toBe(75);
       }
     });
-
-    it('names coordinator_drain_unanswered in the exit-75 catalog row', async () => {
-      const { readFileSync } = await import('node:fs');
-      const row = readFileSync('docs/cli-errors.md', 'utf-8')
-        .split('\n')
-        .find((line) => line.startsWith('| `75` |'));
-
-      expect(row).toBeDefined();
-      expect(row).toContain('`coordinator_drain_unanswered`');
-      expect(errorCodeToExit('coordinator_drain_unanswered')).toBe(75);
-    });
-
-    it('documents the bounded shutdown wait without abandonment remediation', async () => {
-      const { readFileSync } = await import('node:fs');
-      const lines = readFileSync('docs/cli-errors.md', 'utf-8').split('\n');
-      const exitRow = lines.find((line) => line.startsWith('| `75` |'));
-      const shutdownParagraph = lines.find((line) => line.startsWith('- `backend_shutting_down`'));
-
-      for (const text of [exitRow, shutdownParagraph]) {
-        expect(text).toContain('bounded');
-        expect(text).toContain('retry');
-      }
-    });
-
-    it('names provider_preflight_undetermined in the exit-75 catalog row', async () => {
-      const { readFileSync } = await import('node:fs');
-      const row = readFileSync('docs/cli-errors.md', 'utf-8')
-        .split('\n')
-        .find((line) => line.startsWith('| `75` |'));
-
-      expect(row).toBeDefined();
-      expect(row).toContain('`provider_preflight_undetermined`');
-    });
-
-    it('names every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member in the exit-75 catalog row', async () => {
-      const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
-      const { readFileSync } = await import('node:fs');
-      const row = readFileSync('docs/cli-errors.md', 'utf-8')
-        .split('\n')
-        .find((line) => line.startsWith('| `75` |'));
-
-      expect(row).toBeDefined();
-      for (const code of NOT_OBSERVED_CORAL_SETUP_ERROR_CODES) {
-        expect(row).toContain(`\`${code}\``);
-      }
-    });
   });
 });

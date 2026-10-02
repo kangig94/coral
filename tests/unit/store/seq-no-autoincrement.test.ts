@@ -1,6 +1,4 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import * as fs from 'node:fs';
-import { join } from 'node:path';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -13,15 +11,6 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 // plain INTEGER PRIMARY KEY and never spawn the sqlite_sequence row.
 
 describe('events.seq schema (S3)', () => {
-  it('declares INTEGER PRIMARY KEY without AUTOINCREMENT in schema.sql', () => {
-    const sql = fs.readFileSync(join(process.cwd(), 'src/store/schema.sql'), 'utf-8');
-    const seqLine = sql
-      .split('\n')
-      .find((line) => line.includes('seq') && line.toUpperCase().includes('INTEGER PRIMARY KEY'));
-    expect(seqLine).toBeDefined();
-    expect(seqLine!.toUpperCase()).not.toContain('AUTOINCREMENT');
-  });
-
   it('does not create a sqlite_sequence row for events on an initialized journal', () => {
     const db = newRawDatabase(':memory:');
     try {

@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { createRealTimePort } from '#src/infra/time.js';
 import { isTransientStreamError } from '#src/infra/http-errors.js';
 import { decode, encode, type JsonRpcRequestEnvelope } from '#src/transport/ipc/json-rpc.js';
 import { IpcRequestTimeout, IpcRpcError, subscribeIpcMethod } from '#src/transport/ipc/client.js';
@@ -53,6 +54,7 @@ async function startSubscriptionServer(
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   for (const server of servers.splice(0)) {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -64,11 +66,16 @@ afterEach(async () => {
 describe('subscription primitive', () => {
   it('rejects an unanswered subscription handshake as a retriable timeout', async () => {
     const socketPath = makeSocketPath('unanswered');
-    await startSubscriptionServer(socketPath, () => undefined);
-
-    const error = await subscribeIpcMethod(socketPath, 'jobs.wait', undefined, { timeoutMs: 20 }).catch(
-      (caught: unknown) => caught,
-    );
+    const received = createDeferred<void>();
+    await startSubscriptionServer(socketPath, () => received.resolve());
+    vi.useFakeTimers();
+    const handshake = subscribeIpcMethod(socketPath, 'jobs.wait', undefined, {
+      timeoutMs: 20,
+      time: createRealTimePort(),
+    }).catch((caught: unknown) => caught);
+    await received.promise;
+    await vi.advanceTimersByTimeAsync(20);
+    const error = await handshake;
     expect(error).toBeInstanceOf(IpcRequestTimeout);
     expect(isTransientStreamError(error)).toBe(true);
   });

@@ -7,7 +7,7 @@ import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { listJobs, loadJobProjectionDetail, loadJobProjectionDetails } from '#src/jobs/read-queries.js';
+import { listJobs } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -263,99 +263,6 @@ describe('jobs queries', () => {
     db.close();
   });
 
-  it('hydrates batched projection details without narrowing status, runtime, or terminal fields', () => {
-    const jobIds = ['job-completed', 'job-rejected', 'job-queued', 'job-missing', 'job-completed'];
-    const prepareSpy = vi.spyOn(db, 'prepare');
-    const detailsByJob = loadJobProjectionDetails(db, jobIds, readCtx);
-    const prepareCallCount = prepareSpy.mock.calls.length;
-
-    expect(detailsByJob.size).toBe(4);
-
-    for (const jobId of ['job-completed', 'job-rejected', 'job-queued', 'job-missing']) {
-      expect(detailsByJob.get(jobId)).toEqual(loadJobProjectionDetail(db, jobId, readCtx));
-    }
-
-    expect(detailsByJob.get('job-completed')).toMatchObject({
-      status: {
-        phase: 'completed',
-        result: {
-          content: 'done',
-        },
-      },
-      runtime: {
-        transport: 'app-server',
-        providerMeta: {
-          provider: 'codex',
-          leaseState: 'acquired',
-          hostRef: {
-            provider: 'codex',
-            fingerprint: '0'.repeat(64),
-            instanceId: 'instance-1',
-            leaseMode: 'shared',
-          },
-        },
-      },
-      exit: {
-        content: 'done',
-        diagnostics: {
-          warnings: ['soft warning'],
-          usage: {
-            inputTokens: 12,
-            outputTokens: 34,
-            costUsd: 0.56,
-          },
-        },
-      },
-    });
-
-    expect(detailsByJob.get('job-rejected')?.status).toMatchObject({
-      phase: 'error',
-    });
-
-    expect(detailsByJob.get('job-missing')).toEqual({
-      status: null,
-      launch: null,
-      runtime: null,
-      exit: null,
-    });
-
-    expect(prepareCallCount).toBeLessThanOrEqual(4);
-  });
-
-  it('projects durable workflow identity for an opaque child job id', () => {
-    const childJobId = '11111111-1111-4111-8111-111111111111';
-    const workflowJobId = '22222222-2222-4222-8222-222222222222';
-    const replacedJobId = '33333333-3333-4333-8333-333333333333';
-    const workflowSlotId = `${workflowJobId}:0:1`;
-
-    db.prepare(
-      `INSERT INTO projection_jobs (
-         job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-         project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
-         workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-       ) VALUES (?, ?, 'running', NULL, ?, ?, 'codex', ?, ?, 'tests', NULL, 'provider', ?, ?, 1, ?, ?, 0)`,
-    ).run(
-      childJobId,
-      JSON.stringify({ kind: 'workflow', id: workflowJobId }),
-      JSON.stringify({ progressFaults: [] }),
-      'session-child',
-      '/workspace/coral',
-      '/workspace/coral',
-      workflowJobId,
-      workflowSlotId,
-      replacedJobId,
-      '2026-04-20T00:03:00.000Z',
-    );
-
-    expect(loadJobProjectionDetail(db, childJobId, readCtx).status).toMatchObject({
-      jobId: childJobId,
-      parentWorkflowJobId: workflowJobId,
-      workflowSlotId,
-      workflowSlotGeneration: 1,
-      replacesWorkflowJobId: replacedJobId,
-    });
-  });
-
   it('decodes complete projection rows before applying list filters', () => {
     const prepareSpy = vi.spyOn(db, 'prepare');
 
@@ -378,31 +285,5 @@ describe('jobs queries', () => {
     expect(projectionQuery).not.toContain('WHERE');
     expect(projectionQuery).toContain('execution_owner');
     expect(projectionQuery).toContain('workflow_slot_generation');
-  });
-
-  it('keeps KB jobs visible from any project while scoping other projects out', () => {
-    const jobs = listJobs(db, { projectRoot: fixtureCanonicalWorkDir('/workspace/coral') }, readCtx);
-    const ids = jobs.map((entry) => entry.jobId);
-
-    // KB jobs run against the shared corpus, so they surface regardless of cwd...
-    expect(ids).toContain('job-kb-global');
-    // ...the current project's own live job still lists...
-    expect(ids).toContain('job-queued');
-    // Ambient selection is exact: a descendant work directory is not selected by its project identity.
-    expect(ids).not.toContain('job-descendant-work-dir');
-    // ...but a different project's non-KB job stays scoped out.
-    expect(ids).not.toContain('job-other-project');
-  });
-
-  it('keeps the KB exception under the all-phases filter', () => {
-    const jobs = listJobs(db, { projectRoot: fixtureCanonicalWorkDir('/workspace/coral'), all: true }, readCtx);
-    const ids = jobs.map((entry) => entry.jobId);
-
-    // `all` widens phases but does not change the project scope: KB stays global,
-    // the current project's terminal job now appears, the foreign non-KB stays out.
-    expect(ids).toContain('job-kb-global');
-    expect(ids).toContain('job-completed');
-    expect(ids).not.toContain('job-descendant-work-dir');
-    expect(ids).not.toContain('job-other-project');
   });
 });

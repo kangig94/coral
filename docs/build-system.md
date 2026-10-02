@@ -162,7 +162,7 @@ Tests run with:
 npm test
 ```
 
-That command runs `tests/unit/**` plus `tests/invariants/**` and the debug-only simulation harness, and — only when `CI` is unset — the repo typecheck. Under CI the workflow runs `npm run typecheck:tests` as its own step, so the tree is typechecked once per gate and a type error fails under that step's name. Those suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, and shared contracts. `npm run test:simulation` is only a narrower single-batch shortcut for the harness.
+That command runs `tests/unit/**` plus `tests/invariants/**`, and — only when `CI` is unset — the repo typecheck. Under CI the workflow runs `npm run typecheck:tests` as its own step, so the tree is typechecked once per gate and a type error fails under that step's name. Those suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, and shared contracts. The simulation test suite and its npm shortcut were removed during test pruning; the shared simulation runtime remains used by unit and integration tests.
 
 Each of the two vitest runs `npm test` makes writes its JSON report to `reports/vitest-default.json` and `reports/vitest-simulation.json` (git-ignored), and `npm test` prints the ten slowest cases and files from them, each case as `<duration>/<budget>`. CI uploads the directory as the `vitest-reports-node-<version>` artifact, kept for 7 days, on failed runs as well as green ones.
 
@@ -174,7 +174,7 @@ It does **not** run `tests/integration/**`, which owns the multi-process suites 
 npm run test:integration
 ```
 
-Both are CI steps, so a change that only passes one of them is not verified. The end-to-end suites are separate again (`tests/e2e/**`, see the store-reset list below).
+Both are CI steps, so a change that only passes one of them is not verified. The end-to-end suites are separate again (`tests/e2e/**`, see the lifecycle command below).
 
 Store-reset contract changes can be reproduced locally with:
 
@@ -183,19 +183,11 @@ npm run test:store-reset
 npm run test:store-reset:integration
 npm run build
 npm run verify:store-reset-build
-npm run test:e2e:store-reset:build
 ```
 
-`test:e2e:store-reset:build` passes `--store-reset-only` to narrow the suite to that one file for a
-fast local loop. CI runs `npm run test:e2e:build`, the same lane without it: every non-lifecycle `tests/e2e/**` file
-against `clients/build`. The release workflow runs `npm run test:e2e:release`, the same set against the
-`clients/bridge` it just rebuilt — deliberately after `build:release`, since that is the only moment
-`clients/bridge` holds the build being tested. Locally it needs the same precondition: `clients/bridge`
-is rebuilt only by a release, so on `main` between releases it is the previous release and this lane
-fails against source-accurate assertions. Run `npm run build:release` first, or use
-`npm run test:e2e:build`. No e2e file resolves a bundle on its own — `CORAL_E2E_BUNDLE_DIR` is
-set by these scripts and required by `tests/support/e2e-bundle-dir.ts`, so a suite invoked without one
-refuses instead of testing whichever bundle it happened to find.
+The non-lifecycle e2e files were removed during test pruning, together with their build/release
+runner commands. Store-reset coverage remains in the unit and integration commands above and
+the build contract verifier. The shared simulation runtime still supports the retained tests.
 
 Backend lifecycle end-to-end coverage is a separate suite again, unrelated to store-reset but also a CI step — it spawns long-lived backend subprocesses and waits through startup, the IPC handshake, and process death across namespace-isolation and child/no-handoff cold-start cases:
 
@@ -203,7 +195,7 @@ Backend lifecycle end-to-end coverage is a separate suite again, unrelated to st
 npm run test:e2e:lifecycle
 ```
 
-`npm run test:network` is not part of the PR gate — it runs `kiwi-runtime-download.integration.test.ts` against the real network to verify the pinned Kiwi WASM artifact still downloads and hashes clean, on CI's weekly schedule and on manual dispatch only.
+The real-network Kiwi download suite was removed during test pruning, along with its npm command and scheduled CI job.
 
 ## Release Notes
 

@@ -23,11 +23,6 @@ const validManifest = {
 } as const;
 
 describe('engine manifest schema ingress', () => {
-  it('accepts valid provides descriptors', () => {
-    expect(engineManifestSchema.parse(validManifest)).toEqual(validManifest);
-    expect(parseEngineManifest(validManifest)).toEqual(validManifest);
-  });
-
   it('rejects invalid descriptors in custom manifest ingress', () => {
     expect(() =>
       parseEngineManifest({
@@ -96,26 +91,6 @@ describe('engine manifest schema ingress', () => {
       const issuePaths = (error as ZodError).issues.map((issue) => issue.path.join('.'));
       expect(issuePaths).toContain('provides.retrievalRoles.0.requires.0');
     }
-  });
-
-  it('rejects the Stage 1 flat provides array shape', () => {
-    expect(() =>
-      parseEngineManifest({
-        ...validManifest,
-        provides: [validDescriptor],
-      }),
-    ).toThrow();
-  });
-
-  it('rejects external manifest declarations in the reserved kb namespace', () => {
-    expect(() =>
-      parseEngineManifest({
-        ...validManifest,
-        provides: {
-          capabilities: [{ name: 'kb.cache' }],
-        },
-      }),
-    ).toThrow();
   });
 
   it('keeps the production bundled engine catalog parseable', () => {

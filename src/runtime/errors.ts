@@ -184,11 +184,11 @@ export type HandoffRefusalInit = {
 
 type AssertNever<Value extends never> = Value;
 
-export type AssertHandoffRefusalContextCoversCodes = AssertNever<
+type _AssertHandoffRefusalContextCoversCodes = AssertNever<
   Exclude<HandoffRefusalCode, keyof HandoffRefusalContextByCode>
 >;
 
-export type AssertHandoffRefusalCodesCoverContext = AssertNever<
+type _AssertHandoffRefusalCodesCoverContext = AssertNever<
   Exclude<keyof HandoffRefusalContextByCode, HandoffRefusalCode>
 >;
 

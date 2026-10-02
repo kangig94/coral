@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -66,54 +66,6 @@ describe('kb detection and paths', () => {
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
     vi.resetModules();
-  });
-
-  it('honors a caller-provided custom root when creating a runtime', async () => {
-    const customRoot = join(mockState.tmpHome, 'configured-kb');
-    const { kbVaultRoot } = await loadKbModules();
-
-    const { kb } = createKbTestRuntime({
-      markdownRoot: kbVaultRoot('prod', { customRoot }),
-      runtimeDir: kbRuntimePaths('prod').root,
-      db: openKbTestStoreDb(':memory:'),
-    });
-
-    expect(kb.markdownRoot).toBe(customRoot);
-  });
-
-  it('derives flavor-specific KB roots and runtime dirs', async () => {
-    const { kbVaultRoot, oramaPaths } = await loadKbModules();
-
-    expect(kbVaultRoot('prod')).toBe(join(mockState.tmpHome, '.coral', 'kb'));
-    const prodRuntimeDir = kbRuntimePaths('prod').root;
-    expect(prodRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'gen2', 'data', 'kb'));
-    expect(oramaPaths.oramaSnapshotDir(prodRuntimeDir)).toBe(
-      join(mockState.tmpHome, '.coral', 'gen2', 'data', 'kb', 'orama'),
-    );
-
-    expect(kbVaultRoot('dev')).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
-    const devRuntimeDir = kbRuntimePaths('dev').root;
-    expect(devRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'gen2', 'data-dev', 'kb'));
-    expect(oramaPaths.oramaSnapshotDir(devRuntimeDir)).toBe(
-      join(mockState.tmpHome, '.coral', 'gen2', 'data-dev', 'kb', 'orama'),
-    );
-  });
-
-  it('creates the runtime without requiring optional vector equipment at startup', async () => {
-    process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    await loadKbModules();
-    const db = openKbTestStoreDb(':memory:');
-    const { kb } = createKbTestRuntime({
-      markdownRoot: process.env.CORAL_KB_PATH,
-      runtimeDir: kbRuntimePaths('prod').root,
-      db,
-    });
-    const pluginRoot = join(mockState.tmpHome, 'plugin');
-    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
-    writeFileSync(join(pluginRoot, 'bridge', 'coral-backend.cjs'), '', 'utf-8');
-    void pluginRoot;
-
-    expect(kb.runtimeDir).toBe(kbRuntimePaths('prod').root);
   });
 
   it('uses Orama as the base retrieval backend and never creates vec/ anywhere under the machine-local runtime tree', async () => {

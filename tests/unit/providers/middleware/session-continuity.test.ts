@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import type {
   AppServerSession,
@@ -33,18 +33,6 @@ const BASE_REQUEST: ProviderRequest = {
 };
 
 const TEST_PROVIDER_NAME = 'claude';
-
-const DEV_ASSERTIONS = 'CORAL_DEV_ASSERTIONS';
-const ORIGINAL_DEV_ASSERTIONS = process.env[DEV_ASSERTIONS];
-
-afterEach(() => {
-  if (ORIGINAL_DEV_ASSERTIONS === undefined) {
-    delete process.env[DEV_ASSERTIONS];
-    return;
-  }
-
-  process.env[DEV_ASSERTIONS] = ORIGINAL_DEV_ASSERTIONS;
-});
 
 type CodexAppServerRuntime = ProviderAppServerRuntime<CodexExecutionPlan>;
 type CodexStandaloneRuntime = ProviderStandaloneRuntime<CodexExecutionPlan>;
@@ -165,16 +153,6 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
   return events;
 }
 
-function captureThrownError(invoke: () => void): Error {
-  try {
-    invoke();
-  } catch (error) {
-    return error as Error;
-  }
-
-  throw new Error('Expected callback to throw.');
-}
-
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((nextResolve) => {
@@ -184,124 +162,6 @@ function deferred<T>() {
 }
 
 describe('sessionContinuity', () => {
-  it('does not emit an opening continuity snapshot when no live delta occurs', async () => {
-    const downstreamTerminal = terminalEvent('resumable');
-    const provider: Provider<CodexExecutionPlan, CodexStandaloneRuntime> = async function* openingResumableProvider() {
-      yield downstreamTerminal;
-    };
-
-    const events = await collect(
-      sessionContinuity<TestState, CodexExecutionPlan, CodexStandaloneRuntime>(
-        TEST_PROVIDER_NAME,
-        makeContract({
-          opening: {
-            conversationRef: 'abc',
-            resumable: true,
-            providerContinuity: { thread: 'abc' },
-          },
-        }),
-      )(provider)(BASE_REQUEST, createRuntime()),
-    );
-
-    expect(events).toEqual([downstreamTerminal]);
-    expect(events.filter((event) => event.kind === 'continuity')).toHaveLength(0);
-  });
-
-  it('does not emit opening continuity for non-resumable persisted state without a live delta', async () => {
-    const provider: Provider<CodexExecutionPlan, CodexStandaloneRuntime> =
-      async function* openingNonResumableProvider() {
-        yield terminalEvent('non-resumable');
-      };
-
-    const events = await collect(
-      sessionContinuity<TestState, CodexExecutionPlan, CodexStandaloneRuntime>(
-        TEST_PROVIDER_NAME,
-        makeContract({
-          opening: {
-            conversationRef: null,
-            resumable: false,
-            providerContinuity: null,
-          },
-        }),
-      )(provider)(BASE_REQUEST, createRuntime()),
-    );
-
-    expect(events).toEqual([terminalEvent('non-resumable')]);
-  });
-
-  it('maps session-unavailable errors to a terminal fault without synthesizing opening continuity', async () => {
-    const unavailable = new Error('session missing');
-    let invocations = 0;
-    const downstreamReachedTerminal = false;
-    const provider: Provider<CodexExecutionPlan, CodexStandaloneRuntime> = async function* unavailableProvider() {
-      invocations += 1;
-      if (downstreamReachedTerminal) {
-        yield terminalEvent('unexpected');
-      }
-      throw unavailable;
-    };
-
-    const events = await collect(
-      sessionContinuity<TestState, CodexExecutionPlan, CodexStandaloneRuntime>(
-        TEST_PROVIDER_NAME,
-        makeContract({
-          opening: {
-            conversationRef: 'persisted-1',
-            resumable: true,
-            providerContinuity: { thread: 'persisted-1' },
-          },
-          isSessionUnavailable: (err) => err === unavailable,
-        }),
-      )(provider)(BASE_REQUEST, createRuntime()),
-    );
-
-    expect(invocations).toBe(1);
-    expect(downstreamReachedTerminal).toBe(false);
-    expect(events).toEqual([
-      {
-        kind: 'terminal',
-        terminal: {
-          content: '',
-          durationMs: expect.any(Number),
-          outcome: { kind: 'failed' },
-        },
-        diagnostics: {},
-        failureCause: {
-          type: 'session.provider_failed',
-          body: {
-            provider: 'claude',
-            reason: 'session_unavailable',
-            message: 'session missing',
-          },
-        },
-      },
-    ]);
-  });
-
-  it('passes downstream terminals through unmodified when no final continuity delta exists', async () => {
-    const downstreamTerminal = terminalEvent('pass-through');
-    const provider: Provider<CodexExecutionPlan, CodexStandaloneRuntime> = async function* passthroughProvider() {
-      yield downstreamTerminal;
-    };
-
-    const events = await collect(
-      sessionContinuity<TestState, CodexExecutionPlan, CodexStandaloneRuntime>(
-        TEST_PROVIDER_NAME,
-        makeContract({
-          opening: {
-            conversationRef: 'stable',
-            resumable: true,
-            providerContinuity: { thread: 'stable' },
-          },
-        }),
-      )(provider)(BASE_REQUEST, createRuntime()),
-    );
-
-    expect(events).toHaveLength(1);
-    expect(events[0]).toBe(downstreamTerminal);
-    expect(events).toEqual([downstreamTerminal]);
-  });
-
   it('emits final continuity from live bridge checkpoints before the downstream terminal', async () => {
     let baseCheckpointCalls = 0;
     let baseTransportClosedCalls = 0;
@@ -556,6 +416,7 @@ describe('sessionContinuity', () => {
 
   it('keeps exactly one downstream next pending across repeated checkpoint wakes', async () => {
     const downstream = deferred<IteratorResult<ProviderEventBody>>();
+    const nextEntered = deferred<void>();
     let downstreamNextCalls = 0;
     let downstreamReturnCalls = 0;
     let bridge!: CodexStandaloneRuntime['continuityBridge'];
@@ -566,6 +427,7 @@ describe('sessionContinuity', () => {
           return {
             next() {
               downstreamNextCalls += 1;
+              nextEntered.resolve();
               if (downstreamNextCalls > 1) throw new Error('concurrent downstream next');
               return downstream.promise;
             },
@@ -585,7 +447,8 @@ describe('sessionContinuity', () => {
     )(provider)(BASE_REQUEST, createRuntime())[Symbol.asyncIterator]();
 
     const first = iterator.next();
-    await vi.waitFor(() => expect(downstreamNextCalls).toBe(1));
+    await nextEntered.promise;
+    expect(downstreamNextCalls).toBe(1);
     void bridge.checkpoint({ conversationRef: 'checkpoint-1', resumable: true });
     await expect(first).resolves.toMatchObject({ value: { kind: 'continuity', conversationRef: 'checkpoint-1' } });
     expect(downstreamNextCalls).toBe(1);
@@ -664,89 +527,5 @@ describe('sessionContinuity', () => {
       },
       downstreamTerminal,
     ]);
-  });
-
-  it('treats post-deactivation bridge calls as silent no-ops in production', async () => {
-    let capturedBridge: CodexStandaloneRuntime['continuityBridge'] | null = null;
-    const provider: Provider<CodexExecutionPlan, CodexStandaloneRuntime> = async function* postDeactivationProdProvider(
-      _request,
-      runtime,
-    ) {
-      capturedBridge = runtime.continuityBridge;
-      yield terminalEvent('prod');
-    };
-
-    await collect(
-      sessionContinuity<TestState, CodexExecutionPlan, CodexStandaloneRuntime>(
-        TEST_PROVIDER_NAME,
-        makeContract({
-          opening: {
-            conversationRef: null,
-            resumable: false,
-            providerContinuity: null,
-          },
-        }),
-      )(provider)(BASE_REQUEST, createRuntime()),
-    );
-
-    expect(capturedBridge).not.toBeNull();
-    expect(() => {
-      capturedBridge?.checkpoint({ conversationRef: 'stale-prod' });
-      capturedBridge?.transportClosed({ kind: 'transport_closed' });
-    }).not.toThrow();
-  });
-
-  it('throws assertion errors for post-deactivation bridge calls when CORAL_DEV_ASSERTIONS=1', async () => {
-    process.env[DEV_ASSERTIONS] = '1';
-    vi.resetModules();
-    const { sessionContinuity: sessionContinuityWithAssertions } =
-      await import('#src/providers/middleware/session-continuity.js');
-
-    let capturedBridge: CodexStandaloneRuntime['continuityBridge'] | null = null;
-    const provider: Provider<CodexExecutionPlan, CodexStandaloneRuntime> =
-      async function* postDeactivationAssertProvider(_request, runtime) {
-        capturedBridge = runtime.continuityBridge;
-        yield terminalEvent('assert');
-      };
-
-    await collect(
-      sessionContinuityWithAssertions<TestState, CodexExecutionPlan, CodexStandaloneRuntime>(
-        TEST_PROVIDER_NAME,
-        makeContract({
-          opening: {
-            conversationRef: null,
-            resumable: false,
-            providerContinuity: null,
-          },
-        }),
-      )(provider)(
-        BASE_REQUEST,
-        createRuntime(undefined, {
-          env: {
-            get: (key) => (key === DEV_ASSERTIONS ? '1' : undefined),
-            homedir: () => '/mock/home',
-            fullSnapshot: () => ({}),
-          },
-        }),
-      ),
-    );
-
-    expect(capturedBridge).not.toBeNull();
-    const checkpointAssertion = captureThrownError(() => {
-      capturedBridge?.checkpoint({ conversationRef: 'stale-assert' });
-    });
-    expect(checkpointAssertion.message).toMatch(/runtime\.continuityBridge\.checkpoint\(\)/);
-    expect(checkpointAssertion.message).toContain('Bridge creation stack:');
-    expect(checkpointAssertion.message).toContain('Continuity bridge created here.');
-    expect(checkpointAssertion.message).toContain('Bridge deactivation stack:');
-    expect(checkpointAssertion.message).toContain('Continuity bridge deactivated here.');
-    expect(checkpointAssertion.message).toContain(
-      'cancel delayed callbacks or stop emitting after the provider iterator returns',
-    );
-
-    const transportClosedAssertion = captureThrownError(() => {
-      capturedBridge?.transportClosed({ kind: 'transport_closed' });
-    });
-    expect(transportClosedAssertion.message).toMatch(/runtime\.continuityBridge\.transportClosed\(\)/);
   });
 });

@@ -1,3 +1,4 @@
+import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
@@ -10,14 +11,18 @@ type RaceOutcome<T> =
   | Readonly<{ kind: 'rejected'; error: unknown }>
   | Readonly<{ kind: 'timed-out' }>;
 
-function raceAgainstTimeout<T>(promise: Promise<T>, ms: number): Promise<RaceOutcome<T>> {
-  return Promise.race([
+async function raceAgainstTimeout<T>(promise: Promise<T>, ms: number): Promise<RaceOutcome<T>> {
+  const time = new VirtualTime();
+  const outcome = Promise.race([
     promise.then(
       (value): RaceOutcome<T> => ({ kind: 'resolved', value }),
       (error: unknown): RaceOutcome<T> => ({ kind: 'rejected', error }),
     ),
-    new Promise<RaceOutcome<T>>((resolve) => setTimeout(() => resolve({ kind: 'timed-out' }), ms)),
+    new Promise<RaceOutcome<T>>((resolve) => time.setTimeout(() => resolve({ kind: 'timed-out' }), ms)),
   ]);
+  await flushMicrotasks(100);
+  time.tick(ms);
+  return outcome;
 }
 
 /**

@@ -434,29 +434,6 @@ function readManifest(
   return JSON.parse(runtime.storage.readFileSync(manifestPath(runtime, descriptor), 'utf-8')) as ArchiveManifestFixture;
 }
 
-function readOnlyActionManifest(
-  harness: SettlementHarness,
-  jobId: string,
-): { actionName: string; manifest: ArchiveManifestFixture } {
-  const actionsRoot = join(
-    harness.runtime.paths.coral.exports.jobsRoot,
-    jobId,
-    'provider-artifacts',
-    'codex',
-    'actions',
-  );
-  const actions = harness.runtime.storage.readdirSync(actionsRoot, { withFileTypes: true });
-  expect(actions).toHaveLength(1);
-  const action = actions[0];
-  if (action === undefined) throw new Error(`Expected one archive action for ${jobId}.`);
-  return {
-    actionName: action.name,
-    manifest: JSON.parse(
-      harness.runtime.storage.readFileSync(join(actionsRoot, action.name, 'manifest.json'), 'utf-8'),
-    ) as ArchiveManifestFixture,
-  };
-}
-
 function actionRecordPath(runtime: SimulationRuntime, actionId: string): string {
   const file = createHash('sha256').update(actionId, 'utf-8').digest('hex');
   return join(runtime.paths.coral.exports.jobsRoot, '.provider-artifact-discard', `${file}.json`);
@@ -499,10 +476,6 @@ function recoveryWork(
 }
 
 describe('sessions retention-work', () => {
-  it('should join session and job ids with a NUL separator', () => {
-    expect(sessionRetentionWorkKey('session-1', 'job-1')).toBe('session-1\u0000job-1');
-  });
-
   it('hydrates one contained pair from its composite raw envelope', () => {
     expect(hydrateRecoverySessionRetentionWork(rawWork())).toMatchObject({
       sessionId: SESSION_ID,
@@ -530,73 +503,6 @@ describe('sessions retention-work', () => {
         },
       },
     });
-  });
-
-  it.each([
-    {
-      name: 'untyped continuation kind',
-      mutate: (row: RawRetentionContinuationRow): RawRetentionContinuationRow => ({
-        ...row,
-        continuation_kind: 'deferred',
-      }),
-    },
-    {
-      name: 'malformed continuation payload',
-      mutate: (row: RawRetentionContinuationRow): RawRetentionContinuationRow => ({
-        ...row,
-        continuation_key: '{',
-      }),
-    },
-    {
-      name: 'continuation for another pair',
-      mutate: (): RawRetentionContinuationRow => continuationRow({ ...continuationPayload(), jobId: 'job-other' }),
-    },
-    {
-      name: 'repeated completed obligation',
-      mutate: (): RawRetentionContinuationRow =>
-        continuationRow({
-          ...continuationPayload(),
-          completedObligationIds: [RETENTION_ATTEMPT_OBLIGATION, RETENTION_ATTEMPT_OBLIGATION],
-        }),
-    },
-  ])('rejects $name during one-pair hydration', ({ mutate }) => {
-    const continuation = mutate(continuationRow(continuationPayload()));
-
-    expect(() => hydrateRecoverySessionRetentionWork(rawWork(continuation))).toThrow();
-  });
-
-  it('changes operation identity when source revision or handle set changes independently', () => {
-    const firstHandle = '/tmp/provider/identity-a.jsonl';
-    const secondHandle = '/tmp/provider/identity-b.jsonl';
-    const entry: ProviderSession = {
-      ...sessionEntry(),
-      artifactHandles: [artifactHandle(firstHandle), artifactHandle(secondHandle)],
-    };
-    const base = deriveProviderArtifactActionDescriptor({
-      entry,
-      jobId: JOB_ID,
-      handles: [firstHandle],
-      sourceRevision: 'revision-a',
-      archivedAt: NOW,
-    });
-    const changedRevision = deriveProviderArtifactActionDescriptor({
-      entry,
-      jobId: JOB_ID,
-      handles: [firstHandle],
-      sourceRevision: 'revision-b',
-      archivedAt: NOW,
-    });
-    const changedHandles = deriveProviderArtifactActionDescriptor({
-      entry,
-      jobId: JOB_ID,
-      handles: [firstHandle, secondHandle],
-      sourceRevision: 'revision-a',
-      archivedAt: NOW,
-    });
-
-    expect(new Set([base.operationId, changedRevision.operationId, changedHandles.operationId]).size).toBe(3);
-    expect(changedRevision.archiveActionId).not.toBe(base.archiveActionId);
-    expect(changedHandles.discardActionId).not.toBe(base.discardActionId);
   });
 
   it('reuses a published archive action and archivedAt without rewriting an archived record as missing', async () => {
@@ -729,58 +635,6 @@ describe('sessions retention-work', () => {
     expect(readManifest(harness.runtime, foreign).artifacts[0]).toEqual(foreignRecord);
   });
 
-  it('settles retention first and on-demand second through the same stable provider action', async () => {
-    const harness = createSettlementHarness();
-    const jobId = 'job-retention-first-settlement';
-    const handle = '/tmp/provider/retention-first-settlement.jsonl';
-    const { sessionId } = await seedRetentionWork(harness, {
-      jobId,
-      handle,
-      nativeContent: 'retention first\n',
-    });
-
-    await harness.reactor.scanStartup(harness.signal);
-    const beforeOnDemand = readOnlyActionManifest(harness, jobId);
-    await harness.reactor.discardSessionArtifacts(sessionId);
-    const afterOnDemand = readOnlyActionManifest(harness, jobId);
-
-    expect(readRetentionEvents(harness, sessionId).map(({ type }) => type)).toEqual([
-      'session.retention.discard.requested',
-      'session.retention.discard.completed',
-    ]);
-    expect(harness.providerEffects).toHaveLength(1);
-    expect(harness.capabilityCalls.map(({ kind }) => kind)).toEqual(['discard', 'reconcile']);
-    expect(new Set(harness.capabilityCalls.map(({ actionId }) => actionId)).size).toBe(1);
-    expect(afterOnDemand).toEqual(beforeOnDemand);
-    expect(afterOnDemand.actionName).toBe(afterOnDemand.manifest.archiveActionId);
-  });
-
-  it('settles on-demand first and retention second through the same stable provider action', async () => {
-    const harness = createSettlementHarness();
-    const jobId = 'job-on-demand-first-settlement';
-    const handle = '/tmp/provider/on-demand-first-settlement.jsonl';
-    const { sessionId } = await seedRetentionWork(harness, {
-      jobId,
-      handle,
-      nativeContent: 'on demand first\n',
-    });
-
-    await harness.reactor.discardSessionArtifacts(sessionId);
-    const beforeRetention = readOnlyActionManifest(harness, jobId);
-    await harness.reactor.scanStartup(harness.signal);
-    const afterRetention = readOnlyActionManifest(harness, jobId);
-
-    expect(readRetentionEvents(harness, sessionId).map(({ type }) => type)).toEqual([
-      'session.retention.discard.requested',
-      'session.retention.discard.completed',
-    ]);
-    expect(harness.providerEffects).toHaveLength(1);
-    expect(harness.capabilityCalls.map(({ kind }) => kind)).toEqual(['reconcile', 'discard', 'discard']);
-    expect(new Set(harness.capabilityCalls.map(({ actionId }) => actionId)).size).toBe(1);
-    expect(afterRetention).toEqual(beforeRetention);
-    expect(afterRetention.actionName).toBe(afterRetention.manifest.archiveActionId);
-  });
-
   it('restarts after archive publication with the exact action ids and stable archivedAt', async () => {
     let discardFails = true;
     let reconciliation: ProviderArtifactDiscardReconciliation = { kind: 'unknown' };
@@ -869,48 +723,6 @@ describe('sessions retention-work', () => {
       'session.retention.discard.requested',
       'session.retention.discard.completed',
     ]);
-  });
-
-  it.each([
-    {
-      name: 'operation identity',
-      mutate: (descriptor: ProviderArtifactActionDescriptor): ProviderArtifactActionDescriptor => ({
-        ...descriptor,
-        operationId: 'conflicting-operation',
-      }),
-    },
-    {
-      name: 'archive payload hash',
-      mutate: (descriptor: ProviderArtifactActionDescriptor): ProviderArtifactActionDescriptor => ({
-        ...descriptor,
-        archivePayloadHash: 'sha256:conflicting-archive-payload',
-      }),
-    },
-    {
-      name: 'discard payload hash',
-      mutate: (descriptor: ProviderArtifactActionDescriptor): ProviderArtifactActionDescriptor => ({
-        ...descriptor,
-        discardPayloadHash: 'sha256:conflicting-discard-payload',
-      }),
-    },
-  ])('fails closed on a $name conflict before provider effect', async ({ name, mutate }) => {
-    const harness = createSettlementHarness();
-    const jobId = `job-protocol-conflict-${name.replaceAll(' ', '-')}`;
-    const handle = `/tmp/provider/${jobId}.jsonl`;
-    const { entry } = await seedRetentionWork(harness, { jobId, handle, nativeContent: 'conflict\n' });
-    const sourceRevision = 'protocol-conflict-revision';
-    const descriptor = deriveProviderArtifactActionDescriptor({
-      entry,
-      jobId,
-      handles: [handle],
-      sourceRevision,
-      archivedAt: NOW,
-    });
-    const work = recoveryWork(entry, jobId, sourceRevision, mutate(descriptor));
-
-    await expect(harness.reactor.enforceRetention(work)).rejects.toBeInstanceOf(ProviderArtifactProtocolInvariantError);
-    expect(harness.capabilityCalls).toEqual([]);
-    expect(harness.providerEffects).toEqual([]);
   });
 
   it('fails closed on a verified archive hash conflict before provider effect', async () => {

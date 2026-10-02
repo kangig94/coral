@@ -20,11 +20,6 @@ describe('describer coverage invariant', () => {
     expect(missing).toEqual([]);
   });
 
-  it('assertDescriberCoverage passes for the canonical registries', () => {
-    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-    expect(() => assertDescriberCoverage(reducers.describerKeys)).not.toThrow();
-  });
-
   it('assertDescriberCoverage throws CoralSetupError("describer_missing") on mismatch', () => {
     const synthetic = ['job:job.invented_event_for_test'];
     expect(() => assertDescriberCoverage(synthetic)).toThrow(CoralSetupError);

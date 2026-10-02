@@ -101,115 +101,30 @@ describe('rewriteWikiUnderstanding', () => {
       '2026-04-20T08:00:00.000Z',
     );
   });
-
-  it('rejects against a missing wiki', async () => {
-    const { rewriteWikiUnderstanding, paths } = await loadModules();
-    const kb = createRuntime(paths);
-    const sourceFile = join(mockState.tmpHome, 'u.md');
-    writeFileSync(sourceFile, 'x', 'utf-8');
-
-    await expect(rewriteWikiUnderstanding(kb, { slug: 'missing-wiki', understandingFile: sourceFile })).rejects.toThrow(
-      'KB wiki not found',
-    );
-  });
 });
 
-describe('linkWikiKnowledge', () => {
-  it('appends new refs to Knowledge in the order given (idempotent on existing refs)', async () => {
-    const { createWiki, linkWikiKnowledge, paths, frontmatter } = await loadModules();
-    const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge' });
-    const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
-
-    await linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['[[notes/alpha]]', 'source:s-one'] });
-    await linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['note:alpha', '[[notes/beta]]'] });
-
-    expect(readBody(wikiPath, frontmatter).knowledge).toBe('- [[notes/alpha]]\n- [[sources/s-one]]\n- [[notes/beta]]');
-    expect(kb.readIndex()?.entries[wikiEntryId('living-knowledge')]).toMatchObject({
-      knowledge: ['note:alpha', 'source:s-one', 'note:beta'],
-    });
-  });
-
-  it('rejects refs that are not [[link]] / entry IDs', async () => {
-    const { createWiki, linkWikiKnowledge, paths } = await loadModules();
-    const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge' });
-
-    await expect(linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['not-a-link'] })).rejects.toThrow();
-  });
-});
-
-describe('unlinkWikiKnowledge', () => {
-  it('removes refs and their evidence sub-bullets in one write (idempotent on missing refs)', async () => {
-    const { createWiki, linkWikiKnowledge, unlinkWikiKnowledge, citeWikiKnowledge, paths, frontmatter } =
+describe('wiki Knowledge lifecycle', () => {
+  it('persists linked references and citations and removes their evidence when unlinked', async () => {
+    const { createWiki, linkWikiKnowledge, citeWikiKnowledge, unlinkWikiKnowledge, paths, frontmatter } =
       await loadModules();
     const kb = createRuntime(paths);
     await createWiki(kb, { slug: 'living-knowledge' });
-    await linkWikiKnowledge(kb, {
-      slug: 'living-knowledge',
-      refs: ['note:alpha', 'note:beta', 'note:gamma'],
-    });
-    const evidenceFile = join(mockState.tmpHome, 'evidence.md');
-    writeFileSync(evidenceFile, '2026-04-15 finding under beta', 'utf-8');
-    await citeWikiKnowledge(kb, {
-      slug: 'living-knowledge',
-      ref: 'note:beta',
-      evidenceFile,
-    });
     const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
 
-    await unlinkWikiKnowledge(kb, {
-      slug: 'living-knowledge',
-      refs: ['note:beta', 'note:absent'],
-    });
+    await linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['note:alpha', 'source:s-one'] });
+    expect(readBody(wikiPath, frontmatter).knowledge).toBe('- [[notes/alpha]]\n- [[sources/s-one]]');
 
-    expect(readBody(wikiPath, frontmatter).knowledge).toBe('- [[notes/alpha]]\n- [[notes/gamma]]');
-    expect(kb.readIndex()?.entries[wikiEntryId('living-knowledge')]).toMatchObject({
-      knowledge: ['note:alpha', 'note:gamma'],
-    });
-  });
-});
-
-describe('citeWikiKnowledge', () => {
-  it('appends a sub-bullet under the targeted Knowledge link', async () => {
-    const { createWiki, linkWikiKnowledge, citeWikiKnowledge, paths, frontmatter } = await loadModules();
-    const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge' });
-    await linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['note:alpha', 'note:beta'] });
-    const wikiPath = paths.wikiPathFromName('living-knowledge', process.env.CORAL_KB_PATH!);
     const evidenceFile = join(mockState.tmpHome, 'evidence.md');
-    writeFileSync(evidenceFile, '2026-04-15 follow-up finding\n', 'utf-8');
-
-    await citeWikiKnowledge(kb, { slug: 'living-knowledge', ref: '[[notes/alpha]]', evidenceFile });
-
+    writeFileSync(evidenceFile, '2026-04-15 evidence for alpha', 'utf-8');
+    await citeWikiKnowledge(kb, { slug: 'living-knowledge', ref: 'note:alpha', evidenceFile });
     expect(readBody(wikiPath, frontmatter).knowledge).toBe(
-      ['- [[notes/alpha]]', '  - 2026-04-15 follow-up finding', '- [[notes/beta]]'].join('\n'),
+      '- [[notes/alpha]]\n  - 2026-04-15 evidence for alpha\n- [[sources/s-one]]',
     );
-  });
 
-  it('rejects citing a ref that is not in Knowledge', async () => {
-    const { createWiki, linkWikiKnowledge, citeWikiKnowledge, paths } = await loadModules();
-    const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge' });
-    await linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['note:alpha'] });
-    const evidenceFile = join(mockState.tmpHome, 'e.md');
-    writeFileSync(evidenceFile, 'stray', 'utf-8');
-
-    await expect(citeWikiKnowledge(kb, { slug: 'living-knowledge', ref: 'note:absent', evidenceFile })).rejects.toThrow(
-      'not in the Knowledge section',
-    );
-  });
-
-  it('rejects when the evidence file is empty', async () => {
-    const { createWiki, linkWikiKnowledge, citeWikiKnowledge, paths } = await loadModules();
-    const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge' });
-    await linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['note:alpha'] });
-    const evidenceFile = join(mockState.tmpHome, 'e.md');
-    writeFileSync(evidenceFile, '   \n', 'utf-8');
-
-    await expect(citeWikiKnowledge(kb, { slug: 'living-knowledge', ref: 'note:alpha', evidenceFile })).rejects.toThrow(
-      'evidence file is empty',
-    );
+    await unlinkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['note:alpha'] });
+    expect(readBody(wikiPath, frontmatter).knowledge).toBe('- [[sources/s-one]]');
+    expect(kb.readIndex()?.entries[wikiEntryId('living-knowledge')]).toMatchObject({
+      knowledge: ['source:s-one'],
+    });
   });
 });

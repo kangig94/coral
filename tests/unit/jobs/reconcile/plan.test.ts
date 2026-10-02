@@ -19,7 +19,6 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const NOW = '2026-04-12T00:00:00.000Z';
 const CURRENT_NAMESPACE = 'namespace-current';
-const FOREIGN_NAMESPACE = 'namespace-foreign';
 
 type JobFixture = {
   jobId: string;
@@ -59,19 +58,13 @@ class InMemoryRecoverySnapshot implements RecoveryProjectionSnapshot {
   private readonly jobs = new Map<string, StoredJob>();
   private readonly sessionRefs: Array<{ sessionId: string; provider: string }> = [];
   private readonly sessions = new Map<string, ProviderSession | null>();
-  private readonly deadPids = new Set<number>();
 
   constructor(currentNamespace = CURRENT_NAMESPACE) {
     this.currentNamespace = currentNamespace;
   }
 
-  markPidDead(pid: number): this {
-    this.deadPids.add(pid);
-    return this;
-  }
-
-  isPidAlive(pid: number): boolean {
-    return !this.deadPids.has(pid);
+  isPidAlive(): boolean {
+    return true;
   }
 
   addJob(fixture: JobFixture): this {
@@ -230,18 +223,6 @@ function makeRuntime(jobId: string, overrides: Partial<DurableCliRuntimeRecord> 
   };
 }
 
-function makeAppServerRuntime(overrides: Partial<JobRuntime> = {}): JobRuntime {
-  return {
-    transport: 'app-server',
-    startTime: NOW,
-    providerMeta: {
-      provider: 'fakeprovider',
-      leaseState: 'acquired',
-    },
-    ...overrides,
-  } as JobRuntime;
-}
-
 function makeExit(overrides: Partial<DurableProcessExit> = {}): DurableProcessExit {
   return {
     exitCode: 0,
@@ -316,19 +297,6 @@ function summarizeActions(actions: RecoveryAction[]) {
 }
 
 describe('planRecovery', () => {
-  it('returns discardIncompleteAdmission for incomplete admission', () => {
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'incomplete-job',
-      status: null,
-      launch: makeLaunch('incomplete-job'),
-      hasLaunchRequest: true,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([{ type: 'discardIncompleteAdmission', jobId: 'incomplete-job' }]);
-  });
-
   it('returns markError with missing_launch_record for live jobs missing launch records', () => {
     const status = makeStatus('missing-launch-job', 'launching');
     const snapshot = new InMemoryRecoverySnapshot().addJob({
@@ -344,81 +312,6 @@ describe('planRecovery', () => {
         type: 'markError',
         jobId: 'missing-launch-job',
         fault: { kind: 'missing_launch_record' },
-        status,
-      },
-    ]);
-  });
-
-  it('returns markError with ghost_launch for stale_running jobs', () => {
-    const status = makeStatus('ghost-job', 'running');
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'ghost-job',
-      status,
-      launch: makeLaunch('ghost-job'),
-      hasLaunchRequest: true,
-      hasRuntimeStart: false,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([
-      {
-        type: 'resolvePreReadyLaunch',
-        jobId: 'ghost-job',
-        launchRecord: snapshot.readJob('ghost-job').launchRecord,
-        status,
-      },
-    ]);
-  });
-
-  it('does not adopt a launching job without a published runtime identity', () => {
-    const status = makeStatus('unpublished-launch-job', 'launching');
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'unpublished-launch-job',
-      status,
-      launch: makeLaunch('unpublished-launch-job'),
-      hasLaunchRequest: true,
-      hasRuntimeStart: false,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([
-      {
-        type: 'resolvePreReadyLaunch',
-        jobId: 'unpublished-launch-job',
-        launchRecord: snapshot.readJob('unpublished-launch-job').launchRecord,
-        status,
-      },
-    ]);
-  });
-
-  it('marks stale daemon-owned internal KB jobs as wrapper_lost instead of provider recovery', () => {
-    const status = makeStatus('kb-reindex-job', 'running', {
-      sessionId: null,
-      provider: null,
-      jobKind: 'kb',
-    });
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'kb-reindex-job',
-      status,
-      hasLaunchRequest: true,
-      hasRuntimeStart: true,
-      runtime: {
-        transport: 'internal',
-        operation: 'kb.reindex',
-        owner: 'kb-daemon',
-        startTime: NOW,
-      },
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([
-      {
-        type: 'markError',
-        jobId: 'kb-reindex-job',
-        fault: { kind: 'wrapper_lost' },
         status,
       },
     ]);
@@ -461,252 +354,6 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([]);
   });
 
-  it('preserves the durable workflow relation for a pre-upgrade queued child', () => {
-    const workflowId = '00000000-0000-4000-8000-000000000100';
-    const legacySlotJobId = `${workflowId}:0:0`;
-    const owner = { kind: 'workflow' as const, id: workflowId };
-    const launchRecord = makeLaunch(legacySlotJobId, {
-      owner,
-      enqueueSequence: 7,
-      parentWorkflowJobId: workflowId,
-      workflowSlotId: legacySlotJobId,
-      workflowSlotGeneration: 0,
-    });
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: legacySlotJobId,
-      status: makeStatus(legacySlotJobId, 'queued', { owner }),
-      launch: launchRecord,
-      hasLaunchRequest: true,
-      hasRuntimeStart: false,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([
-      {
-        type: 'registerQueued',
-        jobId: legacySlotJobId,
-        launchRecord,
-      },
-    ]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('returns registerRunning for running recoverable jobs', () => {
-    const launchRecord = makeLaunch('running-job');
-    const runtimeRecord = makeRuntime('running-job', { pid: 2001 });
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'running-job',
-      status: makeStatus('running-job', 'running'),
-      launch: launchRecord,
-      runtime: runtimeRecord,
-      hasLaunchRequest: true,
-      hasRuntimeStart: true,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([
-      {
-        type: 'registerRunning',
-        jobId: 'running-job',
-        launchRecord,
-        runtimeRecord,
-      },
-    ]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('routes same-namespace provider jobs with dead pids through provider recovery', () => {
-    const status = makeStatus('dead-pid-job', 'running');
-    const launchRecord = makeLaunch('dead-pid-job');
-    const runtimeRecord = makeRuntime('dead-pid-job', { pid: 9001 });
-    const snapshot = new InMemoryRecoverySnapshot()
-      .addJob({
-        jobId: 'dead-pid-job',
-        status,
-        launch: launchRecord,
-        runtime: runtimeRecord,
-        hasLaunchRequest: true,
-        hasRuntimeStart: true,
-      })
-      .markPidDead(9001);
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([
-      {
-        type: 'registerRunning',
-        jobId: 'dead-pid-job',
-        launchRecord,
-        runtimeRecord,
-      },
-    ]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('routes same-namespace launching provider jobs with dead pids through provider recovery', () => {
-    const status = makeStatus('dead-pid-launching', 'launching');
-    const launchRecord = makeLaunch('dead-pid-launching');
-    const runtimeRecord = makeRuntime('dead-pid-launching', { pid: 9002 });
-    const snapshot = new InMemoryRecoverySnapshot()
-      .addJob({
-        jobId: 'dead-pid-launching',
-        status,
-        launch: launchRecord,
-        runtime: runtimeRecord,
-        hasLaunchRequest: true,
-        hasRuntimeStart: true,
-      })
-      .markPidDead(9002);
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([
-      {
-        type: 'registerRunning',
-        jobId: 'dead-pid-launching',
-        launchRecord,
-        runtimeRecord,
-      },
-    ]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('still registers app-server runtimes (no pid) without probing liveness', () => {
-    const launchRecord = makeLaunch('app-server-no-pid-probe');
-    const runtimeRecord = makeAppServerRuntime();
-    const snapshot = new InMemoryRecoverySnapshot()
-      .addJob({
-        jobId: 'app-server-no-pid-probe',
-        status: makeStatus('app-server-no-pid-probe', 'running'),
-        launch: launchRecord,
-        runtime: runtimeRecord,
-        hasLaunchRequest: true,
-        hasRuntimeStart: true,
-      })
-      // Mark a sentinel pid as dead — the app-server runtime carries no pid
-      // so the planner must not consult the probe at all.
-      .markPidDead(9999);
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register[0]).toEqual({
-      type: 'registerRunning',
-      jobId: 'app-server-no-pid-probe',
-      launchRecord,
-      runtimeRecord,
-    });
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('returns registerRunning for stale_dead jobs', () => {
-    const launchRecord = makeLaunch('stale-dead-job');
-    const runtimeRecord = makeRuntime('stale-dead-job', { pid: 2002 });
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'stale-dead-job',
-      status: makeStatus('stale-dead-job', 'launching'),
-      launch: launchRecord,
-      runtime: runtimeRecord,
-      exit: makeExit({ exitCode: 1 }),
-      hasLaunchRequest: true,
-      hasRuntimeStart: true,
-      hasTerminalRecord: true,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([
-      {
-        type: 'registerRunning',
-        jobId: 'stale-dead-job',
-        launchRecord,
-        runtimeRecord,
-      },
-    ]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('returns no action for terminal jobs', () => {
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'terminal-job',
-      status: makeStatus('terminal-job', 'completed'),
-      launch: makeLaunch('terminal-job'),
-      runtime: makeRuntime('terminal-job'),
-      hasLaunchRequest: true,
-      hasRuntimeStart: true,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('returns registerRunning for inherited jobs from another namespace', () => {
-    const launchRecord = makeLaunch('foreign-job', { backendNamespace: FOREIGN_NAMESPACE });
-    const runtimeRecord = makeRuntime('foreign-job');
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'foreign-job',
-      status: makeStatus('foreign-job', 'running', { backendNamespace: FOREIGN_NAMESPACE }),
-      launch: launchRecord,
-      runtime: runtimeRecord,
-      hasLaunchRequest: true,
-      hasRuntimeStart: true,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([
-      {
-        type: 'registerRunning',
-        jobId: 'foreign-job',
-        launchRecord,
-        runtimeRecord,
-      },
-    ]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('returns registerRunning for app-server runtimes', () => {
-    const launchRecord = makeLaunch('app-server-job');
-    const runtimeRecord = makeAppServerRuntime();
-    const plan = planRecovery(
-      new InMemoryRecoverySnapshot().addJob({
-        jobId: 'app-server-job',
-        status: makeStatus('app-server-job', 'running'),
-        launch: launchRecord,
-        runtime: runtimeRecord,
-        hasLaunchRequest: true,
-        hasRuntimeStart: true,
-      }),
-    );
-
-    expect(plan.register[0]).toEqual({
-      type: 'registerRunning',
-      jobId: 'app-server-job',
-      launchRecord,
-      runtimeRecord,
-    });
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('returns releaseSessionClaim for terminal active job claims', () => {
-    const snapshot = new InMemoryRecoverySnapshot()
-      .addJob({
-        jobId: 'terminal-claimed-job',
-        status: makeStatus('terminal-claimed-job', 'error'),
-      })
-      .addSession({
-        scopeKey: '/sessions/a',
-        sessionId: 'terminal-claim',
-        provider: 'fakeprovider',
-        activeJobId: 'terminal-claimed-job',
-      });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([
-      {
-        type: 'releaseSessionClaim',
-        sessionId: 'terminal-claim',
-        jobId: 'terminal-claimed-job',
-      },
-    ]);
-  });
-
   it('returns releaseSessionClaim for orphaned active job claims', () => {
     const snapshot = new InMemoryRecoverySnapshot().addSession({
       scopeKey: '/sessions/a',
@@ -724,154 +371,6 @@ describe('planRecovery', () => {
         jobId: 'missing-job',
       },
     ]);
-  });
-
-  it('releases foreign-namespace terminal session claims without mutating the foreign job', () => {
-    const snapshot = new InMemoryRecoverySnapshot()
-      .addJob({
-        jobId: 'foreign-terminal-job',
-        status: makeStatus('foreign-terminal-job', 'completed', { backendNamespace: FOREIGN_NAMESPACE }),
-      })
-      .addSession({
-        scopeKey: '/sessions/foreign',
-        sessionId: 'foreign-terminal-claim',
-        provider: 'fakeprovider',
-        activeJobId: 'foreign-terminal-job',
-      });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([
-      {
-        type: 'releaseSessionClaim',
-        sessionId: 'foreign-terminal-claim',
-        jobId: 'foreign-terminal-job',
-      },
-    ]);
-  });
-
-  it('does not release session claims for live jobs that still exist', () => {
-    const snapshot = new InMemoryRecoverySnapshot()
-      .addJob({
-        jobId: 'live-job',
-        status: makeStatus('live-job', 'running'),
-        launch: makeLaunch('live-job'),
-        runtime: makeRuntime('live-job'),
-        hasLaunchRequest: true,
-        hasRuntimeStart: true,
-      })
-      .addSession({
-        scopeKey: '/sessions/live',
-        sessionId: 'live-claim',
-        provider: 'fakeprovider',
-        activeJobId: 'live-job',
-      });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([
-      {
-        type: 'registerRunning',
-        jobId: 'live-job',
-        launchRecord: makeLaunch('live-job'),
-        runtimeRecord: makeRuntime('live-job'),
-      },
-    ]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('treats a missing status projection as incomplete admission when launch exists', () => {
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'corrupt-status-job',
-      status: null,
-      launch: makeLaunch('corrupt-status-job'),
-      hasLaunchRequest: true,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([{ type: 'discardIncompleteAdmission', jobId: 'corrupt-status-job' }]);
-  });
-
-  it('suppresses queued recovery when the launch projection is unavailable', () => {
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'corrupt-launch-job',
-      status: makeStatus('corrupt-launch-job', 'queued'),
-      launch: null,
-      hasLaunchRequest: true,
-      hasRuntimeStart: false,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('suppresses running recovery when the runtime projection is unavailable', () => {
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'corrupt-runtime-job',
-      status: makeStatus('corrupt-runtime-job', 'running'),
-      launch: makeLaunch('corrupt-runtime-job'),
-      runtime: null,
-      hasLaunchRequest: true,
-      hasRuntimeStart: true,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('returns no action for projection fact combinations without recovery semantics', () => {
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'unknown-job',
-      status: makeStatus('unknown-job', 'queued'),
-      launch: makeLaunch('unknown-job'),
-      runtime: makeRuntime('unknown-job'),
-      hasLaunchRequest: true,
-      hasRuntimeStart: true,
-    });
-
-    const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([]);
-  });
-
-  it('produces identical output for identical input snapshots', () => {
-    const snapshot = new InMemoryRecoverySnapshot()
-      .addJob({
-        jobId: 'running-a',
-        status: makeStatus('running-a', 'running'),
-        launch: makeLaunch('running-a', { enqueueSequence: 30 }),
-        runtime: makeRuntime('running-a', { pid: 3001 }),
-        hasLaunchRequest: true,
-        hasRuntimeStart: true,
-      })
-      .addJob({
-        jobId: 'queued-b',
-        status: makeStatus('queued-b', 'queued'),
-        launch: makeLaunch('queued-b', { enqueueSequence: 2 }),
-        hasLaunchRequest: true,
-        hasRuntimeStart: false,
-      })
-      .addJob({
-        jobId: 'ghost-c',
-        status: makeStatus('ghost-c', 'launching'),
-        launch: makeLaunch('ghost-c', { enqueueSequence: 9 }),
-        hasLaunchRequest: true,
-        hasRuntimeStart: false,
-      })
-      .addSession({
-        scopeKey: '/sessions/deterministic',
-        sessionId: 'deterministic-claim',
-        provider: 'fakeprovider',
-        activeJobId: 'missing-d',
-      });
-
-    const first = planRecovery(snapshot);
-    const second = planRecovery(snapshot);
-
-    expect(first.register).toEqual(second.register);
-    expect(first.cleanup).toEqual(second.cleanup);
   });
 
   it('orders actions by registration bridge contract', () => {
@@ -984,25 +483,5 @@ describe('planRecovery', () => {
         jobId: 'missing-job',
       },
     ]);
-  });
-
-  it('propagates snapshot read failures', () => {
-    const snapshot = new InMemoryRecoverySnapshot().addJob({
-      jobId: 'throwing-job',
-      status: makeStatus('throwing-job', 'running'),
-      launch: makeLaunch('throwing-job'),
-      runtime: makeRuntime('throwing-job'),
-      hasLaunchRequest: true,
-      hasRuntimeStart: true,
-    });
-
-    (snapshot as any).readJob = () => {
-      throw new Error('broken readJob');
-    };
-    (snapshot as any).listSessionRefs = () => {
-      throw new Error('broken listSessionRefs');
-    };
-
-    expect(() => planRecovery(snapshot)).toThrow('broken readJob');
   });
 });

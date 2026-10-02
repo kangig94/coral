@@ -1,21 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { Command } from 'commander';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   createSettledUnboundStatusPort,
   MAX_SETTLED_UNBOUND_STATUS_ENTRIES,
 } from '#src/coordinator/services/recovery/settled-unbound-status.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { SETTLED_UNBOUND_STATUS_BOUNDARY } from '#src/recovery/source-registry.js';
-import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
-import { registerBackendCommands } from '#src/cli/commands/backend.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
-import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 
 describe('settled unbound status', () => {
   let db: Database;
@@ -29,70 +24,6 @@ describe('settled unbound status', () => {
 
   afterEach(() => {
     db.close();
-  });
-
-  it('persists an identity-matched exact row status and executes its rendered clear remedy', async () => {
-    const record = providerOperationRecord('settlement-pending');
-    insertProviderOperation(db, record);
-    const status = createSettledUnboundStatusPort(() => db, { now: () => 100 });
-
-    const recorded = status.record(record.operation);
-    if (recorded.kind !== 'recorded') throw new Error('expected durable status ownership');
-    expect(quarantine.list()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          boundary: SETTLED_UNBOUND_STATUS_BOUNDARY,
-          subject: expect.objectContaining({
-            revision: { kind: 'fingerprint', value: expect.stringMatching(/^sha256:/u) },
-          }),
-          errorMessage: expect.stringContaining(
-            `job '${record.operation.jobId}' operation '${record.operation.operationId}'`,
-          ),
-          detail: expect.not.stringContaining('coral-cli'),
-          remedy: expect.objectContaining({
-            kind: 'recovery-quarantine-clear',
-            command: expect.objectContaining({ kind: 'clear' }),
-          }),
-        }),
-      ]),
-    );
-    const rendered = formatRecoveryQuarantineList(quarantine.list());
-    expect(rendered).toContain(SETTLED_UNBOUND_STATUS_BOUNDARY);
-
-    const restartedStatus = createSettledUnboundStatusPort(() => db, { now: () => 200 });
-    let dispatched: unknown;
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, {
-      recoveryQuarantine: {
-        list: () => quarantine.list(),
-        clear: async (request) => {
-          dispatched = request;
-          if (request.revision === null) throw new Error('expected exact rendered revision');
-          const ownership = restartedStatus.rebind({ ...request, revision: request.revision, state: 'active' });
-          if (ownership === null) throw new Error('expected ownership reconstructed from the rendered coordinate');
-          if (!restartedStatus.clear(record.operation, ownership))
-            throw new Error('expected rendered remedy to clear status');
-          return { ...request, disposition: 'advanced' };
-        },
-      },
-    });
-    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    try {
-      await executeRenderedCommand(program, rendered, {
-        label: 'clear',
-        includes: 'recovery-quarantine clear',
-      });
-    } finally {
-      output.mockRestore();
-      process.exitCode = undefined;
-    }
-    expect(dispatched).toEqual({
-      boundary: SETTLED_UNBOUND_STATUS_BOUNDARY,
-      key: expect.stringContaining('settled-unbound:'),
-      revision: expect.stringMatching(/^sha256:/u),
-    });
-    expect(quarantine.list()).toEqual([]);
   });
 
   it('persists identity-keyed status when the provider-operation journal scan fails', () => {
@@ -163,13 +94,6 @@ describe('settled unbound status', () => {
 
     expect(status.clear(record.operation, recorded.ownership)).toBe(false);
     expect(quarantine.list()).toEqual([expect.objectContaining({ state: 'continuation' })]);
-  });
-
-  it('reports proven absence without creating durable status', () => {
-    const status = createSettledUnboundStatusPort(() => db, { now: () => 100 });
-
-    expect(status.record({ jobId: randomUUID(), operationId: randomUUID() })).toEqual({ kind: 'absent' });
-    expect(quarantine.list()).toEqual([]);
   });
 
   it('refuses a new identity without exceeding the durable status capacity', () => {

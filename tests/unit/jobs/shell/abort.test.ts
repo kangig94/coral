@@ -1,734 +1,119 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { allocateTestSession } from '../../../helpers/session.js';
-import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type * as NodeOs from 'node:os';
-import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
-import { createDeferred as _createDeferred } from '#tools/testing/deferred.js';
-import type { JobPhase } from '#src/jobs/phase.js';
-import type { JobLaunch as _JobLaunch, JobEvent, JobStatus } from '#src/jobs/records.js';
-import type { WaitStreamEvent } from '#src/jobs/wait.js';
-import {
-  providerContinuityEvent,
-  providerTerminalEvent,
-  streamProviderEvents,
-  streamProviderTerminal,
-  type ProviderTerminalInput,
-} from '#src/providers/stream.js';
-import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
+import { describe, expect, it } from 'vitest';
 
-import { jobsDir } from '#src/jobs/paths.js';
-import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { prepareTestCodexAppServer } from '#tests/helpers/provider-credentials.js';
-import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
-import {
-  AgentNamespaceNotFoundError as _AgentNamespaceNotFoundError,
-  AgentNotFoundError as _AgentNotFoundError,
-  InvalidAgentRefError as _InvalidAgentRefError,
-  type AgentRef,
-} from '#src/jobs/agent-resolution.js';
-import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
-import type { ProviderServerHandle } from '#src/providers/app-server-transport.js';
-import type { ChildProcessLike } from '#src/infra/port-types.js';
-import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
+import { JobAbortService } from '#src/coordinator/services/job-abort.js';
+import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
+import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { JobStore } from '#src/jobs/store.js';
-import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import { createRealRuntime } from '#src/runtime/real.js';
-import type { SessionManager } from '#src/sessions/shell.js';
-import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import { ExecutionService } from '#src/coordinator/execution-service.js';
-import { ProviderRegistry } from '#src/providers/registry.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import type { QueuedHandle } from '#src/jobs/contracts/admission.js';
+import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
+import { SessionManager } from '#src/sessions/shell.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
-import type { PreflightRuntime } from '#src/providers/contract.js';
-import { toProviderDefinition, type Provider, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
-import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
-import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
-import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { createDeferred } from '#tools/testing/deferred.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
-type ProviderTurnContinuity = {
-  conversationRef: string | null;
-  resumable: boolean;
-  providerContinuity?: Record<string, unknown> | null;
-};
-
-type ProviderTurnResult = ProviderTerminalInput & {
-  continuity?: ProviderTurnContinuity;
-};
-
-const mockState = vi.hoisted(() => ({
-  tmpHome: '',
-  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-abort-test-tmp`,
-  getNewProvider: vi.fn(),
-  resolveAgent: vi.fn(),
-}));
-const TEST_BACKEND_NAMESPACE = 'test-namespace';
-
-vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof NodeOs>('node:os');
-  return {
-    ...actual,
-    homedir: () => mockState.tmpHome,
-    tmpdir: () => mockState.tmpRoot,
-  };
-});
-
-vi.mock('#src/providers/registry.js', async () => ({
-  ...(await vi.importActual('#src/providers/registry.js')),
-  getNewProvider: mockState.getNewProvider,
-}));
-
-vi.mock('#src/jobs/agent-resolution.js', async () => {
-  const actual = await vi.importActual<typeof AgentResolutionMod>('#src/jobs/agent-resolution.js');
-  return {
-    ...actual,
-    resolveAgent: mockState.resolveAgent,
-  };
-});
-
-const createdJobIds = new Set<string>();
-let baselineJobIds = new Set<string>();
-let eventBus: TypedEventBus;
-let launchCoordinator: LaunchCoordinator;
-let runtime: ReturnType<typeof createRealRuntime>;
-let JOBS_DIR = '';
-
-function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createEventBodyCodec(), {
-    db: openTestStoreDb(runtime, ':memory:'),
-    eventBus,
-    providers: permissiveProviderLookupPort,
-  });
-}
-
-function _jobResultPath(jobId: string): string {
-  return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
-}
-
-function _getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {
-  return launchCoordinator.getActiveJobIds(pool);
-}
-
-function terminateAll(): void {
-  void launchCoordinator.settlePendingLaunches();
-}
-
-function _queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {
-  return launchCoordinator.queueDepth(pool);
-}
-
-function createService(
-  ctx: InvocationContext,
-  options: {
-    progressStore?: JobStore;
-    bundleHash?: string;
-    backendNamespace?: string;
-    providerHostManager?: ProviderHostManager;
-    pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
-  } = {},
-): ExecutionService {
-  const resolveProvider = (name: string) => toProviderDefinition(mockState.getNewProvider(name));
-  const providerRegistry = new ProviderRegistry();
-  const provider = resolveProvider('codex');
-  if (provider !== undefined) providerRegistry.register(provider);
-  const progressStore = options.progressStore ?? createProgressStore();
-  return new ExecutionService(ctx, {
-    childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
-    runtime,
-    progressStore,
-    bundleHash: options.bundleHash,
-    backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
-    launchCoordinator,
-    settlementRefusalRecorder: { record: () => true },
-    eventBus,
-    providerRegistry,
-    pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
-    ...createTestJobJournalDeps(progressStore, runtime),
-  });
-}
-
-function _createResolvedAgent(ref: AgentRef, content: string) {
-  return {
-    ref: { namespace: ref.namespace ?? 'coral', name: ref.name },
-    source: 'agent' as const,
-    content,
-    path: `/tmp/${ref.name}.md`,
-  };
-}
-
-function _setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
-  const fallback = handles.at(-1);
-  const mock = vi.fn(async () => {
-    if (!fallback) {
-      throw new Error('No provider server handle configured');
-    }
-    return fallback;
-  });
-  for (const handle of handles) {
-    mock.mockResolvedValueOnce(handle);
-  }
-  return mock;
-}
-
-function trackJob(jobId: string): void {
-  createdJobIds.add(jobId);
-}
-
-function listJobDirs(): Set<string> {
-  try {
-    return new Set(
-      readdirSync(JOBS_DIR, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name),
-    );
-  } catch {
-    return new Set<string>();
-  }
-}
-
-function trackAllJobDirs(): void {
-  try {
-    for (const jobId of listJobDirs()) {
-      if (baselineJobIds.has(jobId)) continue;
-      createdJobIds.add(jobId);
-    }
-  } catch {
-    /* best effort */
-  }
-}
-
-function _createFakeProviderServerHandle(options?: {
-  generation?: number;
-  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
-}) {
-  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
-  const request =
-    options?.request ??
-    (async (_method: string, _params: Record<string, unknown>) => {
-      return {};
-    });
-  const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
-  const notifyMock = vi.fn();
-  const onNotificationMock = vi.fn(
-    (handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
-      handlers.add(handler);
-      return () => {
-        handlers.delete(handler);
-      };
-    },
-  );
-  const markExpectedCloseMock = vi.fn();
-  const closeMock = vi.fn(async () => ({
-    kind: 'observed-absent' as const,
-    evidence: { subject: { kind: 'process' as const, pid: 43210 } },
-  }));
-  const closePromise = new Promise<Error | void>(() => {});
-  const child: ChildProcessLike = {
-    pid: 43210,
-    exitCode: null,
-    signalCode: null,
-    stdin: null,
-    stdout: null,
-    stderr: null,
-    on() {
-      return this;
-    },
-    kill: () => true,
-  };
-
-  return {
-    handle: {
-      pid: 43210,
-      child,
-      generation: options?.generation ?? 7,
-      rpc: {
-        request: requestMock as unknown as ProviderServerHandle['rpc']['request'],
-        notify: notifyMock,
-      },
-      onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
-      closePromise,
-      isClosed: () => false,
-      inspectDiagnostics: () => ({
-        hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
-        completedObservations: [],
-        factsTruncatedBeforeSeq: 0,
-      }),
-      markExpectedClose: markExpectedCloseMock,
-      close: closeMock,
-    } satisfies ProviderServerHandle,
-    requestMock,
-    notifyMock,
-    onNotificationMock,
-    markExpectedCloseMock,
-    closeMock,
-    emit(message: { method: string; params?: Record<string, unknown> }) {
-      for (const handler of handlers) {
-        handler(message);
-      }
-    },
-  };
-}
-
-type TestProviderTurnResult = ProviderTurnResult;
-
-type TestJobTerminal = Omit<NonNullable<JobStatus['result']>, 'outcome'> & {
-  outcome?: NonNullable<JobStatus['result']>['outcome'];
-};
-
-function completedOutcome() {
-  return { kind: 'completed' } as const;
-}
-
-function toCompletedResult(
-  result: TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
-): TestProviderTurnResult {
-  if ('outcome' in result) {
-    return result;
-  }
-  return { ...result, outcome: completedOutcome() };
-}
-
-function toCompletedJobTerminal(
-  result: TestJobTerminal | { content: string; durationMs: number },
-): NonNullable<JobStatus['result']> {
-  if ('outcome' in result && result.outcome !== undefined) {
-    return result as NonNullable<JobStatus['result']>;
-  }
-  return { ...result, outcome: completedOutcome() };
-}
-
-function streamCompletedResult(
-  result:
-    | TestProviderTurnResult
-    | Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>
-    | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
-) {
-  return streamProviderEvents(async (emit) => {
-    const completed = toCompletedResult(await result);
-    if (completed.continuity) {
-      emit(
-        providerContinuityEvent({
-          conversationRef: completed.continuity.conversationRef,
-          resumable: completed.continuity.resumable,
-          providerContinuity: completed.continuity.providerContinuity ?? null,
-        }),
-      );
-    }
-    emit(providerTerminalEvent(completed));
-  });
-}
-
-function makeProvider(options?: {
-  execute?: (
-    ...args: Parameters<StandaloneTestProvider['execute']>
-  ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
-  preflight?: Provider['preflight'];
-}): {
-  provider: NonNullable<ReturnType<typeof toProviderDefinition>>;
-  execute: ReturnType<typeof vi.fn>;
-  preflight?: ReturnType<typeof vi.fn>;
-} {
-  const execute = vi.fn((...args: Parameters<StandaloneTestProvider['execute']>) =>
-    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok', durationMs: 0 })),
-  );
-  const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
-  const provider: Provider = {
-    name: 'codex',
-    execute: execute as unknown as StandaloneTestProvider['execute'],
-    ...(preflight ? { preflight } : {}),
-  };
-  return { provider: toProviderDefinition(provider)!, execute, preflight };
-}
-
-function _makeCodexAppServerProvider(): Provider {
-  return {
-    name: 'codex',
-    execute: vi.fn(() =>
-      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
-    ),
-    appServerLifecycle: {
-      host: (_continuity, request) =>
-        prepareTestCodexAppServer({ cwd: request.cwd ?? process.cwd(), coralEnv: request.coralEnv }),
-      interrupt: async (lease, continuity) => {
-        const threadId = continuity.threadId;
-        const turnId = continuity.turnId;
-        if (typeof threadId !== 'string' || typeof turnId !== 'string') {
-          return;
-        }
-        await lease.rpc('turn/interrupt', { threadId, turnId });
-      },
-      probe: async (lease, continuity) => {
-        const threadId = continuity.threadId;
-        if (typeof threadId !== 'string') {
-          return { resumable: false, updatedContinuity: continuity };
-        }
-        const cwd = typeof continuity.cwd === 'string' ? continuity.cwd : process.cwd();
-        try {
-          await lease.rpc('thread/resume', {
-            threadId,
-            cwd,
-            model: null,
-            approvalPolicy: 'never',
-            sandbox: 'workspace-write',
-          });
-          return { resumable: true, updatedContinuity: continuity };
-        } catch (error) {
-          const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-          if (
-            message.includes('not found') ||
-            message.includes('missing thread') ||
-            message.includes('unknown thread') ||
-            message.includes('does not exist') ||
-            message.includes('no such thread')
-          ) {
-            return { resumable: false, updatedContinuity: continuity };
-          }
-          throw error;
-        }
-      },
-      finalizeInterrupted: (probeResult, continuity, context) => {
-        const effectiveConversationRef =
-          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
-        return probeResult.resumable
-          ? effectiveConversationRef
-            ? {
-                kind: 'set_resumable' as const,
-                conversationRef: effectiveConversationRef,
-                providerContinuity: continuity,
-              }
-            : {
-                kind: 'preserve' as const,
-                providerContinuity: continuity,
-              }
-          : {
-              kind: 'clear_non_resumable' as const,
-              providerContinuity: continuity,
-            };
-      },
-    },
-  };
-}
-
-function _expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
-  expect(preflight).toHaveBeenCalledWith({
-    process: runtime.process,
-    storage: runtime.storage,
-    env: runtime.env,
-    time: runtime.time,
-  } satisfies PreflightRuntime);
-}
-
-function _makeSharedClaudeAppServerProvider(spec: {
-  provider: string;
-  command: string;
-  args: string[];
-  cwd: string;
-  leaseMode: 'shared';
-  idleRetirement: 'unleased' | 'unleased-and-host-idle' | 'never';
-}): Provider {
-  return {
-    name: 'claude',
-    execute: vi.fn(() =>
-      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
-    ),
-    appServerLifecycle: {
-      host: { ...spec, cwd: fixtureCanonicalWorkDir(spec.cwd) },
-      interrupt: async (lease, continuity) => {
-        const brokerSessionKey =
-          typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
-        if (!brokerSessionKey) {
-          return;
-        }
-        await lease.rpc('turn/interrupt', {
-          brokerSessionKey,
-          ...(typeof continuity.brokerTurnId === 'string' ? { brokerTurnId: continuity.brokerTurnId } : {}),
-        });
-      },
-      probe: async (_lease, continuity) => ({
-        resumable: true,
-        updatedContinuity: continuity,
-      }),
-      finalizeInterrupted: (probeResult, continuity, context) => {
-        const effectiveConversationRef =
-          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
-        return probeResult.resumable
-          ? effectiveConversationRef
-            ? {
-                kind: 'set_resumable' as const,
-                conversationRef: effectiveConversationRef,
-                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
-              }
-            : {
-                kind: 'preserve' as const,
-                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
-              }
-          : {
-              kind: 'clear_non_resumable' as const,
-              ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
-            };
-      },
-    },
-  };
-}
-
-async function occupyProviderSlots(
-  service: ExecutionService,
-  ctx: InvocationContext,
-  providerName: string,
-): Promise<string[]> {
-  const decisions = await Promise.all(
-    Array.from({ length: getMaxWorkers(runtime.env) }, (_value, index) =>
-      service.start(providerName, { prompt: `occupy-${index}` }, ctx),
-    ),
-  );
-
-  const jobIds: string[] = [];
-  for (const decision of decisions) {
-    expect(decision.status).toBe('running');
-    if (decision.status !== 'running') {
-      throw new Error('expected running launch while occupying capacity');
-    }
-    trackJob(decision.jobId);
-    jobIds.push(decision.jobId);
-  }
-
-  return jobIds;
-}
-
-async function _waitForTerminalEvent(
-  service: ExecutionService,
-  jobId: string,
-): Promise<Extract<WaitStreamEvent, { type: 'terminal' }>> {
-  for await (const event of service.waitStream({ jobIds: [jobId], timeoutSeconds: 5 })) {
-    if (event.type === 'terminal') {
-      return event;
-    }
-  }
-
-  throw new Error(`Expected terminal event for ${jobId}`);
-}
-
-function _createClaimedJob(
-  service: ExecutionService,
-  ctx: InvocationContext,
-  options: { initialPhase?: JobPhase } = {},
-): {
-  jobId: string;
-  sessionId: string;
-  progressStore: JobStore;
-  sessionManager: SessionManager;
-} {
-  const { progressStore, sessionManager } =
-    /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-    getInternals(service);
-  const session = allocateTestSession(
-    sessionManager,
-    'codex',
-    'wait-session',
-    'test-model',
-    ctx.projectRoot,
-    ctx.projectRoot,
-  );
-  const jobId = `wait-job-${randomUUID()}`;
-  trackJob(jobId);
-  initTestJob(progressStore, {
-    jobId,
-    sessionId: session.sessionId,
-    provider: 'codex',
-    projectRoot: ctx.projectRoot,
-    backendNamespace: TEST_BACKEND_NAMESPACE,
-    initialPhase: options.initialPhase ?? 'running',
-  });
-  expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
-  return {
-    jobId,
-    sessionId: session.sessionId,
-    progressStore,
-    sessionManager,
-  };
-}
-
-function _realizePluginRoot(ctx: InvocationContext): string {
-  mkdirSync(ctx.pluginRoot, { recursive: true });
-  return pluginRootNamespace(ctx.pluginRoot);
-}
-
-function _createScopedContext(name: string): InvocationContext {
-  const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, name));
-  mkdirSync(projectRoot, { recursive: true });
-  const pluginRoot = join(projectRoot, 'plugin');
-  mkdirSync(pluginRoot, { recursive: true });
-  return {
-    projectRoot,
-    pluginRoot,
-    coralEnv: {},
-    principal: testProjectPrincipal(projectRoot),
-    providerScope: TEST_CODEX_SCOPE,
-  };
-}
-
-function _isoAt(ms: number): string {
-  return new Date(ms).toISOString();
-}
-
-async function _flushMicrotasks(count = 5): Promise<void> {
-  for (let index = 0; index < count; index += 1) {
-    await Promise.resolve();
-  }
-}
-
-function _makeStatusRecord(
-  ctx: InvocationContext,
-  jobId: string,
-  phase: JobPhase,
-  options: {
-    sessionId?: string;
-    result?: TestJobTerminal;
-  } = {},
-): JobStatus {
-  return {
-    jobId,
-    owner: { kind: 'provider-session', id: options.sessionId ?? `${jobId}-session` },
-    sessionId: options.sessionId ?? `${jobId}-session`,
-    provider: 'codex',
-    projectRoot: ctx.projectRoot,
-    workDir: ctx.projectRoot,
-    backendNamespace: TEST_BACKEND_NAMESPACE,
-    jobKind: 'provider',
-    phase,
-    updatedAt: '2026-03-06T00:00:00.000Z',
-    ...(options.result ? { result: toCompletedJobTerminal(options.result) } : {}),
-  };
-}
-
-function _makeTerminalReplay(
-  jobId: string,
-  options: {
-    seq?: number;
-    sessionId?: string;
-    ts?: string;
-    result?: TestJobTerminal;
-  } = {},
-): JobEvent {
-  return {
-    jobId,
-    sessionId: options.sessionId ?? `${jobId}-session`,
-    seq: options.seq ?? 1,
-    type: 'terminal',
-    ts: options.ts ?? '2026-03-06T00:00:00.000Z',
-    result: toCompletedJobTerminal(options.result ?? { content: 'done', durationMs: 0 }),
-  };
-}
-
-describe('ExecutionService abort', () => {
-  let ctx: InvocationContext;
-
-  beforeEach(() => {
-    rmSync(mockState.tmpRoot, { recursive: true, force: true });
-    mkdirSync(mockState.tmpRoot, { recursive: true });
-    mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
-    const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, 'project'));
-    mkdirSync(projectRoot, { recursive: true });
-    ctx = {
-      projectRoot,
-      pluginRoot: join(projectRoot, 'plugin'),
-      coralEnv: {},
-      principal: testProjectPrincipal(projectRoot),
-      providerScope: TEST_CODEX_SCOPE,
-    };
-    baselineJobIds = listJobDirs();
-    eventBus = new TypedEventBus();
-    runtime = createRealRuntime('prod');
-    JOBS_DIR = jobsDir(runtime.env);
-    launchCoordinator = new LaunchCoordinator({ runtime });
-    mockState.getNewProvider.mockReset();
-    mockState.resolveAgent.mockReset();
+describe('jobs abort command', () => {
+  it('aborts only the selected job and reports missing jobs', () => {
+    const registry = new AbortRegistry(new SimulationRuntime().ids);
+    registry.register('first');
+    registry.register('second');
+    const command = new JobAbortService({ abortRegistry: registry });
+    expect(command.abort(['first', 'missing'])).toEqual({ aborted: ['first'], notFound: ['missing'] });
+    expect(registry.getSignal('first')?.aborted).toBe(true);
+    expect(registry.getSignal('second')?.aborted).toBe(false);
   });
 
-  afterEach(async () => {
-    trackAllJobDirs();
-    terminateAll();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    for (const jobId of createdJobIds) {
-      rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
-    }
-    createdJobIds.clear();
-    rmSync(mockState.tmpHome, { recursive: true, force: true });
-    rmSync(mockState.tmpRoot, { recursive: true, force: true });
-    mockState.getNewProvider.mockReset();
-    mockState.resolveAgent.mockReset();
-    vi.restoreAllMocks();
-  });
-
-  it('abort aborts the correct jobs', async () => {
-    const never = new Promise<ProviderTurnResult>(() => {});
-    const { provider } = makeProvider({ execute: () => never });
-    mockState.getNewProvider.mockReturnValue(provider);
-    const service = createService(ctx);
-
-    const first = await service.start('codex', { prompt: 'first' }, ctx);
-    const second = await service.start('codex', { prompt: 'second' }, ctx);
-
-    expect(first.status).toBe('running');
-    expect(second.status).toBe('running');
-    if (first.status !== 'running' || second.status !== 'running') {
-      throw new Error('expected running jobs');
-    }
-
-    trackJob(first.jobId);
-    trackJob(second.jobId);
-    const result = service.abort([first.jobId, 'missing-job']);
-    const { abortRegistry } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-
-    expect(result).toEqual({
-      aborted: [first.jobId],
-      notFound: ['missing-job'],
-    });
-    expect(abortRegistry.getSignal(first.jobId)?.aborted).toBe(true);
-    expect(abortRegistry.getSignal(second.jobId)?.aborted).toBe(false);
-  });
-
-  it('abort persists queued jobs as aborted instead of error', async () => {
-    const never = new Promise<ProviderTurnResult>(() => {});
-    const { provider } = makeProvider({ execute: () => never });
-    mockState.getNewProvider.mockReturnValue(provider);
-    const service = createService(ctx);
-    await occupyProviderSlots(service, ctx, 'codex');
-
-    const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
-
-    expect(decision.status).toBe('queued');
-    if (decision.status !== 'queued') throw new Error('expected queued launch');
-    trackJob(decision.jobId);
-
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    expect(launchCoordinator.reservationFor(decision.jobId)).toMatchObject({ kind: 'queued' });
-    const abortResult = service.abort([decision.jobId]);
-
-    expect(abortResult).toEqual({
-      aborted: [decision.jobId],
-      notFound: [],
-    });
-    await vi.waitFor(() => {
-      expect(progressStore.readStatus(decision.jobId)).toMatchObject({
-        phase: 'aborted',
-        result: {
-          outcome: { kind: 'aborted', reason: 'queue_shutdown' },
-        },
+  it('terminalizes an aborted queued job as aborted and releases its claim', async () => {
+    const runtime = new SimulationRuntime();
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    try {
+      const store = new JobStore('test', runtime, createEventBodyCodec(), {
+        db,
+        providers: permissiveProviderLookupPort,
+        reducers: composeReducers(jobsRegistry, sessionsRegistry),
       });
-    });
-    expect(launchCoordinator.reservationFor(decision.jobId)).toBeNull();
+      const registry = new AbortRegistry(runtime.ids);
+      const released = createDeferred<void>();
+      const sessions = new SessionManager(
+        '/project',
+        runtime,
+        undefined,
+        () => released.resolve(),
+        db,
+        permissiveProviderLookupPort,
+      );
+      const session = sessions.prepare({
+        binding: TEST_CODEX_BINDING,
+        name: 'test',
+        cwd: '/project',
+        projectRoot: '/project',
+        backendNamespace: 'test',
+      });
+      let queued = true;
+      const admission: QueuedHandle = {
+        type: 'queued',
+        queuePosition: 1,
+        waitForPermit: () => new Promise(() => {}),
+        cancel: () => {
+          queued = false;
+          return { kind: 'cancelled' };
+        },
+      };
+      const orchestrator = new LaunchOrchestrator({
+        runtime,
+        progressStore: store,
+        sessionManager: sessions,
+        abortRegistry: registry,
+        backendNamespace: 'test',
+        bundleHash: 'test',
+        providerRegistry: {} as never,
+        providerOperationBinding: {} as never,
+        durableSpawner: {} as never,
+        launchAdmission: { requestLaunch: () => admission } as never,
+        coordinatorCommit: (cb) => store.commit(cb),
+        settlementRefusalRecorder: { record: () => true },
+        terminalMaterializer: { recordProviderTerminal: () => {} },
+      });
+      const decision = orchestrator.launchInitialProviderJob(
+        { name: 'codex' } as BoundProvider,
+        session,
+        {
+          action: 'exec',
+          sessionId: session.sessionId,
+          prompt: 'run',
+          cwd: fixtureCanonicalWorkDir('/project'),
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        {
+          requestedJobId: 'queued-job',
+          owner: { kind: 'provider-session', id: session.sessionId },
+          mintProtectedEnv: () => ({}),
+        },
+      );
+      expect(decision).toMatchObject({ status: 'queued' });
+      expect(store.readStatus('queued-job')?.phase).toBe('queued');
+      const command = new JobAbortService({ abortRegistry: registry });
+      expect(command.abort(['queued-job'])).toEqual({ aborted: ['queued-job'], notFound: [] });
+      await released.promise;
+      expect(store.readStatus('queued-job')).toMatchObject({
+        phase: 'aborted',
+        result: { outcome: { kind: 'aborted', reason: 'queue_shutdown' } },
+      });
+      expect(sessions.get('codex', session.sessionId)?.activeJobId).toBeUndefined();
+      expect(queued).toBe(false);
+      expect(registry.has('queued-job')).toBe(false);
+    } finally {
+      db.close();
+    }
   });
 });
-import { initTestJob } from '#tests/helpers/session.js';

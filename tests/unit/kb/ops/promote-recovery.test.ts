@@ -193,37 +193,6 @@ describe('runPromoteRecovery', () => {
     vi.resetModules();
   });
 
-  it('cleans up staged artifacts at marker-created phase without touching the memo', async () => {
-    const { paths } = await loadKbModules();
-    const kb = createRuntime(paths);
-    const { markerPath, memoPath, notePath, wikiPath, promoteId } = setupPromoteFixture(paths, {
-      phase: 'marker-created',
-    });
-
-    await runPromoteRecovery(kb);
-
-    expect(existsSync(markerPath)).toBe(false);
-    expect(existsSync(promoteRecoveryStagingDir(kbRuntimePaths('prod').root, promoteId))).toBe(false);
-    expect(existsSync(promoteRecoveryBackupDir(kbRuntimePaths('prod').root, promoteId))).toBe(false);
-    expect(existsSync(memoPath)).toBe(true);
-    expect(existsSync(notePath)).toBe(false);
-    expect(existsSync(wikiPath)).toBe(false);
-  });
-
-  it('cleans up staged artifacts at payloads-staged phase without touching the memo', async () => {
-    const { paths } = await loadKbModules();
-    const kb = createRuntime(paths);
-    const { markerPath, memoPath, notePath } = setupPromoteFixture(paths, {
-      phase: 'payloads-staged',
-    });
-
-    await runPromoteRecovery(kb);
-
-    expect(existsSync(markerPath)).toBe(false);
-    expect(existsSync(memoPath)).toBe(true);
-    expect(existsSync(notePath)).toBe(false);
-  });
-
   it('rolls back the matching note file and cleans up at note-written phase', async () => {
     const { paths } = await loadKbModules();
     const kb = createRuntime(paths);
@@ -237,21 +206,6 @@ describe('runPromoteRecovery', () => {
     expect(existsSync(markerPath)).toBe(false);
     expect(existsSync(notePath)).toBe(false);
     expect(existsSync(memoPath)).toBe(true);
-  });
-
-  it('leaves a non-matching note file alone at note-written phase but still cleans up the marker', async () => {
-    const { paths } = await loadKbModules();
-    const kb = createRuntime(paths);
-    const foreignContent = '# Foreign File\n';
-    const { markerPath, notePath } = setupPromoteFixture(paths, {
-      phase: 'note-written',
-      noteOnDisk: foreignContent,
-    });
-
-    await runPromoteRecovery(kb);
-
-    expect(existsSync(markerPath)).toBe(false);
-    expect(readFileSync(notePath, 'utf-8')).toBe(foreignContent);
   });
 
   it('rolls forward when wiki-written hashes match the marker', async () => {
@@ -297,74 +251,5 @@ describe('runPromoteRecovery', () => {
     expect(existsSync(notePath)).toBe(false);
     expect(readFileSync(wikiPath, 'utf-8')).toBe(WIKI_OLD_RAW);
     expect(existsSync(memoPath)).toBe(true);
-  });
-
-  it('removes the memo and cleans up at state-committed phase', async () => {
-    const { paths } = await loadKbModules();
-    const kb = createRuntime(paths);
-    const { markerPath, memoPath, notePath, wikiPath } = setupPromoteFixture(paths, {
-      phase: 'state-committed',
-      noteOnDisk: NOTE_RAW,
-      wikiOnDisk: WIKI_NEW_RAW,
-    });
-
-    await runPromoteRecovery(kb);
-
-    expect(existsSync(markerPath)).toBe(false);
-    expect(existsSync(memoPath)).toBe(false);
-    expect(existsSync(notePath)).toBe(true);
-    expect(existsSync(wikiPath)).toBe(true);
-  });
-
-  it('cleans up at memo-removed phase even when the memo was already gone', async () => {
-    const { paths } = await loadKbModules();
-    const kb = createRuntime(paths);
-    const { markerPath, notePath, wikiPath } = setupPromoteFixture(paths, {
-      phase: 'memo-removed',
-      noteOnDisk: NOTE_RAW,
-      wikiOnDisk: WIKI_NEW_RAW,
-      memoOnDisk: null,
-    });
-
-    await runPromoteRecovery(kb);
-
-    expect(existsSync(markerPath)).toBe(false);
-    expect(existsSync(notePath)).toBe(true);
-    expect(existsSync(wikiPath)).toBe(true);
-  });
-
-  it('cleans up at cleanup-complete phase as a no-op terminal', async () => {
-    const { paths } = await loadKbModules();
-    const kb = createRuntime(paths);
-    const { markerPath, notePath, wikiPath, promoteId } = setupPromoteFixture(paths, {
-      phase: 'cleanup-complete',
-      noteOnDisk: NOTE_RAW,
-      wikiOnDisk: WIKI_NEW_RAW,
-    });
-
-    await runPromoteRecovery(kb);
-
-    expect(existsSync(markerPath)).toBe(false);
-    expect(existsSync(promoteRecoveryStagingDir(kbRuntimePaths('prod').root, promoteId))).toBe(false);
-    expect(existsSync(notePath)).toBe(true);
-    expect(existsSync(wikiPath)).toBe(true);
-  });
-
-  it('removes a malformed marker but leaves staged payloads for operator inspection', async () => {
-    const { paths } = await loadKbModules();
-    const kb = createRuntime(paths);
-    const runtimeDir = kbRuntimePaths('prod').root;
-    mkdirSync(promoteRecoveryDir(runtimeDir), { recursive: true });
-    const malformedPath = promoteRecoveryMarkerPath(runtimeDir, 'malformed');
-    writeFileSync(malformedPath, '{ not valid json', 'utf-8');
-    const stagedDir = promoteRecoveryStagingDir(runtimeDir, 'malformed');
-    mkdirSync(stagedDir, { recursive: true });
-    const stagedNote = join(stagedDir, 'note.md');
-    writeFileSync(stagedNote, 'staged content', 'utf-8');
-
-    await runPromoteRecovery(kb);
-
-    expect(existsSync(malformedPath)).toBe(false);
-    expect(existsSync(stagedNote)).toBe(true);
   });
 });

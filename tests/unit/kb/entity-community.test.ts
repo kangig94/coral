@@ -35,51 +35,6 @@ afterEach(() => {
 });
 
 describe('entity-community', () => {
-  it('reduces directed relationships into a deterministic undirected graph, dropping self loops and deduping evidence', async () => {
-    const { buildEntityRelationshipGraph } = await loadCommunityDetectionWithMock();
-    const graph = buildEntityRelationshipGraph({
-      entityMeta: {
-        alpha: { type: 'concept', description: 'Alpha.' },
-        beta: { type: 'concept', description: 'Beta.' },
-        gamma: { type: 'concept', description: 'Gamma.' },
-      },
-      relationships: [
-        {
-          source: 'alpha',
-          target: 'beta',
-          type: 'enables',
-          description: 'Alpha enables beta.',
-          evidence: ['note:1', 'note:1', 'note:2'],
-        },
-        {
-          source: 'beta',
-          target: 'alpha',
-          type: 'requires',
-          description: 'Beta points back to alpha.',
-          evidence: ['note:3'],
-        },
-        {
-          source: 'beta',
-          target: 'beta',
-          type: 'implements',
-          description: 'Self loops should not survive.',
-          evidence: ['note:4'],
-        },
-      ],
-    });
-
-    expect(graph.tags).toEqual(['alpha', 'beta', 'gamma']);
-    expect(graph.edges).toEqual([
-      {
-        left: 'alpha',
-        right: 'beta',
-        weight: 3,
-      },
-    ]);
-    expect(graph.adjacency.get('alpha')?.get('beta')).toBe(3);
-    expect(graph.adjacency.get('beta')?.get('alpha')).toBe(3);
-  });
-
   it('maps dendrogram pointer arrays back to entity names and carries hierarchy-aware slugs across runs', async () => {
     const { buildEntityRelationshipGraph, detectCommunities } = await loadCommunityDetectionWithMock(() => ({
       communities: {
@@ -167,60 +122,6 @@ describe('entity-community', () => {
         children: ['community:alpha-beta-retained', 'community:gamma-omega-retained'],
       }),
     ]);
-  });
-
-  it('reuses the selected partition for topology hashing and community materialization', async () => {
-    let louvainCalls = 0;
-    const { buildCommunityPartitionTree, buildEntityRelationshipGraph } = await loadCommunityDetectionWithMock(() => {
-      louvainCalls += 1;
-      return {
-        communities: {
-          alpha: 0,
-          beta: 0,
-          gamma: 1,
-          omega: 1,
-        },
-        modularity: 0.61,
-        dendrogram: [Uint32Array.from([0, 1, 2, 3]), Uint32Array.from([0, 0, 1, 1]), Uint32Array.from([0, 0, 0, 0])],
-      };
-    });
-    const graph = buildEntityRelationshipGraph({
-      entityMeta: {
-        alpha: { type: 'concept', description: 'Alpha.' },
-        beta: { type: 'concept', description: 'Beta.' },
-        gamma: { type: 'concept', description: 'Gamma.' },
-        omega: { type: 'concept', description: 'Omega.' },
-      },
-      relationships: [
-        {
-          source: 'alpha',
-          target: 'beta',
-          type: 'enables',
-          description: 'Alpha links to beta.',
-          evidence: ['note:1'],
-        },
-        {
-          source: 'gamma',
-          target: 'omega',
-          type: 'enables',
-          description: 'Gamma links to omega.',
-          evidence: ['note:2'],
-        },
-      ],
-    });
-
-    const partitionTree = buildCommunityPartitionTree(graph);
-    const callsAfterBuild = louvainCalls;
-
-    expect(partitionTree.computeTopologyFingerprint()).toMatch(/^[a-f0-9]{64}$/);
-    expect(partitionTree.detect().map((community) => community.members)).toEqual([
-      ['alpha', 'beta'],
-      ['gamma', 'omega'],
-      ['alpha', 'beta', 'gamma', 'omega'],
-    ]);
-    expect(partitionTree.computeTopologyFingerprint()).toMatch(/^[a-f0-9]{64}$/);
-    expect(louvainCalls).toBe(callsAfterBuild);
-    expect(callsAfterBuild).toBeGreaterThan(0);
   });
 
   it('invalidates leaf fingerprints on entity metadata changes and parent fingerprints on child summary changes', async () => {

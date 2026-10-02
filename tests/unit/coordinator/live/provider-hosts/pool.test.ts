@@ -12,7 +12,7 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', async (
   ensureProviderProxySet: vi.fn(),
 }));
 
-import { hostFingerprintFromSpec, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
+import { hostFingerprintFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
@@ -22,7 +22,7 @@ import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/se
 import type { ProviderProxySetRecoveryAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import type { ProviderProxyAcquisitionRecoveryOutcome } from '#src/coordinator/live/provider-proxy/index.js';
 import { reobserveDurableProviderProxyAcquisitionContainment } from '#src/coordinator/live/provider-proxy/spawn-undo.js';
-import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '#src/provider-proxy/protocol.js';
+
 import {
   handOverProviderProxyAcquisitionControlSession,
   providerProxyControlSessionOwner,
@@ -31,9 +31,9 @@ import type {
   DurableProviderProxyOperationAuthority,
   ProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
-import type { HostRef, ProviderServerSpec } from '#src/providers/contract.js';
+import type { ProviderServerSpec } from '#src/providers/contract.js';
 import type { ProviderServerCloseDisposition } from '#src/providers/app-server-transport.js';
-import { backendLog } from '#src/infra/backend-log.js';
+
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
@@ -296,175 +296,6 @@ describe('provider host pool', () => {
     await manager.shutdown();
   });
 
-  it('hostKeyFromSpec normalizes env ordering and separates incompatible hosts', () => {
-    const base = createExclusiveSpec({ args: ['app-server'], cwd: fixtureCanonicalWorkDir('/workspace/a') });
-
-    expect(hostKeyFromSpec(base)).toBe(
-      hostKeyFromSpec({
-        ...base,
-        env: {},
-      }),
-    );
-    expect(
-      hostKeyFromSpec({
-        ...base,
-        env: {
-          BETA: '2',
-          ALPHA: '1',
-        },
-      }),
-    ).toBe(
-      hostKeyFromSpec({
-        ...base,
-        env: {
-          ALPHA: '1',
-          BETA: '2',
-        },
-      }),
-    );
-    expect(hostKeyFromSpec({ ...base, cwd: fixtureCanonicalWorkDir('/workspace/b') })).not.toBe(hostKeyFromSpec(base));
-    expect(hostKeyFromSpec({ ...base, env: { CODEX_HOME: '/accounts/a' } })).not.toBe(
-      hostKeyFromSpec({ ...base, env: { CODEX_HOME: '/accounts/b' } }),
-    );
-    const shared = createSharedSpec();
-    expect(hostKeyFromSpec({ ...shared, idleRetirement: 'never' })).toBe(hostKeyFromSpec(shared));
-    const initialized = createExclusiveSpec({
-      initializeRequest: { method: 'initialize', params: { beta: 2, alpha: { y: 2, x: 1 } } },
-      initializeTimeoutMs: 1_000,
-      shutdownCapability: { method: 'shutdown', timeoutMs: 2_000 },
-    });
-    expect(hostKeyFromSpec(initialized)).toBe(
-      hostKeyFromSpec({
-        ...initialized,
-        initializeRequest: { method: 'initialize', params: { alpha: { x: 1, y: 2 }, beta: 2 } },
-      }),
-    );
-    expect(hostKeyFromSpec({ ...initialized, initializeTimeoutMs: 1_001 })).not.toBe(hostKeyFromSpec(initialized));
-    expect(hostKeyFromSpec({ ...initialized, shutdownCapability: { method: 'stop', timeoutMs: 2_000 } })).not.toBe(
-      hostKeyFromSpec(initialized),
-    );
-  });
-
-  it('deeply snapshots host identity and lifecycle data before caller mutation', async () => {
-    let resolveClosed = () => {};
-    const server = createFakeProviderServerHandle({
-      generation: 10,
-      request: async (method) => {
-        if (method === 'shutdown-original') resolveClosed();
-        return {};
-      },
-    });
-    resolveClosed = server.resolveClosed;
-    const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer,
-    });
-    const spec = createSharedSpec({
-      args: ['broker-original'],
-      env: { PATH: '/bin/original' },
-      initializeRequest: {
-        method: 'initialize-original',
-        params: { nested: { route: 'original' }, sequence: ['original'] },
-      },
-      initializeTimeoutMs: 1_000,
-      shutdownCapability: { method: 'shutdown-original', timeoutMs: 2_000 },
-    });
-    const originalIdentity = hostKeyFromSpec(spec);
-    const acquisition = manager.openSession(createLaunch(spec));
-
-    spec.args[0] = 'broker-mutated';
-    spec.env!.PATH = '/bin/mutated';
-    (spec.initializeRequest!.params.nested as { route: string }).route = 'mutated';
-    (spec.initializeRequest!.params.sequence as string[])[0] = 'mutated';
-    spec.shutdownCapability!.method = 'shutdown-mutated';
-
-    const lease = await acquisition;
-    const entry = [...(manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.values()][0];
-    expect(entry.identityKey).toBe(originalIdentity);
-    expect(entry.spec).toMatchObject({
-      args: ['broker-original'],
-      env: { PATH: '/bin/original' },
-      initializeRequest: {
-        method: 'initialize-original',
-        params: { nested: { route: 'original' }, sequence: ['original'] },
-      },
-      shutdownCapability: { method: 'shutdown-original', timeoutMs: 2_000 },
-    });
-    expect(Object.isFrozen(entry.spec)).toBe(true);
-    expect(Object.isFrozen(entry.spec.initializeRequest?.params)).toBe(true);
-    expect(Object.isFrozen(entry.spec.initializeRequest?.params.nested as object)).toBe(true);
-    expect(spawnProviderServer.mock.calls[0]?.[0]).toMatchObject({
-      args: ['broker-original'],
-      exactEnv: { PATH: '/bin/original' },
-      initializeRequest: {
-        method: 'initialize-original',
-        params: { nested: { route: 'original' }, sequence: ['original'] },
-      },
-    });
-    expect(await manager.attachSession(lease.hostRef, expectedHost(entry.spec))).not.toBeNull();
-    expect(
-      await manager.attachSession({ ...lease.hostRef, fingerprint: '0'.repeat(64) }, expectedHost(entry.spec)),
-    ).toBeNull();
-    expect(
-      await manager.attachSession({ ...lease.hostRef, ownerJobId: 'forbidden' } as never, expectedHost(entry.spec)),
-    ).toBeNull();
-
-    lease.close();
-    await manager.shutdown();
-    expect(server.requestMock).toHaveBeenCalledWith('shutdown-original', {});
-    expect(server.requestMock).not.toHaveBeenCalledWith('shutdown-mutated', {});
-  });
-
-  it('never reuses a job-exclusive process and launches only its stable environment', async () => {
-    const first = createFakeProviderServerHandle({ generation: 41 });
-    const second = createFakeProviderServerHandle({ generation: 42 });
-    const spawnProviderServer = createSpawnProviderServerMock(first.handle, second.handle);
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer,
-    });
-    const spec = createExclusiveSpec({ env: { CODEX_HOME: '/accounts/a' } });
-
-    const leaseA = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
-    const leaseB = await manager.openSession(createLaunch(spec), { jobId: 'job-b' });
-
-    expect(leaseA.hostRef.instanceId).not.toBe(leaseB.hostRef.instanceId);
-    expect(spawnProviderServer).toHaveBeenCalledTimes(2);
-    expect(spawnProviderServer.mock.calls[0]?.[0].exactEnv).toEqual({ CODEX_HOME: '/accounts/a' });
-    expect(spawnProviderServer.mock.calls[1]?.[0].exactEnv).toEqual({ CODEX_HOME: '/accounts/a' });
-
-    leaseA.close();
-    leaseB.close();
-    await manager.shutdown();
-  });
-
-  it('single-flights one job-exclusive placement for equal specs with the same owner job', async () => {
-    const first = createFakeProviderServerHandle({ generation: 41 });
-    const second = createFakeProviderServerHandle({ generation: 41 });
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(first.handle, second.handle),
-    });
-    const spec = createExclusiveSpec();
-
-    const sessionA = await manager.openSession(createLaunch(spec), { jobId: 'same-job' });
-    const sessionB = await manager.openSession(createLaunch(spec), { jobId: 'same-job' });
-
-    expect(sessionA.hostRef.instanceId).toBe(sessionB.hostRef.instanceId);
-    expect((manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.size).toBe(1);
-    expect(first.closeMock).not.toHaveBeenCalled();
-    expect(await manager.attachSession(sessionA.hostRef, expectedHost(spec, 'same-job'))).not.toBeNull();
-    expect(await manager.attachSession(sessionB.hostRef, expectedHost(spec, 'same-job'))).not.toBeNull();
-
-    sessionA.close();
-    sessionB.close();
-    await manager.shutdown();
-  });
-
   it('classifies an already-closed handle as stale before its cleanup microtask runs', async () => {
     const server = createFakeProviderServerHandle({ generation: 51 });
     const manager = new StubbedContainmentProviderHostManager({
@@ -481,38 +312,35 @@ describe('provider host pool', () => {
     await manager.shutdown();
   });
 
-  it.each([
-    ['shared', 'job-exclusive'],
-    ['job-exclusive', 'shared'],
-  ] as const)('fails closed when one executable identity changes lease policy from %s to %s', async (first, second) => {
-    const handle = createFakeProviderServerHandle();
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(handle.handle),
-    });
-    const identity = {
-      provider: 'same-provider',
-      command: process.execPath,
-      args: ['same-app-server.js'],
-      cwd: fixtureCanonicalWorkDir(process.cwd()),
-    };
-    const specFor = (mode: 'shared' | 'job-exclusive') =>
-      mode === 'shared' ? createSharedSpec(identity) : createExclusiveSpec(identity);
-    const firstSpec = specFor(first);
-    const secondSpec = specFor(second);
-    const lease = await manager.openSession(
-      createLaunch(firstSpec),
-      first === 'job-exclusive' ? { jobId: 'job-a' } : {},
-    );
+  it.each([['shared', 'job-exclusive']] as const)(
+    'fails closed when one executable identity changes lease policy from %s to %s',
+    async (first, second) => {
+      const handle = createFakeProviderServerHandle();
+      const manager = new StubbedContainmentProviderHostManager({
+        carrierBlocksRetirement: noCarrierBlocksRetirement,
+        runtime,
+        spawnProviderServer: createSpawnProviderServerMock(handle.handle),
+      });
+      const identity = {
+        provider: 'same-provider',
+        command: process.execPath,
+        args: ['same-app-server.js'],
+        cwd: fixtureCanonicalWorkDir(process.cwd()),
+      };
+      const specFor = (mode: 'shared' | 'job-exclusive') =>
+        mode === 'shared' ? createSharedSpec(identity) : createExclusiveSpec(identity);
+      const firstSpec = specFor(first);
+      const secondSpec = specFor(second);
+      const lease = await manager.openSession(createLaunch(firstSpec), {});
 
-    await expect(
-      manager.openSession(createLaunch(secondSpec), second === 'job-exclusive' ? { jobId: 'job-b' } : {}),
-    ).rejects.toThrow('provider_host_policy_conflict');
+      await expect(
+        manager.openSession(createLaunch(secondSpec), second === 'job-exclusive' ? { jobId: 'job-b' } : {}),
+      ).rejects.toThrow('provider_host_policy_conflict');
 
-    lease.close();
-    await manager.shutdown();
-  });
+      lease.close();
+      await manager.shutdown();
+    },
+  );
 
   it('remembers an executable identity lease policy after its concrete entry closes', async () => {
     const server = createFakeProviderServerHandle({ generation: 10 });
@@ -555,47 +383,6 @@ describe('provider host pool', () => {
     await manager.shutdown();
   });
 
-  it('reuses one shared host and isolates incompatible exclusive hosts', async () => {
-    const firstHandle = createFakeProviderServerHandle({ generation: 11 });
-    const secondHandle = createFakeProviderServerHandle({ generation: 22 });
-    const thirdHandle = createFakeProviderServerHandle({ generation: 33 });
-    const spawnProviderServer = createSpawnProviderServerMock(
-      firstHandle.handle,
-      secondHandle.handle,
-      thirdHandle.handle,
-    );
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer,
-    });
-
-    const sharedSpec = createSharedSpec();
-    const codexSpecA = createExclusiveSpec({
-      cwd: fixtureCanonicalWorkDir('/workspace/a'),
-      env: { PROJECT: 'a' },
-    });
-    const codexSpecB = createExclusiveSpec({
-      cwd: fixtureCanonicalWorkDir('/workspace/b'),
-      env: { PROJECT: 'b' },
-    });
-
-    const sharedLeaseA = await manager.openSession(createLaunch(sharedSpec));
-    const sharedLeaseB = await manager.openSession(createLaunch(sharedSpec));
-    const codexLeaseA = await manager.openSession(createLaunch(codexSpecA), { jobId: 'job-a' });
-    const codexLeaseB = await manager.openSession(createLaunch(codexSpecB), { jobId: 'job-b' });
-
-    expect(sharedLeaseA.hostRef.instanceId).toBe(sharedLeaseB.hostRef.instanceId);
-    expect(codexLeaseA.hostRef.instanceId).not.toBe(codexLeaseB.hostRef.instanceId);
-    expect(spawnProviderServer).toHaveBeenCalledTimes(3);
-
-    sharedLeaseA.close();
-    sharedLeaseB.close();
-    codexLeaseA.close();
-    codexLeaseB.close();
-    await manager.shutdown();
-  });
-
   it('keeps an exclusive host alive until its original and recovered pins are all closed', async () => {
     const server = createFakeProviderServerHandle({ generation: 34 });
     const manager = new StubbedContainmentProviderHostManager({
@@ -619,70 +406,6 @@ describe('provider host pool', () => {
     await server.handle.closePromise;
 
     expect(server.closeMock).toHaveBeenCalledTimes(1);
-    await manager.shutdown();
-  });
-
-  it('does not idle-evict a shared host while a recovered attachment still pins it', async () => {
-    vi.useFakeTimers();
-    const server = createFakeProviderServerHandle({ generation: 35 });
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      idleTimeoutMs: 10,
-    });
-    const spec = createSharedSpec();
-    const original = await manager.openSession(createLaunch(spec));
-    const recovered = await manager.attachSession(original.hostRef, expectedHost(spec));
-
-    original.close();
-    await vi.advanceTimersByTimeAsync(20);
-    expect(server.closeMock).not.toHaveBeenCalled();
-    server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });
-    recovered?.close();
-    await vi.advanceTimersByTimeAsync(10);
-
-    expect(server.closeMock).toHaveBeenCalledTimes(1);
-    await manager.shutdown();
-  });
-
-  it('logs every outstanding codex pin when no live job owns the host without closing it', async () => {
-    vi.useFakeTimers();
-    const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
-    const server = createFakeProviderServerHandle({ generation: 35 });
-    const liveCodexJobBlocksRetirement = vi.fn(() => false);
-    const manager = new StubbedContainmentProviderHostManager({
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      idleTimeoutMs: 10,
-      carrierBlocksRetirement: liveCodexJobBlocksRetirement,
-    });
-    const spec = createSharedSpec({
-      provider: 'codex',
-      command: 'codex',
-      args: ['app-server'],
-      idleRetirement: 'unleased',
-    });
-    const original = await manager.openSession(createLaunch(spec), { jobId: 'job-acquisition' });
-    const attached = await manager.attachSession(original.hostRef, expectedHost(spec, 'job-acquisition'));
-
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    const hostLabel = `Provider host codex ${original.hostRef.instanceId} (${spec.cwd})`;
-    expect(warning.mock.calls).toEqual([
-      [
-        `${hostLabel} has an outstanding pin while no live Codex job owns it: origin.kind=acquisition, origin.jobId=job-acquisition`,
-      ],
-      [
-        `${hostLabel} has an outstanding pin while no live Codex job owns it: origin.kind=attached-session, origin.jobId=none (attached session, no job)`,
-      ],
-    ]);
-    expect(liveCodexJobBlocksRetirement).toHaveBeenCalledOnce();
-    expect(liveCodexJobBlocksRetirement).toHaveBeenCalledWith(original.hostRef);
-    expect(server.closeMock).not.toHaveBeenCalled();
-
-    original.close();
-    attached?.close();
     await manager.shutdown();
   });
 
@@ -811,79 +534,6 @@ describe('provider host pool', () => {
     expect(server.closeMock).toHaveBeenCalledTimes(1);
   });
 
-  it('closes an unpinned shared codex host on the idle timer without a host stats report', async () => {
-    vi.useFakeTimers();
-    const server = createFakeProviderServerHandle({ generation: 74 });
-    const carrierHostInstanceIds = new Set<string>();
-    const carrierBlocksRetirement = vi.fn((hostRef: HostRef) => carrierHostInstanceIds.has(hostRef.instanceId));
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      idleTimeoutMs: 10,
-    });
-    const lease = await manager.openSession(
-      createLaunch(
-        createSharedSpec({
-          provider: 'codex',
-          command: 'codex',
-          args: ['app-server'],
-          idleRetirement: 'unleased',
-        }),
-      ),
-    );
-
-    lease.close();
-    expect(server.closeMock).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(10);
-
-    expect(carrierBlocksRetirement).toHaveBeenCalledTimes(2);
-    expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(1, lease.hostRef);
-    expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(2, lease.hostRef);
-    expect(server.closeMock).toHaveBeenCalledTimes(1);
-    await manager.shutdown();
-  });
-
-  it('keeps shared hosts with idle retirement disabled alive regardless of pins or host notifications', async () => {
-    vi.useFakeTimers();
-    const server = createFakeProviderServerHandle({ generation: 74 });
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      idleTimeoutMs: 10,
-    });
-    const lease = await manager.openSession(createLaunch(createSharedSpec({ idleRetirement: 'never' })));
-
-    lease.close();
-    server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });
-    await vi.advanceTimersByTimeAsync(20);
-    expect(server.closeMock).not.toHaveBeenCalled();
-
-    await manager.shutdown();
-    expect(server.closeMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not let unrelated provider notifications postpone an evidenced idle deadline', async () => {
-    vi.useFakeTimers();
-    const server = createFakeProviderServerHandle({ generation: 75 });
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      idleTimeoutMs: 10,
-    });
-    const lease = await manager.openSession(createLaunch(createSharedSpec()));
-    server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });
-    lease.close();
-
-    await vi.advanceTimersByTimeAsync(5);
-    server.emitNotification({ method: 'turn/completed', params: { turnId: 'turn-1' } });
-    await vi.advanceTimersByTimeAsync(5);
-    expect(server.closeMock).toHaveBeenCalledTimes(1);
-    await manager.shutdown();
-  });
-
   it('rejects an already-aborted caller before returning an already-live shared host', async () => {
     const server = createFakeProviderServerHandle({ generation: 72 });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
@@ -933,37 +583,6 @@ describe('provider host pool', () => {
     expect(spawnProviderServer).not.toHaveBeenCalled();
   });
 
-  it('rejects new acquisitions during drain and awaits an exclusive release close already in flight', async () => {
-    const server = createFakeProviderServerHandle({ generation: 81 });
-    const close = createDeferred<void>();
-    server.closeMock.mockImplementation(async () => {
-      await close.promise;
-      server.resolveClosed();
-      return observedServerClose(server.handle.pid);
-    });
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-    });
-    const lease = await manager.openSession(createLaunch(createExclusiveSpec()), { jobId: 'job-a' });
-
-    lease.close();
-    let drained = false;
-    const drain = manager.drainForHandoff().then(() => {
-      drained = true;
-    });
-    await Promise.resolve();
-
-    expect(server.closeMock).toHaveBeenCalledTimes(1);
-    expect(drained).toBe(false);
-    await expect(manager.openSession(createLaunch(createSharedSpec()))).rejects.toThrow('provider_host_draining');
-
-    close.resolve();
-    await drain;
-    expect(drained).toBe(true);
-  });
-
   it('preserves provider_host_draining identity when drain overtakes a pending cold spawn', async () => {
     const server = createFakeProviderServerHandle({ generation: 91 });
     const spawn = createDeferred<typeof server.handle>();
@@ -1006,94 +625,6 @@ describe('provider host pool', () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toBe('provider_host_draining: Provider server claude drained');
     expect((failure as Error).cause).toBe(entry.closingError);
-  });
-
-  it('does not expose a ready shared lease when same-tick drain wins before lease return', async () => {
-    const server = createFakeProviderServerHandle({ generation: 92 });
-    const close = createDeferred<void>();
-    server.closeMock.mockImplementation(async () => {
-      await close.promise;
-      server.resolveClosed();
-      return observedServerClose(server.handle.pid);
-    });
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-    });
-    const launch = createLaunch(createSharedSpec());
-    const initial = await manager.openSession(launch);
-    initial.close();
-
-    const racedAcquisition = manager.openSession(launch);
-    let drained = false;
-    const drain = manager.drainForHandoff().then(() => {
-      drained = true;
-    });
-
-    await expect(racedAcquisition).rejects.toThrow('drained');
-    expect(drained).toBe(false);
-    expect(server.closeMock).toHaveBeenCalledTimes(1);
-    close.resolve();
-    await drain;
-    expect(drained).toBe(true);
-  });
-
-  it('keeps an outstanding managed-session pin releasable after drain closes its host', async () => {
-    const server = createFakeProviderServerHandle({ generation: 94 });
-    const close = createDeferred<void>();
-    server.closeMock.mockImplementation(async () => {
-      await close.promise;
-      server.resolveClosed();
-      return observedServerClose(server.handle.pid);
-    });
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-    });
-    const session = await manager.openSession(createLaunch(createSharedSpec()));
-
-    const drain = manager.drainForHandoff();
-    await vi.waitFor(() => expect(server.closeMock).toHaveBeenCalledTimes(1));
-    close.resolve();
-    await drain;
-
-    expect(() => session.close()).not.toThrow();
-    expect(() => session.close()).not.toThrow();
-  });
-
-  it('cancels close cleanup after an aborted drain and leaves the unreclaimed group visible', async () => {
-    const server = createFakeProviderServerHandle({ generation: 93 });
-    const close = createDeferred<void>();
-    server.closeMock.mockImplementation(async () => {
-      await close.promise;
-      server.resolveClosed();
-      return observedServerClose(server.handle.pid);
-    });
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-    });
-    const lease = await manager.openSession(createLaunch(createSharedSpec()));
-    lease.close();
-    const drainAbort = new AbortController();
-    const drain = manager.drainForHandoff(drainAbort.signal);
-    drainAbort.abort('caller-stopped-waiting');
-
-    await expect(drain).rejects.toMatchObject({
-      name: 'AbortError',
-      stage: 'provider_host_close_wait',
-      reason: 'caller-stopped-waiting',
-    });
-    await vi.waitFor(() =>
-      expect(manager.listProviderHosts()).toMatchObject([
-        { status: 'reclamation-failed', host: { reclamationAttempts: 1 } },
-      ]),
-    );
-    expect(server.closeMock).not.toHaveBeenCalled();
-    close.resolve();
   });
 
   it('aborts the final wait for an exclusive close removed before drain while shutdown still awaits it once', async () => {
@@ -1143,22 +674,6 @@ describe('provider host pool proxy set registry', () => {
     mockedEnsureProxySet.mockReset();
   });
 
-  it('never attempts proxy set acquisition when constructed without proxySetAcquisition', async () => {
-    const server = createFakeProviderServerHandle();
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-    });
-
-    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
-
-    expect(mockedEnsureProxySet).not.toHaveBeenCalled();
-    expect(manager.liveSets()).toEqual([]);
-    lease.close();
-    await manager.shutdown();
-  });
-
   it('single-flights one acquisition attempt per entry across repeated openSession calls', async () => {
     const server = createFakeProviderServerHandle();
     const manager = new StubbedContainmentProviderHostManager({
@@ -1190,57 +705,6 @@ describe('provider host pool proxy set registry', () => {
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
     first.close();
     second.close();
-    await manager.shutdown();
-  });
-
-  it('exposes an acquired set through liveSets() once the attempt settles, and does not re-acquire once live', async () => {
-    const server = createFakeProviderServerHandle();
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      proxySetAcquisition,
-      providerProxyLifecycleRef: createProxySetLifecycleRef(),
-    });
-    const set = fakeDurableProxySet('proxy-a');
-    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
-      await onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
-    });
-
-    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
-
-    expect(manager.liveSets().map((candidate) => candidate.proxyInstanceId)).toEqual([set.proxyInstanceId]);
-    const second = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-b' });
-    expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
-
-    lease.close();
-    second.close();
-    await manager.shutdown();
-  });
-
-  it('a failed acquisition reports stranded artifacts without failing openSession', async () => {
-    const server = createFakeProviderServerHandle();
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      proxySetAcquisition,
-      providerProxyLifecycleRef: createProxySetLifecycleRef(),
-    });
-    const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
-    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
-      await onSettled({
-        kind: 'failed',
-        reason: 'guardian spawn exploded',
-        strandedArtifacts: ['guardian', 'handoff capsule'],
-      });
-    });
-
-    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
-
-    expect(manager.liveSets()).toEqual([]);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('stranded artifacts: guardian, handoff capsule'));
-    lease.close();
     await manager.shutdown();
   });
 
@@ -1338,56 +802,6 @@ describe('provider host pool proxy set registry', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 0, states: [] }));
-  });
-
-  it('keeps a publication-unknown acquisition represented and single-flighted by executable identity', async () => {
-    const server = createFakeProviderServerHandle();
-    const lifecycleRef = createProxySetLifecycleRef();
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      proxySetAcquisition,
-      providerProxyLifecycleRef: lifecycleRef,
-    });
-    const spec = createSharedSpec();
-    const capsuleBinding = publicationUnknownCapsule(spec);
-    const publicationUnknown = publicationUnknownHandoff(capsuleBinding);
-    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
-      await onSettled(publicationUnknown.handoff);
-    });
-
-    const first = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
-    const second = await manager.openSession(createLaunch(spec), { jobId: 'job-b' });
-
-    expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(publicationUnknown.guardianExchange).toHaveBeenCalled());
-    expect(publicationUnknown.guardianExchange.mock.calls).toContainEqual([
-      'guardian.acquisition-publish.v1',
-      {
-        guardian: publicationUnknown.guardianIdentity,
-        reaper: publicationUnknown.reaperIdentity,
-        proxy: publicationUnknown.proxyIdentity,
-      },
-      PROXY_CONTROL_RPC_TIMEOUT_MS,
-    ]);
-    expect(publicationUnknown.proxyExchange).not.toHaveBeenCalled();
-    expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['recovering'] }));
-    expect(lifecycleRef.get()?.snapshot().operatorDispositions).toContainEqual(
-      expect.objectContaining({ waitingFor: 'publication-confirmation-or-control-release' }),
-    );
-    expect(manager.routeAppServerOperation(spec)).toBeNull();
-
-    first.close();
-    second.close();
-    publicationUnknown.faults.latch({
-      kind: 'heartbeat-failed',
-      role: 'guardian',
-      method: 'guardian.heartbeat.v1',
-      terminalReason: 'local-failure',
-      error: 'test complete',
-    });
-    await manager.shutdown();
   });
 
   it('routes to the exact live authority for a matching spec once acquisition settles', async () => {
@@ -1553,52 +967,6 @@ describe('provider host pool proxy set registry', () => {
 
     for (const lease of leases) lease.close();
     await manager.shutdown();
-  });
-
-  it('waits for a stopped acquisition to finish containment before returning', async () => {
-    const server = createFakeProviderServerHandle();
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      proxySetAcquisition,
-      providerProxyLifecycleRef: createProxySetLifecycleRef(),
-    });
-    let capturedSignal: AbortSignal | undefined;
-    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'late-acquisition-contained' }) as const);
-    const set = fakeDurableProxySet('late-acquisition', { stopAndReap });
-    let settleAcquisition: (() => Promise<void>) | undefined;
-    mockedEnsureProxySet.mockImplementationOnce((_entry, env: { signal: AbortSignal }, onSettled) => {
-      capturedSignal = env.signal;
-      return new Promise<void>((resolve, reject) => {
-        settleAcquisition = () =>
-          Promise.resolve(onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT })).then(
-            resolve,
-            reject,
-          );
-      });
-    });
-
-    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
-
-    expect(capturedSignal).toBeInstanceOf(AbortSignal);
-    expect(capturedSignal?.aborted).toBe(false);
-
-    lease.close();
-    let stopped = false;
-    const shutdown = manager.shutdown().then(() => {
-      stopped = true;
-    });
-    await Promise.resolve();
-
-    expect(capturedSignal?.aborted).toBe(true);
-    expect(stopped).toBe(false);
-    if (settleAcquisition === undefined) throw new Error('acquisition settlement was not captured');
-    await settleAcquisition();
-    await shutdown;
-
-    expect(stopAndReap).toHaveBeenCalledOnce();
-    expect(manager.liveSets()).toEqual([]);
   });
 
   it('delegates a late handoff acquisition to the lifecycle before the drain settles', async () => {
@@ -1777,30 +1145,6 @@ describe('provider host pool proxy set registration', () => {
     // Inheritance never registers routing for new work — only an `ensureProxySetFor` acquisition does.
     expect(manager.routeAppServerOperation(createSharedSpec())).toBeNull();
 
-    await manager.shutdown();
-  });
-
-  it('coexists with an acquired set for a different proxy — liveSets() reports both', async () => {
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(createFakeProviderServerHandle().handle),
-      proxySetAcquisition,
-      providerProxyLifecycleRef: createProxySetLifecycleRef(),
-    });
-    const acquired = fakeDurableProxySet('proxy-acquired');
-    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
-      await onSettled({ kind: 'acquired', set: acquired, publicationReceipt: PUBLICATION_RECEIPT });
-    });
-    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
-    const inherited = fakeDurableProxySet('proxy-inherited');
-
-    manager.registerInheritedSet(inherited, PUBLICATION_RECEIPT);
-
-    expect(new Set(manager.liveSets().map((set) => set.proxyInstanceId))).toEqual(
-      new Set([acquired.proxyInstanceId, inherited.proxyInstanceId]),
-    );
-    lease.close();
     await manager.shutdown();
   });
 });

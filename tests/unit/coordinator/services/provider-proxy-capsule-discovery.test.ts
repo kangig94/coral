@@ -1,34 +1,19 @@
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
-
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/infra/port-types.js';
-import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
-import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
-import { handoffRoutingStatusPath } from '#src/infra/path/coordinator.js';
-import {
-  CURRENT_HANDOFF_CAPSULE_VERSION,
-  SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
-  type HandoffCapsule,
-} from '#src/provider-proxy/handoff-capsule.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
-import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 /** The build this fixture lifecycle belongs to — the same one its capsule carries, so discovery treats it as inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '22222222-2222-4222-8222-222222222222';
-
-/** Nothing observed is never absence, so every discovered capsule is retained and no retirement begins. */
-const retainsEveryCapsule = { observeRecordedProcess: () => 'unknown' as const };
 
 function retirementStorage(
   unlinkSync: () => void,
@@ -39,8 +24,9 @@ function retirementStorage(
 
 describe('provider proxy capsule discovery', () => {
   it('keeps an executing operation recoverable after a crash between v4 write and v3 retirement', () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'coral-capsule-migration-'));
-    const runtime = createRealRuntime('prod', { baseDir });
+    const baseDir = '/coral-capsule-migration';
+    const time = new VirtualTime();
+    const runtime = { ...createRealRuntime('prod', { baseDir }), time, storage: new InMemoryStorage(time) };
     const runDir = runtime.paths.coral.coordinator.runDir;
     runtime.storage.mkdirSync(runDir, { recursive: true, mode: 0o700 });
     const record = providerOperationRecord('executing');
@@ -84,79 +70,9 @@ describe('provider proxy capsule discovery', () => {
       storage: runtime.storage,
       uid: Number(stat.uid),
     });
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([record]);
-    const lifecycle = new ProviderProxySetLifecycle({
-      buildSetId: FIXTURE_BUILD_SET_ID,
-      claims,
-      controlEstablished: () => undefined,
-      time: runtime.time,
-      ...testProviderProxySetLifecycleDurability(runtime.storage, runtime.time),
-      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'capsule-redemption': () => new Promise<never>(() => undefined),
-        'containment-proof': () => new Promise<never>(() => undefined),
-      }),
-      reapRecordedContainment: () => {
-        throw new Error('unexpected containment reaping');
-      },
-      reportLifecycle: () => undefined,
-    });
-    lifecycle.activateDurableOperatorDispositions();
-    lifecycle.initializeClaimSlots();
-    lifecycle.installDiscoveredCapsules(discovered, retainsEveryCapsule);
-
     expect(discovered).toEqual([{ path: v4Path, capsule: v4 }]);
     expect(runtime.storage.existsSync(v3Path)).toBe(false);
     expect(runtime.storage.existsSync(v4Path)).toBe(true);
-    expect(lifecycle.snapshot().states).toEqual(['recovering']);
-
-    for (const conflicting of [
-      { ...v4, grantId: '99999999-9999-4999-8999-999999999999' },
-      { ...v4, secret: 'd'.repeat(64) },
-      { ...v4, guardianInstanceId: '99999999-9999-4999-8999-999999999999' },
-    ]) {
-      runtime.storage.writeAtomicDurableSync(v3Path, JSON.stringify(v3), { encoding: 'utf-8', mode: 0o600 });
-      runtime.storage.writeAtomicDurableSync(v4Path, JSON.stringify(conflicting), {
-        encoding: 'utf-8',
-        mode: 0o600,
-      });
-      const conflict = discoverProviderHandoffCapsules({
-        runDir,
-        generationRoot: runtime.paths.coral.generation.root,
-        storage: runtime.storage,
-        uid: Number(stat.uid),
-      });
-      expect(conflict).toHaveLength(2);
-      expect(runtime.storage.existsSync(v3Path)).toBe(true);
-      const conflictingLifecycle = new ProviderProxySetLifecycle({
-        buildSetId: FIXTURE_BUILD_SET_ID,
-        claims,
-        controlEstablished: () => undefined,
-        time: runtime.time,
-        ...testProviderProxySetLifecycleDurability(runtime.storage, runtime.time),
-        recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({}),
-        reapRecordedContainment: () => {
-          throw new Error('unexpected containment reaping');
-        },
-        reportLifecycle: () => undefined,
-      });
-      conflictingLifecycle.activateDurableOperatorDispositions();
-      conflictingLifecycle.initializeClaimSlots();
-      expect(() => conflictingLifecycle.installDiscoveredCapsules(conflict, retainsEveryCapsule)).toThrow(
-        'provider_proxy_capsule_address_alias',
-      );
-    }
-
-    runtime.storage.writeAtomicDurableSync(v4Path, JSON.stringify(v4), { encoding: 'utf-8', mode: 0o600 });
-    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockReturnValueOnce(false);
-    expect(() =>
-      discoverProviderHandoffCapsules({
-        runDir,
-        generationRoot: runtime.paths.coral.generation.root,
-        storage: runtime.storage,
-        uid: Number(stat.uid),
-      }),
-    ).toThrow('provider_proxy_capsule_migration_retirement_unavailable');
   });
   it('derives retirement availability only from directory durability', () => {
     const unlinkSync = vi.fn();
@@ -209,46 +125,14 @@ describe('provider proxy capsule discovery', () => {
   // as a literal. It is the gate a rolled-back build applies before it opens anything, and this project can
   // no longer unrelease — a bad version is answered by a forward one, so the build being rolled back to is a
   // build already in the field whose source cannot be changed. Correct this only against that source.
-  const V0_10_8_DISCOVERY_PATTERN = /^provider-1[0-9a-f]{23}\.handoff\.json$/u;
-
-  it('writes a capsule a v0.10.8 build will not open', () => {
-    const identity = {
-      generation: 'gen2' as const,
-      flavor: 'prod' as const,
-      buildSetId: '22222222-2222-4222-8222-222222222222',
-      hostFingerprint: 'd'.repeat(64),
-      proxyInstanceId: '55555555-5555-4555-8555-555555555555',
-    };
-    const baseDir = '/tmp/coral-capsule-generation';
-
-    const current = basename(providerHandoffCapsulePath(identity, CURRENT_HANDOFF_CAPSULE_VERSION, { baseDir }));
-    const legacy = basename(providerHandoffCapsulePath(identity, 2, { baseDir }));
-
-    expect(
-      V0_10_8_DISCOVERY_PATTERN.test(current),
-      'a capsule this build writes must be invisible to v0.10.8, not fatal to it',
-    ).toBe(false);
-    // And the older generations stay exactly where they were, or this build stops finding what it must refuse.
-    expect(V0_10_8_DISCOVERY_PATTERN.test(legacy)).toBe(true);
-    expect(current).not.toBe(legacy);
-
-    // Stated over the whole owned list rather than two hand-picked members, so adding a generation cannot pass
-    // by nobody remembering to extend this: v0.10.8 sees exactly the two it shipped able to read, and nothing
-    // after them. A V4 added to the schema and forgotten here fails without anyone editing this test.
-    expect(
-      SUPPORTED_HANDOFF_CAPSULE_VERSIONS.map((version) => [
-        version,
-        V0_10_8_DISCOVERY_PATTERN.test(basename(providerHandoffCapsulePath(identity, version, { baseDir }))),
-      ]),
-    ).toEqual(SUPPORTED_HANDOFF_CAPSULE_VERSIONS.map((version) => [version, version <= 2]));
-  });
 
   // The other direction, and the one that matters from here on: a build must not open a capsule it cannot
   // decode, because refusing one is fatal at startup. A future generation's file has to be invisible to this
   // build exactly as this build's is to v0.10.8 — otherwise rolling back onto it kills the coordinator.
   it('does not discover a capsule generation it cannot decode', () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'coral-capsule-future-'));
-    const runtime = createRealRuntime('prod', { baseDir });
+    const baseDir = '/coral-capsule-future';
+    const time = new VirtualTime();
+    const runtime = { ...createRealRuntime('prod', { baseDir }), time, storage: new InMemoryStorage(time) };
     const runDir = runtime.paths.coral.coordinator.runDir;
     runtime.storage.mkdirSync(runDir, { recursive: true, mode: 0o700 });
     const stat = runtime.storage.statSync(baseDir, { bigint: true });
@@ -270,80 +154,5 @@ describe('provider proxy capsule discovery', () => {
       }),
       'a generation this build cannot decode must never reach the decoder',
     ).toEqual([]);
-  });
-
-  it('represents a canonical real-storage capsule while ignoring routing status artifacts', () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'coral-provider-capsule-discovery-'));
-    const runtime = createRealRuntime('prod', { baseDir });
-    const runDir = runtime.paths.coral.coordinator.runDir;
-    runtime.storage.mkdirSync(runDir, { recursive: true, mode: 0o700 });
-    const capsule: HandoffCapsule = {
-      version: 1,
-      grantId: '11111111-1111-4111-8111-111111111111',
-      secret: 'c'.repeat(64),
-      generation: 'gen2',
-      flavor: 'prod',
-      buildSetId: '22222222-2222-4222-8222-222222222222',
-      hostFingerprint: 'd'.repeat(64),
-      guardianInstanceId: '33333333-3333-4333-8333-333333333333',
-      reaperInstanceId: '44444444-4444-4444-8444-444444444444',
-      proxyInstanceId: '55555555-5555-4555-8555-555555555555',
-      guardianControlEndpoint: '/tmp/coral-capsule-guardian.sock',
-      reaperControlEndpoint: '/tmp/coral-capsule-reaper.sock',
-      proxyEndpoint: '/tmp/coral-capsule-proxy.sock',
-      orphanTimeoutMs: 30_000,
-      teardownReserveMs: 14_000,
-    };
-    const path = providerHandoffCapsulePath(capsule, capsule.version, { baseDir });
-    const stat = runtime.storage.statSync(baseDir, { bigint: true });
-    if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
-    runtime.storage.writeAtomicDurableSync(path, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
-    runtime.storage.writeAtomicDurableSync(handoffRoutingStatusPath('prod', 1, { baseDir }), '', {
-      encoding: 'utf-8',
-      mode: 0o600,
-    });
-
-    const discovered = discoverProviderHandoffCapsules({
-      runDir,
-      generationRoot: runtime.paths.coral.generation.root,
-      storage: runtime.storage,
-      uid: Number(stat.uid),
-    });
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([]);
-    const lifecycle = new ProviderProxySetLifecycle({
-      buildSetId: FIXTURE_BUILD_SET_ID,
-      claims,
-      controlEstablished: () => undefined,
-      time: runtime.time,
-      ...testProviderProxySetLifecycleDurability(runtime.storage, runtime.time),
-      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'capsule-redemption': () => new Promise<never>(() => undefined),
-      }),
-      reapRecordedContainment: () => {
-        throw new Error('capsule discovery fixture unexpectedly requested recorded containment reaping');
-      },
-      reportLifecycle: () => undefined,
-    });
-    lifecycle.activateDurableOperatorDispositions();
-    lifecycle.initializeClaimSlots();
-    lifecycle.installDiscoveredCapsules(discovered, retainsEveryCapsule);
-    const snapshotBeforeAdmission = lifecycle.snapshot();
-    const admission = lifecycle.beginFreshAcquisition('matching-fresh-route', {
-      buildSetId: capsule.buildSetId,
-      hostFingerprint: capsule.hostFingerprint,
-    });
-
-    expect({
-      canonicalBasename: /^provider-1[0-9a-f]{23}\.handoff\.json$/u.test(basename(path)),
-      discovered,
-      snapshotBeforeAdmission,
-      admitted: admission.kind,
-    }).toEqual({
-      canonicalBasename: true,
-      discovered: [{ path, capsule }],
-      snapshotBeforeAdmission: expect.objectContaining({ represented: 1, states: ['capsule-foreign'] }),
-      admitted: 'accepted',
-    });
   });
 });

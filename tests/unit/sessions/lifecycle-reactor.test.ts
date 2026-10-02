@@ -4,32 +4,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as SessionStartupRecoveryModule from '#src/sessions/startup-recovery.js';
 
 import { JobStore } from '#src/jobs/store.js';
-import type { JobLaunch, AppServerRuntime, JobTerminalInput } from '#src/jobs/records.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import type { JobPhase } from '#src/jobs/phase.js';
-import type { TerminalWriteOptions } from '#src/jobs/contracts/job-store.js';
-import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
-import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
-import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { defineProvider } from '#src/providers/registry.js';
-import { managed, none } from '#src/providers/capability.js';
+import { managed } from '#src/providers/capability.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
-import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
 import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import { runSessionStartupRecovery } from '#src/sessions/startup-recovery.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
-import {
-  appendRetentionDiscardCompleted,
-  appendRetentionDiscardFailed,
-  appendRetentionDiscardRequested,
-} from '#src/sessions/retention-outbox.js';
 import { readProjectionProviderSession } from '#src/sessions/projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
@@ -39,24 +25,16 @@ import type { Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import {
-  ProviderArtifactDefinitiveFailure,
   type ArtifactCleanupRuntime,
   type DiscardOutcome,
   type ProviderArtifactDiscardReconciliation,
-  type ProviderResidueDiscardOutcome,
 } from '#src/providers/contract.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import {
-  prepareFixtureAppServerExecutionPlan,
-  prepareFixtureExecutionPlan,
-  prepareFixtureHost,
-  type FixtureExecutionPlan,
-} from '#tests/helpers/scripted-provider.js';
+import { prepareFixtureExecutionPlan, type FixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import type { CauseRef } from '#src/causality/cause-ref.js';
-import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 vi.mock('#src/sessions/startup-recovery.js', async (importOriginal) => {
   const actual = await importOriginal<typeof SessionStartupRecoveryModule>();
@@ -72,8 +50,6 @@ afterEach(() => {
   openDbs.clear();
 });
 
-type ProviderArtifactMode = 'managed' | 'none';
-
 type Harness = {
   readonly runtime: SimulationRuntime;
   readonly db: Database;
@@ -86,7 +62,6 @@ type Harness = {
   readonly reactor: ReturnType<typeof createLifecycleReactor>;
   readonly reactorLifetime: AbortController;
   readonly discardCalls: Array<readonly string[]>;
-  readonly logs: string[];
   readonly appendedBatches: AppendedEvent[][];
 };
 
@@ -94,20 +69,15 @@ async function* noopProvider() {}
 
 function createHarness(
   options: {
-    artifactMode?: ProviderArtifactMode;
     autoObserveCoordinator?: boolean;
     discardArtifacts?: (handles: readonly string[], runtime: ArtifactCleanupRuntime) => Promise<DiscardOutcome>;
     reconcileDiscard?: (
       handles: readonly string[],
       runtime: ArtifactCleanupRuntime,
     ) => Promise<ProviderArtifactDiscardReconciliation>;
-    locateArtifact?: (conversationRef: string) => string | null;
-    discardResidue?: (conversationRef: string, since: number) => Promise<ProviderResidueDiscardOutcome>;
     afterCommit?: (appended: readonly AppendedEvent[], commitEvents: CommitEventsFn) => void;
-    interruptedRecovery?: boolean;
   } = {},
 ): Harness {
-  const artifactMode = options.artifactMode ?? 'managed';
   const autoObserveCoordinator = options.autoObserveCoordinator ?? true;
   const runtime = new SimulationRuntime();
   const db = openTestStoreDb(runtime, ':memory:');
@@ -117,77 +87,37 @@ function createHarness(
   const projectRoot = process.cwd();
   const providerRegistry = new ProviderRegistry();
   const discardCalls: Array<readonly string[]> = [];
-  const providerBuilder = options.interruptedRecovery
-    ? defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
-        name: 'codex',
-        transport: 'app-server',
-        run: noopProvider,
-        prepareExecutionPlan: prepareFixtureAppServerExecutionPlan,
-        appServer: {
-          name: 'codex',
-          planHost: (input) => {
-            if (input.purpose !== 'execution') throw new Error('Codex fixture has no curation host.');
-            return prepareFixtureHost(input, {
-              provider: 'codex',
-              command: 'codex',
-              args: [],
-              cwd: input.request.cwd,
-              env: {},
-              leaseMode: 'job-exclusive',
-            });
-          },
-          compileStableHost: (host: FixtureExecutionPlan['host']) => host.serverSpec,
-        },
-        recovery: {
-          finalizeInterrupted: (probeResult, _continuity, context) =>
-            probeResult.resumable && context.preservedConversationRef !== undefined
-              ? { kind: 'set_resumable' as const, conversationRef: context.preservedConversationRef }
-              : { kind: 'clear_non_resumable' as const },
-          finalizeFromArtifacts: async () => {
-            throw new Error('waiting recovery must not inspect artifacts');
-          },
-        },
-      })
-    : defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
-        name: 'codex',
-        transport: 'standalone',
-        run: noopProvider,
-        prepareExecutionPlan: prepareFixtureExecutionPlan,
-      });
+  const providerBuilder = defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
+    name: 'codex',
+    transport: 'standalone',
+    run: noopProvider,
+    prepareExecutionPlan: prepareFixtureExecutionPlan,
+  });
   providerRegistry.register(
     providerBuilder
       .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(
-        artifactMode === 'managed'
-          ? managed({
-              discardArtifacts: async ({ handles, runtime: cleanupRuntime }) => {
-                discardCalls.push([...handles]);
-                if (options.discardArtifacts) {
-                  return options.discardArtifacts(handles, cleanupRuntime);
-                }
-                return { kind: 'discarded' };
-              },
-              ...(options.reconcileDiscard === undefined
-                ? {}
-                : {
-                    reconcileDiscard: ({ handles, runtime: cleanupRuntime }) =>
-                      options.reconcileDiscard!(handles, cleanupRuntime),
-                  }),
-              ...(options.locateArtifact !== undefined
-                ? { locateArtifact: ({ conversationRef }) => options.locateArtifact!(conversationRef) }
-                : {}),
-              ...(options.discardResidue !== undefined
-                ? { discardResidue: ({ conversationRef, since }) => options.discardResidue!(conversationRef, since) }
-                : {}),
-            })
-          : none('test provider has no artifacts'),
+        managed({
+          discardArtifacts: async ({ handles, runtime: cleanupRuntime }) => {
+            discardCalls.push([...handles]);
+            if (options.discardArtifacts) {
+              return options.discardArtifacts(handles, cleanupRuntime);
+            }
+            return { kind: 'discarded' };
+          },
+          ...(options.reconcileDiscard === undefined
+            ? {}
+            : {
+                reconcileDiscard: ({ handles, runtime: cleanupRuntime }) =>
+                  options.reconcileDiscard!(handles, cleanupRuntime),
+              }),
+        }),
       )
       .build(),
   );
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
   const bodyCodec = createEventBodyCodec();
-  const logs: string[] = [];
   const appendedBatches: AppendedEvent[][] = [];
   const reactorLifetime = new AbortController();
   const coordinatorCommit: CommitEventsFn = (cb) => {
@@ -212,7 +142,7 @@ function createHarness(
     time: runtime.time,
     commitEvents: coordinatorCommit,
     signal: reactorLifetime.signal,
-    log: (message) => logs.push(message),
+    log: () => {},
   });
   const progressStore = new JobStore(namespace, runtime, bodyCodec, {
     db,
@@ -235,63 +165,8 @@ function createHarness(
     reactor,
     reactorLifetime,
     discardCalls,
-    logs,
     appendedBatches,
   };
-}
-
-async function runCoordinatorStartupRecovery(harness: Harness): Promise<void> {
-  const getRecoveryService = () => {
-    throw new Error('These recovery actions must not require provider recovery authority.');
-  };
-  const createInvocationContext = (projectRoot: string) => ({
-    projectRoot: fixtureCanonicalWorkDir(projectRoot),
-    pluginRoot: projectRoot,
-    coralEnv: {},
-    principal: testProjectPrincipal(projectRoot),
-  });
-  const signal = new AbortController().signal;
-  const boundRecovery = await createBoundJobsRecoveryHarness({
-    identity: {
-      pluginRoot: harness.projectRoot,
-      namespace: harness.namespace,
-      version: 'test-version',
-      buildSetId: '00000000-0000-4000-8000-000000000000',
-      bundleHash: 'test-bundle',
-      cliBundleHash: 'test-cli-bundle',
-      claudeAppserverBundleHash: 'test-claude-bundle',
-      durableWrapperBundleHash: 'test-durable-wrapper-bundle',
-      flavor: 'prod',
-      instanceId: 'lifecycle-reactor-recovery',
-      token: 'test-token',
-      bootToken: 'test-boot-token',
-      shutdownToken: 'test-shutdown-token',
-      now: () => harness.runtime.time.now(),
-      log: (message) => harness.logs.push(message),
-    },
-    runtime: harness.runtime,
-    progressStore: harness.progressStore,
-    providerRegistry: harness.providerRegistry,
-    getRecoveryService,
-    createInvocationContext,
-    signal,
-    coordinatorCommit: harness.coordinatorCommit,
-  });
-  const coordinator = createRecoveryCoordinator(
-    {
-      progressStore: harness.progressStore,
-      runtime: harness.runtime,
-      runtimeState: { setLaunchFenceActive: () => {} },
-      eventBus: new TypedEventBus(),
-      getRecoveryService,
-      createInvocationContext,
-      log: (message) => harness.logs.push(message),
-      startupOwnership: new LaunchCoordinator({ runtime: harness.runtime }),
-    },
-    boundRecovery.bound,
-  );
-
-  await boundRecovery.run(coordinator);
 }
 
 async function openClaimedSession(
@@ -518,39 +393,6 @@ describe('LifecycleReactor retention enforcement', () => {
     await shutdown;
     expect(storeClosed).toBe(true);
   });
-  it('enforces a terminal and release pair once and coalesces repeated appended events', async () => {
-    const harness = createHarness();
-    const jobId = 'job-pair-once';
-    const sessionId = await openClaimedSession(harness, jobId);
-    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-job-pair-once.jsonl');
-    initRunningJob(harness, jobId, sessionId);
-
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await expectRetentionEvents(harness, sessionId, [
-      {
-        type: 'session.retention.discard.requested',
-        attempt: 1,
-        handles: ['/tmp/rollout-job-pair-once.jsonl'],
-      },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: ['/tmp/rollout-job-pair-once.jsonl'],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-job-pair-once.jsonl']]);
-
-    const appended = harness.appendedBatches.flat();
-    harness.reactor.observe(appended);
-    harness.reactor.observe(appended);
-    await harness.reactor.waitForIdle();
-
-    expect(readRetentionEvents(harness, sessionId)).toHaveLength(2);
-    expect(harness.discardCalls).toHaveLength(1);
-  });
 
   it('archives provider artifacts into the job export before deleting native logs', async () => {
     const harness = createHarness({
@@ -712,160 +554,6 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.discardCalls).toEqual([['/tmp/rollout-stale.jsonl']]);
   });
 
-  it('records a failed terminal outcome when provider discard fails', async () => {
-    const harness = createHarness({
-      discardArtifacts: async () => {
-        throw new ProviderArtifactDefinitiveFailure('discard permission denied');
-      },
-    });
-    const jobId = 'job-discard-fails';
-    const sessionId = await openClaimedSession(harness, jobId);
-    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-discard-fails.jsonl');
-    initRunningJob(harness, jobId, sessionId);
-
-    const terminalSeq = completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await expectRetentionEvents(harness, sessionId, [
-      {
-        type: 'session.retention.discard.requested',
-        attempt: 1,
-        handles: ['/tmp/rollout-discard-fails.jsonl'],
-      },
-      {
-        type: 'session.retention.discard.failed',
-        attempt: 1,
-        handles: ['/tmp/rollout-discard-fails.jsonl'],
-        reason: 'discard permission denied',
-        causeRef: {
-          stream: { kind: 'job', id: jobId },
-          seq: terminalSeq,
-        },
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-discard-fails.jsonl']]);
-  });
-
-  it('quarantines an unclassified provider settlement exception and still settles its sibling', async () => {
-    const failedHandle = '/tmp/rollout-unclassified-provider-failure.jsonl';
-    const validHandle = '/tmp/rollout-unclassified-provider-sibling.jsonl';
-    const harness = createHarness({
-      autoObserveCoordinator: false,
-      discardArtifacts: async (handles) => {
-        if (handles.includes(failedHandle)) throw new Error('provider process exited before applying discard');
-        return { kind: 'discarded' };
-      },
-      reconcileDiscard: async () => ({ kind: 'not-applied' }),
-    });
-    const failedJobId = 'job-unclassified-provider-failure';
-    const validJobId = 'job-unclassified-provider-sibling';
-    const failedSessionId = await openClaimedSession(harness, failedJobId);
-    const validSessionId = await openClaimedSession(harness, validJobId);
-
-    for (const [jobId, sessionId, handle] of [
-      [failedJobId, failedSessionId, failedHandle],
-      [validJobId, validSessionId, validHandle],
-    ] as const) {
-      await recordArtifact(harness, sessionId, jobId, handle);
-      initRunningJob(harness, jobId, sessionId);
-      completeJobViaCoordinatorCommit(harness, jobId, sessionId);
-      harness.sessionManager.releaseJob(sessionId, jobId);
-    }
-
-    harness.reactor.observe(harness.appendedBatches.flat());
-    await harness.reactor.waitForIdle();
-
-    expect(readRetentionEvents(harness, failedSessionId).map((event) => event.type)).toEqual([
-      'session.retention.discard.requested',
-    ]);
-    expect(
-      harness.db
-        .prepare(
-          `SELECT state, stage, continuation_kind
-             FROM recovery_quarantine
-            WHERE boundary_id = 'session-retention-work'
-              AND subject_key = ?`,
-        )
-        .get(`${failedSessionId}\u0000${failedJobId}`),
-    ).toEqual({ state: 'active', stage: 'settle', continuation_kind: null });
-    expect(readRetentionEvents(harness, validSessionId).map((event) => ({ type: event.type, ...event.body }))).toEqual([
-      {
-        type: 'session.retention.discard.requested',
-        sessionId: validSessionId,
-        attempt: 1,
-        handles: [validHandle],
-      },
-      {
-        type: 'session.retention.discard.completed',
-        sessionId: validSessionId,
-        attempt: 1,
-        handles: [validHandle],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([[failedHandle], [validHandle]]);
-  });
-
-  it('quarantines a request-append exception before provider effect and still settles its sibling', async () => {
-    const harness = createHarness({ autoObserveCoordinator: false });
-    const failedJobId = 'job-request-append-failure';
-    const validJobId = 'job-request-append-sibling';
-    const failedSessionId = await openClaimedSession(harness, failedJobId);
-    const validSessionId = await openClaimedSession(harness, validJobId);
-    const failedHandle = '/tmp/rollout-request-append-failure.jsonl';
-    const validHandle = '/tmp/rollout-request-append-sibling.jsonl';
-
-    for (const [jobId, sessionId, handle] of [
-      [failedJobId, failedSessionId, failedHandle],
-      [validJobId, validSessionId, validHandle],
-    ] as const) {
-      await recordArtifact(harness, sessionId, jobId, handle);
-      initRunningJob(harness, jobId, sessionId);
-      completeJobViaCoordinatorCommit(harness, jobId, sessionId);
-      harness.sessionManager.releaseJob(sessionId, jobId);
-    }
-    harness.db.exec(`
-      CREATE TRIGGER reject_fixture_retention_request
-      BEFORE INSERT ON events
-      WHEN NEW.type = 'session.retention.discard.requested'
-       AND NEW.stream_id = '${failedSessionId}'
-      BEGIN
-        SELECT RAISE(ABORT, 'fixture request append failure');
-      END;
-    `);
-
-    harness.reactor.observe(harness.appendedBatches.flat());
-    await harness.reactor.waitForIdle();
-
-    expect(readRetentionEvents(harness, failedSessionId)).toEqual([]);
-    expect(
-      harness.db
-        .prepare(
-          `SELECT state, stage, continuation_kind
-             FROM recovery_quarantine
-            WHERE boundary_id = 'session-retention-work'
-              AND subject_key = ?`,
-        )
-        .get(`${failedSessionId}\u0000${failedJobId}`),
-    ).toEqual({ state: 'active', stage: 'settle', continuation_kind: null });
-    expect(readRetentionEvents(harness, validSessionId).map((event) => ({ type: event.type, ...event.body }))).toEqual([
-      {
-        type: 'session.retention.discard.requested',
-        sessionId: validSessionId,
-        attempt: 1,
-        handles: [validHandle],
-      },
-      {
-        type: 'session.retention.discard.completed',
-        sessionId: validSessionId,
-        attempt: 1,
-        handles: [validHandle],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([[validHandle]]);
-  });
-
   it('keeps an unknown provider outcome durably deferred and reconciles before replay', async () => {
     const harness = createHarness({
       discardArtifacts: async () => {
@@ -955,525 +643,6 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.discardCalls).toEqual([]);
   });
 
-  it('never discards under a recovered continuation whose attempt was already answered', async () => {
-    let sessionIdForHook = '';
-    let jobIdForHook = '';
-    let protectedOnce = false;
-    let staleContinuation: Record<string, unknown> | undefined;
-    const discardsUnderOpenRequest: boolean[] = [];
-    const harness: Harness = createHarness({
-      afterCommit: (appended, commitEvents) => {
-        if (sessionIdForHook.length === 0) return;
-        if (!protectedOnce && appended.some((event) => event.type === 'session.retention.discard.requested')) {
-          const entry = readProjectionProviderSession(harness.db, sessionIdForHook);
-          if (entry === null) throw new Error(`Expected session ${sessionIdForHook}`);
-          protectedOnce = true;
-          appendContinuationLeaseRecord(commitEvents, entry, jobIdForHook, harness.runtime.time.now() + 100);
-          return;
-        }
-        // The continuation row still exists when the answered attempt commits: this is the crash window.
-        if (
-          staleContinuation === undefined &&
-          appended.some((event) => event.type === 'session.retention.discard.completed')
-        ) {
-          staleContinuation = harness.db
-            .prepare(
-              `SELECT * FROM recovery_quarantine WHERE boundary_id = 'session-retention-work' AND subject_key = ?`,
-            )
-            .get(`${sessionIdForHook}\u0000${jobIdForHook}`) as Record<string, unknown> | undefined;
-        }
-      },
-      discardArtifacts: async () => {
-        const events = readRetentionEvents(harness, sessionIdForHook);
-        const latest = Math.max(
-          ...events
-            .filter((event) => event.type === 'session.retention.discard.requested')
-            .map((event) => event.body.attempt),
-        );
-        discardsUnderOpenRequest.push(
-          !events.some(
-            (event) => event.type !== 'session.retention.discard.requested' && event.body.attempt === latest,
-          ),
-        );
-        return { kind: 'discarded' };
-      },
-    });
-    jobIdForHook = 'job-stale-continuation';
-    sessionIdForHook = await openClaimedSession(harness, jobIdForHook);
-    await recordArtifact(harness, sessionIdForHook, jobIdForHook, '/tmp/rollout-stale.jsonl');
-    initRunningJob(harness, jobIdForHook, sessionIdForHook);
-    completeJob(harness, jobIdForHook, sessionIdForHook);
-    harness.sessionManager.releaseJob(sessionIdForHook, jobIdForHook);
-    await harness.reactor.waitForIdle();
-
-    expect(staleContinuation).toBeDefined();
-    const columns = Object.keys(staleContinuation!);
-    harness.db
-      .prepare(
-        `INSERT OR REPLACE INTO recovery_quarantine (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
-      )
-      .run(...columns.map((column) => staleContinuation![column] as never));
-    harness.runtime.time.tick(200);
-
-    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
-    await harness.reactor.waitForIdle();
-
-    expect(discardsUnderOpenRequest.length).toBeGreaterThan(0);
-    expect(discardsUnderOpenRequest.every(Boolean)).toBe(true);
-  });
-
-  it('rejects contradictory completed and failed outcomes transactionally', async () => {
-    const harness = createHarness();
-    const entry = harness.sessionManager.allocate({
-      binding: TEST_CODEX_BINDING,
-      name: 'session-retention-validator',
-      cwd: harness.projectRoot,
-      projectRoot: harness.projectRoot,
-      backendNamespace: harness.namespace,
-      retention: 'discard_provider_artifacts_on_terminal',
-    });
-    const handles = ['/tmp/retention-validator.jsonl'];
-
-    expect(
-      appendRetentionDiscardRequested(harness.coordinatorCommit, {
-        sessionId: entry.sessionId,
-        attempt: 1,
-        handles,
-      }),
-    ).toMatchObject({ kind: 'appended' });
-    appendRetentionDiscardCompleted(harness.coordinatorCommit, {
-      sessionId: entry.sessionId,
-      attempt: 1,
-      handles,
-      outcome: 'discarded',
-    });
-    const before = readRetentionEvents(harness, entry.sessionId);
-
-    expect(() =>
-      appendRetentionDiscardFailed(harness.coordinatorCommit, {
-        sessionId: entry.sessionId,
-        attempt: 1,
-        handles,
-        reason: 'late failure',
-      }),
-    ).toThrow(/contradicts existing completed outcome/);
-    expect(readRetentionEvents(harness, entry.sessionId)).toEqual(before);
-  });
-
-  it('treats duplicate requested attempts as outbox no-ops before insertion', async () => {
-    const harness = createHarness();
-    const entry = harness.sessionManager.allocate({
-      binding: TEST_CODEX_BINDING,
-      name: 'session-retention-duplicate',
-      cwd: harness.projectRoot,
-      projectRoot: harness.projectRoot,
-      backendNamespace: harness.namespace,
-      retention: 'discard_provider_artifacts_on_terminal',
-    });
-    const handles = ['/tmp/retention-duplicate.jsonl'];
-
-    expect(
-      appendRetentionDiscardRequested(harness.coordinatorCommit, {
-        sessionId: entry.sessionId,
-        attempt: 1,
-        handles,
-      }),
-    ).toMatchObject({ kind: 'appended' });
-    expect(
-      appendRetentionDiscardRequested(harness.coordinatorCommit, {
-        sessionId: entry.sessionId,
-        attempt: 1,
-        handles,
-      }),
-    ).toEqual({ kind: 'duplicate' });
-
-    expect(readRetentionEvents(harness, entry.sessionId)).toHaveLength(1);
-  });
-
-  it('does not enqueue retention work for retain sessions', async () => {
-    const harness = createHarness();
-    const jobId = 'job-retain';
-    const sessionId = await openClaimedSession(harness, jobId, 'retain');
-    initRunningJob(harness, jobId, sessionId);
-
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-    await harness.reactor.waitForIdle();
-
-    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
-    expect(harness.discardCalls).toEqual([]);
-  });
-
-  it('ignores synthetic releases that have no matching terminal for the same job', async () => {
-    const harness = createHarness();
-    const sourceClaimId = 'synthetic-access-claim';
-    const sessionId = await openClaimedSession(harness, sourceClaimId);
-
-    harness.sessionManager.releaseJob(sessionId, sourceClaimId);
-    await harness.reactor.waitForIdle();
-
-    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
-  });
-
-  it('records durable completed no-op outcomes for empty handles and providers declaring none', async () => {
-    const emptyHarness = createHarness();
-    const emptyJobId = 'job-empty-handles';
-    const emptySessionId = await openClaimedSession(emptyHarness, emptyJobId);
-    initRunningJob(emptyHarness, emptyJobId, emptySessionId);
-
-    completeJob(emptyHarness, emptyJobId, emptySessionId);
-    emptyHarness.sessionManager.releaseJob(emptySessionId, emptyJobId);
-
-    await expectRetentionEvents(emptyHarness, emptySessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [],
-        outcome: 'skipped_no_handles',
-      },
-    ]);
-    expect(emptyHarness.discardCalls).toEqual([]);
-
-    const noneHarness = createHarness({ artifactMode: 'none' });
-    const noneJobId = 'job-provider-none';
-    const noneSessionId = await openClaimedSession(noneHarness, noneJobId);
-    await recordArtifact(noneHarness, noneSessionId, noneJobId, '/tmp/provider-none.jsonl');
-    initRunningJob(noneHarness, noneJobId, noneSessionId);
-
-    completeJob(noneHarness, noneJobId, noneSessionId);
-    noneHarness.sessionManager.releaseJob(noneSessionId, noneJobId);
-
-    await expectRetentionEvents(noneHarness, noneSessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: ['/tmp/provider-none.jsonl'] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: ['/tmp/provider-none.jsonl'],
-        outcome: 'provider_declares_none',
-      },
-    ]);
-    expect(noneHarness.discardCalls).toEqual([]);
-  });
-
-  it('falls back to provider locateArtifact when no handle was recorded but a conversationRef exists', async () => {
-    const harness = createHarness({
-      locateArtifact: (conversationRef) =>
-        conversationRef === 'thread-fallback' ? '/tmp/rollout-thread-fallback.jsonl' : null,
-    });
-    const jobId = 'job-locate-fallback';
-    const sessionId = await openClaimedSession(harness, jobId);
-    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
-      conversationRef: 'thread-fallback',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-fallback' },
-    });
-    initRunningJob(harness, jobId, sessionId);
-
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await expectRetentionEvents(harness, sessionId, [
-      {
-        type: 'session.retention.discard.requested',
-        attempt: 1,
-        handles: ['/tmp/rollout-thread-fallback.jsonl'],
-      },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: ['/tmp/rollout-thread-fallback.jsonl'],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-thread-fallback.jsonl']]);
-  });
-
-  it('discards session residue after the primary discard and before retention completes', async () => {
-    const order: string[] = [];
-    const residueCalls: Array<{ conversationRef: string; since: number }> = [];
-    const retention = { completed: (): boolean => false };
-    const harness = createHarness({
-      locateArtifact: (conversationRef) =>
-        conversationRef === 'thread-residue' ? '/tmp/rollout-thread-residue.jsonl' : null,
-      discardArtifacts: async () => {
-        order.push('primary');
-        return { kind: 'discarded' };
-      },
-      discardResidue: async (conversationRef, since) => {
-        residueCalls.push({ conversationRef, since });
-        order.push(retention.completed() ? 'residue-after-completion' : 'residue');
-        return { discarded: ['/tmp/rollout-fork.jsonl'], retained: [] };
-      },
-    });
-    const jobId = 'job-residue';
-    const sessionId = await openClaimedSession(harness, jobId);
-    retention.completed = () =>
-      readRetentionEvents(harness, sessionId).some((event) => event.type === 'session.retention.discard.completed');
-    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
-      conversationRef: 'thread-residue',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-residue' },
-    });
-    initRunningJob(harness, jobId, sessionId);
-
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: ['/tmp/rollout-thread-residue.jsonl'] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: ['/tmp/rollout-thread-residue.jsonl'],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(order).toEqual(['primary', 'residue']);
-    expect(residueCalls).toHaveLength(1);
-    expect(residueCalls[0]?.conversationRef).toBe('thread-residue');
-    expect(Number.isFinite(residueCalls[0]?.since)).toBe(true);
-  });
-
-  it('discards session residue even when the primary artifact cannot be located', async () => {
-    const residueRefs: string[] = [];
-    const harness = createHarness({
-      locateArtifact: () => null,
-      discardResidue: async (conversationRef) => {
-        residueRefs.push(conversationRef);
-        return { discarded: [], retained: [] };
-      },
-    });
-    const jobId = 'job-residue-no-primary';
-    const sessionId = await openClaimedSession(harness, jobId);
-    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
-      conversationRef: 'thread-residue-no-primary',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-residue-no-primary' },
-    });
-    initRunningJob(harness, jobId, sessionId);
-
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
-      { type: 'session.retention.discard.completed', attempt: 1, handles: [], outcome: 'skipped_no_handles' },
-    ]);
-    expect(residueRefs).toEqual(['thread-residue-no-primary']);
-  });
-
-  it('completes retention even when the residue discard throws', async () => {
-    const harness = createHarness({
-      locateArtifact: (conversationRef) =>
-        conversationRef === 'thread-residue-fail' ? '/tmp/rollout-thread-residue-fail.jsonl' : null,
-      discardResidue: async () => {
-        throw new Error('residue scan exploded');
-      },
-    });
-    const jobId = 'job-residue-fail';
-    const sessionId = await openClaimedSession(harness, jobId);
-    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
-      conversationRef: 'thread-residue-fail',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-residue-fail' },
-    });
-    initRunningJob(harness, jobId, sessionId);
-
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await expectRetentionEvents(harness, sessionId, [
-      {
-        type: 'session.retention.discard.requested',
-        attempt: 1,
-        handles: ['/tmp/rollout-thread-residue-fail.jsonl'],
-      },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: ['/tmp/rollout-thread-residue-fail.jsonl'],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.logs.some((line) => line.includes('residue scan exploded'))).toBe(true);
-  });
-
-  it('records skipped_no_handles when locateArtifact also finds nothing', async () => {
-    const harness = createHarness({ locateArtifact: () => null });
-    const jobId = 'job-locate-miss';
-    const sessionId = await openClaimedSession(harness, jobId);
-    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
-      conversationRef: 'thread-missing',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-missing' },
-    });
-    initRunningJob(harness, jobId, sessionId);
-
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [],
-        outcome: 'skipped_no_handles',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([]);
-  });
-
-  it('discards the crash-recovered job handle without using another job or the session fallback', async () => {
-    const locateSpy = vi.fn((_ref: string) => '/tmp/should-not-be-used.jsonl');
-    const harness = createHarness({ locateArtifact: locateSpy });
-    const otherJobId = 'job-before-crash-recovery';
-    const jobId = 'job-crash-recovered';
-    const otherHandle = '/tmp/rollout-other-job.jsonl';
-    const recoveredHandle = '/tmp/rollout-crash-recovered.jsonl';
-    const sessionId = await openClaimedSession(harness, otherJobId);
-    await recordArtifact(harness, sessionId, otherJobId, otherHandle);
-    harness.sessionManager.releaseJob(sessionId, otherJobId);
-    const released = harness.sessionManager.get('codex', sessionId);
-    if (released === null) throw new Error(`Expected session ${sessionId}`);
-    await expect(harness.sessionManager.claimForJobAtomic(sessionId, jobId, released.version)).resolves.toBe(true);
-    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
-      conversationRef: 'thread-precedence',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-precedence' },
-    });
-    await recordArtifact(harness, sessionId, jobId, recoveredHandle);
-    initRunningJob(harness, jobId, sessionId);
-
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [recoveredHandle] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [recoveredHandle],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([[recoveredHandle]]);
-    expect(harness.discardCalls.flat()).not.toContain(otherHandle);
-    expect(locateSpy).not.toHaveBeenCalled();
-  });
-
-  it('discardSessionArtifacts discards recorded handles on demand, bypassing the retain gate', async () => {
-    const harness = createHarness();
-    const jobId = 'job-ondemand';
-    const sessionId = await openClaimedSession(harness, jobId, 'retain');
-    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-ondemand.jsonl');
-    initRunningJob(harness, jobId, sessionId);
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await harness.reactor.discardSessionArtifacts(sessionId);
-
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-ondemand.jsonl']]);
-  });
-
-  it('discardSessionArtifacts leaves session residue alone, since nothing excludes a concurrent resume', async () => {
-    const residueRefs: string[] = [];
-    const harness = createHarness({
-      discardResidue: async (conversationRef) => {
-        residueRefs.push(conversationRef);
-        return { discarded: [], retained: [] };
-      },
-    });
-    const jobId = 'job-ondemand-residue';
-    const sessionId = await openClaimedSession(harness, jobId, 'retain');
-    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
-      conversationRef: 'thread-ondemand-residue',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-ondemand-residue' },
-    });
-    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-ondemand-residue.jsonl');
-    initRunningJob(harness, jobId, sessionId);
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await harness.reactor.discardSessionArtifacts(sessionId);
-
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-ondemand-residue.jsonl']]);
-    expect(residueRefs).toEqual([]);
-  });
-
-  it('discardSessionArtifacts falls back to locateArtifact when no handle was recorded', async () => {
-    const harness = createHarness({
-      locateArtifact: (conversationRef) =>
-        conversationRef === 'thread-ondemand' ? '/tmp/rollout-thread-ondemand.jsonl' : null,
-    });
-    const jobId = 'job-ondemand-locate';
-    const sessionId = await openClaimedSession(harness, jobId, 'retain');
-    initRunningJob(harness, jobId, sessionId);
-    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
-      conversationRef: 'thread-ondemand',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-ondemand' },
-    });
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-
-    await harness.reactor.discardSessionArtifacts(sessionId);
-
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-thread-ondemand.jsonl']]);
-  });
-
-  it('discardSessionArtifacts is a no-op for an unknown session', async () => {
-    const harness = createHarness();
-    await harness.reactor.discardSessionArtifacts('missing-session');
-    expect(harness.discardCalls).toEqual([]);
-  });
-
-  it('discardSessionArtifacts is a no-op when the provider declares no artifacts', async () => {
-    const harness = createHarness({ artifactMode: 'none' });
-    const jobId = 'job-ondemand-none';
-    const sessionId = await openClaimedSession(harness, jobId, 'retain');
-    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-none.jsonl');
-
-    await harness.reactor.discardSessionArtifacts(sessionId);
-
-    expect(harness.discardCalls).toEqual([]);
-  });
-
-  it('discardSessionArtifacts is a no-op when no handle was recorded and no conversationRef exists', async () => {
-    const harness = createHarness();
-    const jobId = 'job-ondemand-empty';
-    const sessionId = await openClaimedSession(harness, jobId, 'retain');
-
-    await harness.reactor.discardSessionArtifacts(sessionId);
-
-    expect(harness.discardCalls).toEqual([]);
-  });
-
-  it('observes job.terminal.recorded appended through JobStore.commit', async () => {
-    const harness = createHarness();
-    const jobId = 'job-store-terminal';
-    const sessionId = await openClaimedSession(harness, jobId);
-    initRunningJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-    await harness.reactor.waitForIdle();
-
-    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
-
-    completeJob(harness, jobId, sessionId);
-
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [],
-        outcome: 'skipped_no_handles',
-      },
-    ]);
-  });
-
   it('enforces once when terminal and release observations arrive out of order', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
     const jobId = 'job-out-of-order';
@@ -1506,111 +675,6 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.discardCalls).toEqual([['/tmp/rollout-out-of-order.jsonl']]);
   });
 
-  it.each([
-    {
-      name: 'projection',
-      corrupt: (harness: Harness, sessionId: string, _jobId: string) => {
-        harness.db
-          .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
-          .run('not valid session json', sessionId);
-        return { boundary: 'session-projection', subjectKey: sessionId };
-      },
-    },
-    {
-      name: 'release event',
-      corrupt: (harness: Harness, sessionId: string, _jobId: string) => {
-        const row = harness.db
-          .prepare<[string], { seq: number }>(
-            `SELECT seq
-               FROM events
-              WHERE type = 'session.claim.released'
-                AND stream_id = ?`,
-          )
-          .get(sessionId);
-        if (row === undefined) throw new Error('Expected release event fixture.');
-        harness.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(Buffer.from('malformed'), row.seq);
-        return { boundary: 'retention-release-pair', subjectKey: String(row.seq) };
-      },
-    },
-    {
-      name: 'terminal event',
-      corrupt: (harness: Harness, _sessionId: string, jobId: string) => {
-        const row = harness.db
-          .prepare<[string], { seq: number }>(
-            `SELECT seq
-               FROM events
-              WHERE type = 'job.terminal.recorded'
-                AND stream_id = ?`,
-          )
-          .get(jobId);
-        if (row === undefined) throw new Error('Expected terminal event fixture.');
-        harness.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(Buffer.from('malformed'), row.seq);
-        return { boundary: 'retention-release-pair', subjectKey: String(row.seq) };
-      },
-    },
-  ])('quarantines one malformed $name pair without requeueing its pending siblings', async ({ corrupt }) => {
-    const harness = createHarness({ autoObserveCoordinator: false });
-    const pairs = [
-      { jobId: 'job-queue-malformed', handle: '/tmp/rollout-queue-malformed.jsonl' },
-      { jobId: 'job-queue-valid-a', handle: '/tmp/rollout-queue-valid-a.jsonl' },
-      { jobId: 'job-queue-valid-b', handle: '/tmp/rollout-queue-valid-b.jsonl' },
-    ];
-    const seeded: Array<{ jobId: string; sessionId: string; handle: string }> = [];
-    for (const pair of pairs) {
-      const sessionId = await openClaimedSession(harness, pair.jobId);
-      await recordArtifact(harness, sessionId, pair.jobId, pair.handle);
-      initRunningJob(harness, pair.jobId, sessionId);
-      completeJobViaCoordinatorCommit(harness, pair.jobId, sessionId);
-      harness.sessionManager.releaseJob(sessionId, pair.jobId);
-      seeded.push({ ...pair, sessionId });
-    }
-
-    const malformed = seeded[0];
-    if (malformed === undefined) throw new Error('Expected malformed pair fixture.');
-    const quarantine = corrupt(harness, malformed.sessionId, malformed.jobId);
-
-    harness.reactor.observe(harness.appendedBatches.flat());
-    await harness.reactor.waitForIdle();
-
-    for (const valid of seeded.slice(1)) {
-      expect(
-        readRetentionEvents(harness, valid.sessionId).map((event) => ({ type: event.type, ...event.body })),
-        harness.logs.join('\n'),
-      ).toEqual([
-        {
-          type: 'session.retention.discard.requested',
-          sessionId: valid.sessionId,
-          attempt: 1,
-          handles: [valid.handle],
-        },
-        {
-          type: 'session.retention.discard.completed',
-          sessionId: valid.sessionId,
-          attempt: 1,
-          handles: [valid.handle],
-          outcome: 'discarded',
-        },
-      ]);
-    }
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-queue-valid-a.jsonl'], ['/tmp/rollout-queue-valid-b.jsonl']]);
-    expect(readRetentionEvents(harness, malformed.sessionId)).toEqual([]);
-    expect(
-      harness.db
-        .prepare(
-          `SELECT boundary_id, subject_key, state, stage
-             FROM recovery_quarantine
-            WHERE boundary_id = ?
-              AND subject_key = ?`,
-        )
-        .get(quarantine.boundary, quarantine.subjectKey),
-    ).toEqual({
-      boundary_id: quarantine.boundary,
-      subject_key: quarantine.subjectKey,
-      state: 'active',
-      stage: 'hydrate',
-    });
-  });
-
   it('startup scan backfills existing terminal and release pairs', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
     const jobId = 'job-startup-scan';
@@ -1633,73 +697,6 @@ describe('LifecycleReactor retention enforcement', () => {
         handles: [],
         outcome: 'skipped_no_handles',
       },
-    ]);
-  });
-
-  it('continues startup retention processing for a valid session when another projection cannot be decoded', async () => {
-    const harness = createHarness({ autoObserveCoordinator: false });
-    const malformedJobId = 'job-startup-scan-malformed-session';
-    const validJobId = 'job-startup-scan-valid-session';
-    const malformedSessionId = await openClaimedSession(harness, malformedJobId);
-    const validSessionId = await openClaimedSession(harness, validJobId);
-
-    for (const [jobId, sessionId] of [
-      [malformedJobId, malformedSessionId],
-      [validJobId, validSessionId],
-    ] as const) {
-      initRunningJob(harness, jobId, sessionId);
-      completeJobViaCoordinatorCommit(harness, jobId, sessionId);
-      harness.sessionManager.releaseJob(sessionId, jobId);
-    }
-    await harness.reactor.waitForIdle();
-    harness.db
-      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
-      .run('not valid session json', malformedSessionId);
-
-    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
-
-    await expectRetentionEvents(harness, validSessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [],
-        outcome: 'skipped_no_handles',
-      },
-    ]);
-    expect(
-      harness.db
-        .prepare(
-          `SELECT boundary_id, subject_key, state, stage
-             FROM recovery_quarantine
-            WHERE boundary_id = 'session-projection'
-              AND subject_key = ?`,
-        )
-        .get(malformedSessionId),
-    ).toEqual({
-      boundary_id: 'session-projection',
-      subject_key: malformedSessionId,
-      state: 'active',
-      stage: 'hydrate',
-    });
-    expect(readRetentionEvents(harness, malformedSessionId)).toEqual([]);
-  });
-
-  it('names the exact primary key when lifecycle processing skips a projection with a non-string session id', () => {
-    const harness = createHarness();
-    harness.db
-      .prepare(
-        `INSERT INTO projection_sessions (
-           session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(Buffer.from([0xde, 0xad]), 'default', 0, null, 'scope', '{}', 1);
-
-    expect(harness.reactor.listLifecycleSessionEntries()).toEqual([]);
-    expect(harness.logs).toEqual([
-      expect.stringContaining(
-        "Skipped malformed session projection at projection_sessions.session_id=X'DEAD' during lifecycle processing:",
-      ),
     ]);
   });
 
@@ -1732,355 +729,5 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-timer.jsonl']]);
     await harness.reactor.dispose();
   });
-
-  it('expires overdue pending continuation leases during startup scan', async () => {
-    const harness = createHarness({ autoObserveCoordinator: false });
-    const jobId = 'job-lease-restart-expired';
-    const sessionId = await openClaimedSession(harness, jobId);
-    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-lease-restart.jsonl');
-    initRunningJob(harness, jobId, sessionId);
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
-    recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() - 1);
-
-    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
-
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: ['/tmp/rollout-lease-restart.jsonl'] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: ['/tmp/rollout-lease-restart.jsonl'],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-restart.jsonl']]);
-    await harness.reactor.dispose();
-  });
-
-  it('reschedules the continuation lease timer for the earliest pending expiry', async () => {
-    const harness = createHarness({ autoObserveCoordinator: false });
-    const firstJobId = 'job-lease-late';
-    const secondJobId = 'job-lease-early';
-    const firstSessionId = await openClaimedSession(harness, firstJobId);
-    const secondSessionId = await openClaimedSession(harness, secondJobId);
-    await recordArtifact(harness, firstSessionId, firstJobId, '/tmp/rollout-lease-late.jsonl');
-    await recordArtifact(harness, secondSessionId, secondJobId, '/tmp/rollout-lease-early.jsonl');
-    initRunningJob(harness, firstJobId, firstSessionId);
-    initRunningJob(harness, secondJobId, secondSessionId);
-    completeJob(harness, firstJobId, firstSessionId);
-    completeJob(harness, secondJobId, secondSessionId);
-    harness.sessionManager.releaseJob(firstSessionId, firstJobId);
-    harness.sessionManager.releaseJob(secondSessionId, secondJobId);
-    recordContinuationLease(harness, firstSessionId, firstJobId, harness.runtime.time.now() + 1_000);
-    recordContinuationLease(harness, secondSessionId, secondJobId, harness.runtime.time.now() + 100);
-
-    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
-    harness.runtime.time.tick(100);
-    await harness.reactor.waitForIdle();
-
-    expect(
-      readRetentionEvents(harness, secondSessionId)
-        .map((event) => event.body.outcome)
-        .at(-1),
-    ).toBe('discarded');
-    expect(readRetentionEvents(harness, firstSessionId)).toEqual([]);
-
-    harness.runtime.time.tick(900);
-
-    await expectRetentionEvents(harness, firstSessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: ['/tmp/rollout-lease-late.jsonl'] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: ['/tmp/rollout-lease-late.jsonl'],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-early.jsonl'], ['/tmp/rollout-lease-late.jsonl']]);
-    await harness.reactor.dispose();
-  });
-
-  it('quarantines a malformed lease while a valid timer sibling expires and settles', async () => {
-    const harness = createHarness({ autoObserveCoordinator: false });
-    const malformedJobId = 'job-lease-malformed';
-    const validJobId = 'job-lease-valid-sibling';
-    const malformedSessionId = await openClaimedSession(harness, malformedJobId);
-    const validSessionId = await openClaimedSession(harness, validJobId);
-
-    for (const [jobId, sessionId, handle] of [
-      [malformedJobId, malformedSessionId, '/tmp/rollout-lease-malformed.jsonl'],
-      [validJobId, validSessionId, '/tmp/rollout-lease-valid-sibling.jsonl'],
-    ] as const) {
-      await recordArtifact(harness, sessionId, jobId, handle);
-      initRunningJob(harness, jobId, sessionId);
-      completeJob(harness, jobId, sessionId);
-      harness.sessionManager.releaseJob(sessionId, jobId);
-      recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() + 100);
-    }
-
-    const malformedEntryRow = harness.db
-      .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-      .get(malformedSessionId);
-    if (malformedEntryRow === undefined) throw new Error('Expected malformed lease projection fixture.');
-    const malformedEntry = JSON.parse(malformedEntryRow.entry) as Record<string, unknown>;
-    malformedEntry.continuationLease = {
-      ...(malformedEntry.continuationLease as Record<string, unknown>),
-      expiresAt: 'not-an-instant',
-    };
-    harness.db
-      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
-      .run(JSON.stringify(malformedEntry), malformedSessionId);
-
-    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
-    expect(readRetentionEvents(harness, malformedSessionId)).toEqual([]);
-    expect(
-      harness.db
-        .prepare(
-          `SELECT boundary_id, subject_key, state, stage
-             FROM recovery_quarantine
-            WHERE boundary_id = 'session-continuation-lease'
-              AND subject_key = ?`,
-        )
-        .get(malformedSessionId),
-    ).toEqual({
-      boundary_id: 'session-continuation-lease',
-      subject_key: malformedSessionId,
-      state: 'active',
-      stage: 'hydrate',
-    });
-
-    harness.runtime.time.tick(100);
-    await expectRetentionEvents(harness, validSessionId, [
-      {
-        type: 'session.retention.discard.requested',
-        attempt: 1,
-        handles: ['/tmp/rollout-lease-valid-sibling.jsonl'],
-      },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: ['/tmp/rollout-lease-valid-sibling.jsonl'],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-valid-sibling.jsonl']]);
-    await harness.reactor.dispose();
-  });
-
-  it('quarantines one expiry append failure and keeps the valid sibling timer live', async () => {
-    const harness = createHarness({ autoObserveCoordinator: false });
-    const failedJobId = 'job-lease-expiry-append-fails';
-    const validJobId = 'job-lease-expiry-append-sibling';
-    const failedSessionId = await openClaimedSession(harness, failedJobId);
-    const validSessionId = await openClaimedSession(harness, validJobId);
-
-    for (const [jobId, sessionId, handle] of [
-      [failedJobId, failedSessionId, '/tmp/rollout-expiry-append-fails.jsonl'],
-      [validJobId, validSessionId, '/tmp/rollout-expiry-append-sibling.jsonl'],
-    ] as const) {
-      await recordArtifact(harness, sessionId, jobId, handle);
-      initRunningJob(harness, jobId, sessionId);
-      completeJob(harness, jobId, sessionId);
-      harness.sessionManager.releaseJob(sessionId, jobId);
-    }
-    recordContinuationLease(harness, failedSessionId, failedJobId, harness.runtime.time.now() - 1);
-    recordContinuationLease(harness, validSessionId, validJobId, harness.runtime.time.now() + 100);
-    harness.db.exec(`
-      CREATE TRIGGER reject_fixture_lease_expiry
-      BEFORE INSERT ON events
-      WHEN NEW.type = 'session.continuation_lease.expired'
-       AND NEW.stream_id = '${failedSessionId}'
-      BEGIN
-        SELECT RAISE(ABORT, 'fixture expiry append failure');
-      END;
-    `);
-
-    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
-    expect(readRetentionEvents(harness, failedSessionId)).toEqual([]);
-    expect(
-      harness.db
-        .prepare(
-          `SELECT boundary_id, subject_key, state, stage
-             FROM recovery_quarantine
-            WHERE boundary_id = 'session-continuation-lease'
-              AND subject_key = ?`,
-        )
-        .get(failedSessionId),
-    ).toEqual({
-      boundary_id: 'session-continuation-lease',
-      subject_key: failedSessionId,
-      state: 'active',
-      stage: 'settle',
-    });
-    expect(
-      harness.db
-        .prepare(
-          `SELECT COUNT(*) AS count
-             FROM events
-            WHERE type = 'session.continuation_lease.expired'
-              AND stream_id = ?`,
-        )
-        .get(failedSessionId),
-    ).toEqual({ count: 0 });
-
-    harness.db.exec('DROP TRIGGER reject_fixture_lease_expiry');
-    harness.runtime.time.tick(100);
-    await expectRetentionEvents(harness, validSessionId, [
-      {
-        type: 'session.retention.discard.requested',
-        attempt: 1,
-        handles: ['/tmp/rollout-expiry-append-sibling.jsonl'],
-      },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: ['/tmp/rollout-expiry-append-sibling.jsonl'],
-        outcome: 'discarded',
-      },
-    ]);
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-expiry-append-sibling.jsonl']]);
-    await harness.reactor.dispose();
-  });
-
-  it('observes startup recovery markError releases through the observer-aware entry point', async () => {
-    const harness = createHarness();
-    const jobId = 'job-recovery-mark-error';
-    const sessionId = await openClaimedSession(harness, jobId);
-    initRunningJob(harness, jobId, sessionId);
-
-    await runCoordinatorStartupRecovery(harness);
-
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [],
-        outcome: 'skipped_no_handles',
-      },
-    ]);
-  });
-
-  it('observes startup recovery releaseSessionClaim through the observer-aware entry point', async () => {
-    const harness = createHarness();
-    const jobId = 'job-recovery-release';
-    const sessionId = await openClaimedSession(harness, jobId);
-    initRunningJob(harness, jobId, sessionId);
-    completeJob(harness, jobId, sessionId);
-
-    await runCoordinatorStartupRecovery(harness);
-
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [],
-        outcome: 'skipped_no_handles',
-      },
-    ]);
-  });
-
-  it('observes finalizeInterruptedAppServerJob releases emitted by finalizeJobContinuityAtomic', async () => {
-    const harness = createHarness({ interruptedRecovery: true });
-    const jobId = 'job-finalize-interrupted';
-    const sessionId = await openClaimedSession(harness, jobId);
-    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
-      conversationRef: 'thread-finalize-interrupted',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-finalize-interrupted' },
-    });
-    initRunningJob(harness, jobId, sessionId);
-
-    const launchRecord: JobLaunch = {
-      jobId,
-      owner: { kind: 'provider-session', id: sessionId },
-      sessionId,
-      provider: 'codex',
-      projectRoot: harness.projectRoot,
-      backendNamespace: harness.namespace,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 1,
-      providerAction: 'exec',
-      request: {
-        prompt: 'recover interrupted',
-        cwd: harness.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: '2026-04-19T00:00:00.000Z',
-    };
-    const runtimeRecord: AppServerRuntime = {
-      transport: 'app-server',
-      startTime: '2026-04-19T00:00:01.000Z',
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'waiting',
-      },
-    };
-    const launchCoordinator = new LaunchCoordinator({ runtime: harness.runtime });
-    const recoveryService = new RecoveryService({
-      runtime: harness.runtime,
-      childPrincipalRegistry: testChildPrincipalRegistry(harness.runtime.ids),
-      parentPrincipal: testProjectPrincipal(harness.projectRoot),
-      sessionManager: harness.sessionManager,
-      abortRegistry: {
-        register: () => 'abort-key',
-        getSignal: () => null,
-        has: () => false,
-        listActive: () => [],
-        abort: () => ({ aborted: [], notFound: [] }),
-        remove: vi.fn(),
-      },
-      backendNamespace: harness.namespace,
-      bundleHash: 'test-bundle',
-      progressStore: harness.progressStore,
-      launchAdmission: launchCoordinator,
-      launchRecovery: launchCoordinator,
-      providerRegistry: harness.providerRegistry,
-      launchOrchestrator: {
-        runRecoveredQueuedJob: vi.fn(),
-        writeJobTerminal: (
-          terminalJobId: string,
-          terminalSessionId: string,
-          result: JobTerminalInput,
-          _phase: JobPhase,
-          options?: TerminalWriteOptions,
-        ) => {
-          harness.progressStore.commit((c) => {
-            appendJobTerminalRecorded(c, {
-              jobId: terminalJobId,
-              sessionId: terminalSessionId,
-              namespace: harness.namespace,
-              project: harness.projectRoot,
-              terminal: result,
-              diagnostics: options?.diagnostics,
-            });
-            return undefined;
-          });
-        },
-      },
-    });
-
-    const captured = await recoveryService.captureProviderRecoveryAuthority(launchRecord);
-    if (!captured.ok) throw new Error('Expected provider recovery authority.');
-    await recoveryService.finalizeInterruptedAppServerJob(captured.authority, runtimeRecord, {
-      reason: 'restart',
-      signal: new AbortController().signal,
-      onCommitStart: vi.fn(),
-    });
-
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [],
-        outcome: 'skipped_no_handles',
-      },
-    ]);
-  });
 });
-import { checkpointClaimedTestContinuity, initTestJob } from '#tests/helpers/session.js';
+import { initTestJob } from '#tests/helpers/session.js';

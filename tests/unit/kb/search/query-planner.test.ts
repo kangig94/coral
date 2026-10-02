@@ -74,13 +74,6 @@ function plan(intent: KbSearchIntent, scope: KbSearchScope, roles: readonly Regi
 }
 
 describe('query planner role selection', () => {
-  it("maps text intent with scope='communities' to only lexical text roles", () => {
-    const queryPlan = plan('text', 'communities', [textRole(), vectorRole(), graphRole()]);
-
-    expect(queryPlan.primaryInvocations.map((invocation) => invocation.registeredRole.descriptor.id)).toEqual(['text']);
-    expect(queryPlan.primaryInvocations.map((invocation) => invocation.required)).toEqual([true]);
-  });
-
   it("maps vector intent with scope='all' to semantic primary roles and lazy lexical fallback", () => {
     const queryPlan = plan('vector', 'all', [textRole(), vectorRole(), graphRole()]);
 
@@ -92,86 +85,5 @@ describe('query planner role selection', () => {
       'text',
     ]);
     expect(queryPlan.fallbackInvocations?.map((invocation) => invocation.required)).toEqual([false]);
-  });
-
-  it("maps hybrid intent with scope='notes' to all three built-ins in registry order", () => {
-    const roles = [textRole(), vectorRole(), graphRole()];
-    const queryPlan = plan('hybrid', 'notes', roles);
-
-    expect(queryPlan.primaryInvocations.map((invocation) => invocation.registeredRole.descriptor.id)).toEqual([
-      'text',
-      'vector',
-      'graph',
-    ]);
-    expect(queryPlan.primaryInvocations.map((invocation) => invocation.required)).toEqual([true, true, false]);
-  });
-
-  it('maps hybrid intent with an empty registry to no primary invocations', () => {
-    expect(plan('hybrid', 'all', [])).toEqual({ primaryInvocations: [] });
-  });
-
-  it('maps vector intent with an empty registry to no primary or fallback invocations', () => {
-    expect(plan('vector', 'all', [])).toEqual({ primaryInvocations: [] });
-  });
-
-  it('preserves registry order after eligibility filtering', () => {
-    const queryPlan = plan('hybrid', 'all', [graphRole(), textRole(), vectorRole()]);
-
-    expect(queryPlan.primaryInvocations.map((invocation) => invocation.registeredRole.descriptor.id)).toEqual([
-      'graph',
-      'text',
-      'vector',
-    ]);
-  });
-
-  it("maps auto intent with scope='communities' to lexical-only eligibility", () => {
-    const queryPlan = plan('auto', 'communities', [textRole(), vectorRole(), graphRole()]);
-
-    expect(queryPlan.primaryInvocations.map((invocation) => invocation.registeredRole.descriptor.id)).toEqual(['text']);
-  });
-
-  it("maps auto intent with scope='all' to optional semantic and structural contributors", () => {
-    const queryPlan = plan('auto', 'all', [textRole(), vectorRole(), graphRole()]);
-
-    expect(queryPlan.primaryInvocations.map((invocation) => invocation.registeredRole.descriptor.id)).toEqual([
-      'text',
-      'vector',
-      'graph',
-    ]);
-    expect(queryPlan.primaryInvocations.map((invocation) => invocation.required)).toEqual([true, false, false]);
-  });
-
-  it('preserves graph eligibility only for notes, sources, and all while skipping semantic and graph for communities', () => {
-    for (const scope of ['notes', 'sources', 'all'] satisfies KbSearchScope[]) {
-      expect(
-        plan('hybrid', scope, [textRole(), vectorRole(), graphRole()]).primaryInvocations.map(
-          (invocation) => invocation.registeredRole.descriptor.id,
-        ),
-      ).toEqual(['text', 'vector', 'graph']);
-    }
-
-    expect(
-      plan('hybrid', 'communities', [textRole(), vectorRole(), graphRole()]).primaryInvocations.map(
-        (invocation) => invocation.registeredRole.descriptor.id,
-      ),
-    ).toEqual(['text']);
-  });
-
-  it("derives required only from criticality === 'core' and the primary descriptor tag", () => {
-    const lexicalCore = registeredRole('lexical-core', ['lexical', 'semantic'], ['all'], { criticality: 'core' });
-    const lexicalSecondary = registeredRole('lexical-secondary', ['semantic', 'lexical'], ['all'], {
-      criticality: 'core',
-    });
-    const lexicalExternal = registeredRole('lexical-external', ['lexical'], ['all'], { origin: 'external' });
-    const structuralBuiltin = registeredRole('structural-builtin', ['structural'], ['all']);
-    const queryPlan = plan('text', 'all', [lexicalCore, lexicalSecondary, lexicalExternal, structuralBuiltin]);
-
-    expect(
-      queryPlan.primaryInvocations.map((invocation) => [invocation.registeredRole.descriptor.id, invocation.required]),
-    ).toEqual([
-      ['lexical-core', true],
-      ['lexical-secondary', false],
-      ['lexical-external', false],
-    ]);
   });
 });

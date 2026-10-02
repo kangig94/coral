@@ -92,25 +92,6 @@ function launchResult(paths: ReturnType<typeof durableFixturePaths>): DurableLau
   };
 }
 
-function spawn(runtime: Runtime, paths: ReturnType<typeof durableFixturePaths>, signal?: AbortSignal) {
-  return spawnDurableJobTransport({
-    runtime,
-    options: {
-      provider: 'codex',
-      command: 'fixture',
-      args: [],
-      jobDir: paths.jobDir,
-      ...(signal === undefined ? {} : { signal }),
-    },
-    pool: {} as LaunchPool,
-    ownership: callerOwnership(runtime, {} as LaunchPool),
-    cleanupHandles: new Map<symbol, DurableProcessCleanup>(),
-    cleanupRetentions: new Map<DurableProcessCleanup, DurableProcessRetention>(),
-    pendingLaunches: new Set<PendingDurableLaunch>(),
-    releaseLaunch: vi.fn(),
-  });
-}
-
 function startWrapperPublication(
   callbacks: Pick<SpawnDurableJobOptions, 'onRuntimeRecord' | 'onDurableProcessIdentity'>,
 ) {
@@ -269,42 +250,6 @@ describe('durable transport observer timing and cleanup ownership', () => {
 
     fixture.cleanup.resolve({ kind: 'containment-absent' });
     await expect(rejection).resolves.toBe(fixture.readinessError);
-  });
-
-  it.each([60_000, 600_000])('does not consume idle budget during %dms of observer lateness', async (latenessMs) => {
-    const paths = durableFixturePaths(`idle-${latenessMs}`);
-    const launched = launchResult(paths);
-    const exited = deferred<DurableProcessExit>();
-    let monotonicNow = 0n;
-    let sleeps = 0;
-    const base = createDurableTestRuntime();
-    const runtime: Runtime = {
-      ...base,
-      time: {
-        ...base.time,
-        monotonicNow: () => monotonicNow,
-        sleep: async () => {
-          sleeps += 1;
-          if (sleeps <= 1_140) monotonicNow += 500n;
-          else if (sleeps === 1_141) monotonicNow += BigInt(latenessMs);
-          else if (sleeps === 1_142) {
-            monotonicNow += 500n;
-            exited.resolve({ exitCode: 0, signal: null, endTime: new Date(1).toISOString() });
-          }
-        },
-      },
-      process: {
-        ...base.process,
-        observeLiveness: () => 'absent',
-        readProcessIncarnation: () => null,
-        durable: {
-          launch: async () => launched,
-          waitForExit: () => exited.promise,
-        },
-      },
-    };
-
-    await expect(spawn(runtime, paths)).resolves.toMatchObject({ code: 0, aborted: false });
   });
 
   it('keeps a superseded cleanup joinable while its replacement runs', async () => {

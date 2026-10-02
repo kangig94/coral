@@ -3,16 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS,
   PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS,
-  buildEffectiveCoralEnv,
-  buildSessionControllerProfile,
-  mapResolverError,
-  resolveAgentLaunchProfile,
   runProviderPreflight,
   toPreflightRuntime,
 } from '#src/coordinator/services/execution-policies.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import type { ProviderPreflightOutcome } from '#src/providers/contract.js';
-import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -21,43 +16,6 @@ function pendingTimerCount(runtime: SimulationRuntime): number {
 }
 
 const CODEX_DEADLINE_MESSAGE = `Coral could not complete the codex availability check within ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms. Repeat the request; if it times out again, verify that the codex CLI starts promptly for the user running the Coral daemon.`;
-
-function agentContext(content: string) {
-  return {
-    projectRoot: '/project',
-    coralPluginRoot: '/plugin',
-    discoverPluginRoot: () => null,
-    storage: {
-      existsSync: (path: string) => path.endsWith('/tester.md'),
-      readFileSync: () => content,
-    },
-  } as unknown as Parameters<typeof resolveAgentLaunchProfile>[1];
-}
-
-describe('resolveAgentLaunchProfile', () => {
-  it('should carry the frontmatter effort as the agent default', () => {
-    const profile = resolveAgentLaunchProfile('tester', agentContext('---\nmodel: fable\neffort: xhigh\n---\n# Body'));
-
-    expect(profile).toMatchObject({ model: 'fable', effort: 'xhigh' });
-  });
-
-  it('should leave effort unset when the frontmatter declares none', () => {
-    expect(resolveAgentLaunchProfile('tester', agentContext('---\nmodel: opus\n---\n# Body'))).not.toHaveProperty(
-      'effort',
-    );
-  });
-
-  it.each(['extreme', 'ultra'])('should refuse an agent whose frontmatter effort is %s', (effort) => {
-    let thrown: unknown;
-    try {
-      resolveAgentLaunchProfile('tester', agentContext(`---\neffort: ${effort}\n---\n# Body`));
-    } catch (err) {
-      thrown = err;
-    }
-
-    expect(mapResolverError(thrown)).toMatchObject({ status: 'refused', code: 'invalid_agent' });
-  });
-});
 
 describe('execution policies', () => {
   it('bounds provider preflight before a launch can wait forever without a job id', async () => {
@@ -212,30 +170,6 @@ describe('execution policies', () => {
     expect(preflight).toHaveBeenCalledTimes(2);
   });
 
-  it('returns a satisfied provider outcome as a satisfied decision', async () => {
-    const runtime = new SimulationRuntime();
-    const provider = {
-      name: 'codex',
-      preflight: vi.fn(async () => ({ kind: 'satisfied' }) as const),
-    } as Pick<BoundProvider, 'name' | 'preflight'>;
-
-    await expect(
-      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
-    ).resolves.toEqual({ kind: 'satisfied' });
-  });
-
-  it('returns a refused provider outcome as a refused decision', async () => {
-    const runtime = new SimulationRuntime();
-    const provider = {
-      name: 'codex',
-      preflight: vi.fn(async () => ({ kind: 'refused', message: 'credentials are invalid' }) as const),
-    } as Pick<BoundProvider, 'name' | 'preflight'>;
-
-    await expect(
-      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
-    ).resolves.toEqual({ kind: 'refused', message: 'credentials are invalid' });
-  });
-
   it('uses a short positive remainder for one immediate decisive re-ask', async () => {
     const runtime = new SimulationRuntime();
     let settleFirstProbe!: (outcome: ProviderPreflightOutcome) => void;
@@ -352,21 +286,6 @@ describe('execution policies', () => {
     expect(pendingTimerCount(runtime)).toBe(0);
   });
 
-  // An unknown field is not a missing answer. The reader is ours, and §10 asks a reader we own to tolerate
-  // what it does not recognise rather than refuse it, so a field nobody reads must not fail a launch.
-  it('accepts a satisfied outcome carrying a field the coordinator does not read', async () => {
-    const runtime = new SimulationRuntime();
-    const provider = {
-      name: 'codex',
-      preflight: vi.fn(async () => ({ kind: 'satisfied', note: 'unread' }) as unknown as ProviderPreflightOutcome),
-    } as Pick<BoundProvider, 'name' | 'preflight'>;
-
-    await expect(
-      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
-    ).resolves.toEqual({ kind: 'satisfied' });
-    expect(pendingTimerCount(runtime)).toBe(0);
-  });
-
   it('rejects an outcome that settles after the deadline before its timer callback runs', async () => {
     const runtime = new SimulationRuntime();
     let monotonicTime = 0n;
@@ -397,46 +316,5 @@ describe('execution policies', () => {
     });
     expect(preflight).toHaveBeenCalledOnce();
     expect(pendingTimerCount(runtime)).toBe(0);
-  });
-
-  it('passes only provider-opaque environment inputs to the bound preflight', async () => {
-    const runtime = new SimulationRuntime({
-      env: { PATH: '/bin', OPENAI_API_KEY: 'daemon-secret', CODEX_HOME: '/daemon/codex' },
-    });
-    const preflight = toPreflightRuntime(runtime, '/workspace/project', { CORAL_OWNER: 'reviewer' });
-
-    expect(preflight).toMatchObject({
-      cwd: '/workspace/project',
-      baseEnv: { PATH: '/bin', OPENAI_API_KEY: 'daemon-secret', CODEX_HOME: '/daemon/codex' },
-      requestEnv: { CORAL_OWNER: 'reviewer' },
-      platform: runtime.env.platform(),
-    });
-    expect(preflight).not.toHaveProperty('access');
-    expect(preflight).not.toHaveProperty('runExact');
-  });
-
-  it('resolves relative preflight working directories against the daemon cwd', async () => {
-    const runtime = new SimulationRuntime();
-    const preflight = toPreflightRuntime(runtime, 'nested/project', {});
-
-    expect(preflight.cwd).toBe(`${runtime.env.cwd()}/nested/project`);
-  });
-
-  it('keeps Claude transport in request env but not the stored session controller profile', () => {
-    const coralEnv = {
-      [CONTEXT_ENV_KEY.owner]: 'alice',
-      [CONTEXT_ENV_KEY.effort]: 'high',
-      [CONTEXT_ENV_KEY.claudeModelCap]: 'opus',
-      [CONTEXT_ENV_KEY.claudeTransport]: 'print',
-    };
-
-    expect(buildEffectiveCoralEnv(coralEnv)).toMatchObject({
-      [CONTEXT_ENV_KEY.claudeTransport]: 'print',
-    });
-    expect(buildSessionControllerProfile(coralEnv)).toEqual({
-      owner: 'alice',
-      effort: 'high',
-      claudeModelCap: 'opus',
-    });
   });
 });

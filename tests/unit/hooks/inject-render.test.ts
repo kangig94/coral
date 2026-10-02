@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, relative, sep } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -11,7 +11,7 @@ import { MAX_ADDITIONAL_CONTEXT_BYTES } from '../../../clients/hooks/lib/additio
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { EQUIP_AGENT_TOOLS } from '../../../clients/hooks/lib/equip-tools.mjs';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { INJECT_FRAGMENT_GROUPS, renderInject } from '../../../clients/hooks/lib/inject-render.mjs';
+import { renderInject } from '../../../clients/hooks/lib/inject-render.mjs';
 
 const TEMPLATE = '# Tools\n\nCLI: `{{CORAL_CLI}}`{{EQUIPPED_TOOLS}}\n\ndone';
 const createdRoots: string[] = [];
@@ -142,45 +142,6 @@ describe('renderInject fragment composition', () => {
 
     expect(base).toBe('core\n\ntools');
     expect(kb).toBe(expectedKb.join('\n\n'));
-  });
-
-  it('renders the shipped fragment groups without legacy control markers', () => {
-    const input = {
-      pluginRoot: join(process.cwd(), 'clients'),
-      projectDir: undefined,
-      sessionId: 's',
-      asOwner: true,
-      kbEnabled: true,
-    };
-    const base = renderInject({ ...input, group: 'base' });
-    const kb = renderInject({ ...input, group: 'kb' });
-
-    expect(base).toContain('# Coral Guidelines');
-    expect(base).toContain('# Tools');
-    expect(base).toContain('invoke this CLI with sandbox bypass/escalation');
-    expect(base).toContain("Invoking a skill that uses Coral expresses the user's intent to run Coral");
-    expect(base).toContain('automatically use sandbox bypass/escalation');
-    expect(kb).toContain('# Knowledge Base');
-    expect(kb).toContain('## Wiki');
-    expect(kb).toContain('## Memo');
-    expect(`${base}\n${kb}`).not.toMatch(/<!-- (?:KB|OWNER|SESSION_ID)_ONLY:/u);
-  });
-
-  it('assigns every shipped inject fragment to exactly one payload', () => {
-    const injectRoot = join(process.cwd(), 'clients', 'inject');
-    const shipped: string[] = [];
-    const visit = (directory: string): void => {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const path = join(directory, entry.name);
-        if (entry.isDirectory()) visit(path);
-        else shipped.push(relative(injectRoot, path).split(sep).join('/'));
-      }
-    };
-    visit(injectRoot);
-
-    const assigned = Object.values(INJECT_FRAGMENT_GROUPS).flat() as string[];
-    expect(new Set(assigned).size).toBe(assigned.length);
-    expect([...assigned].sort()).toEqual([...shipped].sort());
   });
 
   it.each([

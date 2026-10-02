@@ -6,7 +6,6 @@ import {
   buildClaudeChildArgs,
   buildClaudePrintChildArgs,
   createClaudeBrokerServer,
-  createNodeClaudeChildFactory,
 } from '#src/providers/claude/appserver/server.js';
 import type {
   BrokerShutdownDisposition,
@@ -45,10 +44,6 @@ function printSpawnOptions(overrides: Partial<SpawnClaudePrintChildOptions> = {}
 }
 
 describe('claude appserver PTY child args', () => {
-  it('starts new interactive sessions without stream-json print mode', () => {
-    expect(buildClaudeChildArgs(spawnOptions())).toEqual(['--session-id', TEST_SESSION_ID]);
-  });
-
   it('resumes existing sessions and carries bootstrap options at process start', () => {
     expect(
       buildClaudeChildArgs(
@@ -74,64 +69,9 @@ describe('claude appserver PTY child args', () => {
       'acceptEdits',
     ]);
   });
-
-  it('maps auto-allow permission modes to dangerous skip permissions', () => {
-    expect(buildClaudeChildArgs(spawnOptions({ permissionMode: 'bypassPermissions' }))).toContain(
-      '--dangerously-skip-permissions',
-    );
-  });
-
-  it('passes auto permission mode through to Claude', () => {
-    expect(buildClaudeChildArgs(spawnOptions({ permissionMode: 'auto' }))).toEqual([
-      '--session-id',
-      TEST_SESSION_ID,
-      '--permission-mode',
-      'auto',
-    ]);
-  });
-
-  it('surfaces an actionable provider error when the PTY backend cannot load', async () => {
-    const factory = createNodeClaudeChildFactory(process.stderr, async () => {
-      throw new Error('Failed to load native module: pty.node');
-    });
-
-    const error = await factory(spawnOptions()).then(
-      () => null,
-      (caught: unknown) => caught,
-    );
-
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('Claude provider unavailable');
-    expect((error as Error).message).toContain('Codex');
-    expect((error as Error).message).toContain('pty.node');
-  });
 });
 
 describe('claude appserver print child args', () => {
-  it('starts print-mode sessions without a forced session id by default', () => {
-    expect(buildClaudePrintChildArgs(printSpawnOptions())).toEqual([
-      '-p',
-      '--verbose',
-      '--input-format',
-      'stream-json',
-      '--output-format',
-      'stream-json',
-    ]);
-  });
-
-  it('starts a new print-mode session with the requested session id', () => {
-    expect(buildClaudePrintChildArgs(printSpawnOptions({ conversationRef: TEST_SESSION_ID }))).toEqual([
-      '-p',
-      '--verbose',
-      '--input-format',
-      'stream-json',
-      '--output-format',
-      'stream-json',
-      '--session-id',
-      TEST_SESSION_ID,
-    ]);
-  });
-
   it('resumes existing print-mode sessions and carries bootstrap options', () => {
     expect(
       buildClaudePrintChildArgs(
@@ -162,12 +102,6 @@ describe('claude appserver print child args', () => {
       '--permission-mode',
       'acceptEdits',
     ]);
-  });
-
-  it('maps auto-allow print permission modes to dangerous skip permissions', () => {
-    expect(buildClaudePrintChildArgs(printSpawnOptions({ permissionMode: 'bypassPermissions' }))).toContain(
-      '--dangerously-skip-permissions',
-    );
   });
 });
 

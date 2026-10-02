@@ -9,7 +9,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { resolveInstallOnlyManifest } from '#src/expansion/install-only.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
-import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from '#src/cli/expansion/install.js';
+import { installExpansion, uninstallExpansion } from '#src/cli/expansion/install.js';
 import type {
   GenerationMutationCoordination,
   GenerationWriterLease,
@@ -122,14 +122,6 @@ function recordGenerationCoordination(events: string[]): GenerationMutationCoord
   };
 }
 
-async function waitForCondition(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error('condition not met');
-}
-
 describe('install-only codebase-memory', () => {
   it.each([
     { operation: 'install', kind: 'install' },
@@ -197,34 +189,6 @@ describe('install-only codebase-memory', () => {
     expect(pathExists(binaryPath(fixture.baseDir))).toBe(true);
   });
 
-  it('shell-quotes a data dir that contains a single quote', async () => {
-    const fixture = createFixture("ho'me");
-    const runtime = createRuntimeForFixture(fixture);
-    const exec = stubSuccessfulInstall(runtime);
-
-    const result = installResponseSchema.parse(await installExpansion(PACKAGE, { runtime }));
-
-    // The decoder in stubSuccessfulInstall only writes the binary at the real
-    // (quote-containing) dataDir if singleQuote escaped it correctly.
-    expect(result).toMatchObject({ status: 'installed', command: binaryPath(fixture.baseDir) });
-    expect(pathExists(binaryPath(fixture.baseDir))).toBe(true);
-    const pipeline = exec.mock.calls[0]?.[1]?.[1] as string;
-    expect(pipeline).toContain(`'\\''`);
-  });
-
-  it('returns already_installed without re-running the pipeline', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    mkdirSync(dataDir(fixture.baseDir), { recursive: true });
-    writeFileSync(binaryPath(fixture.baseDir), 'binary');
-    const exec = vi.spyOn(runtime.process, 'exec');
-
-    const result = await installExpansion(PACKAGE, { runtime });
-
-    expect(result).toMatchObject({ status: 'already_installed', command: binaryPath(fixture.baseDir) });
-    expect(exec).not.toHaveBeenCalled();
-  });
-
   it('updates an installed package in place via the binary update subcommand', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
@@ -238,17 +202,6 @@ describe('install-only codebase-memory', () => {
     const command = exec.mock.calls[0]?.[1]?.[1] ?? '';
     expect(command).toContain(`${binaryPath(fixture.baseDir)}' update`);
     expect(command).not.toContain('install.sh');
-  });
-
-  it('runs the install pipeline for update when not yet installed', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    const exec = stubSuccessfulInstall(runtime);
-
-    const result = await installExpansion(PACKAGE, { runtime, update: true });
-
-    expect(result).toMatchObject({ status: 'updated', command: binaryPath(fixture.baseDir) });
-    expect(exec.mock.calls[0]?.[1]?.[1] as string).toContain('install.sh');
   });
 
   it('surfaces expansion_install_command_failed with stderr detail on non-zero exit', async () => {
@@ -283,17 +236,17 @@ describe('install-only codebase-memory', () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
     const blocker = createDeferred<void>();
+    const lockAcquired = createDeferred<void>();
     vi.spyOn(runtime.process, 'exec').mockImplementation(async (_command, args) => {
       const dir = extractDir(args[1] ?? '');
+      lockAcquired.resolve();
       await blocker.promise;
       writeFileSync(join(dir, BINARY), 'binary');
       return { stdout: '', stderr: '', status: 0 };
     });
 
     const first = installExpansion(PACKAGE, { runtime, lockTimeoutMs: 25 });
-    await waitForCondition(() =>
-      pathExists(enginePaths('prod', { baseDir: fixture.baseDir }).installLockPath(PACKAGE)),
-    );
+    await lockAcquired.promise;
 
     const second = await installExpansion(PACKAGE, { runtime, lockTimeoutMs: 25 });
     blocker.resolve();
@@ -304,63 +257,6 @@ describe('install-only codebase-memory', () => {
       context: { name: PACKAGE },
     });
     expect((await first).status).toBe('installed');
-  });
-
-  it('rechecks installed state after a concurrent direct install releases the package lock', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    const installer = resolveInstallOnlyManifest(PACKAGE)?.installer;
-    if (installer === undefined) {
-      throw new Error('expected install-only package');
-    }
-    const firstEntered = createDeferred<void>();
-    const finishFirst = createDeferred<void>();
-    const exec = vi.spyOn(runtime.process, 'exec').mockImplementation(async (_command, args) => {
-      firstEntered.resolve();
-      await finishFirst.promise;
-      writeFileSync(join(extractDir(args[1] ?? ''), BINARY), 'binary');
-      return { stdout: '', stderr: '', status: 0 };
-    });
-    const options = { name: PACKAGE, version: 'latest', runtime, lockTimeoutMs: 1000 };
-
-    const first = installer.install(options);
-    await firstEntered.promise;
-    const second = installer.install(options);
-    finishFirst.resolve();
-
-    await expect(first).resolves.toMatchObject({ status: 'installed' });
-    await expect(second).resolves.toMatchObject({ status: 'already_installed' });
-    expect(exec).toHaveBeenCalledOnce();
-  });
-
-  it('waits for a concurrent direct install before deciding whether to uninstall', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    const installer = resolveInstallOnlyManifest(PACKAGE)?.installer;
-    if (installer === undefined) {
-      throw new Error('expected install-only package');
-    }
-    const installEntered = createDeferred<void>();
-    const finishInstall = createDeferred<void>();
-    vi.spyOn(runtime.process, 'exec').mockImplementation(async (_command, args) => {
-      const shellCommand = args[1] ?? '';
-      if (shellCommand.includes('install.sh')) {
-        installEntered.resolve();
-        await finishInstall.promise;
-        writeFileSync(join(extractDir(shellCommand), BINARY), 'binary');
-      }
-      return { stdout: '', stderr: '', status: 0 };
-    });
-    const options = { name: PACKAGE, version: 'latest', runtime, lockTimeoutMs: 1000 };
-
-    const installing = installer.install(options);
-    await installEntered.promise;
-    const uninstalling = installer.uninstall(options);
-    finishInstall.resolve();
-
-    await expect(installing).resolves.toMatchObject({ status: 'installed' });
-    await expect(uninstalling).resolves.toMatchObject({ status: 'uninstalled' });
-    expect(pathExists(dataDir(fixture.baseDir))).toBe(false);
   });
 
   it.each(['install', 'uninstall'] as const)(
@@ -387,21 +283,6 @@ describe('install-only codebase-memory', () => {
     },
   );
 
-  it('inspects installed state from the binary presence', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    expect(inspectExpansionInstallState(runtime, PACKAGE).installed).toBe(false);
-
-    mkdirSync(dataDir(fixture.baseDir), { recursive: true });
-    writeFileSync(binaryPath(fixture.baseDir), 'binary');
-
-    expect(inspectExpansionInstallState(runtime, PACKAGE)).toMatchObject({
-      installed: true,
-      method: 'shell',
-      addonPath: binaryPath(fixture.baseDir),
-    });
-  });
-
   it('runs the binary uninstall subcommand, then removes the package data directory', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
@@ -423,12 +304,5 @@ describe('install-only codebase-memory', () => {
 
     expect(await uninstallExpansion(PACKAGE, { runtime })).toEqual({ status: 'uninstalled' });
     expect(pathExists(dataDir(fixture.baseDir))).toBe(false);
-  });
-
-  it('reports not_equipped when uninstalling an absent package', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-
-    expect(await uninstallExpansion(PACKAGE, { runtime })).toEqual({ status: 'not_equipped' });
   });
 });

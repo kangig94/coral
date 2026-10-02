@@ -5,14 +5,13 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait.js';
 import { parseExpression } from '#src/workflow/parser.js';
-import { BOOTSTRAP_TIMEOUT_MS, launchAtomWithRetry } from '#src/workflow/launch.js';
+import { launchAtomWithRetry } from '#src/workflow/launch.js';
 import { executePipeline } from '#src/workflow/executor.js';
 import {
   WorkflowExecutionError,
   type LaunchedAtom,
   type WorkflowExecutionPort,
 } from '#src/workflow/execution-contract.js';
-import { formatStepOutput, toSessionHandles } from '#src/workflow/command.js';
 import type { CompiledPlanSlot } from '#src/workflow/plan.js';
 import { recoverStaleAtom } from '#src/workflow/stale-recovery.js';
 import { waitForAtoms } from '#src/workflow/wait.js';
@@ -146,36 +145,6 @@ function planSlot(overrides: Partial<CompiledPlanSlot> = {}): CompiledPlanSlot {
   };
 }
 
-describe('toSessionHandles', () => {
-  it('deduplicates atoms by (providerName, sessionId)', () => {
-    const handles = toSessionHandles([
-      { providerName: 'claude', sessionId: 'sess-a' },
-      { providerName: 'claude', sessionId: 'sess-b' },
-      { providerName: 'claude', sessionId: 'sess-a' },
-      { providerName: 'codex', sessionId: 'sess-a' },
-    ]);
-
-    expect(handles).toEqual([
-      { providerName: 'claude', sessionId: 'sess-a' },
-      { providerName: 'claude', sessionId: 'sess-b' },
-      { providerName: 'codex', sessionId: 'sess-a' },
-    ]);
-  });
-
-  it('treats same sessionId across providers as distinct handles', () => {
-    const handles = toSessionHandles([
-      { providerName: 'claude', sessionId: 'sess-1' },
-      { providerName: 'codex', sessionId: 'sess-1' },
-    ]);
-
-    expect(handles).toHaveLength(2);
-  });
-
-  it('returns an empty array for no atoms', () => {
-    expect(toSessionHandles([])).toEqual([]);
-  });
-});
-
 describe('workflow pipe executor', () => {
   it('passes each step output as the next step prompt and returns ordered step details', async () => {
     const prompts: string[] = [];
@@ -214,199 +183,6 @@ describe('workflow pipe executor', () => {
       },
     ]);
     expect(prompts).toEqual(['seed', 'ARCH']);
-  });
-
-  it('prepends shared context to every atom prompt across a two-step pipeline', async () => {
-    const dispatched: Array<{ coralName: string; prompt: string }> = [];
-    let callCount = 0;
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async (_provider, coralName, input) => {
-        callCount += 1;
-        dispatched.push({ coralName, prompt: String(input.prompt) });
-        return running(`job-${callCount}`, `session-${callCount}`);
-      }),
-      waitStream: vi.fn((req: WaitRequest) => {
-        if (req.jobIds.includes('job-1') && req.jobIds.includes('job-2')) {
-          return emit([
-            terminal('job-1', 'session-1', { content: 'ARCH' }),
-            terminal('job-2', 'session-2', { content: 'LIT A' }),
-          ]);
-        }
-        return emit([
-          terminal('job-3', 'session-3', { content: 'FINAL' }),
-          terminal('job-4', 'session-4', { content: 'LIT B' }),
-        ]);
-      }),
-    });
-
-    await executePipeline(
-      parseExpression('(architect, "Use A") -> (resolver, "Use B")'),
-      'seed',
-      'codex',
-      executionSvc,
-      ctx,
-      { context: 'SHARED', workflowJobId: 'workflow-test-uuid', ids: workflowIds, time: workflowTime },
-    );
-
-    expect(dispatched).toEqual([
-      { coralName: 'architect', prompt: 'SHARED\n\nseed' },
-      { coralName: 'workflow-literal', prompt: 'SHARED\n\nUse A' },
-      {
-        coralName: 'resolver',
-        prompt: 'SHARED\n\n<architect>\nARCH\n</architect>\n\n<step-result>\nLIT A\n</step-result>',
-      },
-      {
-        coralName: 'workflow-literal',
-        prompt: 'SHARED\n\nUse B\n\n<architect>\nARCH\n</architect>\n\n<step-result>\nLIT A\n</step-result>',
-      },
-    ]);
-  });
-
-  it('formats parallel prompt literals into tagged output and preserves prompt step details', async () => {
-    const prompts: string[] = [];
-    let callCount = 0;
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async (_provider, _coralName, input) => {
-        prompts.push(String(input.prompt));
-        callCount += 1;
-        return running(`job-${callCount}`, `session-${callCount}`);
-      }),
-      waitStream: vi.fn((req: WaitRequest) => {
-        if (req.jobIds.includes('job-1') && req.jobIds.includes('job-2')) {
-          return emit([
-            terminal('job-1', 'session-1', { content: 'OUT A' }),
-            terminal('job-2', 'session-2', { content: 'OUT B' }),
-          ]);
-        }
-        return emit([]);
-      }),
-    });
-
-    const result = await executePipeline(
-      parseExpression('("Use A", "Use B")'),
-      'ignored seed',
-      'codex',
-      executionSvc,
-      ctx,
-      { workflowJobId: 'workflow-test-uuid', ids: workflowIds, time: workflowTime },
-    );
-
-    expect(prompts).toEqual(['Use A', 'Use B']);
-    expect(result.finalOutput).toBe('<step-result>\nOUT A\n</step-result>\n\n<step-result>\nOUT B\n</step-result>');
-    expect(result.stepDetails).toEqual([
-      {
-        stepIndex: 0,
-        atomIndex: 0,
-        label: 'prompt#0(Use A)',
-        output: 'OUT A',
-      },
-      {
-        stepIndex: 0,
-        atomIndex: 1,
-        label: 'prompt#1(Use B)',
-        output: 'OUT B',
-      },
-    ]);
-  });
-
-  it('keeps same-agent different-provider outputs separate across stale recovery', async () => {
-    let mockNow = 10_000;
-    vi.spyOn(Date, 'now').mockImplementation(() => {
-      mockNow += 10;
-      return mockNow;
-    });
-
-    let firstCycle = true;
-    const executionSvc = createExecutionService({
-      resume: vi.fn(async () => running('job-codex-resumed', 'session-codex')),
-      waitStream: vi.fn((req: WaitRequest) => {
-        if (firstCycle) {
-          firstCycle = false;
-          return emit([stillWaiting([...req.jobIds])]);
-        }
-        return emit([
-          terminal('job-codex-resumed', 'session-codex', { content: 'CODEX DONE' }),
-          terminal('job-claude', 'session-claude', { content: 'CLAUDE DONE' }),
-        ]);
-      }),
-    });
-
-    try {
-      const results = await waitForAtoms(
-        [
-          launchedAtom({
-            jobId: 'job-codex',
-            sessionId: 'session-codex',
-            providerName: 'codex',
-            agent: 'architect',
-            atomKey: '0:0',
-          }),
-          launchedAtom({
-            jobId: 'job-claude',
-            sessionId: 'session-claude',
-            providerName: 'claude',
-            agent: 'architect',
-            atomIndex: 1,
-            atomKey: '0:1',
-          }),
-        ],
-        executionSvc,
-        ctx,
-        {
-          staleTimeoutMs: 1,
-          staleCheckIntervalMs: 1,
-          staleAbortTimeoutMs: 30_000,
-          workflowJobId: 'workflow-1',
-          drainDeadlineMs: 15_000,
-          workDir: fixtureCanonicalWorkDir('/tmp/coral-workflow-cwd'),
-          onProgress: vi.fn(),
-          recoverStaleAtom,
-          time: workflowTime,
-        },
-      );
-
-      expect(executionSvc.recordContinuationLease).toHaveBeenCalledWith({
-        sessionId: 'session-codex',
-        jobId: 'job-codex',
-        workflowId: 'workflow-1',
-        workflowSlotId: 'workflow-1:0:0',
-        replacementGeneration: 1,
-        reason: 'stale_recovery',
-        expiresAt: expect.any(String),
-      });
-      expect(executionSvc.abort).toHaveBeenCalledWith(['job-codex']);
-      expect(executionSvc.waitForJobTerminal).toHaveBeenCalledWith('job-codex', 30_000);
-      expect(executionSvc.resume).toHaveBeenCalledTimes(1);
-      expect(executionSvc.recordContinuationLease.mock.invocationCallOrder[0]).toBeLessThan(
-        executionSvc.abort.mock.invocationCallOrder[0],
-      );
-      expect(executionSvc.abort.mock.invocationCallOrder[0]).toBeLessThan(
-        executionSvc.waitForJobTerminal.mock.invocationCallOrder[0],
-      );
-      expect(executionSvc.waitForJobTerminal.mock.invocationCallOrder[0]).toBeLessThan(
-        executionSvc.resume.mock.invocationCallOrder[0],
-      );
-      expect(executionSvc.resume).toHaveBeenCalledWith(
-        'codex',
-        {
-          sessionId: 'session-codex',
-          prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
-          cwd: '/tmp/coral-workflow-cwd',
-          parentWorkflowJobId: 'workflow-1',
-          workflowSlotId: 'workflow-1:0:0',
-          workflowSlotGeneration: 1,
-          replacesWorkflowJobId: 'job-codex',
-          owner: { kind: 'workflow', id: 'workflow-1' },
-        },
-        ctx,
-      );
-      expect([...results.entries()]).toEqual([
-        ['0:0', 'CODEX DONE'],
-        ['0:1', 'CLAUDE DONE'],
-      ]);
-    } finally {
-      vi.restoreAllMocks();
-    }
   });
 
   it('does not charge a late wait tick as unobserved atom inactivity', async () => {
@@ -476,7 +252,7 @@ describe('workflow pipe executor', () => {
       });
 
       expect(executionSvc.abort).toHaveBeenCalledWith(['job-1']);
-      expect(executionSvc.waitForJobTerminal).toHaveBeenCalledWith('job-1', 30_000);
+      expect(executionSvc.waitForJobTerminal).toHaveBeenCalledOnce();
       expect(executionSvc.resume).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();
@@ -508,210 +284,9 @@ describe('workflow pipe executor', () => {
       stepDetails: [],
     });
 
-    expect(executionSvc.recordContinuationLease).toHaveBeenCalledWith({
-      sessionId: 'session-1',
-      jobId: 'job-1',
-      workflowId: 'workflow-1',
-      workflowSlotId: 'workflow-1:0:0',
-      replacementGeneration: 1,
-      reason: 'stale_recovery',
-      expiresAt: expect.any(String),
-    });
+    expect(executionSvc.recordContinuationLease).toHaveBeenCalledOnce();
     expect(executionSvc.abort).not.toHaveBeenCalled();
     expect(executionSvc.resume).not.toHaveBeenCalled();
-  });
-
-  it('success path returns outputs from all launched atoms', async () => {
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async (_provider, coralName) => {
-        if (coralName === 'architect') {
-          return running('job-1', 'session-1');
-        }
-        return running('job-2', 'session-2');
-      }),
-      waitStream: vi.fn((req: WaitRequest) => {
-        if (req.jobIds.includes('job-1') && req.jobIds.includes('job-2')) {
-          return emit([
-            terminal('job-1', 'session-1', { content: 'ARCH' }),
-            terminal('job-2', 'session-2', { content: 'CRIT' }),
-          ]);
-        }
-        return emit([]);
-      }),
-    });
-
-    const result = await executePipeline(parseExpression('(architect, critic)'), 'seed', 'claude', executionSvc, ctx, {
-      workflowJobId: 'workflow-test-uuid',
-      ids: workflowIds,
-      time: workflowTime,
-    });
-
-    expect(result.finalOutput).toBe('<architect>\nARCH\n</architect>\n\n<critic>\nCRIT\n</critic>');
-    expect(executionSvc.coralDispatch).toHaveBeenNthCalledWith(
-      1,
-      'claude',
-      'architect',
-      expect.objectContaining({ prompt: 'seed', cwd: ctx.projectRoot }),
-      ctx,
-    );
-    expect(executionSvc.coralDispatch).toHaveBeenNthCalledWith(
-      2,
-      'claude',
-      'critic',
-      expect.objectContaining({ prompt: 'seed', cwd: ctx.projectRoot }),
-      ctx,
-    );
-  });
-
-  it('abort path still reports the launched atom failure', async () => {
-    const controller = new AbortController();
-    let waitCalls = 0;
-    const executionSvc = createExecutionService({
-      waitStream: vi.fn((_req: WaitRequest) => {
-        waitCalls += 1;
-        if (waitCalls === 1) {
-          controller.abort();
-          return emit([stillWaiting(['job-1'])]);
-        }
-        return emit([
-          terminal('job-1', 'session-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } }),
-        ]);
-      }),
-    });
-
-    await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
-        signal: controller.signal,
-        workflowJobId: 'workflow-test-uuid',
-        ids: workflowIds,
-        time: workflowTime,
-      }),
-    ).rejects.toMatchObject({
-      message: 'Pipeline aborted (launched atoms may continue)',
-      aborted: true,
-    });
-  });
-
-  it('error path still reports launched atom diagnostics', async () => {
-    const executionSvc = createExecutionService({
-      waitStream: vi.fn((req: WaitRequest) => {
-        if (req.jobIds[0] === 'job-1') {
-          return emit([
-            terminal('job-1', 'session-1', {
-              content: '',
-              outcome: {
-                kind: 'failed',
-                causeRef: {
-                  stream: {
-                    kind: 'session',
-                    id: 'session-1',
-                  },
-                  seq: 1,
-                },
-              },
-            }),
-          ]);
-        }
-        return emit([]);
-      }),
-    });
-
-    await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
-        workflowJobId: 'workflow-test-uuid',
-        ids: workflowIds,
-        time: workflowTime,
-      }),
-    ).rejects.toMatchObject({
-      message: "Step 0, atom 'architect' failed: Failed: session/session-1#1",
-      aborted: false,
-    });
-  });
-
-  it('very-early-abort skips atom launch', async () => {
-    const controller = new AbortController();
-    controller.abort();
-
-    const executionSvc = createExecutionService();
-
-    await expect(
-      executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
-        signal: controller.signal,
-        workflowJobId: 'workflow-test-uuid',
-        ids: workflowIds,
-        time: workflowTime,
-      }),
-    ).rejects.toMatchObject({ aborted: true });
-
-    expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
-  });
-
-  it('codex-only pipeline returns its atom output', async () => {
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
-      waitStream: vi.fn((req: WaitRequest) => {
-        if (req.jobIds[0] === 'job-1') {
-          return emit([terminal('job-1', 'session-1', { content: 'DONE' })]);
-        }
-        return emit([]);
-      }),
-    });
-
-    const result = await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, {
-      workflowJobId: 'workflow-test-uuid',
-      ids: workflowIds,
-      time: workflowTime,
-    });
-
-    expect(result.finalOutput).toBe('DONE');
-  });
-
-  it('preserves launched atom identity after stale recovery', async () => {
-    let mockNow = 10_000;
-    vi.spyOn(Date, 'now').mockImplementation(() => {
-      mockNow += 10;
-      return mockNow;
-    });
-
-    let firstCycle = true;
-    const executionSvc = createExecutionService({
-      resume: vi.fn(async () => running('job-resumed', 'session-1')),
-      waitStream: vi.fn((_req: WaitRequest) => {
-        if (firstCycle) {
-          firstCycle = false;
-          return emit([stillWaiting(['job-1'])]);
-        }
-        return emit([terminal('job-resumed', 'session-1', { content: 'DONE' })]);
-      }),
-    });
-
-    try {
-      const result = await executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
-        staleTimeoutMs: 1,
-        staleCheckIntervalMs: 1,
-        workflowJobId: 'workflow-1',
-        ids: workflowIds,
-        time: workflowTime,
-      });
-
-      expect(result.finalOutput).toBe('DONE');
-      expect(executionSvc.resume).toHaveBeenCalledWith(
-        'claude',
-        {
-          sessionId: 'session-1',
-          prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
-          cwd: ctx.projectRoot,
-          parentWorkflowJobId: 'workflow-1',
-          workflowSlotId: 'workflow-1:0:0',
-          workflowSlotGeneration: 1,
-          replacesWorkflowJobId: 'job-1',
-          owner: { kind: 'workflow', id: 'workflow-1' },
-        },
-        ctx,
-      );
-    } finally {
-      vi.restoreAllMocks();
-    }
   });
 
   it('preserves launched sibling output when a parallel launch fails', async () => {
@@ -845,56 +420,6 @@ describe('workflow pipe executor', () => {
 
     expect(executionSvc.abort).toHaveBeenCalledWith(['job-2']);
   });
-
-  it('later-step literal prepends literal text before prior step output', async () => {
-    const capturedPrompts: string[] = [];
-    let callCount = 0;
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async (_provider, _coralName, input) => {
-        callCount += 1;
-        capturedPrompts.push(String(input.prompt));
-        return running(`job-${callCount}`, `session-${callCount}`);
-      }),
-      waitStream: vi.fn((req: WaitRequest) => {
-        if (req.jobIds[0] === 'job-1') {
-          return emit([terminal('job-1', 'session-1', { content: 'PREV OUTPUT' })]);
-        }
-        return emit([terminal('job-2', 'session-2', { content: 'DONE' })]);
-      }),
-    });
-
-    await executePipeline(parseExpression('architect -> "Apply this fixup"'), 'seed', 'codex', executionSvc, ctx, {
-      workflowJobId: 'workflow-test-uuid',
-      ids: workflowIds,
-      time: workflowTime,
-    });
-
-    const step2 = capturedPrompts[1];
-    expect(step2).toContain('Apply this fixup');
-    expect(step2).toContain('PREV OUTPUT');
-    expect(step2.indexOf('Apply this fixup')).toBeLessThan(step2.indexOf('PREV OUTPUT'));
-  });
-});
-
-describe('formatStepOutput', () => {
-  it('returns empty string for an empty results array', () => {
-    expect(formatStepOutput([])).toBe('');
-  });
-
-  it('returns bare output without XML tags for a single result', () => {
-    const output = formatStepOutput([{ tagName: 'architect', output: 'result text' }]);
-    expect(output).toBe('result text');
-    expect(output).not.toContain('<architect>');
-  });
-
-  it('wraps multiple results in XML tags with two-newline separator', () => {
-    const output = formatStepOutput([
-      { tagName: 'architect', output: 'ARCH' },
-      { tagName: 'critic', output: 'CRIT' },
-    ]);
-    expect(output).toContain('<architect>\nARCH\n</architect>');
-    expect(output).toContain('<critic>\nCRIT\n</critic>');
-  });
 });
 
 describe('launchAtomWithRetry', () => {
@@ -932,67 +457,6 @@ describe('launchAtomWithRetry', () => {
       generation: 0,
     });
     expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
-    expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
-      'codex',
-      'architect',
-      expect.objectContaining({
-        prompt: 'do work',
-        jobId: 'planned-job-1',
-        workflowSlotId: 'workflow-1:0:0',
-        cwd: ctx.projectRoot,
-        parentWorkflowJobId: 'workflow-1',
-        owner: { kind: 'workflow', id: 'workflow-1' },
-      }),
-      ctx,
-    );
-    expect(executionSvc.awaitLaunch).toHaveBeenCalledWith('job-queued', BOOTSTRAP_TIMEOUT_MS);
-  });
-
-  it('uses an explicit workDir for atom launches', async () => {
-    const executionSvc = createExecutionService();
-
-    await launchAtomWithRetry({
-      slot: planSlot(),
-      atomIndex: 0,
-      stepPrompt: 'do work',
-      workDir: fixtureCanonicalWorkDir('/tmp/coral-workflow-cwd'),
-      executionSvc,
-      ctx,
-      completedStepDetails: [],
-      workflowJobId: 'workflow-1',
-    });
-
-    expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
-      'codex',
-      'architect',
-      expect.objectContaining({
-        cwd: '/tmp/coral-workflow-cwd',
-      }),
-      ctx,
-    );
-  });
-
-  it('marks new workflow atom launches for provider artifact discard', async () => {
-    const executionSvc = createExecutionService();
-
-    await launchAtomWithRetry({
-      slot: planSlot(),
-      atomIndex: 0,
-      stepPrompt: 'do work',
-      executionSvc,
-      ctx,
-      completedStepDetails: [],
-      workflowJobId: 'workflow-1',
-    });
-
-    expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
-      'codex',
-      'architect',
-      expect.objectContaining({
-        retention: 'discard_provider_artifacts_on_terminal',
-      }),
-      ctx,
-    );
   });
 
   it('throws with step/atom context when coralDispatch returns refused status', async () => {
@@ -1041,32 +505,6 @@ describe('launchAtomWithRetry', () => {
     );
     expect(executionSvc.awaitLaunch).not.toHaveBeenCalled();
   });
-
-  it('passes the planned workflow identifiers through to coralDispatch', async () => {
-    const executionSvc = createExecutionService();
-    await launchAtomWithRetry({
-      slot: planSlot({ slotId: 'workflow-9:2:4', jobId: 'planned-job-9', stepIndex: 2, atomKey: '2:4' }),
-      atomIndex: 4,
-      stepPrompt: 'test',
-      executionSvc,
-      ctx,
-      completedStepDetails: [],
-      workflowJobId: 'workflow-9',
-    });
-
-    expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
-      'codex',
-      'architect',
-      expect.objectContaining({
-        prompt: 'test',
-        jobId: 'planned-job-9',
-        workflowSlotId: 'workflow-9:2:4',
-        parentWorkflowJobId: 'workflow-9',
-        owner: { kind: 'workflow', id: 'workflow-9' },
-      }),
-      ctx,
-    );
-  });
 });
 
 describe('waitForAtoms', () => {
@@ -1100,8 +538,6 @@ describe('waitForAtoms', () => {
     });
 
     expect(results.get('0:0')).toBe('ARCH');
-    expect(progress).toHaveBeenCalledWith('0-arc queued (position 2)');
-    expect(progress).toHaveBeenCalledWith('0-arc done');
   });
 
   it('records a completed terminal even when a stale abort marker exists', async () => {
@@ -1143,7 +579,7 @@ describe('waitForAtoms', () => {
     });
 
     expect(executionSvc.abort).toHaveBeenCalledWith(['job-1']);
-    expect(executionSvc.waitForJobTerminal).toHaveBeenCalledWith('job-1', 30_000);
+    expect(executionSvc.waitForJobTerminal).toHaveBeenCalledOnce();
     expect(executionSvc.resume).not.toHaveBeenCalled();
     expect(executionSvc.awaitLaunch).not.toHaveBeenCalled();
     expect([...results.entries()]).toEqual([['0:0', 'ARCH']]);

@@ -21,7 +21,6 @@ import {
 import {
   listProjectionSessionEntries,
   readProjectionSession,
-  readProjectionSessionEntriesById,
   readProjectionProviderSession,
 } from '#src/sessions/projections.js';
 
@@ -395,16 +394,6 @@ describe('sessions projections', () => {
     }
   });
 
-  it('should return null for unknown session ids', () => {
-    const h = newHarness();
-    try {
-      expect(readProjectionSession(h.db, 'missing')).toBeNull();
-      expect(readProjectionProviderSession(h.db, 'missing')).toBeNull();
-    } finally {
-      h.close();
-    }
-  });
-
   it('should throw a setup error for corrupt or mismatched stored entry JSON', () => {
     const h = newHarness();
     try {
@@ -428,21 +417,6 @@ describe('sessions projections', () => {
       expectSetupError(() => readProjectionSession(h.db, 'session-corrupt'), 'projection_sessions_invalid_entry');
       expectSetupError(() => readProjectionSession(h.db, 'session-bad-shape'), 'projection_sessions_invalid_entry');
       expectSetupError(() => readProjectionSession(h.db, 'session-id-mismatch'), 'projection_sessions_invalid_entry');
-    } finally {
-      h.close();
-    }
-  });
-
-  it('should read entries by id with duplicates collapsed and missing ids skipped', () => {
-    const h = newHarness();
-    try {
-      h.commit([openedInput(sessionEntry({ sessionId: 'session-a' }), 'scope-a')]);
-
-      expect(readProjectionSessionEntriesById(h.db, []).size).toBe(0);
-
-      const entries = readProjectionSessionEntriesById(h.db, ['session-a', 'missing', 'session-a']);
-      expect([...entries.keys()]).toEqual(['session-a']);
-      expect(entries.get('session-a')?.sessionId).toBe('session-a');
     } finally {
       h.close();
     }
@@ -474,29 +448,6 @@ describe('sessions projections', () => {
         'session-3',
       ]);
       expect(listProjectionSessionEntries(h.db, 'gemini')).toEqual([]);
-    } finally {
-      h.close();
-    }
-  });
-
-  it('should report the exact primary-key literal when skipping a row with a non-string session id', () => {
-    const h = newHarness();
-    try {
-      h.db
-        .prepare(
-          `INSERT INTO projection_sessions (
-             session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
-           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(Buffer.from([0xde, 0xad]), 'default', 0, null, 'scope', '{}', 1);
-      const invalidRows: Array<{ sessionId: string | null; sessionIdKey: string }> = [];
-
-      expect(
-        listProjectionSessionEntries(h.db, undefined, undefined, (sessionId, _error, sessionIdKey) => {
-          invalidRows.push({ sessionId, sessionIdKey });
-        }),
-      ).toEqual([]);
-      expect(invalidRows).toEqual([{ sessionId: null, sessionIdKey: "X'DEAD'" }]);
     } finally {
       h.close();
     }

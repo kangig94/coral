@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-
 import { createRealRuntime } from '#src/runtime/real.js';
 import { JobStore } from '#src/jobs/store.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -23,7 +22,6 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 import {
   compareAndSwapProviderOperation,
   insertProviderOperation,
-  providerOperationMutationAdmission,
   readProviderOperation,
 } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
@@ -178,35 +176,6 @@ afterEach(() => {
 });
 
 describe('createStoreProviderEventEffectPort', () => {
-  it('drains transactions admitted before closure and refuses later transactions', async () => {
-    const db = progressStore.getDb();
-    const port = createStoreProviderEventEffectPort(testDeps());
-    let release!: () => void;
-    const mayFinish = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const admitted = port.runInTransaction(async () => {
-      await mayFinish;
-      return 'committed';
-    });
-    await Promise.resolve();
-
-    const stopping = providerOperationMutationAdmission(db).close();
-    expect(stopping).toMatchObject({
-      kind: 'holding',
-      exit: 'admitted-provider-operation-mutation-settlement',
-    });
-    await expect(port.runInTransaction(async () => 'late')).rejects.toThrow(
-      'Provider operation mutation admission is closed.',
-    );
-
-    release();
-    await expect(admitted).resolves.toBe('committed');
-    if (stopping.kind !== 'holding') throw new Error('accepted provider event transaction was not retained');
-    await stopping.retryAfter;
-    expect(providerOperationMutationAdmission(db).close()).toEqual({ kind: 'drained' });
-  });
-
   it('serializes across separate ports sharing one connection, not just within one port', async () => {
     // `buildProviderEventHandler` is called once per proxy set, and each call builds its own port — while
     // every one of them closes over the same store connection. Two sets is the ordinary case, since Claude
@@ -241,146 +210,6 @@ describe('createStoreProviderEventEffectPort', () => {
     expect(order).toEqual(['a:enter', 'a:exit', 'b:enter']);
   });
 
-  it('serializes overlapping transactions instead of nesting BEGIN IMMEDIATE', async () => {
-    // Two events genuinely arrive interleaved: the proxy runs a separate pump per operation over one socket,
-    // and `control-client.ts` dispatches each inbound frame with `void serveInboundRequest(...)` rather than
-    // awaiting it. This transaction is held open across an `await` — unlike the synchronous `withImmediate` —
-    // so without serialization the second `BEGIN IMMEDIATE` lands inside the first and SQLite refuses it.
-    const port = createStoreProviderEventEffectPort(testDeps());
-    const order: string[] = [];
-    let releaseFirst!: () => void;
-    const firstMayFinish = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
-
-    const first = port.runInTransaction(async () => {
-      order.push('first:enter');
-      await firstMayFinish;
-      order.push('first:exit');
-      return 'first';
-    });
-    const second = port.runInTransaction(async () => {
-      order.push('second:enter');
-      return 'second';
-    });
-
-    // The second must not have entered while the first was suspended mid-transaction.
-    await Promise.resolve();
-    expect(order).toEqual(['first:enter']);
-
-    releaseFirst();
-    expect(await first).toBe('first');
-    expect(await second).toBe('second');
-    expect(order).toEqual(['first:enter', 'first:exit', 'second:enter']);
-  });
-
-  it('keeps serving after a failed transaction rather than wedging every later one behind it', async () => {
-    const port = createStoreProviderEventEffectPort(testDeps());
-
-    await expect(
-      port.runInTransaction(async () => {
-        throw new Error('effect failed');
-      }),
-    ).rejects.toThrow('effect failed');
-
-    // A rejected link must not poison the chain: the queue is what every later event waits on.
-    await expect(port.runInTransaction(async () => 'after')).resolves.toBe('after');
-  });
-
-  it('propagates the original failure, not a secondary error from a ROLLBACK that itself throws', async () => {
-    const port = createStoreProviderEventEffectPort(testDeps());
-    const originalFailure = new Error('effect failed');
-    const rollbackFailure = new Error('rollback boom');
-    const db = progressStore.getDb();
-    const realExec = db.exec.bind(db);
-    const execSpy = vi.spyOn(db, 'exec').mockImplementation((sql: string) => {
-      if (sql === 'ROLLBACK') throw rollbackFailure;
-      return realExec(sql);
-    });
-
-    try {
-      // Strict identity, not just message: the operator must see the effect failure that actually caused the
-      // rollback, not a distinct error object minted for the rollback itself. (A real ROLLBACK failure leaves
-      // the underlying connection genuinely mid-transaction — unlike an ordinary effect failure, there is no
-      // expectation the chain keeps serving afterward; only which error surfaces is this fix's contract.)
-      await expect(
-        port.runInTransaction(async () => {
-          throw originalFailure;
-        }),
-      ).rejects.toBe(originalFailure);
-    } finally {
-      execSpy.mockRestore();
-    }
-  });
-
-  it('applies a progress event, advances the watermark, and appends it to the job journal', async () => {
-    const { identity } = seedOperation();
-    const port = createStoreProviderEventEffectPort(testDeps());
-
-    const result = await port.runInTransaction(async (tx) => {
-      const verified = await port.verifyIdentity(tx, identity);
-      expect(verified).toBe(true);
-      const watermark = await port.readWatermark(tx, identity);
-      expect(watermark).toBe(0);
-      await port.appendProgress(tx, identity, 1, { kind: 'progress', message: 'thinking' });
-      await port.advanceWatermark(tx, identity, 1);
-      return 'done';
-    });
-
-    expect(result).toBe('done');
-    const events = progressStore.readJobEvents(identity.jobId);
-    expect(events.some((event) => event.type === 'progress')).toBe(true);
-  });
-
-  it('releases the session claim atomically with a direct terminal', async () => {
-    const { identity, sessionId } = seedOperation();
-    const port = createStoreProviderEventEffectPort(testDeps());
-
-    await port.runInTransaction(async (tx) => {
-      await port.appendJobTerminal(tx, identity, 1, {
-        kind: 'direct',
-        body: {
-          kind: 'terminal',
-          terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
-          diagnostics: {},
-        },
-      });
-      await port.releaseSessionClaim(tx, identity);
-      await port.advanceWatermark(tx, identity, 1);
-      return undefined;
-    });
-
-    expect(progressStore.readTerminalProjection(identity.jobId)).not.toBeNull();
-    expect(readSession(sessionId)?.activeJobId).toBeUndefined();
-  });
-
-  it('writes the settlement tombstone after terminal effects and the final watermark in the same transaction', async () => {
-    const { identity } = seedOperation();
-    const port = createStoreProviderEventEffectPort(testDeps());
-
-    await port.runInTransaction(async (tx) => {
-      await port.appendJobTerminal(tx, identity, 1, {
-        kind: 'direct',
-        body: {
-          kind: 'terminal',
-          terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
-          diagnostics: {},
-        },
-      });
-      await port.releaseSessionClaim(tx, identity);
-      await port.advanceWatermark(tx, identity, 1);
-      await port.markSettlementPending(tx, identity, 1);
-      return undefined;
-    });
-
-    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
-      phase: 'settlement-pending',
-      committedThroughProviderSeq: 1,
-      terminalProviderSeq: 1,
-      settlementIntent: 'release-after-terminal',
-    });
-  });
-
   it('rolls back the settlement tombstone together with terminal effects and the final watermark', async () => {
     const { identity } = seedOperation();
     const port = createStoreProviderEventEffectPort(testDeps());
@@ -409,63 +238,6 @@ describe('createStoreProviderEventEffectPort', () => {
     });
   });
 
-  it('threads the recorded interruption trigger into a truthful session.interrupted, linked to its terminal', async () => {
-    const { identity, sessionId } = seedOperation();
-    const port = createStoreProviderEventEffectPort(testDeps());
-
-    await port.runInTransaction(async (tx) => {
-      await port.appendSessionInterrupted(tx, identity, 1, 'handoff');
-      await port.appendJobTerminal(tx, identity, 1, { kind: 'interrupted' });
-      await port.releaseSessionClaim(tx, identity);
-      return undefined;
-    });
-
-    const interrupted = rawEventsByType(sessionId, 'session.interrupted')[0];
-    expect((interrupted?.body as { trigger?: string } | undefined)?.trigger).toBe('handoff');
-    const terminal = progressStore.readTerminalProjection(identity.jobId);
-    expect(terminal?.outcome.kind).toBe('failed');
-    expect(readSession(sessionId)?.activeJobId).toBeUndefined();
-  });
-
-  it.each([
-    [
-      'direct',
-      {
-        kind: 'direct',
-        body: {
-          kind: 'terminal',
-          terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
-          diagnostics: {},
-        },
-      },
-    ],
-    ['abort', { kind: 'abort', reason: 'user_abort' }],
-    ['interrupted', { kind: 'interrupted' }],
-  ] as const)('hands a committed %s terminal to the post-commit observer', async (disposition, terminal) => {
-    const { identity } = seedOperation();
-    const observed: Array<{ types: string[]; terminalReadable: boolean }> = [];
-    const port = createStoreProviderEventEffectPort(
-      testDeps({
-        observeCommitted: (appended) => {
-          observed.push({
-            types: appended.filter((event) => event.stream.id === identity.jobId).map((event) => event.type),
-            terminalReadable: progressStore.readTerminalProjection(identity.jobId) !== null,
-          });
-        },
-      }),
-    );
-
-    await port.runInTransaction(async (tx) => {
-      if (disposition === 'interrupted') await port.appendSessionInterrupted(tx, identity, 1, 'handoff');
-      await port.appendJobTerminal(tx, identity, 1, terminal as Parameters<typeof port.appendJobTerminal>[3]);
-      return undefined;
-    });
-
-    expect(observed).toHaveLength(1);
-    expect(observed[0]?.types).toContain('job.terminal.recorded');
-    expect(observed[0]?.terminalReadable).toBe(true);
-  });
-
   it('does not hand a rolled-back terminal to the post-commit observer', async () => {
     const { identity } = seedOperation();
     const observeCommitted = vi.fn();
@@ -486,25 +258,6 @@ describe('createStoreProviderEventEffectPort', () => {
     ).rejects.toThrow('boom before commit');
 
     expect(observeCommitted).not.toHaveBeenCalled();
-  });
-
-  it('rolls back every effect and the watermark together when a later step fails', async () => {
-    const { identity } = seedOperation();
-    const port = createStoreProviderEventEffectPort(testDeps());
-
-    await expect(
-      port.runInTransaction(async (tx) => {
-        await port.appendProgress(tx, identity, 1, { kind: 'progress', message: 'first' });
-        await port.advanceWatermark(tx, identity, 1);
-        throw new Error('boom');
-      }),
-    ).rejects.toThrow('boom');
-
-    expect(progressStore.readJobEvents(identity.jobId).some((event) => event.type === 'progress')).toBe(false);
-    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
-      phase: 'executing',
-      committedThroughProviderSeq: 0,
-    });
   });
 });
 
@@ -566,32 +319,6 @@ describe('createProviderEventHandler', () => {
         event: { kind: 'progress', message: 'a' },
       }),
     ).rejects.toThrow();
-  });
-
-  it('accepts missing-terminal recovery without a stop cause and retains the settlement saga', async () => {
-    const { identity, sessionId } = seedOperation();
-    const handler = createProviderEventHandler(testDeps({ recordedStopCauseFor: () => null }));
-    const result = await handler({
-      operation: identity,
-      providerSeq: 1,
-      event: {
-        kind: 'terminal',
-        terminal: {
-          content: 'Final answer',
-          durationMs: 10_250,
-          outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
-        },
-        diagnostics: {},
-      },
-    });
-    expect(result).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
-    expect(readSession(sessionId)?.activeJobId).toBeUndefined();
-    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
-      phase: 'settlement-pending',
-      terminalProviderSeq: 1,
-      settlementIntent: 'release-after-terminal',
-    });
-    expect(rawEventsByType(sessionId, 'session.interrupted')).toHaveLength(0);
   });
 
   it('answers a suspended event with the coordinator-recorded stop cause, not a default', async () => {

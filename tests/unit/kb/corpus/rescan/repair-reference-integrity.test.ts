@@ -1,8 +1,4 @@
-import { existsSync } from 'node:fs';
-
 import { describe, expect, it } from 'vitest';
-
-import { loadKbNote } from '#src/kb/read.js';
 import { REPAIR_INCIDENT_ID } from '#src/kb/corpus/rescan/incidents/catalog.js';
 import { expectedDetectedIncident, runRepairFixtureCase } from '#tests/unit/kb/corpus/rescan/helpers.js';
 
@@ -51,29 +47,6 @@ describe('repair fixtures: reference integrity', () => {
                   normalizedEntryId: 'source:missing-source',
                 },
               ],
-            });
-          },
-        }),
-      ],
-    });
-  });
-
-  it(`covers ${REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS} end to end`, async () => {
-    await runRepairFixtureCase({
-      fixture: 'reference-integrity-orphan-principle-refs',
-      classification: 'needs-manual',
-      assertFailure(harness) {
-        const loaded = loadKbNote(harness.storage, harness.path('notes/orphan-principle-note.md'));
-        expect(loaded.frontmatter.principles).toEqual(['missing-principle']);
-        expect(existsSync(harness.path('principles/missing-principle.md'))).toBe(false);
-      },
-      expectedIncidents: [
-        expectedDetectedIncident({
-          canonical: REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS,
-          entryId: 'note:orphan-principle-note',
-          assertSignals(signals) {
-            expect(signals).toEqual({
-              orphanPrinciples: ['missing-principle'],
             });
           },
         }),

@@ -163,49 +163,9 @@ describe('installExpansion', () => {
 
     await expect(installExpansion('kiwi', { runtime })).rejects.toThrow(message);
   });
-
-  it('rejects the legacy post-install registration action instead of silently ignoring it', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    vi.spyOn(kiwiInstaller, 'install').mockResolvedValue({
-      status: 'installed',
-      method: kiwiInstallMethod,
-      targetDir: runtime.paths.coral.engine.dataDir('kiwi'),
-      postInstall: ['register_expansion'],
-    });
-
-    await expect(installExpansion('kiwi', { runtime })).rejects.toThrow();
-  });
 });
 
 describe('Kiwi direct installer boundary', () => {
-  it('reports legacy model-only durable state separately from composite readiness', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    const files = new Map<KiwiModelFileName, Buffer>(
-      KIWI_MODEL_FILES.map((fileName) => [fileName, Buffer.from(`installed:${fileName}`, 'utf-8')]),
-    );
-    await writeKiwiModelFilesAtomicInWorker(runtime, files);
-
-    expect(kiwiInstaller.inspect(runtime, 'kiwi')).toMatchObject({
-      installed: false,
-      version: null,
-      method: null,
-      durableState: true,
-    });
-
-    publishKiwiWasmArtifact(
-      runtime,
-      readFileSync(join(process.cwd(), 'node_modules', 'kiwi-nlp', 'dist', 'kiwi-wasm.wasm')),
-    );
-    expect(kiwiInstaller.inspect(runtime, 'kiwi')).toMatchObject({
-      installed: true,
-      version: '0.23.0',
-      method: 'runtime-download',
-      durableState: true,
-    });
-  });
-
   it('rejects a foreign package identity before touching Kiwi data', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);

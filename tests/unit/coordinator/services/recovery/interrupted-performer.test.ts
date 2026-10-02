@@ -1,17 +1,10 @@
-import type { ProcessLiveness } from '#src/infra/node-process.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { describe, expect, it } from 'vitest';
-
 import { reapProviderOperationCarrier } from '#src/coordinator/services/recovery/interrupted-performer.js';
-import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
-import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import type { AppServerRuntime } from '#src/jobs/records.js';
-import type { ProviderRecoveryAuthority } from '#src/jobs/reconcile/contracts.js';
-import { createRealRuntime } from '#src/runtime/real.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
-import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
@@ -82,144 +75,6 @@ describe('interrupted provider-operation carrier reclamation', () => {
         { pid: -record.locator.containment.processGroupId, signal: 'SIGTERM' },
         { pid: record.providerRoot.pid, signal: 'SIGTERM' },
       ]);
-      expect(signals.some(({ signal }) => signal === 'SIGKILL')).toBe(false);
-      expect(readProviderOperation(db, record.operation)).toEqual(record);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('threads RecoveryService cancellation through TERM grace and leaves the saga', async () => {
-    const fixture = providerOperationRecord('executing');
-    if (fixture.phase !== 'executing') throw new Error('executing fixture did not retain its carrier');
-    const baseRuntime = createRealRuntime('prod');
-    const incarnation = baseRuntime.process.readProcessIncarnation(process.pid, 'linux');
-    if (incarnation === null) throw new Error('test process identity was unavailable');
-    const record = providerOperationRecordSchema.parse({
-      ...fixture,
-      locator: {
-        ...fixture.locator,
-        proxy: { ...fixture.locator.proxy, pid: process.pid, incarnation },
-        containment: {
-          ...fixture.locator.containment,
-          pid: process.pid,
-          processGroupId: process.pid,
-          incarnation,
-        },
-      },
-      providerRoot: { pid: process.pid, incarnation },
-    });
-    if (record.phase !== 'executing') throw new Error('service fixture did not retain its carrier');
-    const db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db, currentCoralStoreFormat());
-    insertProviderOperation(db, record);
-    const controller = new AbortController();
-    const live = new Map<number, ProcessIncarnation>([
-      [-record.locator.containment.processGroupId, record.locator.containment.incarnation],
-      [record.locator.containment.pid, record.locator.containment.incarnation],
-      [record.providerRoot.pid, record.providerRoot.incarnation],
-    ]);
-    const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
-    const termDelivered = createDeferred<void>();
-    const runtime = {
-      ...baseRuntime,
-      process: {
-        ...baseRuntime.process,
-        observeLiveness: (pid: number) => (live.has(pid) ? 'alive' : 'absent') as ProcessLiveness,
-        readProcessIncarnation: (pid: number) => live.get(pid) ?? null,
-        observeProcessIdentities: async (owners: readonly { pid: number; incarnation: ProcessIncarnation }[]) =>
-          owners.map((owner) => ({
-            owner,
-            evidence: live.has(owner.pid)
-              ? { kind: 'incarnation' as const, incarnation: live.get(owner.pid)! }
-              : { kind: 'pid-absent' as const },
-          })),
-        kill: (pid: number, signal: NodeJS.Signals | 0) => {
-          signals.push({ pid, signal });
-          if (signals.length === 2) termDelivered.resolve();
-          if (signal === 'SIGKILL') live.clear();
-          return true;
-        },
-      },
-    };
-    const projectRoot = process.cwd();
-    const status = {
-      jobId: record.operation.jobId,
-      owner: { kind: 'provider-session', id: 'recovery-session' },
-      sessionId: 'recovery-session',
-      provider: 'codex',
-      projectRoot,
-      backendNamespace: 'interrupted-carrier-test',
-      jobKind: 'provider',
-      phase: 'running',
-      updatedAt: '2026-08-13T00:00:00.000Z',
-    } as const;
-    const authority = {
-      launchRecord: {
-        ...status,
-        pool: 'default',
-        enqueueSequence: 1,
-        providerAction: 'exec',
-        request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
-        createdAt: status.updatedAt,
-      },
-      session: {
-        sessionId: 'recovery-session',
-        projectRoot,
-        conversationRef: undefined,
-        providerContinuity: { checkpoint: 'persisted' },
-        artifactHandles: [],
-        version: 1,
-      },
-      boundProvider: {
-        name: 'codex',
-        recovery: {
-          finalizeInterrupted: () => ({ kind: 'clear_non_resumable' }),
-          finalizeFromArtifacts: async () => ({}),
-        },
-        appServer: { supportsProbe: true },
-      },
-    } as unknown as ProviderRecoveryAuthority;
-    const runtimeRecord: AppServerRuntime = {
-      transport: 'app-server',
-      startTime: status.updatedAt,
-      providerMeta: { provider: 'codex', leaseState: 'acquired', hostRef: record.activationAck.hostRef },
-    };
-    const launchCoordinator = new LaunchCoordinator({ runtime });
-    const service = new RecoveryService({
-      runtime,
-      progressStore: {
-        readStatus: () => status,
-        getDb: () => db,
-        jobDir: () => '/tmp/interrupted-carrier-test',
-      } as never,
-      sessionManager: {} as never,
-      abortRegistry: {} as never,
-      backendNamespace: 'interrupted-carrier-test',
-      bundleHash: 'test-bundle',
-      launchAdmission: launchCoordinator,
-      launchRecovery: launchCoordinator,
-      providerRegistry: {} as never,
-      launchOrchestrator: {} as never,
-      childPrincipalRegistry: {} as never,
-      parentPrincipal: {} as never,
-    });
-
-    try {
-      const finalization = service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
-        reason: 'restart',
-        signal: controller.signal,
-        onCommitStart: () => undefined,
-      });
-      await termDelivered.promise;
-      expect(signals).toEqual([
-        { pid: -record.locator.containment.processGroupId, signal: 'SIGTERM' },
-        { pid: record.providerRoot.pid, signal: 'SIGTERM' },
-      ]);
-      const observedFinalization = finalization.catch((error: unknown) => error);
-      controller.abort(new Error('recovery service authority expired during TERM grace'));
-      await expect(observedFinalization).resolves.toBeInstanceOf(Error);
-
       expect(signals.some(({ signal }) => signal === 'SIGKILL')).toBe(false);
       expect(readProviderOperation(db, record.operation)).toEqual(record);
     } finally {

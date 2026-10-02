@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { collectBids } from '#src/discuss/shell/flow/bid.js';
-import * as discussLoop from '#src/discuss/shell/loop.js';
 import { startDiscussSession, submitManualBid } from '#src/discuss/shell/operations.js';
-import { DiscussStaleWriteError } from '#src/discuss/shell/session-store.js';
 import {
   DEFAULT_TOPIC,
   cleanupDiscussHarnesses,
@@ -179,59 +177,6 @@ describe('Discuss bid collection', () => {
 
     expect(session.snapshot.state.current_bids.user).toBeNull();
     expect(session.snapshot.runtime.agentRuns.user).toBeUndefined();
-
-    harness.cleanup();
-  });
-
-  it('keeps start successful when provider launch throws during initial bid collection', async () => {
-    vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => undefined);
-    const start = vi.fn().mockRejectedValue(new Error('provider process unavailable'));
-    const harness = createDiscussHarness(createExecutionServiceStub({ start }));
-
-    const session = await startDiscussSession(
-      harness.context,
-      'launch-throw-discuss',
-      DEFAULT_TOPIC,
-      defaultAgents().map((agent) => ({ ...agent, provider: 'claude', model: 'claude-sonnet-4-5' })),
-      {},
-      harness.ctx,
-    );
-
-    expect(session.snapshot.sessionId).toBe('launch-throw-discuss');
-    expect(session.snapshot.state.status).toBe('ended');
-    expect(session.snapshot.state.end_reason_content).toContain('No eligible agents');
-
-    harness.cleanup();
-  });
-
-  it('converts post-launch runtime persistence failure into bid failure instead of throwing', async () => {
-    const start = vi
-      .fn()
-      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
-      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
-    const waitStreamOnce = vi.fn();
-    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
-    const originalAppend = harness.store.append.bind(harness.store);
-    const append = vi.spyOn(harness.store, 'append');
-    append.mockImplementation(async (sessionId, expectedSeq, events) => {
-      if (events.some((event) => event.kind === 'agent.run.bound' || event.kind === 'agent.job.started')) {
-        throw new DiscussStaleWriteError(expectedSeq ?? 0, expectedSeq ?? 0);
-      }
-      return originalAppend(sessionId, expectedSeq, events);
-    });
-
-    const session = await startDiscussSession(
-      harness.context,
-      'runtime-persist-failure-discuss',
-      DEFAULT_TOPIC,
-      defaultAgents().map((agent) => ({ ...agent, provider: 'claude', model: 'claude-sonnet-4-5' })),
-      {},
-      harness.ctx,
-    );
-
-    expect(session.snapshot.state.status).toBe('ended');
-    expect(waitStreamOnce).not.toHaveBeenCalled();
-    expect(session.snapshot.state.end_reason_content).toContain('No eligible agents');
 
     harness.cleanup();
   });

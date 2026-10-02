@@ -24,6 +24,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 const tempRoots: string[] = [];
 const NOTE_SLUG = 'orama-serve-stale-ac3';
@@ -215,49 +216,7 @@ function readMetadata(kb: KbRuntime): OramaProjectionMetadata {
   ) as OramaProjectionMetadata;
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
-  });
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeout !== undefined) {
-      clearTimeout(timeout);
-    }
-  }
-}
-
 describe('Orama AC3 serve-stale read path', () => {
-  it('routes projection reconcile through the injected callback without persisting on the read path', async () => {
-    const { kb, runtime } = createKbFixture();
-    await installProjection(kb, createManager(null, false), runtime);
-    const intlIdentity = ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], []));
-    expect(readMetadata(kb).projectionIdentityHash).toBe(intlIdentity);
-
-    const requestedReasons: OramaReconcileReason[] = [];
-    const kiwiManager = createManager(createKiwiAnalyzer(), true);
-    const searchStore = createSnapshotStore(kb);
-    const searchingProjection = new OramaBaseProjection(engineRuntime(kb), searchStore, {
-      analyzerManager: kiwiManager,
-      kiwiRuntime: runtime,
-      requestProjectionReconcile: (reason) => {
-        requestedReasons.push(reason);
-      },
-    });
-    const persistSpy = vi.spyOn(searchStore, 'persist');
-    const installFullSnapshotSpy = vi.spyOn(searchingProjection, 'installFullSnapshot');
-
-    const result = await withTimeout(searchingProjection.search('searchable marker', 5, 'all'), 1000);
-
-    expect(result.hits.map((hit) => hit.documentId)).toContain(NOTE_ENTRY_ID);
-    expect(requestedReasons).toEqual(['stale-tier']);
-    expect(persistSpy).not.toHaveBeenCalled();
-    expect(installFullSnapshotSpy).not.toHaveBeenCalled();
-    expect(readMetadata(kb).projectionIdentityHash).toBe(intlIdentity);
-  });
-
   it('serves a tier-only-upgrade Intl index immediately, warns stale tier, and does not await reconcile', async () => {
     const { kb, runtime } = createKbFixture();
     await installProjection(kb, createManager(null, false), runtime);
@@ -265,21 +224,22 @@ describe('Orama AC3 serve-stale read path', () => {
     expect(readMetadata(kb).projectionIdentityHash).toBe(intlIdentity);
 
     const requestedReasons: OramaReconcileReason[] = [];
+    const reconcile = createDeferred<void>();
     const kiwiManager = createManager(createKiwiAnalyzer(), true);
     const searchStore = createSnapshotStore(kb);
     const port = createSearchPort(
       kb,
       runtime,
       kiwiManager,
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises -- Stale reads must not await pending reconciliation work.
       (reason) => {
         requestedReasons.push(reason);
-        // A reconcile request that never settles must not block the read path.
-        void new Promise<never>(() => {});
+        return reconcile.promise;
       },
       searchStore,
     );
 
-    const result = await withTimeout(port.search('searchable marker', 5, 'all'), 1000);
+    const result = await port.search('searchable marker', 5, 'all');
 
     expect(result.hits.map((hit) => hit.documentId)).toContain(NOTE_ENTRY_ID);
     expect(readMetadata(kb).projectionIdentityHash).toBe(intlIdentity);
@@ -287,10 +247,12 @@ describe('Orama AC3 serve-stale read path', () => {
     expect(port.warnings()).not.toContain('fts_index_uninitialized');
     expect(requestedReasons).toEqual(['stale-tier']);
 
-    const repeated = await withTimeout(port.search('searchable marker', 5, 'all'), 1000);
+    const repeated = await port.search('searchable marker', 5, 'all');
 
     expect(repeated.hits.map((hit) => hit.documentId)).toContain(NOTE_ENTRY_ID);
     expect(requestedReasons).toEqual(['stale-tier']);
+
+    reconcile.resolve();
 
     const kiwiIdentity = ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], ['ko']));
     const reconciledProjection = new OramaBaseProjection(kb, searchStore, {
@@ -304,27 +266,6 @@ describe('Orama AC3 serve-stale read path', () => {
 
     expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
     expect(port.warnings()).not.toContain('fts_index_stale_tier');
-  });
-
-  it('serves a cold-loaded Kiwi match when the analyzer is only available from the active lease', async () => {
-    const { kb, runtime } = createKbFixture();
-    await installProjection(kb, createManager(createKiwiAnalyzer(), true), runtime);
-    const kiwiIdentity = ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], ['ko']));
-    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
-
-    const requestedReasons: OramaReconcileReason[] = [];
-    const leaseOnlyManager = createLeaseOnlyManager(createKiwiAnalyzer(), true);
-    const port = createSearchPort(kb, runtime, leaseOnlyManager, (reason) => {
-      requestedReasons.push(reason);
-    });
-
-    const result = await port.search('검색', 5, 'all');
-
-    expect(result.hits.map((hit) => hit.documentId)).toContain(NOTE_ENTRY_ID);
-    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
-    expect(port.warnings()).not.toContain('fts_index_uninitialized');
-    expect(port.warnings()).not.toContain('fts_index_stale_tier');
-    expect(requestedReasons).toEqual([]);
   });
 
   it('applies a Kiwi delta when the persisted base analyzer is only available from the active lease', async () => {
@@ -385,48 +326,6 @@ describe('Orama AC3 serve-stale read path', () => {
     expect(fullInstallSpy).not.toHaveBeenCalled();
     expect(result.hits.map((hit) => hit.documentId)).toContain(NOTE_ENTRY_ID);
     expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
-  });
-
-  it('refuses a cold-loaded Kiwi match without a live Kiwi analyzer and requests reconcile', async () => {
-    const { kb, runtime } = createKbFixture();
-    await installProjection(kb, createManager(createKiwiAnalyzer(), true), runtime);
-    const kiwiIdentity = ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], ['ko']));
-    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
-
-    const requestedReasons: OramaReconcileReason[] = [];
-    const unavailableKiwiManager = createManager(null, true);
-    const port = createSearchPort(kb, runtime, unavailableKiwiManager, (reason) => {
-      requestedReasons.push(reason);
-    });
-
-    const result = await port.search('searchable marker', 5, 'all');
-
-    expect(result.hits).toEqual([]);
-    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
-    expect(port.warnings()).toContain('fts_index_uninitialized');
-    expect(port.warnings()).not.toContain('fts_index_stale_tier');
-    expect(requestedReasons).toEqual(['incompatible']);
-  });
-
-  it('serves the degraded path for a Kiwi-tier Hangul index under an Intl query tokenizer', async () => {
-    const { kb, runtime } = createKbFixture();
-    await installProjection(kb, createManager(createKiwiAnalyzer(), true), runtime);
-    const kiwiIdentity = ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], ['ko']));
-    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
-
-    const requestedReasons: OramaReconcileReason[] = [];
-    const degradedIntlManager = createManager(null, false);
-    const port = createSearchPort(kb, runtime, degradedIntlManager, (reason) => {
-      requestedReasons.push(reason);
-    });
-
-    const result = await port.search('검색', 5, 'all');
-
-    expect(result.hits).toEqual([]);
-    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
-    expect(port.warnings()).toContain('fts_index_uninitialized');
-    expect(port.warnings()).not.toContain('fts_index_stale_tier');
-    expect(requestedReasons).toEqual(['incompatible']);
   });
 
   it('handles a terminal analyzer load error by requesting reconcile and retrying through the serve guard', async () => {

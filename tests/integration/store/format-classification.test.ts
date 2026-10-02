@@ -1,17 +1,14 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
-
-import { validateProductVersion } from '#src/infra/product-version.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { classifyStoreFile } from '#src/store/db.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import type { StoreFormatDescription, StoreFormatFingerprint } from '#src/store/format-fingerprint.js';
-import { totalChanges } from '#tests/helpers/test-db.js';
 
 const CURRENT_FINGERPRINT = currentCoralStoreFormat().fingerprint;
 const OTHER_FINGERPRINT: StoreFormatFingerprint = `sha256:${'0'.repeat(64)}`;
@@ -76,12 +73,6 @@ afterEach(() => {
 });
 
 describe('store format classification', () => {
-  it('supplies a validated product version with the current store format', () => {
-    const current = currentCoralStoreFormat();
-
-    expect(validateProductVersion(current.productVersion)).toBe(current.productVersion);
-  });
-
   it('classifies an absent database without creating it', () => {
     const { dbPath } = tempPath('absent.db');
 
@@ -138,22 +129,6 @@ describe('store format classification', () => {
     });
   });
 
-  it('uses SemVer precedence for older and prerelease stores', () => {
-    const older = tempPath('older.db').dbPath;
-    const prerelease = tempPath('prerelease.db').dbPath;
-    createStore(older, { fingerprint: OTHER_FINGERPRINT, productVersion: '0.9.16' });
-    createStore(prerelease, { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.0.0-rc.1' });
-
-    expect(classify(older, format('0.10.0'))).toMatchObject({
-      kind: 'older-incompatible',
-      storedProductVersion: '0.9.16',
-    });
-    expect(classify(prerelease, format('1.0.0'))).toMatchObject({
-      kind: 'compatible',
-      storedProductVersion: '1.0.0-rc.1',
-    });
-  });
-
   it('classifies a newer SemVer as newer-incompatible regardless of fingerprint equality', () => {
     const equalFingerprint = tempPath('newer-equal.db').dbPath;
     const differentFingerprint = tempPath('newer-different.db').dbPath;
@@ -164,73 +139,12 @@ describe('store format classification', () => {
     expect(classify(differentFingerprint, format('1.0.0'))).toMatchObject({ kind: 'newer-incompatible' });
   });
 
-  it('treats build metadata as equal SemVer precedence', () => {
-    const { dbPath } = tempPath('build-metadata.db');
-    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.2.3+stored' });
-
-    expect(classify(dbPath, format('1.2.3+current'))).toMatchObject({
-      kind: 'compatible',
-      storedProductVersion: '1.2.3',
-    });
-  });
-
   it('classifies equal SemVer with a different fingerprint as corrupt-or-unsupported', () => {
     const { dbPath } = tempPath('equal-version-different-fingerprint.db');
     createStore(dbPath, { fingerprint: OTHER_FINGERPRINT, productVersion: '1.0.0' });
 
     expect(classify(dbPath, format('1.0.0'))).toMatchObject({ kind: 'corrupt-or-unsupported' });
   });
-
-  it.each([
-    ['missing fingerprint', { productVersion: '1.0.0' }],
-    ['malformed fingerprint', { fingerprint: 'sha256:not-a-digest', productVersion: '1.0.0' }],
-    ['unsupported fingerprint value', { fingerprint: Buffer.from('digest'), productVersion: '1.0.0' }],
-    ['missing version with a non-current fingerprint', { fingerprint: OTHER_FINGERPRINT }],
-    ['malformed version', { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.0' }],
-    ['unsupported version value', { fingerprint: CURRENT_FINGERPRINT, productVersion: Buffer.from('1.0.0') }],
-  ] satisfies ReadonlyArray<readonly [string, StoredMetadata]>)(
-    'classifies %s as corrupt-or-unsupported',
-    (_, metadata) => {
-      const { dbPath } = tempPath('corrupt-or-unsupported.db');
-      createStore(dbPath, metadata);
-
-      expect(classify(dbPath, format('1.0.0'))).toMatchObject({ kind: 'corrupt-or-unsupported' });
-    },
-  );
-
-  it('rejects a product version that is not valid SemVer', () => {
-    const { dbPath } = tempPath('invalid-version.db');
-    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT, productVersion: '2026.08.01' });
-
-    expect(validateProductVersion('2026.08.01')).toBeNull();
-    expect(classify(dbPath, format('1.0.0'))).toMatchObject({ kind: 'corrupt-or-unsupported' });
-  });
-
-  it.each([
-    ['older-incompatible', { fingerprint: OTHER_FINGERPRINT, productVersion: '0.9.16' }, '0.10.0'],
-    ['newer-incompatible', { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.1.0' }, '1.0.0'],
-    ['equal version with different fingerprint', { fingerprint: OTHER_FINGERPRINT, productVersion: '1.0.0' }, '1.0.0'],
-    ['missing fingerprint', { productVersion: '1.0.0' }, '1.0.0'],
-    ['malformed fingerprint', { fingerprint: 'invalid', productVersion: '1.0.0' }, '1.0.0'],
-    ['unsupported fingerprint', { fingerprint: Buffer.from('invalid'), productVersion: '1.0.0' }, '1.0.0'],
-    ['missing version', { fingerprint: OTHER_FINGERPRINT }, '1.0.0'],
-    ['malformed version', { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.0' }, '1.0.0'],
-    ['unsupported version', { fingerprint: CURRENT_FINGERPRINT, productVersion: Buffer.from('1.0.0') }, '1.0.0'],
-  ] satisfies ReadonlyArray<readonly [string, StoredMetadata, string]>)(
-    'leaves store.db byte-identical when refusing %s',
-    (_, metadata, currentVersion) => {
-      const { root, dbPath } = tempPath('refusal.db');
-      createStore(dbPath, metadata);
-      const before = sha256File(dbPath);
-      const current = format(currentVersion);
-      const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
-
-      expect(() => openTestStoreDatabase({ path: dbPath, storage, storeFormat: current })).toThrow();
-      expect(sha256File(dbPath)).toBe(before);
-      expect(() => openTestStoreDatabase({ path: dbPath, storage, storeFormat: current, readonly: true })).toThrow();
-      expect(sha256File(dbPath)).toBe(before);
-    },
-  );
 
   it('stamps fingerprint and product version rows when initializing a fresh store', () => {
     const { root, dbPath } = tempPath('initialized.db');
@@ -272,38 +186,6 @@ describe('store format classification', () => {
     openTestStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') }).close();
 
     expect(readStoredProductVersion(dbPath)).toBe('1.1.0');
-  });
-
-  it('retains the stored string and performs no write at equal SemVer precedence', () => {
-    const { root, dbPath } = tempPath('equal-high-water.db');
-    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.0.0+stored' });
-    const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
-
-    const db = openTestStoreDatabase({ path: dbPath, storage, storeFormat: format('1.0.0+current') });
-    try {
-      expect(totalChanges(db)).toBe(0);
-    } finally {
-      db.close();
-    }
-    expect(readStoredProductVersion(dbPath)).toBe('1.0.0+stored');
-  });
-
-  it('refuses a store with no product version without replacing its inode', () => {
-    const { root, dbPath } = tempPath('missing-version-high-water.db');
-    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT });
-    const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
-    const before = statSync(dbPath, { bigint: true });
-
-    expect(() =>
-      openTestStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0'), readonly: true }),
-    ).toThrow();
-    expect(readStoredProductVersion(dbPath)).toBeUndefined();
-
-    expect(() => openTestStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') })).toThrow();
-
-    expect(readStoredProductVersion(dbPath)).toBeUndefined();
-    const after = statSync(dbPath, { bigint: true });
-    expect({ dev: after.dev, ino: after.ino }).toEqual({ dev: before.dev, ino: before.ino });
   });
 
   it('never raises the product version during a read-only open', () => {

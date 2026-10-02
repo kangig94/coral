@@ -11,6 +11,8 @@ import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 
+import { createDeferred } from '#tools/testing/deferred.js';
+
 const directories: string[] = [];
 
 function socketPath(): string {
@@ -67,6 +69,7 @@ function ports(): HttpHandlerPorts {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -81,10 +84,16 @@ describe('IPC request leases', () => {
       abandon: vi.fn(),
       timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
     }).begin;
-    serverPorts.admin.restartKbDaemon = async () => new Promise<never>(() => {});
+    const entered = createDeferred<void>();
+    const daemon = createDeferred<Awaited<ReturnType<NonNullable<typeof serverPorts.admin.restartKbDaemon>>>>();
+    serverPorts.admin.restartKbDaemon = async () => {
+      entered.resolve();
+      return daemon.promise;
+    };
     const listener = createIpcServer(serverPorts);
     const address = socketPath();
     await listenIpcServer(listener, address);
+    vi.useFakeTimers();
     try {
       const request = requestIpcMethod(
         address,
@@ -92,20 +101,16 @@ describe('IPC request leases', () => {
         {},
         { auth: { kind: 'boot', token: 'boot-token' } },
       );
-      const outcome = await Promise.race([
-        request.then(
-          () => ({ kind: 'response' as const }),
-          (error: unknown) => ({ kind: 'error' as const, error }),
-        ),
-        new Promise<Readonly<{ kind: 'timeout' }>>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 100)),
-      ]);
-      expect(outcome.kind).toBe('error');
-      if (outcome.kind === 'error') {
-        expect(outcome.error).toBeInstanceOf(IpcRpcError);
-        expect(outcome.error).toMatchObject({ code: 'request_deadline_exceeded' });
-      }
+      const refusal = request.catch((error: unknown) => error);
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(50);
+      const error = await refusal;
+      expect(error).toBeInstanceOf(IpcRpcError);
+      expect(error).toMatchObject({ code: 'request_deadline_exceeded' });
       expect(serverPorts.admin.endRequest).toHaveBeenCalledOnce();
     } finally {
+      vi.useRealTimers();
+      daemon.resolve({ enabled: true, phase: 'online', generation: 1, pid: 12345, startedAt: 0, readyAt: 0 });
       await closeIpcServer(listener);
     }
   });

@@ -140,19 +140,6 @@ const retiredResidueEntrySchema = z
   })
   .strict();
 
-export const catalogEntryStatusSchema = z.union([
-  z.literal('inactive'),
-  z.literal('installed-not-active'),
-  z.literal('unavailable'),
-  z.literal('disabled_pending_reinstall'),
-  z.literal('installing'),
-  z.literal('equipped'),
-  z.literal('catching_up'),
-  z.literal('not_equipped'),
-  z.literal('not_installed'),
-  z.literal('installed'),
-]);
-
 export const catalogEntrySchema = z.discriminatedUnion('activation', [
   expansionEntrySchema,
   installOnlyEntrySchema,

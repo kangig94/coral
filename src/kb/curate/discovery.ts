@@ -259,10 +259,6 @@ export function parseDiscoveryResponseResult(raw: string): {
   };
 }
 
-export function parseDiscoveryResponse(raw: string): DiscoveryProposal[] {
-  return parseDiscoveryResponseResult(raw).proposals;
-}
-
 export function validateDiscoveryProposals(
   proposals: DiscoveryProposal[],
   eligibleNotes: DiscoveryCurateClaimedEntry[],

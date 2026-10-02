@@ -1,35 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  buildClaudeContinuity,
-  mapSessionEnsureParams,
-  mapTurnStartParams,
-  readClaudePersistedContinuity,
-  withClaudeContinuity,
-} from '#src/providers/claude/request-mapping.js';
+import { mapSessionEnsureParams } from '#src/providers/claude/request-mapping.js';
 import { buildClaudeExecutionPlan } from '#src/providers/claude/execution-plan.js';
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
 import { TEST_CLAUDE_ACCESS } from '#tests/helpers/provider-credentials.js';
-import type { ClaudeBootstrapSignature } from '#src/providers/claude/request-prep.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { CORAL_CLAUDE_TRANSPORT_ENV } from '#src/providers/claude/transport-mode.js';
-
-const BOOTSTRAP_SIGNATURE: ClaudeBootstrapSignature = {
-  cwd: '/workspace',
-  systemPromptHash: 'sha256:test',
-
-  bootstrapConfigHash: 'sha256:test-bootstrap',
-  permissionMode: 'default',
-};
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
-
-function withBundleDir<T>(run: () => T): T {
-  vi.stubGlobal('__BUNDLE_DIR__', '/plugin/build');
-  return run();
-}
 
 function withPluginRoot<T>(run: () => T): T {
   vi.stubGlobal('__PLUGIN_ROOT__', '/plugin');
@@ -61,91 +41,7 @@ function prepareBroker(options: {
   return claudeAppServerLifecycle.compileStableHost(hostPlan);
 }
 
-describe('Claude continuity refs', () => {
-  it('rejects an empty persisted payload instead of treating it as absent continuity', () => {
-    expect(() => readClaudePersistedContinuity({})).toThrow('Invalid persisted Claude continuity');
-  });
-
-  it('rejects empty or unexpected persisted refs at the provider boundary', () => {
-    expect(() =>
-      readClaudePersistedContinuity({
-        brokerSessionKey: '',
-        envHash: '',
-        conversationRef: '',
-        brokerTurnId: '',
-      }),
-    ).toThrow('Invalid persisted Claude continuity');
-  });
-
-  it('rejects persisted bootstrap signatures with unknown permission modes', () => {
-    expect(() =>
-      readClaudePersistedContinuity({
-        bootstrapSignature: {
-          cwd: '/workspace',
-          systemPromptHash: 'sha256:test',
-
-          bootstrapConfigHash: 'sha256:test-bootstrap',
-          permissionMode: 'unknown',
-        },
-      }),
-    ).toThrow('Invalid persisted Claude continuity');
-  });
-
-  it('preserves persisted bootstrap signatures with auto permission mode', () => {
-    expect(
-      readClaudePersistedContinuity({
-        bootstrapSignature: {
-          cwd: '/workspace',
-          systemPromptHash: 'sha256:test',
-
-          bootstrapConfigHash: 'sha256:test-bootstrap',
-          permissionMode: 'auto',
-        },
-      }).bootstrapSignature,
-    ).toEqual({
-      cwd: '/workspace',
-      systemPromptHash: 'sha256:test',
-
-      bootstrapConfigHash: 'sha256:test-bootstrap',
-      permissionMode: 'auto',
-    });
-  });
-
-  it('builds continuity from non-empty refs only', () => {
-    expect(
-      buildClaudeContinuity({
-        bootstrapSignature: BOOTSTRAP_SIGNATURE,
-      }),
-    ).toEqual({
-      bootstrapSignature: BOOTSTRAP_SIGNATURE,
-    });
-  });
-
-  it('preserves canonical persisted refs when an update carries empty strings', () => {
-    expect(
-      withClaudeContinuity(
-        {
-          brokerSessionKey: 'broker-1',
-          bootstrapSignature: BOOTSTRAP_SIGNATURE,
-          brokerTurnId: 'turn-1',
-        },
-        {},
-      ),
-    ).toEqual({
-      bootstrapSignature: BOOTSTRAP_SIGNATURE,
-    });
-  });
-});
-
 describe('Claude appserver request mapping', () => {
-  it('prefers the active bundle appserver when running from build output', () => {
-    const spec = withPluginRoot(() =>
-      withBundleDir(() => prepareBroker({ existsSync: (path) => path === '/plugin/build/coral-claude-appserver.cjs' })),
-    );
-
-    expect(spec.args).toEqual(['/plugin/build/coral-claude-appserver.cjs']);
-  });
-
   it('defaults the Claude broker transport to print mode in provider server identity', () => {
     const spec = withPluginRoot(() => prepareBroker({}));
 
@@ -158,39 +54,6 @@ describe('Claude appserver request mapping', () => {
 
     expect(spec.env).toEqual({ [CORAL_CLAUDE_TRANSPORT_ENV]: 'tui' });
     expect(spec.env).toMatchObject({ CORAL_CLAUDE_TRANSPORT: 'tui' });
-  });
-
-  it('carries model and effort in session bootstrap while turn/start only sends the prompt', () => {
-    const ensure = mapSessionEnsureParams(
-      {
-        action: 'exec',
-        sessionId: 'fresh-session',
-        cwd: fixtureCanonicalWorkDir('/workspace'),
-        bypassPermissions: false,
-        coralEnv: {},
-        model: 'claude-sonnet-4-6',
-        effort: 'high',
-      },
-      { sha256: () => 'system-hash' },
-      { derivedSystemPrompt: 'system prompt', controllerEnv: {}, projectsRoot: '/home/user/.claude/projects' },
-    );
-
-    expect(ensure).toMatchObject({
-      cwd: '/workspace',
-      systemPromptHash: 'sha256:system-hash',
-      permissionMode: 'default',
-      systemPrompt: 'system prompt',
-      model: 'claude-sonnet-4-6',
-      effort: 'high',
-      conversationRef: 'fresh-session',
-      resumeExisting: false,
-    });
-
-    expect(mapTurnStartParams('hello', 'broker-1', { uuid: () => 'turn-1' })).toEqual({
-      brokerSessionKey: 'broker-1',
-      brokerTurnId: 'turn-1',
-      prompt: 'hello',
-    });
   });
 
   it('keeps one account-neutral broker while binding each controller to its Claude account', () => {

@@ -30,19 +30,3 @@ export function formatStepOutput(results: Array<{ tagName: string; output: strin
   if (results.length === 1) return results[0].output;
   return results.map((result) => `<${result.tagName}>\n${result.output}\n</${result.tagName}>`).join('\n\n');
 }
-
-export function toSessionHandles(
-  launchedAtoms: readonly { providerName: string; sessionId: string }[],
-): Array<{ providerName: string; sessionId: string }> {
-  const seen = new Set<string>();
-  const handles: Array<{ providerName: string; sessionId: string }> = [];
-
-  for (const atom of launchedAtoms) {
-    const key = `${atom.providerName}:${atom.sessionId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    handles.push({ providerName: atom.providerName, sessionId: atom.sessionId });
-  }
-
-  return handles;
-}

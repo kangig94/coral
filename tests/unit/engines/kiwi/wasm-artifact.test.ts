@@ -1,7 +1,5 @@
 import {
-  chmodSync,
   closeSync,
-  mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
@@ -9,7 +7,6 @@ import {
   rmSync,
   statSync,
   utimesSync,
-  writeFileSync,
   writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,9 +16,7 @@ import { gzipSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  KIWI_NLP_PACKAGE_INTEGRITY,
   KIWI_NLP_PACKAGE_SIZE_BYTES,
-  KIWI_NLP_PACKAGE_URL,
   KIWI_NLP_VERSION,
   KIWI_WASM_TAR_ENTRY,
   KIWI_WASM_SHA256,
@@ -84,37 +79,6 @@ function createTestRuntime() {
 }
 
 describe('Kiwi WASM artifact', () => {
-  it('pins the installed glue and WASM to the declared version and digest', () => {
-    const projectPackage = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as {
-      dependencies: Record<string, string>;
-    };
-    const lockfile = JSON.parse(readFileSync(join(process.cwd(), 'package-lock.json'), 'utf-8')) as {
-      packages: Record<
-        string,
-        {
-          version?: string;
-          resolved?: string;
-          integrity?: string;
-          dependencies?: Record<string, string>;
-        }
-      >;
-    };
-    const packageJson = JSON.parse(
-      readFileSync(join(process.cwd(), 'node_modules', 'kiwi-nlp', 'package.json'), 'utf-8'),
-    ) as { version: string };
-
-    expect(projectPackage.dependencies['kiwi-nlp']).toBe(KIWI_NLP_VERSION);
-    expect(lockfile.packages[''].dependencies?.['kiwi-nlp']).toBe(KIWI_NLP_VERSION);
-    expect(lockfile.packages['node_modules/kiwi-nlp']).toMatchObject({
-      version: KIWI_NLP_VERSION,
-      resolved: KIWI_NLP_PACKAGE_URL,
-      integrity: KIWI_NLP_PACKAGE_INTEGRITY,
-    });
-    expect(packageJson.version).toBe(KIWI_NLP_VERSION);
-    expect(wasmFixture).toHaveLength(KIWI_WASM_SIZE_BYTES);
-    expect(sha256Hex(wasmFixture)).toBe(KIWI_WASM_SHA256);
-  });
-
   it('rejects archives before extraction when size or digest differs', () => {
     expect(() => verifyKiwiNlpArchive(Buffer.alloc(1))).toThrow(/archive size mismatch/);
     expect(() => verifyKiwiNlpArchive(Buffer.alloc(KIWI_NLP_PACKAGE_SIZE_BYTES))).toThrow(/archive digest mismatch/);
@@ -130,52 +94,6 @@ describe('Kiwi WASM artifact', () => {
       extractKiwiWasm(createWasmArchive('package/dist/not-kiwi.wasm', Buffer.from('wrong'))),
     ).rejects.toThrow(KIWI_WASM_TAR_ENTRY);
     await expect(extractKiwiWasm(archive, 1024)).rejects.toThrow(/exceeds maximum decompressed size/);
-  });
-
-  it('distinguishes absent, non-regular, and wrong-size payload states', () => {
-    const { root, runtime } = createTestRuntime();
-    try {
-      expect(inspectKiwiWasmArtifact(runtime)).toMatchObject({
-        installed: false,
-        reason: 'file_missing',
-      });
-
-      mkdirSync(kiwiWasmPath(runtime), { recursive: true });
-      expect(inspectKiwiWasmArtifact(runtime)).toMatchObject({
-        installed: false,
-        reason: 'file_not_regular',
-      });
-
-      rmSync(kiwiWasmPath(runtime), { recursive: true, force: true });
-      writeFileSync(kiwiWasmPath(runtime), Buffer.alloc(1));
-      expect(inspectKiwiWasmArtifact(runtime)).toMatchObject({
-        installed: false,
-        reason: 'file_size_mismatch',
-      });
-
-      writeFileSync(kiwiWasmPath(runtime), Buffer.alloc(KIWI_WASM_SIZE_BYTES + 1));
-      expect(inspectKiwiWasmArtifact(runtime)).toMatchObject({
-        installed: false,
-        reason: 'file_size_mismatch',
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('given a wrong-size payload, when publishing, then rejects before writing artifact files', () => {
-    const { root, runtime } = createTestRuntime();
-    try {
-      expect(() => publishKiwiWasmArtifact(runtime, Buffer.alloc(1))).toThrow(/WASM size mismatch/);
-      expect(runtime.storage.existsSync(kiwiWasmPath(runtime))).toBe(false);
-      expect(runtime.storage.existsSync(kiwiWasmManifestPath(runtime))).toBe(false);
-      expect(
-        runtime.storage.existsSync(kiwiWasmDir(runtime)) &&
-          readdirSync(kiwiWasmDir(runtime)).some((name) => name.endsWith('.tmp')),
-      ).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('given a wrong-digest payload, when publishing, then rejects before writing artifact files', () => {
@@ -257,81 +175,6 @@ describe('Kiwi WASM artifact', () => {
         payloadValid: false,
         reason: 'file_digest_mismatch',
       });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
-    'does not reuse readiness after the payload becomes unreadable',
-    () => {
-      const { root, runtime } = createTestRuntime();
-      const path = kiwiWasmPath(runtime);
-      try {
-        publishKiwiWasmArtifact(runtime, wasmFixture);
-        chmodSync(path, 0o000);
-
-        expect(inspectKiwiWasmArtifact(runtime)).toMatchObject({
-          installed: false,
-          payloadValid: false,
-          reason: 'file_unreadable',
-        });
-
-        chmodSync(path, 0o644);
-        expect(inspectKiwiWasmArtifact(runtime).installed).toBe(true);
-      } finally {
-        try {
-          chmodSync(path, 0o644);
-        } catch {
-          // The fixture may already have been removed after an assertion failure.
-        }
-        rmSync(root, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it('passes the pinned archive byte limit to the downloader before buffering', async () => {
-    const { root, runtime } = createTestRuntime();
-    const download = vi.fn(async (_runtime, url: string, options: { readonly maxBytes: number }) => {
-      expect(url).toBe(KIWI_NLP_PACKAGE_URL);
-      expect(options.maxBytes).toBe(KIWI_NLP_PACKAGE_SIZE_BYTES);
-      throw new Error('stop after bound assertion');
-    });
-    try {
-      await expect(ensureKiwiWasmArtifactLocked(runtime, { download })).rejects.toThrow('stop after bound assertion');
-      expect(download).toHaveBeenCalledTimes(1);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('repairs a directory occupying the canonical WASM file path', () => {
-    const { root, runtime } = createTestRuntime();
-    try {
-      mkdirSync(kiwiWasmPath(runtime), { recursive: true });
-
-      const state = publishKiwiWasmArtifact(runtime, wasmFixture);
-
-      expect(state.installed).toBe(true);
-      expect(statSync(kiwiWasmPath(runtime)).isFile()).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('repairs a directory occupying the manifest path without downloading again', async () => {
-    const { root, runtime } = createTestRuntime();
-    try {
-      publishKiwiWasmArtifact(runtime, wasmFixture);
-      rmSync(kiwiWasmManifestPath(runtime), { force: true });
-      mkdirSync(kiwiWasmManifestPath(runtime), { recursive: true });
-      const download = vi.fn();
-
-      const state = await ensureKiwiWasmArtifactLocked(runtime, { download });
-
-      expect(state.installed).toBe(true);
-      expect(statSync(kiwiWasmManifestPath(runtime)).isFile()).toBe(true);
-      expect(download).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

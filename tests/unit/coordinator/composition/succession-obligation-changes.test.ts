@@ -23,11 +23,16 @@ describe('succession obligation change wiring', () => {
       bundleHash: 'fedcba9876543210',
       flavor: 'prod' as const,
     };
+    let changed!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      changed = resolve;
+    });
     const reconciler = createSuccessionReconciler({
       runtime,
       runDir,
       incumbent: () => incumbent,
       owners: [],
+      onIntentChanged: changed,
       epochKey: () => null,
       admissionRevision: () => 0,
       commitAvailable: true,
@@ -70,12 +75,14 @@ describe('succession obligation change wiring', () => {
         phase: 'completed',
         previousPhase: 'running',
       });
-      await vi.waitFor(() =>
-        expect(readUpgradeIntent(runDir)).toMatchObject({
-          kind: 'readable',
-          intent: { disposition: 'closed', retryCondition: null },
-        }),
-      );
+      await completion;
+      expect(readUpgradeIntent(runDir)).toMatchObject({
+        kind: 'readable',
+        intent: {
+          disposition: 'deferred',
+          retryCondition: { kind: 'target-change', evidence: 'target build no longer validates' },
+        },
+      });
     } finally {
       reconciler.dispose();
       rmSync(runDir, { recursive: true, force: true });

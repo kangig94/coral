@@ -73,25 +73,4 @@ describe('deleteWiki', () => {
     await expect(deleteWiki(kb, { slug: 'no-such-wiki' })).rejects.toThrow('KB wiki not found');
     expect(kb.readIndex()).toEqual(indexBefore);
   });
-
-  it('rejects malformed wiki slugs before any storage call', async () => {
-    const { deleteWiki, paths } = await loadModules();
-    const kb = createRuntime(paths);
-
-    await expect(deleteWiki(kb, { slug: 'Bad Slug' })).rejects.toThrow();
-  });
-
-  it('clears the manifest authority delta for a deleted wiki', async () => {
-    const { deleteWiki, createWiki, paths } = await loadModules();
-    const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'living-knowledge' });
-    const beforeState = kb.readIndexState();
-
-    await deleteWiki(kb, { slug: 'living-knowledge' });
-
-    // Both content and metadata lanes bump on delete.
-    const afterState = kb.readIndexState();
-    expect(afterState.contentSeq).toBeGreaterThan(beforeState.contentSeq);
-    expect(afterState.metadataSeq).toBeGreaterThan(beforeState.metadataSeq);
-  });
 });

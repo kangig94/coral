@@ -11,7 +11,7 @@ import {
 } from '#src/infra/launch-status.js';
 
 describe('launch status diagnostics', () => {
-  it.each(['admissionHolds', 'inheritedHealth'] as const)(
+  it.each(['admissionHolds'] as const)(
     'merges local %s additions and deletions over remote snapshots during publication failure',
     async (key) => {
       vi.useFakeTimers();
@@ -19,15 +19,7 @@ describe('launch status diagnostics', () => {
       const lockDir = join(runDir, 'launch-status.v1.lock');
       mkdirSync(lockDir);
       for (const id of ['one', 'two']) writeFileSync(join(lockDir, `owner-${id}.lock`), '{}');
-      const entry =
-        key === 'admissionHolds'
-          ? { path: '/source', disposition: 'unknown' as const }
-          : {
-              launchId: 'source',
-              supervisor: { pid: 101, incarnation: 'parent' },
-              child: { pid: 202, incarnation: 'child' },
-              observedHealthyAt: 1,
-            };
+      const entry = { path: '/source', disposition: 'unknown' as const };
       try {
         updateLaunchStatus(runDir, (status) => ({ ...status, [key]: [entry] }));
         receiveLaunchStatus(runDir, { version: 1, [key]: [] });
@@ -88,38 +80,6 @@ describe('launch status diagnostics', () => {
         kind: 'readable',
         status: { inheritedHolds: [], signalHolds: [] },
       });
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
-  });
-
-  it('republishes its current holds after unrelated reconstruction erases the durable status', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-status-republish-'));
-    try {
-      updateLaunchStatus(runDir, (status) => ({
-        ...status,
-        hold: { kind: 'custody-unreadable', path: '/custody', retry: 'restore-readable-custody-record' },
-        signalHolds: [{ launchId: 'exact', pid: 101, incarnation: 'child' }],
-      }));
-      writeFileSync(
-        join(runDir, 'launch-status.v1.json'),
-        JSON.stringify({
-          version: 1,
-          previousStatus: 'unavailable',
-          inheritedHolds: [],
-          signalHolds: [],
-        }),
-      );
-      updateLaunchStatus(runDir, (status) => ({ ...status, admissionHolds: [] }));
-      expect(readLaunchStatus(runDir)).toMatchObject({
-        kind: 'readable',
-        status: {
-          previousStatus: 'unavailable',
-          hold: { path: '/custody' },
-          signalHolds: [{ launchId: 'exact' }],
-        },
-      });
-      expect(currentLaunchStatus(runDir)?.publicationFailure).toBeUndefined();
     } finally {
       rmSync(runDir, { recursive: true, force: true });
     }

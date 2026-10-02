@@ -6,29 +6,12 @@ import { describe, expect, it } from 'vitest';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import type { SessionContinuityState, SessionProviderFailureReason } from '#src/sessions/fault.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 
 const renderer = createCauseRefRenderer(defaultEventDescribers);
 
 const NOW = new Date('2026-04-22T00:00:00.000Z');
-const CONTINUITY_CASES = [
-  ['verified', 'continuity verified'],
-  ['missing', 'continuity missing'],
-  ['unavailable', 'continuity unavailable'],
-  ['pre_checkpoint_empty', 'no resumable conversation was available'],
-  ['pre_checkpoint_preserved', 'existing conversation reference was preserved'],
-] as const satisfies ReadonlyArray<readonly [SessionContinuityState, string]>;
-
-const PROVIDER_FAILURE_CASES = [
-  [
-    'session_unavailable',
-    'session detached',
-    'Codex session unavailable: session detached. Start a new Coral session.',
-  ],
-  ['request_failed', 'transport reset', 'codex turn failed: transport reset.'],
-] as const satisfies ReadonlyArray<readonly [SessionProviderFailureReason, string, string]>;
 
 function createStore(): { db: Database; store: CoralStore } {
   const db = newRawDatabase(':memory:');
@@ -78,66 +61,6 @@ function renderRootEventDescription(input: {
     db.close();
   }
 }
-
-describe('cause-ref session rendering', () => {
-  it.each(CONTINUITY_CASES)('renders the %s continuity fragment', (continuity, fragment) => {
-    expect(
-      renderRootEventDescription({
-        type: 'session.interrupted',
-        stream: { kind: 'session', id: `session-${continuity}` },
-        body: {
-          trigger: 'restart',
-          continuity,
-        },
-      }),
-    ).toBe(`App-server restarted during the turn; ${fragment}.`);
-  });
-
-  it.each(PROVIDER_FAILURE_CASES)('renders the %s provider failure message', (reason, message, expected) => {
-    expect(
-      renderRootEventDescription({
-        type: 'session.provider_failed',
-        stream: { kind: 'session', id: `session-${reason}` },
-        body: {
-          provider: 'codex',
-          reason,
-          message,
-        },
-      }),
-    ).toBe(expected);
-  });
-
-  it('rejects continuity values outside the current persisted contract', () => {
-    expect(() =>
-      renderRootEventDescription({
-        type: 'session.interrupted',
-        stream: { kind: 'session', id: 'session-unknown-continuity' },
-        body: {
-          trigger: 'restart',
-          continuity: 'mystery_state' as SessionContinuityState,
-        },
-      }),
-    ).toThrow();
-  });
-});
-
-describe('cause-ref discuss rendering', () => {
-  it('renders discuss-owned agent job outcomes from the default describer composition', () => {
-    expect(
-      renderRootEventDescription({
-        type: 'discuss.agent.job.finished',
-        stream: { kind: 'discuss', id: 'discuss-1' },
-        body: {
-          agent: 'alpha',
-          jobId: 'job-1',
-          outcome: 'retryable_parse_error',
-          attempt: 2,
-          sourceSeq: 7,
-        },
-      }),
-    ).toBe('Discuss agent alpha job job-1 failed with retryable parse error (attempt 2).');
-  });
-});
 
 describe('cause-ref job rendering', () => {
   it('surfaces indeterminate provider activation with a durable inspection command', () => {

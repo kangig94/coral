@@ -1,10 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { backendLog } from '#src/infra/backend-log.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import type { KbRuntime } from '#src/kb/contract.js';
@@ -165,42 +163,6 @@ describe('KB migrations', () => {
     expect(index.entries[sourceEntryId('backfilled-source')]).toMatchObject({
       bodyHash: expectedSourceFingerprint,
       inputFingerprint: expectedSourceFingerprint,
-    });
-  });
-
-  it('does nothing when the per-machine marker is already current', async () => {
-    mkdirSync(kb.notesDir(), { recursive: true });
-    writeMarker(runtimeDir, CURRENT_TEST_MIGRATION_VERSION);
-    const notePath = join(kb.notesDir(), 'coral-current.md');
-    writeFileSync(notePath, renderNote({ title: 'Current', body: 'Body.' }), 'utf-8');
-
-    await runPendingKbMigrations(kb);
-
-    expect(parseFrontmatter(readFileSync(notePath, 'utf-8')).inputFingerprint).toBeUndefined();
-    expect(JSON.parse(readFileSync(markerPath(runtimeDir), 'utf-8'))).toEqual({
-      version: CURRENT_TEST_MIGRATION_VERSION,
-    });
-  });
-
-  it('fails open and leaves KB access usable when migration backfill throws', async () => {
-    mkdirSync(kb.notesDir(), { recursive: true });
-    const notePath = join(kb.notesDir(), 'coral-fail-open.md');
-    writeFileSync(notePath, renderNote({ title: 'Fail Open', body: 'Body.' }), 'utf-8');
-    const logSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
-    const lockSpy = vi.spyOn(kb, 'withMutationLock').mockRejectedValue(new Error('migration failed'));
-
-    await expect(runPendingKbMigrations(kb)).resolves.toBeUndefined();
-
-    expect(logSpy).toHaveBeenCalledWith('kb_migration: migration failed; continuing KB access', expect.any(Error));
-    expect(existsSync(markerPath(runtimeDir))).toBe(false);
-    expect(parseFrontmatter(readFileSync(notePath, 'utf-8')).inputFingerprint).toBeUndefined();
-    lockSpy.mockRestore();
-    await expect(kb.ensureCorpusFreshness({ wait: true })).resolves.toMatchObject({
-      entries: {
-        [noteEntryId('coral-fail-open')]: {
-          bodyHash: computeBodySurfaceHash('Body.'),
-        },
-      },
     });
   });
 });

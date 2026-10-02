@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { incumbentOutranksContender, probeIncumbent } from '#src/transport/ipc/handoff.js';
+import { probeIncumbent } from '#src/transport/ipc/handoff.js';
 import { decode, encode } from '#src/transport/ipc/json-rpc.js';
 
 const servers: NetServer[] = [];
@@ -15,27 +15,6 @@ afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
-
-describe('incumbentOutranksContender', () => {
-  const contender = { version: '0.10.14', bundleHash: 'new', flavor: 'prod' as const, namespace: 'new' };
-
-  it.each([
-    ['0.10.13', false],
-    ['0.10.14', true],
-    ['0.10.15', true],
-  ])('ranks incumbent version %s', (version, expected) => {
-    expect(
-      incumbentOutranksContender({ version, bundleHash: 'old', flavor: 'prod', namespace: 'old' }, contender),
-    ).toBe(expected);
-  });
-
-  it('does not rank an unknown version or a different flavor', () => {
-    expect(incumbentOutranksContender({ bundleHash: 'old', flavor: 'prod', namespace: 'old' }, contender)).toBe(false);
-    expect(
-      incumbentOutranksContender({ version: '0.10.15', bundleHash: 'old', flavor: 'dev', namespace: 'old' }, contender),
-    ).toBe(false);
-  });
 });
 
 describe('probeIncumbent', () => {

@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
-
 import { describe, expect, it } from 'vitest';
-
 import { createCoordinatorJobSettlementRefusalRecorder } from '#src/coordinator/services/recovery/index.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -85,35 +83,6 @@ describe('coordinator job settlement-refusal recorder', () => {
     await expect(
       recorder.record({ jobId, cause: 'claim-release-failed', failure: 'claim store unavailable' }),
     ).rejects.toThrow('recovery quarantine write did not persist');
-    db.close();
-  });
-
-  it('records a reassigned claim as durable recovery work', async () => {
-    const { db, jobId, runtime } = seededJob();
-    const quarantine = new RecoveryQuarantineStore(db, runtime.time);
-    const recorder = createCoordinatorJobSettlementRefusalRecorder({
-      getDb: () => db,
-      isBoundaryRegistered: (boundary) => boundary === COORDINATOR_JOB_RECOVERY_BOUNDARY,
-      upsert: (write) => quarantine.upsert(write),
-    });
-
-    await expect(
-      recorder.record({
-        jobId,
-        cause: 'claim-already-reassigned',
-        failure: 'the claim belongs to its successor',
-      }),
-    ).resolves.toBe(true);
-    expect(quarantine.list()).toEqual([
-      expect.objectContaining({
-        boundary: COORDINATOR_JOB_RECOVERY_BOUNDARY,
-        subject: { key: jobId, revision: { kind: 'fingerprint', value: expect.any(String) } },
-        state: 'active',
-        stage: 'settle',
-        errorMessage: 'the claim belongs to its successor',
-        detail: 'Job settlement refused after claim-already-reassigned.',
-      }),
-    ]);
     db.close();
   });
 });

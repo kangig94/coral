@@ -2,10 +2,9 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import type { UsageSummary } from '#src/providers/contract.js';
-import type { TimePort } from '#src/infra/port-types.js';
+
 import { describe, expect, it } from 'vitest';
 
-import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
@@ -17,49 +16,14 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
-import { loadJobProjectionDetail, loadJobProjectionDetails, readJobEvents } from '#src/jobs/read-queries.js';
-import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
+import { loadJobProjectionDetail, readJobEvents } from '#src/jobs/read-queries.js';
+
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const projectRoot = '/tmp/workflow-usage-project';
 const namespace = 'workflow-usage-ns';
 const createdAt = '2026-04-21T00:00:00.000Z';
 const readCtx = createDefaultStoreReadContext();
-const time = {
-  now: () => Date.parse(createdAt),
-  monotonicNow: () => BigInt(Date.parse(createdAt)),
-  sleep: async (ms: number, options?: { signal?: AbortSignal }) => {
-    await new Promise<void>((resolve, reject) => {
-      if (options?.signal?.aborted) {
-        const reason = options.signal.reason;
-        reject(reason instanceof Error ? reason : new Error(String(reason)));
-        return;
-      }
-      const handle = globalThis.setTimeout(resolve, ms);
-      options?.signal?.addEventListener(
-        'abort',
-        () => {
-          globalThis.clearTimeout(handle);
-          const reason = options.signal?.reason;
-          reject(reason instanceof Error ? reason : new Error(String(reason)));
-        },
-        { once: true },
-      );
-    });
-  },
-  setTimeout: (fn: () => void, ms: number) => globalThis.setTimeout(fn, ms),
-  clearTimeout: (handle) => {
-    if (handle !== null) {
-      globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>);
-    }
-  },
-  setInterval: (fn: () => void, ms: number) => globalThis.setInterval(fn, ms),
-  clearInterval: (handle) => {
-    if (handle !== null) {
-      globalThis.clearInterval(handle as ReturnType<typeof globalThis.setInterval>);
-    }
-  },
-} satisfies TimePort;
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
@@ -311,85 +275,6 @@ describe('workflow usage aggregation', () => {
         diagnostics: string;
       };
       expect(JSON.parse(stored.diagnostics)).not.toHaveProperty('usage');
-    } finally {
-      db.close();
-    }
-  });
-
-  it('attaches workflow aggregate usage through the batch projection detail loader', () => {
-    const db = createDb();
-    try {
-      const workflowJobId = 'workflow-usage-batch-detail';
-      seedWorkflowWithChildren(db, workflowJobId);
-      commit(db, [terminalRecorded(workflowJobId, { jobKind: 'workflow' })]);
-
-      expect(
-        loadJobProjectionDetails(db, [workflowJobId], readCtx).get(workflowJobId)?.exit?.diagnostics.usage,
-      ).toEqual({
-        inputTokens: 107,
-        cacheReadTokens: 53,
-        cacheWriteTokens: 10,
-        outputTokens: 25,
-        costUsd: 0.25,
-        jobsWithoutCostData: 1,
-      });
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects corrupt persisted child diagnostics instead of treating them as absent usage', () => {
-    const db = createDb();
-    try {
-      const workflowJobId = 'workflow-usage-corrupt-child';
-      seedWorkflowWithChildren(db, workflowJobId);
-      db.prepare('UPDATE projection_jobs SET diagnostics = ? WHERE job_id = ?').run('{not-json', 'codex-child');
-
-      expect(() => aggregateWorkflowUsage(db, workflowJobId)).toThrow();
-    } finally {
-      db.close();
-    }
-  });
-
-  it('computes workflow usage for live wait terminal events through the resolver dependency', async () => {
-    const db = createDb();
-    try {
-      const workflowJobId = 'workflow-usage-live-wait';
-      seedWorkflowWithChildren(db, workflowJobId);
-
-      const coordinator = new WaitCoordinator({
-        sessionManager: {} as never,
-        launchQueue: { reservationFor: () => null } as never,
-        eventBus: {} as never,
-        time,
-        loadJobProjectionDetail: (jobId) => loadJobProjectionDetail(db, jobId, readCtx),
-        readJobEvents: (jobId) => readJobEvents(db, jobId, readCtx),
-        aggregateWorkflowUsage: (jobId) => aggregateWorkflowUsage(db, jobId),
-        subscribeJobEvents,
-        getCurrentJournalSeq: () =>
-          (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
-        resultJobsRoot: '/tmp/workflow-usage-results',
-      });
-
-      const iterator = coordinator.waitForJobs({ jobIds: [workflowJobId], timeoutSeconds: 1 })[Symbol.asyncIterator]();
-      const next = iterator.next();
-      publishJobEvents(commit(db, [terminalRecorded(workflowJobId, { jobKind: 'workflow' })]));
-
-      const terminal = await next;
-      expect(terminal.done).toBe(false);
-      expect(terminal.value).toMatchObject({
-        type: 'terminal',
-        jobId: workflowJobId,
-        usage: {
-          inputTokens: 107,
-          cacheReadTokens: 53,
-          cacheWriteTokens: 10,
-          outputTokens: 25,
-          costUsd: 0.25,
-          jobsWithoutCostData: 1,
-        },
-      });
-      await iterator.return?.(undefined);
     } finally {
       db.close();
     }

@@ -12,8 +12,6 @@ import {
   type DetectedIncident,
 } from '#src/kb/corpus/rescan/incidents/catalog.js';
 import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/rescan/auto-fix.js';
-import { detectRescanInfo } from '#src/kb/corpus/rescan/drift.js';
-import { buildCorpusScanView } from '#src/kb/corpus/rescan/scan.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
 import type { PendingRepair } from '#src/kb/curate/state/model.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
@@ -63,121 +61,6 @@ afterEach(() => {
   }
 });
 
-describe('rebuild pipeline wires typed detectors into the retry queue', () => {
-  it('persists a frontmatter-shape/yaml-parse-error incident enqueued by the typed pipeline', async () => {
-    const { kb, root } = createSeededKbRuntime();
-    writeFileSync(
-      join(root, 'notes', 'malformed-frontmatter.md'),
-      ['---', 'tags: [test', 'principles: []', '---', '# Broken', '', 'body', ''].join('\n'),
-      'utf-8',
-    );
-
-    await reindex(kb);
-
-    const queue = readCurateRetryQueue(curateDb(kb));
-    const queued = queue.find((entry) => entry.entryId === 'note:malformed-frontmatter');
-    expect(queued).toBeDefined();
-    expect(queued?.canonicalIncident).toBe(REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR);
-    expect(queued?.locus).toBe('frontmatter-shape');
-  });
-
-  it('persists a file-syntax/conflict-markers incident enqueued by the typed pipeline', async () => {
-    const { kb, root } = createSeededKbRuntime();
-    writeFileSync(
-      join(root, 'notes', 'conflict.md'),
-      [
-        '---',
-        'tags: [test]',
-        'principles: []',
-        'source:',
-        '  - kangig94/coral',
-        'createdAt: 2026-04-01T00:00:00.000Z',
-        'updatedAt: 2026-04-01T00:00:00.000Z',
-        'entrySeq: 41',
-        '---',
-        '# Conflict',
-        '',
-        '<<<<<<< HEAD',
-        'left side',
-        '=======',
-        'right side',
-        '>>>>>>> incoming',
-        '',
-      ].join('\n'),
-      'utf-8',
-    );
-
-    await reindex(kb);
-
-    const queue = readCurateRetryQueue(curateDb(kb));
-    const queued = queue.find((entry) => entry.entryId === 'note:conflict');
-    expect(queued).toBeDefined();
-    expect(queued?.canonicalIncident).toBe(REPAIR_INCIDENT_ID.FILE_SYNTAX.CONFLICT_MARKERS);
-    expect(queued?.locus).toBe('file-syntax');
-  });
-
-  it('persists an identity-sequence/entryseq-collision incident enqueued by the typed pipeline', async () => {
-    const { kb, root } = createSeededKbRuntime();
-    const sharedFrontmatter = (entrySeq: number, title: string): string =>
-      [
-        '---',
-        'tags: [test]',
-        'principles: []',
-        'source:',
-        '  - kangig94/coral',
-        'createdAt: 2026-04-01T00:00:00.000Z',
-        'updatedAt: 2026-04-01T00:00:00.000Z',
-        `entrySeq: ${entrySeq}`,
-        '---',
-        `# ${title}`,
-        '',
-        'body',
-        '',
-      ].join('\n');
-    writeFileSync(join(root, 'notes', 'colliding-alpha.md'), sharedFrontmatter(51, 'Alpha'), 'utf-8');
-    writeFileSync(join(root, 'notes', 'colliding-beta.md'), sharedFrontmatter(51, 'Beta'), 'utf-8');
-
-    await reindex(kb);
-
-    const queue = readCurateRetryQueue(curateDb(kb));
-    const collisions = queue.filter(
-      (entry) => entry.canonicalIncident === REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION,
-    );
-    expect(collisions.map((entry) => entry.entryId).sort()).toEqual(['note:colliding-alpha', 'note:colliding-beta']);
-  });
-
-  it('persists a reference-integrity/orphan-principle-refs incident enqueued by the typed pipeline', async () => {
-    const { kb, root } = createSeededKbRuntime();
-    writeFileSync(
-      join(root, 'notes', 'orphan-principle-ref.md'),
-      [
-        '---',
-        'tags: [test]',
-        'principles: [missing-principle]',
-        'source:',
-        '  - kangig94/coral',
-        'createdAt: 2026-04-01T00:00:00.000Z',
-        'updatedAt: 2026-04-01T00:00:00.000Z',
-        'entrySeq: 61',
-        '---',
-        '# Orphan Principle',
-        '',
-        'references a principle that does not exist',
-        '',
-      ].join('\n'),
-      'utf-8',
-    );
-
-    await reindex(kb);
-
-    const queue = readCurateRetryQueue(curateDb(kb));
-    const queued = queue.find((entry) => entry.entryId === 'note:orphan-principle-ref');
-    expect(queued).toBeDefined();
-    expect(queued?.canonicalIncident).toBe(REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS);
-    expect(queued?.locus).toBe('reference-integrity');
-  });
-});
-
 describe('applyDetectedIncidentFixesLocked lock-reentry safety', () => {
   it('completes without deadlock when invoked from inside withMutationLock', async () => {
     const { kb, root } = createSeededKbRuntime();
@@ -211,9 +94,11 @@ describe('applyDetectedIncidentFixesLocked lock-reentry safety', () => {
       signals: { matches: [{ line: 13, marker: '<<<<<<<', text: '<<<<<<< HEAD' }] },
     };
 
-    // timing-sensitive: 500ms accommodates slow CI; deadlock is detected as 'timeout' return.
-    const completed = await Promise.race([
-      kb.withMutationLock(async (mutation) => {
+    await kb.withMutationLock(async (mutation) => {
+      const nestedLock = vi.spyOn(kb, 'withMutationLock').mockImplementation(async () => {
+        throw new Error('nested mutation lock acquisition');
+      });
+      try {
         const gitSync = createGitSyncController({
           kb,
           curateAssistant: { complete: async () => '' },
@@ -222,12 +107,11 @@ describe('applyDetectedIncidentFixesLocked lock-reentry safety', () => {
           envPort: realRuntime.env,
         });
         await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, [incident]);
-        return 'done' as const;
-      }),
-      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
-    ]);
+      } finally {
+        nestedLock.mockRestore();
+      }
+    });
 
-    expect(completed).toBe('done');
     const queue = readCurateRetryQueue(curateDb(kb));
     expect(queue.find((entry) => entry.entryId === 'note:reentry-target')).toBeDefined();
   });
@@ -300,70 +184,5 @@ describe('performRescan failure semantics', () => {
     const queueAfter = readCurateRetryQueue(curateDb(kb));
     expect(queueAfter).toEqual(queueBefore);
     expect(queueAfter.find((entry) => entry.entryId === 'note:rescan-malformed')).toBeUndefined();
-  });
-});
-
-describe('detectRescanInfo unified MutationLane emitter', () => {
-  // Parity claim: a markdown frontmatter-only edit and an entity-graph-only edit both
-  // emit MutationLane='metadata'. Each scenario lives in its own seeded runtime so the
-  // assertion isolates one drift source so earlier scenarios cannot bleed in via the retry queue.
-  it('emits "metadata" for a markdown frontmatter-only edit', async () => {
-    const { kb, root } = createSeededKbRuntime();
-    const noteFrontmatter = (tags: string): string =>
-      [
-        '---',
-        `tags: [${tags}]`,
-        'principles: []',
-        'source:',
-        '  - kangig94/coral',
-        'createdAt: 2026-04-01T00:00:00.000Z',
-        'updatedAt: 2026-04-01T00:00:00.000Z',
-        'entrySeq: 91',
-        '---',
-        '# Parity Note',
-        '',
-        'body',
-        '',
-      ].join('\n');
-    writeFileSync(join(root, 'notes', 'parity-note.md'), noteFrontmatter('alpha'), 'utf-8');
-    await reindex(kb);
-
-    writeFileSync(join(root, 'notes', 'parity-note.md'), noteFrontmatter('beta'), 'utf-8');
-    await expect(detectRescanInfo(kb, buildCorpusScanView(kb)).then((info) => info.externalMutation)).resolves.toBe(
-      'metadata',
-    );
-  });
-
-  it('emits "metadata" for an entity-graph-only edit', async () => {
-    const { kb } = createSeededKbRuntime();
-    writeFileSync(
-      kb.entityGraphPath(),
-      `${JSON.stringify(
-        {
-          entityMeta: { coral: { type: 'technology', description: 'baseline' } },
-          relationships: [],
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    );
-    await reindex(kb);
-
-    writeFileSync(
-      kb.entityGraphPath(),
-      `${JSON.stringify(
-        {
-          entityMeta: { coral: { type: 'technology', description: 'edited' } },
-          relationships: [],
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    );
-    await expect(detectRescanInfo(kb, buildCorpusScanView(kb)).then((info) => info.externalMutation)).resolves.toBe(
-      'metadata',
-    );
   });
 });

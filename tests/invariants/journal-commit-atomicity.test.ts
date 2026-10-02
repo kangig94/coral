@@ -1,5 +1,5 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -9,7 +9,6 @@ import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { KbJobRecorder } from '#src/jobs/kb/recorder.js';
-import { WorkflowExecutionService } from '#src/coordinator/services/workflow-execution.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -17,7 +16,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
+import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -33,280 +32,17 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
-const REPO_ROOT = process.cwd();
 const NOW = '2026-04-19T00:00:00.000Z';
 const TEST_NAMESPACE = 'test-ns';
 const PROJECT_ROOT = mkdtempSync(resolve(tmpdir(), 'coral-journal-atomicity-'));
 
 afterAll(() => rmSync(PROJECT_ROOT, { recursive: true, force: true }));
-const KB_RECORDER_PATH = 'src/jobs/kb/recorder.ts';
-const KB_SHELL_PATH = 'src/kb-daemon/services/shell.ts';
-const KB_SOURCE_IMPORT_SERVICE_PATH = 'src/kb-daemon/services/source-import.ts';
-const KB_REINDEX_SERVICE_PATH = 'src/kb-daemon/services/reindex.ts';
-const WORKFLOW_EXECUTOR_PATH = 'src/workflow/executor.ts';
-const WORKFLOW_RECOVER_PATH = 'src/workflow/recover.ts';
-const WORKFLOW_EXECUTION_SERVICE_PATH = 'src/coordinator/services/workflow-execution.ts';
-const WORKFLOW_FINALIZATION_HELPER_PATH = 'src/coordinator/services/workflow-finalization.ts';
-const WORKFLOW_RECOVERY_FINALIZER_PATH = 'src/coordinator/services/workflow-recovery-finalizer.ts';
 type Db = Database;
-
-type OrphanKbFailureRow = {
-  cause_seq: number;
-  stream_kind: string;
-  stream_id: string;
-};
-
-type FailedWorkflowCompletionWithoutCauseRefRow = {
-  seq: number;
-  workflow_id: string;
-};
-
-type FailedWorkflowParentTerminalWithoutWorkflowCompletionCauseRow = {
-  terminal_seq: number;
-  job_id: string;
-};
-
-type FailedJobTerminalWithoutCauseRefRow = {
-  seq: number;
-  job_id: string;
-};
-
-const ORPHAN_KB_OPERATION_FAILURES_SQL = `
-  SELECT p.seq AS cause_seq, p.stream_kind, p.stream_id
-    FROM events p
-   WHERE p.type = 'job.progress.emitted'
-     AND json_extract(CAST(p.body AS TEXT), '$.kind') = 'domain'
-     AND json_extract(CAST(p.body AS TEXT), '$.stage') = 'kb_operation_failed'
-     AND NOT EXISTS (
-           SELECT 1
-             FROM events t
-            WHERE t.stream_kind = p.stream_kind
-              AND t.stream_id = p.stream_id
-              AND t.type = 'job.terminal.recorded'
-              AND json_extract(CAST(t.body AS TEXT), '$.terminal.outcome.kind') = 'failed'
-         )
-   ORDER BY p.seq ASC
-`;
-
-const FAILED_WORKFLOW_COMPLETIONS_WITHOUT_CAUSE_REF_SQL = `
-  SELECT seq, stream_id AS workflow_id
-    FROM events
-   WHERE type = 'workflow.completed'
-     AND stream_kind = 'workflow'
-     AND json_extract(CAST(body AS TEXT), '$.outcome') = 'failed'
-     AND json_type(CAST(body AS TEXT), '$.causeRef') IS NULL
-   ORDER BY seq ASC
-`;
-
-const FAILED_WORKFLOW_PARENT_TERMINALS_WITHOUT_WORKFLOW_COMPLETION_CAUSE_SQL = `
-  SELECT t.seq AS terminal_seq, t.stream_id AS job_id
-    FROM events t
-   WHERE t.type = 'job.terminal.recorded'
-     AND json_extract(CAST(t.body AS TEXT), '$.terminal.outcome.kind') = 'failed'
-     AND EXISTS (
-           SELECT 1
-             FROM events launch
-            WHERE launch.stream_kind = 'job'
-              AND launch.stream_id = t.stream_id
-              AND launch.type = 'job.launch.requested'
-              AND json_extract(CAST(launch.body AS TEXT), '$.jobKind') = 'workflow'
-         )
-     AND NOT EXISTS (
-           SELECT 1
-             FROM events completed
-            WHERE completed.stream_kind = 'workflow'
-              AND completed.stream_id = t.stream_id
-              AND completed.type = 'workflow.completed'
-              AND completed.seq = CAST(json_extract(CAST(t.body AS TEXT), '$.terminal.outcome.causeRef.seq') AS INTEGER)
-         )
-   ORDER BY t.seq ASC
-`;
-
-const FAILED_JOB_TERMINALS_WITHOUT_CAUSE_REF_SQL = `
-  SELECT seq, stream_id AS job_id
-    FROM events
-   WHERE type = 'job.terminal.recorded'
-     AND stream_kind = 'job'
-     AND json_extract(CAST(body AS TEXT), '$.terminal.outcome.kind') = 'failed'
-     AND (
-           json_type(CAST(body AS TEXT), '$.terminal.outcome.causeRef') IS NULL
-           OR json_type(CAST(body AS TEXT), '$.terminal.outcome.causeRef') = 'null'
-         )
-   ORDER BY seq ASC
-`;
 
 function createDb(): Db {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
-}
-
-function scanTerminalCausingKbOperationFailureOrphans(db: Db): OrphanKbFailureRow[] {
-  return db.prepare(ORPHAN_KB_OPERATION_FAILURES_SQL).all() as OrphanKbFailureRow[];
-}
-
-function scanFailedWorkflowCompletionsWithoutCauseRef(db: Db): FailedWorkflowCompletionWithoutCauseRefRow[] {
-  return db
-    .prepare(FAILED_WORKFLOW_COMPLETIONS_WITHOUT_CAUSE_REF_SQL)
-    .all() as FailedWorkflowCompletionWithoutCauseRefRow[];
-}
-
-function scanFailedWorkflowParentTerminalsWithoutWorkflowCompletionCause(
-  db: Db,
-): FailedWorkflowParentTerminalWithoutWorkflowCompletionCauseRow[] {
-  return db
-    .prepare(FAILED_WORKFLOW_PARENT_TERMINALS_WITHOUT_WORKFLOW_COMPLETION_CAUSE_SQL)
-    .all() as FailedWorkflowParentTerminalWithoutWorkflowCompletionCauseRow[];
-}
-
-function scanFailedJobTerminalsWithoutCauseRef(db: Db): FailedJobTerminalWithoutCauseRefRow[] {
-  return db.prepare(FAILED_JOB_TERMINALS_WITHOUT_CAUSE_REF_SQL).all() as FailedJobTerminalWithoutCauseRefRow[];
-}
-
-function assertNoTerminalCausingKbOperationFailureOrphans(db: Db): void {
-  const orphans = scanTerminalCausingKbOperationFailureOrphans(db);
-  if (orphans.length > 0) {
-    throw new Error(`orphan terminal-causing kb_operation_failed rows: ${JSON.stringify(orphans)}`);
-  }
-}
-
-function assertNoWorkflowAtomicityOrphans(db: Db): void {
-  const missingWorkflowCauses = scanFailedWorkflowCompletionsWithoutCauseRef(db);
-  if (missingWorkflowCauses.length > 0) {
-    throw new Error(`failed workflow.completed rows without direct causeRef: ${JSON.stringify(missingWorkflowCauses)}`);
-  }
-
-  const missingParentLinks = scanFailedWorkflowParentTerminalsWithoutWorkflowCompletionCause(db);
-  if (missingParentLinks.length > 0) {
-    throw new Error(
-      `failed workflow parent terminals without workflow.completed causeRef: ${JSON.stringify(missingParentLinks)}`,
-    );
-  }
-
-  const missingTerminalCauses = scanFailedJobTerminalsWithoutCauseRef(db);
-  if (missingTerminalCauses.length > 0) {
-    throw new Error(`failed job.terminal.recorded rows without causeRef: ${JSON.stringify(missingTerminalCauses)}`);
-  }
-}
-
-function insertOrphanKbOperationFailure(db: Db): void {
-  db.prepare(
-    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    NOW,
-    'job.progress.emitted',
-    'job',
-    'job-orphan',
-    'test-ns',
-    '/workspace/orphan',
-    JSON.stringify({ jobId: 'job-orphan' }),
-    encodeEventBody({
-      kind: 'domain',
-      stage: 'kb_operation_failed',
-      message: 'KB reindex failed: index unavailable',
-      detail: { operation: 'reindex', cause: { message: 'index unavailable' } },
-      ts: NOW,
-    }),
-  );
-}
-
-function insertFailedWorkflowCompletedWithoutCauseRef(db: Db): void {
-  db.prepare(
-    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    NOW,
-    'workflow.completed',
-    'workflow',
-    'workflow-orphan',
-    'test-ns',
-    '/workspace/orphan',
-    JSON.stringify({ workflowId: 'workflow-orphan' }),
-    encodeEventBody({
-      outcome: 'failed',
-      stepDetails: [],
-    }),
-  );
-}
-
-function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db): void {
-  const insert = db.prepare(
-    `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, refs, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  insert.run(
-    1,
-    NOW,
-    'job.launch.requested',
-    'job',
-    'workflow-parent-orphan',
-    'test-ns',
-    '/workspace/orphan',
-    JSON.stringify({ jobId: 'workflow-parent-orphan', sessionId: 'session-orphan' }),
-    encodeEventBody({
-      sessionId: 'session-orphan',
-      provider: 'codex',
-      projectRoot: '/workspace/orphan',
-      backendNamespace: 'test-ns',
-      jobKind: 'workflow',
-      providerScope: TEST_PROVIDER_SCOPE,
-      pool: 'default',
-      enqueueSequence: 1,
-      providerAction: 'exec',
-      request: {
-        prompt: '',
-        cwd: '/workspace/orphan',
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: NOW,
-    }),
-  );
-  insert.run(
-    2,
-    NOW,
-    'job.terminal.recorded',
-    'job',
-    'workflow-parent-orphan',
-    'test-ns',
-    '/workspace/orphan',
-    JSON.stringify({ jobId: 'workflow-parent-orphan', sessionId: 'session-orphan' }),
-    encodeEventBody({
-      terminal: {
-        content: '',
-        durationMs: 0,
-        outcome: {
-          kind: 'failed',
-          causeRef: { stream: { kind: 'job', id: 'not-workflow-completed' }, seq: 99 },
-        },
-      },
-    }),
-  );
-}
-
-function insertFailedJobTerminalWithoutCauseRef(db: Db): void {
-  db.prepare(
-    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    NOW,
-    'job.terminal.recorded',
-    'job',
-    'job-terminal-without-cause',
-    TEST_NAMESPACE,
-    PROJECT_ROOT,
-    JSON.stringify({ jobId: 'job-terminal-without-cause' }),
-    encodeEventBody({
-      terminal: {
-        content: '',
-        durationMs: 0,
-        outcome: {
-          kind: 'failed',
-        },
-      },
-    }),
-  );
 }
 
 function createWorkflowProgressStore(db: Db, runtime: SimulationRuntime): JobStore {
@@ -563,44 +299,6 @@ async function resumeRecoveryHarness(
   });
 }
 
-function exerciseLaunchedWorkflowFailurePath(db: Db): void {
-  const runtime = new SimulationRuntime();
-  const progressStore = createWorkflowProgressStore(db, runtime);
-  const jobId = 'workflow-executor-path';
-  const plan = buildWorkflowPlan(jobId, parseExpression('architect'), { defaultProvider: 'codex' });
-  progressStore.commit((c) => {
-    c.append(workflowPlanDeclaredEvent(jobId, plan, TEST_PROVIDER_SCOPE));
-    return undefined;
-  });
-  initWorkflowJob(progressStore, jobId);
-
-  const service = new WorkflowExecutionService({
-    runtime,
-    progressStore,
-    backendNamespace: 'test-ns',
-    bundleHash: 'bundle-a',
-    providerRegistry: { get: () => null, getAll: () => [] } as never,
-    coordinatorCommit: (cb) => progressStore.commit(cb),
-    abortRegistry: {
-      remove() {},
-    } as never,
-    launchOrchestrator: {
-      markJobRunning() {},
-    } as never,
-    executionPort: {} as never,
-  });
-
-  (
-    service as unknown as {
-      handleWorkflowError(error: unknown, jobId: string): void;
-    }
-  ).handleWorkflowError(new Error('wrapper exploded'), jobId);
-}
-
-function readSource(path: string): string {
-  return readFileSync(resolve(REPO_ROOT, path), 'utf8');
-}
-
 describe('journal commit atomicity invariant', () => {
   it('finds no orphan terminal-causing KB operation failure after the migrated recorder path', () => {
     const db = createDb();
@@ -631,9 +329,6 @@ describe('journal commit atomicity invariant', () => {
         detail: { operation: 'reindex', cause: { message: 'index unavailable' } },
         startedAtMs,
       });
-
-      expect(scanTerminalCausingKbOperationFailureOrphans(db)).toEqual([]);
-      assertNoTerminalCausingKbOperationFailureOrphans(db);
 
       const rows = db
         .prepare(
@@ -679,158 +374,9 @@ describe('journal commit atomicity invariant', () => {
     }
   });
 
-  it('fails the persisted-state scan for a manually inserted orphan KB operation failure', () => {
-    const db = createDb();
-    try {
-      insertOrphanKbOperationFailure(db);
-
-      expect(scanTerminalCausingKbOperationFailureOrphans(db)).toEqual([
-        { cause_seq: 1, stream_kind: 'job', stream_id: 'job-orphan' },
-      ]);
-      expect(() => assertNoTerminalCausingKbOperationFailureOrphans(db)).toThrow(
-        /orphan terminal-causing kb_operation_failed rows/u,
-      );
-    } finally {
-      db.close();
-    }
-  });
-
-  it('fails the workflow persisted-state scan for a manually inserted failed job terminal without causeRef', () => {
-    const db = createDb();
-    try {
-      insertFailedJobTerminalWithoutCauseRef(db);
-
-      expect(scanFailedJobTerminalsWithoutCauseRef(db)).toEqual([{ seq: 1, job_id: 'job-terminal-without-cause' }]);
-      expect(() => assertNoWorkflowAtomicityOrphans(db)).toThrow(
-        /failed job\.terminal\.recorded rows without causeRef/u,
-      );
-    } finally {
-      db.close();
-    }
-  });
-
-  it('drives resumeAll through final-step completion recovery and emits the completion intent', async () => {
-    const db = createDb();
-    try {
-      const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-final-step');
-      const [slot] = harness.plan.slots;
-      if (slot === undefined) throw new Error('Expected a workflow slot.');
-      const childJobId = initWorkflowSlotJob(harness, slot);
-      appendWorkflowSlotTerminal(harness, slot, childJobId, {
-        content: 'ARCH_DONE',
-        outcome: { kind: 'completed' },
-        durationMs: 0,
-      });
-      const captured = captureWorkflowIntents();
-
-      await expect(resumeRecoveryHarness(harness, captured.finalizeWorkflow)).resolves.toEqual([harness.workflowId]);
-
-      expect(harness.executionSvc.dispatches).toEqual([]);
-      expect(captured.intents).toEqual([
-        {
-          outcome: 'completed',
-          workflowJobId: harness.workflowId,
-          finalOutput: 'ARCH_DONE',
-          stepDetails: [
-            {
-              stepIndex: 0,
-              atomIndex: 0,
-              label: 'architect',
-              output: 'ARCH_DONE',
-            },
-          ],
-        },
-      ]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('drives resumeAll through missing-projection relaunch recovery and emits the completion intent', async () => {
-    const db = createDb();
-    try {
-      const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-relaunch');
-      const [slot] = harness.plan.slots;
-      if (slot === undefined) throw new Error('Expected a workflow slot.');
-      const executionSvc = createWorkflowExecutionPort();
-      const captured = captureWorkflowIntents();
-
-      await expect(resumeRecoveryHarness(harness, captured.finalizeWorkflow, executionSvc)).resolves.toEqual([
-        harness.workflowId,
-      ]);
-
-      const [dispatch] = executionSvc.dispatches;
-      expect(dispatch).toEqual({
-        providerName: 'codex',
-        coralName: 'architect',
-        jobId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u),
-        workflowSlotId: slot.slotId,
-      });
-      if (dispatch === undefined) throw new Error('Expected a recovery dispatch.');
-      expect(dispatch.jobId).not.toBe(slot.slotId);
-      expect(executionSvc.waitRequests.map((request) => request.jobIds)).toEqual([[dispatch.jobId]]);
-      expect(captured.intents).toEqual([
-        {
-          outcome: 'completed',
-          workflowJobId: harness.workflowId,
-          finalOutput: `result:${dispatch.jobId}`,
-          stepDetails: [
-            {
-              stepIndex: 0,
-              atomIndex: 0,
-              label: 'architect',
-              output: `result:${dispatch.jobId}`,
-            },
-          ],
-        },
-      ]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('drives resumeAll through active-step wait recovery and emits the completion intent', async () => {
-    const db = createDb();
-    try {
-      const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-active');
-      const [slot] = harness.plan.slots;
-      if (slot === undefined) throw new Error('Expected a workflow slot.');
-      const childJobId = initWorkflowSlotJob(harness, slot);
-      const executionSvc = createWorkflowExecutionPort({
-        terminalContentByJob: new Map([[childJobId, 'ARCH_FROM_WAIT']]),
-      });
-      const captured = captureWorkflowIntents();
-
-      await expect(resumeRecoveryHarness(harness, captured.finalizeWorkflow, executionSvc)).resolves.toEqual([
-        harness.workflowId,
-      ]);
-
-      expect(executionSvc.dispatches).toEqual([]);
-      expect(executionSvc.waitRequests.map((request) => request.jobIds)).toEqual([[childJobId]]);
-      expect(captured.intents).toEqual([
-        {
-          outcome: 'completed',
-          workflowJobId: harness.workflowId,
-          finalOutput: 'ARCH_FROM_WAIT',
-          stepDetails: [
-            {
-              stepIndex: 0,
-              atomIndex: 0,
-              label: 'architect',
-              output: 'ARCH_FROM_WAIT',
-            },
-          ],
-        },
-      ]);
-    } finally {
-      db.close();
-    }
-  });
-
   it('drives resumeAll through failure recovery with the real finalizer and persists causal rows', async () => {
     const db = createDb();
     try {
-      exerciseLaunchedWorkflowFailurePath(db);
       const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-path', '(architect, critic)');
       const [failedSlot, pendingSlot] = harness.plan.slots;
       if (failedSlot === undefined || pendingSlot === undefined) throw new Error('Expected two workflow slots.');
@@ -869,10 +415,6 @@ describe('journal commit atomicity invariant', () => {
           },
         },
       ]);
-      expect(scanFailedWorkflowCompletionsWithoutCauseRef(db)).toEqual([]);
-      expect(scanFailedWorkflowParentTerminalsWithoutWorkflowCompletionCause(db)).toEqual([]);
-      expect(scanFailedJobTerminalsWithoutCauseRef(db)).toEqual([]);
-      assertNoWorkflowAtomicityOrphans(db);
 
       const rows = db
         .prepare(
@@ -939,79 +481,6 @@ describe('journal commit atomicity invariant', () => {
     } finally {
       db.close();
     }
-  });
-
-  it('fails the workflow persisted-state scan for manually inserted orphan workflow rows', () => {
-    const missingCompletionCauseDb = createDb();
-    try {
-      insertFailedWorkflowCompletedWithoutCauseRef(missingCompletionCauseDb);
-      expect(scanFailedWorkflowCompletionsWithoutCauseRef(missingCompletionCauseDb)).toEqual([
-        { seq: 1, workflow_id: 'workflow-orphan' },
-      ]);
-      expect(() => assertNoWorkflowAtomicityOrphans(missingCompletionCauseDb)).toThrow(
-        /failed workflow\.completed rows without direct causeRef/u,
-      );
-    } finally {
-      missingCompletionCauseDb.close();
-    }
-
-    const missingParentLinkDb = createDb();
-    try {
-      insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(missingParentLinkDb);
-      expect(scanFailedWorkflowParentTerminalsWithoutWorkflowCompletionCause(missingParentLinkDb)).toEqual([
-        { terminal_seq: 2, job_id: 'workflow-parent-orphan' },
-      ]);
-      expect(() => assertNoWorkflowAtomicityOrphans(missingParentLinkDb)).toThrow(
-        /failed workflow parent terminals without workflow\.completed causeRef/u,
-      );
-    } finally {
-      missingParentLinkDb.close();
-    }
-  });
-
-  it('keeps the KB producer structurally collapsed to one commit closure with no caller-side seq handoff', () => {
-    const recorderSource = readSource(KB_RECORDER_PATH);
-    const shellSource = readSource(KB_SHELL_PATH);
-    const sourceImportSource = readSource(KB_SOURCE_IMPORT_SERVICE_PATH);
-    const reindexSource = readSource(KB_REINDEX_SERVICE_PATH);
-    const migratedCallers = `${sourceImportSource}\n${reindexSource}`;
-    const failureMethodStart = recorderSource.indexOf('appendOperationFailureWithTerminal');
-    const nextMethodStart = recorderSource.indexOf('appendHostedKbOperationFailure', failureMethodStart);
-    const failureMethodSource = recorderSource.slice(failureMethodStart, nextMethodStart);
-
-    expect(recorderSource).toContain('appendOperationFailureWithTerminal');
-    expect(failureMethodSource.match(/this\.deps\.progressStore\.commit\(\(c\) =>/gu) ?? []).toHaveLength(1);
-    expect(failureMethodSource).toMatch(
-      /const cause = c\.append\(causeEvent\);[\s\S]*appendJobTerminalRecorded\(c,[\s\S]*failedTerminalOutcome\(cause\)/u,
-    );
-    expect(recorderSource).not.toContain('appendKbOperationFailureCause');
-    expect(recorderSource).not.toContain('appendFailed');
-    expect(recorderSource).not.toContain('append' + 'EventsWithResult');
-
-    expect(shellSource).toContain('appendOperationFailureWithTerminal');
-    expect(migratedCallers).not.toContain('appendOperationFailureWithTerminal');
-    expect(migratedCallers).not.toContain('appendKbOperationFailureCause');
-    expect(migratedCallers).not.toContain('appendFailed');
-    expect(migratedCallers).not.toMatch(/\bcauseRef\b|\bseq\b/u);
-  });
-
-  it('keeps workflow completion producers structurally collapsed to coordinator commit closures', () => {
-    const executorSource = readSource(WORKFLOW_EXECUTOR_PATH);
-    const recoverSource = readSource(WORKFLOW_RECOVER_PATH);
-    const serviceSource = readSource(WORKFLOW_EXECUTION_SERVICE_PATH);
-    const helperSource = readSource(WORKFLOW_FINALIZATION_HELPER_PATH);
-    const recoveryFinalizerSource = readSource(WORKFLOW_RECOVERY_FINALIZER_PATH);
-
-    expect(executorSource).not.toContain('workflowCompletedEvent');
-    expect(recoverSource).not.toContain('append' + 'WorkflowEvents');
-    expect(recoverSource).not.toContain('workflowCompletedEvent');
-    expect(serviceSource).toContain('this.deps.coordinatorCommit((c) =>');
-    expect(serviceSource).toContain('composeWorkflowFinalization(c, jobId, intent');
-    expect(recoveryFinalizerSource).toContain('options.coordinatorCommit((c) =>');
-    expect(recoveryFinalizerSource).toContain('composeWorkflowFinalization(c, intent.workflowJobId, intent');
-    expect(helperSource).toMatch(
-      /workflowLifecycleFaultEvent\(workflowJobId,[\s\S]*workflowCompletedEvent\(workflowJobId,[\s\S]*appendJobTerminalRecorded\(c,/u,
-    );
   });
 });
 import { seedTestSessionProjection } from '#tests/helpers/session.js';

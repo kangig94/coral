@@ -15,8 +15,8 @@ const alias = {
 };
 
 // E2E lifecycle suite: spawns long-lived backend subprocesses + waits for
-// startup / IPC handshake / process death. ~91s wall (mutate-via-ipc 30s +
-// namespace-coexistence 61s). Run when touching coordinator boot/shutdown,
+// startup / IPC handshake / process death across child-no-handoff and
+// namespace-coexistence. Run when touching coordinator boot/shutdown,
 // IPC, backend bundle build, or namespace isolation.
 export default defineConfig({
   root: fileURLToPath(new URL('..', import.meta.url)),

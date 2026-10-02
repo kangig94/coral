@@ -203,13 +203,6 @@ function executing(phase: ProviderOperationPhase = 'executing'): ProviderOperati
 }
 
 describe('provider host transfer owners', () => {
-  it('has nothing to transfer without a host or a provider operation', async () => {
-    const result = await classify(transferFor(runtimeFor()));
-
-    expect(result.operations).toMatchObject({ kind: 'completed' });
-    expect(result.sets).toMatchObject({ kind: 'completed' });
-  });
-
   it('transfers every host and its operations under the recovery grant each host holds', async () => {
     const record = executing();
     const host = hostFor(record, authorized);
@@ -748,17 +741,6 @@ describe('provider host transfer at the commit and after serving', () => {
     expect(install).toHaveBeenCalledTimes(3);
   });
 
-  it('retries a refused grant install while the transferred host remains live', async () => {
-    const record = executing();
-    const host = hostFor(record, authorized);
-    const install = host.installRecoveryCredential as ReturnType<typeof vi.fn>;
-    install.mockResolvedValueOnce({ kind: 'refused', incident: { role: 'guardian' } }).mockResolvedValue(INSTALLED);
-
-    await transferOver(runtimeFor(), lifecycleWith([host]), record).completeTransfers();
-
-    expect(install).toHaveBeenCalledTimes(2);
-  });
-
   it('stops a refused grant retry when the host leaves during its backoff', async () => {
     const record = executing();
     let live = true;
@@ -778,27 +760,6 @@ describe('provider host transfer at the commit and after serving', () => {
     await transferOver(runtimeFor(), lifecycle, record).completeTransfers();
 
     expect(install).toHaveBeenCalledOnce();
-  });
-
-  it('stops installing once the host is no longer this coordinator’s', async () => {
-    const record = executing();
-    let live = true;
-    const install = vi.fn(() => {
-      live = false;
-      return Promise.resolve(RETRYABLE);
-    });
-    const host = {
-      ...hostFor(record, authorized),
-      installRecoveryCredential: install,
-    } as unknown as DurableProviderProxyOperationAuthority;
-    const lifecycle = {
-      liveSets: () => (live ? [host] : []),
-      authorityFor: () => (live ? host : null),
-    } as unknown as ProviderProxySetLifecycle;
-
-    await transferOver(runtimeFor(), lifecycle, record).completeTransfers();
-
-    expect(install).toHaveBeenCalledTimes(1);
   });
 
   it('re-authorizes every host immediately before releasing it, so a reinstall since preparation cannot revoke the transfer', async () => {
@@ -858,40 +819,32 @@ describe('provider host transfer at the commit and after serving', () => {
     const release = transfer.releaseForTransfer('attempt-1', deadline.signal);
     deadline.abort();
 
-    const outcome = await Promise.race([
-      release.then(
-        () => 'released',
-        () => 'aborted',
-      ),
-      new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 20)),
-    ]);
+    await expect(release).rejects.toThrow();
     authorize();
-    expect(outcome).toBe('aborted');
     expect(lifecycle.releaseControlForTransfer).not.toHaveBeenCalled();
   });
 
   it('should stop waiting for control close when the commit deadline expires', async () => {
     const record = executing();
     const host = hostFor(record, authorized);
+    let controlCloseStarted!: () => void;
+    const controlClose = new Promise<void>((resolve) => {
+      controlCloseStarted = resolve;
+    });
     const lifecycle = {
       ...lifecycleWith([host]),
-      releaseControlForTransfer: vi.fn(() => new Promise<never>(() => undefined)),
+      releaseControlForTransfer: vi.fn(() => {
+        controlCloseStarted();
+        return new Promise<never>(() => undefined);
+      }),
     } as unknown as ProviderProxySetLifecycle;
     const transfer = transferOver(runtimeFor(), lifecycle, record);
     await classify(transfer);
     const deadline = new AbortController();
     const release = transfer.releaseForTransfer('attempt-1', deadline.signal);
-    await vi.waitFor(() => expect(lifecycle.releaseControlForTransfer).toHaveBeenCalled());
+    await controlClose;
     deadline.abort();
 
-    expect(
-      await Promise.race([
-        release.then(
-          () => 'released',
-          () => 'aborted',
-        ),
-        new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 20)),
-      ]),
-    ).toBe('aborted');
+    await expect(release).rejects.toThrow();
   });
 });

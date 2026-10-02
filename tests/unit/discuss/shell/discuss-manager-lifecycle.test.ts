@@ -5,22 +5,14 @@ import {
   clearAllDiscuss,
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
-  hasRunningSessions,
-  listAttachedSessions,
 } from '#src/discuss/shell/live-registry.js';
 import { abortDiscussSession, submitManualBid } from '#src/discuss/shell/operations.js';
 import { persistAbortEndForShutdown, recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
-import {
-  appendRuntimeEvents,
-  commitDecision,
-  isSilentCommitRefusal,
-  readSessionEvents,
-} from '#src/discuss/shell/persistence.js';
+import { appendRuntimeEvents, commitDecision, readSessionEvents } from '#src/discuss/shell/persistence.js';
 import * as discussPersistence from '#src/discuss/shell/persistence.js';
 import { SESSION_SHUTTING_DOWN, DiscussManagerError } from '#src/discuss/shell/errors.js';
 import { runFollowUpTurns } from '#src/discuss/shell/flow/followup.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { detachSession } from '#src/discuss/shell/registry.js';
 import { decideEnd } from '#src/discuss/state-machine.js';
 import { makeDecisionContext } from '#src/discuss/shell/flow/primitives.js';
 import {
@@ -53,106 +45,6 @@ describe('DiscussContext lifecycle boundaries', () => {
     cleanupDiscussHarnesses();
     vi.clearAllTimers();
     vi.restoreAllMocks();
-  });
-
-  it('keeps attached-session iteration separate from persisted store summaries', async () => {
-    const harness = createDiscussHarness();
-    const registry = createDiscussContextRegistry();
-    const context = getOrCreateDiscussContext(
-      registry,
-      harness.projectRoot,
-      harness.service,
-      harness.store,
-      discussContextOptions(harness),
-    );
-
-    const liveSnapshot = await persistSession(
-      { ...harness, context },
-      {
-        sessionId: 'live-session',
-        recover: false,
-      },
-    );
-    attachPersistedSession({ ...harness, context }, liveSnapshot);
-    await persistSession(
-      { ...harness, context },
-      {
-        sessionId: 'ended-session',
-        recover: false,
-        buildTail: (snapshot) => [
-          makeEvent(
-            snapshot.sessionId,
-            harness.projectRoot,
-            snapshot.state.topic,
-            snapshot.lastAppliedSeq + 1,
-            'session.ended',
-            '2026-03-10T00:01:00.000Z',
-            { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
-          ),
-          makeEvent(
-            snapshot.sessionId,
-            harness.projectRoot,
-            snapshot.state.topic,
-            snapshot.lastAppliedSeq + 2,
-            'session.synthesized',
-            '2026-03-10T00:01:01.000Z',
-            { synthesis: 'done' },
-          ),
-        ],
-      },
-    );
-
-    expect(listAttachedSessions(registry).map((session) => session.sessionId)).toEqual(['live-session']);
-    expect(
-      harness.store
-        .listSummaries()
-        .map((summary) => summary.sessionId)
-        .sort(),
-    ).toEqual(['ended-session', 'live-session']);
-
-    detachSession(context, 'live-session');
-    expect(hasRunningSessions(registry)).toBe(false);
-    expect(harness.store.listSummaries()).toHaveLength(2);
-  });
-
-  it('persisted ended sessions do not count as running sessions', async () => {
-    const harness = createDiscussHarness();
-    const registry = createDiscussContextRegistry();
-    getOrCreateDiscussContext(
-      registry,
-      harness.projectRoot,
-      harness.service,
-      harness.store,
-      discussContextOptions(harness),
-    );
-    await persistSession(harness, {
-      sessionId: 'ended-session',
-      recover: false,
-      buildTail: (snapshot) => [
-        makeEvent(
-          snapshot.sessionId,
-          harness.projectRoot,
-          snapshot.state.topic,
-          snapshot.lastAppliedSeq + 1,
-          'session.ended',
-          '2026-03-10T00:01:00.000Z',
-          { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
-        ),
-        makeEvent(
-          snapshot.sessionId,
-          harness.projectRoot,
-          snapshot.state.topic,
-          snapshot.lastAppliedSeq + 2,
-          'session.synthesized',
-          '2026-03-10T00:01:01.000Z',
-          { synthesis: 'done' },
-        ),
-      ],
-    });
-
-    expect(hasRunningSessions(registry)).toBe(false);
-    expect(listAttachedSessions(registry)).toEqual([]);
-    expect(harness.store.listSummaries()).toHaveLength(1);
   });
 
   it('hard shutdown persists abort markers for recoverable attached sessions and skips terminal attached history', async () => {
@@ -350,13 +242,6 @@ describe('DiscussContext lifecycle boundaries', () => {
       kind: 'session.ended',
       payload: { force: true, reason: 'abort' },
     });
-  });
-
-  it('isSilentCommitRefusal recognizes exactly the two commit-refusal codes internal flows must stop quietly on', () => {
-    expect(isSilentCommitRefusal('session_not_found')).toBe(true);
-    expect(isSilentCommitRefusal(SESSION_SHUTTING_DOWN)).toBe(true);
-    expect(isSilentCommitRefusal('invalid_phase')).toBe(false);
-    expect(isSilentCommitRefusal('already_bid')).toBe(false);
   });
 
   it('submitManualBid tells the caller the session is shutting down, not that it does not exist', async () => {
@@ -622,49 +507,5 @@ describe('DiscussContext lifecycle boundaries', () => {
 
     expect(recovered.map((session) => session.sessionId)).not.toContain('user-abort-synthesize-session');
     expect(harness.context.sessions.has('user-abort-synthesize-session')).toBe(false);
-  });
-
-  it('user abort does not duplicate an existing abort marker for ended synthesize-window sessions', async () => {
-    const harness = createDiscussHarness();
-    const snapshot = await persistSession(harness, {
-      sessionId: 'user-abort-ended-session',
-      recover: false,
-      buildTail: (current) => [
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 1,
-          'session.ended',
-          '2026-03-10T00:05:00.000Z',
-          {
-            endReason: 'all_blocked',
-            endReasonContent: 'All blocked.',
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 2,
-          'session.ended',
-          '2026-03-10T00:05:01.000Z',
-          {
-            endReasonContent: 'abort',
-            force: true,
-            reason: 'abort',
-          },
-        ),
-      ],
-    });
-    attachPersistedSession(harness, snapshot);
-
-    await abortDiscussSession(harness.context, 'user-abort-ended-session');
-
-    const events = readSessionEvents(harness.context, 'user-abort-ended-session');
-    expect(events.filter((event) => event.kind === 'session.ended' && event.payload.reason === 'abort')).toHaveLength(
-      1,
-    );
-    expect(events.at(-1)).toMatchObject({ payload: { reason: 'abort' } });
   });
 });

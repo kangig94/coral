@@ -14,7 +14,6 @@ const BUILD_ROOT = resolve(ROOT, 'clients', 'build');
 const SIMULATION_BUNDLE = resolve(BUILD_ROOT, 'simulation-core.mjs');
 const DISCUSS_HELPERS_BUNDLE = resolve(BUILD_ROOT, 'discuss-golden-helpers.mjs');
 const FIXTURE_DIR = resolve(ROOT, 'tests/unit/discuss/fixtures');
-const FIXTURE_JSON = resolve(FIXTURE_DIR, 'session-store-golden.json');
 const FIXTURE_EVENTS = resolve(FIXTURE_DIR, 'session-store-golden.events.jsonl');
 const FIXTURE_TS = Date.parse('2035-04-15T01:02:03.000Z');
 const FIXTURE_TMP_ROOT = '/fixture/discuss-golden';
@@ -201,13 +200,10 @@ async function main() {
       throw new Error(`Golden capture did not reach synthesis terminal event; last=${events.at(-1)?.kind ?? 'none'}`);
     }
 
-    const { logByteOffset: _ignoredLogByteOffset, ...snapshotForFixture } = snapshot;
     const normalize = buildNormalizer([FIXTURE_PROJECT_ROOT, FIXTURE_PLUGIN_ROOT, FIXTURE_TMP_ROOT]);
-    const normalizedSnapshot = normalize(snapshotForFixture);
     const normalizedEvents = events.map((event) => normalize(event));
 
     mkdirSync(FIXTURE_DIR, { recursive: true });
-    writeFileSync(FIXTURE_JSON, JSON.stringify(normalizedSnapshot), 'utf8');
     writeFileSync(FIXTURE_EVENTS, `${normalizedEvents.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
   } finally {
     harness.cleanup();

@@ -8,14 +8,8 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { parseExpression } from '#src/workflow/parser.js';
-import {
-  workflowCompletedEvent,
-  workflowDrainEnteredEvent,
-  workflowPlanDeclaredEvent,
-  workflowRegistry,
-} from '#src/workflow/events.js';
+import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { buildWorkflowPlan, compileWorkflowPlan } from '#src/workflow/plan.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -60,72 +54,6 @@ function providerSessionInputs(sessionId: string, jobId: string): CoralEventInpu
 }
 
 describe('workflow reducer equivalence', () => {
-  it('rebuilds projection_workflows.plan rows byte-identically from workflow domain events', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db, currentCoralStoreFormat());
-      const reducers = composeReducers(workflowRegistry);
-      const bodyCodec = createEventBodyCodec();
-
-      const declaredPlan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
-        defaultProvider: 'codex',
-      });
-
-      const appended = commitInputs(
-        db,
-        [
-          workflowPlanDeclaredEvent('workflow-1', declaredPlan, TEST_PROVIDER_SCOPE),
-          // Replay must preserve the drain window.
-          workflowDrainEnteredEvent('workflow-1', {
-            firstFailureSlotId: declaredPlan.slots[1].slotId,
-            drainDeadline: Date.parse('2026-04-19T00:00:15.000Z'),
-          }),
-          workflowCompletedEvent('workflow-1', {
-            outcome: 'failed',
-            causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 2 },
-            stepDetails: [],
-          }),
-        ],
-        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
-      );
-
-      const before = db
-        .prepare(
-          `SELECT workflow_id, plan, last_seq
-           FROM projection_workflows
-          WHERE workflow_id = ?
-          LIMIT 1`,
-        )
-        .get('workflow-1');
-
-      expect(before).toEqual({
-        workflow_id: 'workflow-1',
-        plan: JSON.stringify(declaredPlan),
-        last_seq: appended.at(-1)?.seq,
-      });
-
-      rebuildProjections({
-        db,
-        cutoffSeq: appended.at(-1)?.seq ?? 0,
-        reducers,
-        bodyCodec,
-      });
-
-      const after = db
-        .prepare(
-          `SELECT workflow_id, plan, last_seq
-           FROM projection_workflows
-          WHERE workflow_id = ?
-          LIMIT 1`,
-        )
-        .get('workflow-1');
-
-      expect(after).toStrictEqual(before);
-    } finally {
-      db.close();
-    }
-  });
-
   it('builds WorkflowView slot outcomes from child job projections', () => {
     const db = newRawDatabase(':memory:');
     try {

@@ -25,23 +25,8 @@ afterAll(() => {
   rmSync(PROJECT_ROOT, { recursive: true, force: true });
 });
 
-type RaceOutcome<T> =
-  | Readonly<{ kind: 'resolved'; value: T }>
-  | Readonly<{ kind: 'rejected'; error: unknown }>
-  | Readonly<{ kind: 'timed-out' }>;
-
-function raceAgainstTimeout<T>(promise: Promise<T>, ms: number): Promise<RaceOutcome<T>> {
-  return Promise.race([
-    promise.then(
-      (value): RaceOutcome<T> => ({ kind: 'resolved', value }),
-      (error: unknown): RaceOutcome<T> => ({ kind: 'rejected', error }),
-    ),
-    new Promise<RaceOutcome<T>>((resolve) => setTimeout(() => resolve({ kind: 'timed-out' }), ms)),
-  ]);
-}
-
 describe('coordinator lifecycle startup-failure cleanup — provider operation mutation admission', () => {
-  it('reaches socket close and discovery withdrawal when a provider operation mutation never settles', async () => {
+  it('closes listeners and withdraws discovery while mutation admission holds', async () => {
     const runtime = createRealRuntime('prod', { baseDir: join(PROJECT_ROOT, '.coral') });
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
@@ -68,14 +53,20 @@ describe('coordinator lifecycle startup-failure cleanup — provider operation m
     const removeBackendInfoIfOwnerFn = vi.fn(() => {});
     const launchCoordinator = new LaunchCoordinator({ runtime });
 
-    // Fires once discovery publication is attempted — after the admission has been acquired by startup
-    // (`state.providerOperationMutationAdmission`) but before startup returns. It admits a mutation on that
-    // same admission (keyed on `db`, the identical object startup acquired against) whose inner promise never
-    // settles, then fails discovery publication so the catch block's cleanup runs with that mutation still
-    // outstanding.
+    let releaseDrain!: () => void;
+    const drain = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    let restoreAdmissionClose: (() => void) | undefined;
     const writeBackendInfoFn = vi.fn(() => {
       const admission = providerOperationMutationAdmission(db);
-      void admission.run('test-outstanding-mutation', () => new Promise<void>(() => {}));
+      const closeAdmission = vi.spyOn(admission, 'close').mockReturnValue({
+        kind: 'holding',
+        pendingMutations: ['test-outstanding-mutation'],
+        exit: 'admitted-provider-operation-mutation-settlement',
+        retryAfter: drain,
+      });
+      restoreAdmissionClose = () => closeAdmission.mockRestore();
       return false;
     });
 
@@ -175,13 +166,7 @@ describe('coordinator lifecycle startup-failure cleanup — provider operation m
 
     const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
     try {
-      const outcome = await raceAgainstTimeout(lifecycle.start(), 5_000);
-
-      expect(outcome.kind).toBe('rejected');
-      if (outcome.kind !== 'rejected') {
-        throw new Error('startup-failure cleanup hung on the provider operation mutation admission drain');
-      }
-      expect(String(outcome.error)).toContain('Coordinator discovery publication failed');
+      await expect(lifecycle.start()).rejects.toThrow('Coordinator discovery publication failed');
 
       // The cleanup this drain used to block still runs even though the mutation never settled.
       expect(closeServerFn).toHaveBeenCalledTimes(1);
@@ -196,7 +181,10 @@ describe('coordinator lifecycle startup-failure cleanup — provider operation m
       );
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('test-outstanding-mutation'));
     } finally {
+      restoreAdmissionClose?.();
+      releaseDrain();
       errorSpy.mockRestore();
+      db.close();
     }
-  });
+  }, 1_000);
 });

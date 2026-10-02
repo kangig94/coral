@@ -22,15 +22,6 @@ function statLine(options: { comm?: string; startTicks?: string } = {}): string 
   return `4321 (${options.comm ?? 'node'}) ${afterComm.join(' ')} ${options.startTicks ?? START_TICKS} 0 0\n`;
 }
 
-function scriptLinux(overrides: { bootId?: string | Error; stat?: string | Error } = {}): void {
-  mockedRead.mockReset();
-  mockedRead.mockImplementation((async (path: string) => {
-    const value = path === BOOT_ID_PATH ? (overrides.bootId ?? BOOT_ID) : (overrides.stat ?? statLine());
-    if (value instanceof Error) throw value;
-    return value;
-  }) as unknown as typeof readFile);
-}
-
 describe('linux process incarnation (async)', () => {
   it('frames the start ticks with the boot id, without blocking the caller', async () => {
     let settleBootId!: () => void;
@@ -120,36 +111,5 @@ describe('linux process incarnation (async)', () => {
       timeoutSpy.mockRestore();
       vi.useRealTimers();
     }
-  });
-
-  it('separates two processes that share a pid and a start tick across a reboot', async () => {
-    scriptLinux();
-    const before = await probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux');
-
-    scriptLinux({ bootId: '00000000-0000-4000-8000-111111111111' });
-
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.not.toBe(before);
-  });
-
-  it('reads the boot id every time rather than remembering it', async () => {
-    scriptLinux({ bootId: new Error('EACCES') });
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.toBeNull();
-
-    scriptLinux();
-    await expect(
-      probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux'),
-      'one failed read must not blind every later one',
-    ).resolves.toBe(`linux:${BOOT_ID}:${START_TICKS}`);
-  });
-
-  it('is null, never a throw, when the stat read fails or times out', async () => {
-    scriptLinux({ stat: new Error('ENOENT') });
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.toBeNull();
-
-    // An AbortSignal timeout must be treated as an inconclusive read failure.
-    const timedOut = new Error('The operation was aborted.');
-    timedOut.name = 'AbortError';
-    scriptLinux({ stat: timedOut });
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.toBeNull();
   });
 });

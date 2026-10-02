@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -202,87 +202,5 @@ describe('succession listening-handle handover', () => {
     await attempt.abort();
 
     expect(await response).toBe('incumbent\n');
-  });
-
-  it('keeps the incumbent serving when the attempt child dies before listener acknowledgment', async () => {
-    const path = join(root(), 'primary.sock');
-    const server = await listen(path, (socket) => socket.end('incumbent\n'));
-    const listener: IpcListener = { server, sockets: new Set(), socketPath: path };
-    const child = spawn(process.execPath, [fixture, 'successor', 'attempt-2'], {
-      env: { ...process.env, DIE_BEFORE_LISTENER_ACK: '1' },
-      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-    });
-    children.push(child);
-    await new Promise<void>((resolve, reject) => {
-      child.once('spawn', resolve);
-      child.once('error', reject);
-    });
-    const attempt = await createSuccessionAttemptChannel(
-      createRealSuccessionAttemptPorts(),
-      child,
-      'attempt-2',
-      listener,
-      'boot-token',
-      {
-        epochKey: 'fixture-epoch',
-        receipts: [],
-      },
-    );
-    await expect(attempt.transferListeners(listener)).rejects.toThrow();
-    await expectBusy(path);
-    expect(await responseAt(path)).toBe('incumbent\n');
-  });
-
-  it('reports an attempt child open hold over the private channel while the incumbent retains its address', async () => {
-    const path = join(root(), 'primary.sock');
-    const server = await listen(path, (socket) => socket.end('incumbent\n'));
-    const listener: IpcListener = { server, sockets: new Set(), socketPath: path };
-    const child = spawn(process.execPath, [fixture, 'successor', 'attempt-hold'], {
-      env: { ...process.env, REPORT_OPEN_HOLD: '1' },
-      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-    });
-    children.push(child);
-    await new Promise<void>((resolve, reject) => {
-      child.once('spawn', resolve);
-      child.once('error', reject);
-    });
-    const attempt = await createSuccessionAttemptChannel(
-      createRealSuccessionAttemptPorts(),
-      child,
-      'attempt-hold',
-      listener,
-      'boot-token',
-      {
-        epochKey: 'agreed-epoch',
-        receipts: [],
-      },
-    );
-    const observedAck = messageFrom(child, 'ack');
-    await attempt.allowCommittedOpen();
-    await observedAck;
-    const hold = new Promise<string>((resolve) => {
-      attempt.onAcknowledgment((acknowledgment) => {
-        if (acknowledgment.kind === 'hold') resolve(acknowledgment.reason);
-      });
-    });
-    expect(await hold).toBe('open-failed');
-    await expectBusy(path);
-    expect(await responseAt(path)).toBe('incumbent\n');
-  });
-
-  it('preserves the canonical socket after the incumbent exits without closing it', async () => {
-    const path = join(root(), 'canonical.sock');
-    const incumbent = spawn(process.execPath, [fixture, 'incumbent', path], {
-      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-    });
-    children.push(incumbent);
-    await messageFrom(incumbent, 'transferred');
-    await expectBusy(path);
-    const exited = new Promise<void>((resolve) => incumbent.once('exit', () => resolve()));
-    incumbent.send({ kind: 'exit' });
-    await exited;
-    expect(existsSync(path)).toBe(true);
-    await expectBusy(path);
-    expect(await responseAt(path)).toBe('successor\n');
   });
 });

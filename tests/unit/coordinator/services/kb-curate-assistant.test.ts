@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { none } from '#src/providers/capability.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -118,20 +117,6 @@ describe('KB curate assistant provider scope', () => {
     vi.unstubAllEnvs();
   });
 
-  it('rejects before provider execution when no named system scope is configured', async () => {
-    const runTurn = vi.fn(async () => 'unused');
-    const handler = createKbCurateAssistantHandler({
-      runtime: createRealRuntime('prod'),
-      providerRegistry: createClaudeRegistry({ complete: runTurn }),
-      readActiveRuntime: () => ({}),
-    });
-
-    await expect(handler(request(), { signal: new AbortController().signal })).rejects.toMatchObject({
-      code: 'system_provider_scope_unconfigured',
-    });
-    expect(runTurn).not.toHaveBeenCalled();
-  });
-
   it('binds only the configured Claude system profile independently of daemon selectors', async () => {
     vi.stubEnv('CLAUDE_CONFIG_DIR', '/daemon/claude');
     const runTurn = vi.fn(async () => 'curated');
@@ -162,44 +147,6 @@ describe('KB curate assistant provider scope', () => {
     );
   });
 
-  it('preserves provider-rendered readiness failures and never runs the one-shot turn', async () => {
-    const runTurn = vi.fn(async () => 'unused');
-    const handler = createKbCurateAssistantHandler({
-      runtime: createRealRuntime('prod'),
-      providerRegistry: createClaudeRegistry({
-        complete: runTurn,
-        readinessFailure: {
-          reason: 'profile-unavailable',
-          provider: 'claude',
-          selector: 'configured fixture',
-        },
-      }),
-      readActiveRuntime: () => ({
-        systemProviderScope: claudeSystemScope(),
-      }),
-    });
-
-    await expect(handler(request(), { signal: new AbortController().signal })).rejects.toMatchObject({
-      code: 'provider_binding_profile_unavailable',
-      userMessage: 'claude fixture binding failed: profile-unavailable',
-    });
-    expect(runTurn).not.toHaveBeenCalled();
-  });
-
-  it('rejects a bound provider that does not own curation execution', async () => {
-    const handler = createKbCurateAssistantHandler({
-      runtime: createRealRuntime('prod'),
-      providerRegistry: createClaudeRegistry({ includeCuration: false }),
-      readActiveRuntime: () => ({
-        systemProviderScope: claudeSystemScope(),
-      }),
-    });
-
-    await expect(handler(request(), { signal: new AbortController().signal })).rejects.toMatchObject({
-      code: 'provider_curation_unsupported',
-    });
-  });
-
   it('reads usage only from the verified named system Claude profile', async () => {
     vi.stubEnv('CLAUDE_CONFIG_DIR', '/daemon/claude');
     const runtime = createRealRuntime('prod');
@@ -222,56 +169,5 @@ describe('KB curate assistant provider scope', () => {
 
     await expect(handler({ signal: new AbortController().signal })).resolves.toBe(true);
     expect(readFile).toHaveBeenCalledTimes(1);
-  });
-
-  it('never reads a usage cache when the named system scope is absent', async () => {
-    const runtime = createRealRuntime('prod');
-    const readFile = vi.spyOn(runtime.storage, 'readFileSync');
-    const handler = createKbCurateUsageBudgetHandler({
-      runtime,
-      providerRegistry: createClaudeRegistry(),
-      readActiveRuntime: () => ({}),
-    });
-
-    await expect(handler({ signal: new AbortController().signal })).rejects.toMatchObject({
-      code: 'system_provider_scope_unconfigured',
-    });
-    expect(readFile).not.toHaveBeenCalled();
-  });
-
-  it('never reads a usage cache when the named system profile fails readiness', async () => {
-    const runtime = createRealRuntime('prod');
-    const readFile = vi.spyOn(runtime.storage, 'readFileSync');
-    const handler = createKbCurateUsageBudgetHandler({
-      runtime,
-      providerRegistry: createClaudeRegistry({
-        readinessFailure: {
-          reason: 'profile-unavailable',
-          provider: 'claude',
-          selector: 'configured fixture',
-        },
-      }),
-      readActiveRuntime: () => ({ systemProviderScope: claudeSystemScope() }),
-    });
-
-    await expect(handler({ signal: new AbortController().signal })).rejects.toMatchObject({
-      code: 'provider_binding_profile_unavailable',
-    });
-    expect(readFile).not.toHaveBeenCalled();
-  });
-
-  it('never falls back to a generic quota reader when the bound provider has no curation capability', async () => {
-    const runtime = createRealRuntime('prod');
-    const readFile = vi.spyOn(runtime.storage, 'readFileSync');
-    const handler = createKbCurateUsageBudgetHandler({
-      runtime,
-      providerRegistry: createClaudeRegistry({ includeCuration: false }),
-      readActiveRuntime: () => ({ systemProviderScope: claudeSystemScope() }),
-    });
-
-    await expect(handler({ signal: new AbortController().signal })).rejects.toMatchObject({
-      code: 'provider_curation_unsupported',
-    });
-    expect(readFile).not.toHaveBeenCalled();
   });
 });

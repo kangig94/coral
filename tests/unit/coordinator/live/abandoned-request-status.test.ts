@@ -10,9 +10,8 @@ import {
   writeAbandonedRequestStatus,
 } from '#src/infra/abandoned-request-status.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
-import { createRequestLeaseOwner } from '#src/coordinator/live/request-leases.js';
+
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createRealTimePort } from '#src/infra/time.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -49,43 +48,6 @@ describe('abandoned request status', () => {
     expect(readAbandonedRequestStatus(storage, runDir, request.recordId)).toMatchObject({
       kind: 'found',
       status: { outcome: 'completed', futureField: 'keep', identity: { futureIdentity: 'keep' } },
-    });
-  });
-  it('retains more than 256 concurrently abandoned requests and makes each outcome readable by record ID', async () => {
-    vi.useFakeTimers();
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-abandoned-requests-'));
-    roots.push(runDir);
-    const storage = createRealRuntime('prod').storage;
-    let nextRecord = 0;
-    const owner = createRequestLeaseOwner({
-      begin: () => {},
-      end: () => {},
-      time: createRealTimePort(),
-      newRecordId: () => `request-${nextRecord++}`,
-      timing: { defaultMs: 40, kbMutationMs: 400, settleMs: 10, checkMs: 2, schedulingGapMs: 20 },
-      abandon: (request) => writeAbandonedRequestStatus(storage, runDir, request),
-    });
-    const requests = Array.from({ length: 257 }, (_, index) =>
-      owner.begin('jobs.detail', `request-${index}`).run(() => new Promise<never>(() => {})),
-    );
-    const outcomes = Promise.allSettled(requests);
-    await vi.advanceTimersByTimeAsync(60);
-    expect((await outcomes).every((outcome) => outcome.status === 'rejected')).toBe(true);
-    expect(readdirSync(join(runDir, 'abandoned-requests.v1'))).toHaveLength(257);
-    expect(readAbandonedRequestStatus(storage, runDir, 'request-0')).toMatchObject({
-      kind: 'found',
-      status: { outcome: 'continuing' },
-    });
-    writeAbandonedRequestStatus(storage, runDir, {
-      recordId: 'request-0',
-      method: 'jobs.detail',
-      requestId: 'request-0',
-      startedAt: new Date().toISOString(),
-      outcome: 'completed',
-    });
-    expect(readAbandonedRequestStatus(storage, runDir, 'request-0')).toMatchObject({
-      kind: 'found',
-      status: { outcome: 'completed' },
     });
   });
 

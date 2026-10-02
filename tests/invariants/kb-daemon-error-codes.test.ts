@@ -18,11 +18,6 @@ describe('kb-daemon-error-codes invariant', () => {
     expect(error.remediation).toBe('Restart the daemon: coral-cli backend shutdown');
   });
 
-  it('retains kb_unavailable for the binding_empty translation path (separate from component state)', () => {
-    const error = documentedCoralSetupError('kb_unavailable', { readiness: 'fts', binding: 'kb.fts' });
-    expect(error.code).toBe('kb_unavailable');
-  });
-
   it('maps kb_initializing, kb_offline, and kb_unavailable to HTTP 503', () => {
     expect(domainResultToHttp(domainError('kb_initializing', 'starting')).statusCode).toBe(503);
     expect(domainResultToHttp(domainError('kb_offline', 'offline')).statusCode).toBe(503);

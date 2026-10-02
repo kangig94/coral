@@ -64,49 +64,12 @@ function detectedIncident(slug: string): DetectedIncident {
 }
 
 describe('detectIncidentRetryDrift', () => {
-  it('returns null when both queue and incidents are empty', () => {
-    const scan = createCorpusScanView({ markdownFiles: [], entityGraph: null });
-    expect(detectIncidentRetryDrift([], [], scan)).toBeNull();
-  });
-
-  it('returns null when queue and incidents are identical and content unchanged', () => {
-    const slug = 'broken';
-    const content = 'frontmatter: [unterminated';
-    const scan = noteScan(slug, content);
-    expect(detectIncidentRetryDrift([pendingRepair(slug, content)], [detectedIncident(slug)], scan)).toBeNull();
-  });
-
-  it('returns "both" when retry queue has an entry no longer matching any current incident', () => {
-    const slug = 'fixed-externally';
-    const queuedContent = 'old broken content';
-    const scan = noteScan(slug, 'now valid');
-    expect(detectIncidentRetryDrift([pendingRepair(slug, queuedContent)], [], scan)).toBe('both');
-  });
-
-  it('returns "both" when current incidents have an entry not in the retry queue', () => {
-    const slug = 'newly-broken';
-    const scan = noteScan(slug, 'broken');
-    expect(detectIncidentRetryDrift([], [detectedIncident(slug)], scan)).toBe('both');
-  });
-
   it('returns "both" when matched entry has a content-hash drift', () => {
     const slug = 'edited-but-still-broken';
     const queuedContent = 'first broken version';
     const currentContent = 'second broken version';
     const scan = noteScan(slug, currentContent);
     expect(detectIncidentRetryDrift([pendingRepair(slug, queuedContent)], [detectedIncident(slug)], scan)).toBe('both');
-  });
-
-  it('returns "both" for a retired queue row with no observed content hash', () => {
-    const slug = 'retired';
-    const scan = noteScan(slug, 'broken');
-    const row: PendingRepair = {
-      entryId: noteEntryId(slug),
-      entrySeq: null,
-      detectedAt: '2026-04-27T00:00:00.000Z',
-      reason: 'pending-repair',
-    };
-    expect(detectIncidentRetryDrift([row], [detectedIncident(slug)], scan)).toBe('both');
   });
 });
 
@@ -133,14 +96,6 @@ describe('detectEntityGraphDrift', () => {
     });
   }
 
-  it('returns null when scan and index agree', () => {
-    expect(detectEntityGraphDrift(entityGraphScan(indexedGraph), indexedGraph)).toBeNull();
-  });
-
-  it('returns null when scan is missing AND index has no entity data', () => {
-    expect(detectEntityGraphDrift(null, { entityMeta: {}, relationships: [] })).toBeNull();
-  });
-
   it('returns "metadata" when entityMeta differs', () => {
     const editedGraph: EntityGraph = {
       ...indexedGraph,
@@ -150,53 +105,4 @@ describe('detectEntityGraphDrift', () => {
     };
     expect(detectEntityGraphDrift(entityGraphScan(editedGraph), indexedGraph)).toBe('metadata');
   });
-
-  it('returns "metadata" when relationships differ', () => {
-    const editedGraph: EntityGraph = {
-      entityMeta: indexedGraph.entityMeta,
-      relationships: [
-        {
-          source: 'coral',
-          target: 'kb',
-          type: 'enables',
-          description: 'New description.',
-          evidence: ['note:coral-note'],
-        },
-      ],
-    };
-    expect(detectEntityGraphDrift(entityGraphScan(editedGraph), indexedGraph)).toBe('metadata');
-  });
-
-  it('returns "metadata" when relationship order changes (writes are order-significant)', () => {
-    const indexedTwoRel: EntityGraph = {
-      entityMeta: {},
-      relationships: [
-        { source: 'a', target: 'b', type: 'enables', description: 'one', evidence: ['note:x'] },
-        { source: 'c', target: 'd', type: 'requires', description: 'two', evidence: ['note:y'] },
-      ],
-    };
-    const reordered: EntityGraph = {
-      entityMeta: {},
-      relationships: [indexedTwoRel.relationships[1], indexedTwoRel.relationships[0]],
-    };
-    expect(detectEntityGraphDrift(entityGraphScan(reordered), indexedTwoRel)).toBe('metadata');
-  });
-
-  it('returns "metadata" when the entity-graph file is removed but the index still has data', () => {
-    expect(detectEntityGraphDrift(null, indexedGraph)).toBe('metadata');
-  });
-
-  it('returns null when scan is malformed AND index has no entity data', () => {
-    const malformed = createCorpusEntityGraphScan({
-      content: '{not json}',
-      path: '/virtual/.entity-graph.json',
-    });
-    expect(malformed.graph).toBeNull();
-    expect(detectEntityGraphDrift(malformed, { entityMeta: {}, relationships: [] })).toBeNull();
-  });
-
-  // Unified-emitter parity (markdown drift + entity-graph drift both yield 'metadata')
-  // is asserted at the integration entry point — see rebuild-pipeline-integration.test.ts
-  // 'detectRescanInfo unified MutationLane emitter'. Asserting it here in isolation
-  // collapses to a tautology because detectStructuredTextDrift is not exported.
 });

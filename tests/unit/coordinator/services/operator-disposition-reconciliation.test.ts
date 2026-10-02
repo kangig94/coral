@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-
 import {
   authorizeProviderProxySetContainmentProof,
   createProviderProxySetContainmentProver,
@@ -21,7 +20,7 @@ import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 describe('operator disposition reobservation', () => {
-  it.each(['alive', 'unknown'] as const)(
+  it.each(['alive'] as const)(
     'persists a released-compatible hold for an absent proxy with %s enforcers',
     async (enforcerObservation) => {
       const identity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));

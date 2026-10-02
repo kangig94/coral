@@ -26,7 +26,7 @@ type ShutdownObligationRegistryKey =
   | 'stream response close'
   | 'provider proxy lifecycle fatal incident';
 
-export const SHUTDOWN_OBLIGATION_OWNERS = {
+const _SHUTDOWN_OBLIGATION_OWNERS = {
   'inflight drain': 'launch-admission',
   'server connection close': 'session-continuation',
   'stream response close': 'session-continuation',

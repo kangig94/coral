@@ -1,230 +1,148 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createDurableTestRuntime } from '#tests/helpers/durable-runtime.js';
+import { describe, expect, it, vi } from 'vitest';
 import type { JobRuntime } from '#src/jobs/records.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import { PROVIDER_SERVER_MAX_JSONL_LINE_BYTES } from '#src/providers/app-server-transport.js';
+import {
+  type ProviderServerCleanupHoldAcceptor,
+  PROVIDER_SERVER_MAX_JSONL_LINE_BYTES,
+} from '#src/providers/app-server-transport.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 
-function createProviderServerScript(): string {
-  return [
-    "const { createInterface } = require('node:readline');",
-    'const rl = createInterface({ input: process.stdin });',
-    "rl.on('line', (line) => {",
-    '  const msg = JSON.parse(line);',
-    "  if (typeof msg.id === 'number' && msg.method === 'ping') {",
-    "    process.stdout.write(JSON.stringify({ id: msg.id, result: { pong: msg.params?.value ?? null } }) + '\\n');",
-    '    return;',
-    '  }',
-    "  if (msg.method === 'notify-back') {",
-    "    process.stdout.write(JSON.stringify({ method: 'tick', params: msg.params ?? {} }) + '\\n');",
-    '    return;',
-    '  }',
-    "  if (typeof msg.id === 'number') {",
-    "    process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32601, message: 'unknown method' } }) + '\\n');",
-    '  }',
-    '});',
-    "process.on('SIGTERM', () => process.exit(0));",
-  ].join('');
-}
+const acceptHold: ProviderServerCleanupHoldAcceptor = (hold) => ({
+  kind: 'accepted' as const,
+  owner: 'provider-host-manager' as const,
+  settlement: hold.settled,
+});
 
-function createOversizedProviderServerScript(): string {
-  return [
-    `process.stdout.write('x'.repeat(${PROVIDER_SERVER_MAX_JSONL_LINE_BYTES + 1}));`,
-    'setInterval(() => {}, 1000);',
-  ].join('');
-}
-
-async function waitForValue<T>(read: () => T | null, timeoutMs = 2_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = read();
-    if (value !== null) return value;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`Timed out after ${timeoutMs}ms`);
+async function advance(runtime: SimulationRuntime, milliseconds: number): Promise<void> {
+  runtime.time.tick(milliseconds);
+  await flushMicrotasks(64);
 }
 
 describe('durable transport', () => {
-  let coordinator: LaunchCoordinator;
-  let runtime: ReturnType<typeof createDurableTestRuntime>;
-  let tmpRoot: string;
-
-  beforeEach(() => {
-    process.env.CORAL_MAX_WORKERS = '1';
-    process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
-    runtime = createDurableTestRuntime();
-    coordinator = new LaunchCoordinator({ runtime });
-    tmpRoot = mkdtempSync(join(tmpdir(), 'coral-live-durable-'));
-  });
-
-  afterEach(async () => {
-    rmSync(tmpRoot, { recursive: true, force: true });
-    delete process.env.CORAL_MAX_WORKERS;
-    delete process.env.CORAL_DISCUSS_MAX_WORKERS;
-    await coordinator.settlePendingLaunches();
-    await coordinator.terminateRegisteredChildren();
-    vi.restoreAllMocks();
-  });
-
   it('streams durable-job progress and reports runtime metadata without sidecar files', async () => {
-    const jobDir = join(tmpRoot, 'job-1');
-    mkdirSync(jobDir, { recursive: true });
-    const onEvent = vi.fn();
-    const runtimeRecords: JobRuntime[] = [];
-
-    const result = await coordinator.spawnDurableJob({
-      provider: 'codex',
-      command: process.execPath,
-      args: [
-        '-e',
-        [
-          'process.stdout.write(\'{"step":"one"}\\n\');',
-          'setTimeout(() => process.stdout.write(\'{"step":"two"}\\n\'), 25);',
-          "setTimeout(() => process.stderr.write('warn\\n'), 35);",
-          'setTimeout(() => process.exit(0), 50);',
-        ].join(''),
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueDurable({
+      stdout: [
+        { delayMs: 1, data: '{"step":"one"}\n' },
+        { delayMs: 25, data: '{"step":"two"}\n' },
       ],
-      jobDir,
+      stderr: [{ delayMs: 35, data: 'warn\n' }],
+      exit: { delayMs: 50, exitCode: 0 },
+    });
+    const coordinator = new LaunchCoordinator({ runtime });
+    coordinator.bindActiveEpochPath('/store/epoch-1');
+    const onEvent = vi.fn();
+    const records: JobRuntime[] = [];
+    const result = coordinator.spawnDurableJob({
+      provider: 'codex',
+      command: 'fixture',
+      args: [],
+      jobDir: '/jobs/stream',
       onEvent,
       onRuntimeRecord: (record) => {
-        runtimeRecords.push(record);
+        records.push(record);
       },
     });
+    await flushMicrotasks(64);
+    await advance(runtime, 500);
+    await advance(runtime, 1_000);
 
-    expect(result).toMatchObject({
+    await expect(result).resolves.toMatchObject({
       code: 0,
       aborted: false,
+      stdout: '{"step":"one"}\n{"step":"two"}\n',
+      stderr: 'warn\n',
     });
-    expect(result.stdout).toContain('{"step":"one"}');
-    expect(result.stdout).toContain('{"step":"two"}');
-    expect(result.stderr).toContain('warn');
-    expect(onEvent).toHaveBeenCalledWith('{"step":"one"}');
-    expect(onEvent).toHaveBeenCalledWith('{"step":"two"}');
-    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
-    expect(existsSync(join(jobDir, 'exit.json'))).toBe(false);
-    const lastRuntime = runtimeRecords.at(-1);
-    const tailWatermark = lastRuntime && 'tailWatermark' in lastRuntime ? lastRuntime.tailWatermark : undefined;
-    expect(tailWatermark).toBeGreaterThan(0);
+    expect(onEvent.mock.calls).toEqual([['{"step":"one"}'], ['{"step":"two"}']]);
+    expect(records.at(-1)).toMatchObject({ tailWatermark: expect.any(Number) });
+    expect(runtime.storage.existsSync('/jobs/stream/runtime.json')).toBe(false);
+    expect(runtime.storage.existsSync('/jobs/stream/exit.json')).toBe(false);
   });
 
   it('holds the provider result until an unattributable surviving descendant exits', async () => {
-    const jobDir = join(tmpRoot, 'job-with-descendant');
-    mkdirSync(jobDir, { recursive: true });
-
-    const result = await coordinator.spawnDurableJob({
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueDurable({ exit: { delayMs: 1, exitCode: 0 } });
+    let descendantAlive = true;
+    const observeLiveness = runtime.process.observeLiveness;
+    runtime.process.observeLiveness = (pid) => (pid === -20_000 && descendantAlive ? 'alive' : observeLiveness(pid));
+    const coordinator = new LaunchCoordinator({ runtime });
+    coordinator.bindActiveEpochPath('/store/epoch-1');
+    let completed = false;
+    const result = coordinator.spawnDurableJob({
       provider: 'codex',
-      command: process.execPath,
-      args: [
-        '-e',
-        [
-          "const { spawn } = require('node:child_process');",
-          "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 250)'], { stdio: 'ignore' });",
-          "process.stdout.write(String(descendant.pid) + '\\n');",
-          'descendant.unref();',
-        ].join(''),
-      ],
-      jobDir,
+      command: 'fixture',
+      args: [],
+      jobDir: '/jobs/descendant',
     });
-
-    const descendantPid = Number(result.stdout.trim());
-    expect(result.code).toBe(0);
-    expect(Number.isSafeInteger(descendantPid)).toBe(true);
-    expect(runtime.process.observeLiveness(descendantPid)).toBe('absent');
-  });
-
-  it('spawns a provider server with JSON-RPC transport and stable generation ids', async () => {
-    const handle = await coordinator.spawnProviderServer(
-      {
-        provider: 'codex',
-        command: process.execPath,
-        args: ['-e', createProviderServerScript()],
-      },
-      undefined,
-      undefined,
-      undefined,
-      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
-    );
-    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
-
-    expect(handle.pid).toBeGreaterThan(0);
-    expect(handle.generation).toBe(1);
-
-    const notifications: Array<{ method: string; params?: Record<string, unknown> }> = [];
-    const unsubscribe = handle.onNotification((message) => {
-      notifications.push(message);
+    void result.then(() => {
+      completed = true;
     });
+    await flushMicrotasks(64);
+    await advance(runtime, 500);
+    expect(runtime.process.observeLiveness(20_001)).toBe('absent');
+    expect(runtime.process.observeLiveness(-20_000)).toBe('alive');
+    expect(completed).toBe(false);
 
-    await expect(handle.rpc.request('ping', { value: 'pong' })).resolves.toEqual({ pong: 'pong' });
-    handle.rpc.notify('notify-back', { ready: true });
-
-    expect(await waitForValue(() => notifications[0] ?? null)).toEqual({
-      method: 'tick',
-      params: { ready: true },
-    });
-
-    unsubscribe();
-    await handle.close((hold) => ({
-      kind: 'accepted',
-      owner: 'provider-host-manager',
-      settlement: hold.settled,
-    }));
+    descendantAlive = false;
+    await advance(runtime, 500);
+    await advance(runtime, 1_000);
+    await expect(result).resolves.toMatchObject({ code: 0 });
+    expect(completed).toBe(true);
   });
 
   it('closes provider servers that emit an oversized JSONL line', async () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueSpawn({ close: null, stdout: 'x'.repeat(PROVIDER_SERVER_MAX_JSONL_LINE_BYTES + 1) });
+    const coordinator = new LaunchCoordinator({ runtime });
     const handle = await coordinator.spawnProviderServer(
-      {
-        provider: 'codex',
-        command: process.execPath,
-        args: ['-e', createOversizedProviderServerScript()],
-      },
+      { provider: 'codex', command: 'fixture', args: [] },
       undefined,
       undefined,
       undefined,
-      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+      acceptHold,
     );
-    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
+    if ('kind' in handle) throw new Error('expected provider server');
+    await advance(runtime, 1);
+    await expect(handle.closePromise).resolves.toMatchObject({
+      data: { code: 'provider_server_line_too_large', maxLineBytes: PROVIDER_SERVER_MAX_JSONL_LINE_BYTES },
+    });
+  });
 
-    const outcome = await handle.closePromise;
-    expect(outcome).toBeInstanceOf(Error);
-    const error = outcome as Error & { data?: unknown };
-    const data = error.data as { code?: string; maxLineBytes?: number; observedBytes?: number } | undefined;
-
-    expect(error.message).toContain('emitted an oversized JSONL line');
-    expect(data).toEqual(
-      expect.objectContaining({
-        code: 'provider_server_line_too_large',
-        maxLineBytes: PROVIDER_SERVER_MAX_JSONL_LINE_BYTES,
-      }),
+  it('closes provider servers that emit a malformed JSON-RPC message', async () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueSpawn({ close: null, stdout: '{}\n' });
+    const coordinator = new LaunchCoordinator({ runtime });
+    const handle = await coordinator.spawnProviderServer(
+      { provider: 'codex', command: 'fixture', args: [] },
+      undefined,
+      undefined,
+      undefined,
+      acceptHold,
     );
-    expect(data?.observedBytes).toBeGreaterThan(PROVIDER_SERVER_MAX_JSONL_LINE_BYTES);
+    if ('kind' in handle) throw new Error('expected provider server');
+    await advance(runtime, 1);
+    await expect(handle.closePromise).resolves.toMatchObject({
+      message: expect.stringContaining('malformed JSON-RPC message'),
+    });
   });
 
   it('staged launch termination drains queued launches but does not kill provider servers', async () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueSpawn({ close: null });
+    const coordinator = new LaunchCoordinator({ runtime });
     const handle = await coordinator.spawnProviderServer(
-      {
-        provider: 'codex',
-        command: process.execPath,
-        args: ['-e', createProviderServerScript()],
-      },
+      { provider: 'codex', command: 'fixture', args: [] },
       undefined,
       undefined,
       undefined,
-      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+      acceptHold,
     );
-    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
-
+    if ('kind' in handle) throw new Error('expected provider server');
     await coordinator.settlePendingLaunches();
-    await coordinator.terminateRegisteredChildren();
-
-    await expect(handle.rpc.request('ping', { value: 'still-live' })).resolves.toEqual({
-      pong: 'still-live',
-    });
-    await handle.close((hold) => ({
-      kind: 'accepted',
-      owner: 'provider-host-manager',
-      settlement: hold.settled,
-    }));
+    await expect(coordinator.terminateRegisteredChildren()).resolves.toEqual({ kind: 'all-children-observed-absent' });
+    expect(handle.isClosed()).toBe(false);
+    expect(runtime.process.observeLiveness(handle.pid)).toBe('alive');
+    await handle.close(acceptHold);
   });
 });

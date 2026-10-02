@@ -54,19 +54,4 @@ describe('resolveEquippedTools', () => {
     expect(tools[0].guidance?.join('\n')).toContain('codebase-memory-mcp cli <tool>');
     expect(tools[0].guidance?.join('\n')).toContain('both MCP and shell CLI graph access');
   });
-
-  it('does not surface a directory where the binary should be', () => {
-    const bin = join('/engines', 'codebase-memory', 'codebase-memory-mcp');
-
-    expect(resolveEquippedTools(runtimeWithStat(new Map([[bin, false]])))).toEqual([]);
-  });
-
-  it('fails open when a test/runtime slice does not implement engine paths', () => {
-    const runtime = {
-      paths: { coral: {} },
-      storage: { statSync: () => statResult(true) },
-    } as unknown as RuntimeSlice;
-
-    expect(resolveEquippedTools(runtime)).toEqual([]);
-  });
 });

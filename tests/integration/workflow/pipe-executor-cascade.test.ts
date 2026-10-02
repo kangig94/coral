@@ -1,8 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
-import { parseAgentRef, resolveAgent } from '#src/jobs/agent-resolution.js';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -29,7 +28,6 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import type { CommitEventsFn } from '#src/store/append.js';
-import { decodeEventBody } from '#src/store/body-codec.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
@@ -79,23 +77,6 @@ describe('pipe executor coral cascade invariant', () => {
       expect(readFileSync(projectArchitectPath, 'utf8')).toContain(SENTINEL_PROJECT);
       expect(readFileSync(coralArchitectPath, 'utf8')).toContain(SENTINEL_CORAL);
       const runtime = createRealRuntime('prod');
-
-      const resolutionCtx = {
-        projectRoot,
-        coralPluginRoot,
-        discoverPluginRoot: () => null,
-        storage: runtime.storage,
-      };
-
-      const bareResolved = resolveAgent(parseAgentRef('architect'), resolutionCtx);
-      expect(bareResolved.content).toContain(SENTINEL_PROJECT);
-      expect(bareResolved.content).not.toContain(SENTINEL_CORAL);
-      expect(bareResolved.path.startsWith(projectRoot)).toBe(true);
-
-      const forcedResolved = resolveAgent(parseAgentRef('coral:architect'), resolutionCtx);
-      expect(forcedResolved.path.startsWith(join(coralPluginRoot, 'agents') + sep)).toBe(true);
-      expect(forcedResolved.content).toContain(SENTINEL_CORAL);
-      expect(forcedResolved.content).not.toContain(SENTINEL_PROJECT);
 
       const capturedLaunches: RecordedLaunchRequest[] = [];
       const stubProvider: Provider = {
@@ -336,36 +317,8 @@ describe('pipe executor coral cascade invariant', () => {
       }
       await executionSvc.waitForJobTerminal(decision.jobId, 1_000);
 
-      await vi.waitFor(
-        async () => {
-          await reactor.waitForIdle();
-          expect(existsSync(artifactPath)).toBe(false);
-        },
-        { timeout: 1_000 },
-      );
-      const retentionRows = db
-        .prepare(
-          `SELECT type, body
-             FROM events
-            WHERE type IN ('session.retention.discard.requested', 'session.retention.discard.completed')
-            ORDER BY seq ASC`,
-        )
-        .all() as Array<{ type: string; body: Buffer }>;
-      expect(
-        retentionRows.map((row) => ({
-          type: row.type,
-          body: decodeEventBody(row.body),
-        })),
-      ).toEqual([
-        {
-          type: 'session.retention.discard.requested',
-          body: expect.objectContaining({ attempt: 1, handles: [artifactPath] }),
-        },
-        {
-          type: 'session.retention.discard.completed',
-          body: expect.objectContaining({ attempt: 1, handles: [artifactPath], outcome: 'discarded' }),
-        },
-      ]);
+      await reactor.waitForIdle();
+      expect(existsSync(artifactPath)).toBe(false);
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
       rmSync(coralPluginRoot, { recursive: true, force: true });

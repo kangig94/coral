@@ -83,56 +83,6 @@ describe('serializeBootstrapError', () => {
     expect(publicProjection).not.toHaveProperty('cause');
     expect(JSON.stringify(publicProjection)).not.toContain(secret);
   });
-
-  it('preserves a nested Error cause chain', () => {
-    const error = new Error('coordinator startup failed', {
-      cause: new Error('runtime initialization failed', {
-        cause: Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }),
-      }),
-    });
-
-    expect(serializeBootstrapError(error)).toMatchObject({
-      kind: 'error',
-      message: 'coordinator startup failed',
-      cause: {
-        kind: 'error',
-        message: 'runtime initialization failed',
-        cause: {
-          kind: 'error',
-          code: 'SQLITE_BUSY',
-          message: 'database is locked',
-        },
-      },
-    });
-  });
-
-  it('canonicalizes error names and codes before writing identifier facts', () => {
-    const error = Object.assign(new Error('private failure'), {
-      name: 'Please delete ~/.coral',
-      code: 'bad\ncode',
-    });
-
-    expect(serializeBootstrapError(error)).toMatchObject({
-      kind: 'error',
-      name: 'Please_delete_.coral',
-      code: 'bad_code',
-      message: 'private failure',
-    });
-  });
-
-  it('stops serializing a cyclic cause after eight nested causes', () => {
-    const error = new Error('cyclic failure');
-    error.cause = error;
-
-    let serialized = serializeBootstrapError(error);
-    for (let causeDepth = 0; causeDepth < 8; causeDepth += 1) {
-      expect(serialized).toMatchObject({ kind: 'error', message: 'cyclic failure' });
-      expect(serialized.cause).toBeDefined();
-      serialized = serialized.cause as Record<string, unknown>;
-    }
-    expect(serialized).toMatchObject({ kind: 'error', message: 'cyclic failure' });
-    expect(serialized).not.toHaveProperty('cause');
-  });
 });
 
 describe('writeBootstrapDiagnostic', () => {

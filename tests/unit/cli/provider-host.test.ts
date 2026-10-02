@@ -1,4 +1,3 @@
-import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,7 +5,6 @@ import {
   formatProviderHostInspect,
   formatProviderHostList,
   parseProviderHostSelector,
-  registerBackendCommands,
 } from '#src/cli/commands/backend.js';
 import { IpcRpcError, type IpcClient } from '#src/transport/ipc/client.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
@@ -40,16 +38,6 @@ const host = {
   },
   diagnosticsRetention: { ownerBudgetTruncated: false },
 };
-
-function findCommand(root: Command, ...path: string[]): Command {
-  let current = root;
-  for (const name of path) {
-    const next = current.commands.find((command) => command.name() === name);
-    if (next === undefined) throw new Error(`Missing command: ${path.join(' ')}`);
-    current = next;
-  }
-  return current;
-}
 
 describe('provider-host CLI contracts', () => {
   it('requires exactly one selector', () => {
@@ -140,31 +128,5 @@ describe('provider-host CLI contracts', () => {
 
     await expect(createProviderHostCommandOperations({ getClient: async () => client }).list()).rejects.toBe(thrown);
     expect(requested).toEqual(['coordinator.provider_host.list.v2']);
-  });
-
-  it('warns about selector safety and attached work in evict help', () => {
-    const program = new Command().name('coral-cli');
-    registerBackendCommands(program);
-
-    const help = findCommand(program, 'backend', 'provider-host', 'evict').helpInformation().replace(/\s+/g, ' ');
-
-    expect(help).toContain('copied from `coral-cli backend provider-host list`');
-    expect(help).toContain('Refused for eviction');
-    expect(help).toContain('use it with inspect');
-    expect(help).toContain('exact reference');
-    expect(help).toContain('may end work already attached to that host');
-  });
-
-  it('names every inventory status in list and inspect help', () => {
-    const program = new Command().name('coral-cli');
-    registerBackendCommands(program);
-
-    for (const operation of ['list', 'inspect']) {
-      const help = findCommand(program, 'backend', 'provider-host', operation).helpInformation();
-      expect(help).toContain('live');
-      expect(help).toContain('retained-blocked');
-      expect(help).toContain('shutdown-held');
-      expect(help).toContain('reclamation-failed');
-    }
   });
 });

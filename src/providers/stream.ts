@@ -1,6 +1,5 @@
 import type {
   ProviderJobDiagnostics,
-  ProviderContinuityEventBody,
   ProviderTerminal,
   ProviderEventBody,
   ProviderProgressEventBody,
@@ -137,21 +136,6 @@ export function providerProgressEvent(message: string, _ts?: string): ProviderPr
   return {
     kind: 'progress',
     message,
-  };
-}
-
-export function providerContinuityEvent(
-  event: ProviderContinuityEventBody | Omit<ProviderContinuityEventBody, 'kind'>,
-): ProviderContinuityEventBody {
-  if ('kind' in event && event.kind === 'continuity') {
-    return event;
-  }
-
-  return {
-    kind: 'continuity',
-    conversationRef: event.conversationRef,
-    resumable: event.resumable,
-    providerContinuity: event.providerContinuity,
   };
 }
 

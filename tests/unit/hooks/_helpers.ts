@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,15 +15,10 @@ export const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb
 export const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-promote-gate.mjs');
 export const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-lookup-reminder.mjs');
 export const BASH_REWRITE_HOOK = join(process.cwd(), 'clients', 'hooks', 'bash-rewrite.mjs');
-export const MONITOR_TRACK_HOOK = join(process.cwd(), 'clients', 'hooks', 'monitor-track.mjs');
 export const PRE_COMPACT_HOOK = join(process.cwd(), 'clients', 'hooks', 'pre-compact.mjs');
 export const POST_COMPACT_HOOK = join(process.cwd(), 'clients', 'hooks', 'post-compact.mjs');
 export const CORAL_SKILL_VARS_HOOK = join(process.cwd(), 'clients', 'hooks', 'coral-skill-vars.mjs');
-export const HUD_AUTO_UPDATE_HOOK = join(process.cwd(), 'clients', 'hooks', 'hud-auto-update.mjs');
 export const RALPH_LOOP_HOOK = join(process.cwd(), 'clients', 'hooks', 'ralph-loop.mjs');
-export const CLAUDE_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'claude.json');
-export const CODEX_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'codex.json');
-export const COPILOT_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'copilot.json');
 
 export interface HookRunResult {
   stdout: string;
@@ -107,15 +102,6 @@ export function liveWorkSubagentsDir(fixture: HookFixture, sessionId: string): s
 
 export function liveWorkBackgroundDir(fixture: HookFixture, sessionId: string): string {
   return join(fixture.workRoot, 'coral-work', projectPathKey(fixture.projectRoot), sessionId, 'bg');
-}
-
-export async function waitForFile(filePath: string, timeoutMs = 2_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(filePath)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  return false;
 }
 
 export function runHook(

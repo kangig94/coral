@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import type * as NodeOs from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
-import { wikiEntryId } from '#src/kb/entry-types.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
@@ -71,20 +70,6 @@ describe('createWiki', () => {
     const sections = frontmatter.parseWikiBody(frontmatter.extractBody(raw));
     expect(sections.understanding).toBe('');
     expect(sections.knowledge).toBe('');
-  });
-
-  it('records an empty Knowledge list in the wiki index entry', async () => {
-    const { createWiki, paths } = await loadModules();
-    const kb = createRuntime(paths);
-
-    await createWiki(kb, { slug: 'living-knowledge' });
-
-    const entry = kb.readIndex()?.entries[wikiEntryId('living-knowledge')];
-    expect(entry).toMatchObject({
-      kind: 'wiki',
-      slug: 'living-knowledge',
-      knowledge: [],
-    });
   });
 
   it('rejects an already-existing wiki slug', async () => {

@@ -19,9 +19,6 @@ import { uniqueTrimmedList } from './content-normalize.js';
 
 const FRONTMATTER_BLOCK_PATTERN = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
 
-export const FRONTMATTER_SCALAR_TIEBREAK_RULE =
-  'If scalar fingerprints differ, keep the equal value when present; otherwise inputFingerprint matching the merged normalized body wins; otherwise the side whose body matches the merged body wins; otherwise choose the lexicographically greatest defined value. updatedAt uses the lexicographic maximum.';
-
 export type FrontmatterMergeDriverPaths = {
   basePath: string;
   oursPath: string;

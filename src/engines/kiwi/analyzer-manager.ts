@@ -515,7 +515,3 @@ export function getKiwiAnalyzerManager(): KiwiAnalyzerManager {
   singleton ??= new KiwiAnalyzerManager();
   return singleton;
 }
-
-export function __setKiwiAnalyzerManagerForTests(manager: KiwiAnalyzerManager | null): void {
-  singleton = manager;
-}

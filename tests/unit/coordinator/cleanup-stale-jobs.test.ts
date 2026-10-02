@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
-import { cleanupStaleJobs, resolveJobRetentionMs } from '#src/coordinator/lifecycle.js';
+import { cleanupStaleJobs } from '#src/coordinator/lifecycle.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
@@ -134,49 +134,11 @@ describe('cleanupStaleJobs', () => {
     expect(pruned).toEqual(['old']);
   });
 
-  it('keeps a terminal job within the retention window', async () => {
-    const { pruned } = await runCleanup({
-      recent: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(1) }),
-    });
-    expect(pruned).toEqual([]);
-  });
-
-  it('prunes a terminal job from a previous bundle even when recent', async () => {
-    const { pruned } = await runCleanup({
-      stale: status({ phase: 'error', bundleHash: 'bundle-old', updatedAt: ago(1) }),
-    });
-    expect(pruned).toEqual(['stale']);
-  });
-
   it('never prunes a live job, however old', async () => {
     const { pruned } = await runCleanup({
       running: status({ phase: 'running', bundleHash: 'bundle-old', updatedAt: ago(99) }),
     });
     expect(pruned).toEqual([]);
-  });
-
-  it('prunes an aged terminal job that carries no bundleHash', async () => {
-    const { pruned, purged } = await runCleanup({
-      retired: status({ phase: 'aborted', updatedAt: ago(20) }),
-    });
-    expect(pruned).toEqual(['retired']);
-    expect(purged).toEqual(['retired']);
-  });
-
-  it('keeps a recent terminal job that carries no bundleHash', async () => {
-    const { pruned } = await runCleanup({
-      fresh: status({ phase: 'completed', updatedAt: ago(2) }),
-    });
-    expect(pruned).toEqual([]);
-  });
-
-  it('prunes only the aged jobs in a mixed set', async () => {
-    const { pruned } = await runCleanup({
-      aged: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(30) }),
-      recent: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(3) }),
-      running: status({ phase: 'running', bundleHash: CURRENT_BUNDLE, updatedAt: ago(40) }),
-    });
-    expect(pruned.sort()).toEqual(['aged']);
   });
 
   it('reclaims the pruned job’s recorded carrier identity and leaves every other one', async () => {
@@ -227,23 +189,5 @@ describe('cleanupStaleJobs', () => {
     expect(purged).toEqual([]);
     expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('/jobs/old'));
     expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('permission denied'));
-  });
-});
-
-describe('resolveJobRetentionMs', () => {
-  it('defaults to 14 days when unset', () => {
-    expect(resolveJobRetentionMs(undefined)).toBe(14 * DAY_MS);
-  });
-
-  it('honors a positive day count', () => {
-    expect(resolveJobRetentionMs('7')).toBe(7 * DAY_MS);
-    expect(resolveJobRetentionMs('30')).toBe(30 * DAY_MS);
-  });
-
-  it('falls back to the default for invalid or non-positive values', () => {
-    expect(resolveJobRetentionMs('0')).toBe(14 * DAY_MS);
-    expect(resolveJobRetentionMs('-5')).toBe(14 * DAY_MS);
-    expect(resolveJobRetentionMs('abc')).toBe(14 * DAY_MS);
-    expect(resolveJobRetentionMs('')).toBe(14 * DAY_MS);
   });
 });

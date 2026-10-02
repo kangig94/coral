@@ -131,7 +131,3 @@ export function parseClassificationResponseResult(
     parseFailed,
   };
 }
-
-export function parseClassificationResponse(raw: string, entryMap: Map<string, true>): ClassificationAssignment[] {
-  return parseClassificationResponseResult(raw, entryMap).assignments;
-}

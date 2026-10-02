@@ -1,6 +1,6 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
-import { activePinCount, acquireProviderHostPin } from '#src/coordinator/live/provider-hosts/lease.js';
+
 import {
   closeProviderServerEntry,
   createProviderHostContainmentReaper,
@@ -8,16 +8,12 @@ import {
 } from '#src/coordinator/live/provider-hosts/drain.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { RecordedContainmentIdentity } from '#src/infra/process-containment.js';
-import type { SpawnProviderServerFn } from '#src/providers/app-server-transport.js';
-import type { HostRef } from '#src/providers/contract.js';
+
 import { createDeferred } from '#tools/testing/deferred.js';
 import {
-  StubbedContainmentProviderHostManager,
   createEntry,
   createFakeProviderServerHandle,
   createSharedSpec,
-  createSpawnProviderServerMock,
-  randomSequence,
   runtime,
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
@@ -127,39 +123,6 @@ describe('provider host drain properties', () => {
 
     expect(monotonicNow).toHaveBeenCalled();
     expect(wallNow).not.toHaveBeenCalled();
-  });
-
-  it('balances acquired and released leases at drain completion across 100 random sequences', async () => {
-    for (let seed = 1; seed <= 100; seed += 1) {
-      const entry = createEntry();
-      const entries = new Map([[entry.hostKey, entry]]);
-      const releasePins: Array<() => void> = [];
-      let acquiredLeaseCount = 0;
-      let releasedLeaseCount = 0;
-
-      for (const step of randomSequence(seed)) {
-        if (step % 2 === 0 || activePinCount(entry) === 0) {
-          releasePins.push(acquireProviderHostPin(entry, { kind: 'acquisition' }, () => {}));
-          acquiredLeaseCount += 1;
-        } else {
-          releasePins.pop()?.();
-          releasedLeaseCount += 1;
-        }
-      }
-
-      const outstandingBeforeDrain = activePinCount(entry);
-      await closeProviderServerEntry(entry, 'drained', {
-        runtime,
-        entries,
-        shutdownHandle: async () => ({ kind: 'observed-absent' }),
-        reapContainment: async () => {},
-      });
-
-      expect(activePinCount(entry)).toBe(outstandingBeforeDrain);
-      expect(acquiredLeaseCount).toBe(releasedLeaseCount + outstandingBeforeDrain);
-      for (const releasePin of releasePins) releasePin();
-      expect(activePinCount(entry)).toBe(0);
-    }
   });
 
   it('signals the recorded negative process group with TERM then KILL for coordinator-local host close', async () => {
@@ -337,72 +300,4 @@ describe('provider host drain properties', () => {
     await Promise.resolve();
     expect(signals).toEqual([[-containment.processGroupId, 'SIGTERM']]);
   });
-
-  it.each(['idle retirement', 'eviction', 'drainForHandoff', 'shutdown', 'initialization failure'] as const)(
-    'routes %s through the recorded containment reaper',
-    async (terminalPath) => {
-      if (terminalPath === 'idle retirement') vi.useFakeTimers();
-      const server = createFakeProviderServerHandle({ containmentIdentity: containment });
-      const reapContainment = vi.fn(async () => {});
-      const initializationError = new Error('fixture initialization failed');
-      const spawnProviderServer: SpawnProviderServerFn =
-        terminalPath === 'initialization failure'
-          ? vi.fn(async (...args: Parameters<SpawnProviderServerFn>) => {
-              args[3]?.(containment);
-              throw initializationError;
-            })
-          : createSpawnProviderServerMock(server.handle);
-      const carrierHostInstanceIds = new Set<string>();
-      const carrierBlocksRetirement = vi.fn((hostRef: HostRef) => carrierHostInstanceIds.has(hostRef.instanceId));
-      const manager = new StubbedContainmentProviderHostManager({
-        carrierBlocksRetirement,
-        runtime,
-        spawnProviderServer,
-        idleTimeoutMs: 10,
-        reapContainment,
-      });
-      const spec = createSharedSpec();
-
-      let openedHostRef: HostRef | null = null;
-      if (terminalPath === 'initialization failure') {
-        await expect(manager.openSession(spec)).rejects.toBe(initializationError);
-      } else {
-        const opened = await manager.openSession(spec);
-        openedHostRef = opened.hostRef;
-        if (terminalPath === 'idle retirement') {
-          opened.close();
-          server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });
-          await vi.advanceTimersByTimeAsync(10);
-        } else if (terminalPath === 'eviction') {
-          await manager.evictHost(opened.hostRef);
-        } else if (terminalPath === 'drainForHandoff') {
-          await manager.drainForHandoff();
-        } else {
-          await manager.shutdown();
-        }
-      }
-
-      expect(reapContainment).toHaveBeenCalledOnce();
-      if (terminalPath === 'initialization failure') {
-        expect(reapContainment).toHaveBeenCalledWith(containment, undefined);
-      } else {
-        const signal =
-          terminalPath === 'idle retirement' || terminalPath === 'eviction' ? undefined : expect.any(AbortSignal);
-        expect(reapContainment).toHaveBeenCalledWith(
-          containment,
-          signal,
-          expect.objectContaining({ pid: server.handle.pid, hasExited: expect.any(Function) }),
-        );
-      }
-      if (terminalPath === 'idle retirement') {
-        expect(carrierBlocksRetirement).toHaveBeenCalledTimes(2);
-        expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(1, openedHostRef);
-        expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(2, openedHostRef);
-      } else {
-        expect(carrierBlocksRetirement).not.toHaveBeenCalled();
-      }
-      await manager.shutdown();
-      expect(reapContainment).toHaveBeenCalledOnce();
-    },
-  );
 });

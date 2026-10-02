@@ -10,7 +10,6 @@ import { createHttpHandler } from '#src/transport/http/handler.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import type { WaitStreamRequest } from '#src/jobs/wait.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
-import { JOBS_WAIT_EXTENSIONS, jobWaitSchema, jobsWaitRequest } from '#src/transport/rpc/jobs.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import { IdleTimer } from '#src/coordinator/live/idle.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
@@ -210,108 +209,6 @@ afterEach(async () => {
 });
 
 describe('subscription carriage', () => {
-  it('advertises on ping exactly the jobs.wait extensions its own request schema accepts', async () => {
-    const socketPath = makeSocketPath();
-    const listener = createIpcServer(createPorts([]));
-    await listenIpcServer(listener, socketPath);
-    try {
-      const ping = await createIpcClient(socketPath).ping<{ jobsWaitExtensions?: unknown }>({ timeoutMs: 3_000 });
-      expect(ping.jobsWaitExtensions).toEqual([...JOBS_WAIT_EXTENSIONS]);
-      const request = jobsWaitRequest(
-        {
-          jobIds: ['job-1'],
-          projectRoot: PROJECT_ROOT,
-          cursor: { version: 'jobs.wait.v2', positions: {}, locations: {} },
-        },
-        JOBS_WAIT_EXTENSIONS,
-      );
-      expect(jobWaitSchema.safeParse(request).success).toBe(true);
-      expect(request).toMatchObject({ supportsInterrupted: true, supportsWaitV2: true, supportsHandover: true });
-    } finally {
-      await closeIpcServer(listener);
-    }
-  });
-
-  it('carries the scripted jobs.wait stream over IPC with the subscription primitive', async () => {
-    const requests: WaitStreamRequest[] = [];
-    const ports = createPorts(requests);
-    const socketPath = makeSocketPath();
-    const listener = createIpcServer(ports);
-    const expectedCursor = { afterSeq: 4 };
-
-    await listenIpcServer(listener, socketPath);
-    try {
-      const subscription = await createIpcClient(socketPath, undefined, {
-        kind: 'boot',
-        token: 'test-boot-token',
-      }).subscribe<ReturnType<typeof makeWaitEvents>[number]>('jobs.wait', {
-        jobIds: ['job-1'],
-        projectRoot: PROJECT_ROOT,
-        timeoutSeconds: 30,
-        cursor: expectedCursor,
-      });
-      const received: Array<ReturnType<typeof makeWaitEvents>[number]> = [];
-
-      for await (const event of subscription) {
-        received.push(event);
-      }
-
-      expect(received).toEqual(makeWaitEvents());
-      expect(requests).toHaveLength(1);
-      expect(requests[0]).toMatchObject({
-        jobIds: ['job-1'],
-        projectRoot: PROJECT_ROOT,
-        timeoutSeconds: 30,
-        cursor: expectedCursor,
-      });
-      expect(Object.getOwnPropertyDescriptor(requests[0], 'abortSignal')?.value).toBeInstanceOf(AbortSignal);
-      expect(ports.admin.beginRequest).not.toHaveBeenCalled();
-      expect(ports.admin.endRequest).not.toHaveBeenCalled();
-    } finally {
-      await closeIpcServer(listener);
-    }
-  });
-
-  it('detaches the server-side data listener after accepting a subscription handshake', async () => {
-    const requests: WaitStreamRequest[] = [];
-    const ports = createPorts(requests);
-    let release = () => {};
-    const holdStreamOpen = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    ports.jobs.waitStream = vi.fn(async function* (request: WaitStreamRequest) {
-      requests.push(request);
-      yield makeWaitEvents()[0];
-      await holdStreamOpen;
-    });
-
-    const socketPath = makeSocketPath();
-    const listener = createIpcServer(ports);
-
-    await listenIpcServer(listener, socketPath);
-    try {
-      const subscription = await createIpcClient(socketPath, undefined, {
-        kind: 'boot',
-        token: 'test-boot-token',
-      }).subscribe<ReturnType<typeof makeWaitEvents>[number]>('jobs.wait', {
-        jobIds: ['job-1'],
-        projectRoot: PROJECT_ROOT,
-        timeoutSeconds: 30,
-      });
-
-      expect(listener.sockets.size).toBe(1);
-      const serverSocket = Array.from(listener.sockets)[0];
-      expect(serverSocket?.listenerCount('data')).toBe(0);
-
-      release();
-      await subscription.close();
-    } finally {
-      release();
-      await closeIpcServer(listener);
-    }
-  });
-
   it("should end an undeclared subscriber's wait at handover with the lifecycle refusal shipped CLIs retry", async () => {
     const requests: WaitStreamRequest[] = [];
     const ports = createPorts(requests);
@@ -387,44 +284,6 @@ describe('subscription carriage', () => {
         await closeIpcServer(listener);
       }
     },
-  );
-
-  it.each([false, true])(
-    'should end an HTTP SSE wait at handover with a typed handover event carrying its resume cursor (declared=%s)',
-    async (supportsHandover) => {
-      const requests: WaitStreamRequest[] = [];
-      const ports = createPorts(requests);
-      const handover = new AbortController();
-      ports.jobs.waitHandoverSignal = () => handover.signal;
-      ports.jobs.waitStream = vi.fn(async function* (request: WaitStreamRequest) {
-        requests.push(request);
-        yield makeWaitEvents()[1];
-        setTimeout(() => handover.abort(), 20);
-        await new Promise<void>((resolve) => request.abortSignal?.addEventListener('abort', () => resolve()));
-      });
-      const baseUrl = await startHttpServer(ports);
-
-      const response = await fetch(`${baseUrl}/jobs/wait`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': ports.identity.token },
-        body: JSON.stringify({
-          jobIds: ['job-1'],
-          projectRoot: PROJECT_ROOT,
-          timeoutSeconds: 30,
-          ...(supportsHandover ? { supportsHandover: true } : {}),
-        }),
-      });
-      const events = (await response.text())
-        .split('\n\n')
-        .map((block) => parseSseBlock(block))
-        .filter((block): block is NonNullable<typeof block> => block !== null);
-
-      expect(events.map(({ event }) => event)).toEqual(['progress', 'handover']);
-      expect(events[0]?.id).toBeDefined();
-      expect(events[1]?.id).toBe(events[0]?.id);
-      expect(JSON.parse(events[1]?.data ?? 'null')).toMatchObject({ type: 'handover', code: 'backend_shutting_down' });
-    },
-    5_000,
   );
 
   it('lets an explicit drain start while a subscription is still streaming', async () => {

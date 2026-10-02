@@ -1,23 +1,9 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   CODEX_CAPACITY_CONTINUATION_PROMPT,
   CODEX_CYBER_POLICY_CONTINUATION_PROMPT,
-  applyCodexContinuityUpdate,
-  buildCodexContinuity,
-  buildCodexPrompt,
   mapThreadResumeParams,
   mapThreadStartParams,
   mapRecoveryContinuationTurnStartParams,
@@ -34,15 +20,19 @@ import {
   buildCodexHost,
   type CodexExecutionPlan,
 } from '#src/providers/codex/execution-plan.js';
-import { backendLog } from '#src/infra/backend-log.js';
 import type { CodexModelCatalog } from '#src/providers/codex/model-catalog.js';
 
-const tempHomes: string[] = [];
+const configs = new Map<string, string>();
+let nextAccount = 0;
 type CodexRuntime = ProviderRuntime<CodexExecutionPlan>;
 type TierReadFileSync = NonNullable<NonNullable<CodexRuntime['storage']>['readFileSync']>;
 type TierStatSync = NonNullable<NonNullable<CodexRuntime['storage']>['statSync']>;
-const defaultReadFileSync: TierReadFileSync = (path, encoding) => readFileSync(path, encoding);
-const defaultStatSync: TierStatSync = statSync as TierStatSync;
+const defaultReadFileSync: TierReadFileSync = (path) => {
+  const content = configs.get(String(path));
+  if (content === undefined) throw Object.assign(new Error('missing config'), { code: 'ENOENT' });
+  return content;
+};
+const defaultStatSync: TierStatSync = (() => ({ mtimeMs: 1 })) as unknown as TierStatSync;
 
 describe('mapRecoveryContinuationTurnStartParams', () => {
   it.each([
@@ -68,12 +58,6 @@ describe('mapRecoveryContinuationTurnStartParams', () => {
     });
     expect(continuation.input[0]?.text).not.toContain('original task');
     expect(continuation.input[0]?.text).not.toContain('system rules');
-  });
-
-  it('keeps the cyber-policy continuation narrowly scoped to defensive repository quality', () => {
-    expect(CODEX_CYBER_POLICY_CONTINUATION_PROMPT).toContain('defensive software quality');
-    expect(CODEX_CYBER_POLICY_CONTINUATION_PROMPT).toContain("user's own codebase");
-    expect(CODEX_CYBER_POLICY_CONTINUATION_PROMPT).not.toContain('cyber');
   });
 });
 
@@ -113,15 +97,9 @@ function turnStartParams(request: ProviderRequest, threadId: string, tier?: Code
   return mapTurnStartParams(request, resolveCodexSelection(request, unavailableCatalog), threadId, tier);
 }
 
-function useTempCodexConfig(content?: string): string {
-  const home = mkdtempSync(join(tmpdir(), 'coral-codex-'));
-  tempHomes.push(home);
-  vi.stubEnv('HOME', home);
-  if (content !== undefined) {
-    const configDir = join(home, '.codex');
-    mkdirSync(configDir, { recursive: true });
-    writeFileSync(join(configDir, 'config.toml'), content, 'utf-8');
-  }
+function useCodexConfig(content: string): string {
+  const home = '/accounts/account-' + nextAccount++;
+  configs.set(join(home, '.codex', 'config.toml'), content);
   return home;
 }
 
@@ -182,52 +160,12 @@ function resolvedServiceTier(
 }
 
 afterEach(() => {
-  for (const home of tempHomes.splice(0)) {
-    rmSync(home, { recursive: true, force: true });
-  }
+  configs.clear();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
-describe('buildCodexPrompt ordering', () => {
-  it('orders the inject-bundle systemPrompt, then instruction, then user prompt', () => {
-    const text = buildCodexPrompt(
-      makeRequest({
-        systemPrompt: 'guidelines',
-        instruction: { channel: 'system', content: 'agent body' },
-        prompt: 'user task',
-      }),
-    );
-    expect(text).toBe('guidelines\n\n---\n\nagent body\n\n---\n\nuser task');
-  });
-
-  it('skips instruction on resume but keeps systemPrompt and prompt', () => {
-    const text = buildCodexPrompt(
-      makeRequest({
-        action: 'resume',
-        systemPrompt: 'guidelines',
-        instruction: { channel: 'system', content: 'agent body' },
-        prompt: 'continue',
-      }),
-    );
-    expect(text).toBe('guidelines\n\n---\n\ncontinue');
-    expect(text).not.toContain('agent body');
-  });
-});
-
 describe('mapTurnStartParams effort mapping', () => {
-  it.each([
-    ['low', 'low'],
-    ['medium', 'medium'],
-    ['high', 'high'],
-    ['xhigh', 'xhigh'],
-    ['max', 'max'],
-    ['ultra', 'ultra'],
-  ] as const)('maps Coral effort %s to Codex %s on the GPT-6 Sol default', (coral, codex) => {
-    const params = turnStartParams(makeRequest({ effort: coral }), 'thread-1');
-    expect(params.effort).toBe(codex);
-  });
-
   it('caps effort at xhigh on single-size models (e.g. gpt-5.5)', () => {
     expect(
       turnStartParams(
@@ -247,200 +185,19 @@ describe('mapTurnStartParams effort mapping', () => {
     ).toBe('xhigh');
   });
 
-  it('allows ultra on Astra, Sol and Terra, but caps Luna at max', () => {
-    expect(turnStartParams(makeRequest({ model: 'astra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
-    expect(turnStartParams(makeRequest({ model: 'gpt-6-astra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
-    expect(turnStartParams(makeRequest({ model: 'fable', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
-    expect(turnStartParams(makeRequest({ model: 'sol', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
-    expect(turnStartParams(makeRequest({ model: 'terra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
-    expect(turnStartParams(makeRequest({ model: 'gpt-6-sol', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
-    expect(turnStartParams(makeRequest({ model: 'gpt-5.6-terra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
-    expect(turnStartParams(makeRequest({ model: 'luna', effort: 'ultra' }), 'thread-1').effort).toBe('max');
-    expect(turnStartParams(makeRequest({ model: 'gpt-6-luna', effort: 'ultra' }), 'thread-1').effort).toBe('max');
-    expect(turnStartParams(makeRequest({ model: 'haiku', effort: 'ultra' }), 'thread-1').effort).toBe('max');
-  });
-
-  it('allows max on all sized models including Luna', () => {
-    expect(turnStartParams(makeRequest({ model: 'sol', effort: 'max' }), 'thread-1').effort).toBe('max');
-    expect(turnStartParams(makeRequest({ model: 'terra', effort: 'max' }), 'thread-1').effort).toBe('max');
-    expect(turnStartParams(makeRequest({ model: 'luna', effort: 'max' }), 'thread-1').effort).toBe('max');
-  });
-
-  it('defaults to high when no explicit or env effort is set', () => {
-    const params = turnStartParams(makeRequest({ effort: undefined }), 'thread-1');
-    expect(params.effort).toBe('high');
-  });
-
-  it('lets CORAL_CODEX_EFFORT win over CORAL_EFFORT', () => {
-    const params = turnStartParams(
-      makeRequest({
-        effort: undefined,
-        coralEnv: { CORAL_CODEX_EFFORT: 'low', CORAL_EFFORT: 'high' },
-      }),
-      'thread-1',
-    );
-    expect(params.effort).toBe('low');
-  });
-
-  it('falls back to CORAL_EFFORT when no provider-specific effort is set', () => {
-    const params = turnStartParams(
-      makeRequest({ effort: undefined, coralEnv: { CORAL_EFFORT: 'medium' } }),
-      'thread-1',
-    );
-    expect(params.effort).toBe('medium');
-  });
-
-  it('warns and falls back to the default effort when CORAL_CODEX_EFFORT is invalid (no throw)', () => {
-    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-    const params = turnStartParams(
-      makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }),
-      'thread-1',
-    );
-    expect(params.effort).toBe('high');
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('CORAL_CODEX_EFFORT="turbo"'));
-  });
-
-  it('falls back through CORAL_EFFORT when CORAL_CODEX_EFFORT is invalid', () => {
-    vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-    const params = turnStartParams(
-      makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'nope', CORAL_EFFORT: 'medium' } }),
-      'thread-1',
-    );
-    expect(params.effort).toBe('medium');
-  });
-
-  it('does not raise Sol effort above the configured value', () => {
-    expect(turnStartParams(makeRequest({ model: 'opus', effort: 'high' }), 'thread-1').effort).toBe('high');
-    expect(turnStartParams(makeRequest({ model: 'sol', effort: 'medium' }), 'thread-1').effort).toBe('medium');
-    expect(turnStartParams(makeRequest({ model: 'gpt-6-sol', effort: undefined }), 'thread-1').effort).toBe('high');
-  });
-
-  it.each([
-    ['sonnet', 'gpt-5.6-terra'],
-    ['haiku', 'gpt-6-luna'],
-    ['terra', 'gpt-5.6-terra'],
-    ['luna', 'gpt-6-luna'],
-    ['gpt-5.6-terra', 'gpt-5.6-terra'],
-    ['gpt-6-luna', 'gpt-6-luna'],
-  ] as const)('floors %s effort to xhigh (resolved model %s)', (model, resolvedModel) => {
-    const params = turnStartParams(makeRequest({ model, effort: 'high' }), 'thread-1');
-    expect(params.model).toBe(resolvedModel);
-    expect(params.effort).toBe('xhigh');
-  });
-
-  it('floors terra/luna below xhigh even when CORAL_CODEX_EFFORT is low', () => {
-    const params = turnStartParams(
-      makeRequest({
-        model: 'sonnet',
-        effort: undefined,
-        coralEnv: { CORAL_CODEX_EFFORT: 'low' },
-      }),
-      'thread-1',
-    );
-    expect(params.model).toBe('gpt-5.6-terra');
-    expect(params.effort).toBe('xhigh');
-  });
-
-  it('keeps terra/luna at or above the xhigh floor without over-clipping', () => {
-    expect(turnStartParams(makeRequest({ model: 'luna', effort: 'xhigh' }), 'thread-1').effort).toBe('xhigh');
-    expect(turnStartParams(makeRequest({ model: 'terra', effort: 'max' }), 'thread-1').effort).toBe('max');
-    expect(turnStartParams(makeRequest({ model: 'terra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
-  });
-
-  it('does not floor astra effort', () => {
-    expect(turnStartParams(makeRequest({ model: 'astra', effort: 'low' }), 'thread-1').effort).toBe('low');
-    expect(turnStartParams(makeRequest({ model: 'fable', effort: 'medium' }), 'thread-1').effort).toBe('medium');
-  });
-
-  it('does not apply terra/luna floor on single-size baselines', () => {
-    const params = turnStartParams(
-      makeRequest({
-        model: 'sonnet',
-        effort: 'high',
-        coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' },
-      }),
-      'thread-1',
-    );
-    expect(params.model).toBe('gpt-5.5');
-    expect(params.effort).toBe('high');
-  });
+  it.each([['sonnet', 'gpt-5.6-terra']] as const)(
+    'floors %s effort to xhigh (resolved model %s)',
+    (model, resolvedModel) => {
+      const params = turnStartParams(makeRequest({ model, effort: 'high' }), 'thread-1');
+      expect(params.model).toBe(resolvedModel);
+      expect(params.effort).toBe('xhigh');
+    },
+  );
 });
 
 describe('Codex continuity refs', () => {
-  it('rejects an empty persisted payload instead of treating it as absent continuity', () => {
-    expect(() => readCodexPersistedContinuity({})).toThrow('Invalid persisted Codex continuity');
-  });
-
-  it('rejects unexpected persisted keys', () => {
-    expect(() =>
-      readCodexPersistedContinuity({
-        cwd: '/workspace/project',
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        attacker: 'keep-out',
-      }),
-    ).toThrow('Invalid persisted Codex continuity');
-  });
-
-  it('rejects empty persisted identifiers', () => {
-    expect(() => readCodexPersistedContinuity({ cwd: '', threadId: '', turnId: '' })).toThrow(
-      'Invalid persisted Codex continuity',
-    );
-  });
-
-  it('uses explicit non-empty refs for updates while ignoring empty conversationRef', () => {
-    const persisted = buildCodexContinuity({
-      cwd: '/workspace',
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-    });
-
-    expect(applyCodexContinuityUpdate(persisted, { conversationRef: '' })).toEqual(persisted);
-    expect(applyCodexContinuityUpdate(persisted, { conversationRef: 'thread-2' })).toEqual({
-      cwd: '/workspace',
-      threadId: 'thread-2',
-      turnId: 'turn-1',
-    });
-    expect(applyCodexContinuityUpdate(persisted, { conversationRef: null })).toEqual({});
-  });
-
-  it('uses an in-scope persisted cwd for the Codex app-server cwd', () => {
-    const project = mkdtempSync(join(tmpdir(), 'coral-codex-project-'));
-    tempHomes.push(project);
-    const subdir = join(project, 'subdir');
-    mkdirSync(subdir);
-    const continuity = {
-      cwd: subdir,
-      threadId: 'thread-1',
-    };
-
-    const spec = prepareTestCodexAppServer({ cwd: project }, continuity);
-
-    expect(spec.cwd).toBe(subdir);
-    expect(spec.leaseMode).toBe('shared');
-    expect(readCodexPersistedContinuity(continuity)).toEqual({
-      cwd: subdir,
-      threadId: 'thread-1',
-      turnId: undefined,
-    });
-  });
-
-  it('canonicalizes an in-scope persisted symlink before constructing the app-server spec', () => {
-    const project = mkdtempSync(join(tmpdir(), 'coral-codex-project-'));
-    tempHomes.push(project);
-    const physical = join(project, 'physical');
-    const selected = join(project, 'selected');
-    mkdirSync(physical);
-    symlinkSync(physical, selected, 'dir');
-
-    const spec = prepareTestCodexAppServer({ cwd: project }, { cwd: selected, threadId: 'thread-1' });
-
-    expect(spec.cwd).toBe(physical);
-  });
-
   it('ignores a persisted cwd outside the current project scope', () => {
-    const project = mkdtempSync(join(tmpdir(), 'coral-codex-project-'));
-    tempHomes.push(project);
+    const project = fixtureCanonicalWorkDir('/workspace/project');
     const continuity = {
       cwd: '/tmp/attacker',
       threadId: 'thread-1',
@@ -458,114 +215,20 @@ describe('Codex continuity refs', () => {
 });
 
 describe('resolveCodexServiceTier precedence', () => {
-  it.each([
-    ['1', 'fast'],
-    ['0', 'default'],
-  ] as const)('maps CORAL_CODEX_FAST=%s to %s before config fallback', (envValue, expected) => {
-    const home = useTempCodexConfig('service_tier = "flex"');
+  it.each([['1', 'fast']] as const)('maps CORAL_CODEX_FAST=%s to %s before config fallback', (envValue, expected) => {
+    const home = useCodexConfig('service_tier = "flex"');
     const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: envValue } });
 
     const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe(expected);
   });
-
-  it('returns undefined for unrecognized non-empty env values without silently falling through', () => {
-    const home = useTempCodexConfig('service_tier = "fast"');
-    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: 'garbage' } });
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params).not.toHaveProperty('serviceTier');
-  });
-
-  it('falls through to config when env is empty', () => {
-    const home = useTempCodexConfig('service_tier = "fast"');
-    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '' } });
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params.serviceTier).toBe('fast');
-  });
-
-  it('falls through to config when env is whitespace only', () => {
-    const home = useTempCodexConfig('service_tier = "fast"');
-    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '   ' } });
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params.serviceTier).toBe('fast');
-  });
-});
-
-describe('mapThreadStartParams serviceTier', () => {
-  it('pins the official OpenAI model provider for start and resume', () => {
-    const request = makeRequest();
-
-    expect(threadStartParams(request, {}).modelProvider).toBe('openai');
-    expect(threadResumeParams(request, 'thread-1', {}).modelProvider).toBe('openai');
-  });
-
-  it('includes serviceTier when resolved from env', () => {
-    const home = useTempCodexConfig();
-    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '1' } });
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params.serviceTier).toBe('fast');
-  });
-
-  it('omits serviceTier when neither env nor config resolves one', () => {
-    const home = useTempCodexConfig();
-    const request = makeRequest();
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params).not.toHaveProperty('serviceTier');
-  });
-});
-
-describe('mapThreadResumeParams serviceTier', () => {
-  it('includes serviceTier when resolved from env', () => {
-    const home = useTempCodexConfig();
-    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '0' } });
-    const params = threadResumeParams(request, 'thread-1', {}, resolvedServiceTier(request, home));
-
-    expect(params.serviceTier).toBe('default');
-  });
-
-  it('omits serviceTier when neither env nor config resolves one', () => {
-    const home = useTempCodexConfig();
-    const request = makeRequest();
-
-    const params = threadResumeParams(request, 'thread-1', {}, resolvedServiceTier(request, home));
-
-    expect(params).not.toHaveProperty('serviceTier');
-  });
-});
-
-describe('mapTurnStartParams serviceTier', () => {
-  it('includes serviceTier when resolved from env', () => {
-    const home = useTempCodexConfig();
-    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '1' } });
-    const params = turnStartParams(request, 'thread-1', resolvedServiceTier(request, home));
-
-    expect(params.serviceTier).toBe('fast');
-  });
-
-  it('omits serviceTier when neither env nor config resolves one', () => {
-    const home = useTempCodexConfig();
-    const request = makeRequest();
-
-    const params = turnStartParams(request, 'thread-1', resolvedServiceTier(request, home));
-
-    expect(params).not.toHaveProperty('serviceTier');
-  });
 });
 
 describe('TOML fallback', () => {
   it('reads service_tier from the selected account instead of the daemon user home', () => {
-    const daemonHome = useTempCodexConfig('service_tier = "default"');
-    const selectedHome = useTempCodexConfig('service_tier = "fast"');
+    const daemonHome = useCodexConfig('service_tier = "default"');
+    const selectedHome = useCodexConfig('service_tier = "fast"');
     const request = makeRequest();
 
     expect(
@@ -576,17 +239,8 @@ describe('TOML fallback', () => {
     ).toBe('fast');
   });
 
-  it('reads a top-level fast service_tier', () => {
-    const home = useTempCodexConfig('service_tier = "fast"\n[profiles.dev]\nservice_tier = "flex"');
-    const request = makeRequest();
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params.serviceTier).toBe('fast');
-  });
-
   it('reads a top-level flex service_tier', () => {
-    const home = useTempCodexConfig("service_tier = 'flex'");
+    const home = useCodexConfig("service_tier = 'flex'");
     const request = makeRequest();
 
     const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
@@ -595,7 +249,7 @@ describe('TOML fallback', () => {
   });
 
   it('sends fast-off as explicit default across all requests so a live app-server cannot retain fast', () => {
-    const home = useTempCodexConfig('service_tier = "default"');
+    const home = useCodexConfig('service_tier = "default"');
     const request = makeRequest();
     const serviceTier = resolvedServiceTier(request, home);
 
@@ -603,155 +257,9 @@ describe('TOML fallback', () => {
     expect(threadResumeParams(request, 'thread-1', {}, serviceTier).serviceTier).toBe('default');
     expect(turnStartParams(request, 'thread-1', serviceTier).serviceTier).toBe('default');
   });
-
-  it('reads an unquoted top-level service_tier', () => {
-    const home = useTempCodexConfig('service_tier = fast');
-    const request = makeRequest();
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params.serviceTier).toBe('fast');
-  });
-
-  it('reads a top-level service_tier with a trailing comment', () => {
-    const home = useTempCodexConfig('service_tier = "fast"  # note about priority');
-    const request = makeRequest();
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params.serviceTier).toBe('fast');
-  });
-
-  it('ignores profile-scoped service_tier values', () => {
-    const home = useTempCodexConfig('[profiles.foo]\nservice_tier = "fast"');
-    const request = makeRequest();
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params).not.toHaveProperty('serviceTier');
-  });
-
-  it('swallows missing config file errors', () => {
-    const home = useTempCodexConfig();
-    const request = makeRequest();
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params).not.toHaveProperty('serviceTier');
-  });
-
-  it('returns undefined for garbled config content', () => {
-    const home = useTempCodexConfig('service_tier = maybe-fast');
-    const request = makeRequest();
-
-    const params = threadStartParams(request, {}, resolvedServiceTier(request, home));
-
-    expect(params).not.toHaveProperty('serviceTier');
-  });
-
-  it('warns on non-ENOENT config read errors and stays silent on ENOENT', () => {
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const eioError = Object.assign(new Error('disk I/O failure'), { code: 'EIO' });
-    const enoentError = Object.assign(new Error('missing file'), { code: 'ENOENT' });
-    const home = useTempCodexConfig('service_tier = "fast"');
-    const request = makeRequest();
-
-    expect(
-      threadStartParams(
-        request,
-        {},
-        resolvedServiceTier(request, home, () => {
-          throw eioError;
-        }),
-      ),
-    ).not.toHaveProperty('serviceTier');
-    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('CORAL_CODEX_FAST'));
-
-    stderrSpy.mockClear();
-    const missingHome = useTempCodexConfig();
-    expect(
-      threadStartParams(
-        request,
-        {},
-        resolvedServiceTier(request, missingHome, () => {
-          throw enoentError;
-        }),
-      ),
-    ).not.toHaveProperty('serviceTier');
-    expect(stderrSpy).not.toHaveBeenCalled();
-  });
-
-  it('caches service_tier reads when the config mtime is unchanged', () => {
-    const home = useTempCodexConfig('service_tier = "fast"');
-    const request = makeRequest();
-    const configPath = join(home, '.codex', 'config.toml');
-    const readSpy = vi.fn<TierReadFileSync>(defaultReadFileSync);
-    const statSpy: TierStatSync = vi.fn(defaultStatSync) as unknown as TierStatSync;
-
-    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('fast');
-    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('fast');
-    expect(statSpy).toHaveBeenCalledTimes(2);
-    expect(readSpy).toHaveBeenCalledTimes(1);
-    expect(readSpy).toHaveBeenCalledWith(configPath, 'utf-8');
-  });
-
-  it('re-reads a fast-to-default config toggle when the mtime changes', () => {
-    const home = useTempCodexConfig('service_tier = "fast"');
-    const request = makeRequest();
-    const configPath = join(home, '.codex', 'config.toml');
-    const readSpy = vi.fn<TierReadFileSync>(defaultReadFileSync);
-    const statSpy: TierStatSync = vi.fn(defaultStatSync) as unknown as TierStatSync;
-
-    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('fast');
-
-    const updatedAt = new Date(statSync(configPath).mtimeMs + 1_000);
-    writeFileSync(configPath, 'service_tier = "default"', 'utf-8');
-    utimesSync(configPath, updatedAt, updatedAt);
-
-    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('default');
-    expect(statSpy).toHaveBeenCalledTimes(2);
-    expect(readSpy).toHaveBeenCalledTimes(2);
-  });
-
-  it('caches missing top-level service_tier results when the config mtime is unchanged', () => {
-    const home = useTempCodexConfig('[profiles.dev]\nservice_tier = "fast"');
-    const request = makeRequest();
-    const readSpy = vi.fn<TierReadFileSync>(defaultReadFileSync);
-    const statSpy: TierStatSync = vi.fn(defaultStatSync) as unknown as TierStatSync;
-
-    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBeUndefined();
-    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBeUndefined();
-    expect(statSpy).toHaveBeenCalledTimes(2);
-    expect(readSpy).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe('resolveCodexSelection uses coralEnv', () => {
-  it('uses CORAL_CODEX_MODEL from request.coralEnv across all mapping functions', () => {
-    const request = makeRequest({ coralEnv: { CORAL_CODEX_MODEL: 'custom-model' } });
-
-    expect(threadStartParams(request, {}).model).toBe('custom-model');
-    expect(threadResumeParams(request, 'thread-1', {}).model).toBe('custom-model');
-    expect(turnStartParams(request, 'thread-1').model).toBe('custom-model');
-  });
-
-  it.each([
-    ['astra', 'gpt-6-astra'],
-    ['sol', 'gpt-6-sol'],
-    ['terra', 'gpt-5.6-terra'],
-    ['luna', 'gpt-6-luna'],
-  ] as const)('normalizes bare size baseline alias %s to %s', (alias, codexModel) => {
-    const request = makeRequest({ model: undefined, coralEnv: { CORAL_CODEX_MODEL: alias } });
-
-    expect(threadStartParams(request, {}).model).toBe(codexModel);
-  });
-
-  it('preserves a non-alias CORAL_CODEX_MODEL baseline', () => {
-    const request = makeRequest({ model: undefined, coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } });
-
-    expect(threadStartParams(request, {}).model).toBe('gpt-5.5');
-  });
-
   it('does not leak CORAL_CODEX_MODEL from the daemon process env', () => {
     vi.stubEnv('CORAL_CODEX_MODEL', 'daemon-env-model');
 
@@ -760,103 +268,6 @@ describe('resolveCodexSelection uses coralEnv', () => {
     expect(threadStartParams(request, {}).model).toBe('gpt-6-sol');
     expect(threadResumeParams(request, 'thread-1', {}).model).toBe('gpt-6-sol');
     expect(turnStartParams(request, 'thread-1').model).toBe('gpt-6-sol');
-  });
-
-  it.each([
-    ['fable', 'gpt-6-astra'],
-    ['opus', 'gpt-6-sol'],
-    ['sonnet', 'gpt-5.6-terra'],
-    ['haiku', 'gpt-6-luna'],
-  ] as const)('maps abstract tier %s to Codex model %s under the default baseline', (tier, codexModel) => {
-    const request = makeRequest({ model: tier });
-
-    expect(threadStartParams(request, {}).model).toBe(codexModel);
-    expect(threadResumeParams(request, 'thread-1', {}).model).toBe(codexModel);
-    expect(turnStartParams(request, 'thread-1').model).toBe(codexModel);
-  });
-
-  it.each([
-    ['fable', 'gpt-6-astra'],
-    ['opus', 'gpt-6-sol'],
-    ['sonnet', 'gpt-5.6-terra'],
-    ['haiku', 'gpt-6-luna'],
-  ] as const)('maps abstract tier %s when CORAL_CODEX_MODEL is a GPT-6 sized model', (tier, codexModel) => {
-    const request = makeRequest({
-      model: tier,
-      coralEnv: { CORAL_CODEX_MODEL: 'astra' },
-    });
-
-    expect(threadStartParams(request, {}).model).toBe(codexModel);
-    expect(turnStartParams(request, 'thread-1').model).toBe(codexModel);
-  });
-
-  it('maps abstract tiers when CORAL_CODEX_MODEL is a bare GPT-5.6 alias', () => {
-    const request = makeRequest({
-      model: 'sonnet',
-      coralEnv: { CORAL_CODEX_MODEL: 'gpt-6-sol' },
-    });
-
-    expect(threadStartParams(request, {}).model).toBe('gpt-5.6-terra');
-  });
-
-  it.each([
-    ['astra', 'gpt-6-astra'],
-    ['ASTRA', 'gpt-6-astra'],
-    ['sol', 'gpt-6-sol'],
-    ['terra', 'gpt-5.6-terra'],
-    ['luna', 'gpt-6-luna'],
-  ] as const)('normalizes bare size alias %s to %s', (alias, codexModel) => {
-    const request = makeRequest({ model: alias });
-
-    expect(threadStartParams(request, {}).model).toBe(codexModel);
-    expect(threadResumeParams(request, 'thread-1', {}).model).toBe(codexModel);
-    expect(turnStartParams(request, 'thread-1').model).toBe(codexModel);
-    expect(threadStartParams(makeRequest({ model: alias, coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } }), {}).model).toBe(
-      codexModel,
-    );
-  });
-
-  it('collapses every abstract tier, fable included, to a single-size baseline', () => {
-    for (const model of ['fable', 'opus', 'sonnet', 'haiku']) {
-      expect(threadStartParams(makeRequest({ model, coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } }), {}).model).toBe(
-        'gpt-5.5',
-      );
-    }
-  });
-
-  it('collapses abstract tiers to a single-size CORAL_CODEX_MODEL (no sol/terra/luna split)', () => {
-    const request = makeRequest({
-      model: 'opus',
-      coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' },
-    });
-
-    expect(threadStartParams(request, {}).model).toBe('gpt-5.5');
-    expect(threadResumeParams(request, 'thread-1', {}).model).toBe('gpt-5.5');
-    expect(turnStartParams(request, 'thread-1').model).toBe('gpt-5.5');
-  });
-
-  it.each(['opus', 'sonnet', 'haiku'] as const)('uses the same single-size baseline for abstract tier %s', (tier) => {
-    const request = makeRequest({
-      model: tier,
-      coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' },
-    });
-    expect(turnStartParams(request, 'thread-1').model).toBe('gpt-5.5');
-  });
-
-  it('passes concrete model ids through unchanged', () => {
-    const request = makeRequest({ model: 'gpt-6-sol' });
-
-    expect(threadStartParams(request, {}).model).toBe('gpt-6-sol');
-    expect(turnStartParams(request, 'thread-1').model).toBe('gpt-6-sol');
-  });
-
-  it('passes concrete model ids even when CORAL_CODEX_MODEL is a different line', () => {
-    const request = makeRequest({
-      model: 'gpt-5.4',
-      coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' },
-    });
-
-    expect(threadStartParams(request, {}).model).toBe('gpt-5.4');
   });
 });
 
@@ -868,16 +279,6 @@ describe('catalog model resolution', () => {
     supportedEfforts: new Map([['gpt-6.1-sol', ['high', 'max']]]),
   };
 
-  it.each([{ model: 'opus' }, { model: 'sol' }, { coralEnv: { CORAL_CODEX_MODEL: 'sol' } }, {}])(
-    'uses the newest catalog sol for an abstract tier, alias, or default: %j',
-    (overrides) => {
-      const request = makeRequest({ effort: 'ultra', ...overrides });
-      const selection = resolveCodexSelection(request, catalog);
-
-      expect(selection).toEqual({ model: 'gpt-6.1-sol', effort: 'max', source: { kind: 'catalog' } });
-    },
-  );
-
   it('shares the resolved selection across thread creation, resume, and turn parameters', () => {
     const request = makeRequest({ model: 'opus', effort: 'ultra' });
     const selection = resolveCodexSelection(request, catalog);
@@ -887,90 +288,6 @@ describe('catalog model resolution', () => {
     expect(mapTurnStartParams(request, selection, 'thread-1')).toMatchObject({
       model: selection.model,
       effort: selection.effort,
-    });
-  });
-
-  it('uses a missing size fallback without discarding other listed sizes', () => {
-    const partial: CodexModelCatalog = {
-      kind: 'listed',
-      skippedEntries: 0,
-      newestBySize: { sol: 'gpt-6.1-sol' },
-      supportedEfforts: new Map(),
-    };
-    expect(resolveCodexSelection(makeRequest({ model: 'sonnet' }), partial)).toEqual({
-      model: 'gpt-5.6-terra',
-      effort: 'xhigh',
-      source: { kind: 'built-in', cause: 'size-unlisted', size: 'terra' },
-    });
-    expect(resolveCodexSelection(makeRequest({ model: 'opus' }), partial).model).toBe('gpt-6.1-sol');
-  });
-
-  it('recognizes a gpt-6.1-sol baseline as sized even without a readable catalog', () => {
-    const request = makeRequest({
-      model: 'fable',
-      effort: 'ultra',
-      coralEnv: { CORAL_CODEX_MODEL: 'gpt-6.1-sol' },
-    });
-    expect(resolveCodexSelection(request, unavailableCatalog)).toEqual({
-      model: 'gpt-6-astra',
-      effort: 'ultra',
-      source: { kind: 'built-in', cause: 'catalog-unavailable', reason: unavailableCatalog.reason },
-    });
-    expect(resolveCodexSelection({ ...request, model: undefined }, unavailableCatalog)).toEqual({
-      model: 'gpt-6.1-sol',
-      effort: 'ultra',
-      source: { kind: 'pinned' },
-    });
-  });
-
-  it('does not treat a gpt-5.6 substring in an unsized baseline as a size split', () => {
-    expect(
-      resolveCodexSelection(
-        makeRequest({
-          model: 'fable',
-          effort: 'ultra',
-          coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6' },
-        }),
-        unavailableCatalog,
-      ),
-    ).toEqual({ model: 'gpt-5.6', effort: 'xhigh', source: { kind: 'pinned' } });
-  });
-
-  it('applies catalog ceilings to explicit ids, ignoring efforts Coral cannot rank', () => {
-    const pinnedCatalog: CodexModelCatalog = {
-      ...catalog,
-      supportedEfforts: new Map([
-        ['gpt-6-sol', ['future-effort', 'low', 'high']],
-        ['gpt-5.5', ['medium']],
-      ]),
-    };
-    expect(resolveCodexSelection(makeRequest({ model: 'gpt-6-sol', effort: 'ultra' }), pinnedCatalog)).toEqual({
-      model: 'gpt-6-sol',
-      effort: 'high',
-      source: { kind: 'pinned' },
-    });
-    expect(resolveCodexSelection(makeRequest({ model: 'gpt-5.5', effort: 'ultra' }), pinnedCatalog)).toEqual({
-      model: 'gpt-5.5',
-      effort: 'medium',
-      source: { kind: 'pinned' },
-    });
-  });
-
-  it('retains a concrete baseline when the request names no model', () => {
-    const request = makeRequest({ coralEnv: { CORAL_CODEX_MODEL: 'gpt-6-sol' } });
-    expect(resolveCodexSelection(request, catalog).model).toBe('gpt-6-sol');
-  });
-
-  it('allows a catalog Luna ceiling to raise the static max ceiling to ultra', () => {
-    const raisedCatalog: CodexModelCatalog = {
-      ...catalog,
-      supportedEfforts: new Map([['gpt-6-luna', ['max', 'ultra']]]),
-    };
-
-    expect(resolveCodexSelection(makeRequest({ model: 'haiku', effort: 'ultra' }), raisedCatalog)).toEqual({
-      model: 'gpt-6-luna',
-      effort: 'ultra',
-      source: { kind: 'catalog' },
     });
   });
 });

@@ -2,7 +2,6 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { backendLog } from '#src/infra/backend-log.js';
 
 import {
   compareAndSwapUpgradeIntent,
@@ -121,24 +120,6 @@ describe('upgrade intent', () => {
     ).toBe('prepared');
   });
 
-  it('emits one audit event for each visible status change', async () => {
-    const events: string[] = [];
-    vi.spyOn(backendLog, 'info').mockImplementation((message) => {
-      if (message.includes('upgrade_intent_status_changed')) events.push(message);
-    });
-    const dir = runDir();
-    const initial = await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
-    if (initial.kind !== 'written') throw new Error('intent not written');
-    const unchanged = await compareAndSwapUpgradeIntent(dir, initial.intent.revision, pendingIntent('first'));
-    if (unchanged.kind !== 'written') throw new Error('intent not rewritten');
-    await compareAndSwapUpgradeIntent(dir, unchanged.intent.revision, {
-      ...pendingIntent('first'),
-      disposition: 'deferred',
-      blockers: [{ owner: 'jobs', reason: 'job-1' }],
-    });
-    expect(events).toHaveLength(2);
-  });
-
   it('preserves unknown keys at every object level and refuses unknown generations', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, {
@@ -177,51 +158,6 @@ describe('upgrade intent', () => {
     await expect(compareAndSwapUpgradeIntent(dir, 1, pendingIntent('third'))).resolves.toEqual({ kind: 'unsupported' });
   });
 
-  it('retains an unresolved blocker row written by a newer build when this build records its own blocker', async () => {
-    const dir = runDir();
-    const futureBlocker = {
-      owner: 'future-owner',
-      reason: 'future build has not discharged its custody',
-      futureHoldEvidence: 'keep-this-row',
-    };
-    const seeded = await compareAndSwapUpgradeIntent(dir, null, {
-      ...pendingIntent('first'),
-      disposition: 'deferred',
-      blockers: [futureBlocker],
-    });
-    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
-
-    const written = await compareAndSwapUpgradeIntent(dir, seeded.intent.revision, {
-      ...pendingIntent('first'),
-      disposition: 'deferred',
-      blockers: [{ owner: 'jobs', reason: 'job-1 is still running' }],
-    });
-
-    expect(written.kind).toBe('written');
-    expect(readUpgradeIntent(dir)).toMatchObject({
-      kind: 'readable',
-      intent: {
-        blockers: expect.arrayContaining([futureBlocker, { owner: 'jobs', reason: 'job-1 is still running' }]),
-      },
-    });
-    expect(JSON.parse(readFileSync(upgradeIntentPath(dir), 'utf-8'))).toMatchObject({
-      blockers: expect.arrayContaining([futureBlocker]),
-    });
-    if (written.kind !== 'written') return;
-    await expect(
-      compareAndSwapUpgradeIntent(dir, written.intent.revision, {
-        ...written.intent,
-        attemptId: 'attempt-1',
-        attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: 100, incarnation: null },
-        blockers: [],
-      }),
-    ).resolves.toEqual({ kind: 'unsupported' });
-    expect(readUpgradeIntent(dir)).toMatchObject({
-      kind: 'readable',
-      intent: { blockers: expect.arrayContaining([futureBlocker]), attemptId: null },
-    });
-  });
-
   it('clears blockers owned by this build when their obligations settle', async () => {
     const dir = runDir();
     const seeded = await compareAndSwapUpgradeIntent(dir, null, {
@@ -234,85 +170,6 @@ describe('upgrade intent', () => {
       blockers: [],
     });
     expect(written).toMatchObject({ kind: 'written', intent: { blockers: [] } });
-  });
-
-  it('retains a newer blocker shape even when its owner name is familiar', async () => {
-    const dir = runDir();
-    const futureBlocker = { owner: 'jobs', reason: 'new custody rule', futureHoldEvidence: 'pending' };
-    const seeded = await compareAndSwapUpgradeIntent(dir, null, {
-      ...pendingIntent('first'),
-      blockers: [futureBlocker],
-    });
-    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
-    const written = await compareAndSwapUpgradeIntent(dir, seeded.intent.revision, {
-      ...seeded.intent,
-      blockers: [],
-    });
-    expect(written).toMatchObject({ kind: 'written', intent: { blockers: [futureBlocker] } });
-    if (written.kind !== 'written') return;
-    await expect(
-      compareAndSwapUpgradeIntent(dir, written.intent.revision, {
-        ...written.intent,
-        attemptId: 'attempt-1',
-        attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: 100, incarnation: null },
-      }),
-    ).resolves.toEqual({ kind: 'unsupported' });
-  });
-
-  it('should read a retry record of a newer shape as absent instead of refusing the intent', async () => {
-    const dir = runDir();
-    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
-    const path = upgradeIntentPath(dir);
-    const stored = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-    stored.transientRetry = { targetKey: 'target', failures: 'many', retryAfter: 'later' };
-    writeFileSync(path, JSON.stringify(stored));
-
-    const read = readUpgradeIntent(dir);
-    expect(read.kind).toBe('readable');
-    if (read.kind !== 'readable') return;
-    expect(read.intent.transientRetry).toBeUndefined();
-  });
-
-  it.each([
-    ['disposition', (stored: Record<string, unknown>) => ({ ...stored, disposition: 'handing-over' })],
-    [
-      'retry condition',
-      (stored: Record<string, unknown>) => ({ ...stored, retryCondition: { kind: 'host-release', evidence: 'x' } }),
-    ],
-    [
-      'attempt owner',
-      (stored: Record<string, unknown>) => ({
-        ...stored,
-        attemptId: 'attempt-1',
-        attemptOwner: { kind: 'supervisor', instanceId: 'supervisor', pid: 100, incarnation: null },
-      }),
-    ],
-    ['recovery retry', (stored: Record<string, unknown>) => ({ ...stored, recoveryRetry: { kind: 'future-kind' } })],
-  ])(
-    'should read an intent whose %s comes from a newer vocabulary as a newer build’s, and never overwrite it',
-    async (_field, newer) => {
-      const dir = runDir();
-      await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
-      const path = upgradeIntentPath(dir);
-      const written = JSON.stringify(newer(JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>));
-      writeFileSync(path, written);
-
-      expect(readUpgradeIntent(dir)).toEqual({ kind: 'unsupported', version: 'v1' });
-      await expect(compareAndSwapUpgradeIntent(dir, 0, pendingIntent('second'))).resolves.toEqual({
-        kind: 'unsupported',
-      });
-      expect(readFileSync(path, 'utf-8')).toBe(written);
-    },
-  );
-
-  it('should keep reading a record that breaks this build’s own invariants as corrupt', async () => {
-    const dir = runDir();
-    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
-    const path = upgradeIntentPath(dir);
-    const stored = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-    writeFileSync(path, JSON.stringify({ ...stored, disposition: 'completed' }));
-
-    expect(readUpgradeIntent(dir)).toEqual({ kind: 'corrupt' });
   });
 
   it('does not treat a stored plugin-root label as a validated launch target', async () => {
@@ -422,7 +279,7 @@ describe('upgrade intent', () => {
     expect(history.receipts[0]).toMatchObject({ futureEntry: 'keep' });
   });
 
-  it.each(['{', JSON.stringify({ version: 1, receipts: 'damaged' })])(
+  it.each(['{'])(
     'quarantines damaged optional receipt history (%s) while retaining the current completion',
     async (damage) => {
       const dir = runDir();

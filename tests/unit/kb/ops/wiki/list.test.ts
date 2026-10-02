@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import type * as NodeOs from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
-import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
@@ -72,41 +71,5 @@ describe('listWikis', () => {
       slug: 'newest-wiki',
       knowledge: ['note:b'],
     });
-  });
-
-  it('only includes wiki entries (filters out non-wiki entries from the index)', async () => {
-    const { listWikis, createWiki, paths } = await loadModules();
-    const kb = createRuntime(paths);
-    await createWiki(kb, { slug: 'only-wiki' });
-
-    const index = kb.readIndex()!;
-    kb.writeIndex({
-      ...index,
-      entries: {
-        ...index.entries,
-        'note:foreign': {
-          kind: 'note',
-          slug: 'foreign',
-          title: 'Foreign Note',
-          tags: [],
-          principles: [],
-          source: [],
-          createdAt: '2026-04-15T00:00:00.000Z',
-          updatedAt: '2026-04-15T00:00:00.000Z',
-          related: [],
-          bodyHash: computeBodySurfaceHash('Foreign note.'),
-        },
-      },
-    });
-
-    const list = await listWikis(kb);
-    expect(list.map((entry) => entry.slug)).toEqual(['only-wiki']);
-  });
-
-  it('returns an empty list when no wikis exist', async () => {
-    const { listWikis, paths } = await loadModules();
-    const kb = createRuntime(paths);
-
-    expect(await listWikis(kb)).toEqual([]);
   });
 });

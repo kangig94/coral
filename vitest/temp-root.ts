@@ -25,7 +25,7 @@ function tmpfsWithRoom(candidate: string): boolean {
 
 /** Every unix socket the suites bind sits under this root, and `AF_UNIX` truncates `sun_path` at a fixed
  *  small limit — 108 bytes on Linux — so bytes spent on the name are bytes the rest of the path cannot use.
- *  `tests/invariants/temp-root-socket-budget.test.ts` holds the arithmetic. */
+ *  Keep the prefix short enough for the complete socket path to fit that limit. */
 export function userRootName(
   identity: string | number = process.getuid?.() ?? process.env.USERNAME ?? process.env.USER ?? 'unknown',
 ): string {

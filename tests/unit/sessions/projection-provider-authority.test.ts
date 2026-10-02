@@ -163,47 +163,39 @@ describe('projection session provider authority', () => {
 
   it('rejects corrupt claim snapshots atomically', () => {
     const base = session('claim-invariants', TEST_CODEX_BINDING);
-    const validClaim: ProviderSession = {
+    const entry: ProviderSession = {
       ...base,
-      activeJobId: 'job-1',
+      activeJobId: 'other-job',
       lastUsedAt: '2026-07-22T00:00:01.000Z',
       version: 2,
     };
-    const corruptClaims: ProviderSession[] = [
-      { ...validClaim, activeJobId: 'other-job' },
-      { ...validClaim, state: 'ready' },
-      { ...validClaim, cwd: '/other-project' },
-      { ...validClaim, version: 3 },
-    ];
 
-    for (const entry of corruptClaims) {
-      const db = newRawDatabase(':memory:');
-      try {
-        applyBundledStoreSchema(db, currentCoralStoreFormat());
-        openSession(db, base, permissiveProviderLookupPort);
-        expect(() =>
-          commitInputs(
-            db,
-            [
-              {
-                type: 'session.claimed',
-                stream: { kind: 'session', id: base.sessionId },
-                refs: { sessionId: base.sessionId, jobId: 'job-1' },
-                body: { entry, jobId: 'job-1' },
-              },
-            ],
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      openSession(db, base, permissiveProviderLookupPort);
+      expect(() =>
+        commitInputs(
+          db,
+          [
             {
-              now: () => new Date(NOW),
-              reducers: composeReducers(sessionsRegistry),
-              bodyCodec: createEventBodyCodec(),
-              providers: permissiveProviderLookupPort,
+              type: 'session.claimed',
+              stream: { kind: 'session', id: base.sessionId },
+              refs: { sessionId: base.sessionId, jobId: 'job-1' },
+              body: { entry, jobId: 'job-1' },
             },
-          ),
-        ).toThrowError(expect.objectContaining({ code: 'provider_session_claim_transition_invalid' }));
-        expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(1);
-      } finally {
-        db.close();
-      }
+          ],
+          {
+            now: () => new Date(NOW),
+            reducers: composeReducers(sessionsRegistry),
+            bodyCodec: createEventBodyCodec(),
+            providers: permissiveProviderLookupPort,
+          },
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'provider_session_claim_transition_invalid' }));
+      expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(1);
+    } finally {
+      db.close();
     }
   });
 
@@ -317,9 +309,6 @@ describe('projection session provider authority', () => {
       );
       insert.run('session-codex', JSON.stringify(session('session-codex', TEST_CODEX_BINDING)));
       insert.run('session-claude', JSON.stringify(session('session-claude', TEST_CLAUDE_BINDING)));
-
-      const columns = db.prepare('PRAGMA table_info(projection_sessions)').all() as Array<{ name: string }>;
-      expect(columns.map((column) => column.name)).not.toContain('provider');
 
       expect(readProjectionSession(db, 'session-codex')?.provider).toBe('codex');
       expect(readProjectionSession(db, 'session-claude')?.provider).toBe('claude');

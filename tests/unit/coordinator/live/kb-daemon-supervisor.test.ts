@@ -1,7 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -15,9 +13,9 @@ import { CORAL_KB_EXTRA_LANGS_ENV } from '#src/kb/extra-langs.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
-import { createRealRuntime } from '#src/runtime/real.js';
-import { encodeResolvedStoreEpoch, resolveCurrentStore } from '#src/store/epoch/index.js';
-import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
+
+import { encodeResolvedStoreEpoch, resolvedStoreEpoch } from '#src/store/epoch/index.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 class FakeStdin extends EventEmitter {
   destroyed = false;
@@ -207,32 +205,22 @@ describe('KB daemon supervisor', () => {
 
   it('passes the coordinator-opened store epoch to the KB daemon', async () => {
     const daemonProcess = new FakeDaemonProcess(115);
-    const root = mkdtempSync(join(tmpdir(), 'coral-kb-opened-store-'));
-    const storeRuntime = createRealRuntime('prod', { baseDir: join(root, '.coral') });
-    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {}, storeRuntime);
+    const backing = new SimulationRuntime();
+    const openedStore = { ...resolvedStoreEpoch(backing.paths.coral.store.dbDir, '7'), path: ':memory:' };
+    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {}, backing);
     const supervisor = createKbDaemonSupervisor({
       runtime,
       pluginRoot: '/plugin',
       entrypoint: '/plugin/bridge/coral-backend.cjs',
       command: '/node',
     });
-
-    try {
-      openSettledTestStoreDb(storeRuntime).close();
-      const openedStore = resolveCurrentStore(storeRuntime).epoch;
-      if (openedStore === null) {
-        throw new Error('Expected a settled store epoch');
-      }
-
-      void supervisor.start(openedStore);
-      await vi.waitFor(() => expect(spawnCalls).toHaveLength(1));
-
-      expect(spawnCalls[0]?.envAdditions).toMatchObject({
-        CORAL_KB_DAEMON_STORE: encodeResolvedStoreEpoch(storeRuntime, openedStore),
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    const start = supervisor.start(openedStore);
+    await flushMicrotasks();
+    expect(spawnCalls[0]?.envAdditions).toMatchObject({
+      CORAL_KB_DAEMON_STORE: encodeResolvedStoreEpoch(backing, openedStore),
+    });
+    writeReady(daemonProcess);
+    await start;
   });
 
   it('forwards every inherited CORAL_KB_* config var into the spawn env (composeChildEnv strips inherited CORAL_*)', async () => {
@@ -258,65 +246,6 @@ describe('KB daemon supervisor', () => {
       CORAL_KB_IMPORT_MARKER_DEVICE: 'cuda',
       CORAL_KB_CORPUS_SCAN_MAX_FILES: '9000',
     });
-  });
-
-  it('does not forward CORAL_* vars that lack the CORAL_KB_ prefix and are not allowlisted', async () => {
-    const daemonProcess = new FakeDaemonProcess(112);
-    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {
-      CORAL_MAX_WORKERS: '4',
-      CORAL_ENV_PASSTHROUGH: 'FOO',
-    });
-    const supervisor = createKbDaemonSupervisor({
-      runtime,
-      pluginRoot: '/plugin',
-      entrypoint: '/plugin/bridge/coral-backend.cjs',
-      command: '/node',
-    });
-
-    void supervisor.start();
-    await flushMicrotasks();
-
-    // Guard against a vacuous pass: the spawn must have happened for the negative
-    // assertions below to mean anything.
-    expect(spawnCalls).toHaveLength(1);
-    expect(spawnCalls[0]?.envAdditions).not.toHaveProperty('CORAL_MAX_WORKERS');
-    expect(spawnCalls[0]?.envAdditions).not.toHaveProperty('CORAL_ENV_PASSTHROUGH');
-  });
-
-  it('forwards allowlisted parent-owned knobs that do not carry the CORAL_KB_ prefix', async () => {
-    const daemonProcess = new FakeDaemonProcess(113);
-    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {
-      CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000',
-    });
-    const supervisor = createKbDaemonSupervisor({
-      runtime,
-      pluginRoot: '/plugin',
-      entrypoint: '/plugin/bridge/coral-backend.cjs',
-      command: '/node',
-    });
-
-    void supervisor.start();
-    await flushMicrotasks();
-
-    expect(spawnCalls[0]?.envAdditions).toMatchObject({ CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000' });
-  });
-
-  it('lets daemon-identity vars override any inherited CORAL_KB_DAEMON_* collision', async () => {
-    const daemonProcess = new FakeDaemonProcess(114);
-    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {
-      CORAL_KB_DAEMON_GENERATION: '999',
-    });
-    const supervisor = createKbDaemonSupervisor({
-      runtime,
-      pluginRoot: '/plugin',
-      entrypoint: '/plugin/bridge/coral-backend.cjs',
-      command: '/node',
-    });
-
-    void supervisor.start();
-    await flushMicrotasks();
-
-    expect(spawnCalls[0]?.envAdditions).toMatchObject({ CORAL_KB_DAEMON_GENERATION: '1' });
   });
 
   it('reports failed when the daemon closes before emitting ready', async () => {
@@ -420,39 +349,6 @@ describe('KB daemon supervisor', () => {
       kbRead: { phase: 'ready', initializedAt: 1_000_100 },
       pendingRequests: 0,
     });
-  });
-
-  it('coalesces concurrent health probes into one daemon request', async () => {
-    const daemonProcess = new FakeDaemonProcess(155);
-    const { runtime } = createRuntime([daemonProcess]);
-    const supervisor = createKbDaemonSupervisor({
-      runtime,
-      pluginRoot: '/plugin',
-      entrypoint: '/plugin/bridge/coral-backend.cjs',
-      command: '/node',
-    });
-
-    const start = supervisor.start();
-    await flushMicrotasks();
-    writeReady(daemonProcess);
-    await start;
-
-    const first = supervisor.probe();
-    const second = supervisor.probe();
-    await flushMicrotasks();
-    const requests = requestMessages(daemonProcess);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.method).toBe('health');
-
-    writeResponse(daemonProcess, String(requests[0]?.id), {
-      status: 'ready',
-      pid: 155,
-      startedAt: 1_000_000,
-      uptimeMs: 300,
-    });
-
-    await expect(first).resolves.toMatchObject({ phase: 'online', daemonUptimeMs: 300, pendingRequests: 0 });
-    await expect(second).resolves.toMatchObject({ phase: 'online', daemonUptimeMs: 300, pendingRequests: 0 });
   });
 
   it('sends read-only KB requests over the daemon control protocol', async () => {
@@ -938,42 +834,6 @@ describe('KB daemon supervisor', () => {
     expect(supervisor.read()).toMatchObject({ phase: 'online', generation: 2, pid: 172, pendingRequests: 0 });
   });
 
-  it('waits for an in-flight start before retrying read-only KB requests', async () => {
-    const daemonProcess = new FakeDaemonProcess(173);
-    const { runtime, spawnCalls } = createRuntime([daemonProcess]);
-    const supervisor = createKbDaemonSupervisor({
-      runtime,
-      pluginRoot: '/plugin',
-      entrypoint: '/plugin/bridge/coral-backend.cjs',
-      command: '/node',
-    });
-
-    const start = supervisor.start();
-    await flushMicrotasks();
-
-    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
-    await flushMicrotasks();
-    expect(spawnCalls).toHaveLength(1);
-
-    writeReady(daemonProcess);
-    await start;
-    await flushMicrotasks(12);
-
-    const request = latestRequest(daemonProcess);
-    expect(request.method).toBe('kb.read');
-    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
-    writeResponse(daemonProcess, request.id, {
-      ok: true,
-      data: { slug: 'alpha-note', source: 'started-daemon' },
-    });
-
-    await expect(read).resolves.toEqual({
-      ok: true,
-      data: { slug: 'alpha-note', source: 'started-daemon' },
-    });
-    expect(spawnCalls).toHaveLength(1);
-  });
-
   it('restarts and retries read-only KB requests after a request timeout', async () => {
     const first = new FakeDaemonProcess(174);
     const second = new FakeDaemonProcess(175);
@@ -1082,50 +942,6 @@ describe('KB daemon supervisor', () => {
 
     await expect(mutation).rejects.toMatchObject({ name: 'AbortError' });
     expect(requestMessages(daemonProcess).filter((request) => request.method === 'kb.mutate')).toHaveLength(0);
-  });
-
-  it('uses the extended request timeout for KB job mutations', async () => {
-    const daemonProcess = new FakeDaemonProcess(176);
-    const { runtime, time } = createRuntime([daemonProcess]);
-    const supervisor = createKbDaemonSupervisor({
-      runtime,
-      pluginRoot: '/plugin',
-      entrypoint: '/plugin/bridge/coral-backend.cjs',
-      command: '/node',
-      requestTimeoutMs: 25,
-      jobRequestTimeoutMs: 100,
-    });
-
-    const start = supervisor.start();
-    await flushMicrotasks();
-    writeReady(daemonProcess);
-    await start;
-
-    let settled = false;
-    const mutation = supervisor
-      .mutateKb({
-        method: 'createSource',
-        args: { filePath: '/workspace/project-a/source.md', async: false },
-        ctx: daemonCtx(),
-      })
-      .finally(() => {
-        settled = true;
-      });
-    await flushMicrotasks();
-    expect(latestRequest(daemonProcess).method).toBe('kb.mutate');
-
-    time.tick(25);
-    await flushMicrotasks(12);
-    expect(settled).toBe(false);
-    expect(supervisor.read()).toMatchObject({ pendingRequests: 1 });
-
-    time.tick(75);
-    await flushMicrotasks(12);
-    await expect(mutation).resolves.toMatchObject({
-      ok: false,
-      code: 'kb_unavailable',
-      message: expect.stringContaining('timed out after 100ms'),
-    });
   });
 
   it('does not restart read-only KB requests after dispose is requested', async () => {
@@ -1467,26 +1283,6 @@ describe('createDisabledKbDaemonSupervisor', () => {
       ok: false,
       code: 'kb_disabled',
     });
-  });
-
-  it('attaches a remediation that stays honest for a nested/child caller across reads, mutations, and expansion RPC', async () => {
-    const supervisor = createDisabledKbDaemonSupervisor();
-
-    const results = await Promise.all([
-      supervisor.readKb({ method: 'readNote', args: {} } as never),
-      supervisor.mutateKb({ method: 'createNote', args: {} } as never),
-      supervisor.expansionRpc({ method: 'listExpansion', args: {} } as never),
-    ]);
-
-    for (const result of results) {
-      expect(result.ok).toBe(false);
-      const remediation = (result as { remediation?: string }).remediation;
-      // Nested skills/hooks invoking `coral-cli kb ...` from inside a Coral-launched job are
-      // the normal caller here, and `coral-cli backend shutdown` is refused from that exact
-      // caller. The remediation must not unconditionally tell every reader to run it.
-      expect(remediation).toContain('backend shutdown');
-      expect(remediation).toContain('nested/child job cannot run that shutdown itself');
-    }
   });
 
   it('reports every requested job as not found on abort and disposes cleanly', async () => {

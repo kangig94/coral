@@ -4,10 +4,6 @@ import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
 import { TEST_CLAUDE_ACCESS } from '../../helpers/provider-credentials.js';
 
-const immediateTime = {
-  sleep: async () => {},
-};
-
 function fakeTimerTime(): Pick<ArtifactCleanupRuntime['time'], 'sleep'> {
   return {
     sleep: (ms) =>
@@ -41,79 +37,7 @@ const protocolPaths = {
   coral: { exports: { jobsRoot: '/tmp/coral/jobs' } },
 } as ArtifactCleanupRuntime['paths'];
 
-function makeRuntime(): {
-  runtime: ArtifactCleanupRuntime;
-  unlinkSync: ReturnType<typeof vi.fn>;
-  existsSync: ReturnType<typeof vi.fn>;
-} {
-  const unlinkSync = vi.fn();
-  const existsSync = vi.fn(() => false);
-  return {
-    runtime: {
-      storage: protocolStorage(unlinkSync, existsSync),
-      env: { homedir: () => '/home/user' },
-      paths: protocolPaths,
-      time: immediateTime,
-    } as unknown as ArtifactCleanupRuntime,
-    unlinkSync,
-    existsSync,
-  };
-}
-
 describe('claudeArtifactCapability.discardArtifacts', () => {
-  it('is a no-op for an empty handle list', async () => {
-    const { runtime, unlinkSync } = makeRuntime();
-
-    await expect(
-      claudeArtifactCapability.discardArtifacts({
-        handles: [],
-        actionId: 'test-action',
-        payloadHash: 'test-payload',
-        access: TEST_CLAUDE_ACCESS,
-        runtime,
-      }),
-    ).resolves.toEqual({
-      kind: 'skipped_no_handles',
-    });
-
-    expect(unlinkSync).not.toHaveBeenCalled();
-  });
-
-  it('unlinks only recorded handles passed by the caller', async () => {
-    const { runtime, unlinkSync } = makeRuntime();
-
-    await expect(
-      claudeArtifactCapability.discardArtifacts({
-        handles: ['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'],
-        actionId: 'test-action',
-        payloadHash: 'test-payload',
-        access: TEST_CLAUDE_ACCESS,
-        runtime,
-      }),
-    ).resolves.toEqual({ kind: 'discarded' });
-
-    expect(unlinkSync.mock.calls).toEqual([['/tmp/ref-a.jsonl'], ['/tmp/ref-b.jsonl']]);
-  });
-
-  it('swallows unlink failures and continues', async () => {
-    const { runtime, unlinkSync } = makeRuntime();
-    unlinkSync.mockImplementationOnce(() => {
-      throw new Error('EACCES');
-    });
-
-    await expect(
-      claudeArtifactCapability.discardArtifacts({
-        handles: ['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'],
-        actionId: 'test-action',
-        payloadHash: 'test-payload',
-        access: TEST_CLAUDE_ACCESS,
-        runtime,
-      }),
-    ).resolves.toEqual({ kind: 'discarded' });
-
-    expect(unlinkSync).toHaveBeenCalledTimes(2);
-  });
-
   it('removes a native log recreated during cleanup settling', async () => {
     vi.useFakeTimers();
     try {

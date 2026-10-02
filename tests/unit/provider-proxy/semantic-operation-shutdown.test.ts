@@ -76,7 +76,7 @@ function preparedFixture(): ProxyPreparedAppServerOperation {
       action: 'exec',
       sessionId: 'session-1',
       prompt: 'hello',
-      cwd: fixtureCanonicalWorkDir('/workspace'),
+      cwd: fixtureCanonicalWorkDir(process.cwd()),
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -98,7 +98,7 @@ function fakeHostSpec(provider = 'claude'): ProviderServerSpec {
     provider,
     command: provider,
     args: ['app-server'],
-    cwd: fixtureCanonicalWorkDir('/workspace'),
+    cwd: fixtureCanonicalWorkDir(process.cwd()),
     leaseMode: 'job-exclusive',
   };
 }
@@ -343,16 +343,5 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
       ],
     });
     expect(closeStaged).not.toHaveBeenCalled();
-  });
-
-  it('is a safe no-op when nothing is staged', async () => {
-    const { proxy } = createTestProxy();
-    const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
-
-    const first = host.shutdown('signal_abort');
-    const repeated = host.shutdown('queue_shutdown');
-
-    expect(repeated).toBe(first);
-    await expect(first).resolves.toBeUndefined();
   });
 });

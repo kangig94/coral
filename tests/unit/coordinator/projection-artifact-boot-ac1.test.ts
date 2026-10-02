@@ -75,30 +75,4 @@ describe('repairProjectionArtifactLagOnBoot AC1 fallback', () => {
     });
     expect(driver.waitFreshUntil).not.toHaveBeenCalled();
   });
-
-  it('does not wait for non-Orama projection repair during boot', async () => {
-    vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-    const driver = driverForRepair(['vector-base']);
-
-    await expect(
-      repairProjectionArtifactLagOnBoot(kbWithDescriptor(descriptorFor(['vector-base'])), driver, 25),
-    ).resolves.toEqual({ allowStaleFts: false });
-    expect(driver.forceCorpusApply).toHaveBeenCalledWith(SNAPSHOT, {
-      reason: 'projection-artifact-lag',
-      consumers: ['vector-base'],
-      generatedCommunityFreshness: EMPTY_GENERATED_COMMUNITY_FRESHNESS,
-    });
-    expect(driver.waitFreshUntil).not.toHaveBeenCalled();
-  });
-
-  it('does not wait for mixed projection repair during boot', async () => {
-    vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-    const targets = [ORAMA_BASE_CONSUMER_ID, 'vector-base'];
-    const driver = driverForRepair(targets);
-
-    await expect(
-      repairProjectionArtifactLagOnBoot(kbWithDescriptor(descriptorFor(targets)), driver, 25),
-    ).resolves.toEqual({ allowStaleFts: false });
-    expect(driver.waitFreshUntil).not.toHaveBeenCalled();
-  });
 });

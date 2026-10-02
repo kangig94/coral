@@ -1,5 +1,6 @@
 import { MAX_STORE_EPOCH_METADATA_BYTES } from './constants.js';
 
+/** @knipignore scripts/build-server.mjs imports it from the compiled dist/, which knip cannot map back to src. */
 export function storeEpochHookSource(): string {
   return String.raw`// Generated from src/store/epoch/hook-source.ts by scripts/build-server.mjs. Do not edit directly.
 import { lstatSync, readFileSync, readdirSync, realpathSync } from '${'node:' + 'fs'}';

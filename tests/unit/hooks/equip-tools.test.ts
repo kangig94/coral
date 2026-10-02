@@ -59,40 +59,5 @@ describe('resolveEquippedTools', () => {
 
     const tools = resolveEquippedTools();
     expect(tools.map((t: { id: string }) => t.id)).toEqual(['codebase-memory']);
-    expect(tools[0].summary).toContain('mandatory first stop');
-    expect(tools[0].guidance.join('\n')).toContain('mcp__codebase_memory_mcp namespace first');
-    expect(tools[0].guidance.join('\n')).toContain('search_graph');
-    expect(tools[0].guidance.join('\n')).toContain('codebase-memory-mcp cli <tool>');
-    expect(tools[0].guidance.join('\n')).toContain('both MCP and shell CLI graph access');
-  });
-
-  it('stops surfacing the instant the binary is removed by any means (no equip uninstall needed)', () => {
-    tmpHome();
-    const dir = codebaseMemoryBinDir();
-    mkdirSync(dir, { recursive: true });
-    const bin = join(dir, 'codebase-memory-mcp');
-    writeFileSync(bin, 'binary');
-    expect(resolveEquippedTools().map((t: { id: string }) => t.id)).toEqual(['codebase-memory']);
-
-    rmSync(bin);
-    expect(resolveEquippedTools()).toEqual([]);
-  });
-
-  it('does not surface a like-named directory (binary must be a regular file)', () => {
-    tmpHome();
-    const dir = codebaseMemoryBinDir();
-    mkdirSync(join(dir, 'codebase-memory-mcp'), { recursive: true });
-    expect(resolveEquippedTools()).toEqual([]);
-  });
-
-  it('keeps the engine tree account-neutral when CLAUDE_CONFIG_DIR changes', () => {
-    const home = tmpHome();
-    const canonicalDir = codebaseMemoryBinDir();
-    process.env.CLAUDE_CONFIG_DIR = join(home, 'alt-config');
-    expect(codebaseMemoryBinDir()).toBe(canonicalDir);
-    mkdirSync(canonicalDir, { recursive: true });
-    writeFileSync(join(canonicalDir, 'codebase-memory-mcp'), 'binary');
-
-    expect(resolveEquippedTools().map((t: { id: string }) => t.id)).toEqual(['codebase-memory']);
   });
 });

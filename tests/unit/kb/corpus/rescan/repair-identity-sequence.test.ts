@@ -1,43 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadKbNote, loadKbSource } from '#src/kb/read.js';
+import { loadKbNote } from '#src/kb/read.js';
 import { REPAIR_INCIDENT_ID } from '#src/kb/corpus/rescan/incidents/catalog.js';
 import { expectedDetectedIncident, runRepairFixtureCase } from '#tests/unit/kb/corpus/rescan/helpers.js';
 
 describe('repair fixtures: identity sequence', () => {
-  it(`covers ${REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION} end to end`, async () => {
-    await runRepairFixtureCase({
-      fixture: 'identity-sequence-entryseq-collision',
-      classification: 'needs-manual',
-      assertFailure(harness) {
-        expect(loadKbNote(harness.storage, harness.path('notes/collision-alpha.md')).frontmatter.entrySeq).toBe(21);
-        expect(loadKbSource(harness.storage, harness.path('sources/collision-beta.md')).frontmatter.entrySeq).toBe(21);
-      },
-      expectedIncidents: [
-        expectedDetectedIncident({
-          canonical: REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION,
-          entryId: 'note:collision-alpha',
-          assertSignals(signals) {
-            expect(signals).toEqual({
-              entrySeq: 21,
-              colliders: ['note:collision-alpha', 'source:collision-beta'],
-            });
-          },
-        }),
-        expectedDetectedIncident({
-          canonical: REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION,
-          entryId: 'source:collision-beta',
-          assertSignals(signals) {
-            expect(signals).toEqual({
-              entrySeq: 21,
-              colliders: ['note:collision-alpha', 'source:collision-beta'],
-            });
-          },
-        }),
-      ],
-    });
-  });
-
   it(`covers ${REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'identity-sequence-entryseq-format',

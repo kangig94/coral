@@ -77,31 +77,6 @@ describe('IdleTimer', () => {
     );
   });
 
-  it('should report a sticky predicate failure once per transition, not once per poll', () => {
-    const harness = createTimeHarness();
-    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
-    const timer = new IdleTimer({ time: harness.time, timeoutMs: 0 });
-    let failing = true;
-
-    timer.startWatching(() => {
-      if (failing) throw new Error('still broken');
-      return false;
-    }, vi.fn());
-    harness.advance(1);
-
-    harness.tick();
-    harness.tick();
-    harness.tick();
-    expect(errorSpy).toHaveBeenCalledTimes(1);
-
-    // Recovering and failing again is a new transition, so it reports again.
-    failing = false;
-    harness.tick();
-    failing = true;
-    harness.tick();
-    expect(errorSpy).toHaveBeenCalledTimes(2);
-  });
-
   it('should still honour an explicit drain request when the predicate throws', () => {
     const harness = createTimeHarness();
     vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);

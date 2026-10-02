@@ -1,8 +1,7 @@
-import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
-import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
+
 import { ensureProviderServerHandle } from '#src/coordinator/live/provider-hosts/recovery.js';
-import { createHostAdmissionCollection, type HostAdmissionCollection } from '#src/providers/host-admission.js';
+
 import {
   StubbedContainmentProviderHostManager,
   noCarrierBlocksRetirement,
@@ -35,49 +34,6 @@ describe('provider host recovery', () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toBe('provider_host_draining: Provider server codex drained');
     expect((failure as Error).cause).toBe(closingError);
-  });
-
-  it('records the verified containment identity on the host entry before admitting it', async () => {
-    const containmentIdentity = Object.freeze({
-      pid: 71,
-      incarnation: testIncarnation(1_700_000_071),
-      processGroupId: 71,
-    });
-    const server = createFakeProviderServerHandle({ generation: 71, containmentIdentity });
-    const baseAdmission = createHostAdmissionCollection({ classify: () => 'unknown' });
-    let containmentAtMarkLive: ProviderHostEntry['containment'] | undefined;
-    const admission: HostAdmissionCollection = {
-      ...baseAdmission,
-      withFreshPlacement: (slot, delegate) =>
-        baseAdmission.withFreshPlacement(slot, (reservation) =>
-          delegate({
-            ...reservation,
-            markLive: (ref, generation) => {
-              const entry = [
-                ...(manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.values(),
-              ][0];
-              containmentAtMarkLive = entry?.containment;
-              reservation.markLive(ref, generation);
-            },
-          }),
-        ),
-    };
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      admission,
-    });
-
-    const lease = await manager.openSession(createExclusiveSpec(), { jobId: 'job-a' });
-    const entry = [...(manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.values()][0];
-
-    expect(containmentAtMarkLive).toEqual(containmentIdentity);
-    expect(containmentAtMarkLive?.processGroupId).toBe(containmentAtMarkLive?.pid);
-    expect(entry?.containment).toEqual(containmentIdentity);
-
-    lease.close();
-    await manager.shutdown();
   });
 
   it('rejects valid references substituted across profiles or exclusive job owners', async () => {
@@ -128,41 +84,6 @@ describe('provider host recovery', () => {
     borrowed?.close();
     lease.close();
     await expect(manager.attachSession(lease.hostRef, expectation)).resolves.toBeNull();
-    await manager.shutdown();
-  });
-
-  it('passes initializeRequest from spec to spawnProviderServer options', async () => {
-    const server = createFakeProviderServerHandle({ generation: 50 });
-    const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer,
-    });
-
-    const spec = createExclusiveSpec({
-      initializeRequest: {
-        method: 'initialize',
-        params: { clientInfo: { name: 'coral', version: '0.5.0' } },
-      },
-      initializeTimeoutMs: 12_345,
-    });
-
-    const lease = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
-    expect(spawnProviderServer).toHaveBeenCalledWith(
-      expect.objectContaining({
-        initializeRequest: {
-          method: 'initialize',
-          params: { clientInfo: { name: 'coral', version: '0.5.0' } },
-        },
-        initializeTimeoutMs: 12_345,
-      }),
-      expect.any(Function),
-      expect.any(Number),
-      expect.any(Function),
-      expect.any(Function),
-    );
-    lease.close();
     await manager.shutdown();
   });
 

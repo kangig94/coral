@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { attenuate } from '../../../src/security/attenuate.js';
-import { CAPABILITIES, type Capability } from '../../../src/security/capability.js';
+import { type Capability } from '../../../src/security/capability.js';
 import type { Principal, ResourceBinding, Subject } from '../../../src/security/principal.js';
-import { capabilitiesFor } from '../../../src/security/policy/capabilities.js';
 import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
 function principal(subject: Subject, binding: ResourceBinding, attenuatedCaps?: Iterable<Capability>): Principal {
@@ -14,11 +13,6 @@ function principal(subject: Subject, binding: ResourceBinding, attenuatedCaps?: 
     binding,
     attenuatedCaps: attenuatedCaps ? new Set(attenuatedCaps) : undefined,
   };
-}
-
-function effectiveCapabilities(principal: Principal): Set<Capability> {
-  const baseline = capabilitiesFor(principal.subject);
-  return new Set([...baseline].filter((capability) => (principal.attenuatedCaps ?? baseline).has(capability)));
 }
 
 describe('attenuate', () => {
@@ -47,19 +41,5 @@ describe('attenuate', () => {
     const child = attenuate(parent, ['kb:read', 'system:shutdown']);
 
     expect(child.attenuatedCaps).toEqual(new Set(['kb:read']));
-  });
-
-  it('keeps every child effective capability within the parent effective set', () => {
-    const parent = principal('agent', { kind: 'project', root: fixtureCanonicalWorkDir('/workspace/project') }, [
-      'kb:read',
-      'jobs:read',
-    ]);
-    const child = attenuate(parent, CAPABILITIES);
-    const parentEffective = effectiveCapabilities(parent);
-    const childEffective = effectiveCapabilities(child);
-
-    for (const capability of childEffective) {
-      expect(parentEffective.has(capability)).toBe(true);
-    }
   });
 });

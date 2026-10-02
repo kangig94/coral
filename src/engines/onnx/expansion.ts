@@ -57,13 +57,6 @@ type OnnxEmbeddingService = EmbeddingService & {
   readonly specId: string;
 };
 
-type OnnxExpansionTestHooks = {
-  resolveRuntimeModule?: (runtimeDir: string) => OnnxRuntimeModule | null;
-  downloadFile?: (url: string, destinationPath: string) => Promise<void>;
-};
-
-let onnxExpansionTestHooks: OnnxExpansionTestHooks | null = null;
-
 function isOnnxRuntimeModule(value: unknown): value is OnnxRuntimeModule {
   return (
     isRecord(value) &&
@@ -184,8 +177,7 @@ export async function ensureOnnxModelAvailable(
   }
 
   mkdirSync(dataDir, { recursive: true });
-  const download = onnxExpansionTestHooks?.downloadFile ?? defaultDownloadFile;
-  await download(ONNX_MODELS[model].downloadUrl, destinationPath);
+  await defaultDownloadFile(ONNX_MODELS[model].downloadUrl, destinationPath);
   return destinationPath;
 }
 
@@ -240,8 +232,7 @@ class LocalOnnxProvider implements OnnxEmbeddingService {
 
 const onnxExpansion: Expansion = async (host) => {
   const dataDir = host.runtime.paths.coral.engine.dataDir(host.id);
-  const runtimeModule =
-    onnxExpansionTestHooks?.resolveRuntimeModule?.(host.kb.runtimeDir) ?? resolveOnnxRuntime(host.kb.runtimeDir);
+  const runtimeModule = resolveOnnxRuntime(host.kb.runtimeDir);
   if (runtimeModule === null) {
     throw new CoralSetupError({
       code: 'onnx-runtime-missing',
@@ -267,9 +258,5 @@ const onnxExpansion: Expansion = async (host) => {
   host.registerConsumer({ id: consumer.id, kind: consumer.kind }, host.scope);
   host.bind(KB_EMBEDDING_CAPABILITY, provider);
 };
-
-export function __setOnnxExpansionTestHooks(hooks: OnnxExpansionTestHooks | null): void {
-  onnxExpansionTestHooks = hooks;
-}
 
 export default onnxExpansion;
