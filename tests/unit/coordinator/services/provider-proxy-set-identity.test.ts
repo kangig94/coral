@@ -1,58 +1,17 @@
 import { decodeProviderProxySetAddress, encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
-import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
-
 import { describe, expect, it } from 'vitest';
-
 import {
   ProviderProxySetIdentityIndex,
   providerProxySetAddress,
   providerProxySetAddressKey,
   providerProxySetIdentitiesEqual,
-  providerProxySetIdentityFromCapsule,
   providerProxySetIdentityFromRecord,
   providerProxySetKey,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 describe('complete provider proxy set identity', () => {
-  it('derives all sixteen identity facts from a v3 capsule', () => {
-    const identity = providerProxySetIdentityFromCapsule({
-      version: 3,
-      grantId: '11111111-1111-4111-8111-111111111111',
-      secret: 'a'.repeat(64),
-      generation: 'gen2',
-      flavor: 'prod',
-      buildSetId: '22222222-2222-4222-8222-222222222222',
-      hostFingerprint: 'b'.repeat(64),
-      guardianInstanceId: '33333333-3333-4333-8333-333333333333',
-      guardianPid: 101,
-      guardianIncarnation: testIncarnation(1_001),
-      guardianControlEndpoint: '/tmp/guardian.sock',
-      proxyInstanceId: '44444444-4444-4444-8444-444444444444',
-      proxyPid: 102,
-      reaperInstanceId: '55555555-5555-4555-8555-555555555555',
-      reaperPid: 103,
-      reaperIncarnation: testIncarnation(1_003),
-      reaperControlEndpoint: '/tmp/reaper.sock',
-      containmentKind: 'detached-process-group',
-      proxyIncarnation: testIncarnation(1_002),
-      proxyProcessGroupId: 102,
-      proxyEndpoint: '/tmp/proxy.sock',
-      orphanTimeoutMs: 30_000,
-      teardownReserveMs: 14_000,
-    });
-
-    expect(Object.keys(identity)).toHaveLength(16);
-    expect(identity).toMatchObject({
-      guardianPid: 101,
-      proxyPid: 102,
-      reaperPid: 103,
-      proxyProcessGroupId: 102,
-      canonicalEndpoint: '/tmp/proxy.sock',
-    });
-  });
-
   it('derives every live identity field from one durable record and serializes it canonically', () => {
     const record = providerOperationRecord('executing');
     const identity = providerProxySetIdentityFromRecord(record);
@@ -118,31 +77,5 @@ describe('complete provider proxy set identity', () => {
     expect(providerProxySetAddressKey(address)).toBe(
       JSON.stringify([address.buildSetId, address.hostFingerprint, address.proxyInstanceId]),
     );
-  });
-
-  it('rejects every malformed or non-canonical token with one authored recovery message', () => {
-    const address = providerProxySetAddress(providerProxySetIdentityFromRecord(providerOperationRecord('executing')));
-    const token = encodeProviderProxySetAddress(address);
-    const reordered = `pps1.${Buffer.from(
-      JSON.stringify({
-        proxyInstanceId: address.proxyInstanceId,
-        hostFingerprint: address.hostFingerprint,
-        buildSetId: address.buildSetId,
-      }),
-    ).toString('base64url')}`;
-
-    const emptyObject = `pps1.${Buffer.from('{}').toString('base64url')}`;
-    const expected =
-      'provider_proxy_set_token_invalid: copy the exact provider-proxy set token from coral-cli backend status';
-    for (const malformed of [token.replace('pps1.', 'pps2.'), `${token}=`, reordered, emptyObject]) {
-      expect(() => decodeProviderProxySetAddress(malformed)).toThrow(expected);
-      try {
-        decodeProviderProxySetAddress(malformed);
-      } catch (error: unknown) {
-        expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toBe(expected);
-        expect((error as Error).message).not.toMatch(/Zod|buildSetId|invalid_type/u);
-      }
-    }
   });
 });

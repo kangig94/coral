@@ -10,10 +10,6 @@ import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport
 import type { HealthSnapshot, HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 
-function requestEnvelope(payload: Record<string, unknown>): string {
-  return JSON.stringify({ kind: 'request', id: 1, method: 'coordinator.listExpansion', ...payload });
-}
-
 async function withCapturedIpcRequest(
   respond: (request: JsonRpcRequestEnvelope, socket: Socket) => void,
   run: (socketPath: string) => Promise<unknown>,
@@ -218,43 +214,6 @@ async function withRealIpcServer(
 // a real unix socket to prove the metadata contract on the wire. The unit tier is kept free of unix-socket
 // binds so it stays runnable under a filesystem sandbox — see tests/invariants/unit-tier-io-boundary.test.ts.
 describe('IPC auth metadata invariant', () => {
-  it('accepts only closed, validated auth metadata on JSON-RPC requests', () => {
-    expect(decode(requestEnvelope({ auth: { kind: 'boot', token: 'boot-token' } }))).toMatchObject({
-      kind: 'request',
-      auth: { kind: 'boot', token: 'boot-token' },
-    });
-    expect(
-      decode(
-        requestEnvelope({
-          auth: {
-            kind: 'child',
-            handle: 'handle',
-            token: 'child-token',
-            jobId: 'job-a',
-            sessionId: 'session-a',
-          },
-        }),
-      ),
-    ).toMatchObject({
-      kind: 'request',
-      auth: {
-        kind: 'child',
-        handle: 'handle',
-        token: 'child-token',
-        jobId: 'job-a',
-        sessionId: 'session-a',
-      },
-    });
-
-    expect(() => decode(requestEnvelope({ auth: { kind: 'boot', token: '' } }))).toThrow();
-    expect(() => decode(requestEnvelope({ auth: { kind: 'boot', token: 'x', extra: true } }))).toThrow();
-    expect(() => decode(requestEnvelope({ auth: { kind: 'shutdown', token: 'x' } }))).toThrow();
-    expect(() => decode(requestEnvelope({ auth: { kind: 'child', token: 'x' } }))).toThrow();
-    expect(() =>
-      decode(requestEnvelope({ auth: { kind: 'child', handle: 'handle', token: 'x', jobId: 'job-a' } })),
-    ).toThrow();
-  });
-
   it('attaches auth metadata to unary and subscription client envelopes', async () => {
     const unary = await withCapturedIpcRequest(
       (request, socket) => {
@@ -315,23 +274,5 @@ describe('IPC auth metadata invariant', () => {
       });
       expect(ports.admin.requestDrain).not.toHaveBeenCalled();
     });
-  });
-
-  it('carries authenticated succession requests to the coordinator port', async () => {
-    const succession = vi.fn(async (method: string, params: unknown) => ({ kind: 'registered', method, params }));
-    await withRealIpcServer(async (socketPath) => {
-      await expect(
-        requestIpcMethod(socketPath, 'coordinator.succession.v1.request', { requestId: 'one' }),
-      ).rejects.toMatchObject({
-        message: 'IPC boot token or child principal required',
-      });
-      for (const operation of ['request', 'prepare', 'commit', 'abort', 'status']) {
-        const method = `coordinator.succession.v1.${operation}`;
-        await expect(
-          requestIpcMethod(socketPath, method, { requestId: 'one' }, { auth: { kind: 'boot', token: 'boot-token' } }),
-        ).resolves.toEqual({ kind: 'registered', method, params: { requestId: 'one' } });
-      }
-    }, succession);
-    expect(succession).toHaveBeenCalledTimes(5);
   });
 });

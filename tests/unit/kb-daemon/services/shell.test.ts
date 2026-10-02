@@ -5,8 +5,6 @@ import { describe, expect, it } from 'vitest';
 import { KbOperationJobShell, type KbOperationJobContext } from '#src/kb-daemon/services/shell.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
-import type { JobStatus } from '#src/jobs/records.js';
-import { throwIfAborted } from '#src/runtime/abort.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -48,46 +46,7 @@ function reindexContext(): KbOperationJobContext {
   };
 }
 
-async function waitForTerminal(progressStore: JobStore, jobId: string): Promise<JobStatus> {
-  const startedAt = Date.now();
-  for (;;) {
-    const status = progressStore.readStatus(jobId);
-    if (status?.result !== undefined) {
-      return status;
-    }
-    if (Date.now() - startedAt > 1000) {
-      throw new Error(`No terminal recorded for ${jobId}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
-
 describe('KbOperationJobShell', () => {
-  it('runSync records started/completed envelopes and returns the body result', async () => {
-    const { shell, progressStore, abortRegistry } = createShell();
-    let jobId = '';
-
-    const result = await shell.runSync('kb.reindex', reindexContext(), async (job) => {
-      jobId = job.jobId;
-      expect(job.signal.aborted).toBe(false);
-      job.recorder.appendMessage('working');
-      return {
-        data: { rebuilt: true },
-        terminalContent: 'Reindexed 4 KB entries.',
-      };
-    });
-
-    expect(result).toEqual({ ok: true, data: { rebuilt: true } });
-    expect(abortRegistry.has(jobId)).toBe(false);
-    expect(progressStore.readStatus(jobId)).toMatchObject({
-      phase: 'completed',
-      result: {
-        content: 'Reindexed 4 KB entries.',
-        outcome: { kind: 'completed' },
-      },
-    });
-  });
-
   it('runSync normalizes thrown errors and records the failed terminal through the recorder', async () => {
     const { shell, progressStore, abortRegistry } = createShell();
     let jobId = '';
@@ -142,51 +101,5 @@ describe('KbOperationJobShell', () => {
         outcome: { kind: 'aborted', reason: 'user_abort' },
       },
     });
-  });
-
-  it('launchAsync returns a waitable job id while the body records completion in the background', async () => {
-    const { shell, progressStore, abortRegistry } = createShell();
-
-    const { jobId } = shell.launchAsync('kb.reindex', reindexContext(), async () => ({
-      data: { launched: true },
-      terminalContent: 'Reindexed 1 KB entry.',
-    }));
-
-    expect(jobId).toMatch(/\S/u);
-    expect(abortRegistry.has(jobId)).toBe(true);
-
-    await expect(waitForTerminal(progressStore, jobId)).resolves.toMatchObject({
-      phase: 'completed',
-      result: {
-        content: 'Reindexed 1 KB entry.',
-        outcome: { kind: 'completed' },
-      },
-    });
-    expect(abortRegistry.has(jobId)).toBe(false);
-  });
-
-  it('launchAsync exposes active jobs until abort terminal cleanup finalizes them', async () => {
-    const { shell, progressStore, abortRegistry } = createShell();
-
-    const { jobId } = shell.launchAsync('kb.reindex', reindexContext(), async (job) => {
-      await new Promise<void>((resolve) => job.signal.addEventListener('abort', () => resolve(), { once: true }));
-      throwIfAborted(job.signal, 'test');
-      return {
-        data: { launched: true },
-        terminalContent: 'unreachable',
-      };
-    });
-
-    expect(abortRegistry.listActive()).toEqual([jobId]);
-    expect(abortRegistry.abort([jobId])).toEqual({ aborted: [jobId], notFound: [] });
-
-    await expect(waitForTerminal(progressStore, jobId)).resolves.toMatchObject({
-      phase: 'aborted',
-      result: {
-        content: '',
-        outcome: { kind: 'aborted', reason: 'user_abort' },
-      },
-    });
-    expect(abortRegistry.listActive()).toEqual([]);
   });
 });

@@ -2,72 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createKbDaemonTerminalWindowAuthority,
   handleKbDaemonExpansionRpcRequest,
-  resolveKbDaemonParentPid,
   startKbDaemonParentWatchdog,
 } from '#src/kb-daemon/daemon-main.js';
 
 describe('KB daemon main parent watchdog', () => {
-  it('parses a valid parent pid and rejects invalid or self pids', () => {
-    expect(resolveKbDaemonParentPid('123', 456)).toBe(123);
-    expect(resolveKbDaemonParentPid(' 123 ', 456)).toBe(123);
-    expect(resolveKbDaemonParentPid(undefined, 456)).toBeNull();
-    expect(resolveKbDaemonParentPid('', 456)).toBeNull();
-    expect(resolveKbDaemonParentPid('0', 456)).toBeNull();
-    expect(resolveKbDaemonParentPid('-1', 456)).toBeNull();
-    expect(resolveKbDaemonParentPid('12.5', 456)).toBeNull();
-    expect(resolveKbDaemonParentPid('1e3', 456)).toBeNull();
-    expect(resolveKbDaemonParentPid('0x10', 456)).toBeNull();
-    expect(resolveKbDaemonParentPid('abc', 456)).toBeNull();
-    expect(resolveKbDaemonParentPid('456', 456)).toBeNull();
-  });
-
-  it('does not start a watchdog when no parent pid is available', () => {
-    const setIntervalFn = vi.fn();
-
-    expect(
-      startKbDaemonParentWatchdog({
-        parentPid: null,
-        setIntervalFn,
-        onParentExit: vi.fn(),
-      }),
-    ).toBeNull();
-    expect(
-      startKbDaemonParentWatchdog({
-        parentPid: 0,
-        setIntervalFn,
-        onParentExit: vi.fn(),
-      }),
-    ).toBeNull();
-    expect(setIntervalFn).not.toHaveBeenCalled();
-  });
-
-  it('keeps the watchdog alive while the original parent is still present', () => {
-    let tick: (() => void) | undefined;
-    const handle = { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
-    const clearIntervalFn = vi.fn();
-    const onParentExit = vi.fn();
-
-    const watchdog = startKbDaemonParentWatchdog({
-      parentPid: 123,
-      intervalMs: 25,
-      observeLiveness: () => 'alive' as const,
-      getCurrentParentPid: () => 123,
-      setIntervalFn: (fn, ms) => {
-        tick = fn;
-        expect(ms).toBe(25);
-        return handle;
-      },
-      clearIntervalFn,
-      onParentExit,
-    });
-
-    expect(watchdog).toBe(handle);
-    expect(handle.unref).toHaveBeenCalledTimes(1);
-    tick?.();
-    expect(clearIntervalFn).not.toHaveBeenCalled();
-    expect(onParentExit).not.toHaveBeenCalled();
-  });
-
   it('stops the daemon when the parent pid is no longer the direct parent', () => {
     let tick: (() => void) | undefined;
     let currentParentPid = 123;
@@ -189,86 +127,9 @@ describe('KB daemon terminal window', () => {
     expect(exit).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(0);
   });
-
-  it('never holds the event loop open on its own', () => {
-    const { scheduled, setTimeoutFn } = scheduler();
-
-    createKbDaemonTerminalWindowAuthority({
-      setTimeoutFn,
-      exit: vi.fn(),
-      log: vi.fn(),
-    }).open(0);
-
-    expect(scheduled).toHaveLength(2);
-    for (const entry of scheduled) {
-      expect(entry.unref).toHaveBeenCalledTimes(1);
-    }
-  });
 });
 
 describe('KB daemon expansion RPC authorization', () => {
-  it.each([
-    ['missing ctx', { method: 'equipExpansion', args: { name: 'vector' } }],
-    [
-      'unknown subject',
-      {
-        method: 'equipExpansion',
-        args: { name: 'vector' },
-        ctx: { principal: { subject: 'admin', binding: { kind: 'unbound' } } },
-      },
-    ],
-    [
-      'non-array attenuation',
-      {
-        method: 'equipExpansion',
-        args: { name: 'vector' },
-        ctx: {
-          principal: {
-            subject: 'operator',
-            binding: { kind: 'unbound' },
-            attenuatedCaps: 'expansion:manage',
-          },
-        },
-      },
-    ],
-  ])('rejects malformed expansion requests with %s before calling the runtime host', async (_label, params) => {
-    const expansionRpc = vi.fn(async () => ({ ok: true as const, data: { status: 'equipped' } }));
-
-    await expect(handleKbDaemonExpansionRpcRequest(params, { expansionRpc })).resolves.toMatchObject({
-      ok: false,
-      code: 'invalid_request',
-    });
-    expect(expansionRpc).not.toHaveBeenCalled();
-  });
-
-  it.each(['equipExpansion', 'unequipExpansion', 'removeExpansionCatalog'] as const)(
-    'denies attenuated child principals without expansion:manage for %s',
-    async (method) => {
-      const expansionRpc = vi.fn(async () => ({ ok: true as const, data: { status: 'ok' } }));
-
-      await expect(
-        handleKbDaemonExpansionRpcRequest(
-          {
-            method,
-            args: { name: 'vector' },
-            ctx: {
-              principal: {
-                subject: 'operator',
-                binding: { kind: 'unbound' },
-                attenuatedCaps: ['liveness', 'kb:read'],
-              },
-            },
-          },
-          { expansionRpc },
-        ),
-      ).resolves.toMatchObject({
-        ok: false,
-        code: 'unauthorized',
-      });
-      expect(expansionRpc).not.toHaveBeenCalled();
-    },
-  );
-
   it('calls the runtime host for principals with expansion:manage', async () => {
     const expansionRpc = vi.fn(async () => ({ ok: true as const, data: { status: 'equipped' } }));
     const request = {

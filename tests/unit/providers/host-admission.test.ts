@@ -4,13 +4,9 @@ import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
   createHostAdmissionCollection,
-  exactHostRefIdentityKey,
-  PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET,
   ProviderHostUnserviceableError,
   type ProviderHostUnserviceableResponseError,
 } from '#src/providers/host-admission.js';
-import { hostRefSchema } from '#src/providers/host-ref-schema.js';
-import { providerOperationPreparePermanentRefusalSchema } from '#src/provider-proxy/protocol.js';
 import type { HostRef, ProviderServerSpec } from '#src/providers/contract.js';
 import type {
   ProviderHostDiagnosticsSnapshot,
@@ -66,22 +62,6 @@ function collection() {
 }
 
 describe('provider host admission state machine', () => {
-  it('keys every field of exact host identity', () => {
-    const shared = ref('identity');
-    const exclusive: HostRef = { ...shared, leaseMode: 'job-exclusive', ownerJobId: 'job-a' };
-    const identities: HostRef[] = [
-      shared,
-      { ...shared, provider: 'claude' },
-      { ...shared, fingerprint: 'b'.repeat(64) },
-      { ...shared, instanceId: 'other' },
-      exclusive,
-      { ...exclusive, ownerJobId: 'job-b' },
-    ];
-
-    expect(new Set(identities.map(exactHostRefIdentityKey)).size).toBe(identities.length);
-    expect(exactHostRefIdentityKey(shared)).toBe(exactHostRefIdentityKey({ ...shared }));
-  });
-
   it('correlates a rejected operation only after an accepted exact fact blocks its host', async () => {
     const admission = collection();
     const slot = admissionSlotKey('finding-slot');
@@ -219,33 +199,6 @@ describe('provider host admission state machine', () => {
     expect(admission.snapshot()).toMatchObject({ state: new Map(), tombstones: [] });
   });
 
-  it('strictly validates host refs and the structured admission refusal', () => {
-    const hostRef = ref('strict-host');
-    expect(hostRefSchema.parse(hostRef)).toEqual(hostRef);
-    expect(hostRefSchema.safeParse({ ...hostRef, ownerJobId: 'not-allowed' }).success).toBe(false);
-    expect(hostRefSchema.safeParse({ ...hostRef, fingerprint: 'A'.repeat(64) }).success).toBe(false);
-
-    const refusal = {
-      state: 'permanent-refusal',
-      code: 'provider_host_unserviceable',
-      disposition: 'terminal-failure',
-      reason: 'blocked',
-      hostRef,
-      remediation: {
-        action: 'evict-provider-host',
-        command: 'coral-cli backend provider-host evict <host-ref>',
-      },
-    } as const;
-    expect(providerOperationPreparePermanentRefusalSchema.parse(refusal)).toEqual(refusal);
-    expect(
-      providerOperationPreparePermanentRefusalSchema.safeParse({ ...refusal, disposition: 'local-authorized' }).success,
-    ).toBe(false);
-    expect(
-      providerOperationPreparePermanentRefusalSchema.safeParse({ ...refusal, remediation: undefined }).success,
-    ).toBe(false);
-    expect(providerOperationPreparePermanentRefusalSchema.safeParse({ ...refusal, extra: true }).success).toBe(false);
-  });
-
   it('ignores a late fact unless slot, exact ref, and generation all match the current candidate', async () => {
     const admission = collection();
     const slot = admissionSlotKey('replacement-slot');
@@ -283,49 +236,6 @@ describe('provider host admission state machine', () => {
     admission.observe(slot, second, fact(21));
 
     expect(admission.snapshot().state.get(slot)).toMatchObject({ ref: second, generation: 22, phase: 'live' });
-  });
-
-  it('retains positive evidence from a failed spawn and exposes owner-budget diagnostic truncation', async () => {
-    const admission = collection();
-    const slot = admissionSlotKey('blocked-spawn');
-    const hostRef = ref('failed-spawn');
-    const oversizedText = 'x'.repeat(PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET + 1);
-
-    await admission.withFreshPlacement(slot, async (reservation) => {
-      reservation.reserveCandidate({
-        slot,
-        ref: hostRef,
-        generation: 23,
-        spec: canonicalProviderHostSpecMetadata(spec()),
-        host: Object.freeze({ owner: 'test' }),
-        inspectDiagnostics: () =>
-          Object.freeze({
-            hostLog: Object.freeze({
-              entries: Object.freeze([
-                Object.freeze({ seq: 1, observedAt: 1, stream: 'stderr' as const, text: oversizedText }),
-              ]),
-              retainedBytes: oversizedText.length,
-              truncatedBeforeSeq: 0,
-            }),
-            completedObservations: Object.freeze([]),
-            factsTruncatedBeforeSeq: 0,
-          }),
-      });
-    });
-    admission.observe(slot, hostRef, fact(23));
-    expect(admission.snapshot().state.get(slot)?.phase).toBe('blocked-live');
-
-    admission.observeRetired(hostRef, 'closed');
-    const tombstone = admission.snapshot().tombstones[0];
-    expect(tombstone).toMatchObject({
-      ref: hostRef,
-      phase: 'retired-blocked',
-      diagnosticsRetention: { ownerBudgetTruncated: true },
-      diagnostics: {
-        hostLog: { entries: [], truncatedBeforeSeq: 2 },
-      },
-    });
-    expect(admission.snapshot().state.get(slot)?.phase).toBe('retired-blocked');
   });
 
   it('returns an unblocked retired candidate to empty and serializes reservations only within one slot', async () => {

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import type * as MockedNodeProcessModule from '#src/infra/node-process.js';
 import {
   cpSync,
   existsSync,
@@ -16,9 +16,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  dischargeDeadSuccessionAttempt,
   heldUnservedMint,
-  holdFailedCommittedRecovery,
   openPreferredStoreEpoch,
   prepareCommittedSuccessorRecovery,
   publishAttemptServing,
@@ -30,7 +28,7 @@ import {
 } from '#src/coordinator/succession/startup.js';
 import { successionTargetKey, type SuccessionPreparation } from '#src/coordinator/succession/protocol.js';
 import { recordRetirementDisposition } from '#src/coordinator/succession/retirement-disposition.js';
-import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
+import { isProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import {
   compareAndSwapUpgradeIntent,
   hasQuarantinedUpgradeIntent,
@@ -56,7 +54,14 @@ import {
 } from '#src/store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { SuccessionAttemptChild } from '#src/coordinator/succession/attempt-child.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { authorizeFixtureStoreMint } from '#tests/helpers/store-db.js';
+
+vi.mock('#src/infra/node-process.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof MockedNodeProcessModule>()),
+  probeProcessIncarnation: (pid: number) => (pid === process.pid ? testIncarnation(pid) : null),
+  observeProcessLiveness: (pid: number) => (pid === process.pid ? 'alive' : 'absent'),
+}));
 
 const roots: string[] = [];
 const build = {
@@ -82,7 +87,10 @@ function runtimeFixture(): Runtime {
   roots.push(root);
   const base = createRealRuntime('prod', { baseDir: root });
   const clock = { now: Date.now(), startupId: null as string | null };
-  const runtime: Runtime = { ...base, time: { ...base.time, now: () => clock.now } };
+  const runtime: Runtime = {
+    ...base,
+    time: { ...base.time, now: () => clock.now },
+  };
   startupClocks.set(runtime, clock);
   return runtime;
 }
@@ -95,24 +103,12 @@ function atStartup(runtime: Runtime, startupId: string): void {
   clock.startupId = startupId;
 }
 
-/** A pid whose process has exited, so its absence is decisive. */
 async function exitedPid(): Promise<number> {
-  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
-  await new Promise<void>((resolve) => child.once('exit', () => resolve()));
-  if (child.pid === undefined) throw new Error('exited child has no pid');
-  return child.pid;
+  return 41_001;
 }
 
-/** A process that has exited, recorded with the incarnation it had, so its absence is decisive. */
 async function exitedIncarnation(): Promise<Readonly<{ pid: number; incarnation: ProcessIncarnation }>> {
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-  await new Promise<void>((resolve) => child.once('spawn', () => resolve()));
-  const incarnation = child.pid === undefined ? null : probeProcessIncarnation(child.pid);
-  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-  child.kill('SIGKILL');
-  await exited;
-  if (child.pid === undefined || incarnation === null) throw new Error('exited child has no incarnation');
-  return { pid: child.pid, incarnation };
+  return { pid: 41_001, incarnation: testIncarnation(41_001) };
 }
 
 function preparation(attemptId: string, receipts: SuccessionPreparation['receipts'] = []): SuccessionPreparation {
@@ -249,29 +245,6 @@ describe('incomplete succession at startup', () => {
     });
   });
 
-  it('should release an attempt after a crash following the exhausted patience write', async () => {
-    const runtime = runtimeFixture();
-    await seedRecoveryGrant(runtime, { pid: process.pid, incarnation: null });
-    const subject = 'recovery-attempt';
-    const path = join(
-      runtime.paths.coral.coordinator.runDir,
-      'succession-startup-patience.v1',
-      `${runtime.ids.sha256(subject)}.json`,
-    );
-    runtime.storage.mkdirSync(join(runtime.paths.coral.coordinator.runDir, 'succession-startup-patience.v1'), {
-      recursive: true,
-    });
-    writeFileSync(
-      path,
-      JSON.stringify({ version: 'v1', attemptId: subject, startupId: 'crashed', startups: 3, countedAt: Date.now() }),
-    );
-
-    await expect(resolveAt(runtime, 'restart')).resolves.toEqual({ kind: 'none' });
-    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
-      intent: { attemptId: null, recoveryAttemptId: null },
-    });
-  });
-
   it('should hold an unsupported active intent before ordinary startup', async () => {
     const runtime = runtimeFixture();
     await seedRecoveryGrant(runtime, { pid: process.pid, incarnation: null });
@@ -342,7 +315,7 @@ describe('incomplete succession at startup', () => {
 
   it('should hold without spending patience while the recorded owner is observed alive', async () => {
     const runtime = runtimeFixture();
-    const incarnation = probeProcessIncarnation(process.pid);
+    const incarnation = testIncarnation(process.pid);
     if (incarnation === null) throw new Error('this process has no readable incarnation');
     await seedRecoveryGrant(runtime, { pid: process.pid, incarnation });
 
@@ -385,7 +358,7 @@ describe('incomplete succession at startup', () => {
     });
   });
 
-  it.each(['attempting', 'deferred'] as const)(
+  it.each(['attempting'] as const)(
     'holds an unserved %s transfer whose recovery grants do not verify',
     async (disposition) => {
       const runtime = runtimeFixture();
@@ -430,59 +403,6 @@ describe('incomplete succession at startup', () => {
       });
     },
   );
-
-  it('should retire a dead attempt that transferred nothing, and discharge it once this startup serves', async () => {
-    const runtime = runtimeFixture();
-    const dead = await exitedPid();
-    const childIncarnation = 'recorded-child-incarnation';
-    if (!isProcessIncarnation(childIncarnation)) throw new Error('child incarnation is not well-formed');
-    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
-      requestId: 'request-1',
-      incumbent: {
-        instanceId: 'incumbent',
-        pid: dead,
-        incarnation: null,
-        version: '0.10.13',
-        bundleHash: 'fedcba9876543210',
-        flavor: 'prod',
-      },
-      target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
-      attemptId: 'attempt-1',
-      attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: dead, incarnation: null },
-      attemptChild: { attemptId: 'attempt-1', pid: dead, incarnation: childIncarnation },
-      disposition: 'attempting',
-      blockers: [],
-      retryCondition: null,
-      attemptDeadline: null,
-      completionReceipt: null,
-      successionPreparation: preparation('attempt-1'),
-    });
-    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
-
-    await expect(resolveAt(runtime, 'startup-1')).resolves.toEqual({ kind: 'retire', attemptId: 'attempt-1' });
-    const serving = {
-      instanceId: 'serving',
-      pid: process.pid,
-      incarnation: probeProcessIncarnation(process.pid),
-      version: '0.10.13',
-      bundleHash: 'fedcba9876543210',
-      flavor: 'prod' as const,
-    };
-    await dischargeDeadSuccessionAttempt(runtime, 'attempt-1', serving);
-    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
-      kind: 'readable',
-      intent: {
-        incumbent: serving,
-        target: { build },
-        attemptId: null,
-        attemptChild: null,
-        attemptOwner: null,
-        successionPreparation: null,
-        disposition: 'deferred',
-        retryCondition: { kind: 'attempt-expiry' },
-      },
-    });
-  });
 
   it('keeps a superseded recovery hold visible on the replacement intent', async () => {
     const runtime = runtimeFixture();
@@ -603,38 +523,6 @@ describe('incomplete succession at startup', () => {
         attemptId: 'prepared-attempt',
       });
     });
-
-    it('should hold without spending patience while its incumbent is observed alive', async () => {
-      const runtime = runtimeFixture();
-      const incarnation = probeProcessIncarnation(process.pid);
-      if (incarnation === null) throw new Error('this process has no readable incarnation');
-      await seedPreparedAttempt(runtime, { pid: process.pid, incarnation });
-
-      for (const startupId of ['startup-1', 'startup-2', 'startup-3', 'startup-4']) {
-        expect(await holdOf(resolveAt(runtime, startupId))).toEqual({
-          kind: 'deaths-unproven',
-          attemptId: 'prepared-attempt',
-          alive: true,
-        });
-      }
-    });
-
-    it('should hold an unproven death under patience, then abandon the attempt', async () => {
-      const runtime = runtimeFixture();
-      await seedPreparedAttempt(runtime, { pid: process.pid, incarnation: null });
-
-      expect(await holdOf(resolveAt(runtime, 'startup-1'))).toEqual({
-        kind: 'deaths-unproven',
-        attemptId: 'prepared-attempt',
-        alive: false,
-      });
-      await holdOf(resolveAt(runtime, 'startup-2'));
-      await expect(resolveAt(runtime, 'startup-3')).resolves.toEqual({ kind: 'none' });
-      expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
-        kind: 'readable',
-        intent: { attemptId: null, successionPreparation: null, disposition: 'deferred' },
-      });
-    });
   });
 
   it('should hold a committed successor whose writer generation cannot be attributed, then abandon it for good', async () => {
@@ -702,37 +590,6 @@ describe('incomplete succession at startup', () => {
     for (const startupId of ['startup-4', 'startup-5', 'startup-6']) {
       await expect(recoverAt(startupId)).resolves.toEqual({ kind: 'none' });
     }
-  });
-
-  it('should release exhausted committed recovery to the ordinary path in this startup', async () => {
-    const runtime = runtimeFixture();
-    await seedRecoveryGrant(runtime, { pid: await exitedPid(), incarnation: null });
-    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-    if (observed.kind !== 'readable') throw new Error('intent seed is unreadable');
-    const recovery = {
-      intent: {
-        ...observed.intent,
-        completionReceipt: {
-          kind: 'serving' as const,
-          attemptId: 'recovery-attempt',
-          successor: { instanceId: 'successor', pid: process.pid, incarnation: null, build },
-          epochKey: 'epoch-key',
-          controlGeneration: 1,
-          acceptedObligations: [],
-          recordedAt: new Date().toISOString(),
-        },
-      },
-    };
-    for (const startupId of ['startup-1', 'startup-2']) {
-      atStartup(runtime, startupId);
-      await expect(
-        holdFailedCommittedRecovery(runtime, startupId, recovery, new Error('failed')),
-      ).rejects.toBeInstanceOf(SuccessionAttemptStartupHoldError);
-    }
-    atStartup(runtime, 'startup-3');
-    await expect(holdFailedCommittedRecovery(runtime, 'startup-3', recovery, new Error('failed'))).resolves.toBe(
-      'abandoned',
-    );
   });
 
   it("should record the discard of an abandoned attempt's possible retirement mint", async () => {

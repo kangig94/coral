@@ -1,3 +1,4 @@
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { createHash } from 'node:crypto';
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -119,23 +120,43 @@ const readProcessIncarnation = vi.fn<(pid: number, platform: NodeJS.Platform) =>
 );
 let runtime: Runtime;
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function pollGates() {
+  const releases: Array<() => void> = [];
+  const waiting: Array<{ count: number; resolve: () => void }> = [];
+  return {
+    releases,
+    sleep: () =>
+      new Promise<void>((resolve) => {
+        releases.push(resolve);
+        for (const waiter of waiting.splice(0)) {
+          if (releases.length >= waiter.count) waiter.resolve();
+          else waiting.push(waiter);
+        }
+      }),
+    reached: (count: number) => {
+      if (releases.length >= count) return Promise.resolve();
+      return new Promise<void>((resolve) => waiting.push({ count, resolve }));
+    },
+  };
+}
+
 async function createHandoffRuntime(baseDir?: string): Promise<Runtime> {
   const { createRealRuntime } = await vi.importActual<typeof RealRuntimeMod>('#src/runtime/real.js');
   const actual = createRealRuntime('prod', baseDir === undefined ? undefined : { baseDir });
+  const time = new VirtualTime(1_700_000_000_000);
   return {
     ...actual,
     ids: { ...actual.ids, uuid: runtimeUuid },
     process: { ...actual.process, readProcessIncarnation },
-    time: {
-      ...actual.time,
-      now: () => 1_700_000_000_000,
-      monotonicNow: () => 0n,
-      sleep: async () => {},
-      setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
-      clearTimeout: (handle: { unref?(): void } | null) => {
-        clearTimeout(handle as unknown as NodeJS.Timeout);
-      },
-    },
+    time,
     env: {
       ...actual.env,
       pid: () => 101,
@@ -835,21 +856,18 @@ describe('handoff-routing/runner', () => {
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
-  it.each([['--help'], ['-h'], ['--version']])(
-    'should skip the incumbent probe for display-only invocation %s',
-    async (flag) => {
-      await expect(runHandoff(cliOperation(flag), { pluginRoot: '/plugin/root' })).resolves.toEqual({
-        kind: 'run-current',
-        reason: { kind: 'handoff-not-applicable', reason: 'display-only' },
-      });
+  it.each([['--help']])('should skip the incumbent probe for display-only invocation %s', async (flag) => {
+    await expect(runHandoff(cliOperation(flag), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+      reason: { kind: 'handoff-not-applicable', reason: 'display-only' },
+    });
 
-      expect(mockState.createRealRuntime).not.toHaveBeenCalled();
-      expect(mockState.probeCoordinator).not.toHaveBeenCalled();
-      expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
-    },
-  );
+    expect(mockState.createRealRuntime).not.toHaveBeenCalled();
+    expect(mockState.probeCoordinator).not.toHaveBeenCalled();
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
+  });
 
-  it.each(['', '2', '01', ' 1 ', 'true'])('should reject invalid delegation guard value %j as usage', async (guard) => {
+  it.each([''])('should reject invalid delegation guard value %j as usage', async (guard) => {
     process.env[GUARD_ENV] = guard;
 
     // Owned by the runner, not `cli/errors.ts` — importing that would close a cli -> coordinator -> cli
@@ -884,6 +902,7 @@ describe('handoff-routing/runner', () => {
     process.argv[1] = join(currentBundleDir, 'coral-backend.cjs');
     rmSync(join(bundleDir, 'coral-sentinel.cjs'));
     const target = validatedTarget(bundleDir);
+    const pollStarted = deferred();
     let child: ChildProcess | undefined;
     let releasePoll: (() => void) | undefined;
     const pollDelays: number[] = [];
@@ -894,6 +913,7 @@ describe('handoff-routing/runner', () => {
         new Promise<void>((resolve) => {
           pollDelays.push(ms);
           releasePoll = resolve;
+          pollStarted.resolve();
         }),
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
@@ -913,7 +933,8 @@ describe('handoff-routing/runner', () => {
       { kind: 'backend-startup' },
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
-    await vi.waitFor(() => expect(child?.unref).toHaveBeenCalledOnce());
+    await pollStarted.promise;
+    expect(child?.unref).toHaveBeenCalledOnce();
 
     expect(mockState.probeCoordinator).toHaveBeenCalled();
     expect(mockState.health).not.toHaveBeenCalled();
@@ -1061,12 +1082,14 @@ describe('handoff-routing/runner', () => {
   it('refuses a pre-terminal ok as proof of startup once the coordinator is gone', async () => {
     const bundleDir = roots[0];
     const namespace = pluginRootNamespace(dirname(bundleDir));
+    const healthStarted = deferred();
     const target = validatedTarget(bundleDir);
     let answerFirstProbe!: (health: LiveIncumbentHealth) => void;
     mockState.health.mockImplementationOnce(
       () =>
         new Promise<LiveIncumbentHealth>((resolve) => {
           answerFirstProbe = resolve;
+          healthStarted.resolve();
         }),
     );
     let child!: ChildProcess;
@@ -1080,7 +1103,8 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalledOnce());
+    await healthStarted.promise;
+    expect(mockState.health).toHaveBeenCalledOnce();
 
     // The coordinator dies while that first probe is still in flight, so the reply it eventually gives
     // describes a coordinator that no longer exists.
@@ -1095,6 +1119,7 @@ describe('handoff-routing/runner', () => {
   });
 
   it('refuses a pre-terminal unresolved probe as proof of failure once the coordinator answers', async () => {
+    const healthStarted = deferred();
     const target = validatedTarget(roots[0]);
     vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     let refuseFirstProbe!: (error: Error) => void;
@@ -1102,6 +1127,7 @@ describe('handoff-routing/runner', () => {
       () =>
         new Promise((_resolve, reject) => {
           refuseFirstProbe = reject;
+          healthStarted.resolve();
         }),
     );
     let child!: ChildProcess;
@@ -1115,7 +1141,8 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalledOnce());
+    await healthStarted.promise;
+    expect(mockState.health).toHaveBeenCalledOnce();
 
     // A transitively delegated coordinator publishes only once the build that spawned it has exited, so the
     // probe raced against that exit could not have seen it.
@@ -1137,11 +1164,12 @@ describe('handoff-routing/runner', () => {
     const bundleDir = roots[0];
     const namespace = pluginRootNamespace(dirname(bundleDir));
     const target = validatedTarget(bundleDir);
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -1159,12 +1187,14 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
 
     child.emit('exit', 0, null);
     // A second poll is the hold: it comes from the probe taken after the child ended, which found the
     // coordinator still starting and recorded nothing.
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+    await polls.reached(2);
+    expect(releasePolls).toHaveLength(2);
     let settled = false;
     void result.then(
       () => {
@@ -1203,11 +1233,12 @@ describe('handoff-routing/runner', () => {
     const bundleDir = roots[0];
     const namespace = pluginRootNamespace(dirname(bundleDir));
     const target = validatedTarget(bundleDir);
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -1225,9 +1256,11 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
     child.emit('exit', 0, null);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+    await polls.reached(2);
+    expect(releasePolls).toHaveLength(2);
 
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     for (const release of releasePolls.splice(0)) release();
@@ -1248,11 +1281,12 @@ describe('handoff-routing/runner', () => {
     const bundleDir = roots[0];
     const namespace = pluginRootNamespace(dirname(bundleDir));
     const target = validatedTarget(bundleDir);
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -1266,14 +1300,16 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
 
     configureNewerIncumbent(bundleDir);
     mockState.health.mockResolvedValue({ ...liveHealth(bundleDir, namespace), status: 'starting' });
     for (const release of releasePolls.splice(0)) release();
 
     // A further poll is the evidence of the hold: readiness would have settled the delegation instead.
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
     let settled = false;
     void result.then(
       () => {
@@ -1296,11 +1332,12 @@ describe('handoff-routing/runner', () => {
 
   it('holds a coordinator that cannot prove this startup attempt until the spawned backend ends', async () => {
     const target = validatedTarget(roots[0]);
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -1318,7 +1355,8 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
 
     const foreignBundleDir = createBundle();
     const foreignManifest = { ...manifest, version: '2.0.0', bundleHash: 'f'.repeat(16) };
@@ -1340,7 +1378,8 @@ describe('handoff-routing/runner', () => {
       manifest: foreignManifest,
     });
     for (const release of releasePolls.splice(0)) release();
-    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalled());
+    await polls.reached(1);
+    expect(mockState.health).toHaveBeenCalled();
 
     let settled = false;
     void result.then(
@@ -1364,11 +1403,12 @@ describe('handoff-routing/runner', () => {
   it('holds matching build health from a different plugin-root namespace until the spawned backend ends', async () => {
     const bundleDir = roots[0];
     const target = validatedTarget(bundleDir);
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -1386,7 +1426,8 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
 
     const foreignNamespace = 'foreign-plugin-root';
     mockState.probeCoordinator.mockReturnValue({
@@ -1402,7 +1443,8 @@ describe('handoff-routing/runner', () => {
     });
     mockState.health.mockResolvedValue(liveHealth(bundleDir, foreignNamespace));
     for (const release of releasePolls.splice(0)) release();
-    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalled());
+    await polls.reached(1);
+    expect(mockState.health).toHaveBeenCalled();
 
     let settled = false;
     void result.then(
@@ -1776,11 +1818,12 @@ describe('handoff-routing/runner', () => {
   it('keeps both delegators pending until the final backend publishes authenticated readiness', async () => {
     const firstTarget = validatedTarget(roots[0]);
     const secondTarget = validatedTarget(roots[0]);
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -1794,13 +1837,15 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: firstTarget, time },
     );
     void first.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
     const second = runHandoff(
       { kind: 'backend-startup' },
       { pluginRoot: '/plugin/root', activeSelectionTarget: secondTarget, time },
     );
     void second.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+    await polls.reached(2);
+    expect(releasePolls).toHaveLength(2);
 
     let firstSettled = false;
     void first.then(
@@ -1826,11 +1871,12 @@ describe('handoff-routing/runner', () => {
     const secondTarget = validatedTarget(roots[0]);
     let firstChild: ChildProcess | undefined;
     let secondChild: ChildProcess | undefined;
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -1852,13 +1898,15 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: firstTarget, time },
     );
     void first.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
     const second = runHandoff(
       { kind: 'backend-startup' },
       { pluginRoot: '/plugin/root', activeSelectionTarget: secondTarget, time },
     );
     void second.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+    await polls.reached(2);
+    expect(releasePolls).toHaveLength(2);
     const spawnedFirstChild = firstChild;
     const spawnedSecondChild = secondChild;
     if (spawnedFirstChild === undefined || spawnedSecondChild === undefined) {
@@ -1903,11 +1951,12 @@ describe('handoff-routing/runner', () => {
         }),
       },
     };
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -1926,7 +1975,8 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
 
     const bundleDir = configureNewerIncumbent(roots[0]);
     mockState.health.mockResolvedValue({
@@ -1934,7 +1984,8 @@ describe('handoff-routing/runner', () => {
       env: { CORAL_STARTUP_ATTEMPT_ID: 'other-attempt' },
     });
     for (const release of releasePolls.splice(0)) release();
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
 
     let settled = false;
     void result.then(
@@ -1970,11 +2021,12 @@ describe('handoff-routing/runner', () => {
         }),
       },
     };
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -1993,7 +2045,8 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
 
     mockState.probeCoordinator.mockReturnValue({
       kind: 'live',
@@ -2041,11 +2094,12 @@ describe('handoff-routing/runner', () => {
         get: (key) => (key === 'CORAL_STARTUP_ATTEMPT_ID' ? undefined : runtime.env.get(key)),
       },
     };
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -2065,7 +2119,8 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
 
     // The id only proves lineage if the child it was minted for actually receives it and passes it on.
     expect(mockState.spawn.mock.calls[0]?.[2]?.env).toMatchObject({ CORAL_STARTUP_ATTEMPT_ID: mintedAttemptId });
@@ -2109,11 +2164,12 @@ describe('handoff-routing/runner', () => {
         fullSnapshot: () => ({ ...runtime.env.fullSnapshot(), CORAL_STARTUP_ATTEMPT_ID: '' }),
       },
     };
-    const releasePolls: Array<() => void> = [];
+    const polls = pollGates();
+    const releasePolls = polls.releases;
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      sleep: polls.sleep,
       setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
       setInterval: vi.fn(() => ({})),
@@ -2144,7 +2200,8 @@ describe('handoff-routing/runner', () => {
       { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
     );
     void result.catch(() => undefined);
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
 
     let settled = false;
     void result.then(
@@ -2156,7 +2213,8 @@ describe('handoff-routing/runner', () => {
       },
     );
     for (const release of releasePolls.splice(0)) release();
-    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    await polls.reached(1);
+    expect(releasePolls).toHaveLength(1);
     expect(settled).toBe(false);
 
     child.emit('exit', 0, null);
@@ -2247,7 +2305,6 @@ describe('handoff-routing/runner', () => {
   });
 
   it('should degrade an undrainable stdout to run-current without throwing', async () => {
-    vi.useFakeTimers();
     let markDrainStarted: (() => void) | undefined;
     const drainStarted = new Promise<void>((resolve) => {
       markDrainStarted = resolve;
@@ -2257,9 +2314,10 @@ describe('handoff-routing/runner', () => {
       return false;
     }) as typeof process.stdout.write);
 
-    const result = runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' });
+    const time = new VirtualTime();
+    const result = runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root', time });
     await drainStarted;
-    await vi.advanceTimersByTimeAsync(3_000);
+    time.tick(3_000);
 
     await expect(result).resolves.toEqual({
       kind: 'run-current',

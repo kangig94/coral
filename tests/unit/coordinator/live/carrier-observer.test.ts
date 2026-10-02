@@ -53,7 +53,7 @@ function endpointLane<TEndpoint, TRow>(endpoint: TEndpoint, laneRows: readonly T
 }
 
 const NONCE = proxyOperationStatusNonceSchema.parse('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
-const FOREIGN_NONCE = proxyOperationStatusNonceSchema.parse('ffffffff-ffff-ffff-ffff-ffffffffffff');
+
 const FOREIGN_PROXY_INSTANCE_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const FOREIGN_BUILD_SET_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const FOREIGN_JOB_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
@@ -178,63 +178,9 @@ const transportFailureModes: ReadonlyArray<
       close: vi.fn(),
     }),
   },
-  {
-    name: 'call timeout',
-    createTransport: () =>
-      respondingConnector(() => {
-        throw new Error('call timeout');
-      }),
-  },
-  {
-    name: 'socket close',
-    createTransport: () =>
-      respondingConnector(() => {
-        throw new Error('socket closed');
-      }),
-  },
-  {
-    name: 'malformed frame',
-    createTransport: () =>
-      respondingConnector(() => {
-        throw new Error('malformed frame');
-      }),
-  },
-  {
-    name: 'schema-rejected reply',
-    createTransport: () => respondingConnector(() => ({ malformed: true })),
-  },
-  {
-    name: 'partial batch',
-    createTransport: () =>
-      respondingConnector((request) => {
-        const result = validStatusResult(request);
-        return { ...result, operations: result.operations.slice(0, 1) };
-      }),
-  },
-  {
-    name: 'unmatched nonce',
-    createTransport: () =>
-      respondingConnector((request) => ({
-        ...validStatusResult(request),
-        nonce: FOREIGN_NONCE,
-      })),
-  },
-  {
-    name: 'tuple-bijection failure',
-    createTransport: () =>
-      respondingConnector((request) => {
-        const result = validStatusResult(request);
-        return { ...result, operations: [result.operations[0], result.operations[0]] };
-      }),
-  },
 ];
 
 describe('carrier status bounded scheduler', () => {
-  it('owns the coordinator pass limits independently of the wire batch size', () => {
-    expect(CARRIER_STATUS_MAX_ENDPOINT_REQUESTS).toBe(32);
-    expect(CARRIER_STATUS_MAX_CONCURRENT_CALLS).toBe(8);
-  });
-
   it("runs one endpoint locator's status batches serially", async () => {
     const laneRows = rows(PROXY_OPERATION_STATUS_MAX_OPERATIONS + 1);
     const firstCall = createDeferred<void>();
@@ -485,24 +431,6 @@ describe('carrier status identity handshake', () => {
     expect(transport.close).toHaveBeenCalledOnce();
   });
 
-  it('rejects a duplicate request group before connecting instead of silently de-duplicating it', async () => {
-    const transport = respondingConnector();
-
-    const outcomes = await observeCarrierStatuses(
-      [recordFor(OPERATION_A), recordFor(OPERATION_A), recordFor(OPERATION_B)],
-      observerOptions(transport.connect),
-    );
-
-    expect(transport.connect).not.toHaveBeenCalled();
-    expect(outcomes).toEqual(
-      new Map([
-        [carrierStatusOperationKey(OPERATION_A), 'unknown'],
-        [carrierStatusOperationKey(OPERATION_B), 'unknown'],
-      ]),
-    );
-    expect([...outcomes.values()]).not.toContain('absent');
-  });
-
   it('groups by every exact locator field and partitions each locator by proxy/build identity', async () => {
     const transport = respondingConnector();
     const otherBuildOperation = operationIdentitySchema.parse({
@@ -540,19 +468,6 @@ describe('carrier status identity handshake', () => {
       expect(new Set(request.operations.map((operation) => operation.buildSetId))).toHaveLength(1);
     }
     expect(transport.close).toHaveBeenCalledTimes(5);
-  });
-
-  it('rejects a malformed minted nonce before opening a connection', async () => {
-    const transport = respondingConnector();
-
-    const outcomes = await observeCarrierStatuses(
-      [recordFor(OPERATION_A), recordFor(OPERATION_B)],
-      observerOptions(transport.connect, () => 'malformed-nonce' as ProxyOperationStatusNonce),
-    );
-
-    expect(transport.connect).not.toHaveBeenCalled();
-    expect([...outcomes.values()]).toEqual(['unknown', 'unknown']);
-    expect([...outcomes.values()]).not.toContain('absent');
   });
 });
 

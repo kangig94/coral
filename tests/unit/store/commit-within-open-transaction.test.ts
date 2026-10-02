@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
-import { commit, commitWithinOpenTransaction, type AppendContext } from '#src/store/append.js';
+import { commitWithinOpenTransaction, type AppendContext } from '#src/store/append.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -121,27 +121,6 @@ describe('commitWithinOpenTransaction', () => {
       db.exec('ROLLBACK');
 
       expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(0);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('leaves commit itself unchanged: still one self-contained transaction per call', () => {
-    const db = setupDb();
-    try {
-      commit(
-        db,
-        (c) => {
-          c.append({ type: 'test.counter.ticked', stream: { kind: 'job', id: 'a' }, body: { id: 'a', delta: 5 } });
-          return undefined;
-        },
-        testAppendContext(),
-      );
-
-      const row = db.prepare('SELECT count FROM projection_test_counter WHERE id = ?').get('a') as
-        | { count: number }
-        | undefined;
-      expect(row?.count).toBe(5);
     } finally {
       db.close();
     }

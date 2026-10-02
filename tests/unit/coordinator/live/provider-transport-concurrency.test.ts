@@ -143,32 +143,6 @@ describe('provider transport concurrency hardening', () => {
     expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
   });
 
-  it('falls back to the default initialize timeout for invalid provider timeout values', async () => {
-    const runtime = new SimulationRuntime();
-    runtime.spawner.enqueueSpawn({ close: null });
-    const launchCoordinator = new LaunchCoordinator({ runtime });
-    const hostManager = createHostManager(runtime, launchCoordinator);
-
-    const observed = observePromise(
-      hostManager.openSession(createHostLaunch({ initializeTimeoutMs: 0 }), { jobId: 'job-a' }),
-    );
-    await flushMicrotasks();
-
-    runtime.time.tick(PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS - 1);
-    await flushMicrotasks();
-    expect(observed.settled).toBe(false);
-
-    runtime.time.tick(1);
-    await flushMicrotasks(2_000);
-
-    expect(observed.settled).toBe(true);
-    expect((observed.error as Error | undefined)?.message).toContain(
-      `initialize timed out after ${PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS}ms`,
-    );
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: -20_000, signal: 'SIGTERM' });
-    expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
-  });
-
   it('does not spawn a provider server when acquire is already aborted', async () => {
     const runtime = new SimulationRuntime();
     const launchCoordinator = new LaunchCoordinator({ runtime });

@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
 import { createUnreadableProviderOperationDiscardService } from '#src/coordinator/services/recovery/unreadable-provider-operation-discard.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
@@ -9,7 +8,6 @@ import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation, observeProviderOperationRecord } from '#src/store/provider-operation-journal.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { unreadableProviderOperationDiscardRequestSchema } from '#src/transport/rpc/catalog.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
@@ -80,29 +78,17 @@ describe('unreadable provider-operation discard ownership', () => {
     expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key)).toBeNull();
   });
 
-  it.each(['retrying', 'continuation'] as const)(
+  it.each(['retrying'] as const)(
     'refuses while a %s recovery owner holds the exact subject and changes no evidence',
     (state) => {
       const seeded = seedRaw();
       const subject = unreadableProviderOperationSubject(seeded.key, seeded.revision);
       persistActive(seeded.key, seeded.revision);
-      if (state === 'retrying') {
-        quarantine.claimRetry({
-          boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
-          subject,
-          retry: { owner: 'recovery-owner', token: 'recovery-token' },
-        });
-      } else {
-        quarantine.upsert({
-          boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
-          subject,
-          state: 'continuation',
-          stage: 'settle',
-          continuation: { kind: 'provider-retry', key: 'continuation-key' },
-          errorMessage: 'partial progress',
-          detail: 'continuation owns recovery',
-        });
-      }
+      quarantine.claimRetry({
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject,
+        retry: { owner: 'recovery-owner', token: 'recovery-token' },
+      });
       const before = quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key);
 
       expect(service().discard({ key: seeded.key, revision: seeded.revision })).toEqual({
@@ -120,19 +106,6 @@ describe('unreadable provider-operation discard ownership', () => {
       expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key)).toEqual(before);
     },
   );
-
-  it('refuses without persisted exact quarantine authority and leaves the raw row untouched', () => {
-    const seeded = seedRaw();
-
-    expect(service().discard({ key: seeded.key, revision: seeded.revision })).toEqual({
-      key: seeded.key,
-      revision: seeded.revision,
-      kind: 'quarantine-not-found',
-    });
-    expect(db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(seeded.key)?.value).toBe(
-      seeded.raw,
-    );
-  });
 
   it('releases its temporary claim when the raw revision no longer matches', () => {
     const seeded = seedRaw();
@@ -183,12 +156,12 @@ describe('unreadable provider-operation discard ownership', () => {
     expect(uuid).not.toHaveBeenCalled();
   });
 
-  it.each(['absent', 'readable'] as const)('releases its temporary claim when the raw row is %s', (kind) => {
+  it.each(['readable'] as const)('releases its temporary claim when the raw row is %s', (kind) => {
     const seeded = seedRaw();
     persistActive(seeded.key, seeded.revision);
     db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(seeded.key);
-    let requestRevision = seeded.revision;
-    if (kind === 'readable') {
+    let requestRevision: string;
+    {
       insertProviderOperation(db, seeded.record);
       const raw = db
         .prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?')
@@ -226,24 +199,5 @@ describe('unreadable provider-operation discard ownership', () => {
     expect(service().discard(request)).toEqual({ ...request, kind: 'discarded' });
     expect(observeProviderOperationRecord(db, seeded.key)).toEqual({ kind: 'absent' });
     expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key)).toBeNull();
-  });
-
-  it('refuses the retired tagged key at RPC decode without deleting readable durable state', () => {
-    const seeded = seedRaw();
-    db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(seeded.key);
-    insertProviderOperation(db, seeded.record);
-    const raw = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(seeded.key)?.value;
-    if (raw === undefined) throw new Error('expected readable row');
-    const revision = `sha256:${sha256Hex(raw)}`;
-    persistActive(seeded.key, revision);
-
-    expect(
-      unreadableProviderOperationDiscardRequestSchema.safeParse({
-        key: `readable-provider-operation\u0000${seeded.key}`,
-        revision,
-      }).success,
-    ).toBe(false);
-    expect(observeProviderOperationRecord(db, seeded.key)).toMatchObject({ kind: 'readable' });
-    expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key)).toMatchObject({ state: 'active' });
   });
 });

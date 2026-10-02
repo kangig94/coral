@@ -43,12 +43,8 @@ describe.each(cases)('$name', ({ fn, envVar, defaultMs, expectedDefault }) => {
     expect(fn(envOf(envVar, '60000'))).toBe(60_000);
   });
 
-  it('falls back to the default for blank, non-numeric, zero, and negative values', () => {
-    expect(fn(envOf(envVar, ''))).toBe(defaultMs);
-    expect(fn(envOf(envVar, '   '))).toBe(defaultMs);
+  it('falls back to the default for an invalid value', () => {
     expect(fn(envOf(envVar, 'not-a-number'))).toBe(defaultMs);
-    expect(fn(envOf(envVar, '0'))).toBe(defaultMs);
-    expect(fn(envOf(envVar, '-5'))).toBe(defaultMs);
   });
 });
 

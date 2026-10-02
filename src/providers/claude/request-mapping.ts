@@ -188,24 +188,6 @@ export function snapshotClaudePersistedContinuity(state: {
   return Object.keys(candidate).length === 0 ? null : readClaudePersistedContinuity(candidate);
 }
 
-export function withClaudeContinuity(
-  persistedContinuity: ProviderContinuityBlob | undefined,
-  update: {
-    bootstrapSignature?: ClaudeBootstrapSignature;
-    brokerSessionKey?: string;
-    brokerTurnId?: string;
-  },
-): ClaudePersistedContinuity {
-  const continuity = readClaudePersistedContinuity(persistedContinuity);
-  const bootstrapSignature = update.bootstrapSignature ?? continuity.bootstrapSignature;
-  return {
-    ...(bootstrapSignature === undefined ? {} : { bootstrapSignature }),
-    ...(update.brokerSessionKey === undefined || update.brokerTurnId === undefined
-      ? {}
-      : { brokerSessionKey: update.brokerSessionKey, brokerTurnId: update.brokerTurnId }),
-  };
-}
-
 export function resolveClaudeBrokerEntrypoint(storage: Pick<StoragePort, 'existsSync'>): string {
   if (typeof __PLUGIN_ROOT__ !== 'string') {
     throw new Error('Claude broker entrypoint requires __PLUGIN_ROOT__ to be defined at build time.');

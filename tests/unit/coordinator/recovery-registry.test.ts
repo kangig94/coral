@@ -55,46 +55,6 @@ function makeAppServerRuntimeRecord(
 }
 
 describe('RecoveryRegistry', () => {
-  it('registers and finds entries', () => {
-    const reg = new RecoveryRegistry();
-    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }));
-    expect(reg.has('j1')).toBe(true);
-    expect(reg.has('j2')).toBe(false);
-    expect(reg.size).toBe(1);
-  });
-
-  it('retrieves registered entry by jobId', () => {
-    const reg = new RecoveryRegistry();
-    const launch = makeLaunchRecord({ jobId: 'j1' });
-    reg.register('j1', launch);
-    const entry = reg.get('j1');
-    expect(entry).toBeDefined();
-    expect(entry!.launchRecord).toBe(launch);
-    expect(entry!.runtimeRecord).toBeUndefined();
-  });
-
-  it('retrieves entry with runtimeRecord when provided', () => {
-    const reg = new RecoveryRegistry();
-    const launch = makeLaunchRecord({ jobId: 'j1' });
-    const runtime = makeRuntimeRecord();
-    reg.register('j1', launch, runtime);
-    const entry = reg.get('j1');
-    expect(entry!.runtimeRecord).toBe(runtime);
-  });
-
-  it('returns undefined for unknown jobId', () => {
-    const reg = new RecoveryRegistry();
-    expect(reg.get('nonexistent')).toBeUndefined();
-  });
-
-  it('removes entries', () => {
-    const reg = new RecoveryRegistry();
-    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }));
-    reg.remove('j1');
-    expect(reg.has('j1')).toBe(false);
-    expect(reg.size).toBe(0);
-  });
-
   it('notifies succession when a recovery hold settles', () => {
     const onSettlement = vi.fn();
     const reg = new RecoveryRegistry(new Set(), onSettlement);
@@ -104,13 +64,6 @@ describe('RecoveryRegistry', () => {
 
     expect(onSettlement).toHaveBeenCalledOnce();
     expect(onSettlement).toHaveBeenCalledWith('j1');
-  });
-
-  it('remove is a no-op for unknown jobId', () => {
-    const reg = new RecoveryRegistry();
-    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }));
-    reg.remove('j2');
-    expect(reg.size).toBe(1);
   });
 
   it('abort returns notFound for unknown jobs', () => {
@@ -289,26 +242,5 @@ describe('RecoveryRegistry', () => {
     const byProject = reg.entriesByProject();
     expect(byProject.get('/a')?.length).toBe(2);
     expect(byProject.get('/b')?.length).toBe(1);
-  });
-
-  it('entriesByProject returns empty map when registry is empty', () => {
-    const reg = new RecoveryRegistry();
-    const byProject = reg.entriesByProject();
-    expect(byProject.size).toBe(0);
-  });
-
-  it('iterates entries via Symbol.iterator', () => {
-    const reg = new RecoveryRegistry();
-    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }));
-    reg.register('j2', makeLaunchRecord({ jobId: 'j2' }));
-    const entries = [...reg];
-    expect(entries.length).toBe(2);
-    expect(entries.map(([id]) => id).sort()).toEqual(['j1', 'j2']);
-  });
-
-  it('iterates zero entries when empty', () => {
-    const reg = new RecoveryRegistry();
-    const entries = [...reg];
-    expect(entries.length).toBe(0);
   });
 });

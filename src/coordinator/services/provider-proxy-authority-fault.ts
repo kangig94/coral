@@ -49,11 +49,11 @@ export type ProviderProxyControlChannelIncident = Readonly<{
 
 type AssertNever<Value extends never> = Value;
 /** Every admitted incident cause must belong to the wire vocabulary. */
-export type AssertDispositionCausesCoverIncident = AssertNever<
+type _AssertDispositionCausesCoverIncident = AssertNever<
   Exclude<ProviderProxyControlChannelIncident['cause'], ProviderProxySetOperatorDispositionCause>
 >;
 /** Every wire-vocabulary cause must be producible by an admitted incident. */
-export type AssertIncidentCoversDispositionCauses = AssertNever<
+type _AssertIncidentCoversDispositionCauses = AssertNever<
   Exclude<ProviderProxySetOperatorDispositionCause, ProviderProxyControlChannelIncident['cause']>
 >;
 

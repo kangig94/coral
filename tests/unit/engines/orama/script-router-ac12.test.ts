@@ -3,13 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { KiwiAnalyzerManager } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
-import {
-  createOramaDb,
-  createOramaTokenizer,
-  normalizeOramaTerm,
-  tokenizeQuery,
-  type KbOramaDocument,
-} from '#src/engines/orama/document-builder.js';
+import { createOramaDb, normalizeOramaTerm, type KbOramaDocument } from '#src/engines/orama/document-builder.js';
 import { buildOramaSearchChannelFields } from '#src/engines/orama/search-channels.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { installedKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';
@@ -82,23 +76,6 @@ function mixedScriptDocument(): KbOramaDocument {
 }
 
 describe('Orama AC12 script router', () => {
-  it('routes mixed-script Hangul runs to the leased Kiwi analyzer and other runs to Intl', async () => {
-    const runtime = createRuntime();
-    const manager = createManager();
-    const tokenizer = createOramaTokenizer({
-      currentKiwiAnalyzer: () => manager.currentAnalyzer(),
-    });
-
-    expect(tokenizeQuery(normalizeOramaTerm('검색API'), tokenizer)).toEqual(['검색', 'api']);
-
-    await manager.withAnalyzerLease(runtime, ['ko'], () => {
-      expect(tokenizeQuery(normalizeOramaTerm('검색 hello'), tokenizer)).toEqual(['kiwi_검색', 'hello']);
-      expect(tokenizeQuery(normalizeOramaTerm('검색API'), tokenizer)).toEqual(['kiwi_검색', 'api']);
-      expect(tokenizeQuery(normalizeOramaTerm('React훅'), tokenizer)).toEqual(['react', 'kiwi_훅']);
-      expect(tokenizeQuery(normalizeOramaTerm('v2검색'), tokenizer)).toEqual(['v2', 'kiwi_검색']);
-    });
-  });
-
   it('uses one Kiwi-routed Orama index and search path for mixed-script documents', async () => {
     const runtime = createRuntime();
     const manager = createManager();

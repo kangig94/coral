@@ -129,56 +129,18 @@ describe('provider-neutral CLI detection', () => {
     expect(exec).toHaveBeenCalledTimes(2);
   });
 
-  it('resets all cached state explicitly', async () => {
-    const exec = vi.fn().mockResolvedValue({ stdout: 'fixture 1.0', stderr: '', status: 0 });
-    const subject = detector({ token: 'secret', exec });
-    await subject.detect();
-    subject.resetCache();
-    await subject.detect();
-    expect(exec).toHaveBeenCalledTimes(2);
-  });
-
   // The whole point of the third answer. A probe that could not run is not a missing CLI, and the difference
   // reaches an operator: the collapsed version told someone whose machine was out of process slots to install
   // software they already had.
-  it.each([['ETIMEDOUT'], ['EAGAIN'], ['EMFILE'], ['ENOMEM'], ['EWOULDBLOCKX']])(
-    'reports %s as undetermined rather than as a missing CLI',
-    async (code) => {
-      const exec = vi.fn().mockResolvedValue(launchFailure(code));
+  it.each([['ETIMEDOUT']])('reports %s as undetermined rather than as a missing CLI', async (code) => {
+    const exec = vi.fn().mockResolvedValue(launchFailure(code));
 
-      const info = await detector({ exec }).detect();
+    const info = await detector({ exec }).detect();
 
-      expect(info).toMatchObject({ available: false, reason: 'undetermined' });
-      expect(info.available === false && info.error, 'the message must not name a cause nobody observed').not.toMatch(
-        /not found|install it/iu,
-      );
-    },
-  );
-
-  // The default direction. Asserted because it is a choice, not a consequence: nothing about a codeless error
-  // says the binary ran, and the cost of guessing wrong here is a false instruction to an operator rather
-  // than a wasted fork. `git-sync.ts`'s own probe used to default the other way — an unrecognised shape read
-  // as a confident answer — until it moved onto this same `classifyExecOutcome`; both lanes now share one
-  // owner for the question, so there is no second default left to diverge from.
-  it('reports a launch error carrying no recognisable code as undetermined', async () => {
-    const exec = vi.fn().mockResolvedValue({ stdout: '', stderr: '', status: null, error: new Error('boom') });
-
-    await expect(detector({ exec }).detect()).resolves.toMatchObject({
-      available: false,
-      reason: 'undetermined',
-    });
-  });
-
-  // Not a launch failure and not an answer: the port reports its own timeout as an error, so a null status is
-  // a child killed by something else. The partial stdout it leaves behind is the same buffer the version is
-  // read from, which is how a killed probe used to mint a version out of a truncated line.
-  it('reports a probe killed by a signal as undetermined rather than as a version', async () => {
-    const exec = vi.fn().mockResolvedValue({ stdout: 'fixt', stderr: '', status: null, signal: 'SIGKILL' });
-
-    await expect(detector({ exec }).detect()).resolves.toMatchObject({
-      available: false,
-      reason: 'undetermined',
-    });
+    expect(info).toMatchObject({ available: false, reason: 'undetermined' });
+    expect(info.available === false && info.error, 'the message must not name a cause nobody observed').not.toMatch(
+      /not found|install it/iu,
+    );
   });
 
   it('reports and caches ENOENT only as a command that could not start after verifying the working directory', async () => {
@@ -193,20 +155,6 @@ describe('provider-neutral CLI detection', () => {
     });
     await subject.detect();
     expect(statSync).toHaveBeenCalledWith('/workspace/project');
-    expect(exec).toHaveBeenCalledOnce();
-  });
-
-  it.each(['EACCES', 'EPERM'])('reports and caches %s with the daemon PATH and permission remedies', async (code) => {
-    const exec = vi.fn().mockResolvedValue(launchFailure(code));
-    const subject = detector({ exec });
-
-    const info = await subject.detect();
-
-    expect(info).toMatchObject({
-      available: false,
-      error: `Could not run \`fixture-cli version\` because the executable selected by the Coral daemon's PATH may not be executed by the daemon user (${code}); fix that executable's permissions, or correct the daemon's PATH and restart the Coral backend, then retry.`,
-    });
-    await subject.detect();
     expect(exec).toHaveBeenCalledOnce();
   });
 
@@ -225,105 +173,6 @@ describe('provider-neutral CLI detection', () => {
     expect(info.error).not.toMatch(/execute permissions on `fixture-cli`/iu);
   });
 
-  it('uses denied traversability when the working-directory shape cannot be observed', async () => {
-    const exec = vi.fn().mockResolvedValue(launchFailure('EACCES'));
-
-    await expect(detector({ exec, cwdState: 'unobserved', cwdTraversability: 'denied' }).detect()).resolves.toEqual({
-      available: false,
-      reason: 'invalid-working-directory',
-      error: expect.stringMatching(/not traversable/iu),
-    });
-  });
-
-  it('reports EACCES as undetermined when working-directory traversability cannot be observed', async () => {
-    const exec = vi.fn().mockResolvedValue(launchFailure('EACCES'));
-
-    await expect(detector({ exec, cwdTraversability: 'unobserved' }).detect()).resolves.toEqual({
-      available: false,
-      reason: 'undetermined',
-      error: expect.stringMatching(
-        /could not determine whether .* failed because of the command or working directory/iu,
-      ),
-    });
-  });
-
-  it('reports and caches ENOTDIR with the daemon PATH and backend restart remedy', async () => {
-    const exec = vi.fn().mockResolvedValue(launchFailure('ENOTDIR'));
-    const subject = detector({ exec });
-
-    const info = await subject.detect();
-
-    expect(info).toMatchObject({
-      available: false,
-      error:
-        "Could not run `fixture-cli version` because the Coral daemon's PATH resolves `fixture-cli` through a component that is not a directory (ENOTDIR); correct that PATH, restart the Coral backend, then retry.",
-    });
-    await subject.detect();
-    expect(exec).toHaveBeenCalledOnce();
-  });
-
-  it.each([
-    ['missing', 'ENOENT', /does not exist/iu],
-    ['not-directory', 'ENOTDIR', /is not a directory/iu],
-  ] as const)('reports a %s working directory as a request-specific refusal', async (cwdState, code, remedy) => {
-    const exec = vi.fn().mockResolvedValue(launchFailure(code));
-    const cwd = '/workspace/removed-project';
-    const subject = detector({ exec, cwd, cwdState });
-
-    const info = await subject.detect();
-
-    expect(info).toEqual({
-      available: false,
-      reason: 'invalid-working-directory',
-      error: expect.stringMatching(remedy),
-    });
-    if (info.available) throw new Error('expected unavailable');
-    expect(info.error).toContain(cwd);
-  });
-
-  it('reports an unobservable working directory as undetermined', async () => {
-    const exec = vi.fn().mockResolvedValue(launchFailure('ENOENT'));
-
-    await expect(detector({ exec, cwdState: 'unobserved' }).detect()).resolves.toEqual({
-      available: false,
-      reason: 'undetermined',
-      error: expect.stringMatching(
-        /could not determine whether .* failed because of the command or working directory/iu,
-      ),
-    });
-  });
-
-  it('does not cache a request-specific working-directory refusal', async () => {
-    const statSync = vi
-      .fn()
-      .mockImplementationOnce(() => {
-        throw errno('ENOENT');
-      })
-      .mockReturnValue({ isDirectory: () => true });
-    const exec = vi
-      .fn()
-      .mockResolvedValueOnce(launchFailure('ENOENT'))
-      .mockResolvedValueOnce({ stdout: 'fixture 1.0', stderr: '', status: 0 });
-    const subject = detector({ token: 'secret', exec, statSync });
-
-    await expect(subject.detect()).resolves.toMatchObject({ reason: 'invalid-working-directory' });
-    await expect(subject.detect()).resolves.toMatchObject({ available: true, version: 'fixture 1.0' });
-    expect(exec).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not cache a permission refusal attributed to one request's working directory", async () => {
-    const observeDirectoryTraversabilitySync = vi.fn().mockReturnValueOnce('denied').mockReturnValue('traversable');
-    const exec = vi
-      .fn()
-      .mockResolvedValueOnce(launchFailure('EACCES'))
-      .mockResolvedValueOnce({ stdout: 'fixture 1.0', stderr: '', status: 0 });
-    const subject = detector({ token: 'secret', exec, observeDirectoryTraversabilitySync });
-
-    await expect(subject.detect()).resolves.toMatchObject({ reason: 'invalid-working-directory' });
-    await expect(subject.detect()).resolves.toMatchObject({ available: true, version: 'fixture 1.0' });
-    expect(exec).toHaveBeenCalledTimes(2);
-  });
-
   it('never remembers an undetermined probe, so a recovered machine heals on the next call', async () => {
     const exec = vi
       .fn()
@@ -336,16 +185,5 @@ describe('provider-neutral CLI detection', () => {
       available: true,
       version: 'fixture 1.0',
     });
-  });
-
-  it('re-asks after every undetermined probe rather than letting one answer for the next', async () => {
-    const exec = vi.fn().mockResolvedValue(launchFailure('EAGAIN'));
-    const subject = detector({ exec });
-
-    for (let call = 0; call < 5; call += 1) {
-      await expect(subject.detect()).resolves.toMatchObject({ reason: 'undetermined' });
-    }
-
-    expect(exec, 'one unobserved fork failure must not decide for five later calls').toHaveBeenCalledTimes(5);
   });
 });

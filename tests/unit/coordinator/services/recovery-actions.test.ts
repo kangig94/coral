@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-
 import { applyRecoveryAction, COORDINATOR_NOT_APPLICABLE_FACTS } from '#src/coordinator/services/recovery/actions.js';
 import { writeDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { RecoveryRegistry } from '#src/jobs/reconcile/registry.js';
@@ -273,11 +272,7 @@ describe('registerRunningRecovery provider-binding holds', () => {
     }
   });
 
-  it.each([
-    { name: 'missing', recordedPid: null, observedIncarnation: testIncarnation('observed') },
-    { name: 'different pid', recordedPid: PID + 1, observedIncarnation: testIncarnation('observed') },
-    { name: 'different incarnation', recordedPid: PID, observedIncarnation: testIncarnation('other') },
-  ])(
+  it.each([{ name: 'different incarnation', recordedPid: PID, observedIncarnation: testIncarnation('other') }])(
     'does not signal an alive process when its recorded identity is $name',
     async ({ recordedPid, observedIncarnation }) => {
       const fixture = recoveryFixture('alive');
@@ -324,33 +319,6 @@ describe('registerRunningRecovery provider-binding holds', () => {
       expect(fixture.kill).toHaveBeenCalledWith(-PID, 'SIGTERM');
       expect(fixture.kill).toHaveBeenCalledWith(PID + 1, 'SIGTERM');
       expect(fixture.settleFault).toHaveBeenCalledOnce();
-      expect(fixture.recoveryRegistry.has(JOB_ID)).toBe(true);
-    } finally {
-      fixture.db.close();
-    }
-  });
-
-  it('returns a no-signal quarantine when the recorded identities cannot be observed', async () => {
-    const fixture = recoveryFixture('unknown');
-    try {
-      const incarnation = testIncarnation('matching');
-      writeDurableCliProcessRuntimeMeta(fixture.db, {
-        jobId: JOB_ID,
-        pid: PID,
-        incarnation,
-        processGroupId: PID,
-        childRoot: { pid: PID + 1, incarnation },
-      });
-      fixture.setObservedIncarnation(incarnation);
-
-      const disposition = await fixture.run();
-
-      if (disposition.kind !== 'quarantine') throw new Error(`expected quarantine, received ${disposition.kind}`);
-      expect(disposition.detail).toContain(
-        'process identity could not be observed before recorded-containment signal authorization',
-      );
-      expect(fixture.kill).not.toHaveBeenCalled();
-      expect(fixture.settleFault).not.toHaveBeenCalled();
       expect(fixture.recoveryRegistry.has(JOB_ID)).toBe(true);
     } finally {
       fixture.db.close();

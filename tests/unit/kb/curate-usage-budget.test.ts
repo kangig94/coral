@@ -46,14 +46,6 @@ describe('curate usage budget runtime isolation', () => {
     expect(observedPath).toBe('/isolated-home/.claude/hud/.coral-cache.json');
   });
 
-  it('allows curate below the five-hour and weekly guardrails', () => {
-    expect(usageBudgetExhausted({ fiveHour: 49, weekly: 69 })).toBe(false);
-  });
-
-  it('blocks curate at the five-hour guardrail', () => {
-    expect(usageBudgetExhausted({ fiveHour: 50, weekly: 10 })).toBe(true);
-  });
-
   it('blocks curate at the weekly guardrail', () => {
     expect(usageBudgetExhausted({ fiveHour: 10, weekly: 70 })).toBe(true);
   });

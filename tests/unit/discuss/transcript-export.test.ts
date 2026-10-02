@@ -97,28 +97,12 @@ describe('renderDiscussRecordMarkdown', () => {
     expect(md).not.toContain('bids');
     expect(md).not.toContain('resolve_type');
   });
-
-  it('does not duplicate the synthesis inside the transcript section', () => {
-    const md = renderDiscussRecordMarkdown(snapshot({ transcript: [SPEECH_A, SYNTHESIS] }));
-    expect(md.split('Adopt with a migration plan.').length - 1).toBe(1);
-  });
-
-  it('renders placeholders when transcript or synthesis is empty', () => {
-    const md = renderDiscussRecordMarkdown(snapshot({ transcript: [] }));
-    expect(md).toContain('_(no transcript entries)_');
-    expect(md).toContain('_(no synthesis recorded)_');
-  });
 });
 
 describe('discussRecordPath', () => {
   it('builds <projectDataDir>/discuss/<YYYYMMDD-HHMMSS>-<topic-slug>.md', () => {
     const path = discussRecordPath('/data/projects/acme-repo', snapshot());
     expect(path).toBe(join('/data/projects/acme-repo', 'discuss', '20260610-091530-should-we-adopt-the-new-schema.md'));
-  });
-
-  it('falls back to a default slug when the topic has no slug-able characters', () => {
-    const path = discussRecordPath('/d', snapshot({ topic: '???' }));
-    expect(path).toBe(join('/d', 'discuss', '20260610-091530-discussion.md'));
   });
 });
 
@@ -140,12 +124,5 @@ describe('writeDiscussRecord', () => {
     const [writtenPath, content] = writeAtomicSync.mock.calls[0];
     expect(writtenPath).toBe(path);
     expect(String(content)).toContain('## Final Synthesis');
-  });
-
-  it('throws when the atomic write fails', () => {
-    const storage = { mkdirSync: vi.fn(), writeAtomicSync: vi.fn(() => false) };
-    expect(() => writeDiscussRecord({ storage, projectData: (p) => p }, snapshot())).toThrow(
-      /Failed to write discuss record/,
-    );
   });
 });

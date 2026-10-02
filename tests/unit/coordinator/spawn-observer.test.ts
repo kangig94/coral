@@ -1,8 +1,5 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { createRealRuntime } from '#src/runtime/real.js';
+import { describe, expect, it } from 'vitest';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -12,14 +9,6 @@ import {
   attachRecordingObserver,
   observeRuntimeSpawns,
 } from '#src/coordinator/spawn-observer.js';
-
-const tempDirs: string[] = [];
-
-function createTempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
 
 function waitForClose(child: ChildProcessLike): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve, reject) => {
@@ -51,31 +40,29 @@ async function readPipedOutput(child: ChildProcessLike): Promise<{
   return { stdout, stderr, ...result };
 }
 
-afterEach(() => {
-  for (const dir of tempDirs.splice(0, tempDirs.length)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 describe('recording observer', () => {
   it('records spawned children through the observer subscriber wiring', async () => {
-    const runtime = createRealRuntime('prod');
+    const runtime = new SimulationRuntime();
     const observer = new EventEmitterObserver();
     observeRuntimeSpawns(runtime, observer);
 
-    const recordingDir = createTempDir('coral-recording-observer-');
+    const recordingDir = '/recordings';
+    runtime.storage.mkdirSync(recordingDir, { recursive: true });
     attachRecordingObserver({
       observer,
       runtime,
       recordingDir,
     });
 
-    const child = runtime.process.spawn({
-      command: process.execPath,
-      args: ['-e', "process.stdout.write('recorded\\n');"],
+    runtime.spawner.enqueueSpawn({
+      stdout: [{ delayMs: 1, data: 'recorded\n' }],
+      close: { delayMs: 1, code: 0 },
     });
-
-    const result = await readPipedOutput(child);
+    const child = runtime.process.spawn({ command: 'recorded-child', args: [] });
+    const pending = readPipedOutput(child);
+    await flushMicrotasks();
+    runtime.time.tick(1);
+    const result = await pending;
     expect(result).toEqual({
       stdout: 'recorded\n',
       stderr: '',
@@ -83,12 +70,12 @@ describe('recording observer', () => {
       signal: null,
     });
 
-    const files = readdirSync(recordingDir);
+    const files = runtime.storage.readdirSync(recordingDir);
     expect(files).toHaveLength(1);
 
     const recording = loadRecording(runtime.storage, join(recordingDir, files[0]));
-    expect(recording.command).toBe(process.execPath);
-    expect(recording.args).toEqual(['-e', "process.stdout.write('recorded\\n');"]);
+    expect(recording.command).toBe('recorded-child');
+    expect(recording.args).toEqual([]);
     expect(recording.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: 'stdout', data: 'recorded\n' }),
@@ -98,14 +85,6 @@ describe('recording observer', () => {
   });
 
   it.each([
-    {
-      name: 'real',
-      createRuntime: () => createRealRuntime('prod'),
-      command: process.execPath,
-      args: ['-e', "process.stdout.write('late-bound\\n');"],
-      runExec: async (runtime: ReturnType<typeof createRealRuntime>) =>
-        runtime.process.exec(process.execPath, ['-e', "process.stdout.write('late-bound\\n');"]),
-    },
     {
       name: 'simulation',
       createRuntime: () => new SimulationRuntime(),

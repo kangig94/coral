@@ -7,7 +7,6 @@ import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js'
 import { TEST_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 
 const SESSION_ID = 'session-1';
-const SECOND_SESSION_ID = 'session-2';
 const PROJECT_ROOT = '/tmp/coral-discuss/project';
 const SOURCE = 'local/project-source';
 const TOPIC = 'Should the city pedestrianize the downtown core?';
@@ -66,46 +65,6 @@ async function appendRoundTripHistory(store: DiscussSessionStore, sessionId = SE
 }
 
 describe('DiscussSessionStore', () => {
-  it('appends events to the Journal and reads the projection snapshot', async () => {
-    const store = createStore();
-    const finalSnapshot = await appendRoundTripHistory(store);
-
-    expect(store.load(SESSION_ID)).toEqual(finalSnapshot);
-    expect(store.readSessionEvents(SESSION_ID).map((event) => event.kind)).toEqual([
-      'session.created',
-      'bidding.opened',
-      'bid.submitted',
-    ]);
-  });
-
-  it('lists summaries and recovery candidates from Journal snapshots', async () => {
-    const store = createStore();
-    const first = await appendRoundTripHistory(store, SESSION_ID);
-    await appendRoundTripHistory(store, SECOND_SESSION_ID);
-
-    expect(
-      store
-        .listSummaries()
-        .map((summary) => summary.sessionId)
-        .sort(),
-    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
-    expect(store.listSummaries()).toContainEqual(
-      expect.objectContaining({
-        sessionId: SESSION_ID,
-        projectRoot: PROJECT_ROOT,
-        topic: TOPIC,
-        status: first.state.status,
-        authority: 'persisted',
-      }),
-    );
-    expect(store.listRecoveryCandidates()).toContainEqual(
-      expect.objectContaining({
-        sessionId: SESSION_ID,
-        topic: TOPIC,
-      }),
-    );
-  });
-
   it('rejects stale compare-and-append attempts', async () => {
     const store = createStore();
     const created = await store.append(

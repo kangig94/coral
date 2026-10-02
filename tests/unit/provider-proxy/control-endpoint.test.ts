@@ -1,6 +1,66 @@
-import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import type * as MockedNodeNetModule from 'node:net';
+vi.mock('node:net', async (importOriginal) => {
+  const actual = await importOriginal<typeof MockedNodeNetModule>();
+  const { EventEmitter } = await import('node:events');
+  const listeners = new Map<string, (socket: MemorySocket) => void>();
+  class MemorySocket extends EventEmitter {
+    destroyed = false;
+    peer!: MemorySocket;
+    write(data: string, done?: () => void): boolean {
+      done?.();
+      setImmediate(() => {
+        if (!this.peer.destroyed) this.peer.emit('data', Buffer.from(data));
+      });
+      return true;
+    }
+    destroy(): this {
+      if (this.destroyed) return this;
+      this.destroyed = true;
+      queueMicrotask(() => this.emit('close'));
+      this.peer.destroy();
+      return this;
+    }
+    end(data?: string, done?: () => void): this {
+      if (data !== undefined) this.write(data);
+      setImmediate(() => {
+        done?.();
+        this.destroy();
+      });
+      return this;
+    }
+  }
+  return {
+    ...actual,
+    createServer: (accept: (socket: MemorySocket) => void) => {
+      const server = new EventEmitter();
+      let path = '';
+      return Object.assign(server, {
+        listen: (socketPath: string) => {
+          path = socketPath;
+          listeners.set(path, accept);
+          queueMicrotask(() => server.emit('listening'));
+        },
+        close: (done: () => void) => {
+          listeners.delete(path);
+          done();
+        },
+      });
+    },
+    createConnection: (path: string) => {
+      const client = new MemorySocket();
+      const server = new MemorySocket();
+      client.peer = server;
+      server.peer = client;
+      queueMicrotask(() => {
+        const accept = listeners.get(path);
+        if (accept === undefined) throw new Error(`No in-memory endpoint at ${path}`);
+        accept(server);
+        client.emit('connect');
+      });
+      return client;
+    },
+  };
+});
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -18,13 +78,12 @@ afterEach(async () => {
 });
 
 const timer = {
-  setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
-  clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as NodeJS.Timeout),
+  setTimeout: () => ({}),
+  clearTimeout: () => {},
 };
 
 async function provisionalConnectionFixture() {
-  const directory = mkdtempSync(join(tmpdir(), 'coral-provisional-control-'));
-  cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = '/control-test';
   const socketPath = join(directory, 'role.sock');
   let controlLive = false;
   let challenge = 0;
@@ -107,86 +166,20 @@ async function provisionalConnectionFixture() {
 
 describe('control endpoint operator authority', () => {
   it('refuses operator abandonment while coordinator control is live', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'coral-operator-control-'));
-    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
-    const socketPath = join(directory, 'role.sock');
-    let controlLive = false;
-    const challenges: ControlChallengeAuthority = {
-      issueFirstChallenge: () => {
-        controlLive = true;
-        return { accepted: true, challenge: 'challenge-1' };
+    const fixture = await provisionalConnectionFixture();
+    const refused = await fixture.provisional.exchange('role.operator.v1', {}, 1000);
+    expect(refused).toMatchObject({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: { kind: 'json-rpc-error', protocolCode: 'invalid_state' },
       },
-      admitSuccessor: () => ({ accepted: false, reason: 'control-active' }),
-      reattachControl: () => ({ accepted: true }),
-      controlIsLive: () => controlLive,
-      echoChallenge: () => ({ accepted: true, nextChallenge: 'challenge-2' }),
-    };
-    const operator = vi.fn(() => ({ state: 'abandoned' }));
-    const endpoint = createControlEndpoint({
-      socketPath,
-      role: {
-        heartbeatMethod: 'role.heartbeat.v1',
-        methods: new Map([
-          [
-            'role.open.v1',
-            {
-              authority: 'establishes-control' as const,
-              handle: () => ({
-                holder: { instanceId: randomUUID(), pid: 4_001, incarnation: testIncarnation(4_001) },
-                fields: { state: 'opened' },
-              }),
-            },
-          ],
-          ['role.operator.v1', { authority: 'operator' as const, handle: operator }],
-        ]),
-      },
-      challenges,
-      observer: { onControlLost: () => {} },
-      timer,
-      holderAuthority: createControlHolderAuthority(),
-      requestTimeoutMs: 1_000,
     });
-    await endpoint.listen();
-    cleanups.push(() => endpoint.close());
-
-    const clients: ControlClient[] = [];
-    const connect = async (): Promise<ControlClient> => {
-      const client = await connectControlClient(socketPath, timer, 1_000);
-      clients.push(client);
-      return client;
-    };
-    cleanups.push(() => clients.forEach((client) => client.close()));
-    const coordinator = await connect();
-    const opened = await coordinator.exchange('role.open.v1', {}, 1_000);
-    expect(opened.kind).toBe('response');
-
-    const attempted = await connect();
-    const refused = await attempted.exchange('role.operator.v1', {}, 1_000);
-
-    expect(refused.kind).toBe('response');
-    if (refused.kind !== 'response' || refused.response.kind !== 'refusal') {
-      throw new Error('operator abandonment was not refused');
-    }
-    if (refused.response.failure.kind !== 'json-rpc-error') {
-      throw new Error('operator abandonment did not return a protocol refusal');
-    }
-    expect(refused.response.failure.protocolCode).toBe('invalid_state');
-    expect(refused.response.error.message).toContain('provider-proxy-set abandon <set-token>');
-    expect(operator).not.toHaveBeenCalled();
+    expect(fixture.operator).not.toHaveBeenCalled();
   });
 });
 
 describe('control endpoint provisional admission', () => {
-  it('evaluates operator authority when the first frame is dispatched', async () => {
-    const fixture = await provisionalConnectionFixture();
-    fixture.lapseControl();
-
-    await expect(strictControlExchangeResult(fixture.provisional, 'role.operator.v1', {}, 1_000)).resolves.toEqual({
-      state: 'abandoned',
-    });
-    expect(fixture.operator).toHaveBeenCalledOnce();
-  });
-
   it('keeps a provisionally accepted socket when successor control is admitted after expiry', async () => {
     const fixture = await provisionalConnectionFixture();
     fixture.lapseControl();

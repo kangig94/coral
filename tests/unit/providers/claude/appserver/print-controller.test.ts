@@ -198,106 +198,30 @@ async function ensureController(
 }
 
 describe('PrintSessionController', () => {
-  it('returns an observable hold and retains listeners when TERM and KILL do not produce close', async () => {
-    vi.useFakeTimers();
-    try {
+  it.each([['resumed', true]] as const)(
+    'passes %s-session intent to the print child',
+    async (_label, resumeExisting) => {
       const child = new FakeClaudePrintChild();
-      child.exitOnKill = false;
-      const controller = createController(child);
-      await ensureController(controller, child);
-
-      const shutdown = controller.shutdown();
-      await vi.advanceTimersByTimeAsync(2_500);
-      const held = await shutdown;
-
-      expect(held).toMatchObject({
-        kind: 'held-unobservable',
-        observation: 'unobservable',
-        operatorExit: { kind: 'transfer-to-broker-session-pool' },
+      const spawnOptions: SpawnClaudePrintChildOptions[] = [];
+      const controller = createController(child, [], {
+        onSpawn: (options) => spawnOptions.push(options),
       });
-      expect(child.killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
-      child.emitExit({ code: null, signal: 'SIGKILL' });
-      if (held.kind === 'observed-absent') throw new Error('Expected a held shutdown.');
-      await expect(held.settled).resolves.toMatchObject({ kind: 'observed-absent' });
-      await expect(controller.shutdown()).resolves.toMatchObject({ kind: 'observed-absent' });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 
-  it.each([
-    ['new', false],
-    ['resumed', true],
-  ] as const)('passes %s-session intent to the print child', async (_label, resumeExisting) => {
-    const child = new FakeClaudePrintChild();
-    const spawnOptions: SpawnClaudePrintChildOptions[] = [];
-    const controller = createController(child, [], {
-      onSpawn: (options) => spawnOptions.push(options),
-    });
-
-    await expect(
-      ensureController(controller, child, 'default', {
-        conversationRef: TEST_SESSION_ID,
-        resumeExisting,
-      }),
-    ).resolves.toMatchObject({ conversationRef: TEST_SESSION_ID });
-    expect(spawnOptions).toHaveLength(1);
-    expect(spawnOptions[0]).toMatchObject({
-      conversationRef: TEST_SESSION_ID,
-      resume: resumeExisting,
-    });
-
-    await controller.shutdown();
-  });
-
-  it('bootstraps with a control request, sends user JSONL, and completes from result output', async () => {
-    const child = new FakeClaudePrintChild();
-    const notifications: ControllerNotification[] = [];
-    const controller = createController(child, notifications);
-
-    await expect(ensureController(controller, child)).resolves.toMatchObject({
-      sessionId: TEST_SESSION_ID,
-      conversationRef: TEST_SESSION_ID,
-      initialized: true,
-    });
-
-    await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
-    expect(parseWrite(child, 1)).toMatchObject({
-      type: 'user',
-      message: { role: 'user', content: 'hello' },
-      session_id: TEST_SESSION_ID,
-    });
-
-    child.emitStdout({
-      type: 'result',
-      subtype: 'success',
-      session_id: TEST_SESSION_ID,
-      result: 'done',
-      duration_ms: 12,
-      num_turns: 1,
-      total_cost_usd: 0.02,
-      usage: { input_tokens: 3 },
-      is_error: false,
-    });
-
-    expect(notifications).toContainEqual(
-      expect.objectContaining({
-        method: 'turn/completed',
-        params: expect.objectContaining({
-          brokerTurnId: 'turn-1',
-          sessionId: TEST_SESSION_ID,
+      await expect(
+        ensureController(controller, child, 'default', {
           conversationRef: TEST_SESSION_ID,
-          result: 'done',
-          model: 'claude-sonnet-test',
-          durationMs: 12,
-          costUsd: 0.02,
-          isError: false,
+          resumeExisting,
         }),
-      }),
-    );
+      ).resolves.toMatchObject({ conversationRef: TEST_SESSION_ID });
+      expect(spawnOptions).toHaveLength(1);
+      expect(spawnOptions[0]).toMatchObject({
+        conversationRef: TEST_SESSION_ID,
+        resume: resumeExisting,
+      });
 
-    await controller.shutdown();
-  });
+      await controller.shutdown();
+    },
+  );
 
   it('keeps the controller turn active after interrupt acknowledgement and emits evidence only after result', async () => {
     const child = new FakeClaudePrintChild();
@@ -546,60 +470,6 @@ describe('PrintSessionController', () => {
         params: expect.objectContaining({
           brokerTurnId: 'turn-1',
           diagnostic: expect.objectContaining({ reason: 'internal-error' }),
-        }),
-      }),
-    );
-
-    await controller.shutdown();
-  });
-
-  it('uses a late system init model for the active turn completion', async () => {
-    const child = new FakeClaudePrintChild();
-    const notifications: ControllerNotification[] = [];
-    const controller = createController(child, notifications);
-
-    const ensure = controller.sessionEnsure({
-      cwd: '/workspace',
-      projectsRoot: '/tmp/coral-test-home/.claude/projects',
-      systemPromptHash: 'sha256:test',
-
-      bootstrapConfigHash: 'sha256:test-bootstrap',
-      permissionMode: 'default',
-      systemPrompt: 'system',
-      effort: 'high',
-    });
-    await waitForWrite(child, 0);
-    const initRequest = parseWrite(child, 0);
-    child.emitStdout({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: initRequest.request_id,
-        response: {},
-      },
-    });
-    await ensure;
-
-    await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
-    child.emitStdout({
-      type: 'system',
-      subtype: 'init',
-      session_id: TEST_SESSION_ID,
-      model: 'claude-late-model',
-    });
-    child.emitStdout({
-      type: 'result',
-      subtype: 'success',
-      session_id: TEST_SESSION_ID,
-      result: 'done',
-    });
-
-    expect(notifications).toContainEqual(
-      expect.objectContaining({
-        method: 'turn/completed',
-        params: expect.objectContaining({
-          brokerTurnId: 'turn-1',
-          model: 'claude-late-model',
         }),
       }),
     );

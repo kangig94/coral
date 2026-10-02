@@ -1,88 +1,60 @@
 import { readdirSync } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import { cleanupFixtures, createFixture, liveWorkBackgroundDir } from '#tests/unit/hooks/_helpers.js';
 
-import {
-  MONITOR_TRACK_HOOK,
-  cleanupFixtures,
-  createFixture,
-  expectBashRewriteOutput,
-  liveWorkBackgroundDir,
-  runHook,
-  type HookFixture,
-} from '#tests/unit/hooks/_helpers.js';
-
-afterEach(cleanupFixtures);
-
-const SESSION = 'sess-monitor-01';
-
-function bgDir(fixture: HookFixture): string {
-  return liveWorkBackgroundDir(fixture, SESSION);
-}
-
-function runMonitor(fixture: HookFixture, toolInput: Record<string, unknown>) {
-  return runHook(
-    MONITOR_TRACK_HOOK,
-    {
+const input = vi.hoisted(() => ({ persistent: false }));
+const output = vi.hoisted(() => vi.fn());
+vi.mock('../../../clients/hooks/lib/hook-utils.mjs', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  exitIfChildProcess: () => {},
+  exitIfWrongFlavor: () => {},
+  readStdin: async () =>
+    JSON.stringify({
       hook_event_name: 'PreToolUse',
       tool_name: 'Monitor',
-      session_id: SESSION,
-      cwd: fixture.projectRoot,
-      tool_input: toolInput,
-    },
-    { CLAUDE_PROJECT_DIR: fixture.projectRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
-  );
-}
+      session_id: 'sess-monitor-01',
+      cwd: process.env.CLAUDE_PROJECT_DIR,
+      tool_input: { command: 'tail -f app.log | grep ERROR', persistent: input.persistent },
+    }),
+  writeHookOutput: output,
+}));
 
-describe('monitor-track.mjs', () => {
-  it('wraps a bounded Monitor command and records .launched', () => {
-    const fixture = createFixture();
-    const result = runMonitor(fixture, {
-      command: 'tail -f app.log | grep ERROR',
-      description: 'errors',
-      timeout_ms: 60000,
-      persistent: false,
-    });
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  vi.resetModules();
+  output.mockClear();
+  cleanupFixtures();
+});
 
-    const rewritten = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput.command;
-    expect(rewritten).toContain('coral-work');
-    expect(rewritten.endsWith('tail -f app.log | grep ERROR')).toBe(true);
-    expect(readdirSync(bgDir(fixture)).some((name) => name.endsWith('.launched'))).toBe(true);
+it('keeps the monitor command and records its background marker', async () => {
+  const fixture = createFixture();
+  vi.stubEnv('CLAUDE_PROJECT_DIR', fixture.projectRoot);
+  vi.stubEnv('CORAL_WORK_ROOT_OVERRIDE', fixture.workRoot);
+  input.persistent = false;
+  const exit = vi.spyOn(process, 'exit').mockImplementation(() => {
+    throw new Error('unexpected exit');
   });
 
-  it('skips persistent monitors (tracking one would stall the ralph loop)', () => {
-    const fixture = createFixture();
-    const result = runMonitor(fixture, { command: 'tail -f app.log', description: 'log', persistent: true });
+  // @ts-expect-error — hooks are executable .mjs modules without declarations.
+  await import('../../../clients/hooks/monitor-track.mjs');
 
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('');
+  expect(exit).not.toHaveBeenCalled();
+  const command = output.mock.calls[0]?.[0].hookSpecificOutput.updatedInput.command as string;
+  expect(command.endsWith('\ntail -f app.log | grep ERROR')).toBe(true);
+  const markers = readdirSync(liveWorkBackgroundDir(fixture, 'sess-monitor-01'));
+  expect(markers.filter((name) => name.endsWith('.launched'))).toHaveLength(1);
+});
+
+it('leaves persistent monitors untracked', async () => {
+  input.persistent = true;
+  const exit = new Error('hook finished');
+  vi.spyOn(process, 'exit').mockImplementation(() => {
+    throw exit;
   });
 
-  it('skips the ws-variant monitor (no command to wrap)', () => {
-    const fixture = createFixture();
-    const result = runMonitor(fixture, {
-      ws: { url: 'wss://events.example.com' },
-      description: 'ws',
-      persistent: false,
-    });
+  // @ts-expect-error — hooks are executable .mjs modules without declarations.
+  await expect(import('../../../clients/hooks/monitor-track.mjs')).rejects.toBe(exit);
 
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('');
-  });
-
-  it('leaves the command unwrapped when session_id is absent', () => {
-    const fixture = createFixture();
-    const result = runHook(
-      MONITOR_TRACK_HOOK,
-      {
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Monitor',
-        cwd: fixture.projectRoot,
-        tool_input: { command: 'tail -f app.log', description: 'x', persistent: false },
-      },
-      { CLAUDE_PROJECT_DIR: fixture.projectRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
-    );
-
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('');
-  });
+  expect(output).not.toHaveBeenCalled();
 });

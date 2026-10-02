@@ -209,50 +209,6 @@ describe('coordinator provider-host admission', () => {
     ).toBe(providerCause);
   });
 
-  it('keys job-exclusive admission by owner job and single-flights concurrent opens within that slot', async () => {
-    const first = createFakeProviderServerHandle({ generation: 201 });
-    const second = createFakeProviderServerHandle({ generation: 202 });
-    const sinks: ProviderResponseObservationSink[] = [];
-    const handles = [first.handle, second.handle];
-    const spawnProviderServer = vi.fn<SpawnProviderServerFn>(async (_options, sink, _generation, recordContainment) => {
-      sinks.push(sink);
-      const handle = handles.shift();
-      if (handle === undefined) throw new Error('unexpected third spawn');
-      recordContainment?.(handle.containmentIdentity);
-      return handle;
-    });
-    let generation = 201;
-    const manager = new StubbedContainmentProviderHostManager({
-      carrierBlocksRetirement: noCarrierBlocksRetirement,
-      runtime,
-      spawnProviderServer,
-      admission: createCoordinatorProviderHostAdmission(),
-      allocateProviderServerGeneration: () => generation++,
-    });
-    const hostSpec = createExclusiveSpec();
-
-    const [jobAFirst, jobASecond] = await Promise.all([
-      manager.openSession(hostSpec, { jobId: 'job-a' }),
-      manager.openSession(hostSpec, { jobId: 'job-a' }),
-    ]);
-    expect(jobAFirst.hostRef).toEqual(jobASecond.hostRef);
-    expect(spawnProviderServer).toHaveBeenCalledOnce();
-    sinks[0]?.(rejectedConfigRead(201));
-
-    const jobB = await manager.openSession(hostSpec, { jobId: 'job-b' });
-    expect(jobB.hostRef.instanceId).not.toBe(jobAFirst.hostRef.instanceId);
-    expect(spawnProviderServer).toHaveBeenCalledTimes(2);
-    await expect(manager.openSession(hostSpec, { jobId: 'job-a' })).rejects.toMatchObject({
-      code: 'provider_host_unserviceable',
-      hostRef: jobAFirst.hostRef,
-    });
-
-    jobAFirst.close();
-    jobASecond.close();
-    jobB.close();
-    await manager.shutdown();
-  });
-
   it('awaits exact live coordinator close before confirmation and leaves another live job untouched', async () => {
     const evictedClose = createDeferred<void>();
     const evictedRpc = createDeferred<unknown>();

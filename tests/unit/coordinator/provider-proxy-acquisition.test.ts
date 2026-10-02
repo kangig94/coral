@@ -1,4 +1,5 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -394,6 +395,12 @@ describe('provider proxy set acquisition', () => {
   });
 
   it('does not let a hung cleanup action hold the acquisition open past its deadline', async () => {
+    const time = new VirtualTime();
+    const deadline = new AbortController();
+    let cleanupStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      cleanupStarted = resolve;
+    });
     const recorded = steps({ failAt: 'control' });
     const originalSpawn = recorded.steps.spawnGuardian;
     recorded.steps.spawnGuardian = async () => {
@@ -403,17 +410,28 @@ describe('provider proxy set acquisition', () => {
       }
       // Simulates a control-close RPC that never returns — exactly what would otherwise hold the caller's
       // single-flight slot open forever.
-      return { label: undo.label, run: () => new Promise<void>(() => {}) };
+      return {
+        label: undo.label,
+        run: () => {
+          cleanupStarted();
+          return new Promise<void>(() => {});
+        },
+      };
     };
     const cleanupFailures: string[] = [];
 
-    const result = await acquireProviderProxySet({
+    const pending = acquireProviderProxySet({
       steps: recorded.steps,
-      time: immediateRetryTime,
+      time,
       acceptHold: acceptHoldForTest,
-      deadlineSignal: AbortSignal.timeout(50),
+      deadlineSignal: deadline.signal,
       onCleanupFailure: (label) => cleanupFailures.push(label),
     });
+
+    await started;
+    time.setTimeout(() => deadline.abort(), 50);
+    time.tick(50);
+    const result = await pending;
 
     // The hung undo is reported as stranded instead of awaited forever; the attempt still resolves reporting
     // the original failure, and the capsules undo — which does not hang — still runs to completion.

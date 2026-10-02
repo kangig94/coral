@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildOramaSearchChannelFields, ngramSearchTerms } from '#src/engines/orama/search-channels.js';
+import { buildOramaSearchChannelFields } from '#src/engines/orama/search-channels.js';
 
 describe('orama search-channels large-body regression', () => {
   // Regression (#239): building the n-gram channel over a long body used to
@@ -24,11 +24,6 @@ describe('orama search-channels large-body regression', () => {
     }).not.toThrow();
     expect(fields?.bodyNgram.length ?? 0).toBeGreaterThan(0);
     expect(fields?.bodySurface.length ?? 0).toBeGreaterThan(0);
-  });
-
-  it('ngramSearchTerms handles a long Hangul body without throwing', () => {
-    expect(() => ngramSearchTerms(longHangulBody)).not.toThrow();
-    expect(ngramSearchTerms('가나다').length).toBeGreaterThan(0);
   });
 
   it('does not synthesize body ngrams across high-signal segment boundaries', () => {

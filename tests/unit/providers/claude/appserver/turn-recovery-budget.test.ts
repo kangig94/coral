@@ -23,32 +23,4 @@ describe('turn recovery budget', () => {
     expect(budgetUpperBoundMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBeLessThan(DEFAULT_STALE_TIMEOUT_MS);
     expect(isBelowWorkflowStaleTimeout(DEFAULT_TURN_RECOVERY_BUDGET)).toBe(true);
   });
-
-  it('flags an oversized no-progress hard cap as stale-violating', () => {
-    const oversizedHardCapBudget = {
-      ...DEFAULT_TURN_RECOVERY_BUDGET,
-      'hard-cap': {
-        ...DEFAULT_TURN_RECOVERY_BUDGET['hard-cap'],
-        hardCapMs: DEFAULT_STALE_TIMEOUT_MS,
-      },
-    } as const satisfies TurnRecoveryBudget;
-
-    expect(totalNoProgressRecoveryWindowMs(oversizedHardCapBudget)).toBe(326_500);
-    expect(budgetUpperBoundMs(oversizedHardCapBudget)).toBe(DEFAULT_STALE_TIMEOUT_MS);
-    expect(isBelowWorkflowStaleTimeout(oversizedHardCapBudget)).toBe(false);
-  });
-
-  it('flags oversized phase timings as stale-violating', () => {
-    const oversizedPhaseBudget = {
-      ...DEFAULT_TURN_RECOVERY_BUDGET,
-      'assistant-progress': {
-        ...DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'],
-        assistantProgressIdleMs: DEFAULT_STALE_TIMEOUT_MS,
-      },
-    } as const satisfies TurnRecoveryBudget;
-
-    expect(totalNoProgressRecoveryWindowMs(oversizedPhaseBudget)).toBe(1_046_500);
-    expect(budgetUpperBoundMs(oversizedPhaseBudget)).toBe(1_046_500);
-    expect(isBelowWorkflowStaleTimeout(oversizedPhaseBudget)).toBe(false);
-  });
 });

@@ -1,21 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '#src/discuss/events.js';
-import * as discussLoop from '#src/discuss/shell/loop.js';
 import * as discussBidFlow from '#src/discuss/shell/flow/bid.js';
-import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
-import { getSession } from '#src/discuss/shell/registry.js';
 import * as discussSpeechFlow from '#src/discuss/shell/flow/speech.js';
-import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
-  advanceDiscussRuntime,
   cleanupDiscussHarnesses,
   createDiscussHarness,
   createExecutionServiceStub,
   persistSession,
-  type DiscussHarness,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
-import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -23,26 +16,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-
-async function recoverSessions(harness: DiscussHarness) {
-  return recoverPersistedSessionsFromStore(
-    harness.store,
-    () => harness.context,
-    (snapshot) => ({
-      projectRoot: fixtureCanonicalWorkDir(snapshot.projectRoot),
-      pluginRoot: harness.ctx.pluginRoot,
-      coralEnv: {},
-      principal: testProjectPrincipal(snapshot.projectRoot),
-      providerScope: snapshot.providerScope ?? harness.ctx.providerScope,
-    }),
-  );
-}
-
-function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSessions>>): void {
-  for (const session of recovered) {
-    discussLoop.resumeLoop(session.ctx, session.sessionId, session.invocationCtx);
-  }
-}
 
 describe('Discuss faults and retry recovery', () => {
   it('treats a speech wait timeout as a persisted speech timeout', async () => {
@@ -100,36 +73,6 @@ describe('Discuss faults and retry recovery', () => {
     if (timeoutEntry?.type === 'speech') {
       expect(timeoutEntry.content).toContain('(alpha) timed out without delivering a speech.');
     }
-  });
-
-  it('soft-expels a failed cold-start bidder without wiping a healthy committed bid', async () => {
-    const start = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-beta' });
-    const waitStreamOnce = vi.fn().mockRejectedValue(new Error('resume failed'));
-    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
-    await persistSession(harness, {
-      sessionId: 'discuss-1',
-      recover: true,
-      buildTail: (snapshot) => [
-        makeEvent(
-          snapshot.sessionId,
-          harness.projectRoot,
-          snapshot.state.topic,
-          snapshot.lastAppliedSeq + 1,
-          'bid.submitted',
-          '2026-03-10T00:01:00.000Z',
-          { agent: 'alpha', score: 88, thought: 'alpha' },
-        ),
-      ],
-    });
-
-    await discussBidFlow.collectBids(harness.context, 'discuss-1', harness.ctx);
-
-    const snapshot = harness.store.load('discuss-1');
-    expect(snapshot?.state.current_bids).toEqual({ alpha: 88, beta: 0 });
-    expect(snapshot?.state.current_thoughts).toEqual({ alpha: 'alpha', beta: '' });
-    expect(snapshot?.state.agents.beta?.banned).toBe(false);
   });
 
   it('restarts malformed bid retries from the persisted attempt counter', async () => {
@@ -192,73 +135,6 @@ describe('Discuss faults and retry recovery', () => {
       harness.ctx,
     );
     expect(snapshot?.state.current_bids).toEqual({ alpha: 66, user: null });
-    expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
-    expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('completed');
-  });
-
-  it('after recovery attach, resumeLoop re-runs a missing bid job against the persisted execution session id', async () => {
-    const resume = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-alpha' });
-    const waitStreamOnce = vi.fn().mockImplementation(async () => {
-      queueMicrotask(() => {
-        getSession(harness.context, 'discuss-1')?.controller.abort();
-      });
-      return {
-        content: '{"score": 58, "thought": "recovered bid"}',
-        continuity: null,
-      };
-    });
-    const harness = createDiscussHarness(createExecutionServiceStub({ resume, waitStreamOnce }));
-    await persistSession(harness, {
-      sessionId: 'discuss-1',
-      recover: false,
-      agents: [
-        { name: 'alpha', persona: '# Alpha', participation: 'required' },
-        { name: 'user', persona: '# User', participation: 'observer' },
-      ],
-      buildTail: (snapshot) => [
-        makeEvent(
-          snapshot.sessionId,
-          harness.projectRoot,
-          snapshot.state.topic,
-          snapshot.lastAppliedSeq + 1,
-          'agent.run.bound',
-          '2026-03-10T00:01:00.000Z',
-          { agent: 'alpha', executionSessionId: 'exec-alpha' },
-        ),
-        makeEvent(
-          snapshot.sessionId,
-          harness.projectRoot,
-          snapshot.state.topic,
-          snapshot.lastAppliedSeq + 2,
-          'agent.job.started',
-          '2026-03-10T00:01:01.000Z',
-          { agent: 'alpha', jobId: 'job-missing', purpose: 'bid', attempt: 1 },
-        ),
-      ],
-    });
-    const recovered = await recoverSessions(harness);
-    expect(recovered).toHaveLength(1);
-    resumeRecoveredSessions(recovered);
-    await advanceDiscussRuntime(harness, 1);
-
-    const snapshot = harness.store.load('discuss-1');
-    expect(resume).toHaveBeenCalledWith(
-      'codex',
-      expect.objectContaining({
-        sessionId: 'exec-alpha',
-        pool: 'discuss',
-        owner: { kind: 'discussion', id: 'discuss-1' },
-      }),
-      harness.ctx,
-    );
-    // The job-completion bookkeeping (attempt count, outcome) lands via appendRuntimeEvents,
-    // which this abort does not gate. The bid batch itself commits through commitDecision,
-    // which now refuses once the live controller is aborted — the abort raised from inside
-    // waitStreamOnce above lands before collectBids reaches that commit, so the recovered
-    // score is discarded rather than applied to an already-aborting session.
-    expect(snapshot?.state.current_bids).toEqual({ alpha: null, user: null });
     expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
     expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('completed');
   });

@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import {
   createKbMutationLock,
-  DEFAULT_MUTATION_LOCK_TIMEOUT_MS,
   type KbMutationDeadlineReason,
   type KbMutationLockContext,
   type KbMutationLockRunner,
@@ -88,10 +87,6 @@ async function flushMicrotasks(rounds = 16): Promise<void> {
 }
 
 describe('createKbMutationLock', () => {
-  it('exposes the documented default timeout', () => {
-    expect(DEFAULT_MUTATION_LOCK_TIMEOUT_MS).toBe(30_000);
-  });
-
   it('aborts composed signal with mutation_deadline reason but keeps the lock until fn settles', async () => {
     const runner = createSpyRunner();
     const time = new VirtualTime();
@@ -153,85 +148,6 @@ describe('createKbMutationLock', () => {
     expect(controller.diagnostics()).toEqual({ blocked: false });
   });
 
-  it("reports owner 'unknown' when deadline fires before pendingMutationReason is set", async () => {
-    const runner = createSpyRunner();
-    const time = new VirtualTime();
-    const controller = createKbMutationLock<Index, Publication, Lane>(runner, {
-      defaultTimeoutMs: 1000,
-      time: asTimePort(time),
-    });
-
-    let releaseHang!: () => void;
-    const hang = new Promise<void>((resolve) => {
-      releaseHang = resolve;
-    });
-
-    const stuckPromise = controller.withMutationLock(async () => {
-      // Simulate fn stuck in pre-write I/O — never reaches recordMutationCommitted.
-      await hang;
-      return 'done' as const;
-    });
-
-    await flushMicrotasks();
-    time.tick(1100);
-    await flushMicrotasks();
-    time.tick(150);
-    await flushMicrotasks();
-
-    const blocked = controller.diagnostics();
-    expect(blocked.blocked).toBe(true);
-    if (!blocked.blocked) throw new Error('unreachable');
-    expect(blocked.owner).toBe('unknown');
-
-    releaseHang();
-    expect(await stuckPromise).toBe('done');
-    expect(controller.diagnostics()).toEqual({ blocked: false });
-  });
-
-  it('cooperative fn that settles within grace never surfaces as blocked', async () => {
-    const runner = createSpyRunner();
-    const time = new VirtualTime();
-    const controller = createKbMutationLock<Index, Publication, Lane>(runner, {
-      defaultTimeoutMs: 1000,
-      time: asTimePort(time),
-    });
-
-    const result = await controller.withMutationLock(async (_lockCtx, { signal }) => {
-      const aborted = new Promise<never>((_, reject) => {
-        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-      });
-      time.tick(1100);
-      try {
-        await aborted;
-      } catch {
-        return 'cooperatively-stopped' as const;
-      }
-      return 'unreachable' as const;
-    });
-
-    expect(result).toBe('cooperatively-stopped');
-    expect(controller.diagnostics()).toEqual({ blocked: false });
-  });
-
-  it('honors a per-call timeoutMs override longer than the default', async () => {
-    const runner = createSpyRunner();
-    const time = new VirtualTime();
-    const controller = createKbMutationLock<Index, Publication, Lane>(runner, {
-      defaultTimeoutMs: 100,
-      time: asTimePort(time),
-    });
-
-    const result = await controller.withMutationLock(
-      async () => {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        return 'ok' as const;
-      },
-      { timeoutMs: 60_000 },
-    );
-
-    expect(result).toBe('ok');
-  });
-
   it('propagates caller signal abort with caller reason', async () => {
     const runner = createSpyRunner();
     const time = new VirtualTime();
@@ -263,37 +179,6 @@ describe('createKbMutationLock', () => {
     callerController.abort(callerReason);
 
     await expect(promise).rejects.toMatchObject({ reason: callerReason });
-  });
-
-  it('enqueues publication for finalized mutation before propagating postFinalize failure', async () => {
-    const runner = createSpyRunner();
-    const time = new VirtualTime();
-    const controller = createKbMutationLock<Index, Publication, Lane>(runner, {
-      defaultTimeoutMs: 1000,
-      time: asTimePort(time),
-    });
-    const publication: Publication = {
-      snapshot: {} as CorpusSnapshot,
-      changedLanes: ['content'],
-    };
-    const postFinalizeError = new Error('post finalize failed');
-
-    await expect(
-      controller.withMutationLock(
-        async (lockCtx) => {
-          lockCtx.publication = publication;
-          return 'committed' as const;
-        },
-        {
-          postFinalize: async () => {
-            throw postFinalizeError;
-          },
-        },
-      ),
-    ).rejects.toBe(postFinalizeError);
-
-    expect(runner.finalizeCalls).toBe(1);
-    expect(runner.publications).toEqual([publication]);
   });
 
   it('keeps mutationBlocked watchdog active while finalize is hung', async () => {

@@ -25,6 +25,7 @@ type OpenReadOnlyStoreOptions = {
   | { readonly path?: never; readonly resolved: ResolvedStorePath }
 );
 
+/** @knipignore Used by remaining tests through helper/module indirection. */
 export function asReadonlyDatabase(db: Database): ReadonlyDatabase {
   return db as unknown as ReadonlyDatabase;
 }

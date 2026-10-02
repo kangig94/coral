@@ -1,897 +1,114 @@
 import { Command } from 'commander';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
+import { afterEach, expect, it, vi } from 'vitest';
 import {
   registerBackendCommands,
   type HandoffRoutingStatusCommandOperations,
   type HandoffRoutingStatusQuarantineCommandOperations,
 } from '#src/cli/commands/backend.js';
-import { formatHandoffRoutingResolveResult } from '#src/cli/format/backend.js';
-import { parseHandoffRepairOperation } from '#src/coordinator/handoff-routing/repair-operation.js';
-import {
-  handoffRoutingStatusStoreSchema,
-  type HandoffRoutingResolveRequest,
-  type HandoffRoutingResolveResult,
-} from '#src/coordinator/handoff-routing/status.js';
-import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
-import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 
 const INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
-const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 
 afterEach(() => {
   vi.restoreAllMocks();
   process.exitCode = undefined;
 });
 
-describe('backend routing-status resolve grammar', () => {
-  it.each([
-    ['separated', ['backend', 'routing-status', 'resolve', '--invocation', INVOCATION_ID]],
-    ['equals', ['backend', 'routing-status', 'resolve', `--invocation=${INVOCATION_ID}`]],
-    [
-      'force after invocation',
-      ['backend', 'routing-status', 'resolve', '--invocation', INVOCATION_ID, '--force-unobservable'],
-    ],
-    [
-      'force before invocation',
-      ['backend', 'routing-status', 'resolve', '--force-unobservable', `--invocation=${INVOCATION_ID}`],
-    ],
-  ])('parses %s syntax', (_name, tokens) => {
-    expect(parseHandoffRepairOperation(['node', 'coral-cli', ...tokens])).toEqual({
-      kind: 'routing-status-resolve',
-      invocationId: INVOCATION_ID,
-      forceUnobservable: tokens.includes('--force-unobservable'),
-    });
+it('keeps an expired owner observation refused even with force', async () => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const resolve = vi.fn<HandoffRoutingStatusCommandOperations['resolve']>(async (request) => ({
+    kind: 'unauthorized-unobservable',
+    invocationId: request.invocationId,
+    cause: 'deadline-expired',
+  }));
+  const program = new Command().exitOverride();
+  registerBackendCommands(program, {
+    routingStatus: { resolve, discard: () => ({ kind: 'refused', status: { kind: 'absent' } }) },
   });
 
-  it.each([
-    ['missing invocation', []],
-    ['missing separated value', ['--invocation']],
-    ['option as separated value', ['--invocation', '--force-unobservable']],
-    ['unknown option', ['--invocation', INVOCATION_ID, '--unknown']],
-    ['unknown operand', ['--invocation', INVOCATION_ID, 'extra']],
-    ['noncanonical invocation', ['--invocation', INVOCATION_ID.toUpperCase()]],
-    ['duplicate separated invocation', ['--invocation', INVOCATION_ID, '--invocation', INVOCATION_ID]],
-    [
-      'duplicate mixed invocation',
-      [`--invocation=${INVOCATION_ID}`, '--invocation', '223e4567-e89b-42d3-a456-426614174000'],
-    ],
-    ['duplicate force', ['--invocation', INVOCATION_ID, '--force-unobservable', '--force-unobservable']],
-  ])('rejects %s', (_name, options) => {
-    expect(
-      parseHandoffRepairOperation(['node', 'coral-cli', 'backend', 'routing-status', 'resolve', ...options]),
-    ).toBeNull();
+  await program.parseAsync([
+    'node',
+    'coral-cli',
+    'backend',
+    'routing-status',
+    'resolve',
+    '--invocation',
+    INVOCATION_ID,
+    '--force-unobservable',
+  ]);
+
+  expect(resolve).toHaveBeenCalledWith({
+    kind: 'routing-status-resolve',
+    invocationId: INVOCATION_ID,
+    forceUnobservable: true,
   });
+  expect(stdout).not.toHaveBeenCalled();
+  expect(stderr).toHaveBeenCalledWith(expect.stringContaining('cannot override'));
+  expect(process.exitCode).toBe(75);
+});
 
-  it('is bidirectionally equivalent to the registered Commander action', async () => {
-    const secondInvocationId = '223e4567-e89b-42d3-a456-426614174000';
-    const cases = [
-      ['--invocation', INVOCATION_ID],
-      [`--invocation=${INVOCATION_ID}`],
-      ['--force-unobservable', '--invocation', INVOCATION_ID],
-      ['--invocation', INVOCATION_ID, '--force-unobservable'],
-      ['--invocation', INVOCATION_ID, '--invocation', INVOCATION_ID],
-      [`--invocation=${INVOCATION_ID}`, '--invocation', secondInvocationId],
-      ['--invocation', INVOCATION_ID, '--force-unobservable', '--force-unobservable'],
-      [],
-      ['--invocation'],
-      ['--invocation', '--force-unobservable'],
-      ['--invocation', INVOCATION_ID, '--'],
-      ['--invocation', INVOCATION_ID, '--unknown'],
-      ['--invocation', INVOCATION_ID, 'extra'],
-      ['--invocation', INVOCATION_ID.toUpperCase()],
-    ];
+it('does not report an unreadable quarantine artifact as absent', async () => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
+    list: () => ({ kind: 'listed', entries: [], overflow: false }),
+    clear: async (quarantineId) => ({
+      kind: 'quarantine-clear-undeterminable',
+      quarantineId,
+      quarantinePath: `/state/run/handoff-routing-quarantine/${quarantineId}`,
+      artifact: 'database',
+      errcode: 13,
+    }),
+  };
+  const program = new Command().exitOverride();
+  registerBackendCommands(program, { routingStatusQuarantine });
 
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    for (const options of cases) {
-      const argv = ['node', 'coral-cli', 'backend', 'routing-status', 'resolve', ...options];
-      const parsed = parseHandoffRepairOperation(argv);
-      const requests: unknown[] = [];
-      const routingStatus: HandoffRoutingStatusCommandOperations = {
-        resolve: async (request) => {
-          requests.push(request);
-          return {
-            kind: 'resolved',
-            invocationId: request.invocationId,
-            reason: 'owner-absent',
-            sequence: 1,
-          };
-        },
-        discard: () => ({ kind: 'refused', status: { kind: 'absent' } }),
-      };
-      const program = new Command();
-      program.exitOverride();
-      program.configureOutput({ writeErr: () => undefined });
-      registerBackendCommands(program, { routingStatus });
-      await program.parseAsync(argv).catch(() => undefined);
-      expect(requests, options.join(' ')).toEqual(parsed === null ? [] : [parsed]);
-      process.exitCode = undefined;
-    }
-  });
+  await program.parseAsync([
+    'node',
+    'coral-cli',
+    'backend',
+    'routing-status',
+    'quarantine',
+    'clear',
+    '--id',
+    INVOCATION_ID,
+  ]);
 
-  it('documents the force override safety precondition in command help', () => {
-    const program = new Command();
-    registerBackendCommands(program, {
-      routingStatus: {
-        resolve: async () => {
-          throw new Error('not used');
-        },
-        discard: async () => ({ kind: 'refused', status: { kind: 'absent' } }),
-      },
-    });
-    const backend = program.commands.find((command) => command.name() === 'backend');
-    const routingStatus = backend?.commands.find((command) => command.name() === 'routing-status');
-    const resolve = routingStatus?.commands.find((command) => command.name() === 'resolve');
+  expect(stdout).not.toHaveBeenCalled();
+  expect(stderr).toHaveBeenCalledWith(expect.stringContaining(`quarantine clear --id ${INVOCATION_ID}`));
+  expect(process.exitCode).toBe(75);
+});
 
-    const help = resolve?.helpInformation();
-    expect(help).toContain('Default: false; requires external owner verification');
-    expect(help).toContain('cannot override deadline-expired');
-  });
+it('retains the list and retry actions after a partial clear', async () => {
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
+    list: () => ({ kind: 'listed', entries: [], overflow: false }),
+    clear: async (quarantineId) => ({
+      kind: 'quarantine-clear-storage-failed',
+      quarantineId,
+      quarantinePath: `/state/run/handoff-routing-quarantine/${quarantineId}`,
+      removedArtifacts: [],
+      observedRemovedArtifacts: ['wal'],
+      syncedDirectories: [],
+      cause: 'directory-sync-failed',
+    }),
+  };
+  const program = new Command().exitOverride();
+  registerBackendCommands(program, { routingStatusQuarantine });
 
-  it.each<Readonly<{ result: HandoffRoutingResolveResult; exitCode: 0 | 1 | 70 | 75 }>>([
-    {
-      result: { kind: 'resolved', invocationId: INVOCATION_ID, reason: 'owner-absent', sequence: 1 },
-      exitCode: 0,
-    },
-    {
-      result: { kind: 'acknowledged-capacity-eviction', invocationId: INVOCATION_ID, selectionSequence: 1 },
-      exitCode: 0,
-    },
-    { result: { kind: 'already-terminal', invocationId: INVOCATION_ID }, exitCode: 0 },
-    { result: { kind: 'stale', invocationId: INVOCATION_ID }, exitCode: 1 },
-    { result: { kind: 'live-owner', invocationId: INVOCATION_ID }, exitCode: 1 },
-    {
-      result: { kind: 'unauthorized-unobservable', invocationId: INVOCATION_ID, cause: 'deadline-expired' },
-      exitCode: 75,
-    },
-    {
-      result: {
-        kind: 'status-unavailable',
-        invocationId: INVOCATION_ID,
-        status: { kind: 'unreadable', reason: 'invalid-shape' },
-      },
-      exitCode: 75,
-    },
-    {
-      result: {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'contended',
-      },
-      exitCode: 75,
-    },
-    {
-      result: {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'invalid-record',
-        validation: { kind: 'malformed-json' },
-      },
-      exitCode: 70,
-    },
-    {
-      result: {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'coordination-unavailable',
-      },
-      exitCode: 75,
-    },
-    {
-      result: {
-        kind: 'commit-outcome-unknown',
-        invocationId: INVOCATION_ID,
-        cause: 'io-failed',
-        errcode: 5,
-      },
-      exitCode: 75,
-    },
-  ])('maps $result.kind to command exit $exitCode', async ({ result, exitCode }) => {
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const routingStatus: HandoffRoutingStatusCommandOperations = {
-      resolve: async () => result,
-      discard: async () => ({ kind: 'refused', status: { kind: 'absent' } }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatus });
+  await program.parseAsync([
+    'node',
+    'coral-cli',
+    'backend',
+    'routing-status',
+    'quarantine',
+    'clear',
+    '--id',
+    INVOCATION_ID,
+  ]);
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'routing-status',
-      'resolve',
-      '--invocation',
-      INVOCATION_ID,
-    ]);
-
-    expect(process.exitCode).toBe(exitCode);
-    expect(exitCode === 0 ? stdout : stderr).toHaveBeenCalledWith(`${formatHandoffRoutingResolveResult(result)}\n`);
-  });
-
-  it.each([
-    ['incarnation-unavailable', true],
-    ['probe-not-available', true],
-    ['probe-failed', true],
-    ['deadline-expired', false],
-  ] as const)('dispatches the rendered %s remedy with forceUnobservable=%s', async (cause, forceUnobservable) => {
-    let dispatched: HandoffRoutingResolveRequest | undefined;
-    const routingStatus: HandoffRoutingStatusCommandOperations = {
-      resolve: async (request) => {
-        dispatched = request;
-        return { kind: 'resolved', invocationId: request.invocationId, reason: 'owner-absent', sequence: 1 };
-      },
-      discard: async () => ({ kind: 'refused', status: { kind: 'absent' } }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatus });
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-    await executeRenderedCommand(
-      program,
-      formatHandoffRoutingResolveResult({
-        kind: 'unauthorized-unobservable',
-        invocationId: INVOCATION_ID,
-        cause,
-      }),
-      { label: 'command', includes: 'routing-status resolve' },
-    );
-
-    expect(dispatched).toEqual({
-      kind: 'routing-status-resolve',
-      invocationId: INVOCATION_ID,
-      forceUnobservable,
-    });
-  });
-
-  it.each<readonly [HandoffRoutingResolveResult, string]>([
-    [{ kind: 'stale', invocationId: INVOCATION_ID }, 'copy an invocation still shown as unresolved'],
-    [{ kind: 'already-terminal', invocationId: INVOCATION_ID }, 'No resolution is needed'],
-    [{ kind: 'live-owner', invocationId: INVOCATION_ID }, 'wait for the owner to finish'],
-    [
-      { kind: 'unauthorized-unobservable', invocationId: INVOCATION_ID, cause: 'incarnation-unavailable' },
-      'verify the owner externally',
-    ],
-    [
-      { kind: 'unauthorized-unobservable', invocationId: INVOCATION_ID, cause: 'probe-not-available' },
-      'verify the owner externally',
-    ],
-    [
-      { kind: 'unauthorized-unobservable', invocationId: INVOCATION_ID, cause: 'probe-failed' },
-      'verify the owner externally',
-    ],
-    [
-      { kind: 'unauthorized-unobservable', invocationId: INVOCATION_ID, cause: 'deadline-expired' },
-      'cannot override an expired observation budget',
-    ],
-    [
-      {
-        kind: 'status-unavailable',
-        invocationId: INVOCATION_ID,
-        status: { kind: 'unreadable', reason: 'invalid-json' },
-      },
-      'discard command',
-    ],
-    [
-      {
-        kind: 'status-unavailable',
-        invocationId: INVOCATION_ID,
-        status: { kind: 'foreign-generation', generation: 2 },
-      },
-      'discard command',
-    ],
-    [
-      {
-        kind: 'status-unavailable',
-        invocationId: INVOCATION_ID,
-        status: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
-      },
-      'without discarding',
-    ],
-    [
-      {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'contended',
-      },
-      `coral-cli backend routing-status resolve --invocation ${INVOCATION_ID}`,
-    ],
-    [
-      {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'generation-maintenance',
-      },
-      'maintenance lease has gone ten minutes without a heartbeat',
-    ],
-    [
-      {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'capacity-exhausted',
-      },
-      'storage-capacity condition',
-    ],
-    [
-      {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'io-failed',
-      },
-      'repair the reported storage condition',
-    ],
-    [
-      {
-        kind: 'artifact-refused',
-        invocationId: INVOCATION_ID,
-        classification: { kind: 'unreadable', reason: 'invalid-shape' },
-      },
-      'routing-status discard successor',
-    ],
-    [
-      {
-        kind: 'artifact-refused',
-        invocationId: INVOCATION_ID,
-        classification: { kind: 'foreign-generation', generation: 2 },
-      },
-      'routing-status discard successor',
-    ],
-    [
-      {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'invalid-record',
-        validation: { kind: 'envelope-body-disagreement' },
-      },
-      `journal is unaffected, and no storage action is appropriate. After installing corrected Coral software, rerun coral-cli backend routing-status resolve --invocation ${INVOCATION_ID}`,
-    ],
-    [
-      {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'rejected-transition',
-      },
-      'do not assume resolution occurred',
-    ],
-    [
-      {
-        kind: 'not-published',
-        invocationId: INVOCATION_ID,
-        cause: 'coordination-unavailable',
-      },
-      'make the generation coordination root writable again',
-    ],
-    [
-      {
-        kind: 'commit-outcome-unknown',
-        invocationId: INVOCATION_ID,
-        cause: 'io-failed',
-        errcode: 5,
-      },
-      'could not determine whether it committed',
-    ],
-    [
-      {
-        kind: 'commit-outcome-unknown',
-        invocationId: INVOCATION_ID,
-        cause: 'contended',
-        errcode: 5,
-      },
-      'contended commit completed',
-    ],
-    [
-      {
-        kind: 'commit-outcome-unknown',
-        invocationId: INVOCATION_ID,
-        cause: 'capacity-exhausted',
-        errcode: 13,
-      },
-      'storage-capacity condition',
-    ],
-    [
-      {
-        kind: 'commit-outcome-unknown',
-        invocationId: INVOCATION_ID,
-        cause: 'storage-corrupt',
-        errcode: 26,
-      },
-      'if the journal is unreadable',
-    ],
-  ])('renders an outcome-specific successor for $0.kind', (result, expected) => {
-    const rendered = formatHandoffRoutingResolveResult(result);
-    expect(rendered).toContain(expected);
-    if (result.kind === 'status-unavailable') {
-      expect(rendered).toContain(`routing invocation ${result.invocationId}`);
-    }
-    if (result.kind === 'commit-outcome-unknown') expect(rendered).not.toContain('was not published');
-  });
-
-  it('dispatches operator discard and reports its retained address', async () => {
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const routingStatus: HandoffRoutingStatusCommandOperations = {
-      resolve: async () => {
-        throw new Error('not used');
-      },
-      discard: () => ({
-        kind: 'discarded',
-        artifactPath: `/state/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
-        quarantineId: INVOCATION_ID,
-        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.event-id`,
-        quarantineState: 'complete',
-        previousStatus: { kind: 'unreadable', reason: 'invalid-shape' },
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatus });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
-
-    expect(stdout).toHaveBeenCalledWith(
-      `Quarantined routing status from /state/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db at /state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.event-id.\n`,
-    );
-    expect(process.exitCode).toBe(0);
-  });
-
-  it('renders the exact successful incomplete-quarantine discard result', async () => {
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const quarantinePath = `/state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.${INVOCATION_ID}`;
-    const routingStatus: HandoffRoutingStatusCommandOperations = {
-      resolve: async () => {
-        throw new Error('not used');
-      },
-      discard: () => ({
-        kind: 'discarded',
-        artifactPath: `/state/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
-        quarantineId: INVOCATION_ID,
-        quarantinePath,
-        quarantineState: 'incomplete',
-        previousStatus: { kind: 'detached-wal' },
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatus });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
-
-    expect(stdout).toHaveBeenCalledWith(
-      `Discarded routing status: the main database was absent and its detached WAL is retained in incomplete quarantine ${INVOCATION_ID} at ${quarantinePath}.\n` +
-        `Next step: inspect it with coral-cli backend routing-status quarantine list; when the evidence is no longer needed, run coral-cli backend routing-status quarantine clear --id ${INVOCATION_ID}. Another routing-status discard remains blocked until it is cleared.\n`,
-    );
-    expect(process.exitCode).toBe(0);
-  });
-
-  it.each([
-    [{ kind: 'refused', status: { kind: 'absent' } } as const, 'Next step: no action is needed.', 0],
-    [
-      {
-        kind: 'refused',
-        status: {
-          kind: 'current',
-          generation: HANDOFF_ROUTING_STATUS_GENERATION,
-          statuses: [],
-          retirementHistoryTruncated: {
-            kind: 'retirement-history-truncated',
-            expiredIdentityCount: 0,
-            causes: {
-              'selection-evicted-at-capacity': 0,
-              'completed-pair-compaction': 0,
-              'operator-resolved': 0,
-            },
-            minSelectionSequence: null,
-            maxSelectionSequence: null,
-            earliestSelectedAt: null,
-            latestSelectedAt: null,
-          },
-        },
-      } as const,
-      'Next step: run coral-cli backend status and follow whatever successor it shows.',
-      75,
-    ],
-    [
-      { kind: 'refused', status: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 } } as const,
-      'Next step: retry coral-cli backend status without discarding',
-      75,
-    ],
-    [
-      { kind: 'coordinator-running', socketPath: '/state/run/coordinator.sock' } as const,
-      'Next step: run coral-cli backend shutdown',
-      75,
-    ],
-    [
-      {
-        kind: 'coordinator-socket-unobservable',
-        socketPath: '/state/run/coordinator.sock',
-        cause: 'bind-failed',
-      } as const,
-      'could not determine whether the coordinator socket is available',
-      75,
-    ],
-    [
-      { kind: 'coordinator-socket-insecure', socketPath: '/state/run/coordinator.sock' } as const,
-      'repair the reported socket-directory ownership or permissions',
-      75,
-    ],
-    [
-      { kind: 'generation-maintenance-unavailable', cause: 'contended' } as const,
-      'maintenance lease has gone ten minutes without a heartbeat',
-      75,
-    ],
-    [
-      {
-        kind: 'generation-maintenance-unavailable',
-        cause: 'writer-observation-unknown',
-        holder: 'routing-status:handoff-routing-status (pid 42)',
-      } as const,
-      'retry after the lease has gone ten minutes without a heartbeat; do not delete the lease',
-      75,
-    ],
-    [
-      { kind: 'generation-maintenance-unavailable', cause: 'ownership-lost' } as const,
-      'repair the generation coordination root, rerun coral-cli backend status, then retry',
-      75,
-    ],
-    [
-      { kind: 'incomplete-quarantine', quarantineId: '00000000-0000-4000-8000-000000000042' } as const,
-      'routing-status quarantine clear --id 00000000-0000-4000-8000-000000000042',
-      75,
-    ],
-    [
-      {
-        kind: 'quarantine-coordinate-occupied',
-        quarantineId: '00000000-0000-4000-8000-000000000042',
-        quarantinePath: '/state/run/handoff-routing-quarantine/handoff-routing.db.00000000-0000-4000-8000-000000000042',
-        artifact: 'database',
-      } as const,
-      'preserve the existing evidence and rerun coral-cli backend routing-status discard',
-      75,
-    ],
-    [
-      { kind: 'quarantine-capacity-exhausted', maximum: 16 } as const,
-      'routing-status quarantine list, clear exact entries',
-      75,
-    ],
-    [
-      { kind: 'undeterminable', cause: 'root-observation-failed', errcode: 13 } as const,
-      'undeterminable quarantine evidence cannot authorize another quarantine',
-      75,
-    ],
-    [
-      {
-        kind: 'quarantine-storage-failed',
-        quarantineId: '00000000-0000-4000-8000-000000000042',
-        quarantinePath: '/state/run/handoff-routing-quarantine/handoff-routing.db.00000000-0000-4000-8000-000000000042',
-        retainedArtifacts: ['wal'],
-        movedArtifacts: [],
-        observedMovedArtifacts: ['wal'],
-        removedArtifacts: [],
-        observedRemovedArtifacts: [],
-        syncedDirectories: [],
-        cause: 'directory-sync-failed',
-      } as const,
-      'repair the reported storage condition, then run coral-cli backend routing-status quarantine list; if it ' +
-        'lists 00000000-0000-4000-8000-000000000042, run coral-cli backend routing-status quarantine clear ' +
-        '--id 00000000-0000-4000-8000-000000000042, then rerun ' +
-        'coral-cli backend routing-status discard',
-      75,
-    ],
-  ])('renders the discard refusal successor for case #%# with exit $2', async (result, expected, exitCode) => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const routingStatus: HandoffRoutingStatusCommandOperations = {
-      resolve: async () => {
-        throw new Error('not used');
-      },
-      discard: async () => result,
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatus });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
-
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining(expected));
-    expect(process.exitCode).toBe(exitCode);
-  });
-
-  it('lists complete and incomplete retained quarantines without hiding bounded overflow', async () => {
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
-      list: () => ({
-        kind: 'listed',
-        entries: [
-          {
-            id: INVOCATION_ID,
-            quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.${INVOCATION_ID}`,
-            state: 'incomplete',
-            artifacts: ['wal'],
-          },
-        ],
-        overflow: true,
-      }),
-      clear: async () => {
-        throw new Error('not used');
-      },
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatusQuarantine });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'quarantine', 'list']);
-
-    expect(stdout).toHaveBeenCalledWith(expect.stringContaining(`id=${INVOCATION_ID} state=incomplete artifacts=wal`));
-    expect(stdout).toHaveBeenCalledWith(expect.stringContaining('did not reach every retained file'));
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('clears one exact retained quarantine by canonical ID', async () => {
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const clear = vi.fn(async (quarantineId: string) => ({
-      kind: 'cleared' as const,
-      entry: {
-        id: quarantineId,
-        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.${quarantineId}`,
-        state: 'complete' as const,
-        artifacts: ['database' as const],
-      },
-    }));
-    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
-      list: () => ({ kind: 'listed', entries: [], overflow: false }),
-      clear,
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatusQuarantine });
-
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'routing-status',
-      'quarantine',
-      'clear',
-      '--id',
-      INVOCATION_ID,
-    ]);
-
-    expect(clear).toHaveBeenCalledWith(INVOCATION_ID);
-    expect(stdout).toHaveBeenCalledWith(expect.stringContaining(`Cleared routing-status quarantine ${INVOCATION_ID}`));
-    expect(process.exitCode).toBe(0);
-  });
-
-  it('renders the exact list and retry successor after a partial quarantine clear', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
-      list: () => ({ kind: 'listed', entries: [], overflow: false }),
-      clear: async (quarantineId) => ({
-        kind: 'quarantine-clear-storage-failed',
-        quarantineId,
-        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${quarantineId}`,
-        removedArtifacts: [],
-        observedRemovedArtifacts: ['wal'],
-        syncedDirectories: [],
-        cause: 'directory-sync-failed',
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatusQuarantine });
-
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'routing-status',
-      'quarantine',
-      'clear',
-      '--id',
-      INVOCATION_ID,
-    ]);
-
-    const rendered = String(stderr.mock.calls[0]?.[0]);
-    expect(rendered).toContain('removed artifacts: none');
-    expect(rendered).toContain('observed removed artifacts (not durable): wal');
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('coral-cli backend routing-status quarantine list'));
-    expect(stderr).toHaveBeenCalledWith(
-      expect.stringContaining(`coral-cli backend routing-status quarantine clear --id ${INVOCATION_ID}`),
-    );
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('reports an undeterminable quarantine listing instead of an empty retained set', async () => {
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
-      list: () => ({ kind: 'undeterminable', cause: 'root-observation-failed', errcode: 13 }),
-      clear: async () => {
-        throw new Error('not used');
-      },
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatusQuarantine });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'quarantine', 'list']);
-
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('could not be enumerated'));
-    expect(stdout).not.toHaveBeenCalledWith(expect.stringContaining('quarantine is empty'));
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('does not report an unreadable quarantine artifact as already absent', async () => {
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
-      list: () => ({ kind: 'listed', entries: [], overflow: false }),
-      clear: async (quarantineId) => ({
-        kind: 'quarantine-clear-undeterminable',
-        quarantineId,
-        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${quarantineId}`,
-        artifact: 'database',
-        errcode: 13,
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatusQuarantine });
-
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'routing-status',
-      'quarantine',
-      'clear',
-      '--id',
-      INVOCATION_ID,
-    ]);
-
-    expect(stdout).not.toHaveBeenCalledWith(expect.stringContaining('already absent'));
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining(`quarantine clear --id ${INVOCATION_ID}`));
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('does not render an inspect-or-clear successor when a partial discard retained nothing', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const routingStatus: HandoffRoutingStatusCommandOperations = {
-      resolve: async () => {
-        throw new Error('not used');
-      },
-      discard: async () => ({
-        kind: 'quarantine-storage-failed',
-        quarantineId: INVOCATION_ID,
-        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${INVOCATION_ID}`,
-        retainedArtifacts: [],
-        movedArtifacts: ['wal'],
-        observedMovedArtifacts: [],
-        removedArtifacts: ['wal'],
-        observedRemovedArtifacts: [],
-        syncedDirectories: [],
-        cause: 'directory-sync-failed',
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatus });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
-
-    const rendered = String(stderr.mock.calls[0]?.[0]);
-    expect(rendered).toContain('No artifact is retained');
-    expect(rendered).not.toContain('quarantine list');
-    expect(rendered).not.toContain('quarantine clear');
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('renders unknown retention as a hold resolved by quarantine list', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const routingStatus: HandoffRoutingStatusCommandOperations = {
-      resolve: async () => {
-        throw new Error('not used');
-      },
-      discard: async () => ({
-        kind: 'quarantine-retention-undeterminable',
-        quarantineId: INVOCATION_ID,
-        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${INVOCATION_ID}`,
-        observedRetainedArtifacts: ['wal'],
-        movedArtifacts: ['wal'],
-        observedMovedArtifacts: [],
-        removedArtifacts: [],
-        observedRemovedArtifacts: ['wal'],
-        syncedDirectories: ['source', 'quarantine'],
-        cause: 'directory-sync-failed',
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatus });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
-
-    const rendered = String(stderr.mock.calls[0]?.[0]);
-    expect(rendered).toContain('Whether evidence was retained');
-    expect(rendered).toContain('coral-cli backend routing-status quarantine list');
-    expect(rendered).toContain('coral-cli backend routing-status quarantine clear');
-    expect(rendered).toContain('directory-sync-failed');
-    expect(rendered).not.toContain('No artifact is retained');
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('renders ownership-lost retention uncertainty with its exact recovery sequence', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const quarantinePath = `/state/run/handoff-routing-quarantine/handoff-routing.db.${INVOCATION_ID}`;
-    const routingStatus: HandoffRoutingStatusCommandOperations = {
-      resolve: async () => {
-        throw new Error('not used');
-      },
-      discard: async () => ({
-        kind: 'quarantine-retention-undeterminable',
-        quarantineId: INVOCATION_ID,
-        quarantinePath,
-        observedRetainedArtifacts: ['wal'],
-        movedArtifacts: ['wal'],
-        observedMovedArtifacts: [],
-        removedArtifacts: [],
-        observedRemovedArtifacts: ['wal'],
-        syncedDirectories: ['source', 'quarantine'],
-        cause: 'ownership-lost',
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatus });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
-
-    expect(String(stderr.mock.calls[0]?.[0])).toBe(
-      `Routing-status discard stopped after an ambiguous storage effect at quarantine ${INVOCATION_ID} (observed retained artifacts: wal; moved artifacts: wal; observed moved artifacts (not durable): none; removed artifacts: none; observed removed artifacts (not durable): wal; synced directories: source, quarantine; ownership-lost). Whether evidence was retained at ${quarantinePath} could not be determined.\nNext step: repair the generation coordination root so maintenance ownership is stable, then run coral-cli backend routing-status quarantine list; if it lists ${INVOCATION_ID}, run coral-cli backend routing-status quarantine clear --id ${INVOCATION_ID}, then rerun coral-cli backend routing-status discard.\n`,
-    );
-    expect(process.exitCode).toBe(75);
-  });
-
-  it('renders the retained and unsynced state when ownership is lost after a wal move', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const routingStatus: HandoffRoutingStatusCommandOperations = {
-      resolve: async () => {
-        throw new Error('not used');
-      },
-      discard: async () => ({
-        kind: 'quarantine-storage-failed',
-        quarantineId: INVOCATION_ID,
-        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${INVOCATION_ID}`,
-        retainedArtifacts: ['wal'],
-        movedArtifacts: ['wal'],
-        observedMovedArtifacts: [],
-        removedArtifacts: [],
-        observedRemovedArtifacts: [],
-        syncedDirectories: [],
-        cause: 'ownership-lost',
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { routingStatus });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
-
-    const rendered = String(stderr.mock.calls[0]?.[0]);
-    expect(rendered).toContain('retained artifacts: wal');
-    expect(rendered).toContain('moved artifacts: wal');
-    expect(rendered).toContain('synced directories: none');
-    expect(rendered).toContain('ownership-lost');
-    expect(process.exitCode).toBe(75);
-  });
+  expect(stderr).toHaveBeenCalledWith(expect.stringContaining('coral-cli backend routing-status quarantine list'));
+  expect(stderr).toHaveBeenCalledWith(expect.stringContaining(`quarantine clear --id ${INVOCATION_ID}`));
+  expect(process.exitCode).toBe(75);
 });

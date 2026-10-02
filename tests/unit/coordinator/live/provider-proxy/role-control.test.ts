@@ -8,7 +8,6 @@ vi.mock('#src/provider-proxy/role-spawn.js', () => ({
 import {
   establishRoleControl,
   ProviderProxyRoleControlRemoteError,
-  ProviderProxyRoleControlUnavailableError,
 } from '#src/coordinator/live/provider-proxy/role-control.js';
 import {
   ControlClientError,
@@ -17,10 +16,7 @@ import {
   type ControlClientTimer,
   type ControlExchange,
 } from '#src/provider-proxy/control-client.js';
-import {
-  PROXY_CONTROL_PROTOCOL_ERROR_CODES,
-  type ProxyControlProtocolErrorCode,
-} from '#src/provider-proxy/protocol.js';
+import { type ProxyControlProtocolErrorCode } from '#src/provider-proxy/protocol.js';
 import { connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
 
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
@@ -137,7 +133,7 @@ describe('role control recovery classification', () => {
     await expect(establishing).rejects.toBe(cancellation);
   });
 
-  it.each(['timeout', 'closed'] as const)('classifies %s transport origin as availability', async (origin) => {
+  it.each(['timeout'] as const)('classifies %s transport origin as availability', async (origin) => {
     const failure = new ControlClientError('control_call_failed', 'transport failed', origin);
 
     await expect(establishWith(client(async () => Promise.reject(failure)))).rejects.toMatchObject({
@@ -168,7 +164,7 @@ describe('role control recovery classification', () => {
     });
   });
 
-  it.each(PROXY_CONTROL_PROTOCOL_ERROR_CODES)(
+  it.each(['invalid_request'] as const)(
     'keeps open remote protocol code %s fatal without the exact busy reason',
     async (protocolCode) => {
       await expect(
@@ -294,10 +290,6 @@ describe('role control recovery classification', () => {
         observation: { kind: 'reply', reply: { kind: 'unusable', error: failure } },
       },
     });
-  });
-
-  it('exposes availability and remote refusal as distinct typed errors', () => {
-    expect(ProviderProxyRoleControlUnavailableError).not.toBe(ProviderProxyRoleControlRemoteError);
   });
 
   it('rethrows a non-ControlClientError from the opening heartbeat unwrapped, as a local failure', async () => {

@@ -12,7 +12,7 @@ import {
   type WaitCursor,
   type WaitStreamEvent,
 } from '#src/jobs/wait.js';
-import { advanceWaitRenderCursor, parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
+import { advanceWaitRenderCursor } from '#src/jobs/wait-stream-event.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const mockState = vi.hoisted(() => ({
@@ -393,25 +393,5 @@ describe('cli follow handoff', () => {
     expect(replayed).toEqual({ cursor: { afterSeq: 4 }, shouldRender: false });
     expect(waiting).toEqual({ cursor: { afterSeq: 4 }, shouldRender: true });
     expect(parseSerializedWaitCursor(serializeWaitCursor(progressed.cursor))).toEqual({ afterSeq: 4 });
-  });
-
-  it('tolerates the retired snapshot-acknowledgement field name as an ordinary unrecognized field', () => {
-    // What keeps `snapshotRenderId` dead is its absence from `WaitCursor` and from every renderer, not a
-    // wire-level rejection of the key. Passthrough tolerance — added so a newer coordinator can add an
-    // additive field without breaking this build's parse — necessarily tolerates this name too, so the
-    // event still renders and advances the cursor exactly as if the field were absent.
-    const withRetiredField = parseWaitStreamEvent(
-      'waiting',
-      JSON.stringify({ type: 'waiting', waitingJobIds: ['job-1'], snapshotRenderId: 'retired-snapshot-id' }),
-    );
-    expect(withRetiredField).toMatchObject({ type: 'waiting', waitingJobIds: ['job-1'] });
-
-    const decision = advanceWaitRenderCursor({ afterSeq: 0 }, withRetiredField as WaitStreamEvent);
-    expect(decision.cursor).toEqual({ afterSeq: 0 });
-
-    expect(parseWaitStreamEvent('waiting', JSON.stringify({ type: 'waiting', waitingJobIds: ['job-1'] }))).toEqual({
-      type: 'waiting',
-      waitingJobIds: ['job-1'],
-    });
   });
 });

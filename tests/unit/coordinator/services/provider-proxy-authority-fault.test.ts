@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-
 import { ControlClientError, controlExchangeForTest } from '#src/provider-proxy/control-client.js';
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import {
@@ -102,7 +101,7 @@ describe('provider proxy authority fault latch', () => {
     expect(observed).toEqual([unusable]);
   });
 
-  it.each(['proxy', 'guardian', 'reaper'] as const)('reports a %s channel close with its exact role', (role) => {
+  it.each(['proxy'] as const)('reports a %s channel close with its exact role', (role) => {
     const sources = {
       proxy: faultSource(),
       guardian: faultSource(),

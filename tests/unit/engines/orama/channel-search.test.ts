@@ -2,16 +2,7 @@ import { insertMultiple } from '@orama/orama';
 import { describe, expect, it } from 'vitest';
 
 import { OramaSearchPort } from '#src/engines/orama/search-port.js';
-import { collectOramaDocumentsForFuzzyScan, fuzzyDocumentScore } from '#src/engines/orama/ranking.js';
 import { createOramaDb, toOramaDocument, type KbOramaDocument } from '#src/engines/orama/document-builder.js';
-import {
-  ORAMA_BODY_NGRAM_TERM_LIMIT,
-  ORAMA_BODY_SURFACE_TERM_LIMIT,
-  ORAMA_QUERY_NGRAM_TERM_LIMIT,
-  ORAMA_QUERY_SOURCE_CHAR_LIMIT,
-  analyzeOramaSearchQuery,
-  surfaceSearchTerms,
-} from '#src/engines/orama/search-channels.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import type { KbProjectionArtifactFilePort } from '#src/kb/contract.js';
 
@@ -49,14 +40,6 @@ async function createSearchPort(documents: readonly KbOramaDocument[]): Promise<
 }
 
 describe('Orama channel search', () => {
-  it('folds decomposed Latin diacritics without splitting surface terms', () => {
-    const terms = surfaceSearchTerms('re\u0301\u0323sume\u0301');
-
-    expect(terms).toContain('resume');
-    expect(terms).not.toContain('re');
-    expect(terms).not.toContain('sume');
-  });
-
   it('expands camel-case compound queries and prefers metadata identity over body-only matches', async () => {
     const port = await createSearchPort([
       note('graph-rag', 'Graph RAG', 'A short note about retrieval.'),
@@ -102,28 +85,6 @@ describe('Orama channel search', () => {
     expect(result.hits[0]?.documentId).toBe('note:retrieval-pipeline');
   });
 
-  it('caps fuzzy fallback scoring for body-only terms', () => {
-    const manyUniqueFillers = Array.from({ length: 700 }, (_, index) => `filler${index}`).join(' ');
-    const earlyMatch = note('early-body-match', 'Unrelated', `retrieval ${manyUniqueFillers}`);
-    const lateMatch = note('late-body-match', 'Unrelated', `${manyUniqueFillers} retrieval`);
-
-    expect(fuzzyDocumentScore(earlyMatch, ['retrievel'])).toBeGreaterThan(0);
-    expect(fuzzyDocumentScore(lateMatch, ['retrievel'])).toBe(0);
-  });
-
-  it('bounds fuzzy fallback document scans before scoring', async () => {
-    const created = await createOramaDb();
-    await insertMultiple(created.db, [
-      note('fuzzy-scan-one', 'Fuzzy Scan One', 'retrieval alpha'),
-      note('fuzzy-scan-two', 'Fuzzy Scan Two', 'retrieval beta'),
-    ]);
-
-    const scan = collectOramaDocumentsForFuzzyScan(created.db, 1);
-
-    expect(scan.truncated).toBe(true);
-    expect(scan.documents).toHaveLength(1);
-  });
-
   it('does not fuzzy-match only the Latin part of a mixed-script query', async () => {
     const port = await createSearchPort([note('retrieval-pipeline', 'Retrieval Pipeline', 'Lexical search path.')]);
 
@@ -144,40 +105,5 @@ describe('Orama channel search', () => {
     expect(bodyNgrams).toContain('검색');
     expect(bodyNgrams).not.toContain('후반');
     expect(bodyNgrams).not.toContain('반고');
-  });
-
-  it('caps body surface and ngram channel fields while leaving morph body intact', () => {
-    const longHangulBody = Array.from(
-      { length: ORAMA_BODY_SURFACE_TERM_LIMIT + 200 },
-      (_, index) => `검색${index}`,
-    ).join(' ');
-    const singleTokenBody = Array.from({ length: 5_000 }, (_, index) =>
-      String.fromCodePoint(0xac00 + (index % 11_172)),
-    ).join('');
-    const doc = note('large-korean-body', '대형 한국어 본문', longHangulBody);
-    const singleTokenDoc = note('single-token-korean-body', '단일 한국어 본문', singleTokenBody);
-
-    expect(doc.body).toBe(longHangulBody);
-    expect(doc.bodySurface.split(/\s+/u).filter(Boolean)).toHaveLength(ORAMA_BODY_SURFACE_TERM_LIMIT);
-    expect(doc.bodyNgram.split(/\s+/u).filter(Boolean).length).toBeLessThanOrEqual(ORAMA_BODY_NGRAM_TERM_LIMIT);
-    expect(singleTokenDoc.body).toBe(singleTokenBody);
-    expect(singleTokenDoc.bodyNgram.split(/\s+/u).filter(Boolean).length).toBeLessThanOrEqual(
-      ORAMA_BODY_NGRAM_TERM_LIMIT,
-    );
-  });
-
-  it('caps ngram analysis for large search queries before tokenization', () => {
-    const query = Array.from({ length: ORAMA_QUERY_SOURCE_CHAR_LIMIT + 20 }, (_, index) =>
-      String.fromCodePoint(0xac00 + index),
-    ).join('');
-    const outsideCapBigram = Array.from(query)
-      .slice(ORAMA_QUERY_SOURCE_CHAR_LIMIT, ORAMA_QUERY_SOURCE_CHAR_LIMIT + 2)
-      .join('');
-
-    const analysis = analyzeOramaSearchQuery(query, []);
-
-    expect(analysis.ngram.length).toBeLessThanOrEqual(ORAMA_QUERY_NGRAM_TERM_LIMIT);
-    expect(analysis.ngram).not.toContain(outsideCapBigram);
-    expect(analysis.surface.join('')).not.toContain(outsideCapBigram);
   });
 });

@@ -118,33 +118,12 @@ export function recordDiscoveryAttemptLocked(
   return persistCurateState(kb, state, applyRecordDiscoveryAttempt(state, highSeq, nextOffset));
 }
 
-export async function recordDiscoveryAttempt(kb: KbRuntime, highSeq: number, nextOffset: number): Promise<void> {
-  await kb.withMutationLock(() => {
-    const state = readCurateState(curateDb(kb));
-    recordDiscoveryAttemptLocked(kb, state, highSeq, nextOffset);
-  });
-}
-
 export function addPendingDiscoveryLocked(kb: KbRuntime, state: CurateState, entry: PendingDiscovery): CurateState {
   return persistCurateState(kb, state, applyAddPendingDiscovery(state, entry));
 }
 
-export async function addPendingDiscovery(kb: KbRuntime, entry: PendingDiscovery): Promise<void> {
-  await kb.withMutationLock(() => {
-    const state = readCurateState(curateDb(kb));
-    addPendingDiscoveryLocked(kb, state, entry);
-  });
-}
-
 export function removePendingDiscoveryLocked(kb: KbRuntime, state: CurateState, entry: PendingDiscovery): CurateState {
   return persistCurateState(kb, state, applyRemovePendingDiscovery(state, entry));
-}
-
-export async function removePendingDiscovery(kb: KbRuntime, entry: PendingDiscovery): Promise<void> {
-  await kb.withMutationLock(() => {
-    const state = readCurateState(curateDb(kb));
-    removePendingDiscoveryLocked(kb, state, entry);
-  });
 }
 
 function ensurePrincipleDocumentLocked(

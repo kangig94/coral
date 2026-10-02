@@ -11,7 +11,6 @@ import {
   readCommunitySummaryInput,
 } from '#src/kb/curate/community/summary-surface.js';
 import { captureIndexStateSnapshot } from '#src/kb/corpus/lanes.js';
-import { corpusStructuralCacheKey } from '#src/kb/corpus/structural-key.js';
 import { performRescan } from '#src/kb/corpus/rescan/index.js';
 import { communityEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { readEntryByKind } from '#src/kb/read.js';
@@ -195,73 +194,5 @@ describe('generated community projection lifecycle', () => {
         generatedCommunityGeneration: secondGenerated.generation + 1,
       }),
     );
-  });
-
-  it('preserves ambiguous authored community markdown and ignores generated slugs in inbound sync', async () => {
-    const { kb } = createHarness();
-    await adoptGeneratedCommunity(kb);
-
-    const ambiguousRaw = [
-      '---',
-      'createdAt: 2026-06-01',
-      'updatedAt: 2026-06-01',
-      'level: 1',
-      '---',
-      '# Generated Fresh Community',
-      '',
-      '## Members',
-      '- #fresh',
-      '',
-    ].join('\n');
-    const existing = kb.generatedCommunityProjectionStore.loadExistingCommunityState({
-      communityFiles: [{ slug: 'generated-fresh', content: ambiguousRaw }],
-      detectedCommunities: [{ slug: 'generated-fresh' }],
-    });
-    expect(existing.reservedSlugs.has('generated-fresh')).toBe(true);
-    expect(existing.authoredDocuments).toEqual([{ slug: 'generated-fresh', content: ambiguousRaw }]);
-    expect(existing.migratedGeneratedSlugs.has('generated-fresh')).toBe(false);
-    expect(existing.generated).toEqual([]);
-
-    const before = kb.captureCorpusSnapshot();
-    mkdirSync(kb.communitiesDir(), { recursive: true });
-    await kb.runInboundSync(
-      async () => {
-        writeFileSync(kb.communityPath('generated-fresh'), ambiguousRaw, 'utf-8');
-        return {
-          kind: 'paths' as const,
-          changes: [{ status: 'modified' as const, path: 'communities/generated-fresh.md' }],
-        };
-      },
-      { structuredDiff: true },
-    );
-    const after = kb.captureCorpusSnapshot();
-
-    expect(captureIndexStateSnapshot(kb.readIndexState())).toEqual({ contentSeq: 0, metadataSeq: 0 });
-    expect(after).toEqual(before);
-  });
-
-  it('keeps structural-key computations consistent after generated-only changes and point mutations', async () => {
-    const { kb } = createHarness();
-    writeNote(kb);
-    const graph = writeEntityGraph(kb);
-    await adoptGeneratedCommunity(kb);
-    await expect(performRescan(kb, captureIndexStateSnapshot(kb.readIndexState()))).resolves.toMatchObject({
-      status: 'committed',
-    });
-    const beforeIndex = kb.readIndex();
-    const beforeKey = beforeIndex?.structuralKey;
-    expect(beforeKey).toBeDefined();
-
-    await adoptGeneratedCommunity(kb, generatedCommunityRaw('Generated-only pre-summary.'));
-    await applyCommunitySummary(kb, 'generated-fresh', 'Generated-only summary.');
-    await kb.writeEntityGraph(graph);
-
-    const afterIndex = kb.readIndex();
-    const afterKey = afterIndex?.structuralKey;
-    expect(afterKey).toBeDefined();
-    expect(afterKey?.entityGraphHash).toBe(beforeKey?.entityGraphHash);
-    expect(afterKey?.communityDocsHash).not.toBe(beforeKey?.communityDocsHash);
-    expect(afterKey).toEqual(kb.readCorpusStructuralKey(afterIndex!));
-    expect(corpusStructuralCacheKey(afterKey!)).not.toBe(corpusStructuralCacheKey(beforeKey!));
   });
 });

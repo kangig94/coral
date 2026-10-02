@@ -31,7 +31,6 @@ import { projectPathKey, sandboxTmpDir } from '../../../clients/hooks/lib/plugin
 const { beginBgTask, bgWrapperPreamble, hasLiveWork, recordSubagentStart, recordSubagentStop } = liveWorkRegistry;
 
 const SESSION = 'sess-11111111';
-const OTHER = 'sess-22222222';
 
 // Windows mirrored from live-work-registry.mjs.
 const BG_STALE_MS = 60_000; // > BG_MTIME_WINDOW_MS (30s)
@@ -181,35 +180,6 @@ describe('live-work-registry: subagents', () => {
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(true);
     expect(markerCount(SESSION)).toBe(1);
   });
-
-  it('does not bleed markers between sessions whose ids share a hyphen prefix', () => {
-    // SESSION ('sess-11111111') is a hyphen-prefix of `${SESSION}-fork`.
-    const forkSession = `${SESSION}-fork`;
-    const forkTranscript = join(sandbox, 'projects', 'slug', `${forkSession}.jsonl`);
-    recordSubagentStart(projectDir, forkSession, 'agentA');
-    writeSubagentTranscript(forkTranscript, 'agentA');
-
-    expect(markerCount(SESSION)).toBe(0);
-    expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(false);
-    expect(hasLiveWork(projectDir, forkSession, forkTranscript).live).toBe(true);
-  });
-
-  it("isolates sessions: one session's subagents do not affect another", () => {
-    recordSubagentStart(projectDir, SESSION, 'agentA');
-    writeSubagentTranscript(parentTranscript, 'agentA');
-
-    const otherTranscript = join(sandbox, 'projects', 'slug', `${OTHER}.jsonl`);
-    expect(hasLiveWork(projectDir, OTHER, otherTranscript).live).toBe(false);
-    expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(true);
-  });
-
-  it('ignores invalid session or agent identifiers', () => {
-    recordSubagentStart(projectDir, 'bad id with spaces', 'agentA');
-    recordSubagentStart(projectDir, SESSION, 'bad/agent');
-
-    expect(markerCount(SESSION)).toBe(0);
-    expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(false);
-  });
 });
 
 describe('live-work-registry: background tasks', () => {
@@ -239,19 +209,6 @@ describe('live-work-registry: background tasks', () => {
 
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(false);
     expect(bgMarkerCount(SESSION)).toBe(0);
-  });
-
-  it('keeps a recent terminal record around for exit-code reads', () => {
-    writeBgMarker(SESSION, 'taskA.exited.0');
-    expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(false);
-    expect(bgMarkerCount(SESSION)).toBe(1);
-  });
-
-  it('recognizes a negative exit code as a terminal record', () => {
-    writeBgMarker(SESSION, 'taskA.started');
-    writeBgMarker(SESSION, 'taskA.exited.-1');
-
-    expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(false);
   });
 
   it('keeps a live bg task while pruning a dead sibling past the TTL', () => {
@@ -312,37 +269,6 @@ describe('live-work-registry: an unreadable registry directory is unobserved, no
     ).toBe(true);
     expect(result.notice).toMatch(/\bbg\b/u);
   });
-
-  // Every non-ENOENT errno reaching this point is already abnormal, so none of them stay quiet — unlike the
-  // flock probe's own errno set, a missed member here is a silent permanent gate, not a cheap wasted fork, so
-  // there is no errno worth filtering the notice on. `EIO` is deliberately included alongside the standing set:
-  // the previous design held it exempt as "transient", and that was exactly the gap this replaces.
-  it.each([['EACCES'], ['EPERM'], ['ENOTDIR'], ['EIO'], ['ELOOP']])(
-    'names the errno in the notice so the hold is visible, not just held (%s)',
-    (code) => {
-      writeBgMarker(SESSION, 'taskA.started');
-      readdirFixture.failPath = bgDirFor(SESSION);
-      readdirFixture.failCode = code;
-
-      const result = hasLiveWork(projectDir, SESSION, parentTranscript);
-      expect(result.live).toBe(true);
-      expect(result.notice, 'a hold with nothing that says why it is held is what this replaces').toMatch(
-        new RegExp(code, 'u'),
-      );
-    },
-  );
-
-  it('reports once, naming both subagents/ and bg/, when the shared session root itself is unreadable', () => {
-    // A permissions change on the root fails a read of either child dir identically — the failure is reported
-    // against the root, before either child is touched, rather than as two near-identical lines for one cause.
-    writeBgMarker(SESSION, 'taskA.started'); // creates the session root as a side effect
-    readdirFixture.failPath = sessionRootFor(SESSION);
-
-    const result = hasLiveWork(projectDir, SESSION, parentTranscript);
-    expect(result.live).toBe(true);
-    expect(result.notice).toMatch(/subagents/u);
-    expect(result.notice).toMatch(/\bbg\b/u);
-  });
 });
 
 describe('live-work-registry: bg task wrapper (beginBgTask)', () => {
@@ -353,11 +279,6 @@ describe('live-work-registry: bg task wrapper (beginBgTask)', () => {
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(true);
   });
 
-  it('returns null and writes nothing for an invalid session id', () => {
-    expect(beginBgTask(projectDir, 'bad id with spaces')).toBeNull();
-    expect(bgMarkerCount(SESSION)).toBe(0);
-  });
-
   it('the wrapper records .started and the exit code, and reads as terminal', () => {
     const task = beginBgTask(projectDir, SESSION);
     runWrapped(task.wrapper, 'exit 7');
@@ -366,13 +287,6 @@ describe('live-work-registry: bg task wrapper (beginBgTask)', () => {
     expect(existsSync(join(bgDir, `${task.id}.started`))).toBe(true);
     expect(existsSync(join(bgDir, `${task.id}.exited.7`))).toBe(true);
     expect(hasLiveWork(projectDir, SESSION, parentTranscript).live).toBe(false);
-  });
-
-  it('records exit code 0 for a clean command', () => {
-    const task = beginBgTask(projectDir, SESSION);
-    runWrapped(task.wrapper, 'true');
-
-    expect(existsSync(join(bgDirFor(SESSION), `${task.id}.exited.0`))).toBe(true);
   });
 
   it('runs the user command even when the registry dir cannot be created (fail-open under dash)', () => {

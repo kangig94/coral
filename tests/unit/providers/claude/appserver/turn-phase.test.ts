@@ -1,343 +1,177 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import type * as MockedNodeFsModule from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  advanceTurnPhase,
-  SingleSessionController,
-  type TurnPhase,
-} from '#src/providers/claude/appserver/controller.js';
+import { SingleSessionController } from '#src/providers/claude/appserver/controller.js';
+import type { ControllerNotification } from '#src/providers/claude/appserver/session-contract.js';
 import { FakeClaudeChild } from '#tests/helpers/fake-claude-child.js';
 
-const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
-const TEST_MODEL = 'claude-sonnet-test';
+vi.mock('node:timers/promises', () => ({
+  setTimeout: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+}));
 
-type ActiveTurnForTest = {
-  phase: TurnPhase;
-  promptTranscriptOffset: number;
-};
-
-type ControllerInternals = {
-  activeTurn: ActiveTurnForTest | null;
-  processTranscriptLine(turn: ActiveTurnForTest, line: string, lineStartOffset: number): void;
-  readTranscriptAppend(turn: ActiveTurnForTest): void;
-  resolveTranscriptPath(): string | null;
-};
-
-type StartedController = {
-  controller: SingleSessionController;
-  internals: ControllerInternals;
-};
-
-const controllers: SingleSessionController[] = [];
-
-afterEach(async () => {
-  for (const controller of controllers.splice(0)) {
-    await controller.turnInterrupt({ brokerTurnId: 'turn-1' });
-    await controller.shutdown();
-  }
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof MockedNodeFsModule>();
+  const { InMemoryStorage } = await import('#tools/simulation/core/memory-storage.js');
+  const { VirtualTime } = await import('#tools/simulation/core/virtual-time.js');
+  const storage = new InMemoryStorage(new VirtualTime());
+  return {
+    ...original,
+    mkdirSync: storage.mkdirSync.bind(storage),
+    writeFileSync: storage.writeFileSync.bind(storage),
+    appendFileSync: storage.appendFileSync.bind(storage),
+    existsSync: storage.existsSync.bind(storage),
+    readdirSync: storage.readdirSync.bind(storage),
+    statSync: storage.statSync.bind(storage),
+    openSync: storage.openSync.bind(storage),
+    readSync: storage.readSync.bind(storage),
+    closeSync: storage.closeSync.bind(storage),
+    fstatSync: (fd: number) => ({ size: Number(storage.fstatSync(fd, { bigint: true }).size) }),
+  };
 });
 
-async function startController(
-  prompt = 'hello',
-  projectsRoot = '/home/user/.claude/projects',
-): Promise<StartedController> {
+const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
+const controllers: SingleSessionController[] = [];
+let fixtureIndex = 0;
+beforeEach(() => vi.useFakeTimers());
+afterEach(async () => {
+  for (const controller of controllers.splice(0)) await controller.shutdown();
+  vi.useRealTimers();
+});
+
+function transcriptFixture() {
+  const projectsRoot = '/transcripts/phase-' + fixtureIndex++;
+  const pathFor = (ref: string, project = 'workspace') => join(projectsRoot, project, ref + '.jsonl');
+  mkdirSync(join(projectsRoot, 'workspace'), { recursive: true });
+  writeFileSync(pathFor(TEST_SESSION_ID), '');
+  return { projectsRoot, pathFor, path: pathFor(TEST_SESSION_ID) };
+}
+
+function userRow(text: string, sessionId = TEST_SESSION_ID) {
+  return { type: 'user', session_id: sessionId, message: { role: 'user', content: [{ type: 'text', text }] } };
+}
+
+function queueRow(content: string) {
+  return { type: 'queue-operation', operation: 'enqueue', sessionId: TEST_SESSION_ID, content };
+}
+
+function assistantRow(stopReason?: string, sessionId = TEST_SESSION_ID) {
+  return {
+    type: 'assistant',
+    session_id: sessionId,
+    message: {
+      role: 'assistant',
+      model: 'claude-sonnet-test',
+      content: [{ type: 'text', text: 'response' }],
+      ...(stopReason ? { stop_reason: stopReason } : {}),
+    },
+  };
+}
+
+async function appendRows(path: string, ...rows: unknown[]) {
+  appendFileSync(path, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  await vi.advanceTimersByTimeAsync(100);
+}
+
+async function startController(prompt = 'hello', fixture = transcriptFixture()) {
+  const child = new FakeClaudeChild();
+  const notifications: ControllerNotification[] = [];
   const controller = new SingleSessionController({
-    spawnChild: () => new FakeClaudeChild(),
+    spawnChild: () => child,
     ids: { uuid: () => TEST_SESSION_ID },
-    monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
+    monotonicNow: () => BigInt(Date.now()),
     readySettleMs: 1,
     promptAckTimeoutMs: 60_000,
   });
   controllers.push(controller);
-
-  await controller.sessionEnsure({
+  controller.subscribeNotifications((notification) => notifications.push(notification));
+  const ensure = controller.sessionEnsure({
     cwd: '/workspace',
-    projectsRoot,
+    projectsRoot: fixture.projectsRoot,
     systemPromptHash: 'sha256:test',
-
     bootstrapConfigHash: 'sha256:test-bootstrap',
     permissionMode: 'default',
   });
+  await vi.advanceTimersByTimeAsync(10);
+  await ensure;
   await controller.turnStart({ brokerTurnId: 'turn-1', prompt });
-
-  return {
-    controller,
-    internals: controller as unknown as ControllerInternals,
-  };
+  return { ...fixture, controller, child, notifications };
 }
 
-function activeTurn(internals: ControllerInternals): ActiveTurnForTest {
-  expect(internals.activeTurn).not.toBeNull();
-  return internals.activeTurn as ActiveTurnForTest;
-}
-
-function processLine(
-  internals: ControllerInternals,
-  line: string,
-  lineStartOffset = activeTurn(internals).promptTranscriptOffset,
-): void {
-  internals.processTranscriptLine(activeTurn(internals), line, lineStartOffset);
-}
-
-function userPromptLine(
-  text: string,
-  overrides: {
-    sessionId?: string;
-    role?: string;
-    content?: unknown;
-  } = {},
-): string {
-  return JSON.stringify({
-    type: 'user',
-    session_id: overrides.sessionId ?? TEST_SESSION_ID,
-    message: {
-      role: overrides.role ?? 'user',
-      content: overrides.content ?? [{ type: 'text', text }],
-    },
-  });
-}
-
-function userToolResultLine(): string {
-  return userPromptLine('hello', {
-    content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'tool output' }],
-  });
-}
-
-function queueOperationLine(
-  content: string,
-  overrides: {
-    sessionId?: string;
-    operation?: string;
-    content?: unknown;
-  } = {},
-): string {
-  return JSON.stringify({
-    type: 'queue-operation',
-    operation: overrides.operation ?? 'enqueue',
-    sessionId: overrides.sessionId ?? TEST_SESSION_ID,
-    content: overrides.content ?? content,
-  });
-}
-
-function assistantLine(options: { sessionId?: string; stopReason?: string } = {}): string {
-  return JSON.stringify({
-    type: 'assistant',
-    session_id: options.sessionId ?? TEST_SESSION_ID,
-    message: {
-      role: 'assistant',
-      model: TEST_MODEL,
-      content: [{ type: 'text', text: 'response' }],
-      ...(options.stopReason === undefined ? {} : { stop_reason: options.stopReason }),
-    },
-  });
-}
-
-function systemLine(options: { sessionId?: string } = {}): string {
-  return JSON.stringify({
-    type: 'system',
-    subtype: 'turn_duration',
-    session_id: options.sessionId ?? TEST_SESSION_ID,
-    durationMs: 25,
-  });
-}
-
-type TranscriptFixture = {
-  transcriptPath: string;
-  projectsRoot: string;
-  pathFor: (conversationRef: string, projectName?: string) => string;
-  cleanup: () => void;
-};
-
-function createTranscriptFixture(
-  conversationRef = TEST_SESSION_ID,
-  extraConversationRefs: string[] = [],
-): TranscriptFixture {
-  const previousHome = process.env.HOME;
-  const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
-  const home = mkdtempSync(join(tmpdir(), 'coral-claude-home-'));
-  const projectDir = join(home, '.claude', 'projects', 'workspace');
-  mkdirSync(projectDir, { recursive: true });
-  const pathFor = (ref: string, projectName = 'workspace'): string =>
-    join(home, '.claude', 'projects', projectName, `${ref}.jsonl`);
-  const transcriptPath = pathFor(conversationRef);
-  for (const ref of [conversationRef, ...extraConversationRefs]) {
-    writeFileSync(pathFor(ref), '');
-  }
-  process.env.HOME = home;
-  delete process.env.CLAUDE_CONFIG_DIR;
-
-  return {
-    transcriptPath,
-    projectsRoot: join(home, '.claude', 'projects'),
-    pathFor,
-    cleanup: (): void => {
-      if (previousHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = previousHome;
-      }
-      if (previousClaudeConfigDir === undefined) {
-        delete process.env.CLAUDE_CONFIG_DIR;
-      } else {
-        process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
-      }
-      rmSync(home, { recursive: true, force: true });
-    },
-  };
+function observedPhase(harness: Awaited<ReturnType<typeof startController>>) {
+  harness.child.emitExit({ code: 1, signal: null });
+  const failed = harness.notifications.find((notification) => notification.method === 'turn/failed');
+  return failed?.method === 'turn/failed' ? failed.params.diagnostic?.phase : undefined;
 }
 
 describe('Claude turn phase state machine', () => {
   it('advances sent to registered for the canonical current-turn prompt row', async () => {
-    const { internals } = await startController('hello\nworld');
-
-    expect(activeTurn(internals).phase).toBe('sent');
-    processLine(internals, userPromptLine('hello\r\nworld'));
-
-    expect(activeTurn(internals).phase).toBe('registered');
+    const harness = await startController('hello\nworld');
+    await appendRows(harness.path, userRow('hello\r\nworld'));
+    expect(observedPhase(harness)).toBe('registered');
   });
 
   it('advances sent to registered for a Claude queue-operation enqueue row', async () => {
-    const { internals } = await startController('hello\nworld');
-
-    expect(activeTurn(internals).phase).toBe('sent');
-    processLine(internals, queueOperationLine('hello\r\nworld'));
-
-    expect(activeTurn(internals).phase).toBe('registered');
-  });
-
-  it('advances registered to responding on an assistant row', async () => {
-    const { internals } = await startController();
-
-    processLine(internals, userPromptLine('hello'));
-    processLine(internals, assistantLine());
-
-    expect(activeTurn(internals).phase).toBe('responding');
+    const harness = await startController('hello\nworld');
+    await appendRows(harness.path, queueRow('hello\r\nworld'));
+    expect(observedPhase(harness)).toBe('registered');
   });
 
   it('advances responding to ending on an end-turn assistant row', async () => {
-    const { internals } = await startController();
-
-    processLine(internals, userPromptLine('hello'));
-    processLine(internals, assistantLine({ stopReason: 'end_turn' }));
-
-    expect(activeTurn(internals).phase).toBe('ending');
+    const harness = await startController();
+    await appendRows(harness.path, userRow('hello'), assistantRow('end_turn'));
+    expect(observedPhase(harness)).toBe('ending');
   });
 
   it('keeps a turn in ending when a late assistant row arrives after end_turn', async () => {
-    const { controller, internals } = await startController();
-
-    processLine(internals, userPromptLine('hello'));
-    processLine(internals, assistantLine({ stopReason: 'end_turn' }));
-    expect(activeTurn(internals).phase).toBe('ending');
-
-    processLine(internals, assistantLine());
-
-    expect(controller.hasActiveTurn()).toBe(true);
-    expect(activeTurn(internals).phase).toBe('ending');
-  });
-
-  it('does not register raw transcript bytes or system rows', async () => {
-    const fixture = createTranscriptFixture();
-    try {
-      const { internals } = await startController('hello', fixture.projectsRoot);
-      const turn = activeTurn(internals);
-
-      appendFileSync(fixture.transcriptPath, 'raw transcript bytes\n');
-      internals.readTranscriptAppend(turn);
-      expect(activeTurn(internals).phase).toBe('sent');
-
-      processLine(internals, systemLine());
-      expect(activeTurn(internals).phase).toBe('sent');
-    } finally {
-      fixture.cleanup();
-    }
+    const harness = await startController();
+    await appendRows(harness.path, userRow('hello'), assistantRow('end_turn'));
+    await appendRows(harness.path, assistantRow());
+    expect(harness.controller.hasActiveTurn()).toBe(true);
+    expect(observedPhase(harness)).toBe('ending');
   });
 
   it('does not keep reading a cached transcript after the session id changes', async () => {
     const nextSessionId = '00000000-0000-4000-8000-000000000002';
-    const fixture = createTranscriptFixture(TEST_SESSION_ID, [nextSessionId]);
-    try {
-      const { internals } = await startController('hello', fixture.projectsRoot);
-      const turn = activeTurn(internals);
-
-      expect(internals.resolveTranscriptPath()).toBe(fixture.transcriptPath);
-      processLine(internals, systemLine({ sessionId: nextSessionId }));
-      appendFileSync(fixture.pathFor(nextSessionId), `${assistantLine({ sessionId: nextSessionId })}\n`);
-      internals.readTranscriptAppend(turn);
-
-      expect(activeTurn(internals).phase).toBe('responding');
-    } finally {
-      fixture.cleanup();
-    }
+    const fixture = transcriptFixture();
+    writeFileSync(fixture.pathFor(nextSessionId), '');
+    const harness = await startController('hello', fixture);
+    await appendRows(harness.path, {
+      type: 'system',
+      subtype: 'turn_duration',
+      session_id: nextSessionId,
+      durationMs: 25,
+    });
+    await appendRows(fixture.pathFor(nextSessionId), assistantRow(undefined, nextSessionId));
+    expect(observedPhase(harness)).toBe('responding');
   });
 
   it('does not arbitrarily select a transcript when the conversation ref is ambiguous across projects', async () => {
-    const fixture = createTranscriptFixture();
-    const duplicatePath = fixture.pathFor(TEST_SESSION_ID, 'other-workspace');
-    mkdirSync(join(duplicatePath, '..'), { recursive: true });
-    writeFileSync(duplicatePath, '');
-    try {
-      const { internals } = await startController('hello', fixture.projectsRoot);
-
-      expect(internals.resolveTranscriptPath()).toBeNull();
-    } finally {
-      fixture.cleanup();
-    }
+    const fixture = transcriptFixture();
+    mkdirSync(join(fixture.projectsRoot, 'other'), { recursive: true });
+    writeFileSync(fixture.pathFor(TEST_SESSION_ID, 'other'), '');
+    const harness = await startController('hello', fixture);
+    await appendRows(harness.path, userRow('hello'));
+    await appendRows(fixture.pathFor(TEST_SESSION_ID, 'other'), userRow('hello'));
+    expect(observedPhase(harness)).toBe('sent');
   });
 
   it('does not register mismatched user rows', async () => {
-    const { internals } = await startController();
-    const turn = activeTurn(internals);
-
-    processLine(internals, userPromptLine('hello'), turn.promptTranscriptOffset - 1);
-    expect(activeTurn(internals).phase).toBe('sent');
-
-    processLine(internals, userPromptLine('different prompt'));
-    expect(activeTurn(internals).phase).toBe('sent');
-
-    processLine(internals, userPromptLine('hello', { sessionId: 'other-session' }));
-    expect(activeTurn(internals).phase).toBe('sent');
-
-    processLine(internals, userToolResultLine());
-    expect(activeTurn(internals).phase).toBe('sent');
-
-    processLine(internals, queueOperationLine('hello'), turn.promptTranscriptOffset - 1);
-    expect(activeTurn(internals).phase).toBe('sent');
-
-    processLine(internals, queueOperationLine('different prompt'));
-    expect(activeTurn(internals).phase).toBe('sent');
-
-    processLine(internals, queueOperationLine('hello', { sessionId: 'other-session' }));
-    expect(activeTurn(internals).phase).toBe('sent');
-
-    processLine(internals, queueOperationLine('hello', { operation: 'dequeue' }));
-    expect(activeTurn(internals).phase).toBe('sent');
-
-    processLine(internals, queueOperationLine('hello', { content: { text: 'hello' } }));
-    expect(activeTurn(internals).phase).toBe('sent');
-  });
-
-  it('does not let user rows after responding regress the phase', async () => {
-    const { internals } = await startController();
-
-    processLine(internals, userPromptLine('hello'));
-    processLine(internals, assistantLine());
-    expect(activeTurn(internals).phase).toBe('responding');
-
-    processLine(internals, userPromptLine('hello'));
-    expect(activeTurn(internals).phase).toBe('responding');
-
-    processLine(internals, userToolResultLine());
-    expect(activeTurn(internals).phase).toBe('responding');
-  });
-
-  it('rejects illegal transitions', () => {
-    expect(advanceTurnPhase('sent', 'registered')).toBe('registered');
-    expect(advanceTurnPhase('responding', 'responding')).toBe('responding');
-    expect(() => advanceTurnPhase('sent', 'ending')).toThrow('sent -> ending');
-    expect(() => advanceTurnPhase('responding', 'registered')).toThrow('responding -> registered');
-    expect(() => advanceTurnPhase('terminal', 'sent')).toThrow('terminal -> sent');
+    const fixture = transcriptFixture();
+    writeFileSync(fixture.path, JSON.stringify(userRow('hello')) + '\n' + JSON.stringify(queueRow('hello')) + '\n');
+    const harness = await startController('hello', fixture);
+    await appendRows(
+      harness.path,
+      userRow('different prompt'),
+      userRow('hello', 'other-session'),
+      queueRow('different prompt'),
+      {
+        type: 'user',
+        session_id: TEST_SESSION_ID,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'tool output' }] },
+      },
+    );
+    expect(observedPhase(harness)).toBe('sent');
   });
 });

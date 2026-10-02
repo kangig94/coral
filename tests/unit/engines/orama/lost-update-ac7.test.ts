@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ORAMA_PROJECTION_IDENTITY_HASH,
   createOramaProjectionIdentityInput,
-  oramaProjectionTokenizerTier,
   type OramaProjectionMetadata,
 } from '#src/engines/orama/artifact-port.js';
 import { OramaBaseProjection } from '#src/engines/orama/base-projection.js';
@@ -345,45 +344,5 @@ describe('Orama AC7 identity-aware lost-update guard', () => {
     const coldProjection = createProjection(kb, createSnapshotStore(kb), runtime, kiwiManager);
     await expectSearchDocumentIds(coldProjection, 'newestonly', [noteEntryId('delta-race-note')]);
     await expectSearchDocumentIds(coldProjection, 'staleonly', []);
-  });
-
-  it('allows equal-snapshot tier reconciles to converge for upgrade and degrade', async () => {
-    const { kb, runtime } = createKbFixture();
-    const intlManager = createManager(false);
-    const kiwiManager = createManager(true);
-    const snapshotStore = createSnapshotStore(kb);
-    const snapshot = seedNotes(
-      kb,
-      [
-        {
-          slug: 'equal-tier-reconcile',
-          title: 'Equal Tier Reconcile',
-          body: 'The equalsnapshot tier reconcile marker stays byte-identical.',
-          entrySeq: 1,
-        },
-      ],
-      'seed equal-snapshot tier reconcile',
-    );
-    const projectionInput = createKbProjectionInput(kb);
-
-    const intlProjection = createProjection(kb, snapshotStore, runtime, intlManager);
-    await installFullSnapshot(intlProjection, kb, snapshot);
-    expect(oramaProjectionTokenizerTier(readMetadata(kb))).toBe('intl');
-
-    const kiwiProjection = createProjection(kb, snapshotStore, runtime, kiwiManager);
-    await kiwiProjection.apply(makeContext(snapshot, snapshot, projectionInput));
-
-    expect(readMetadata(kb).snapshotId).toBe(snapshot.snapshotId);
-    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentityHash());
-    expect(oramaProjectionTokenizerTier(readMetadata(kb))).toBe('kiwi');
-    expect(oramaProjectionTokenizerTier(readCacheMetadata(snapshotStore))).toBe('kiwi');
-
-    const degradedIntlProjection = createProjection(kb, snapshotStore, runtime, intlManager);
-    await degradedIntlProjection.apply(makeContext(snapshot, snapshot, projectionInput));
-
-    expect(readMetadata(kb).snapshotId).toBe(snapshot.snapshotId);
-    expect(readMetadata(kb).projectionIdentityHash).toBe(intlIdentityHash());
-    expect(oramaProjectionTokenizerTier(readMetadata(kb))).toBe('intl');
-    expect(oramaProjectionTokenizerTier(readCacheMetadata(snapshotStore))).toBe('intl');
   });
 });

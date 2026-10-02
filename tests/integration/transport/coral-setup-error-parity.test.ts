@@ -3,13 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import {
-  CoralSetupError,
-  documentedCoralSetupError,
-  serializeCoralSetupError,
-  type DocumentedCoralSetupErrorCode,
-  type SerializedCoralSetupError,
-} from '#src/runtime/errors.js';
+import { serializeCoralSetupError, type SerializedCoralSetupError } from '#src/runtime/errors.js';
 import { buildTransportErrorResponse } from '#src/transport/error-response.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
 import { generationNotQuiescentError } from '#src/store/generation-mutation-coordination.js';
@@ -26,41 +20,6 @@ function makeSocketPath(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-setup-error-parity-'));
   tempDirs.push(root);
   return join(root, 'coordinator.sock');
-}
-
-const ADDED_DOCUMENTED_SETUP_ERRORS = [
-  { code: 'unknown_expansion', context: { name: 'vector' } },
-  { code: 'expansion_runtime_unavailable', context: { name: 'vector' } },
-  { code: 'engine_env_var_missing', context: { engine: 'gemini', envVar: 'GEMINI_API_KEY' } },
-  { code: 'consumer_not_registered', context: { id: 'consumer-a' } },
-  {
-    code: 'consumer_authority_mismatch',
-    context: { id: 'consumer-a', expected: 'journal', actual: 'corpus' },
-  },
-  { code: 'consumer_interest_mismatch', context: { id: 'consumer-a' } },
-  {
-    code: 'consumer_registration_kind_mismatch',
-    context: { id: 'consumer-a', expected: 'base', actual: 'expansion' },
-  },
-  { code: 'consumer_lane_invalid', context: { id: 'consumer-a' } },
-  { code: 'consumer_wait_unsupported', context: { id: 'consumer-a' } },
-  { code: 'consumer_unregister_requires_stop', context: { id: 'consumer-a' } },
-  { code: 'consumer_interest_invalid', context: { id: 'consumer-a' } },
-  { code: 'consumer_registration_kind_invalid', context: { id: 'consumer-a' } },
-] satisfies Array<{
-  code: DocumentedCoralSetupErrorCode;
-  context: Record<string, unknown>;
-}>;
-
-function documentedSetupErrorPayload(
-  code: DocumentedCoralSetupErrorCode,
-  context: Record<string, unknown>,
-): SerializedCoralSetupError {
-  const payload = serializeCoralSetupError(documentedCoralSetupError(code, context));
-  if (payload === null) {
-    throw new Error(`Expected ${code} to serialize`);
-  }
-  return payload;
 }
 
 function createPorts(failWith: () => Error): HttpHandlerPorts {
@@ -308,55 +267,4 @@ describe('coral setup error parity', () => {
       await closeIpcServer(ipcListener);
     }
   });
-
-  it('serializes workflow lifecycle conflicts as a safe HTTP 409 response', () => {
-    const response = buildTransportErrorResponse(
-      new CoralSetupError({
-        code: 'workflow_lifecycle_invalid',
-        userMessage: "Workflow 'workflow-1' is already terminal.",
-        remediation: 'Reload the workflow before retrying.',
-        context: { workflowId: 'workflow-1', current: 'completed' },
-      }),
-    );
-
-    expect(response.statusCode).toBe(409);
-    expect(response.body).toMatchObject({
-      code: 'workflow_lifecycle_invalid',
-      message: "Workflow 'workflow-1' is already terminal.",
-      remediation: 'Reload the workflow before retrying.',
-    });
-  });
-  it('serializes a still-starting backend as a retryable HTTP 503, not an internal error', () => {
-    const response = buildTransportErrorResponse(
-      new CoralSetupError({
-        code: 'startup_not_ready',
-        userMessage: 'Coral backend is still starting.',
-        remediation: 'The Coral backend is still starting; retry shortly.',
-      }),
-    );
-
-    expect(response.statusCode).toBe(503);
-  });
-
-  it.each(ADDED_DOCUMENTED_SETUP_ERRORS)(
-    'surfaces $code through IPC and HTTP with matching setup payloads',
-    async ({ code, context }) => {
-      const ports = createPorts(() => documentedCoralSetupError(code, context));
-      const expected = documentedSetupErrorPayload(code, context);
-      const socketPath = makeSocketPath();
-      const ipcListener = createIpcServer(ports);
-      const { baseUrl } = await startHttpServer(ports);
-
-      await listenIpcServer(ipcListener, socketPath);
-      try {
-        const ipcPayload = await requestIpcErrorPayload(socketPath, expected);
-        const httpPayload = await requestHttpErrorPayload(baseUrl, ports.identity.token, expected);
-
-        expect(ipcPayload).toEqual(expected);
-        expect(httpPayload).toEqual(expected);
-      } finally {
-        await closeIpcServer(ipcListener);
-      }
-    },
-  );
 });

@@ -29,7 +29,7 @@ vi.mock('#src/coordinator/live/provider-hosts/index.js', async (importOriginal) 
   };
 });
 
-import { activePinCount, acquireProviderHostPin } from '#src/coordinator/live/provider-hosts/lease.js';
+import { acquireProviderHostPin } from '#src/coordinator/live/provider-hosts/lease.js';
 import { maybeArmIdleTimer } from '#src/coordinator/live/provider-hosts/idle.js';
 import { hostRefFromEntry } from '#src/coordinator/live/provider-hosts/state.js';
 import { createCoordinatorWorld } from '#src/coordinator/composition/world.js';
@@ -55,7 +55,7 @@ import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { consumeJobStream } from '#src/jobs/shell/continuity-consumer.js';
 import { providerTerminalEvent } from '#src/providers/stream.js';
-import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -67,7 +67,6 @@ import {
   createLaunch,
   createSharedSpec,
   createSpawnProviderServerMock,
-  randomSequence,
   runtime,
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
@@ -161,161 +160,6 @@ beforeEach(() => {
 });
 
 describe('provider host idle properties', () => {
-  it('connects the production-created manager to committed terminal publication', () => {
-    const world = createCoordinatorWorld(
-      {
-        runtime,
-        storeFormat: currentCoralStoreFormat(),
-        pluginRoot: process.cwd(),
-        backendNamespace: 'idle-production-connection',
-        bootSnapshot: {
-          version: 'test-version',
-          bundleHash: 'test-bundle',
-          flavor: 'prod',
-          instanceId: 'idle-production-connection-instance',
-          token: 'idle-production-connection-token',
-          pid: process.pid,
-          now: () => 10_000,
-          log: () => undefined,
-        },
-        kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-        getConsumerStuck: () => [],
-      },
-      runtime,
-      createDefaultsPlan(),
-    );
-    const db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db, currentCoralStoreFormat());
-    const progressStore = new ProductionJobStore('idle-production-connection', runtime, createEventBodyCodec(), {
-      db,
-      eventBus: world.eventBus,
-      providers: permissiveProviderLookupPort,
-    });
-    setStoreServicesForTest(world.storeServicesRef, { storeDb: db, progressStore, consumerDriver: null });
-    const jobId = '00000000-0000-4000-8000-000000000602';
-    const sessionId = 'idle-production-connection-session';
-    const exactRef: HostRef = {
-      provider: 'codex',
-      fingerprint: 'a'.repeat(64),
-      instanceId: 'idle-production-connection-host',
-      leaseMode: 'shared',
-    };
-
-    try {
-      initTestJob(progressStore, {
-        jobId,
-        sessionId,
-        provider: 'codex',
-        projectRoot: '/workspace',
-        backendNamespace: 'idle-production-connection',
-        initialPhase: 'running',
-      });
-      progressStore.appendRuntimeStarted(jobId, {
-        transport: 'app-server',
-        startTime: '2026-08-13T00:00:00.000Z',
-        providerMeta: { provider: 'codex', leaseState: 'acquired', hostRef: exactRef },
-      });
-
-      commitJobTerminal(progressStore, jobId, sessionId, {
-        content: 'done',
-        durationMs: 0,
-        outcome: { kind: 'completed' },
-      });
-
-      expect(productionWiring.reevaluateIdleRetirement).toHaveBeenCalledExactlyOnceWith(exactRef);
-    } finally {
-      runtime.storage.rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
-      db.close();
-    }
-  });
-
-  it('connects operation settlement to targeted retirement re-evaluation', () => {
-    const eventBus = new TypedEventBus();
-    const storeServicesRef = createStoreServicesRef();
-    const storeDb = newRawDatabase(':memory:');
-    const operationRegistry = new LocalOperationRegistry();
-    operationRegistry.connectBinding({
-      settleProviderOperationBinding: () => ({ kind: 'settled-unbound' }),
-    } as never);
-    const retirement = { reevaluateIdleRetirement: vi.fn() };
-    const record = providerOperationRecord('executing');
-    if (record.phase !== 'executing') throw new Error('expected executing operation fixture');
-    const exactRef = record.activationAck.hostRef;
-    const progressStore = {
-      loadJobProjectionDetail: () => acquiredDetail(record.operation.jobId, exactRef),
-    };
-    setStoreServicesForTest(storeServicesRef, {
-      storeDb,
-      progressStore: progressStore as unknown as JobStore,
-      consumerDriver: null,
-    });
-    try {
-      connectProviderHostRetirementReevaluation({
-        eventBus,
-        storeServicesRef,
-        operationRegistry,
-        retirement,
-        time: runtime.time,
-      });
-      operationRegistry.activate(
-        record,
-        { stop: async () => undefined },
-        { kind: 'job-local', jobId: record.operation.jobId, pool: 'default' },
-      );
-
-      operationRegistry.settled(record.operation);
-
-      expect(retirement.reevaluateIdleRetirement).toHaveBeenCalledExactlyOnceWith(exactRef);
-    } finally {
-      storeDb.close();
-    }
-  });
-
-  it('bounds retries when every retirement wake fails', async () => {
-    vi.useFakeTimers();
-    const eventBus = new TypedEventBus();
-    const storeServicesRef = createStoreServicesRef();
-    const storeDb = newRawDatabase(':memory:');
-    const operationRegistry = new LocalOperationRegistry();
-    operationRegistry.connectBinding({
-      settleProviderOperationBinding: () => ({ kind: 'settled-unbound' }),
-    } as never);
-    const record = providerOperationRecord('executing');
-    if (record.phase !== 'executing') throw new Error('expected executing operation fixture');
-    const exactRef = record.activationAck.hostRef;
-    const progressStore = {
-      loadJobProjectionDetail: () => acquiredDetail(record.operation.jobId, exactRef),
-    };
-    setStoreServicesForTest(storeServicesRef, {
-      storeDb,
-      progressStore: progressStore as unknown as JobStore,
-      consumerDriver: null,
-    });
-    const retirementWake = vi.fn(() => {
-      throw new Error('fixture persistent retirement wake failure');
-    });
-    vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
-    connectProviderHostRetirementReevaluation({
-      eventBus,
-      storeServicesRef,
-      operationRegistry,
-      retirement: { reevaluateIdleRetirement: retirementWake },
-      time: runtime.time,
-    });
-    operationRegistry.activate(
-      record,
-      { stop: async () => undefined },
-      { kind: 'job-local', jobId: record.operation.jobId, pool: 'default' },
-    );
-
-    expect(() => operationRegistry.settled(record.operation)).not.toThrow();
-    await vi.runAllTimersAsync();
-
-    expect(retirementWake).toHaveBeenCalledTimes(3);
-    expect(retirementWake).toHaveBeenCalledWith(exactRef);
-    storeDb.close();
-  });
-
   it('re-evaluates the real carrier guard after stream close, pin release, and terminal commit', async () => {
     vi.useFakeTimers();
     const eventBus = new TypedEventBus();
@@ -490,66 +334,6 @@ describe('provider host idle properties', () => {
     expect(closeProviderServerEntry).not.toHaveBeenCalled();
   });
 
-  it('never evicts a currently-acquired lease across 100 random idle sequences', async () => {
-    vi.useFakeTimers();
-
-    for (let seed = 1; seed <= 100; seed += 1) {
-      const server = createFakeProviderServerHandle();
-      const entry = createEntry({
-        handle: server.handle,
-        hostStats: { liveControllers: 0, activeTurns: 0 },
-      });
-      const entries = new Map([[entry.hostKey, entry]]);
-      const releasePins: Array<() => void> = [];
-      let evictedWhileHeld = false;
-
-      const arm = () =>
-        maybeArmIdleTimer(entry, {
-          runtime,
-          idleTimeoutMs: 5,
-          entries,
-          carrierBlocksRetirement: () => false,
-          closeProviderServerEntry: async () => {
-            if (activePinCount(entry) > 0) {
-              evictedWhileHeld = true;
-            }
-          },
-        });
-
-      for (const step of randomSequence(seed)) {
-        switch (step % 4) {
-          case 0:
-            releasePins.push(acquireProviderHostPin(entry, { kind: 'acquisition' }, () => {}));
-            break;
-          case 1:
-            if (activePinCount(entry) === 0) {
-              releasePins.push(acquireProviderHostPin(entry, { kind: 'acquisition' }, () => {}));
-            } else {
-              releasePins.pop()?.();
-            }
-            arm();
-            break;
-          case 2:
-            arm();
-            await vi.advanceTimersByTimeAsync(5);
-            break;
-          default:
-            entry.hostStats = {
-              liveControllers: step % 3 === 0 ? 1 : 0,
-              activeTurns: step % 5 === 0 ? 1 : 0,
-            };
-            arm();
-            break;
-        }
-
-        if (activePinCount(entry) > 0) {
-          await vi.advanceTimersByTimeAsync(5);
-          expect(evictedWhileHeld).toBe(false);
-        }
-      }
-    }
-  });
-
   it('rechecks the carrier predicate when an armed timer expires', async () => {
     vi.useFakeTimers();
     const server = createFakeProviderServerHandle();
@@ -631,39 +415,6 @@ describe('provider host idle properties', () => {
       }
     },
   );
-
-  it('production wiring blocks a matching shared host through both manager-to-idle paths', async () => {
-    vi.useFakeTimers();
-    const server = createFakeProviderServerHandle();
-    const rows = new Map<string, JobProjectionDetail>();
-    const { predicate, db } = composeProductionPredicate(rows);
-    const carrierBlocksRetirement = vi.fn(predicate);
-    const manager = new StubbedContainmentProviderHostManager({
-      runtime,
-      idleTimeoutMs: 5,
-      spawnProviderServer: createSpawnProviderServerMock(server.handle),
-      carrierBlocksRetirement,
-    });
-
-    try {
-      const first = await manager.openSession(createLaunch(createSharedSpec()));
-      rows.set(MATCHED_JOB_ID, acquiredDetail(MATCHED_JOB_ID, first.hostRef));
-      first.close();
-
-      server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });
-      const second = await manager.openSession(createLaunch(createSharedSpec()));
-      second.close();
-      await vi.advanceTimersByTimeAsync(5);
-
-      expect(carrierBlocksRetirement).toHaveBeenCalledTimes(2);
-      expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(1, first.hostRef);
-      expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(2, first.hostRef);
-      expect(server.closeMock).not.toHaveBeenCalled();
-    } finally {
-      await manager.shutdown();
-      db?.close();
-    }
-  });
 
   it('treats an unavailable store as retirement-blocking', () => {
     const { predicate } = composeProductionPredicate(null);

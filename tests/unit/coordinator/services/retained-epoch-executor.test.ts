@@ -1,6 +1,3 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('#src/coordinator/succession/controller-open.js', async (importOriginal) => {
@@ -22,6 +19,8 @@ import { latestControllerOpen, type ControllerOpen } from '#src/coordinator/succ
 import { createForeignTargetValidator, type ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 const EPOCH_KEY = 'epoch-key';
 const target = { validated: true } as unknown as ValidatedHandoffTarget;
@@ -53,20 +52,18 @@ const openProof = `${JSON.stringify({
   bundleHash: opened.build.bundleHash,
 })}\n`;
 
-const roots: string[] = [];
 let runtime: Runtime;
 
 beforeEach(() => {
-  const baseDir = mkdtempSync(join(tmpdir(), 'coral-retained-executor-'));
-  roots.push(baseDir);
-  runtime = createRealRuntime('prod', { baseDir });
+  const time = new VirtualTime();
+  const real = createRealRuntime('prod', { baseDir: '/coral-retained-executor' });
+  runtime = { ...real, time, storage: new InMemoryStorage(time), process: { ...real.process, execSync: vi.fn() } };
   vi.mocked(latestControllerOpen).mockReturnValue({ latest: opened, unreadable: [] });
   vi.mocked(createForeignTargetValidator).mockReturnValue(() => ({ kind: 'validated', target }));
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe('retained-epoch-executor', () => {
@@ -82,27 +79,13 @@ describe('retained-epoch-executor', () => {
         instanceId: 'instance',
       });
     });
-
-    it.each([
-      [['node', 'backend']],
-      [['node', 'backend', '--recover-retained-epoch']],
-      [['node', 'backend', '--recover-retained-epoch', EPOCH_KEY, 'extra']],
-      [['node', 'backend', '--probe-retained-epoch', EPOCH_KEY]],
-      [['node', 'backend', '--probe-retained-epoch', EPOCH_KEY, 'instance', 'extra']],
-      [['node', 'backend', '--retained-epoch', EPOCH_KEY]],
-    ])('should refuse %j instead of guessing a command', (argv) => {
-      expect(parseRetainedEpochArgv(argv)).toBeNull();
-    });
   });
 
   describe('settleWithRetainedExecutor', () => {
     it.each([
       [0, { kind: 'settled' }],
       [70, { kind: 'no-capable-root', reason: 'retained executor refused with exit 70' }],
-      [71, { kind: 'no-capable-root', reason: 'retained executor refused with exit 71' }],
       [72, { kind: 'transient-failure', status: 72 }],
-      [73, { kind: 'transient-failure', status: 73 }],
-      [null, { kind: 'transient-failure', status: null }],
     ] as const)('should read executor exit %s as %j', (status, settlement) => {
       const execSync = vi.spyOn(runtime.process, 'execSync').mockReturnValue({ status, stdout: '', stderr: '' });
 

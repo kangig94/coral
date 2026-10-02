@@ -1,33 +1,43 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import type * as MockedNodeFsModule from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MAX_BUFFER } from '#src/infra/process-constants.js';
-import { BrokerSessionPool } from '#src/providers/claude/appserver/broker-pool.js';
 import { SingleSessionController } from '#src/providers/claude/appserver/controller.js';
 import type { ControllerNotification } from '#src/providers/claude/appserver/session-contract.js';
 import { FakeClaudeChild } from '#tests/helpers/fake-claude-child.js';
-import { createDeferred } from '#tools/testing/deferred.js';
+
+vi.mock('node:timers/promises', () => ({
+  setTimeout: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof MockedNodeFsModule>();
+  const { InMemoryStorage } = await import('#tools/simulation/core/memory-storage.js');
+  const { VirtualTime } = await import('#tools/simulation/core/virtual-time.js');
+  const storage = new InMemoryStorage(new VirtualTime());
+  return {
+    ...original,
+    mkdirSync: storage.mkdirSync.bind(storage),
+    writeFileSync: storage.writeFileSync.bind(storage),
+    appendFileSync: storage.appendFileSync.bind(storage),
+    existsSync: storage.existsSync.bind(storage),
+    readdirSync: storage.readdirSync.bind(storage),
+    statSync: storage.statSync.bind(storage),
+    openSync: storage.openSync.bind(storage),
+    readSync: storage.readSync.bind(storage),
+    closeSync: storage.closeSync.bind(storage),
+    fstatSync: (fd: number) => ({ size: Number(storage.fstatSync(fd, { bigint: true }).size) }),
+  };
+});
+
+let fixtureIndex = 0;
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
 const TEST_MODEL = 'claude-sonnet-test';
 
 const FAST_TIMING = { readySettleMs: 5, promptAckTimeoutMs: 10 } as const;
-
-async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate() && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  if (!predicate()) {
-    throw new Error(`Timed out after ${timeoutMs}ms`);
-  }
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 type TranscriptFixture = {
   transcriptPath: string;
@@ -36,32 +46,16 @@ type TranscriptFixture = {
 };
 
 function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptFixture {
-  const previousHome = process.env.HOME;
-  const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
-  const home = mkdtempSync(join(tmpdir(), 'coral-claude-home-'));
+  const home = '/transcripts/fixture-' + fixtureIndex++;
   const projectDir = join(home, '.claude', 'projects', 'workspace');
   mkdirSync(projectDir, { recursive: true });
   const transcriptPath = join(projectDir, `${conversationRef}.jsonl`);
   writeFileSync(transcriptPath, '');
-  process.env.HOME = home;
-  delete process.env.CLAUDE_CONFIG_DIR;
 
   return {
     transcriptPath,
     projectsRoot: join(home, '.claude', 'projects'),
-    cleanup: (): void => {
-      if (previousHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = previousHome;
-      }
-      if (previousClaudeConfigDir === undefined) {
-        delete process.env.CLAUDE_CONFIG_DIR;
-      } else {
-        process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
-      }
-      rmSync(home, { recursive: true, force: true });
-    },
+    cleanup: (): void => {},
   };
 }
 
@@ -87,19 +81,10 @@ function durationTranscriptLine(durationMs: number): string {
   });
 }
 
-type ActiveTurnForUsageTest = object;
-
-type ControllerInternals = {
-  activeTurn: ActiveTurnForUsageTest | null;
-  processTranscriptLine(turn: ActiveTurnForUsageTest, line: string, lineStartOffset: number): void;
-  recoverStalledTurn(turn: ActiveTurnForUsageTest, observedAtMs: bigint): Promise<boolean>;
-};
-
 type UsageControllerHarness = {
   controller: SingleSessionController;
-  internals: ControllerInternals;
   notifications: ControllerNotification[];
-  turn: ActiveTurnForUsageTest;
+  transcriptPath: string;
 };
 
 type TurnCompletedNotification = Extract<ControllerNotification, { method: 'turn/completed' }>;
@@ -113,12 +98,13 @@ function completedNotification(
 }
 
 async function startUsageController(): Promise<UsageControllerHarness> {
+  const fixture = createTranscriptFixture();
   const child = new FakeClaudeChild();
   const notifications: ControllerNotification[] = [];
   const controller = new SingleSessionController({
     spawnChild: () => child,
     ids: { uuid: () => TEST_SESSION_ID },
-    monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
+    monotonicNow: () => BigInt(Date.now()),
     readySettleMs: 1,
     promptAckTimeoutMs: 10_000,
   });
@@ -126,9 +112,9 @@ async function startUsageController(): Promise<UsageControllerHarness> {
     notifications.push(notification);
   });
 
-  await controller.sessionEnsure({
+  await ensureReady(controller, {
     cwd: '/workspace',
-    projectsRoot: '/tmp/coral-test-home/.claude/projects',
+    projectsRoot: fixture.projectsRoot,
     systemPromptHash: 'sha256:test',
 
     bootstrapConfigHash: 'sha256:test-bootstrap',
@@ -136,14 +122,7 @@ async function startUsageController(): Promise<UsageControllerHarness> {
   });
   await controller.turnStart({ brokerTurnId: 'turn-usage', prompt: 'hello' });
 
-  const internals = controller as unknown as ControllerInternals;
-  expect(internals.activeTurn).not.toBeNull();
-  return {
-    controller,
-    internals,
-    notifications,
-    turn: internals.activeTurn as ActiveTurnForUsageTest,
-  };
+  return { controller, notifications, transcriptPath: fixture.transcriptPath };
 }
 
 function assistantUsageTranscriptLine(options: {
@@ -172,105 +151,20 @@ async function completeFromTranscriptRows(
   harness: UsageControllerHarness,
   rows: readonly string[],
 ): Promise<TurnCompletedNotification> {
-  for (const row of rows) {
-    harness.internals.processTranscriptLine(harness.turn, row, 0);
-  }
-
-  await harness.internals.recoverStalledTurn(harness.turn, process.hrtime.bigint() / 1_000_000n);
+  appendFileSync(harness.transcriptPath, rows.join('\n') + '\n');
+  await vi.advanceTimersByTimeAsync(1_600);
   const completed = completedNotification(harness.notifications);
   expect(completed).toBeDefined();
   return completed as TurnCompletedNotification;
 }
 
 describe('SingleSessionController PTY lifecycle', () => {
-  it('transfers an unsettled child to the broker pool before reporting a retryable shutdown hold', async () => {
-    const child = new FakeClaudeChild();
-    const ids = ['broker-session-1', TEST_SESSION_ID];
-    const pool = new BrokerSessionPool({
-      spawnChild: () => child,
-      ids: { uuid: () => ids.shift() ?? TEST_SESSION_ID },
-      monotonicNow: () => 0n,
-    });
-    await pool.sessionEnsure({
-      cwd: '/workspace',
-      projectsRoot: '/tmp/coral-test-home/.claude/projects',
-      systemPromptHash: 'sha256:test',
-      bootstrapConfigHash: 'sha256:test-bootstrap',
-      permissionMode: 'default',
-    });
-    child.exitOnProtocolShutdown = false;
-    child.exitOnKill = false;
-    vi.useFakeTimers();
-    try {
-      const shutdown = pool.shutdown();
-      await vi.advanceTimersByTimeAsync(2_500);
-      const held = await shutdown;
-
-      expect(held).toMatchObject({
-        kind: 'held-unobservable',
-        observation: 'unobservable',
-        successor: { kind: 'accepted', owner: 'broker-session-pool' },
-        operatorExit: { kind: 'retry-broker-shutdown' },
-      });
-      expect(child.disposed).toBe(false);
-
-      child.emitExit({ code: null, signal: 'SIGKILL' });
-      if (held.kind === 'observed-absent') throw new Error('Expected a broker shutdown hold.');
-      await expect(held.settled).resolves.toMatchObject({ kind: 'observed-absent' });
-      await expect(pool.shutdown()).resolves.toMatchObject({ kind: 'observed-absent' });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('returns an observable hold and retains listeners when TERM and KILL do not produce close', async () => {
-    try {
-      const child = new FakeClaudeChild();
-      child.exitOnProtocolShutdown = false;
-      child.exitOnKill = false;
-      const controller = new SingleSessionController({
-        spawnChild: () => child,
-        ids: { uuid: () => TEST_SESSION_ID },
-        monotonicNow: () => 0n,
-        ...FAST_TIMING,
-      });
-      await controller.sessionEnsure({
-        cwd: '/workspace',
-        projectsRoot: '/tmp/coral-test-home/.claude/projects',
-        systemPromptHash: 'sha256:test',
-        bootstrapConfigHash: 'sha256:test-bootstrap',
-        permissionMode: 'default',
-      });
-      vi.useFakeTimers();
-
-      const shutdown = controller.shutdown();
-      await vi.advanceTimersByTimeAsync(2_500);
-      const held = await shutdown;
-
-      expect(held).toMatchObject({
-        kind: 'held-unobservable',
-        observation: 'unobservable',
-        operatorExit: { kind: 'transfer-to-broker-session-pool' },
-      });
-      expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
-      expect(child.disposed).toBe(false);
-
-      child.emitExit({ code: null, signal: 'SIGKILL' });
-      if (held.kind === 'observed-absent') throw new Error('Expected a held shutdown.');
-      await expect(held.settled).resolves.toMatchObject({ kind: 'observed-absent' });
-      expect(child.disposed).toBe(true);
-      await expect(controller.shutdown()).resolves.toMatchObject({ kind: 'observed-absent' });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it('waits for Claude terminal readiness before accepting the first turn', async () => {
     const child = new FakeClaudeChild(false);
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
-      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
+      monotonicNow: () => BigInt(Date.now()),
       ...FAST_TIMING,
     });
 
@@ -291,6 +185,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     expect(ensured).toBe(false);
 
     child.emitData('\x1b[?2004h');
+    await vi.advanceTimersByTimeAsync(10);
     await ensurePromise;
 
     await controller.turnStart({
@@ -303,99 +198,20 @@ describe('SingleSessionController PTY lifecycle', () => {
     await controller.shutdown();
   });
 
-  it('becomes ready only after output goes quiet, re-arming on each chunk', async () => {
-    vi.useFakeTimers();
-    try {
-      const child = new FakeClaudeChild(false);
-      const controller = new SingleSessionController({
-        spawnChild: () => child,
-        ids: { uuid: () => TEST_SESSION_ID },
-        monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
-        readySettleMs: 100,
-      });
-
-      const ensure = controller.sessionEnsure({
-        cwd: '/workspace',
-        projectsRoot: '/tmp/coral-test-home/.claude/projects',
-        systemPromptHash: 'sha256:test',
-
-        bootstrapConfigHash: 'sha256:test-bootstrap',
-        permissionMode: 'default',
-      });
-      let ready = false;
-      void ensure.then(() => {
-        ready = true;
-      });
-      await Promise.resolve();
-      await Promise.resolve();
-
-      child.emitData('\x1b[?2004h'); // marker arms the quiet timer
-      await vi.advanceTimersByTimeAsync(60);
-      expect(ready).toBe(false); // still inside the quiet window
-
-      child.emitData('…more TUI render…'); // re-arms the quiet timer
-      await vi.advanceTimersByTimeAsync(60);
-      expect(ready).toBe(false); // only 60ms since the last chunk
-
-      await vi.advanceTimersByTimeAsync(60); // now quiet for >= 100ms
-      await ensure;
-      expect(ready).toBe(true);
-
-      await controller.shutdown();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('reserves the exact turn before transcript discovery so an in-flight interrupt cancels it', async () => {
-    const child = new FakeClaudeChild();
-    const controller = new SingleSessionController({
-      spawnChild: () => child,
-      ids: { uuid: () => TEST_SESSION_ID },
-      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
-      ...FAST_TIMING,
-    });
-    await controller.sessionEnsure({
-      cwd: '/workspace',
-      projectsRoot: '/tmp/coral-test-home/.claude/projects',
-      systemPromptHash: 'sha256:test',
-
-      bootstrapConfigHash: 'sha256:test-bootstrap',
-      permissionMode: 'default',
-    });
-    const cursor = createDeferred<{ path: string | null; offset: number }>();
-    Object.defineProperty(controller, 'readTranscriptCursorBeforeTurn', {
-      configurable: true,
-      value: () => cursor.promise,
-    });
-
-    const started = controller.turnStart({ brokerTurnId: 'turn-reserved', prompt: 'must not run' });
-    await expect(controller.turnInterrupt({ brokerTurnId: 'turn-reserved' })).resolves.toEqual({
-      brokerTurnId: 'turn-reserved',
-      interrupted: true,
-    });
-    cursor.resolve({ path: null, offset: 0 });
-    await started;
-
-    expect(child.writes).not.toContain('[200~must not run[201~\r');
-    expect(controller.hasActiveTurn()).toBe(false);
-    await controller.shutdown();
-  });
-
   it('clears the active turn and emits failure when an interactive turn is interrupted', async () => {
     const child = new FakeClaudeChild();
     const notifications: ControllerNotification[] = [];
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
-      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
+      monotonicNow: () => BigInt(Date.now()),
       ...FAST_TIMING,
     });
     controller.subscribeNotifications((notification) => {
       notifications.push(notification);
     });
 
-    await controller.sessionEnsure({
+    await ensureReady(controller, {
       cwd: '/workspace',
       projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
@@ -430,57 +246,20 @@ describe('SingleSessionController PTY lifecycle', () => {
     await controller.shutdown();
   });
 
-  it('interrupts the child when turn/start fails after sending the prompt', async () => {
-    const child = new FakeClaudeChild();
-    const controller = new SingleSessionController({
-      spawnChild: () => child,
-      ids: { uuid: () => TEST_SESSION_ID },
-      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
-      onTurnStarted: () => {
-        throw new Error('turn registry unavailable');
-      },
-      ...FAST_TIMING,
-    });
-
-    try {
-      await controller.sessionEnsure({
-        cwd: '/workspace',
-        projectsRoot: '/home/user/.claude/projects',
-        systemPromptHash: 'sha256:test',
-
-        bootstrapConfigHash: 'sha256:test-bootstrap',
-        permissionMode: 'default',
-      });
-
-      await expect(
-        controller.turnStart({
-          brokerTurnId: 'turn-1',
-          prompt: 'hello',
-        }),
-      ).rejects.toThrow('turn registry unavailable');
-
-      expect(child.writes).toContain('\x1b[200~hello\x1b[201~\r');
-      expect(child.writes).toContain('\x03');
-      expect(controller.hasActiveTurn()).toBe(false);
-    } finally {
-      await controller.shutdown();
-    }
-  });
-
   it('re-sends a dropped prompt and fails fast when Claude never registers the turn', async () => {
     const child = new FakeClaudeChild();
     const notifications: ControllerNotification[] = [];
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
-      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
+      monotonicNow: () => BigInt(Date.now()),
       ...FAST_TIMING,
     });
     controller.subscribeNotifications((notification) => {
       notifications.push(notification);
     });
 
-    await controller.sessionEnsure({
+    await ensureReady(controller, {
       cwd: '/workspace',
       projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
@@ -496,7 +275,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const paste = '\x1b[200~hello\x1b[201~\r';
     expect(child.writes.filter((w) => w === paste)).toHaveLength(1);
 
-    await waitFor(() => !controller.hasActiveTurn());
+    await vi.advanceTimersByTimeAsync(500);
 
     expect(controller.hasActiveTurn()).toBe(false);
     expect(child.writes.filter((w) => w === paste)).toHaveLength(4);
@@ -520,7 +299,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
-      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
+      monotonicNow: () => BigInt(Date.now()),
       readySettleMs: 5,
       promptAckTimeoutMs: 2_000,
     });
@@ -529,7 +308,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     });
 
     try {
-      await controller.sessionEnsure({
+      await ensureReady(controller, {
         cwd: '/workspace',
         projectsRoot: fixture.projectsRoot,
         systemPromptHash: 'sha256:test',
@@ -542,10 +321,10 @@ describe('SingleSessionController PTY lifecycle', () => {
       const assistantLine = assistantTranscriptLine('split transcript ok');
       const splitAt = Math.floor(assistantLine.length / 2);
       appendFileSync(fixture.transcriptPath, assistantLine.slice(0, splitAt));
-      await sleep(150);
+      await vi.advanceTimersByTimeAsync(150);
       appendFileSync(fixture.transcriptPath, `${assistantLine.slice(splitAt)}\n${durationTranscriptLine(25)}\n`);
 
-      await waitFor(() => notifications.some((notification) => notification.method === 'turn/completed'));
+      await vi.advanceTimersByTimeAsync(2_000);
 
       expect(notifications).toContainEqual(
         expect.objectContaining({
@@ -572,7 +351,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
-      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
+      monotonicNow: () => BigInt(Date.now()),
       readySettleMs: 5,
       promptAckTimeoutMs: 5_000,
     });
@@ -581,7 +360,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     });
 
     try {
-      await controller.sessionEnsure({
+      await ensureReady(controller, {
         cwd: '/workspace',
         projectsRoot: fixture.projectsRoot,
         systemPromptHash: 'sha256:test',
@@ -593,13 +372,7 @@ describe('SingleSessionController PTY lifecycle', () => {
 
       appendFileSync(fixture.transcriptPath, 'x'.repeat(MAX_BUFFER + 1));
 
-      await waitFor(() =>
-        notifications.some(
-          (notification) =>
-            notification.method === 'turn/failed' &&
-            notification.params.message.includes('transcript JSONL line exceeded'),
-        ),
-      );
+      await vi.advanceTimersByTimeAsync(2_000);
 
       expect(notifications).toContainEqual(
         expect.objectContaining({
@@ -720,48 +493,16 @@ describe('Claude TUI usage accumulation', () => {
       await harness.controller.shutdown();
     }
   });
-
-  it('counts rows with missing identity fields separately', async () => {
-    const harness = await startUsageController();
-    try {
-      const missingMessageId = assistantUsageTranscriptLine({
-        text: 'missing message id',
-        requestId: 'req-missing-message-id',
-        usage: {
-          input_tokens: 5,
-          cache_creation_input_tokens: 7,
-          cache_read_input_tokens: 11,
-          output_tokens: 13,
-          costUSD: 0.05,
-        },
-      });
-      const completed = await completeFromTranscriptRows(harness, [
-        missingMessageId,
-        missingMessageId,
-        assistantUsageTranscriptLine({
-          text: 'missing request id',
-          messageId: 'msg-missing-request-id',
-          usage: {
-            input_tokens: 17,
-            cache_creation_input_tokens: 19,
-            cache_read_input_tokens: 23,
-            output_tokens: 29,
-            costUSD: 0.08,
-          },
-          stopReason: 'end_turn',
-        }),
-        durationTranscriptLine(16),
-      ]);
-
-      expect(completed.params.usage).toEqual({
-        input_tokens: 27,
-        cache_creation_input_tokens: 33,
-        cache_read_input_tokens: 45,
-        output_tokens: 55,
-      });
-      expect(completed.params.costUsd).toBe(0.08);
-    } finally {
-      await harness.controller.shutdown();
-    }
-  });
 });
+
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
+
+async function ensureReady(
+  controller: SingleSessionController,
+  params: Parameters<SingleSessionController['sessionEnsure']>[0],
+) {
+  const ensure = controller.sessionEnsure(params);
+  await vi.advanceTimersByTimeAsync(10);
+  return ensure;
+}

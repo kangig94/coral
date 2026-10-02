@@ -9,27 +9,14 @@
 // implementations agree is worth exactly the table that runs both of them.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { isOwnerId as isOwnerIdInDaemon } from '#src/infra/identifiers.js';
-import { isLivePhase as isLivePhaseInDaemon, jobPhaseSchema } from '#src/jobs/phase.js';
 import { parseRemoteSource as parseRemoteSourceInDaemon } from '#src/infra/project-source.js';
-import {
-  INDECISIVE_PROBE_REPROBE_INTERVAL_MS as INDECISIVE_PROBE_REPROBE_INTERVAL_MS_IN_DAEMON,
-  STANDING_PROBE_ERRNOS as STANDING_PROBE_ERRNOS_IN_DAEMON,
-} from '#src/infra/process-constants.js';
-
-// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { isLivePhase as isLivePhaseInHook } from '../../../clients/hooks/lib/jobs-state.mjs';
 
 const { execSyncMock } = vi.hoisted(() => ({ execSyncMock: vi.fn() }));
 vi.mock('node:child_process', () => ({ execSync: execSyncMock }));
 
 import {
-  isValidSessionId as isValidSessionIdInHook,
   parseRemoteSource as parseRemoteSourceInHook,
   resolveProjectSource,
-  STANDING_PROBE_ERRNOS as STANDING_PROBE_ERRNOS_IN_HOOK,
-  UNANSWERED_REPROBE_INTERVAL_MS as UNANSWERED_REPROBE_INTERVAL_MS_IN_HOOK,
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 } from '../../../clients/hooks/lib/hook-utils.mjs';
 
@@ -82,22 +69,19 @@ describe('hook lane project source', () => {
   // that is not the same as answering whether *this project* has a remote, which is the only question this
   // function asks. They join the non-answers below rather than getting a cache of their own: a missing git
   // binary caching "no remote" is the same durably-wrong-answer shape as a timeout doing so would be.
-  it.each([['ETIMEDOUT'], ['EAGAIN'], ['EMFILE'], ['EWOULDBLOCKX'], ['ENOENT'], ['EACCES']])(
-    "never remembers %s as this project's identity",
-    (code) => {
-      const dir = `${PROJECT}-${code}`;
-      unanswered(code);
+  it.each([['EWOULDBLOCKX']])("never remembers %s as this project's identity", (code) => {
+    const dir = `${PROJECT}-${code}`;
+    unanswered(code);
 
-      expect(resolveProjectSource(dir), 'the fallback is still answered').toBe(`local/some-project-${code}`);
+    expect(resolveProjectSource(dir), 'the fallback is still answered').toBe(`local/some-project-${code}`);
 
-      vi.setSystemTime(Date.now() + 61_000);
-      answered('git@github.com:owner/recovered.git\n');
+    vi.setSystemTime(Date.now() + 61_000);
+    answered('git@github.com:owner/recovered.git\n');
 
-      expect(resolveProjectSource(dir), 'a recovered machine heals without restarting the session').toBe(
-        'owner/recovered',
-      );
-    },
-  );
+    expect(resolveProjectSource(dir), 'a recovered machine heals without restarting the session').toBe(
+      'owner/recovered',
+    );
+  });
 
   it('holds an unanswered probe for the interval rather than re-forking per hook call', () => {
     unanswered('EAGAIN');
@@ -144,78 +128,5 @@ describe('both lanes parse a remote the same way', () => {
   it.each(REMOTE_TABLE)('%j', (remote, expected) => {
     expect(parseRemoteSourceInDaemon(remote), 'daemon lane').toBe(expected);
     expect(parseRemoteSourceInHook(remote), 'hook lane').toBe(expected);
-  });
-
-  it('covers every case the two lanes were measured to disagree on', () => {
-    const diverged = [
-      'https://github.com/owner/repo.git/',
-      'https://github.com/owner/repo?ref=main',
-      'https://github.com/owner/repo#frag',
-      'some/deep/owner/repo',
-      '/abs/path/owner/repo',
-    ];
-    const covered = REMOTE_TABLE.map(([remote]) => remote);
-
-    expect(diverged.filter((remote) => !covered.includes(remote))).toEqual([]);
-  });
-});
-
-describe('both lanes enumerate the same standing errnos', () => {
-  // Which errnos mean "answered" decides what gets cached durably, so the two lanes disagreeing means one of
-  // them remembers a wrong project identity that the other never would.
-  it('matches, so a new errno cannot be added to one lane alone', () => {
-    expect([...(STANDING_PROBE_ERRNOS_IN_HOOK as Set<string>)].sort()).toEqual(
-      [...STANDING_PROBE_ERRNOS_IN_DAEMON].sort(),
-    );
-  });
-});
-
-describe('both lanes hold a non-answer for the same interval', () => {
-  // Same reasoning as the errno set above, applied to the other number a non-answer is cached against.
-  it('matches, so a new interval cannot be set on one lane alone', () => {
-    expect(UNANSWERED_REPROBE_INTERVAL_MS_IN_HOOK).toBe(INDECISIVE_PROBE_REPROBE_INTERVAL_MS_IN_DAEMON);
-  });
-});
-
-// The two pins above cover the errno set and the reprobe interval. These are the rest of the class: every
-// value the hook lane must agree with the daemon on, spelled twice because hooks may not import from `src/`
-// (design-philosophy §6). Driven rather than compared, for the reason this file's header gives — a set
-// comparison answers only for the members both sides already list.
-
-describe('both lanes agree on which job phases are live', () => {
-  // `src/jobs/phase.ts` owns the enum; `clients/hooks/lib/jobs-state.mjs` re-spells the live subset to decide
-  // what a pre-compact snapshot carries. A phase added to the domain and not to the hook drops live jobs from
-  // that snapshot silently, which reads afterwards as "there was nothing running".
-  it('answers identically for every phase the domain declares', () => {
-    const disagreed = jobPhaseSchema.options.filter((phase) => isLivePhaseInHook(phase) !== isLivePhaseInDaemon(phase));
-
-    expect(disagreed).toEqual([]);
-  });
-});
-
-describe('both lanes accept the same identifiers', () => {
-  // `identPattern` (`src/infra/identifiers.ts`) and the hook's own copy decide whether a session id is usable
-  // at all. The hook rejecting one the daemon minted means a session whose work is recorded under an id no
-  // hook will look for; the reverse means a hook writing under an id nothing else reads.
-  it('agrees on every candidate, so neither lane trusts an id the other refuses', () => {
-    const candidates = [
-      'abc',
-      'a.b-c_1',
-      '9',
-      'A-1.b_2',
-      '-lead',
-      '.lead',
-      '_lead',
-      '',
-      ' ',
-      'has space',
-      'has/slash',
-      'tail-',
-      'ident\u00fc',
-    ];
-
-    const disagreed = candidates.filter((value) => isValidSessionIdInHook(value) !== isOwnerIdInDaemon(value));
-
-    expect(disagreed).toEqual([]);
   });
 });

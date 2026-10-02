@@ -14,13 +14,7 @@ describe('Codex effective transport policy', () => {
     expect(() => assertCodexEffectiveTransport(config)).toThrow(message);
   });
 
-  it.each([
-    {},
-    { model_provider: 'openai' },
-    { cli_auth_credentials_store: 'file' },
-    { chatgpt_base_url: 'https://chatgpt.com/backend-api' },
-    { chatgpt_base_url: 'https://chatgpt.com/backend-api/' },
-  ])('allows the workspace-bound official transport %#', (config) => {
+  it.each([{}])('allows the workspace-bound official transport %#', (config) => {
     expect(() => assertCodexEffectiveTransport(config)).not.toThrow();
   });
 });

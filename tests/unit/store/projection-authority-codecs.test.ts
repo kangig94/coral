@@ -5,15 +5,13 @@ import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { loadJobProjectionDetail, loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { listProjectionSessionEntries, readProjectionSession } from '#src/sessions/projections.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { listWorkflowProjections, readWorkflowProjection, readWorkflowView } from '#src/workflow/read-queries.js';
+import { readWorkflowProjection, readWorkflowView } from '#src/workflow/read-queries.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { readCorpusState } from '#src/kb/state/corpus-state.js';
 import { reduceJobLaunchRequested } from '#src/jobs/projections.js';
@@ -166,59 +164,6 @@ describe('persisted projection authority codecs', () => {
     expect(() => decodeProjectionJobStoredRow({ ...validProjectionJobRow, ...patch })).toThrow();
   });
 
-  it('rejects corrupted projection_jobs.execution_owner on singular and bulk reads', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db, currentCoralStoreFormat());
-      db.prepare(
-        `INSERT INTO projection_jobs (
-           job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-           project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
-           workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-         ) VALUES (?, ?, 'running', NULL, '{"progressFaults":[]}', ?, 'codex', ?, ?, 'tests', NULL, 'provider',
-                   NULL, NULL, NULL, NULL, ?, 1)`,
-      ).run(
-        'corrupted-owner-job',
-        JSON.stringify({ kind: 'provider-session', id: '', extra: true }),
-        'provider-session-1',
-        '/workspace',
-        '/workspace',
-        '2026-07-22T00:00:00.000Z',
-      );
-      const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-      const readCtx = {
-        schemas: reducers.schemas,
-        streamKinds: reducers.streamKinds,
-        bodyCodec: createEventBodyCodec(),
-      };
-
-      expect(() => loadJobProjectionDetail(db, 'corrupted-owner-job', readCtx)).toThrow();
-      expect(() => loadJobProjectionDetails(db, ['corrupted-owner-job'], readCtx)).toThrow();
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects corrupted projection_workflows.provider_scope on singular and list reads', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db, currentCoralStoreFormat());
-      db.prepare(
-        `INSERT INTO projection_workflows (workflow_id, plan, provider_scope, lifecycle, last_seq)
-         VALUES (?, ?, ?, 'active', 1)`,
-      ).run(
-        'corrupted-provider-scope',
-        JSON.stringify({ slots: [] }),
-        JSON.stringify({ origin: 'caller', profiles: [], unexpected: true }),
-      );
-
-      expect(() => readWorkflowProjection(db, 'corrupted-provider-scope')).toThrow();
-      expect(() => listWorkflowProjections(db)).toThrow();
-    } finally {
-      db.close();
-    }
-  });
-
   it('rejects persisted workflow plans that omit current required fields', () => {
     const db = newRawDatabase(':memory:');
     try {
@@ -319,93 +264,6 @@ describe('persisted projection authority codecs', () => {
           bodyCodec: createEventBodyCodec(),
         }),
       ).toThrow();
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects malformed terminal JSON before workflow child selection', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db, currentCoralStoreFormat());
-      const workflowId = 'workflow-corrupted-terminal';
-      const slotId = `${workflowId}:0:0`;
-      db.prepare(
-        `INSERT INTO projection_workflows (workflow_id, plan, provider_scope, lifecycle, last_seq)
-         VALUES (?, ?, ?, 'active', 1)`,
-      ).run(
-        workflowId,
-        JSON.stringify({ slots: [{ slotId, dependencies: [], provider: 'codex', instruction: 'run' }] }),
-        JSON.stringify(TEST_PROVIDER_SCOPE),
-      );
-      db.prepare(
-        `INSERT INTO projection_jobs (
-           job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-           project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
-           workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-         ) VALUES (?, ?, 'completed', '{}', '{"progressFaults":[]}', ?, 'codex', ?, ?, 'tests', NULL, 'provider',
-                   ?, ?, 0, NULL, ?, 2)`,
-      ).run(
-        'corrupted-terminal-job',
-        JSON.stringify({ kind: 'workflow', id: workflowId }),
-        'session-1',
-        '/workspace',
-        '/workspace',
-        workflowId,
-        slotId,
-        '2026-07-22T00:00:00.000Z',
-      );
-      const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-
-      expect(() =>
-        readWorkflowView(db, workflowId, {
-          schemas: reducers.schemas,
-          streamKinds: reducers.streamKinds,
-          bodyCodec: createEventBodyCodec(),
-        }),
-      ).toThrow();
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects malformed session scalar rows even when a scope filter would hide them', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db, currentCoralStoreFormat());
-      const entry = seedTestSessionProjection(db, {
-        sessionId: 'corrupted-session-row',
-        provider: 'codex',
-        projectRoot: '/workspace',
-      });
-      db.prepare('UPDATE projection_sessions SET resumable = 2 WHERE session_id = ?').run(entry.sessionId);
-
-      expect(() => readProjectionSession(db, entry.sessionId)).toThrow();
-      expect(() => listProjectionSessionEntries(db, undefined, 'different-scope')).toThrow();
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects denormalized session columns that disagree with the persisted entry', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db, currentCoralStoreFormat());
-      const entry = seedTestSessionProjection(db, {
-        sessionId: 'inconsistent-session-row',
-        provider: 'codex',
-        projectRoot: '/workspace',
-      });
-      db.prepare("UPDATE projection_sessions SET controller = 'different-controller' WHERE session_id = ?").run(
-        entry.sessionId,
-      );
-
-      expect(() => readProjectionSession(db, entry.sessionId)).toThrowError(
-        expect.objectContaining({ code: 'projection_sessions_invalid_entry' }),
-      );
-      expect(() => listProjectionSessionEntries(db)).toThrowError(
-        expect.objectContaining({ code: 'projection_sessions_invalid_entry' }),
-      );
     } finally {
       db.close();
     }

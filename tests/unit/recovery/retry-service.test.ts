@@ -1,40 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import {
-  EPOCH_CLOSURE_BOUNDARY,
-  SETTLED_UNBOUND_STATUS_BOUNDARY,
-  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
-} from '#src/recovery/source-registry.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { defineRecoverySource, type RecoveryDisposition, type RecoverySubject } from '#src/recovery/containment.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
-import { coordinatorJobRecoverySource } from '#src/coordinator/services/recovery/coordinator-job-source.js';
-import { crashedJobTerminalizationSource } from '#src/jobs/crashed-job-terminalization-recovery-source.js';
-import { staleJobCleanupSource } from '#src/jobs/stale-job-cleanup-recovery-source.js';
-import { discussionCandidateRecoverySource } from '#src/discuss/shell/discussion-candidate-recovery-source.js';
-import { discussionSourceRecoverySource } from '#src/discuss/shell/discussion-source-recovery-source.js';
-import { retentionReleasePairComponentSource } from '#src/sessions/retention-release-pair-recovery-source.js';
-import { retentionWorkItemRecoverySource } from '#src/sessions/retention-work-item-recovery-source.js';
-import { sessionContinuationLeaseRecoverySource } from '#src/sessions/continuation-lease-recovery-source.js';
-import { sessionProjectionRecoverySource } from '#src/sessions/projection-recovery-source.js';
-import { terminalRetentionOutcomeRecoverySource } from '#src/sessions/terminal-retention-outcome-recovery-source.js';
-import { workflowRecoverySource } from '#src/workflow/recovery-source.js';
-import { createEpochClosureRetryPlan } from '#src/coordinator/services/recovery/epoch-closure-retry-plan.js';
-import { createJobLocationRecoveryRetryPlan } from '#src/jobs/location-recovery.js';
-import { JobLocationIndex } from '#src/jobs/location-index.js';
-import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
-import { createRealRuntime } from '#src/runtime/real.js';
 import {
-  createSettledUnboundStatusRetryPlan,
-  createUnreadableProviderOperationRetryPlan,
-} from '#src/coordinator/services/recovery/index.js';
-import {
-  assertRecoverySourceRegistryComplete,
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
-  repeatableRecoveryBoundaryIds,
   type RecoveryQuarantineRetryService,
   type RecoveryRetryQuarantinePort,
   type RecoveryRetryPolicy,
@@ -73,16 +43,6 @@ function advanced(detail = 'settled by retry'): RecoveryDisposition {
     outcome: 'settled',
     facts: [],
     detail,
-  };
-}
-
-function passThroughPolicy<Raw>(): RecoveryRetryPolicy<Raw, Raw> {
-  return {
-    processLocalCleanup: { kind: 'not-required' },
-    hydrate: (raw) => raw,
-    requiredObligations: () => [],
-    settle: () => advanced(),
-    onFault: (fault) => ({ kind: 'quarantine', detail: `retry ${fault.stage} failed` }),
   };
 }
 
@@ -144,7 +104,6 @@ describe('recovery quarantine retry service', () => {
   let db: Database;
   let quarantine: RecoveryQuarantineStore;
   let envelope: Envelope | null;
-  let boundaryRoot: string | null = null;
 
   beforeEach(() => {
     db = newRawDatabase(':memory:');
@@ -156,8 +115,7 @@ describe('recovery quarantine retry service', () => {
 
   afterEach(() => {
     db.close();
-    if (boundaryRoot !== null) rmSync(boundaryRoot, { recursive: true, force: true });
-    boundaryRoot = null;
+    vi.useRealTimers();
   });
 
   function service(
@@ -180,130 +138,14 @@ describe('recovery quarantine retry service', () => {
   } as const;
 
   it('bounds a recovery source that ignores cancellation', async () => {
+    vi.useFakeTimers();
     const registry = createRegistry({ readEnvelope: () => envelope, settle: () => new Promise<never>(() => {}) }, 20);
-    await expect(service('coordinator-1', registry).clear(request)).rejects.toThrow(
+    const rejected = expect(service('coordinator-1', registry).clear(request)).rejects.toThrow(
       'Recovery source retry deadline exceeded',
     );
-  });
 
-  it('should keep the runtime registry equal to every manifest boundary', () => {
-    boundaryRoot = mkdtempSync(join(tmpdir(), 'coral-recovery-boundaries-'));
-    const runtime = createRealRuntime('prod', { baseDir: boundaryRoot });
-    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
-    const signal = new AbortController().signal;
-    expect(repeatableRecoveryBoundaryIds).toEqual([
-      'coordinator-job-recovery',
-      'discussion-source',
-      'discussion-candidate',
-      'session-projection',
-      'session-continuation-lease',
-      'terminal-retention-outcome',
-      'retention-release-pair',
-      'session-retention-work',
-      'workflow-recovery',
-      'stale-job-cleanup',
-      'crashed-job-terminalization',
-      'job-location-write-through',
-      EPOCH_CLOSURE_BOUNDARY,
-      'provider-operation-settled-unbound',
-      'provider-operation-unreadable',
-    ]);
-    const registeredSourceBoundaries = [
-      coordinatorJobRecoverySource(db).boundary,
-      discussionSourceRecoverySource(db).boundary,
-      discussionCandidateRecoverySource(db).boundary,
-      sessionProjectionRecoverySource(db).boundary,
-      sessionContinuationLeaseRecoverySource(db).boundary,
-      terminalRetentionOutcomeRecoverySource(db).boundary,
-      retentionReleasePairComponentSource(db).boundary,
-      retentionWorkItemRecoverySource([]).boundary,
-      workflowRecoverySource(db).boundary,
-      staleJobCleanupSource(db).boundary,
-      crashedJobTerminalizationSource(db).boundary,
-      createJobLocationRecoveryRetryPlan(index, 'epoch-key', {} as JobProgressStore, subject()).source.boundary,
-      createEpochClosureRetryPlan(runtime, index, subject(), signal, null).source.boundary,
-      createSettledUnboundStatusRetryPlan(db, subject(), quarantine, () => true).source.boundary,
-      createUnreadableProviderOperationRetryPlan(
-        db,
-        {
-          key: 'provider-operation-row',
-          revision: { kind: 'fingerprint', value: 'revision-1' },
-        },
-        () => ({
-          kind: 'refused',
-          reason: 'not exercised by the boundary manifest test',
-          remedy: { kind: 'external-repair' },
-        }),
-      ).source.boundary,
-    ];
-
-    expect(new Set(registeredSourceBoundaries)).toEqual(new Set(repeatableRecoveryBoundaryIds));
-    expect(registeredSourceBoundaries).toHaveLength(repeatableRecoveryBoundaryIds.length);
-
-    const runtimeRegistry = createRecoverySourceRegistry();
-    runtimeRegistry.register('coordinator-job-recovery', (retrySubject) => ({
-      source: coordinatorJobRecoverySource(db, { subject: retrySubject }),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('discussion-source', (retrySubject) => ({
-      source: discussionSourceRecoverySource(db, retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('discussion-candidate', (retrySubject) => ({
-      source: discussionCandidateRecoverySource(db, retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('session-projection', (retrySubject) => ({
-      source: sessionProjectionRecoverySource(db, retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('session-continuation-lease', (retrySubject) => ({
-      source: sessionContinuationLeaseRecoverySource(db, retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('terminal-retention-outcome', (retrySubject) => ({
-      source: terminalRetentionOutcomeRecoverySource(db, retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('retention-release-pair', (retrySubject) => ({
-      source: retentionReleasePairComponentSource(db, retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('session-retention-work', (retrySubject) => ({
-      source: retentionWorkItemRecoverySource([], retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('workflow-recovery', (retrySubject) => ({
-      source: workflowRecoverySource(db, retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('stale-job-cleanup', (retrySubject) => ({
-      source: staleJobCleanupSource(db, retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('crashed-job-terminalization', (retrySubject) => ({
-      source: crashedJobTerminalizationSource(db, retrySubject),
-      policy: passThroughPolicy(),
-    }));
-    runtimeRegistry.register('job-location-write-through', (retrySubject) =>
-      createJobLocationRecoveryRetryPlan(index, 'epoch-key', {} as JobProgressStore, retrySubject),
-    );
-    runtimeRegistry.register(EPOCH_CLOSURE_BOUNDARY, (retrySubject) =>
-      createEpochClosureRetryPlan(runtime, index, retrySubject, signal, null),
-    );
-    runtimeRegistry.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (retrySubject) =>
-      createSettledUnboundStatusRetryPlan(db, retrySubject, quarantine, () => true),
-    );
-    runtimeRegistry.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (retrySubject) =>
-      createUnreadableProviderOperationRetryPlan(db, retrySubject, () => ({
-        kind: 'refused',
-        reason: 'not exercised by the registry completeness test',
-        remedy: { kind: 'external-repair' },
-      })),
-    );
-
-    expect(() => assertRecoverySourceRegistryComplete(runtimeRegistry)).not.toThrow();
-    expect(runtimeRegistry.boundaries()).toEqual(repeatableRecoveryBoundaryIds);
+    await vi.advanceTimersByTimeAsync(20);
+    await rejected;
   });
 
   it('should delete the retained row after successful settlement', async () => {

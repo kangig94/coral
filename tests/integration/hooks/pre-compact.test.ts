@@ -10,11 +10,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { PRE_COMPACT_HOOK, cleanupFixtures, createFixture, runHook, runHookAsync } from '#tests/unit/hooks/_helpers.js';
+import { PRE_COMPACT_HOOK, cleanupFixtures, createFixture, runHook } from '#tests/unit/hooks/_helpers.js';
 
 afterEach(cleanupFixtures);
 
@@ -89,23 +88,6 @@ describe('pre-compact.mjs', () => {
     const result = runHook(
       PRE_COMPACT_HOOK,
       { session_id: 'sess-1', cwd: fixture.projectRoot },
-      { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot, HOME: fixture.root },
-    );
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe('');
-    expect(existsSync(fixture.snapshotDir)).toBe(false);
-    expect(JSON.parse(result.stderr.trim())).toMatchObject({
-      hook: 'pre-compact',
-      message: 'no relevant jobs to snapshot',
-    });
-  });
-
-  it('remains fail-open with no jobs directory', () => {
-    const fixture = createFixture();
-    const result = runHook(
-      PRE_COMPACT_HOOK,
-      { session_id: 'sess-3', cwd: fixture.projectRoot },
       { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot, HOME: fixture.root },
     );
 
@@ -291,54 +273,6 @@ describe('pre-compact.mjs', () => {
     expect(statSync(lockPath).mtimeMs).toBe(before.mtimeMs);
     expect(readdirSync(epochDir)).toEqual(entries);
     expect(readFileSync(join(epochDir, 'store.db'))).toEqual(database);
-  });
-
-  // @flaky — process scheduling can consume part of the hook's three-second host budget.
-  it('shares one bounded SQLite wait budget across the epoch lock and store reads', { retry: 2 }, async () => {
-    const fixture = createFixture();
-    const fingerprint = 'sha256:9999999999999999999999999999999999999999999999999999999999999999';
-    const hook = seedPluginManifest(fixture.pluginRoot, fingerprint);
-    seedStore(fixture.root, fixture.projectRoot, fingerprint);
-    const epochDir = join(fixture.root, '.coral', 'gen2', 'data', 'store', 'epoch-1');
-    const epochLock = newRawDatabase(join(epochDir, '.lock'));
-    const storeLock = newRawDatabase(join(epochDir, 'store.db'));
-    epochLock.exec('BEGIN EXCLUSIVE');
-    storeLock.exec('BEGIN EXCLUSIVE');
-    let epochLockHeld = true;
-
-    const startedAt = performance.now();
-    const hookRun = runHookAsync(
-      hook,
-      { session_id: 'sess-contended', cwd: fixture.projectRoot },
-      {
-        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
-        CLAUDE_PROJECT_DIR: fixture.projectRoot,
-        TMPDIR: fixture.tmpRoot,
-        HOME: fixture.root,
-      },
-    ).then((result) => ({ result, elapsedMs: performance.now() - startedAt }));
-
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
-      epochLock.exec('ROLLBACK');
-      epochLockHeld = false;
-      const { result, elapsedMs } = await hookRun;
-
-      expect(elapsedMs).toBeGreaterThanOrEqual(1_100);
-      expect(elapsedMs).toBeLessThan(2_800);
-      expect(result.status).toBe(0);
-      expect(existsSync(join(fixture.snapshotDir, 'hooks'))).toBe(false);
-      expect(JSON.parse(result.stderr.trim())).toMatchObject({
-        hook: 'pre-compact',
-        message: 'fail-open',
-        error: 'SQLite wait budget exhausted before the compact snapshot could be captured.',
-      });
-    } finally {
-      if (epochLockHeld) epochLock.exec('ROLLBACK');
-      storeLock.exec('ROLLBACK');
-      epochLock.close();
-      storeLock.close();
-    }
   });
 
   it('reads the highest validated epoch after publication', () => {

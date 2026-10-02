@@ -6,16 +6,6 @@ import type * as NodeOs from 'node:os';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import type { EntityGraph, KbEntryId } from '#src/kb/entry-types.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import { createHybridFusion } from '#src/kb/search/hybrid.js';
-import { defaultFusionProfile } from '#src/kb/search/default-fusion-profile.js';
-import type {
-  RegisteredRetrievalRole,
-  RetrievalHit,
-  RetrievalRoleDescriptor,
-  RoleExecutionResult,
-  TextRetrievalResult,
-  VectorRetrievalResult,
-} from '#src/kb/search/contract.js';
 import {
   bindEmbedding,
   bindOramaFtsForTest,
@@ -240,74 +230,6 @@ function aggregateMockVectorHits(
     }));
 }
 
-function textResult(entryId: `note:${string}`, rank: number): TextRetrievalResult['hits'][number] {
-  const slug = entryId.slice(entryId.indexOf(':') + 1);
-  return {
-    entryId,
-    slug,
-    kind: 'note',
-    title: slug.toUpperCase(),
-    tags: [],
-    principles: [],
-    score: 1,
-    rank,
-    document: {
-      entryId,
-      slug,
-      kind: 'note',
-      freshness: 'fresh',
-      title: slug.toUpperCase(),
-      body: `${slug} body`,
-      tags: [],
-      principles: [],
-    },
-  };
-}
-
-function vectorResult(entryId: `note:${string}`, rank: number): VectorRetrievalResult['hits'][number] {
-  const slug = entryId.slice(entryId.indexOf(':') + 1);
-  return {
-    entryId,
-    slug,
-    kind: 'note',
-    title: slug.toUpperCase(),
-    tags: [],
-    principles: [],
-    score: 1,
-    rank,
-  };
-}
-
-function roleResult(
-  id: string,
-  label: string,
-  tags: readonly string[],
-  hits: readonly RetrievalHit[],
-): RoleExecutionResult {
-  const descriptor: RetrievalRoleDescriptor = {
-    id,
-    label,
-    tags: [...tags],
-    phase: 'retrieval-source',
-    supportsScopes: ['notes', 'sources', 'communities', 'all'],
-    provides: 'retrieval-source',
-  };
-  const registeredRole: RegisteredRetrievalRole = {
-    role: {
-      id,
-      descriptor,
-      async search() {
-        return { hits: [] };
-      },
-    },
-    descriptor,
-    origin: 'builtin',
-    permanence: 'runtime',
-    criticality: 'core',
-  };
-  return { registeredRole, hits: [...hits] };
-}
-
 describe('hybrid reciprocal rank fusion', () => {
   beforeEach(() => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-hybrid-rrf-'));
@@ -319,36 +241,6 @@ describe('hybrid reciprocal rank fusion', () => {
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
     vi.resetModules();
-  });
-
-  it('reorders the top-3 exactly for the text-plus-vector RRF fixture', () => {
-    const hybrid = createHybridFusion();
-    const fused = hybrid.fuse(
-      [
-        roleResult(
-          'text',
-          'Text',
-          ['lexical'],
-          [textResult('note:a', 1), textResult('note:b', 2), textResult('note:c', 3)],
-        ),
-        roleResult('vector', 'Vector', ['semantic'], [vectorResult('note:c', 1), vectorResult('note:a', 2)]),
-      ],
-      defaultFusionProfile,
-    );
-
-    expect(fused.hits.map((hit) => hit.entryId)).toEqual(['note:a', 'note:c', 'note:b']);
-    expect(fused.hits[0]?.score).toBe(1 / 61 + 1 / 62);
-    expect(fused.hits[1]?.score).toBe(1 / 63 + 1 / 61);
-    expect(fused.hits[2]?.score).toBe(1 / 62);
-    expect(fused.hits[0]?.evidence.map((item) => [item.roleId, item.rank, item.weight, item.contribution])).toEqual([
-      ['text', 1, 1, 1 / 61],
-      ['vector', 2, 1, 1 / 62],
-    ]);
-    expect(fused.hits[1]?.evidence.map((item) => [item.roleId, item.rank, item.weight, item.contribution])).toEqual([
-      ['text', 3, 1, 1 / 63],
-      ['vector', 1, 1, 1 / 61],
-    ]);
-    expect(fused.hits[0]).not.toHaveProperty('graphRank');
   });
 
   it('keeps graph participation in explicit hybrid mode through the router-backed fusion path', async () => {

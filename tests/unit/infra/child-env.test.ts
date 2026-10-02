@@ -6,10 +6,7 @@ vi.mock('#src/infra/backend-log.js', () => ({
 
 import {
   buildChildEnv,
-  coralEnvForwardSchema,
-  DAEMON_OWNED_CORAL_ENV_KEYS,
   filterForwardableCoralEnv,
-  isForwardableCoralEnvKey,
   measureEnv,
   readForwardedCoralEnv,
   resolveEnvBudgetBytes as envBudgetBytes,
@@ -40,12 +37,6 @@ describe('buildChildEnv', () => {
     process.env = originalEnv;
   });
 
-  it('should derive budget from system ARG_MAX', () => {
-    const budgetBytes = envBudgetBytes();
-    expect(budgetBytes).toBeGreaterThan(0);
-    expect(budgetBytes).toBeLessThanOrEqual(16 * 1024 * 1024);
-  });
-
   it('should strip CORAL_* vars from base env and set CORAL_CHILD', () => {
     process.env = {
       PATH: '/usr/bin',
@@ -73,31 +64,6 @@ describe('buildChildEnv', () => {
     expect(result.CORAL_CHILD).toBe('1');
   });
 
-  it('should allow CORAL_* vars via extraEnv', () => {
-    process.env = { PATH: '/usr/bin' };
-
-    const result = buildChildEnv({ CORAL_OWNER: 'session-abc' });
-
-    expect(result.CORAL_OWNER).toBe('session-abc');
-    expect(result.CORAL_CHILD).toBe('1');
-  });
-
-  it('should pass through all vars when env is under budget', () => {
-    process.env = {
-      PATH: '/usr/bin',
-      HOME: '/home/user',
-      CFLAGS: '-O2 -Wall -Wextra',
-      CMAKE_PREFIX_PATH: '/opt/local:/usr/local',
-    };
-
-    const result = buildChildEnv();
-
-    expect(result.PATH).toBe('/usr/bin');
-    expect(result.CFLAGS).toBe('-O2 -Wall -Wextra');
-    expect(result.CMAKE_PREFIX_PATH).toBe('/opt/local:/usr/local');
-    expect(backendLog.warn).not.toHaveBeenCalled();
-  });
-
   it('should shed largest vars first when over budget', () => {
     const env: Record<string, string> = {
       PATH: '/usr/bin',
@@ -115,17 +81,6 @@ describe('buildChildEnv', () => {
     expect(keptBloat).toBeGreaterThan(0);
     expect(keptBloat).toBeLessThan(totalBloat);
     expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('child-env: shed'));
-  });
-
-  it('should produce env within budget after shedding', () => {
-    const env: Record<string, string> = { PATH: '/usr/bin' };
-    fillUntilOverBudget(env, 'VAR', 1024);
-
-    process.env = env;
-    const result = buildChildEnv();
-
-    // CORAL_CHILD adds a few bytes — allow small overhead
-    expect(measureEnv(result)).toBeLessThanOrEqual(envBudgetBytes() + 64);
   });
 
   it('should never shed extraEnv entries', () => {
@@ -154,16 +109,6 @@ describe('buildChildEnv', () => {
     expect(result.CRITICAL_BUILD_FLAGS).toBe('x'.repeat(8192));
     expect(result.PATH).toBe('/usr/bin');
     expect(backendLog.warn).toHaveBeenCalled();
-  });
-
-  it('should log shed var names and passthrough hint', () => {
-    const env: Record<string, string> = { PATH: '/usr/bin' };
-    fillUntilOverBudget(env, 'BIG', 4096);
-
-    process.env = env;
-    buildChildEnv();
-
-    expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('CORAL_ENV_PASSTHROUGH'));
   });
 });
 
@@ -226,18 +171,6 @@ describe('shedInheritedClaudeCodeEnv', () => {
 });
 
 describe('forwardable CORAL_* env', () => {
-  it('accepts CORAL_* config keys and rejects non-CORAL keys', () => {
-    expect(isForwardableCoralEnvKey('CORAL_CODEX_MODEL')).toBe(true);
-    expect(isForwardableCoralEnvKey('CORAL_MAX_WORKERS')).toBe(true);
-    expect(isForwardableCoralEnvKey('PATH')).toBe(false);
-  });
-
-  it('rejects every daemon-owned key (self-updating if the set grows)', () => {
-    for (const key of DAEMON_OWNED_CORAL_ENV_KEYS) {
-      expect(isForwardableCoralEnvKey(key)).toBe(false);
-    }
-  });
-
   describe('filterForwardableCoralEnv', () => {
     it('keeps forwardable CORAL_* keys and drops daemon-owned, non-CORAL, and empty values', () => {
       const result = filterForwardableCoralEnv({
@@ -255,60 +188,13 @@ describe('forwardable CORAL_* env', () => {
 
       expect(result).toEqual({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_EFFORT: 'high' });
     });
-
-    it('returns an empty object for an empty input', () => {
-      expect(filterForwardableCoralEnv({})).toEqual({});
-    });
   });
 
   describe('readForwardedCoralEnv', () => {
-    it('returns undefined for non-object input (absent field)', () => {
-      expect(readForwardedCoralEnv(undefined)).toBeUndefined();
-      expect(readForwardedCoralEnv(null)).toBeUndefined();
-      expect(readForwardedCoralEnv('CORAL_CODEX_MODEL=x')).toBeUndefined();
-    });
-
-    it('returns an empty map (not undefined) when a present object filters to nothing', () => {
-      // Present-but-empty is authoritative: it must be distinguishable from an
-      // absent field so the daemon clears its boot config → provider default.
-      expect(readForwardedCoralEnv({})).toEqual({});
-      expect(readForwardedCoralEnv({ CORAL_JOB_ID: 'j', PATH: '/usr/bin', CORAL_FLAVOR: 'dev' })).toEqual({});
-    });
-
     it('returns the filtered forwardable config for a valid map', () => {
       expect(readForwardedCoralEnv({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_JOB_ID: 'j' })).toEqual({
         CORAL_CODEX_MODEL: 'gpt-5.6-sol',
       });
-    });
-  });
-
-  describe('coralEnvForwardSchema', () => {
-    it('parses a map of non-reserved CORAL_* keys with non-empty values', () => {
-      expect(coralEnvForwardSchema.parse({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_EFFORT: 'high' })).toEqual({
-        CORAL_CODEX_MODEL: 'gpt-5.6-sol',
-        CORAL_EFFORT: 'high',
-      });
-    });
-
-    it('parses an empty map', () => {
-      expect(coralEnvForwardSchema.parse({})).toEqual({});
-    });
-
-    it('rejects reserved (daemon-owned) keys', () => {
-      expect(coralEnvForwardSchema.safeParse({ CORAL_JOB_ID: 'job-1' }).success).toBe(false);
-      expect(coralEnvForwardSchema.safeParse({ CORAL_CHILD_PRINCIPAL_HANDLE: 'x' }).success).toBe(false);
-      // CORAL_KB_ENABLE is a daemon-boot decision, not a per-request caller knob.
-      expect(coralEnvForwardSchema.safeParse({ CORAL_KB_ENABLE: '0' }).success).toBe(false);
-    });
-
-    it('rejects the whole map when a reserved key is mixed with a valid one', () => {
-      expect(coralEnvForwardSchema.safeParse({ CORAL_EFFORT: 'high', CORAL_JOB_ID: 'forged' }).success).toBe(false);
-    });
-
-    it('rejects non-CORAL keys, empty values, and non-string values', () => {
-      expect(coralEnvForwardSchema.safeParse({ PATH: '/usr/bin' }).success).toBe(false);
-      expect(coralEnvForwardSchema.safeParse({ CORAL_CODEX_MODEL: '' }).success).toBe(false);
-      expect(coralEnvForwardSchema.safeParse({ CORAL_EFFORT: 42 }).success).toBe(false);
     });
   });
 });

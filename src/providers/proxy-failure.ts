@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { ProviderEventBody, ProviderTerminalEventBody } from './contract.js';
-import { providerRequestFailed, type ProviderFailureCause } from './fault.js';
+import { providerRequestFailed } from './fault.js';
 
 export const PROVIDER_PROXY_FAILURE_ORIGIN = '@coral/provider-proxy' as const;
 export const MAX_PROVIDER_PROXY_EMERGENCY_FRAME_BYTES = 641;
@@ -60,10 +60,6 @@ export function providerProxyReplayFailed(input: unknown): ProviderProxyFailureC
 
 export function isProviderProxyFailureOrigin(provider: string): provider is typeof PROVIDER_PROXY_FAILURE_ORIGIN {
   return provider === PROVIDER_PROXY_FAILURE_ORIGIN;
-}
-
-export function isProviderProxyFailureCause(cause: ProviderFailureCause): cause is ProviderProxyFailureCause {
-  return cause.type === 'session.provider_failed' && isProviderProxyFailureOrigin(cause.body.provider);
 }
 
 export const providerProxyEmergencyEventSchema = z

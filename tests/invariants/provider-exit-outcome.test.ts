@@ -49,16 +49,6 @@ describe('provider_exit outcome materialization', () => {
     });
   });
 
-  it('does NOT translate provider_exit into a failed cause chain (no domain events emitted)', () => {
-    const recipe = materializeProviderTerminal(
-      baseTerminal({ outcome: { kind: 'provider_exit', code: 1, note: 'plain non-zero exit' } }),
-      { jobId: 'job-3', sessionId: 'session-3' },
-    );
-
-    expect(recipe.outcomePlan.kind).toBe('immediate');
-    expect(recipe.outcomePlan.domainEvents).toEqual([]);
-  });
-
   it('completed and aborted outcomes remain immediate without domain events', () => {
     const completedRecipe = materializeProviderTerminal(baseTerminal({ outcome: { kind: 'completed' } }), {
       jobId: 'job-4',

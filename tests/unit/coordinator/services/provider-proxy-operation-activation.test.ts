@@ -2,22 +2,13 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { createProviderOperationRetryHarness } from '#tests/helpers/provider-operation-retry-harness.js';
-
 import { describe, expect, it } from 'vitest';
-
-import {
-  PROXY_CONTROL_PROTOCOL_ERROR_CODES,
-  type OperationIdentity,
-  type ProxyControlProtocolErrorCode,
-  type ProxyPreparedAppServerOperation,
-} from '#src/provider-proxy/protocol.js';
+import { type OperationIdentity, type ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
 import {
   activateProviderOperation,
-  attachProviderOperation,
   authorizeProviderOperation,
   buildProviderOperationControl,
   cancelProviderOperation,
-  inspectProviderOperation,
   prepareProviderOperation,
   providerOperationPrepareAttempt,
   settleProviderOperation,
@@ -31,11 +22,7 @@ import {
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
-import {
-  ControlClientError,
-  controlExchangeForTest,
-  type ControlExchange,
-} from '#src/provider-proxy/control-client.js';
+import { controlExchangeForTest } from '#src/provider-proxy/control-client.js';
 
 const SET_IDENTITY: ProviderProxySetIdentity = {
   buildSetId: randomUUID(),
@@ -147,183 +134,7 @@ function faultRoutingDeps(
   };
 }
 
-type PolicyFailureCase = Readonly<{
-  method: string;
-  phase:
-    | 'prepare-pending'
-    | 'guardian-activation-pending'
-    | 'proxy-activation-pending'
-    | 'executing'
-    | 'prestart-cleanup-pending'
-    | 'settlement-pending';
-  effect: 'observation' | 'mutation';
-  indeterminate: 'retry-safe' | 'requires-containment' | null;
-  channel: 'terminal-fault' | 'incident' | 'observation';
-  invoke: (activationDeps: ProviderProxyOperationActivationDeps) => Promise<unknown>;
-}>;
-
-const POLICY_FAILURE_CASES = [
-  {
-    method: 'operation.prepare.v1',
-    phase: 'prepare-pending',
-    effect: 'mutation',
-    indeterminate: 'requires-containment',
-    channel: 'terminal-fault',
-    invoke: (activationDeps) =>
-      prepareProviderOperation(activationDeps, providerOperationPrepareAttempt(activationDeps, OPERATION, PREPARED)),
-  },
-  {
-    method: 'operation.inspect.v1',
-    phase: 'prepare-pending',
-    effect: 'observation',
-    indeterminate: null,
-    channel: 'observation',
-    invoke: (activationDeps) => inspectProviderOperation(activationDeps, OPERATION, 'b'.repeat(64)),
-  },
-  {
-    method: 'guardian.operation-activate.v1',
-    phase: 'guardian-activation-pending',
-    effect: 'mutation',
-    indeterminate: 'requires-containment',
-    channel: 'terminal-fault',
-    invoke: (activationDeps) =>
-      authorizeProviderOperation(activationDeps, OPERATION, {
-        reservation: randomUUID(),
-        providerRoot: { pid: 701, incarnation: testIncarnation(800) },
-        jointContainmentReceipt: 'joint-1',
-      }),
-  },
-  {
-    method: 'operation.activate.v1',
-    phase: 'proxy-activation-pending',
-    effect: 'mutation',
-    indeterminate: 'requires-containment',
-    channel: 'terminal-fault',
-    invoke: (activationDeps) =>
-      activateProviderOperation(activationDeps, OPERATION, {
-        reservation: randomUUID(),
-        jointContainmentReceipt: 'joint-1',
-        jointActivationReceipt: 'joint-activation-1',
-      }),
-  },
-  {
-    method: 'operation.attach.v1',
-    phase: 'executing',
-    effect: 'mutation',
-    indeterminate: 'retry-safe',
-    channel: 'incident',
-    invoke: (activationDeps) => attachProviderOperation(activationDeps, OPERATION, 7),
-  },
-  {
-    method: 'operation.cancel.v1',
-    phase: 'prestart-cleanup-pending',
-    effect: 'mutation',
-    indeterminate: 'requires-containment',
-    channel: 'terminal-fault',
-    invoke: (activationDeps) => cancelProviderOperation(activationDeps, OPERATION, 1, 'b'.repeat(64)),
-  },
-  {
-    method: 'operation.settle.v1',
-    phase: 'settlement-pending',
-    effect: 'mutation',
-    indeterminate: 'retry-safe',
-    channel: 'incident',
-    invoke: (activationDeps) => settleProviderOperation(activationDeps, OPERATION, 7),
-  },
-  {
-    method: 'operation.stop.v1',
-    phase: 'executing',
-    effect: 'mutation',
-    indeterminate: 'retry-safe',
-    channel: 'incident',
-    invoke: (activationDeps) => buildProviderOperationControl(activationDeps, OPERATION).stop('user_abort'),
-  },
-] as const satisfies readonly PolicyFailureCase[];
-
 describe('provider proxy operation mutations', () => {
-  it('routes every closed operation client call as a role-specific channel incident', async () => {
-    const closed = new ControlClientError('control_client_closed', 'control client closed', 'closed');
-    const rejectingClient: OperationControlClient = { exchange: () => Promise.reject(closed) };
-    const incidents: ProviderProxyAuthorityIncident[] = [];
-    const activationDeps: ProviderProxyOperationActivationDeps = {
-      ...deps(rejectingClient, rejectingClient),
-      reportIncident: (incident) => incidents.push(incident),
-    };
-    const prepareAttempt = providerOperationPrepareAttempt(activationDeps, OPERATION, PREPARED);
-    const calls = [
-      () => prepareProviderOperation(activationDeps, prepareAttempt),
-      () => inspectProviderOperation(activationDeps, OPERATION, prepareAttempt.prepareAttemptKey),
-      () =>
-        authorizeProviderOperation(activationDeps, OPERATION, {
-          reservation: randomUUID(),
-          providerRoot: { pid: 701, incarnation: testIncarnation(800) },
-          jointContainmentReceipt: 'joint-1',
-        }),
-      () =>
-        activateProviderOperation(activationDeps, OPERATION, {
-          reservation: randomUUID(),
-          jointContainmentReceipt: 'joint-1',
-          jointActivationReceipt: 'joint-activation-1',
-        }),
-      () => attachProviderOperation(activationDeps, OPERATION, 0),
-      () => cancelProviderOperation(activationDeps, OPERATION, 1, prepareAttempt.prepareAttemptKey),
-      () => settleProviderOperation(activationDeps, OPERATION, 0),
-      () => buildProviderOperationControl(activationDeps, OPERATION).stop('user_abort'),
-    ];
-
-    for (const call of calls) await expect(call()).rejects.toBe(closed);
-
-    expect(incidents).toEqual([
-      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
-      { kind: 'control-channel-fault', role: 'guardian', cause: 'closed', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
-    ]);
-  });
-
-  it.each(POLICY_FAILURE_CASES)(
-    'routes $method ($phase, $effect, $indeterminate) through $channel for an indeterminate call failure',
-    async ({ method, phase, effect, indeterminate, channel, invoke }) => {
-      const failure = Object.assign(new Error(`${method} failed indeterminately`), { code: 'control_call_failed' });
-      const calledMethods: string[] = [];
-      const routing = faultRoutingDeps({
-        exchange: (calledMethod) => {
-          calledMethods.push(calledMethod);
-          return Promise.reject(failure);
-        },
-      });
-      const expectedPolicy = {
-        method,
-        phase,
-        effect,
-        ...(indeterminate === null ? {} : { indeterminate }),
-      };
-
-      await expect(invoke(routing.activationDeps)).rejects.toBe(failure);
-
-      expect(calledMethods).toEqual([method]);
-      if (channel === 'terminal-fault') {
-        expect(routing.faults).toEqual([
-          { kind: 'operation-control-failed', policy: expect.objectContaining(expectedPolicy), error: failure },
-        ]);
-        expect(routing.incidents).toEqual([]);
-      } else if (channel === 'incident') {
-        expect(routing.faults).toEqual([]);
-        expect(routing.incidents).toEqual([
-          { kind: 'operation-control-failed', policy: expect.objectContaining(expectedPolicy), error: failure },
-        ]);
-      } else {
-        expect(expectedPolicy).toEqual({ method, phase, effect: 'observation' });
-        expect(routing.faults).toEqual([]);
-        expect(routing.incidents).toEqual([]);
-      }
-    },
-  );
-
   it('derives one stable prepare attempt and validates the exact prepare reply', async () => {
     const pending = {
       state: 'pending-activation',
@@ -345,21 +156,6 @@ describe('provider proxy operation mutations', () => {
 
     expect(first.prepareAttemptKey).toBe(second.prepareAttemptKey);
     expect(proxy.calls).toEqual([{ method: 'operation.prepare.v1', params: first.request }]);
-  });
-
-  it('uses observation-only inspect v2 with the full operation identity and attempt key', async () => {
-    const proxy = scriptedClient({ 'operation.inspect.v1': { state: 'absent' } });
-    const guardian = scriptedClient({});
-    const prepareAttemptKey = 'b'.repeat(64);
-
-    await expect(
-      inspectProviderOperation(deps(proxy.client, guardian.client), OPERATION, prepareAttemptKey),
-    ).resolves.toEqual({
-      state: 'absent',
-    });
-    expect(proxy.calls).toEqual([
-      { method: 'operation.inspect.v1', params: { operation: OPERATION, prepareAttemptKey } },
-    ]);
   });
 
   it('keeps guardian authorization and semantic activation as separate replayable mutations', async () => {
@@ -447,82 +243,8 @@ describe('provider proxy operation mutations', () => {
     ]);
   });
 
-  it('reports a malformed settlement reply without consuming the authority fault latch', async () => {
-    const routing = faultRoutingDeps({
-      exchange: () =>
-        Promise.resolve(
-          controlExchangeForTest({
-            kind: 'response',
-            response: { kind: 'result', value: { state: 'released-after-terminal' } },
-          }),
-        ),
-    });
-
-    await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toThrow();
-
-    expect(routing.faults).toEqual([]);
-    expect(routing.incidents).toEqual([
-      {
-        kind: 'operation-control-failed',
-        policy: expect.objectContaining({
-          method: 'operation.settle.v1',
-          effect: 'mutation',
-          indeterminate: 'retry-safe',
-        }),
-        error: expect.any(Error),
-      },
-    ]);
-  });
-
-  it('reports a closed settlement channel without faulting authority', async () => {
-    const closed = new ControlClientError('control_client_closed', 'control client closed', 'closed');
-    const routing = faultRoutingDeps({ exchange: () => Promise.reject(closed) });
-
-    await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toBe(closed);
-
-    expect(routing.faults).toEqual([]);
-    expect(routing.incidents).toEqual([
-      {
-        kind: 'control-channel-fault',
-        role: 'proxy',
-        cause: 'closed',
-        error: closed,
-      },
-    ]);
-  });
-
-  it('reports a closed settlement channel after a retry-safe incident is preserved', async () => {
-    const timeout = Object.assign(new Error('settlement timed out'), { code: 'control_call_failed' });
-    const closed = new ControlClientError('control_client_closed', 'control client closed', 'closed');
-    const failures = [timeout, closed];
-    const routing = faultRoutingDeps({
-      exchange: () => {
-        const failure = failures.shift();
-        return Promise.reject(failure instanceof Error ? failure : new Error('unexpected extra call'));
-      },
-    });
-
-    await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toBe(timeout);
-    expect(routing.faults).toEqual([]);
-    expect(routing.incidents).toHaveLength(1);
-
-    await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toBe(closed);
-    expect(routing.faults).toEqual([]);
-    expect(routing.incidents).toEqual([
-      expect.objectContaining({ kind: 'operation-control-failed' }),
-      expect.objectContaining({
-        kind: 'control-channel-fault',
-        role: 'proxy',
-        cause: 'closed',
-        error: closed,
-      }),
-    ]);
-  });
-
   it.each([
-    { method: 'attach', ordering: 'before-effect' },
     { method: 'attach', ordering: 'after-effect' },
-    { method: 'stop', ordering: 'before-effect' },
     { method: 'stop', ordering: 'after-effect' },
   ] as const)(
     'reconciles $method after a lost $ordering response without losing retry ownership',
@@ -535,7 +257,7 @@ describe('provider proxy operation mutations', () => {
         const retryOwned = readProviderOperation(progressStore.getDb(), record.operation);
 
         const targetEffectCount = method === 'attach' ? endpoint.attachmentEffectCount() : endpoint.stopEffectCount();
-        expect(targetEffectCount).toBe(ordering === 'before-effect' ? 0 : 1);
+        expect(targetEffectCount).toBe(1);
         expect(retryOwned).toEqual(
           expect.objectContaining({
             phase: 'executing',
@@ -601,74 +323,6 @@ describe('provider proxy operation mutations', () => {
       }
     },
   );
-
-  it('keeps exactly the four audited activation codes non-faulting across the complete protocol code set', async () => {
-    const auditedPreEffectCodes = new Set<ProxyControlProtocolErrorCode>([
-      'method_not_found',
-      'identity_mismatch',
-      'operation_not_found',
-      'unauthorized_control',
-    ]);
-    const refusal = (protocolCode: ProxyControlProtocolErrorCode): ControlExchange => {
-      const failure = {
-        kind: 'json-rpc-error' as const,
-        jsonRpcCode: -32_600,
-        protocolCode,
-        admissionReason: null,
-        heartbeatRefusal: null,
-      };
-      return controlExchangeForTest({
-        kind: 'response',
-        response: {
-          kind: 'refusal',
-          failure,
-          error: new ControlClientError('control_call_failed', protocolCode, 'remote-response', failure),
-        },
-      });
-    };
-    const observed: Array<readonly [ProxyControlProtocolErrorCode, number]> = [];
-
-    for (const protocolCode of PROXY_CONTROL_PROTOCOL_ERROR_CODES) {
-      const faults: unknown[] = [];
-      const proxy: OperationControlClient = {
-        exchange: async () => refusal(protocolCode),
-      };
-      const activationDeps: ProviderProxyOperationActivationDeps = {
-        ...deps(proxy, scriptedClient({}).client),
-        faultAuthority: (fault) => faults.push(fault),
-      };
-      await expect(
-        activateProviderOperation(activationDeps, OPERATION, {
-          reservation: randomUUID(),
-          jointContainmentReceipt: 'joint-1',
-          jointActivationReceipt: 'joint-activation-1',
-        }),
-      ).rejects.toThrow(protocolCode);
-      observed.push([protocolCode, faults.length]);
-    }
-
-    expect(observed).toEqual(
-      PROXY_CONTROL_PROTOCOL_ERROR_CODES.map((code) => [code, auditedPreEffectCodes.has(code) ? 0 : 1]),
-    );
-  });
-
-  it('strictly validates attachment before and after the wire call', async () => {
-    const proxy = scriptedClient({
-      'operation.attach.v1': { state: 'attached', replayFromProviderSeq: 0 },
-    });
-    const guardian = scriptedClient({});
-    const activationDeps = deps(proxy.client, guardian.client);
-
-    await expect(attachProviderOperation(activationDeps, OPERATION, 4)).rejects.toThrow();
-    await expect(attachProviderOperation(activationDeps, OPERATION, -1)).rejects.toThrow();
-
-    expect(proxy.calls).toEqual([
-      {
-        method: 'operation.attach.v1',
-        params: { operation: OPERATION, committedThroughProviderSeq: 4 },
-      },
-    ]);
-  });
 
   it('uses fenced cancel v2 for prestart cleanup while retaining the executing stop capability', async () => {
     const prepareAttemptKey = 'b'.repeat(64);

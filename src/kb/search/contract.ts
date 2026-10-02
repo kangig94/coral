@@ -175,10 +175,6 @@ interface RankedRetrievalHit extends RetrievalEntry {
   score: number;
 }
 
-interface TextRetrievalHit extends RankedRetrievalHit {
-  document: RetrievedDocument;
-}
-
 export type VectorRetrievalHit = RankedRetrievalHit;
 
 type GraphRetrievalHit = RankedRetrievalHit;
@@ -188,10 +184,6 @@ export interface FusedRetrievalHit extends RetrievalEntry {
   score: number;
   document: RetrievedDocument | null;
   evidence: RetrievalEvidence[];
-}
-
-export interface TextRetrievalResult {
-  hits: TextRetrievalHit[];
 }
 
 export interface VectorRetrievalResult {

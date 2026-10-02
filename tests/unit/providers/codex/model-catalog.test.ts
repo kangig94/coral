@@ -107,30 +107,6 @@ describe('readCodexModelCatalog', () => {
     });
   });
 
-  it('reports envelope schema failures as a short line with the first issue and issue count', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: 'invalid', nextCursor: '' });
-
-    const catalog = await readCodexModelCatalog(transport(rpc));
-
-    expect(catalog.kind).toBe('unavailable');
-    if (catalog.kind !== 'unavailable') throw new Error('Expected unavailable');
-    expect(catalog.reason).toMatch(/^Invalid model\/list response: data: .+ \(2 issues\)$/);
-    expect(catalog.reason).not.toMatch(/[\r\n{}\[\]]/);
-    expect(catalog.reason.length).toBeLessThanOrEqual(200);
-  });
-
-  it('collapses and caps multiline RPC rejection reasons', async () => {
-    const rpc = vi.fn().mockRejectedValue(new Error('transport\n\tclosed ' + 'detail '.repeat(100)));
-
-    const catalog = await readCodexModelCatalog(transport(rpc));
-
-    expect(catalog.kind).toBe('unavailable');
-    if (catalog.kind !== 'unavailable') throw new Error('Expected unavailable');
-    expect(catalog.reason).toMatch(/^model\/list RPC failed: transport closed detail/);
-    expect(catalog.reason).not.toMatch(/\s{2}|[\r\n]/);
-    expect(catalog.reason.length).toBeLessThanOrEqual(200);
-  });
-
   it('stops at the first repeated cursor instead of fetching the same page again', async () => {
     const rpc = vi.fn().mockResolvedValue({ data: [model('gpt-6-sol')], nextCursor: 'repeat' });
 

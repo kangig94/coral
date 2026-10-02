@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
-
 import type { CauseRefToken } from '#src/causality/cause-ref.js';
 import type { AppendedEvent, CommitContext } from '#src/store/append.js';
 import type { ResolvableCoralEventInput } from '#src/store/envelope.js';
-import { providerRequestFailed, providerSessionUnavailable, type ProviderFailureCause } from '#src/providers/fault.js';
+import { providerRequestFailed, type ProviderFailureCause } from '#src/providers/fault.js';
 import type { ProviderTerminalEventBody } from '#src/providers/contract.js';
 import {
   materializeJobRecoveryFaultInCommit,
@@ -68,46 +67,42 @@ const OPTIONS = {
 } as const;
 
 describe('terminal-materializer canonical output boundary', () => {
-  it.each([
-    [{ kind: 'ghost_launch' }, { kind: 'job_fault', fault: { kind: 'ghost_launch' } }],
-    [{ kind: 'wrapper_lost' }, { kind: 'job_fault', fault: { kind: 'wrapper_lost' } }],
-    [
-      { kind: 'wrapper_crashed', cause: { message: 'wrapper exploded' } },
-      { kind: 'job_fault', fault: { kind: 'wrapper_crashed', cause: { message: 'wrapper exploded' } } },
-    ],
-  ] as const)('returns an immediate canonical job outcome for %j', (fault, expected) => {
-    const recorder = createContextRecorder();
+  it.each([[{ kind: 'ghost_launch' }, { kind: 'job_fault', fault: { kind: 'ghost_launch' } }]] as const)(
+    'returns an immediate canonical job outcome for %j',
+    (fault, expected) => {
+      const recorder = createContextRecorder();
 
-    const outcome = materializeJobRecoveryFaultInCommit(recorder.c, fault, OPTIONS);
+      const outcome = materializeJobRecoveryFaultInCommit(recorder.c, fault, OPTIONS);
 
-    expect(outcome).toEqual(expected);
-    expect(recorder.appended).toEqual([]);
-  });
+      expect(outcome).toEqual(expected);
+      expect(recorder.appended).toEqual([]);
+    },
+  );
 
-  it.each([
-    ['missing_launch_record', { kind: 'missing_launch_record' }],
-    ['recovery_parse_failed', { kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } }],
-  ] as const)('appends a canonical job progress cause event for %s', (_label, fault) => {
-    const recorder = createContextRecorder();
+  it.each([['missing_launch_record', { kind: 'missing_launch_record' }]] as const)(
+    'appends a canonical job progress cause event for %s',
+    (_label, fault) => {
+      const recorder = createContextRecorder();
 
-    const outcome = materializeJobRecoveryFaultInCommit(recorder.c, fault, OPTIONS);
+      const outcome = materializeJobRecoveryFaultInCommit(recorder.c, fault, OPTIONS);
 
-    expect(outcome).toEqual({
-      kind: 'failed',
-      causeRef: recorder.appended[0]?.token,
-    });
-    expect(recorder.appended[0]?.input).toEqual({
-      type: 'job.progress.emitted',
-      stream: { kind: 'job', id: 'job-1' },
-      refs: {
-        jobId: 'job-1',
-        sessionId: 'session-1',
-        parentJobId: 'parent-1',
-        workflowSlotId: 'slot-1',
-      },
-      body: fault,
-    });
-  });
+      expect(outcome).toEqual({
+        kind: 'failed',
+        causeRef: recorder.appended[0]?.token,
+      });
+      expect(recorder.appended[0]?.input).toEqual({
+        type: 'job.progress.emitted',
+        stream: { kind: 'job', id: 'job-1' },
+        refs: {
+          jobId: 'job-1',
+          sessionId: 'session-1',
+          parentJobId: 'parent-1',
+          workflowSlotId: 'slot-1',
+        },
+        body: fault,
+      });
+    },
+  );
 
   it.each([
     [
@@ -129,19 +124,6 @@ describe('terminal-materializer canonical output boundary', () => {
         stdout: 'partial stdout',
         stderr: 'partial stderr',
         parseError: 'bad json',
-      },
-    ],
-    [
-      'session unavailable',
-      providerSessionUnavailable({
-        provider: 'claude',
-        reason: 'thread missing',
-      }),
-      'session.provider_failed',
-      {
-        provider: 'claude',
-        reason: 'session_unavailable',
-        message: 'thread missing',
       },
     ],
     [

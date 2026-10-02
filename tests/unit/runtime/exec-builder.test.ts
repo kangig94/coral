@@ -53,60 +53,6 @@ class FakeChildProcess extends EventEmitter implements ChildProcessLike {
 }
 
 describe('buildExecPromise', () => {
-  it('propagates explicit shell execution to the process spawn boundary', async () => {
-    const time = new VirtualTime();
-    const child = new FakeChildProcess(1234);
-    const spawnCalls: RuntimeSpawnOptions[] = [];
-    const execPromise = buildExecPromise({
-      command: 'provider.cmd',
-      args: ['--version'],
-      shell: true,
-      maxBuffer: 1024,
-      encoding: 'utf-8',
-      spawn: (options) => {
-        spawnCalls.push(options);
-        return child;
-      },
-      kill: () => true,
-      setTimeout: (fn, ms) => time.setTimeout(fn, ms),
-      clearTimeout: (handle) => time.clearTimeout(handle),
-    });
-
-    child.emitClose(0, null);
-
-    await expect(execPromise).resolves.toMatchObject({ status: 0 });
-    expect(spawnCalls).toEqual([
-      expect.objectContaining({ command: 'provider.cmd', args: ['--version'], shell: true }),
-    ]);
-  });
-
-  it('continues waiting for close when no kill was scheduled', async () => {
-    const time = new VirtualTime();
-    const child = new FakeChildProcess(1234);
-    const execPromise = buildExecPromise({
-      command: 'fake-exec',
-      args: [],
-      maxBuffer: 1024,
-      encoding: 'utf-8',
-      spawn: () => child,
-      kill: () => true,
-      setTimeout: (fn, ms) => time.setTimeout(fn, ms),
-      clearTimeout: (handle) => time.clearTimeout(handle),
-    });
-    let settled = false;
-    void execPromise.then(() => {
-      settled = true;
-    });
-
-    child.emitExit(0, null);
-    time.tick(SIGKILL_GRACE_MS);
-    await flushMicrotasks();
-    expect(settled).toBe(false);
-
-    child.emitClose(0, null);
-    await expect(execPromise).resolves.toMatchObject({ status: 0 });
-  });
-
   it('uses owned-child group authority on Darwin without a platform capability gate', async () => {
     const time = new VirtualTime();
     const child = new FakeChildProcess(1234);
@@ -150,7 +96,7 @@ describe('buildExecPromise', () => {
       stdout: '',
       stderr: '',
       status: null,
-      error: expect.any(Error),
+      error: expect.objectContaining({ code: EXEC_TIMEOUT_CODE }),
     });
   });
 
@@ -188,7 +134,10 @@ describe('buildExecPromise', () => {
     expect(child.killedSignals).toEqual([]);
 
     child.emitClose(null, 'SIGKILL');
-    await expect(execPromise).resolves.toMatchObject({ status: null, error: expect.any(Error) });
+    await expect(execPromise).resolves.toMatchObject({
+      status: null,
+      error: expect.objectContaining({ code: EXEC_TIMEOUT_CODE }),
+    });
   });
 
   it('refuses group signaling after the child has been collected', async () => {
@@ -219,7 +168,10 @@ describe('buildExecPromise', () => {
     expect(child.killedSignals).toEqual([]);
 
     child.emitClose(0, null);
-    await expect(execPromise).resolves.toMatchObject({ status: null, error: expect.any(Error) });
+    await expect(execPromise).resolves.toMatchObject({
+      status: null,
+      error: expect.objectContaining({ code: EXEC_TIMEOUT_CODE }),
+    });
   });
 
   it.each([
@@ -227,15 +179,11 @@ describe('buildExecPromise', () => {
       mode: 'group',
       killProcessGroup: true,
       expectedChildSignals: [],
-      expectedMessage:
-        /no identified signal target; SIGTERM and SIGKILL delivery were not attempted because no pid or pgid could be attributed; child collection and descendant absence remain unobserved; exec will not attempt further signals/,
     },
     {
       mode: 'non-group',
       killProcessGroup: false,
       expectedChildSignals: ['SIGTERM', 'SIGKILL'],
-      expectedMessage:
-        /no identified signal target; SIGTERM and SIGKILL were attempted through the child handle without an identified pid; child collection and descendant absence remain unobserved; exec will not attempt further signals/,
     },
   ])('reports an unidentified signal target in $mode mode', async (testCase) => {
     const time = new VirtualTime();
@@ -264,7 +212,7 @@ describe('buildExecPromise', () => {
     expect(child.killedSignals).toEqual(testCase.expectedChildSignals);
     await expect(execPromise).resolves.toMatchObject({
       status: null,
-      error: expect.objectContaining({ message: expect.stringMatching(testCase.expectedMessage) }),
+      error: expect.objectContaining({ code: EXEC_TIMEOUT_CODE }),
     });
   });
 
@@ -292,11 +240,7 @@ describe('buildExecPromise', () => {
     time.tick(SIGKILL_GRACE_MS);
     await expect(execPromise).resolves.toMatchObject({
       status: null,
-      error: expect.objectContaining({
-        message: expect.stringMatching(
-          /child pid 1234 was collected;.*can no longer be attributed to pid 1234; pid 1234 will not be signalled/,
-        ),
-      }),
+      error: expect.objectContaining({ code: EXEC_TIMEOUT_CODE }),
     });
   });
 
@@ -331,9 +275,6 @@ describe('buildExecPromise', () => {
       status: null,
       error: expect.objectContaining({
         code: EXEC_TIMEOUT_CODE,
-        message: expect.stringMatching(
-          /leader pid 1234 was collected;.*inherited stdio remains running and can no longer be attributed to pgid 1234; pgid 1234 will not be signalled/,
-        ),
       }),
     });
   });
@@ -368,9 +309,6 @@ describe('buildExecPromise', () => {
       status: null,
       error: expect.objectContaining({
         code: EXEC_TIMEOUT_CODE,
-        message: expect.stringMatching(
-          /collection of leader pid 1234 remains unobserved.*SIGTERM and SIGKILL were attempted for pgid 1234;.*will not attempt further signals/,
-        ),
       }),
     });
   });

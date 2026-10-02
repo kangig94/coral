@@ -86,8 +86,6 @@ export function createControlHolderAuthority(options: ControlHolderAuthorityOpti
   });
 }
 
-export type HolderDisposition = 'alive' | 'absent' | 'unobservable';
-
 /** `observedAt` must name when the identity-bound observation completed, not when its result is consumed. */
 export type HolderObservation<Scope extends symbol> =
   | Readonly<{

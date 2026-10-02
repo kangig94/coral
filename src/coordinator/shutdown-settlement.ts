@@ -16,8 +16,6 @@ import {
   type SettlementObligation,
 } from '../obligation/settlement.js';
 
-export type ShutdownDeclinedSettlement = ShutdownUndischarged['settlement'];
-
 export type ProcessExitRemainder = Readonly<{
   undischarged: readonly ShutdownUndischarged[];
 }>;

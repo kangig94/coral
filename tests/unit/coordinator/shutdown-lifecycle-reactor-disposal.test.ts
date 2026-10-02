@@ -1,3 +1,4 @@
+import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -69,16 +70,15 @@ function buildServerOptions(disposeLifecycleReactor: () => Promise<void>): Coord
   };
 }
 
-type RaceOutcome<T> = Readonly<{ kind: 'resolved'; value: T }> | Readonly<{ kind: 'microtask-budget-exhausted' }>;
-
-function raceAgainstMicrotaskBudget<T>(promise: Promise<T>): Promise<RaceOutcome<T>> {
-  return Promise.race([
-    promise.then((value): RaceOutcome<T> => ({ kind: 'resolved', value })),
-    (async (): Promise<RaceOutcome<T>> => {
-      for (let turn = 0; turn < 100; turn += 1) await Promise.resolve();
-      return { kind: 'microtask-budget-exhausted' };
-    })(),
+async function withinVirtualDeadline<T>(promise: Promise<T>): Promise<T | 'timed-out'> {
+  const time = new VirtualTime();
+  const outcome = Promise.race([
+    promise,
+    new Promise<'timed-out'>((resolve) => time.setTimeout(() => resolve('timed-out'), 100)),
   ]);
+  await flushMicrotasks(100);
+  time.tick(100);
+  return outcome;
 }
 
 describe('coordinator controller lifecycle reactor disposal', () => {
@@ -87,9 +87,9 @@ describe('coordinator controller lifecycle reactor disposal', () => {
     vi.mocked(createCoordinatorCore).mockReturnValue(fakeCoordinatorCore(async () => ({ disposition: 'finalized' })));
 
     const controller = createCoordinatorServer(buildServerOptions(disposeLifecycleReactor));
-    const outcome = await raceAgainstMicrotaskBudget(controller.shutdown('test-teardown'));
+    const outcome = await withinVirtualDeadline(controller.shutdown('test-teardown'));
 
-    expect(outcome).toEqual({ kind: 'resolved', value: { disposition: 'finalized' } });
+    expect(outcome).toEqual({ disposition: 'finalized' });
     // The abort/kickoff must still fire (it is the only trigger when the settlement ledger itself
     // never started this obligation), even though the controller does not wait on it.
     expect(disposeLifecycleReactor).toHaveBeenCalledTimes(1);
@@ -102,11 +102,11 @@ describe('coordinator controller lifecycle reactor disposal', () => {
     );
 
     const controller = createCoordinatorServer(buildServerOptions(disposeLifecycleReactor));
-    const outcome = await raceAgainstMicrotaskBudget(controller.waitForShutdown());
+    const outcome = await withinVirtualDeadline(controller.waitForShutdown());
 
     expect(outcome).toEqual({
-      kind: 'resolved',
-      value: { disposition: 'finalized-with-losses', undischarged: [] },
+      disposition: 'finalized-with-losses',
+      undischarged: [],
     });
     expect(disposeLifecycleReactor).toHaveBeenCalledTimes(1);
   });

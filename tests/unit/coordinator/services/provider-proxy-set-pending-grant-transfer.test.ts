@@ -1,9 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-import { afterEach, describe, expect, it } from 'vitest';
-
+import { describe, expect, it } from 'vitest';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import {
   readPendingGrantTransfer,
@@ -13,15 +9,12 @@ import {
 import type { HandoffCapsuleV4 } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 const INCUMBENT_BUILD = '11111111-1111-4111-8111-111111111111';
 const SUCCESSOR_BUILD = '22222222-2222-4222-8222-222222222222';
 const RECOVERY_GRANT = '33333333-3333-4333-8333-333333333333';
-
-const roots: string[] = [];
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
 
 function capsule(): HandoffCapsuleV4 {
   const identity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
@@ -55,9 +48,12 @@ function capsule(): HandoffCapsuleV4 {
 
 describe('pending provider grant transfer', () => {
   it('preserves an additive field when a later attempt rewrites the same grant status', () => {
-    const root = mkdtempSync(join(tmpdir(), 'coral-pending-grant-additive-'));
-    roots.push(root);
-    const runtime = createRealRuntime('prod', { baseDir: join(root, '.coral') });
+    const time = new VirtualTime();
+    const runtime = {
+      ...createRealRuntime('prod', { baseDir: '/coral-pending-grant' }),
+      time,
+      storage: new InMemoryStorage(time),
+    };
     const handoff = capsule();
     expect(recordPendingGrantTransfer(runtime, handoff, SUCCESSOR_BUILD, 'attempt-1')).toEqual({ kind: 'recorded' });
     const name = runtime.storage
@@ -65,11 +61,14 @@ describe('pending provider grant transfer', () => {
       .find((entry) => entry.startsWith('provider-grant-transfer-'));
     if (name === undefined) throw new Error('expected pending transfer status');
     const path = join(runtime.paths.coral.coordinator.runDir, name);
-    const prior = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    const prior = JSON.parse(runtime.storage.readFileSync(path, 'utf-8')) as Record<string, unknown>;
     runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify({ ...prior, futureField: 'keep' })}\n`);
 
     expect(recordPendingGrantTransfer(runtime, handoff, SUCCESSOR_BUILD, 'attempt-2')).toEqual({ kind: 'recorded' });
-    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({ attemptId: 'attempt-2', futureField: 'keep' });
+    expect(JSON.parse(runtime.storage.readFileSync(path, 'utf-8'))).toMatchObject({
+      attemptId: 'attempt-2',
+      futureField: 'keep',
+    });
     expect(readPendingGrantTransferController(runtime, handoff)).toMatchObject({
       kind: 'recorded',
       attemptId: 'attempt-2',
@@ -77,9 +76,12 @@ describe('pending provider grant transfer', () => {
     });
   });
   it('holds an unreadable newer status with its retry exit instead of accepting it', () => {
-    const root = mkdtempSync(join(tmpdir(), 'coral-red-pending-grant-'));
-    roots.push(root);
-    const runtime = createRealRuntime('prod', { baseDir: join(root, '.coral') });
+    const time = new VirtualTime();
+    const runtime = {
+      ...createRealRuntime('prod', { baseDir: '/coral-pending-grant' }),
+      time,
+      storage: new InMemoryStorage(time),
+    };
     const handoff = capsule();
 
     expect(recordPendingGrantTransfer(runtime, handoff, SUCCESSOR_BUILD, 'attempt-1')).toEqual({ kind: 'recorded' });

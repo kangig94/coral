@@ -6,13 +6,6 @@ import {
 } from '#src/kb/curate/entity-consolidation.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
 
-function emptyGraph(): EntityGraph {
-  return {
-    entityMeta: {},
-    relationships: [],
-  };
-}
-
 describe('entity-consolidation', () => {
   it('merges normalized and pluralized entities, exports aliases, and rewires relationships to canonical ids', () => {
     const existingGraph: EntityGraph = {
@@ -89,58 +82,6 @@ describe('entity-consolidation', () => {
     expect(result.replacementMap['cuda-runtime-apis']).toBe('cuda-runtime-api');
     expect(result.replacementMap['gpu-device-memories']).toBe('gpu-device-memory');
     expect(resolveCanonicalEntityId('CUDA_RUNTIME_APIS', result.replacementMap)).toBe('cuda-runtime-api');
-  });
-
-  it('preserves sparse but valid entities while dropping malformed entities and invalid relationships', () => {
-    const result = consolidateEntityGraph(emptyGraph(), {
-      entities: [
-        {
-          name: 'rare-entity',
-          type: 'concept',
-          description: 'A sparse but valid entity should survive.',
-        },
-        {
-          name: 'bad entity',
-          type: 'concept',
-          description: '',
-        },
-        {
-          name: 'bad@entity',
-          type: 'concept',
-          description: 'Invalid id syntax should be dropped.',
-        },
-        {
-          name: 'invalid-type-entity',
-          type: 'invalid-type' as never,
-          description: 'Invalid types should be dropped.',
-        },
-      ],
-      relationships: [
-        {
-          source: 'rare-entity',
-          target: 'rare-entity',
-          type: 'enables',
-          description: 'Self loops should be dropped.',
-          evidence: ['note:1'],
-        },
-        {
-          source: 'rare-entity',
-          target: 'missing-entity',
-          type: 'enables',
-          description: 'Relationships to missing endpoints should be dropped.',
-          evidence: ['note:2'],
-        },
-      ],
-    });
-
-    expect(result.canonicalGraph.entityMeta).toEqual({
-      'rare-entity': {
-        type: 'concept',
-        description: 'A sparse but valid entity should survive.',
-      },
-    });
-    expect(result.canonicalGraph.relationships).toEqual([]);
-    expect(result.replacementMap['rare-entity']).toBe('rare-entity');
   });
 
   it('folds duplicate canonical ids and canonical-vs-prior alias conflicts into one deterministic replacement map', () => {

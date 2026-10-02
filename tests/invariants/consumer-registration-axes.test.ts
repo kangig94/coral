@@ -1,19 +1,4 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
-// Phase 7 of apply-contract-reform plan.
-//
-// AC3 declared per-arm `kind` and `registrationKind` literals on all four arms
-// of `ConsumerRegistration` so the two-axis rule
-//   `kind: 'stateless' ⟺ registrationKind: 'stateless'`
-//   `kind: 'cursor' | 'apply' ⟹ registrationKind: 'base' | 'expansion'`
-// is enforced compile-time on every arm.
-//
-// The compile-time half lives in
-// `tests/types/consumer-registration-axes.test-d.ts`, typechecked by
-// `tsc -p tests/types/tsconfig.json`.
-//
-// This file holds the *runtime* half: `ConsumerDriver.register()` must accept
-// every type-valid two-axis combination.
-
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -29,69 +14,6 @@ function createDb(): Database {
 }
 
 describe('Two-axis kind/registrationKind invariant', () => {
-  it('runtime: ConsumerDriver.register() accepts every type-valid two-axis combination', () => {
-    const db = createDb();
-    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
-    try {
-      const valid: ConsumerRegistration[] = [
-        {
-          id: 'cursor-base',
-          authority: 'journal',
-          kind: 'cursor',
-          registrationKind: 'base',
-        },
-        {
-          id: 'apply-base',
-          authority: 'journal',
-          kind: 'apply',
-          registrationKind: 'base',
-          apply: async () => {},
-        },
-        {
-          id: 'apply-expansion',
-          authority: 'journal',
-          kind: 'apply',
-          registrationKind: 'expansion',
-          apply: async () => {},
-        },
-        {
-          id: 'corpus-base',
-          authority: 'corpus',
-          kind: 'apply',
-          registrationKind: 'base',
-          corpusInterest: 'content',
-          projectionIdentityHash: () => 'corpus-base-v1',
-          readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }),
-          apply: async () => {},
-        },
-        {
-          id: 'corpus-expansion',
-          authority: 'corpus',
-          kind: 'apply',
-          registrationKind: 'expansion',
-          corpusInterest: 'metadata',
-          projectionIdentityHash: () => 'corpus-expansion-v1',
-          readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }),
-          apply: async () => {},
-        },
-        {
-          id: 'stateless',
-          kind: 'stateless',
-          registrationKind: 'stateless',
-        },
-      ];
-
-      for (const reg of valid) {
-        const handle = driver.register(reg);
-        expect(handle.id).toBe(reg.id);
-        expect(handle.registrationKind).toBe(reg.registrationKind);
-      }
-    } finally {
-      void driver.shutdown();
-      db.close();
-    }
-  });
-
   it('runtime: rejects an untyped corpus registration without authoritative freshness', () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });

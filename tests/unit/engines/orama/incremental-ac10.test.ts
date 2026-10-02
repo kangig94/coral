@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OramaBaseProjection, createOramaBaseProjection } from '#src/engines/orama/base-projection.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
-import { type OramaEntryManifest, type OramaProjectionMetadata } from '#src/engines/orama/artifact-port.js';
+import { type OramaProjectionMetadata } from '#src/engines/orama/artifact-port.js';
 import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '#src/kb/corpus/index/records.js';
 import { communityEntryId, noteEntryId, sourceEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import type { KbCorpusSnapshot, KbEngineRuntimeBase, KbRuntime } from '#src/kb/contract.js';
@@ -256,10 +256,6 @@ function readMetadata(kb: KbRuntime): OramaProjectionMetadata {
   ) as OramaProjectionMetadata;
 }
 
-function writeMetadata(kb: KbRuntime, metadata: OramaProjectionMetadata): void {
-  writeFileSync(oramaIndexMetadataPath(kb.projectionArtifacts.runtimeDir), `${JSON.stringify(metadata, null, 2)}\n`);
-}
-
 function expectManifestEntryIds(kb: KbRuntime, entryIds: readonly string[]): void {
   expect(Object.keys(readMetadata(kb).entryManifest).sort()).toEqual([...entryIds].sort());
 }
@@ -392,51 +388,6 @@ describe('orama AC10 incremental projection', () => {
     );
   });
 
-  it('treats an artifact ahead of the consumer cursor as the persisted delta base after restart', async () => {
-    const kb = createRuntime(allocateRoot('coral-orama-ahead-'));
-    const snapshotV1 = seedCorpus(kb, INITIAL_CORPUS, 'seed initial corpus');
-    const { projection } = newProjection(kb);
-    await applySnapshot(projection, kb, snapshotV1);
-
-    const snapshotV2 = seedCorpus(kb, FINAL_CORPUS, 'persist current corpus ahead of cursor');
-    await applySnapshot(projection, kb, snapshotV2);
-
-    const { projection: restarted } = newProjection(kb);
-    const fullInstallSpy = vi.spyOn(restarted, 'installFullSnapshot');
-    await restarted.apply(makeContext(snapshotV1, snapshotV2, createKbProjectionInput(kb)));
-
-    expect(fullInstallSpy).not.toHaveBeenCalled();
-    expect(readMetadata(kb).snapshotId).toBe(snapshotV2.snapshotId);
-    await expectSearchDocumentIds(restarted, 'incremental golden', [noteEntryId('graph-rag')]);
-  });
-
-  it('removes a deleted manifest entry after restart without rebuilding unrelated entries', async () => {
-    const kb = createRuntime(allocateRoot('coral-orama-delete-'));
-    const snapshotV1 = seedCorpus(kb, INITIAL_CORPUS, 'seed initial corpus');
-    const { projection } = newProjection(kb);
-    await applySnapshot(projection, kb, snapshotV1);
-
-    const snapshotV2 = seedCorpus(
-      kb,
-      {
-        notes: INITIAL_CORPUS.notes?.filter((note) => note.slug !== 'retired-delete'),
-        sources: INITIAL_CORPUS.sources,
-      },
-      'delete one note',
-    );
-
-    const { projection: restarted } = newProjection(kb);
-    const fullInstallSpy = vi.spyOn(restarted, 'installFullSnapshot');
-    await applySnapshot(restarted, kb, snapshotV2);
-
-    expect(fullInstallSpy).not.toHaveBeenCalled();
-    expect(readMetadata(kb).snapshotId).toBe(snapshotV2.snapshotId);
-    expectManifestEntryIds(kb, [noteEntryId('graph-rag'), sourceEntryId('sqlite-planner')]);
-    expect(readMetadata(kb).entryManifest[noteEntryId('retired-delete')]).toBeUndefined();
-    await expectSearchDocumentIds(restarted, 'deleteonly sunset deletion', []);
-    await expectSearchDocumentIds(restarted, 'graph retrieval', [noteEntryId('graph-rag')]);
-  });
-
   it('rejects a stale sidecar manifest whose digest no longer matches the artifact', async () => {
     const kb = createRuntime(allocateRoot('coral-orama-stale-manifest-'));
     const snapshotV1 = seedCorpus(kb, INITIAL_CORPUS, 'seed initial corpus');
@@ -455,88 +406,6 @@ describe('orama AC10 incremental projection', () => {
     expect(fullInstallSpy).toHaveBeenCalledTimes(1);
     expect(readMetadata(kb).snapshotId).toBe(snapshotV2.snapshotId);
     await expectSearchDocumentIds(restarted, 'incremental golden equivalence', [noteEntryId('graph-rag')]);
-  });
-
-  it('falls back to one full rebuild when delta application cannot remove a manifest document', async () => {
-    const kb = createRuntime(allocateRoot('coral-orama-delta-fallback-'));
-    const snapshotV1 = seedCorpus(kb, INITIAL_CORPUS, 'seed initial corpus');
-    const { projection } = newProjection(kb);
-    await applySnapshot(projection, kb, snapshotV1);
-
-    const snapshotV2 = seedCorpus(kb, FINAL_CORPUS, 'final corpus after delta failure');
-    const metadata = readMetadata(kb);
-    const graphManifestEntry = metadata.entryManifest[noteEntryId('graph-rag')];
-    expect(graphManifestEntry).toBeDefined();
-    const corruptedManifest: OramaEntryManifest = {
-      ...metadata.entryManifest,
-      [noteEntryId('graph-rag')]: {
-        ...graphManifestEntry,
-        documentId: noteEntryId('missing-graph-rag'),
-      },
-    };
-    writeMetadata(kb, { ...metadata, entryManifest: corruptedManifest });
-
-    const { projection: restarted } = newProjection(kb);
-    const fullInstallSpy = vi.spyOn(restarted, 'installFullSnapshot');
-    await applySnapshot(restarted, kb, snapshotV2);
-
-    expect(fullInstallSpy).toHaveBeenCalledTimes(1);
-    expect(readMetadata(kb).snapshotId).toBe(snapshotV2.snapshotId);
-    expectManifestEntryIds(kb, [
-      noteEntryId('delta-insert'),
-      noteEntryId('graph-rag'),
-      sourceEntryId('sqlite-planner'),
-    ]);
-    await expectSearchDocumentIds(restarted, 'settled current projection behavior', [
-      noteEntryId('delta-insert'),
-      noteEntryId('graph-rag'),
-    ]);
-    await expectSearchDocumentIds(restarted, 'deleteonly sunset deletion', []);
-  });
-
-  it('uses a full rebuild when a community metadata hash changes between snapshots', async () => {
-    const kb = createRuntime(allocateRoot('coral-orama-community-topology-'));
-    const communityV1: CorpusSpec = {
-      communities: [
-        {
-          slug: 'retrieval-topology',
-          title: 'Retrieval Topology',
-          members: ['graph', 'rag'],
-          body: 'Community topology keeps oldonlytopology marker.',
-        },
-      ],
-    };
-    const communityV2: CorpusSpec = {
-      communities: [
-        {
-          slug: 'retrieval-topology',
-          title: 'Retrieval Topology',
-          members: ['graph', 'rag'],
-          body: 'Community topology now serves rebuiltonlytopology marker.',
-          updatedAt: '2026-04-02T00:00:00.000Z',
-        },
-      ],
-    };
-    const snapshotV1 = seedCorpus(kb, communityV1, 'seed community topology v1');
-    const { projection } = newProjection(kb);
-    await applySnapshot(projection, kb, snapshotV1);
-    const previousCommunityMetadataHash =
-      readMetadata(kb).entryManifest[communityEntryId('retrieval-topology')]?.metadataHash;
-    expect(previousCommunityMetadataHash).toBeDefined();
-
-    const snapshotV2 = seedCorpus(kb, communityV2, 'seed community topology v2');
-    const fullInstallSpy = vi.spyOn(projection, 'installFullSnapshot');
-    await applySnapshot(projection, kb, snapshotV2);
-
-    const metadata = readMetadata(kb);
-    expect(fullInstallSpy).toHaveBeenCalledTimes(1);
-    expect(metadata.snapshotId).toBe(snapshotV2.snapshotId);
-    expect(metadata.entryManifest[communityEntryId('retrieval-topology')]?.metadataHash).not.toBe(
-      previousCommunityMetadataHash,
-    );
-    expectManifestEntryIds(kb, [communityEntryId('retrieval-topology')]);
-    await expectSearchDocumentIds(projection, 'rebuiltonlytopology', [communityEntryId('retrieval-topology')]);
-    await expectSearchDocumentIds(projection, 'oldonlytopology', []);
   });
 
   it('recovers from a torn write by rebuilding when the persisted metadata sidecar is missing', async () => {

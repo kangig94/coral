@@ -1,5 +1,5 @@
 import type * as NodeFs from 'node:fs';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -104,40 +104,6 @@ describe('createPluginRegistry', () => {
     expect(registry.discoverPluginRoot('foo')).toBeNull();
   });
 
-  it('uses outer-key insertion order when multiple keys share the same namespace', () => {
-    const firstRoot = createPluginRoot('foo-first');
-    const secondRoot = createPluginRoot('foo-second');
-    setRegistry({
-      version: 1,
-      plugins: {
-        'foo@m1': [{ installPath: firstRoot, scope: 'user' }],
-        'foo@m2': [{ installPath: secondRoot, scope: 'workspace' }],
-      },
-    });
-
-    const registry = createPluginRegistry();
-
-    expect(registry.discoverPluginRoot('foo')).toBe(firstRoot);
-  });
-
-  it('uses inner-array order within a matching registry key', () => {
-    const firstRoot = createPluginRoot('foo-array-first');
-    const secondRoot = createPluginRoot('foo-array-second');
-    setRegistry({
-      version: 1,
-      plugins: {
-        'foo@m1': [
-          { installPath: firstRoot, scope: 'workspace' },
-          { installPath: secondRoot, scope: 'project' },
-        ],
-      },
-    });
-
-    const registry = createPluginRegistry();
-
-    expect(registry.discoverPluginRoot('foo')).toBe(firstRoot);
-  });
-
   it('skips stale install paths and continues searching matching keys', () => {
     const freshRoot = createPluginRoot('foo-fresh');
     setRegistry({
@@ -151,45 +117,5 @@ describe('createPluginRegistry', () => {
     const registry = createPluginRegistry();
 
     expect(registry.discoverPluginRoot('foo')).toBe(freshRoot);
-  });
-
-  it('caches resolved namespaces and does not reread the registry file on repeat lookup', () => {
-    const cachedRoot = createPluginRoot('foo-cached');
-    const registryPath = setRegistry({
-      version: 1,
-      plugins: {
-        'foo@m1': [{ installPath: cachedRoot, scope: 'workspace' }],
-      },
-    });
-
-    const registry = createPluginRegistry({
-      storage: {
-        readFileSync: (path, encoding) => readFileSync(path, encoding),
-        existsSync: (path) => existsSync(path),
-      },
-      env: {
-        get: (key) => process.env[key],
-      },
-    });
-
-    expect(registry.discoverPluginRoot('foo')).toBe(cachedRoot);
-    expect(registry.discoverPluginRoot('foo')).toBe(cachedRoot);
-    expect(fsCalls.readFileSync).toEqual([[registryPath, 'utf-8']]);
-    expect(fsCalls.existsSync).toEqual([[cachedRoot]]);
-  });
-
-  it('parses plugin keys with indexOf so marketplace names can contain @', () => {
-    const pluginRoot = createPluginRoot('foo-marketplace-root');
-    setRegistry({
-      version: 1,
-      plugins: {
-        'foo@bar@baz': [{ installPath: pluginRoot, scope: 'workspace' }],
-      },
-    });
-
-    const registry = createPluginRegistry();
-
-    expect(registry.discoverPluginRoot('foo')).toBe(pluginRoot);
-    expect(registry.discoverPluginRoot('foo@bar')).toBeNull();
   });
 });

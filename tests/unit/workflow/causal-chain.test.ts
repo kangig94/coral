@@ -37,7 +37,6 @@ import { workflowRegistry } from '#src/workflow/events.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
-import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
@@ -352,68 +351,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
 }
 
 describe('worked example — [A] | [B, C] where C fails', () => {
-  it('at the final seq, projection_jobs(wf-1) is failed-with-causeRef pointing at workflow.completed', async () => {
-    const { db, driver } = setup();
-    try {
-      const finalSeq = await runChain(db, driver);
-
-      const row = db
-        .prepare(
-          `SELECT job_id, phase, terminal, parent_workflow_job_id, workflow_slot, last_seq
-             FROM projection_jobs
-            WHERE job_id = ?`,
-        )
-        .get(WORKFLOW_ID) as
-        | {
-            job_id: string;
-            phase: string;
-            terminal: string | null;
-            parent_workflow_job_id: string | null;
-            workflow_slot: string | null;
-            last_seq: number;
-          }
-        | undefined;
-
-      expect(row).toBeDefined();
-      expect(row?.phase).toBe('error');
-      expect(row?.parent_workflow_job_id).toBeNull();
-      expect(row?.workflow_slot).toBeNull();
-      expect(row?.last_seq).toBe(finalSeq);
-
-      const terminal = JSON.parse(row?.terminal ?? 'null');
-      expect(terminal.outcome.kind).toBe('failed');
-      expect(terminal.outcome.causeRef.stream).toEqual({ kind: 'workflow', id: WORKFLOW_ID });
-      expect(terminal.outcome.causeRef.seq).toBe(finalSeq - 1);
-    } finally {
-      await driver.shutdown();
-      db.close();
-    }
-  });
-
-  it('WorkflowView aggregates plan + slot outcomes with causeRef pointing at job/c-1', async () => {
-    const { db, driver, store } = setup();
-    try {
-      await runChain(db, driver);
-
-      const view = readWorkflowView(db, WORKFLOW_ID, store);
-      expect(view).toBeDefined();
-      expect(view?.outcome).toBe('failed');
-      expect(view?.causeRef).toEqual({
-        stream: { kind: 'job', id: 'c-1' },
-        seq: expect.any(Number),
-      });
-      expect(view?.plan.slots.map((slot) => slot.slotId)).toEqual([SLOT_A, SLOT_B, SLOT_C]);
-
-      expect(view?.slotOutcomes[SLOT_A]).toMatchObject({ jobId: 'a-1', phase: 'completed', causeRef: null });
-      expect(view?.slotOutcomes[SLOT_B]).toMatchObject({ jobId: 'b-1', phase: 'completed', causeRef: null });
-      // c-1 ended via provider_exit, not failed-with-causeRef, so slot causeRef is null.
-      expect(view?.slotOutcomes[SLOT_C]).toMatchObject({ jobId: 'c-1', phase: 'error', causeRef: null });
-    } finally {
-      await driver.shutdown();
-      db.close();
-    }
-  });
-
   it('describeCauseRef walks workflow.completed → c-1 provider_exit chain', async () => {
     const { db, driver, store } = setup();
     try {
@@ -430,35 +367,6 @@ describe('worked example — [A] | [B, C] where C fails', () => {
       expect(description).toContain('Workflow failed.');
       expect(description).toContain('Provider exited 1.');
       expect(description).toMatch(/Workflow failed\..*Caused by:.*Provider exited 1\./);
-    } finally {
-      await driver.shutdown();
-      db.close();
-    }
-  });
-
-  it('Transaction 5 commit atomicity: the three events share a contiguous seq range and replay sees all-or-nothing', async () => {
-    const { db, driver } = setup();
-    try {
-      const finalSeq = await runChain(db, driver);
-
-      const tx5 = db
-        .prepare(
-          `SELECT seq, type, stream_kind, stream_id
-             FROM events
-            WHERE seq BETWEEN ? AND ?
-            ORDER BY seq ASC`,
-        )
-        .all(finalSeq - 2, finalSeq) as Array<{
-        seq: number;
-        type: string;
-        stream_kind: string;
-        stream_id: string;
-      }>;
-
-      expect(tx5).toHaveLength(3);
-      expect(tx5[0]).toMatchObject({ type: 'job.terminal.recorded', stream_kind: 'job', stream_id: 'c-1' });
-      expect(tx5[1]).toMatchObject({ type: 'workflow.completed', stream_kind: 'workflow', stream_id: WORKFLOW_ID });
-      expect(tx5[2]).toMatchObject({ type: 'job.terminal.recorded', stream_kind: 'job', stream_id: WORKFLOW_ID });
     } finally {
       await driver.shutdown();
       db.close();

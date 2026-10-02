@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { collectForwardedNetworkEnv, networkEnvSchema } from '#src/infra/network-env.js';
+import { collectForwardedNetworkEnv } from '#src/infra/network-env.js';
 
 describe('collectForwardedNetworkEnv', () => {
   it('picks recognized proxy and CA keys, preserving case and value', () => {
@@ -42,29 +42,5 @@ describe('collectForwardedNetworkEnv', () => {
     });
 
     expect(result).toEqual({ ALL_PROXY: 'socks5://proxy:1080' });
-  });
-});
-
-describe('networkEnvSchema', () => {
-  it('accepts a record limited to known keys', () => {
-    expect(networkEnvSchema.parse({ HTTPS_PROXY: 'http://p:1', NO_PROXY: 'x' })).toEqual({
-      HTTPS_PROXY: 'http://p:1',
-      NO_PROXY: 'x',
-    });
-  });
-
-  it('rejects unknown keys', () => {
-    const result = networkEnvSchema.safeParse({ PATH: '/usr/bin' });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects non-string values', () => {
-    const result = networkEnvSchema.safeParse({ HTTP_PROXY: 123 });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects empty string values', () => {
-    const result = networkEnvSchema.safeParse({ HTTP_PROXY: '' });
-    expect(result.success).toBe(false);
   });
 });

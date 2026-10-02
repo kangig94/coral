@@ -192,16 +192,6 @@ export function createSpawnProviderServerMock(...handles: ContainedProviderServe
   return spawnProviderServer;
 }
 
-export function randomSequence(seed: number, maxLength = 50): number[] {
-  let state = seed >>> 0;
-  const next = () => {
-    state = (1664525 * state + 1013904223) >>> 0;
-    return state;
-  };
-  const length = (next() % maxLength) + 1;
-  return Array.from({ length }, () => next());
-}
-
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();

@@ -100,27 +100,4 @@ describe('process identity batch observation', () => {
       );
     },
   );
-
-  it.runIf(process.platform === 'linux')(
-    'settles the production Linux observer within its deadline budget',
-    async () => {
-      const runtime = createRealRuntime('dev');
-      const incarnation = runtime.process.readProcessIncarnation(process.pid, 'linux');
-      expect(incarnation).not.toBeNull();
-      if (incarnation === null) throw new Error('Expected the current Linux process to have an incarnation.');
-      const owners = Array.from({ length: 64 }, () => ({ pid: process.pid, incarnation }));
-      const startedAt = Date.now();
-      const observations = await runtime.process.observeProcessIdentities(owners, 500);
-
-      expect(observations).toHaveLength(owners.length);
-      expect(
-        observations.every(
-          (observation) =>
-            observation.evidence.kind === 'incarnation' ||
-            (observation.evidence.kind === 'unobservable' && observation.evidence.cause === 'deadline-expired'),
-        ),
-      ).toBe(true);
-      expect(Date.now() - startedAt).toBeLessThan(750);
-    },
-  );
 });

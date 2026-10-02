@@ -1,5 +1,0 @@
-type Decision = Readonly<{ kind: 'accepted' }> | Readonly<{ kind: 'refused'; reason: string }>;
-
-declare function decide(): Promise<Decision>;
-
-decide();

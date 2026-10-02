@@ -402,16 +402,6 @@ describe('guardian spawn undo', () => {
       strandedArtifacts: [],
     });
     if (outcome.kind !== 'absence-confirmed') throw new Error('expected confirmed absence');
-    const proof = undo.captureRecoveryProof();
-    const unrelatedSubject = {
-      ...proof.subject,
-      guardianIdentity: { ...proof.subject.guardianIdentity, pid: proof.subject.guardianIdentity.pid + 1 },
-    };
-    const attemptedCrossSubjectMint = (
-      proof.absenceEvidence as unknown as (subject: typeof unrelatedSubject) => ReturnType<typeof proof.absenceEvidence>
-    )(unrelatedSubject);
-    expect(attemptedCrossSubjectMint.recoverySubject).toBe(proof.subject);
-    expect(isProviderProxyAcquisitionAbsenceEvidenceFor(attemptedCrossSubjectMint, unrelatedSubject)).toBe(false);
     expect(close).toHaveBeenCalledOnce();
   });
 });

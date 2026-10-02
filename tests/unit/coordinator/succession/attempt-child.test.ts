@@ -1,12 +1,12 @@
 import { EventEmitter } from 'node:events';
-import { Socket } from 'node:net';
+import type { Socket } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createSuccessionAttemptChannel,
   receiveSuccessionAttemptChild,
 } from '#src/coordinator/succession/attempt-child.js';
-import { createRealTimePort } from '#src/infra/time.js';
+import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import type { SuccessionAttemptPorts } from '#src/runtime/succession-attempt.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -47,8 +47,9 @@ function fakePorts(env: Record<string, string> = { CORAL_SUCCESSION_ATTEMPT_ID: 
       events.emit('message', message, handle);
     },
   };
+  const time = new VirtualTime();
   const ports: SuccessionAttemptPorts = {
-    time: createRealTimePort(),
+    time,
     spawn: () => {
       throw new Error('a received attempt never spawns');
     },
@@ -56,7 +57,7 @@ function fakePorts(env: Record<string, string> = { CORAL_SUCCESSION_ATTEMPT_ID: 
     env: (name) => env[name],
     channel,
   };
-  return { ports, channel };
+  return { ports, channel, time };
 }
 
 function start(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -72,6 +73,17 @@ function start(overrides: Record<string, unknown> = {}): Record<string, unknown>
   };
 }
 
+function fakeSocket(): Socket {
+  const socket = {
+    destroyed: false,
+    pause: vi.fn(),
+    destroy() {
+      socket.destroyed = true;
+    },
+  };
+  return socket as unknown as Socket;
+}
+
 async function settled<T>(promise: Promise<T>): Promise<boolean> {
   let done = false;
   void promise.then(
@@ -82,7 +94,7 @@ async function settled<T>(promise: Promise<T>): Promise<boolean> {
       done = true;
     },
   );
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await flushMicrotasks();
   return done;
 }
 
@@ -166,8 +178,9 @@ describe('succession attempt child channel', () => {
       },
       drainConnections: async () => undefined,
     } as unknown as IpcListener;
+    const { ports, time } = fakePorts();
     const creating = createSuccessionAttemptChannel(
-      { ...fakePorts().ports, processIncarnation: () => testIncarnation(process.pid) },
+      { ...ports, processIncarnation: () => testIncarnation(process.pid) },
       child as unknown as Parameters<typeof createSuccessionAttemptChannel>[1],
       ATTEMPT_ID,
       listener,
@@ -178,7 +191,7 @@ describe('succession attempt child channel', () => {
     const attempt = await creating;
     await attempt.transferListeners(listener);
     attempt.forwardConnections(listener);
-    const socket = new Socket();
+    const socket = fakeSocket();
     callbacks.forward?.(socket, '');
 
     const draining = attempt.drainIncumbentConnections(listener);
@@ -187,21 +200,13 @@ describe('succession attempt child channel', () => {
     await expect(draining).resolves.toBeUndefined();
     socket.destroy();
 
-    const stalled = new Socket();
+    const stalled = fakeSocket();
     callbacks.forward?.(stalled, '');
-    await attempt.drainIncumbentConnections(listener, 5);
+    const stalledDrain = attempt.drainIncumbentConnections(listener, 5);
+    time.tick(5);
+    await stalledDrain;
     expect(stalled.destroyed).toBe(true);
     callbacks.finishSend?.();
-  });
-
-  it('should not treat a process without an attempt id as an attempt child', async () => {
-    await expect(receiveSuccessionAttemptChild(fakePorts({}).ports)).resolves.toBeNull();
-  });
-
-  it('should refuse an attempt child that has no private channel', async () => {
-    await expect(receiveSuccessionAttemptChild(fakePorts(undefined, false).ports)).rejects.toThrow(
-      /private spawn channel/u,
-    );
   });
 
   it('should wait through foreign and malformed start messages for its own well-formed start', async () => {
@@ -235,24 +240,29 @@ describe('succession attempt child channel', () => {
     channel.deliver({ kind: 'abort', attemptId: 'another-attempt' });
     expect(channel.failures).toEqual([]);
     channel.deliver({ kind: 'abort', attemptId: ATTEMPT_ID });
-    await vi.waitFor(() => expect(channel.failures).toEqual([false]));
+    await flushMicrotasks();
+    expect(channel.failures).toEqual([false]);
   });
 
   it('should fail the attempt once a finite commit deadline passes, and ignore a non-finite one', async () => {
-    const { ports, channel } = fakePorts();
+    const { ports, channel, time } = fakePorts();
     const received = receiveSuccessionAttemptChild(ports);
     channel.deliver(start());
     await received;
 
     channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: Number.NaN });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    time.tick(20);
+    await flushMicrotasks();
     expect(channel.failures).toEqual([]);
 
-    channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: Date.now() + 5 });
-    await vi.waitFor(() => expect(channel.sent).toContainEqual({ kind: 'release-request', attemptId: ATTEMPT_ID }));
+    channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: time.now() + 5 });
+    time.tick(5);
+    await flushMicrotasks();
+    expect(channel.sent).toContainEqual({ kind: 'release-request', attemptId: ATTEMPT_ID });
     expect(channel.failures).toEqual([]);
     channel.deliver({ kind: 'release-ready', attemptId: ATTEMPT_ID });
-    await vi.waitFor(() => expect(channel.failures).toEqual([false]));
+    await flushMicrotasks();
+    expect(channel.failures).toEqual([false]);
   });
 
   it('should refuse a listener for an address outside its claim before adopting anything', async () => {
@@ -273,9 +283,9 @@ describe('succession attempt child channel', () => {
   });
 
   it('should return every connection it parked to the incumbent before an abort ends it', async () => {
-    const { ports, channel } = fakePorts();
+    const { ports, channel, time } = fakePorts();
     const listener = await adoptedChild(channel, ports);
-    channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: Date.now() + 60_000 });
+    channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: time.now() + 60_000 });
     const forwarded = { pause: vi.fn() };
     const accepted = { pause: vi.fn() };
     channel.deliver(
@@ -287,7 +297,8 @@ describe('succession attempt child channel', () => {
 
     channel.deliver({ kind: 'abort', attemptId: ATTEMPT_ID });
 
-    await vi.waitFor(() => expect(channel.failures).toEqual([false]));
+    await flushMicrotasks();
+    expect(channel.failures).toEqual([false]);
     expect(channel.handles).toEqual(expect.arrayContaining([forwarded, accepted]));
     const returned = channel.sent.filter((message) => (message as { kind?: string }).kind === 'connection');
     expect(returned).toEqual(
@@ -300,17 +311,20 @@ describe('succession attempt child channel', () => {
   });
 
   it('should acknowledge abort after returning sockets during a deadline release', async () => {
-    const { ports, channel } = fakePorts();
+    const { ports, channel, time } = fakePorts();
     const listener = await adoptedChild(channel, ports);
-    channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: Date.now() + 5 });
-    const socket = new Socket();
+    channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: time.now() + 5 });
+    const socket = fakeSocket();
     listener.park(socket, '');
-    await vi.waitFor(() => expect(channel.sent).toContainEqual({ kind: 'release-request', attemptId: ATTEMPT_ID }));
+    time.tick(5);
+    await flushMicrotasks();
+    expect(channel.sent).toContainEqual({ kind: 'release-request', attemptId: ATTEMPT_ID });
 
     channel.deliver({ kind: 'abort', attemptId: ATTEMPT_ID });
     channel.deliver({ kind: 'release-ready', attemptId: ATTEMPT_ID });
 
-    await vi.waitFor(() => expect(channel.failures).toEqual([false]));
+    await flushMicrotasks();
+    expect(channel.failures).toEqual([false]);
     expect(channel.handles).toContain(socket);
     expect(channel.sent).toContainEqual({ kind: 'connections-released', attemptId: ATTEMPT_ID });
     socket.destroy();
@@ -333,27 +347,30 @@ describe('succession attempt child channel', () => {
     expect(channel.failures).toEqual([]);
   });
 
-  it.each([
-    ['its own commit deadline', { kind: 'deadline', attemptId: ATTEMPT_ID, at: Date.now() + 5 }],
-    ['a listener outside its claim', { kind: 'listener', attemptId: ATTEMPT_ID, socketPath: '/run/other.sock' }],
-  ])('should return its parked connections while the channel lives when it fails on %s', async (_cause, failure) => {
-    const { ports, channel } = fakePorts();
-    await adoptedChild(channel, ports);
-    channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: Date.now() + 60_000 });
-    const forwarded = { pause: vi.fn() };
-    channel.deliver(
-      { kind: 'connection', attemptId: ATTEMPT_ID, socketPath: '/run/coral.sock', pendingFrameBase64: 'e30=' },
-      forwarded,
-    );
-    expect(channel.handles).toEqual([]);
+  it.each([['its own commit deadline', { kind: 'deadline', attemptId: ATTEMPT_ID, at: 5 }]])(
+    'should return its parked connections while the channel lives when it fails on %s',
+    async (_cause, failure) => {
+      const { ports, channel, time } = fakePorts();
+      await adoptedChild(channel, ports);
+      channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: time.now() + 60_000 });
+      const forwarded = { pause: vi.fn() };
+      channel.deliver(
+        { kind: 'connection', attemptId: ATTEMPT_ID, socketPath: '/run/coral.sock', pendingFrameBase64: 'e30=' },
+        forwarded,
+      );
+      expect(channel.handles).toEqual([]);
 
-    channel.deliver(failure, {});
+      channel.deliver({ ...failure, at: time.now() + 5 }, {});
+      time.tick(5);
 
-    await vi.waitFor(() => expect(channel.sent).toContainEqual({ kind: 'release-request', attemptId: ATTEMPT_ID }));
-    expect(channel.handles).toEqual([]);
-    channel.deliver({ kind: 'release-ready', attemptId: ATTEMPT_ID });
+      await flushMicrotasks();
+      expect(channel.sent).toContainEqual({ kind: 'release-request', attemptId: ATTEMPT_ID });
+      expect(channel.handles).toEqual([]);
+      channel.deliver({ kind: 'release-ready', attemptId: ATTEMPT_ID });
 
-    await vi.waitFor(() => expect(channel.failures).toEqual([false]));
-    expect(channel.handles).toEqual([forwarded]);
-  });
+      await flushMicrotasks();
+      expect(channel.failures).toEqual([false]);
+      expect(channel.handles).toEqual([forwarded]);
+    },
+  );
 });

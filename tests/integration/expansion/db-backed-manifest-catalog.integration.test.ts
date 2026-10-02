@@ -8,7 +8,15 @@ import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
-import dummyInstalledDbManifest from '#tests/fixtures/dummy-installed-engine/manifest.js';
+import type { EngineManifest } from '#src/expansion/contract.js';
+
+const dummyInstalledDbManifest = {
+  id: 'dummy-installed-db-engine',
+  version: '0.0.0',
+  specifier: '#tests/fixtures/dummy-installed-engine/expansion.js',
+  tier: 'installed',
+  description: 'DB-backed installed manifest fixture.',
+} as const satisfies EngineManifest;
 
 const tempRoots: string[] = [];
 

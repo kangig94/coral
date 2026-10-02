@@ -653,6 +653,7 @@ export function buildCommunityPartitionTree(graph: TagGraph): CommunityPartition
   return CommunityPartitionTree.fromGraph(graph);
 }
 
+/** @knipignore Used by remaining tests through helper/module indirection. */
 export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOptions = {}): DetectedCommunity[] {
   return buildCommunityPartitionTree(graph).detect(options);
 }

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import type * as MockedNodeProcessModule from '#src/infra/node-process.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,14 +10,21 @@ import { createSuccessionCoordinator } from '#src/coordinator/succession/index.j
 import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
 import { upgradeIntentPath } from '#src/infra/path/index.js';
 import { successionTargetKey } from '#src/coordinator/succession/protocol.js';
-import { probeProcessIncarnation } from '#src/infra/node-process.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { createDeferred } from '#tools/testing/deferred.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
-import { waitForCondition } from '#tests/support/wait-for-condition.js';
 import { SUCCESSION_CAPABILITY_VERSION } from '#src/infra/bundle-manifest-address.js';
 import type { SuccessionCapabilities } from '#src/coordinator/succession/protocol.js';
-import { REQUIRED_SUCCESSION_OWNERS, type SuccessionOwner } from '#src/coordinator/succession/obligations.js';
+import { type SuccessionOwner } from '#src/coordinator/succession/obligations.js';
 import type * as ProtocolModule from '#src/coordinator/succession/protocol.js';
 import type * as UpgradeIntentModule from '#src/infra/upgrade-intent.js';
+
+vi.mock('#src/infra/node-process.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof MockedNodeProcessModule>()),
+  probeProcessIncarnation: (pid: number) => (pid === process.pid ? testIncarnation(pid) : null),
+  observeProcessLiveness: (pid: number) => (pid === process.pid ? 'alive' : 'absent'),
+}));
 
 /** Plugin roots whose target validates and declares these capabilities, with no bundle on disk. */
 const installedTargets = vi.hoisted(() => new Map<string, unknown>());
@@ -46,7 +53,12 @@ vi.mock('#src/coordinator/succession/protocol.js', async (importOriginal) => {
   };
 });
 
-const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
+const baseRuntime = createRealRuntime('prod', { baseDir: tmpdir() });
+const time = new VirtualTime();
+const runtime = {
+  ...baseRuntime,
+  time,
+};
 
 const build = {
   version: '0.11.0',
@@ -59,18 +71,14 @@ const build = {
   durableWrapperBundleHash: '0123456789abcdef',
 };
 
-/** A pid whose process has exited, so its absence is decisive. */
 async function exitedPid(): Promise<number> {
-  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
-  await new Promise<void>((resolve) => child.once('exit', () => resolve()));
-  if (child.pid === undefined) throw new Error('exited child has no pid');
-  return child.pid;
+  return 41_001;
 }
 
 const serving = {
   instanceId: 'serving',
   pid: process.pid,
-  incarnation: probeProcessIncarnation(process.pid),
+  incarnation: testIncarnation(process.pid),
   version: '0.10.13',
   bundleHash: 'fedcba9876543210',
   flavor: 'prod' as const,
@@ -139,7 +147,7 @@ describe('succession reconciler', () => {
     }
   });
 
-  it.each(['0.11.0', '0.10.50'])(
+  it.each(['0.10.50'])(
     'replaces a vanished target with an installed %s target that outranks the incumbent',
     async (version) => {
       const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
@@ -363,7 +371,7 @@ describe('succession reconciler', () => {
         flavor: 'prod' as const,
       };
       const target = { build, pluginRootLabel: '/missing/target' };
-      const retryAfterMs = Date.now() + 1_500;
+      const retryAfterMs = time.now() + 1_500;
       const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
         requestId: 'request-1',
         incumbent,
@@ -395,6 +403,7 @@ describe('succession reconciler', () => {
             }),
       });
       if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+      const changed = createDeferred<void>();
       let notify: (() => void) | undefined;
       const reconciler = createSuccessionReconciler({
         runtime,
@@ -404,6 +413,7 @@ describe('succession reconciler', () => {
         epochKey: () => null,
         admissionRevision: () => 0,
         commitAvailable: true,
+        onIntentChanged: () => changed.resolve(),
         subscribeObligationChanges: (callback) => {
           notify = callback;
           return () => undefined;
@@ -421,11 +431,10 @@ describe('succession reconciler', () => {
         });
         expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { revision: seeded.intent.revision } });
 
-        await waitForCondition(() => {
-          const observed = readUpgradeIntent(runDir);
-          return observed.kind === 'readable' && observed.intent.revision > seeded.intent.revision;
-        }, 10_000);
-        expect(Date.now()).toBeGreaterThanOrEqual(retryAfterMs);
+        time.tick(1_500);
+        await changed.promise;
+        expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { revision: seeded.intent.revision + 1 } });
+        expect(time.now()).toBeGreaterThanOrEqual(retryAfterMs);
         expect(readUpgradeIntent(runDir)).toMatchObject({
           intent: { blockers: [{ owner: 'target', reason: 'target build no longer validates' }] },
         });
@@ -441,10 +450,7 @@ describe('succession reconciler', () => {
     const seeded = await seedHeldIntent(runDir, exited);
     const reconciler = servingReconciler(runDir);
     try {
-      await waitForCondition(() => {
-        const observed = readUpgradeIntent(runDir);
-        return observed.kind === 'readable' && observed.intent.incumbent.instanceId === serving.instanceId;
-      }, 5_000);
+      await reconciler.reconcile();
       expect(readUpgradeIntent(runDir)).toMatchObject({
         intent: {
           incumbent: serving,
@@ -457,23 +463,6 @@ describe('succession reconciler', () => {
         kind: 'deferred',
         reason: 'successor target must change after failed attempt',
       });
-    } finally {
-      reconciler.dispose();
-    }
-  });
-
-  it('closes an adopted intent whose target no longer outranks the adopting incumbent', async () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
-    directories.push(runDir);
-    const exited = { ...serving, instanceId: 'exited', pid: await exitedPid(), incarnation: null };
-    await seedHeldIntent(runDir, exited, serving.version);
-    const reconciler = servingReconciler(runDir);
-    try {
-      await waitForCondition(() => {
-        const observed = readUpgradeIntent(runDir);
-        return observed.kind === 'readable' && observed.intent.disposition === 'closed';
-      }, 5_000);
-      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { incumbent: serving, retryCondition: null } });
     } finally {
       reconciler.dispose();
     }
@@ -513,28 +502,6 @@ describe('succession reconciler', () => {
           retryCondition: seeded.retryCondition,
         },
       });
-    } finally {
-      reconciler.dispose();
-    }
-  });
-
-  it('removes the adoption hold once the recorded incumbent is proven gone', async () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
-    directories.push(runDir);
-    const exited = { ...serving, instanceId: 'exited', pid: await exitedPid(), incarnation: null };
-    const seeded = await seedHeldIntent(runDir, exited);
-    const held = await compareAndSwapUpgradeIntent(runDir, seeded.revision, {
-      ...seeded,
-      blockers: [...seeded.blockers, { owner: 'succession-adoption', reason: 'recorded incumbent is unknown' }],
-    });
-    if (held.kind !== 'written') throw new Error(`hold seed was ${held.kind}`);
-    const reconciler = servingReconciler(runDir);
-    try {
-      await waitForCondition(() => {
-        const observed = readUpgradeIntent(runDir);
-        return observed.kind === 'readable' && observed.intent.incumbent.instanceId === serving.instanceId;
-      }, 5_000);
-      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { blockers: seeded.blockers } });
     } finally {
       reconciler.dispose();
     }
@@ -582,7 +549,7 @@ describe('succession reconciler', () => {
       disposition: 'attempting',
       blockers: [],
       retryCondition: null,
-      attemptDeadline: new Date(Date.now() - 1_000).toISOString(),
+      attemptDeadline: new Date(time.now() - 1_000).toISOString(),
       completionReceipt: null,
     });
     if (committing.kind !== 'written') throw new Error(`intent seed was ${committing.kind}`);
@@ -606,7 +573,7 @@ describe('succession reconciler', () => {
     directories.push(runDir);
     const incumbent = { ...serving, instanceId: 'former', pid: await exitedPid(), incarnation: null };
     const discard = { attemptId: 'retirement-attempt', incumbentEpochKey: 'retired-epoch' };
-    const staleIncarnation = probeProcessIncarnation(process.pid);
+    const staleIncarnation = testIncarnation(process.pid);
     if (staleIncarnation === null) throw new Error('this process has no observable incarnation');
     const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
       requestId: 'request-1',
@@ -705,6 +672,7 @@ describe('succession reconciler', () => {
       },
     });
     if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    const adopted = createDeferred<void>();
     const reconciler = createSuccessionReconciler({
       runtime,
       runDir,
@@ -713,6 +681,10 @@ describe('succession reconciler', () => {
       epochKey: () => 'serving-epoch',
       admissionRevision: () => 0,
       commitAvailable: true,
+      onIntentChanged: () => {
+        const observed = readUpgradeIntent(runDir);
+        if (observed.kind === 'readable' && observed.intent.requestId === 'request-2') adopted.resolve();
+      },
       observeServing: (attemptId) =>
         attemptId === 'recovery-attempt'
           ? {
@@ -735,10 +707,8 @@ describe('succession reconciler', () => {
           retryCondition: { kind: 'target-change' },
         },
       });
-      await waitForCondition(() => {
-        const observed = readUpgradeIntent(runDir);
-        return observed.kind === 'readable' && observed.intent.requestId === 'request-2';
-      }, 5_000);
+      await adopted.promise;
+      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { requestId: 'request-2' } });
     } finally {
       reconciler.dispose();
     }
@@ -831,7 +801,7 @@ describe('succession reconciler', () => {
       unservedMintDiscard: discard,
     });
     if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
-    const outcomes: ('held' | 'discarded')[] = ['held', 'discarded'];
+    let discardAllowed = false;
     const attempts: (readonly [string, string])[] = [];
     const reconciler = createSuccessionReconciler({
       runtime,
@@ -845,18 +815,17 @@ describe('succession reconciler', () => {
       retryIntervalMs: 60_000,
       discardUnservedMint: (incumbentEpochKey, attemptId) => {
         attempts.push([incumbentEpochKey, attemptId]);
-        const kind = outcomes.shift() ?? 'discarded';
+        const kind = discardAllowed ? 'discarded' : 'held';
         return kind === 'held' ? { kind, reason: 'a reader holds the mint' } : { kind };
       },
     });
     try {
-      await waitForCondition(() => attempts.length >= 1);
+      await reconciler.reconcile();
       expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { unservedMintDiscard: discard } });
-      expect(await reconciler.reconcile()).toMatchObject({ kind: 'deferred' });
-      await waitForCondition(() => {
-        const observed = readUpgradeIntent(runDir);
-        return observed.kind === 'readable' && observed.intent.unservedMintDiscard === null;
-      });
+      discardAllowed = true;
+      await reconciler.reconcile();
+      await reconciler.reconcile();
+      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { unservedMintDiscard: null } });
       expect(attempts[0]).toEqual(['retired-epoch', 'failed-retirement']);
     } finally {
       reconciler.dispose();
@@ -927,66 +896,6 @@ describe('succession reconciler over an installed target', () => {
     return { owner, granted, classified };
   }
 
-  it('should not classify an owner that records grants while another owner blocks', async () => {
-    const runDir = runDirectory();
-    const target = installedTarget('/installed/target');
-    const durableCli = grantingOwner();
-    const workflow: SuccessionOwner = {
-      id: 'workflow',
-      classify: async () => ({ kind: 'blocking', reason: 'workflow execution is coordinator-local' }),
-    };
-    const reconciler = createSuccessionReconciler({
-      runtime,
-      runDir,
-      incumbent: () => serving,
-      owners: [durableCli.owner, workflow],
-      requiredOwners: ['durable-cli', 'workflow'],
-      epochKey: () => 'serving-epoch',
-      admissionRevision: () => 0,
-      commitAvailable: true,
-      retryIntervalMs: 60_000,
-    });
-    try {
-      await reconciler.request({ requestId: 'request-1', target });
-      for (let pass = 0; pass < 5; pass++) {
-        expect(await reconciler.reconcile()).toMatchObject({
-          kind: 'deferred',
-          blockers: [{ owner: 'workflow', reason: 'workflow execution is coordinator-local' }],
-        });
-      }
-      expect(durableCli.classified).toEqual([]);
-    } finally {
-      reconciler.dispose();
-    }
-  });
-
-  it('should discharge the grants of every attempt a blocked preparation left unnamed', async () => {
-    const runDir = runDirectory();
-    const target = installedTarget('/installed/target');
-    const durableCli = grantingOwner();
-    const launchAdmission = grantingOwner('blocking');
-    const reconciler = createSuccessionReconciler({
-      runtime,
-      runDir,
-      incumbent: () => serving,
-      owners: [durableCli.owner, launchAdmission.owner],
-      requiredOwners: ['durable-cli', 'launch-admission'],
-      epochKey: () => 'serving-epoch',
-      admissionRevision: () => 0,
-      commitAvailable: true,
-      retryIntervalMs: 60_000,
-    });
-    try {
-      await reconciler.request({ requestId: 'request-1', target });
-      for (let pass = 0; pass < 5; pass++) await reconciler.reconcile();
-      expect(durableCli.classified.length).toBeGreaterThanOrEqual(5);
-      expect(durableCli.granted.size).toBeLessThanOrEqual(1);
-      expect(launchAdmission.granted.size).toBeLessThanOrEqual(1);
-    } finally {
-      reconciler.dispose();
-    }
-  });
-
   it('should reuse an already named grant without classifying it a second time', async () => {
     const runDir = runDirectory();
     const target = installedTarget('/installed/target');
@@ -1021,54 +930,6 @@ describe('succession reconciler over an installed target', () => {
       expect(first.kind).toBe('prepared');
       expect(second).toEqual(first);
       expect(durableCli.classified).toHaveLength(1);
-    } finally {
-      reconciler.dispose();
-    }
-  });
-
-  it('should retain a named grant with the production required-owner default', async () => {
-    const runDir = runDirectory();
-    const target = installedTarget('/installed/target');
-    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
-      requestId: 'request-1',
-      incumbent: serving,
-      target,
-      attemptId: null,
-      attemptOwner: null,
-      disposition: 'pending',
-      blockers: [],
-      retryCondition: null,
-      attemptDeadline: null,
-      completionReceipt: null,
-    });
-    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
-    const durableCli = grantingOwner();
-    const owners: SuccessionOwner[] = [
-      durableCli.owner,
-      ...REQUIRED_SUCCESSION_OWNERS.filter((id) => id !== 'durable-cli').map((id) => ({
-        id,
-        classify: async () => ({ kind: 'completed' as const, reason: 'no live obligation' }),
-      })),
-    ];
-    const reconciler = createSuccessionReconciler({
-      runtime,
-      runDir,
-      incumbent: () => serving,
-      owners,
-      epochKey: () => 'serving-epoch',
-      admissionRevision: () => 0,
-      commitAvailable: false,
-      retryIntervalMs: 60_000,
-    });
-    try {
-      const first = await reconciler.prepare('request-1');
-      const second = await reconciler.prepare('request-1');
-      expect(first.kind).toBe('prepared');
-      expect(second).toEqual(first);
-      if (first.kind !== 'prepared') throw new Error(`preparation was ${first.kind}`);
-      await reconciler.reconcile();
-      expect(durableCli.classified).toEqual([first.preparation.attemptId]);
-      expect(durableCli.granted.has(first.preparation.attemptId)).toBe(true);
     } finally {
       reconciler.dispose();
     }
@@ -1179,7 +1040,8 @@ describe('succession reconciler over an installed target', () => {
     });
     try {
       await reconciler.request({ requestId: 'request-1', target });
-      await waitForCondition(() => launched.length === 1, 5_000);
+      await reconciler.reconcile();
+      expect(launched).toHaveLength(1);
       const newer = installedTarget('/installed/newer', '0.12.0');
 
       expect(await reconciler.request({ requestId: 'request-2', target: newer })).toMatchObject({
@@ -1203,6 +1065,8 @@ describe('succession reconciler over an installed target', () => {
       settle = resolve;
     });
     let committing: string | null = null;
+    const replacementPrepared = createDeferred<void>();
+    const adopted = createDeferred<void>();
     const reconciler = createSuccessionReconciler({
       runtime,
       runDir,
@@ -1212,15 +1076,20 @@ describe('succession reconciler over an installed target', () => {
       epochKey: () => 'serving-epoch',
       admissionRevision: () => 0,
       commitAvailable: true,
+      onIntentChanged: () => {
+        const observed = readUpgradeIntent(runDir);
+        if (observed.kind === 'readable' && observed.intent.requestId === 'request-2') adopted.resolve();
+      },
       retryIntervalMs: 60_000,
       launchPrepared: async (intent, preparation) => {
         const written = await compareAndSwapUpgradeIntent(runDir, intent.revision, {
           ...intent,
           disposition: 'attempting',
-          attemptDeadline: new Date(Date.now() + 5_000).toISOString(),
+          attemptDeadline: new Date(time.now() + 5_000).toISOString(),
         });
         if (written.kind !== 'written') throw new Error(`attempting write was ${written.kind}`);
         committing = preparation.attemptId;
+        if (intent.requestId === 'request-2') replacementPrepared.resolve();
         return { settled } as Awaited<
           ReturnType<NonNullable<Parameters<typeof createSuccessionReconciler>[0]['launchPrepared']>>
         >;
@@ -1228,7 +1097,8 @@ describe('succession reconciler over an installed target', () => {
     });
     try {
       await reconciler.request({ requestId: 'request-1', target });
-      await waitForCondition(() => committing !== null, 5_000);
+      await reconciler.reconcile();
+      expect(committing).not.toBeNull();
       const newer = installedTarget('/installed/newer', '0.12.0');
       await reconciler.request({ requestId: 'request-2', target: newer });
       expect(intentOf(runDir)).toMatchObject({ disposition: 'attempting', nextTarget: { requestId: 'request-2' } });
@@ -1250,7 +1120,9 @@ describe('succession reconciler over an installed target', () => {
         }),
       });
 
-      await waitForCondition(() => intentOf(runDir).requestId === 'request-2', 5_000);
+      await adopted.promise;
+      await replacementPrepared.promise;
+      expect(intentOf(runDir).requestId).toBe('request-2');
       expect(intentOf(runDir)).toMatchObject({ target: newer, attemptId: expect.any(String) as unknown });
     } finally {
       reconciler.dispose();

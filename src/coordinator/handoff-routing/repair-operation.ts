@@ -95,10 +95,3 @@ export function classifyHandoffRoutingStatusOperatorInvocation(
       return { kind: 'unclassified-routing-status' };
   }
 }
-
-export function parseHandoffRepairOperation(argv: readonly string[]): HandoffRepairOperation | null {
-  const classification = classifyHandoffRoutingStatusOperatorInvocation(argv);
-  return classification.kind === 'operator' && classification.command === 'resolve'
-    ? classification.repairOperation
-    : null;
-}

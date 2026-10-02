@@ -1,5 +1,5 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -9,9 +9,6 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import type * as NodeProcess from '#src/infra/node-process.js';
 
-// `observeProcessLiveness`/`probeProcessIncarnation` default to the real implementation so every existing test
-// below keeps observing genuine OS state; only the ambiguous-evidence test overrides them (once each) to
-// stage the alive-but-unreadable-start-time combination without depending on real `/proc` timing.
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const original = await importOriginal<typeof NodeProcess>();
   return {
@@ -40,6 +37,12 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const mockedIsAlive = vi.mocked(observeProcessLiveness);
 const mockedProbe = vi.mocked(probeProcessIncarnation);
+
+afterEach(async () => {
+  const original = await vi.importActual<typeof NodeProcess>('#src/infra/node-process.js');
+  mockedIsAlive.mockReset().mockImplementation(original.observeProcessLiveness);
+  mockedProbe.mockReset().mockImplementation(original.probeProcessIncarnation);
+});
 
 const PLATFORM = process.platform;
 // Guaranteed to name no process this OS ever assigns, so both the OS start-time probe and the alive check
@@ -349,12 +352,12 @@ describe('createObserveCarriers', () => {
   });
 
   it('reports a durable CLI job as live when the recorded pid and incarnation both still match', async () => {
-    const ownIncarnation = probeProcessIncarnation(process.pid, PLATFORM);
-    // Only the current test process's own pid is guaranteed alive and probeable from this test.
-    if (ownIncarnation === null) return;
+    const ownIncarnation = testIncarnation(42);
+    mockedProbe.mockReturnValue(ownIncarnation);
+    mockedIsAlive.mockReturnValue('alive');
     const runtime: JobRuntime = {
       transport: 'durable-cli',
-      pid: process.pid,
+      pid: 4242,
       stdoutPath: '/tmp/o',
       stderrPath: '/tmp/e',
       startTime: '2026-04-19T00:00:00.000Z',
@@ -363,10 +366,10 @@ describe('createObserveCarriers', () => {
     const db = createDb();
     writeDurableCliProcessRuntimeMeta(db, {
       jobId: DURABLE_JOB_ID,
-      pid: process.pid,
+      pid: 4242,
       incarnation: ownIncarnation,
-      processGroupId: process.pid,
-      childRoot: { pid: process.pid, incarnation: ownIncarnation },
+      processGroupId: 4242,
+      childRoot: { pid: 4242, incarnation: ownIncarnation },
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
@@ -402,11 +405,12 @@ describe('createObserveCarriers', () => {
   });
 
   it('reports a durable CLI job as absent when the pid is alive but its incarnation no longer matches — a recycled pid', async () => {
-    const ownIncarnation = probeProcessIncarnation(process.pid, PLATFORM);
-    if (ownIncarnation === null) return;
+    const ownIncarnation = testIncarnation(42);
+    mockedProbe.mockReturnValue(ownIncarnation);
+    mockedIsAlive.mockImplementation((pid) => (pid < 0 ? 'absent' : 'alive'));
     const runtime: JobRuntime = {
       transport: 'durable-cli',
-      pid: process.pid,
+      pid: 4242,
       stdoutPath: '/tmp/o',
       stderrPath: '/tmp/e',
       startTime: '2026-04-19T00:00:00.000Z',
@@ -415,10 +419,10 @@ describe('createObserveCarriers', () => {
     const db = createDb();
     writeDurableCliProcessRuntimeMeta(db, {
       jobId: DURABLE_JOB_ID,
-      pid: process.pid,
+      pid: 4242,
       incarnation: testIncarnation('a-different-incarnation'),
-      processGroupId: process.pid,
-      childRoot: { pid: process.pid, incarnation: testIncarnation('a-different-child-incarnation') },
+      processGroupId: 4242,
+      childRoot: { pid: 4242, incarnation: testIncarnation('a-different-child-incarnation') },
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 

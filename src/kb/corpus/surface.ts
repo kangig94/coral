@@ -11,7 +11,6 @@ import {
   capturePrincipleManifestDelta,
   captureSourceManifestDeltas,
   captureWikiManifestDeltas,
-  computeManifestHashFromSurfaceHashes,
   type FullManifestSurfaceHashes,
   type ManifestAuthority,
 } from './manifest-authority.js';
@@ -74,13 +73,6 @@ export function buildCurrentCorpusSurface(kb: Parameters<typeof buildCorpusScanV
 
 export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuthorityBaselineRecord[] {
   return [...buildCorpusSurface(scan).baselineRecords];
-}
-
-export function computeCorpusSurfaceManifestHash(
-  kb: Parameters<typeof buildCorpusScanView>[0],
-  lane: ManifestAuthorityLane,
-): string {
-  return computeManifestHashFromSurfaceHashes(buildCurrentCorpusSurface(kb).manifest[lane]);
 }
 
 export function diffCorpusSurfaces(before: CorpusSurface, after: CorpusSurface): CorpusSurfaceMutationDiff {

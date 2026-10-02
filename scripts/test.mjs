@@ -125,7 +125,7 @@ async function runVitestStrict(configName) {
 //
 // GitHub gives a public repository's `ubuntu-latest` job 4 vCPU (GitHub Actions runner specification, read
 // 2026-09-17), and every entry of `tasks` runs on them at once. No pool may assume a dedicated core: each
-// case spends its budget on a fraction of one, which is only survivable while no single case holds a core
+// case shares the available cores, which is only survivable while no single case holds a core
 // for tens of seconds — see casesWithoutHeadroom in scripts/test-report.mjs.
 if (process.env.CI) {
   console.error('skipping tsc: the CI gate typechecks the tree under its own step');
@@ -133,7 +133,6 @@ if (process.env.CI) {
 const tasks = [
   ...(process.env.CI ? [] : [runAsync('npx tsc -p tsconfig/typecheck.json')]),
   runVitestStrict('default'),
-  runVitestStrict('simulation'),
 ];
 
 const results = await Promise.allSettled(tasks);

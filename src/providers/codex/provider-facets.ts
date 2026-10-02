@@ -61,15 +61,6 @@ type CodexAppServerProbeResult =
 let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
 const codexAuthTokensCache = new Map<string, PreflightCacheEntry>();
 
-/** A test isolates itself from a sibling's cached verdict today by
- *  advancing a shared fake clock past `CODEX_PREFLIGHT_CACHE_TTL_MS` in `beforeEach` — this is the explicit
- *  escape hatch `createCliDetector`'s `resetCache` offers its own instance-scoped cache, for the one case that
- *  clock gap does not reach: a test that does not preserve it. */
-export function resetCodexPreflightCachesForTest(): void {
-  codexAppServerAvailabilityCache = null;
-  codexAuthTokensCache.clear();
-}
-
 async function rpc<M extends AppServerMethod>(
   lease: AppServerTransport,
   method: M,

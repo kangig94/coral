@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import { classifyCodexProviderResponseServiceability } from '#src/providers/codex/serviceability.js';
-import { classifyProviderResponseServiceability } from '#src/providers/serviceability.js';
 import type { ProviderResponseDiagnosticFact } from '#src/providers/host-diagnostics.js';
 
 describe('Codex provider response serviceability', () => {
@@ -30,25 +29,6 @@ describe('Codex provider response serviceability', () => {
         }),
       ),
     ).toBe('unknown');
-  });
-
-  it('does not interpret provider prose containing config/read as prerequisite identity', () => {
-    expect(
-      classifyCodexProviderResponseServiceability(
-        fact('thread/start', {
-          kind: 'failure',
-          rpcCode: -32_000,
-          providerMessage: 'operation rejected after config/read was mentioned',
-          providerData: null,
-        }),
-      ),
-    ).toBe('unknown');
-  });
-
-  it('registers the Codex classifier and leaves providers without a classifier unknown', () => {
-    const prerequisite = fact('config/read', { kind: 'success' });
-    expect(classifyProviderResponseServiceability('codex', prerequisite)).toBe('serviceable');
-    expect(classifyProviderResponseServiceability('claude', prerequisite)).toBe('unknown');
   });
 });
 

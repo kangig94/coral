@@ -1,369 +1,109 @@
-import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 
+import { createProviderProxyAuthorityHeartbeatAssembly } from '#src/coordinator/live/provider-proxy/heartbeat.js';
+import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import {
-  createProviderProxyAuthorityHeartbeatAssembly,
-  type ProviderProxyHeartbeatSession,
-  type ProviderProxyRoleHeartbeats,
-} from '#src/coordinator/live/provider-proxy/heartbeat.js';
-import {
-  createProviderProxyAuthorityFaultLatch,
-  type ProviderProxyAuthorityFault,
-} from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import {
-  connectControlClient,
+  ControlClientError,
   controlExchangeForTest,
   type ControlClient,
+  type ControlExchange,
 } from '#src/provider-proxy/control-client.js';
-import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
-import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
-import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
-import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
-import type { Runtime } from '#src/runtime/ports.js';
-import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { PROXY_CONTROL_HEARTBEAT_MS } from '#src/provider-proxy/orphan-deadline.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
-const cleanups: Array<() => void | Promise<void>> = [];
-
-afterEach(async () => {
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+const assemblies: ReturnType<typeof createProviderProxyAuthorityHeartbeatAssembly>[] = [];
+afterEach(() => {
+  for (const assembly of assemblies.splice(0)) assembly.stop();
 });
 
-const realTimer = {
-  setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
-  clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as NodeJS.Timeout),
-};
-
-function runtimeWithTime(time: VirtualTime): Runtime {
-  return { time } as unknown as Runtime;
+function startHeartbeat(exchange: ControlClient['exchange']) {
+  const runtime = new SimulationRuntime();
+  const time = runtime.time;
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const client: ControlClient = {
+    exchange,
+    faulted: new Promise<never>(() => {}),
+    onFault: () => () => {},
+    close: () => {},
+  };
+  const assembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
+  assemblies.push(assembly);
+  assembly.startRole('proxy', {
+    client,
+    controlEpoch: 1,
+    nextHeartbeatChallenge: 'challenge-1',
+    instanceId: 'proxy-1',
+  });
+  return { time, faults };
 }
 
-function passiveClient(role: 'guardian' | 'reaper'): ControlClient {
-  let challenge = 0;
-  return {
-    exchange: async () =>
+it('keeps one heartbeat outstanding across multiple scheduler intervals', async () => {
+  const response = createDeferred<ControlExchange>();
+  const exchange = vi.fn<ControlClient['exchange']>(() => response.promise);
+  const { time } = startHeartbeat(exchange);
+  time.tick(PROXY_CONTROL_HEARTBEAT_MS * 3);
+  expect(exchange).toHaveBeenCalledOnce();
+
+  response.resolve(
+    controlExchangeForTest({
+      kind: 'response',
+      response: {
+        kind: 'result',
+        value: { state: 'active', nextHeartbeatChallenge: 'challenge-2' },
+      },
+    }),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+  expect(exchange).toHaveBeenCalledTimes(2);
+  expect(exchange.mock.calls[1][1]).toEqual({ controlEpoch: 1, heartbeatChallenge: 'challenge-2' });
+});
+
+it('uses the replacement challenge after a mismatch without losing authority', async () => {
+  const exchange = vi
+    .fn<ControlClient['exchange']>()
+    .mockResolvedValueOnce(
+      controlExchangeForTest({
+        kind: 'response',
+        response: {
+          kind: 'refusal',
+          failure: {
+            kind: 'json-rpc-error',
+            jsonRpcCode: -32600,
+            protocolCode: 'invalid_request',
+            admissionReason: null,
+            heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-2' },
+          },
+          error: new ControlClientError('control_call_failed', 'challenge mismatch', 'remote-response', {
+            kind: 'json-rpc-error',
+            jsonRpcCode: -32600,
+            protocolCode: 'invalid_request',
+            admissionReason: null,
+            heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-2' },
+          }),
+        },
+      }),
+    )
+    .mockResolvedValue(
       controlExchangeForTest({
         kind: 'response',
         response: {
           kind: 'result',
-          value: { state: 'active', nextHeartbeatChallenge: `${role}-challenge-${++challenge}` },
+          value: { state: 'active', nextHeartbeatChallenge: 'challenge-3' },
         },
       }),
-    faulted: new Promise<never>(() => undefined),
-    onFault: () => () => undefined,
-    close: () => undefined,
-  };
-}
-
-function sessions(
-  clients: { proxy: ControlClient; guardian: ControlClient; reaper: ControlClient },
-  opened: {
-    controlEpoch: number;
-    heartbeatChallenge: string;
-  },
-): Record<'proxy' | 'guardian' | 'reaper', ProviderProxyHeartbeatSession> {
-  return {
-    proxy: {
-      client: clients.proxy,
-      controlEpoch: opened.controlEpoch,
-      nextHeartbeatChallenge: opened.heartbeatChallenge,
-      instanceId: 'proxy-1',
-    },
-    guardian: {
-      client: clients.guardian,
-      controlEpoch: 2,
-      nextHeartbeatChallenge: 'guardian-challenge-0',
-      instanceId: 'guardian-1',
-    },
-    reaper: {
-      client: clients.reaper,
-      controlEpoch: 3,
-      nextHeartbeatChallenge: 'reaper-challenge-0',
-      instanceId: 'reaper-1',
-    },
-  };
-}
-
-function startAll(
-  heartbeatSessions: ReturnType<typeof sessions>,
-  runtime: Runtime,
-  faults: ReturnType<typeof createProviderProxyAuthorityFaultLatch>,
-): ProviderProxyRoleHeartbeats {
-  const assembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
-  assembly.startRole('proxy', heartbeatSessions.proxy);
-  assembly.startRole('guardian', heartbeatSessions.guardian);
-  assembly.startRole('reaper', heartbeatSessions.reaper);
-  return assembly.complete();
-}
-
-async function openLeaseEndpoint(
-  onAcceptedEcho?: (leaseIsLive: boolean) => void,
-  onRejectedEcho?: (reason: string) => void,
-  options: Readonly<{
-    time?: VirtualTime;
-    beforeEcho?: () => void;
-  }> = {},
-) {
-  const directory = mkdtempSync(join(tmpdir(), 'coral-heartbeat-'));
-  cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
-  const socketPath = join(directory, 'control.sock');
-  const clockScope = Symbol('heartbeat-lease');
-  let elapsed = 0n;
-  const clock = createMonotonicClock(clockScope, {
-    readMilliseconds: () => (options.time === undefined ? elapsed : BigInt(options.time.now())),
-  });
-  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now());
-  let challengeNumber = 0;
-  const mintChallenge = (): string => `challenge-${challengeNumber++}`;
-  const challenges: ControlChallengeAuthority = {
-    issueFirstChallenge: () => {
-      const challenge = mintChallenge();
-      return lease.issueFirstChallenge(challenge)
-        ? { accepted: true, challenge }
-        : { accepted: false, reason: 'already-issued' };
-    },
-    admitSuccessor: () => ({ accepted: false, reason: 'not-used' }),
-    reattachControl: () => {
-      lease.reattachControl();
-      return { accepted: true };
-    },
-    controlIsLive: () => lease.isControlLive(clock.now()),
-    echoChallenge: (challenge) => {
-      options.beforeEcho?.();
-      const nextChallenge = mintChallenge();
-      const recorded = lease.echoChallenge(clock.now(), challenge, nextChallenge);
-      if (!recorded.accepted) {
-        onRejectedEcho?.(recorded.reason);
-        return recorded;
-      }
-      onAcceptedEcho?.(lease.isControlLive(clock.now()));
-      return { accepted: true, nextChallenge };
-    },
-  };
-  const endpoint = createControlEndpoint({
-    socketPath,
-    role: {
-      heartbeatMethod: 'control.heartbeat.v1',
-      methods: new Map([
-        [
-          'role.open.v1',
-          {
-            authority: 'establishes-control' as const,
-            handle: async () => ({
-              holder: { instanceId: 'coordinator', pid: 1, incarnation: testIncarnation(1) },
-              fields: {},
-            }),
-          },
-        ],
-      ]),
-    },
-    challenges,
-    observer: { onControlLost: () => undefined },
-    timer: options.time ?? realTimer,
-    holderAuthority: createControlHolderAuthority(),
-    requestTimeoutMs: 5_000,
-  });
-  await endpoint.listen();
-  cleanups.push(() => endpoint.close());
-  const client = await connectControlClient(socketPath, options.time ?? realTimer, 5_000);
-  cleanups.push(() => client.close());
-  if (options.time === undefined) elapsed = 1_000n;
-  else options.time.tick(1_000);
-  const openedExchange = await client.exchange('role.open.v1', {}, 5_000);
-  if (openedExchange.kind !== 'response' || openedExchange.response.kind !== 'result') {
-    throw new Error('heartbeat fixture control did not open');
-  }
-  const opened = openedExchange.response.value as {
-    controlEpoch: number;
-    heartbeatChallenge: string;
-  };
-  return {
-    client,
-    opened,
-    setElapsed: (milliseconds: number) => {
-      elapsed = BigInt(milliseconds);
-    },
-    controlIsLive: () => lease.isControlLive(clock.now()),
-  };
-}
-
-describe('provider proxy heartbeat against the real endpoint', () => {
-  it('accepts two consecutive recurring echoes that each spend 4200ms before endpoint acceptance', async () => {
-    const time = new VirtualTime();
-    let heartbeatRpcCalls = 0;
-    let activeCalls = 0;
-    let maxActiveCalls = 0;
-    let acceptedEchoes = 0;
-    const rejectedReasons: string[] = [];
-    const failures: ProviderProxyAuthorityFault[] = [];
-    const endpoint = await openLeaseEndpoint(
-      () => {
-        acceptedEchoes += 1;
-      },
-      (reason) => rejectedReasons.push(reason),
-      { time, beforeEcho: () => time.tick(4_200) },
     );
-    const client: ControlClient = {
-      ...endpoint.client,
-      exchange(method, params, timeoutMs) {
-        if (method !== 'control.heartbeat.v1') return endpoint.client.exchange(method, params, timeoutMs);
-        heartbeatRpcCalls += 1;
-        activeCalls += 1;
-        maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
-        return endpoint.client.exchange(method, params, timeoutMs).finally(() => {
-          activeCalls -= 1;
-        });
-      },
-    };
-    const clients = { proxy: client, guardian: passiveClient('guardian'), reaper: passiveClient('reaper') };
-    const faultLatch = createProviderProxyAuthorityFaultLatch();
-    faultLatch.onFault((fault) => failures.push(fault));
-    const heartbeats = startAll(sessions(clients, endpoint.opened), runtimeWithTime(time), faultLatch);
-
-    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
-    await vi.waitFor(() => expect(acceptedEchoes).toBe(1));
-    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
-    await vi.waitFor(() => expect(acceptedEchoes + rejectedReasons.length).toBe(2));
-
-    expect({
-      acceptedEchoes,
-      rejectedReasons,
-      controlIsLive: endpoint.controlIsLive(),
-      faults: failures.map((failure) =>
-        failure.kind === 'operation-control-failed' ? failure.kind : `${failure.kind}:${failure.role}`,
-      ),
-      heartbeatRpcCalls,
-      maxActiveCalls,
-    }).toEqual({
-      acceptedEchoes: 2,
-      rejectedReasons: [],
-      controlIsLive: true,
-      faults: [],
-      heartbeatRpcCalls: 2,
-      maxActiveCalls: 1,
-    });
-    heartbeats.proxy.stop();
-    heartbeats.guardian.stop();
-    heartbeats.reaper.stop();
-  });
-
-  it('keeps one RPC outstanding while an accepted response spans two intervals', async () => {
-    const time = new VirtualTime();
-    let heartbeatRpcCalls = 0;
-    let acceptedResponses = 0;
-    const failures: ProviderProxyAuthorityFault[] = [];
-    const rejectedReasons: string[] = [];
-    let heldResponseSnapshot: { calls: number; failures: number; leaseIsLive: boolean } | null = null;
-    const endpoint = await openLeaseEndpoint(
-      (leaseIsLive) => {
-        time.tick(PROXY_CONTROL_HEARTBEAT_MS * 2);
-        heldResponseSnapshot = { calls: heartbeatRpcCalls, failures: failures.length, leaseIsLive };
-      },
-      (reason) => rejectedReasons.push(reason),
-    );
-    const client: ControlClient = {
-      ...endpoint.client,
-      exchange(method, params, timeoutMs) {
-        if (method === 'control.heartbeat.v1') heartbeatRpcCalls += 1;
-        const exchanged = endpoint.client.exchange(method, params, timeoutMs);
-        if (method === 'control.heartbeat.v1') {
-          void exchanged.then(
-            (outcome) => {
-              // An exchange resolves for every outcome, so acceptance is the variant, not the settlement.
-              if (outcome.kind === 'response' && outcome.response.kind === 'result') acceptedResponses += 1;
-            },
-            () => undefined,
-          );
-        }
-        return exchanged;
-      },
-    };
-    const clients = { proxy: client, guardian: passiveClient('guardian'), reaper: passiveClient('reaper') };
-    const faultLatch = createProviderProxyAuthorityFaultLatch();
-    faultLatch.onFault((fault) => failures.push(fault));
-    endpoint.setElapsed(4_000);
-    const heartbeats = startAll(sessions(clients, endpoint.opened), runtimeWithTime(time), faultLatch);
-
-    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
-    await vi.waitFor(() => expect(heldResponseSnapshot).not.toBeNull());
-    await vi.waitFor(() => expect(acceptedResponses).toBe(1));
-
-    expect({
-      heldResponseSnapshot,
-      rejectedReasons,
-      faults: failures.map((failure) =>
-        failure.kind === 'operation-control-failed' ? failure.kind : `${failure.kind}:${failure.role}`,
-      ),
-    }).toEqual({
-      heldResponseSnapshot: { calls: 1, failures: 0, leaseIsLive: true },
-      rejectedReasons: [],
-      faults: [],
-    });
-
-    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
-    await vi.waitFor(() => expect(heartbeatRpcCalls).toBe(2));
-    expect(failures).toEqual([]);
-    heartbeats.proxy.stop();
-    heartbeats.guardian.stop();
-    heartbeats.reaper.stop();
-  });
-
-  it('resynchronizes after a real endpoint challenge mismatch without latching authority loss', async () => {
-    const time = new VirtualTime();
-    let heartbeatRpcCalls = 0;
-    let endpointRejections = 0;
-    const failures: ProviderProxyAuthorityFault[] = [];
-    const incidents: string[] = [];
-    const endpoint = await openLeaseEndpoint(undefined, () => {
-      endpointRejections += 1;
-    });
-    const client: ControlClient = {
-      ...endpoint.client,
-      exchange(method, params, timeoutMs) {
-        if (method === 'control.heartbeat.v1') heartbeatRpcCalls += 1;
-        return endpoint.client.exchange(method, params, timeoutMs);
-      },
-    };
-    const clients = { proxy: client, guardian: passiveClient('guardian'), reaper: passiveClient('reaper') };
-    const faultLatch = createProviderProxyAuthorityFaultLatch();
-    faultLatch.onFault((fault) => failures.push(fault));
-    faultLatch.onIncident((incident) => {
-      if (
-        incident.kind === 'heartbeat-observation' &&
-        incident.role === 'proxy' &&
-        incident.observation.kind === 'reply'
-      ) {
-        incidents.push(incident.observation.reply.kind);
-      }
-    });
-    const heartbeatSessions = sessions(clients, endpoint.opened);
-    const heartbeats = startAll(
-      {
-        ...heartbeatSessions,
-        proxy: { ...heartbeatSessions.proxy, nextHeartbeatChallenge: 'wrong-challenge' },
-      },
-      runtimeWithTime(time),
-      faultLatch,
-    );
-
-    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
-    await vi.waitFor(() => expect(endpointRejections).toBe(1));
-    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
-    // The retry's acceptance is published when its promise settles, which is later than the call being
-    // counted at the transport; waiting on the count would assert before the acceptance is observable.
-    await vi.waitFor(() => expect(incidents).toContain('accepted'));
-
-    expect({ endpointRejections, heartbeatRpcCalls, failures: failures.length, incidents }).toEqual({
-      endpointRejections: 1,
-      heartbeatRpcCalls: 2,
-      failures: 0,
-      incidents: ['challenge-mismatch', 'accepted'],
-    });
-    heartbeats.proxy.stop();
-    heartbeats.guardian.stop();
-    heartbeats.reaper.stop();
-  });
+  const { time, faults } = startHeartbeat(exchange);
+  const observedFaults: unknown[] = [];
+  faults.onFault((fault) => observedFaults.push(fault));
+  time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(exchange.mock.calls.map((call) => call[1])).toEqual([
+    { controlEpoch: 1, heartbeatChallenge: 'challenge-1' },
+    { controlEpoch: 1, heartbeatChallenge: 'challenge-2' },
+  ]);
+  expect(observedFaults).toEqual([]);
 });

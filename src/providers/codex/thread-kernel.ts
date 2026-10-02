@@ -1158,50 +1158,6 @@ async function waitForTurnResult(
   }
 }
 
-export function createCodexTurnStateForTest(request: ProviderRequest, runtime: CodexProviderRuntime): CodexTurnState {
-  return createState(request, runtime);
-}
-
-export function applyCodexNotificationForTest(
-  state: CodexTurnState,
-  message: AppServerNotificationMessage,
-  emit: (event: ProviderEventBody) => void,
-): void {
-  applyNotification(state, message, emit);
-}
-
-export function buildCodexCompletedTerminalForTest(
-  state: CodexTurnState,
-  turn: Turn,
-): Extract<ProviderEventBody, { kind: 'terminal' }> {
-  return buildCompletedTerminal(state, turn);
-}
-
-export function buildCodexFailedTerminalForTest(
-  state: CodexTurnState,
-  message: string,
-): Extract<ProviderEventBody, { kind: 'terminal' }> {
-  return buildFailedTerminal(state, message);
-}
-
-export function buildCodexAbortedTerminalForTest(
-  state: CodexTurnState,
-): Extract<ProviderEventBody, { kind: 'terminal' }> {
-  return buildAbortedTerminal(state);
-}
-
-export function finishCodexCompletedForTest(
-  state: CodexTurnState,
-  turn: Turn,
-  emit: (event: ProviderEventBody) => void,
-): Promise<Extract<ProviderEventBody, { kind: 'terminal' | 'suspended' }> | null> {
-  return finishInvocation(
-    state,
-    { kind: 'completed', turn, source: 'notification', attempt: state.activeAttempt },
-    emit,
-  );
-}
-
 function isSuccessfulTurn(status: string | undefined): boolean {
   return status === undefined || status === 'completed';
 }

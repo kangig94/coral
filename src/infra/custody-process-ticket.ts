@@ -67,8 +67,6 @@ export function custodyProcessArgument(processToken: string): string {
   return `--coral-custody-token=${z.string().uuid().parse(processToken)}`;
 }
 
-export type CustodyProcessTokenObservation = 'alive' | 'absent' | 'unknown';
-
 /** Only a complete process listing may prove a pre-minted process token absent. */
 export function findCustodyProcessToken(
   processToken: string,
@@ -112,10 +110,6 @@ export function findCustodyProcessToken(
     }
   }
   return { kind: undecidable ? 'unknown' : 'absent' };
-}
-
-export function observeCustodyProcessToken(processToken: string): CustodyProcessTokenObservation {
-  return findCustodyProcessToken(processToken).kind;
 }
 
 export function recordChildRoleCustodyIntent(

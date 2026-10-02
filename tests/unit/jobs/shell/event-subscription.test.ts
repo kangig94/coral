@@ -10,17 +10,6 @@ describe('subscribeJobEvents', () => {
       Symbol.asyncIterator
     ]();
 
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const result = await Promise.race([
-        iterator.next(),
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(() => reject(new Error('subscription did not close')), 100);
-        }),
-      ]);
-      expect(result.done).toBe(true);
-    } finally {
-      if (timeout !== undefined) clearTimeout(timeout);
-    }
+    expect(await iterator.next()).toEqual({ value: undefined, done: true });
   });
 });

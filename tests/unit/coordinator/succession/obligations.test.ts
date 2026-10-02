@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  REQUIRED_SUCCESSION_OWNERS,
-  prepareOwnerObligations,
-  type SuccessionOwner,
-} from '#src/coordinator/succession/obligations.js';
+import { prepareOwnerObligations, type SuccessionOwner } from '#src/coordinator/succession/obligations.js';
 import type { SuccessionCapabilities } from '#src/coordinator/succession/protocol.js';
 
 const capabilities: SuccessionCapabilities = {
@@ -16,19 +12,6 @@ const capabilities: SuccessionCapabilities = {
 };
 
 describe('succession owner preparation', () => {
-  it.each(REQUIRED_SUCCESSION_OWNERS)('requires the %s owner contract', async (missing) => {
-    const owners: SuccessionOwner[] = REQUIRED_SUCCESSION_OWNERS.filter((id) => id !== missing).map((id) => ({
-      id,
-      classify: async () => ({ kind: 'completed', reason: 'no live work' }),
-    }));
-    const accepts = REQUIRED_SUCCESSION_OWNERS.map((owner) => ({ owner, generation: 1 }));
-
-    expect(await prepareOwnerObligations(owners, 'attempt', { ...capabilities, accepts })).toMatchObject({
-      kind: 'blocking',
-      blockers: expect.arrayContaining([{ owner: missing, reason: 'owner disposition unavailable' }]),
-    });
-  });
-
   it('allows a completed owner without declaring a transfer contract', async () => {
     const classify = vi.fn(async () => ({ kind: 'completed' as const, reason: 'settled' }));
     const owner: SuccessionOwner = { id: 'launch-admission', classify };

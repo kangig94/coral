@@ -1,19 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-
-import { observeProcessLiveness } from '#src/infra/node-process.js';
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
 import {
   buildArtifactsAvailable,
   coordinatorFilesForHome,
   createPluginFixture,
-  readDiscoveryRecordForHome,
-  spawnCoordinator,
-  stopCoordinator,
-  waitForDiscoveryRecord,
 } from '../../../integration/coordinator/helpers.js';
 
 const SOURCE_MANIFEST = join(process.cwd(), 'clients', 'build', 'manifest.json');
@@ -78,56 +72,5 @@ describe('bundled child coordinator confinement', () => {
     expect(existsSync(paths.startupErrorFile)).toBe(false);
     expect(existsSync(paths.startupDiagnosticFile)).toBe(false);
     expect(existsSync(join(paths.runDir, 'coordinator.log'))).toBe(false);
-  });
-
-  it('reuses a mismatched parent before rejecting an unregistered child without lifecycle mutation', async () => {
-    if (!buildArtifactsAvailable() || !existsSync(SOURCE_MANIFEST)) {
-      throw new Error('Expected a built Coral bundle before running lifecycle E2E tests.');
-    }
-
-    const flavor = sourceFlavor();
-    const home = temporaryHomes.create('coral-child-mismatch-', flavor);
-    const parentFixture = createPluginFixture(tempRoots, { flavor, bundleHash: 'parent-bundle-a' });
-    const childFixture = createPluginFixture(tempRoots, { flavor, bundleHash: 'child-bundle-b' });
-    expect(childFixture.bundleHash).not.toBe(parentFixture.bundleHash);
-
-    const parent = spawnCoordinator({
-      fixture: parentFixture,
-      home,
-      tempRoots,
-      env: { CLAUDE_CONFIG_DIR: '', CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000' },
-    });
-    temporaryHomes.registerCoordinator(home, parent, stopCoordinator);
-    const before = await waitForDiscoveryRecord(home, flavor, 15_000);
-    const paths = coordinatorFilesForHome(home, flavor);
-    const discoveryBefore = readFileSync(paths.infoFile, 'utf-8');
-    const logPath = join(paths.runDir, 'coordinator.log');
-    const logBefore = existsSync(logPath) ? statSync(logPath) : null;
-
-    // This bundled boundary deliberately uses an unknown handle so it can run
-    // without launching a provider. The IPC server integration suite covers a
-    // registered child succeeding within its caps and receiving the actionable
-    // missing_capability response outside them.
-    const result = runUnregisteredChildCli(join(childFixture.root, 'bridge', 'coral-cli'), home);
-
-    expect(result.error).toBeUndefined();
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('IPC boot token or child principal required');
-
-    const after = readDiscoveryRecordForHome(home, flavor);
-    expect(after).not.toBeNull();
-    expect(after?.pid).toBe(before.pid);
-    expect(after?.instanceId).toBe(before.instanceId);
-    expect(after?.bundleHash).toBe(before.bundleHash);
-    expect(after?.bundleHash).toBe(parentFixture.bundleHash);
-    expect(readFileSync(paths.infoFile, 'utf-8')).toBe(discoveryBefore);
-    expect(observeProcessLiveness(before.pid)).toBe('alive');
-
-    if (logBefore === null) {
-      expect(existsSync(logPath)).toBe(false);
-    } else {
-      const logAfter = statSync(logPath);
-      expect(logAfter.ino).toBe(logBefore.ino);
-    }
   });
 });

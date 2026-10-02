@@ -1,69 +1,40 @@
 import { deleteNote } from './ops/delete.js';
-import { deleteMemos, listMemos, purgeMemos, writeMemo } from './ops/memo.js';
+import { deleteMemos, purgeMemos, writeMemo } from './ops/memo.js';
 import { promote as kbPromote } from './ops/promote.js';
-import { listPrinciples } from './ops/principles-list.js';
-import { searchKb } from './ops/search.js';
-import { deleteSource, listSources } from './ops/source/store.js';
+import { deleteSource } from './ops/source/store.js';
 import { update as kbUpdate } from './ops/update.js';
 import { adoptIntoWiki } from './ops/wiki/adopt.js';
 import { citeWikiKnowledge } from './ops/wiki/cite.js';
 import { createWiki } from './ops/wiki/create.js';
 import { deleteWiki } from './ops/wiki/delete.js';
 import { linkWikiKnowledge } from './ops/wiki/link.js';
-import { listWikis } from './ops/wiki/list.js';
 import { rewriteWikiUnderstanding } from './ops/wiki/rewrite.js';
 import { unlinkWikiKnowledge } from './ops/wiki/unlink.js';
-import { generateWakeUpPacket } from './ops/wake-up.js';
-import { readCurateRetryQueue } from './curate/retry.js';
-import { readCurateConflictQuarantine } from './curate/conflict-quarantine.js';
-import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from './validation.js';
 import { applyCommunitySummary } from './curate/community/summary-surface.js';
-import { type KbReadKind } from './selector.js';
-import { readEntry, readEntryByKind, type KbReadOptions, type KbReadPathResolver } from './read.js';
+import { readEntry, type KbReadPathResolver } from './read.js';
 import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { assertOwnerId } from '../infra/identifiers.js';
 import type { KbToolRuntime, KnowledgeBaseRuntime } from './runtime-contract.js';
-import { buildKbDiagnoseResult } from './diagnose.js';
 import {
   kbCommunitySetSummarySchema,
   kbDeleteSchema,
-  kbDiagnoseSchema,
   kbMemoDeleteConsolidatedSchema,
-  kbMemoDeleteSchema,
-  kbMemoListSchema,
-  kbMemoPurgeSchema,
   kbMemoSchema,
-  kbPrinciplesSchema,
   kbPromoteSchema,
   kbReadSchema,
-  kbSearchSchema,
   kbSourceDeleteSchema,
-  kbSourceListSchema,
   kbUpdateSchema,
-  kbWakeUpSchema,
   kbWikiAdoptSchema,
   kbWikiCiteSchema,
   kbWikiCreateSchema,
   kbWikiDeleteSchema,
   kbWikiLinkSchema,
-  kbWikiListSchema,
-  kbWikiReadSchema,
   kbWikiRewriteSchema,
   kbWikiUnlinkSchema,
 } from './tool-contracts.js';
 
 type KbArgs = Record<string, unknown>;
-
-function asAbortSignal(value: unknown): AbortSignal | undefined {
-  return typeof value === 'object' &&
-    value !== null &&
-    'aborted' in value &&
-    'addEventListener' in value &&
-    'removeEventListener' in value
-    ? (value as AbortSignal)
-    : undefined;
-}
 
 function kbErrorResult(error: unknown): KbToolResult {
   const detail = error instanceof Error ? { message: error.message } : error;
@@ -98,33 +69,6 @@ function invalidRequestResult(error: unknown): KbToolResult {
   return kbError('invalid_request', deriveKbErrorMessage('invalid_request', error));
 }
 
-function kbNotFoundResult(kind: KbReadKind, slug: string): KbToolResult {
-  return kbError('not_found', `KB ${kind} not found: ${slug}`);
-}
-
-function normalizeKbSlug(
-  slug: string,
-  kind: KbReadKind,
-): { ok: true; slug: string } | { ok: false; result: KbToolResult } {
-  try {
-    if (kind === 'community') {
-      return { ok: true, slug: assertCommunitySlug(slug, kind) };
-    }
-
-    if (kind === 'source') {
-      return { ok: true, slug: assertSourceSlug(slug, kind) };
-    }
-
-    if (kind === 'wiki') {
-      return { ok: true, slug: assertWikiSlug(slug, kind) };
-    }
-
-    return { ok: true, slug: assertNoteSlug(slug, kind) };
-  } catch (error: unknown) {
-    return { ok: false, result: invalidRequestResult(error) };
-  }
-}
-
 function validateOwner(
   owner: string | undefined,
 ): { ok: true; owner: string | undefined } | { ok: false; result: KbToolResult } {
@@ -155,120 +99,6 @@ function kbReadPaths(kbRuntime: KnowledgeBaseRuntime | undefined): KbReadPathRes
     communityPath: (slug) => required.kb.communityPath(slug),
     principlePath: (slug) => required.kb.principlePath(slug),
   };
-}
-
-function buildKbReadOptions(
-  kind: KbReadKind,
-  ctx: InvocationContext | undefined,
-  runtime: KbToolRuntime,
-  kbRuntime: KnowledgeBaseRuntime | undefined,
-): KbReadOptions {
-  const options: KbReadOptions = {
-    ...(ctx?.projectRoot === undefined ? {} : { projectDataDir: runtime.paths.projectData(ctx.projectRoot) }),
-    storage: runtime.storage,
-  };
-  return kind === 'memo'
-    ? options
-    : {
-        ...options,
-        paths: kbReadPaths(kbRuntime),
-        ...(kbRuntime === undefined
-          ? {}
-          : {
-              communityDocumentProvider: {
-                readGeneratedCommunityDocument: (slug: string) =>
-                  kbRuntime.kb.generatedCommunityProjectionStore.readCommunityDocument(slug),
-              },
-            }),
-      };
-}
-
-function handleKbTypedRead(
-  kind: KbReadKind,
-  slug: string,
-  ctx: InvocationContext | undefined,
-  runtime: KbToolRuntime,
-  kbRuntime?: KnowledgeBaseRuntime,
-): KbToolResult {
-  const normalized = normalizeKbSlug(slug, kind);
-  if (!normalized.ok) {
-    return normalized.result;
-  }
-
-  try {
-    const entry = readEntryByKind(kind, normalized.slug, buildKbReadOptions(kind, ctx, runtime, kbRuntime));
-    return entry === null ? kbNotFoundResult(kind, normalized.slug) : kbSuccess(entry);
-  } catch (error: unknown) {
-    return kbErrorResult(error);
-  }
-}
-
-export async function handleKbSearch(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
-  const parsed = kbSearchSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return runKbAction(() =>
-    searchKb(
-      kbRuntime.kb,
-      parsed.data.query,
-      parsed.data.top_k ?? 20,
-      parsed.data.scope ?? 'all',
-      parsed.data.mode ?? 'auto',
-      asAbortSignal(args.abortSignal),
-    ),
-  );
-}
-
-export function handleKbNoteRead(
-  slug: string,
-  ctx: InvocationContext,
-  runtime: KbToolRuntime,
-  kbRuntime?: KnowledgeBaseRuntime,
-): KbToolResult {
-  return handleKbTypedRead('note', slug, ctx, runtime, kbRuntime);
-}
-
-export function handleKbSourceRead(
-  slug: string,
-  kbRuntime: KnowledgeBaseRuntime | undefined,
-  runtime: KbToolRuntime,
-): KbToolResult {
-  return handleKbTypedRead('source', slug, undefined, runtime, kbRuntime);
-}
-
-export function handleKbCommunityRead(
-  slug: string,
-  kbRuntime: KnowledgeBaseRuntime | undefined,
-  runtime: KbToolRuntime,
-): KbToolResult {
-  return handleKbTypedRead('community', slug, undefined, runtime, kbRuntime);
-}
-
-export function handleKbWikiRead(
-  slugOrArgs: string | KbArgs,
-  kbRuntime: KnowledgeBaseRuntime | undefined,
-  runtime: KbToolRuntime,
-): KbToolResult {
-  const parsed = kbWikiReadSchema.safeParse(typeof slugOrArgs === 'string' ? { slug: slugOrArgs } : slugOrArgs);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return handleKbTypedRead('wiki', parsed.data.slug, undefined, runtime, kbRuntime);
-}
-
-export function handleKbMemoRead(slug: string, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
-  return handleKbTypedRead('memo', slug, ctx, runtime);
-}
-
-export function handleKbPrincipleRead(
-  slug: string,
-  kbRuntime: KnowledgeBaseRuntime | undefined,
-  runtime: KbToolRuntime,
-): KbToolResult {
-  return handleKbTypedRead('principle', slug, undefined, runtime, kbRuntime);
 }
 
 export function handleKbRead(
@@ -421,48 +251,6 @@ export async function handleKbWikiDelete(args: KbArgs, kbRuntime: KnowledgeBaseR
   return runKbMutationAction(kbRuntime, () => deleteWiki(kbRuntime.kb, parsed.data));
 }
 
-export async function handleKbWikiList(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
-  const parsed = kbWikiListSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return runKbAction(async () => {
-    return { wikis: await listWikis(kbRuntime.kb) };
-  });
-}
-
-export async function handleKbWakeUp(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
-  const parsed = kbWakeUpSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return runKbAction(async () => ({
-    content: await generateWakeUpPacket(kbRuntime.kb, parsed.data.project),
-  }));
-}
-
-export function handleKbDiagnose(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): KbToolResult {
-  const parsed = kbDiagnoseSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return runKbSyncAction(() =>
-    buildKbDiagnoseResult(readCurateRetryQueue(kbRuntime.readDb), readCurateConflictQuarantine(kbRuntime.readDb)),
-  );
-}
-
-export async function handleKbSourceList(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
-  const parsed = kbSourceListSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return runKbAction(() => listSources(kbRuntime.kb));
-}
-
 export async function handleKbSourceDelete(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbSourceDeleteSchema.safeParse(args);
   if (!parsed.success) {
@@ -490,17 +278,6 @@ export async function handleKbCommunitySetSummary(
   });
 }
 
-export async function handleKbPrinciples(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
-  const parsed = kbPrinciplesSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return runKbAction(async () => {
-    return listPrinciples(kbRuntime.kb, parsed.data);
-  });
-}
-
 export function handleKbMemo(args: KbArgs, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
   const parsed = kbMemoSchema.safeParse(args);
   if (!parsed.success) {
@@ -525,38 +302,6 @@ export function handleKbMemo(args: KbArgs, ctx: InvocationContext, runtime: KbTo
       runtime.time,
     ),
   );
-}
-
-export function handleKbMemoList(args: KbArgs, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
-  const parsed = kbMemoListSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  const owner = validateOwner(parsed.data.owner);
-  if (!owner.ok) {
-    return owner.result;
-  }
-
-  return runKbSyncAction(() => listMemos(runtime.storage, runtime.paths.projectData(ctx.projectRoot), owner.owner));
-}
-
-export function handleKbMemoDelete(args: KbArgs, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
-  const parsed = kbMemoDeleteSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return handleKbMemoDeleteConsolidated(parsed.data, ctx, runtime);
-}
-
-export function handleKbMemoPurge(args: KbArgs, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
-  const parsed = kbMemoPurgeSchema.safeParse(args);
-  if (!parsed.success) {
-    return kbValidationError(parsed.error);
-  }
-
-  return handleKbMemoDeleteConsolidated({ owner: parsed.data.owner, all: true }, ctx, runtime);
 }
 
 export function handleKbMemoDeleteConsolidated(

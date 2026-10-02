@@ -186,8 +186,6 @@ export const kbWikiAdoptSchema = z
   .strict();
 
 export const kbWikiDeleteSchema = z.object({ slug: slugSchema }).strict();
-export const kbWikiListSchema = z.object({}).strict();
-export const kbWikiReadSchema = z.object({ slug: slugSchema }).strict();
 export const kbWakeUpSchema = z
   .object({
     project: z.string().min(1).optional(),
@@ -203,8 +201,6 @@ export const kbSourceImportSchema = z
   })
   .strict();
 
-export const kbSourceListSchema = z.object({}).strict();
-
 export const kbSourceDeleteSchema = z
   .object({
     slug: slugSchema,
@@ -219,28 +215,9 @@ export const kbMemoSchema = z
   })
   .strict();
 
-export const kbMemoListSchema = z
-  .object({
-    owner: optionalTextFilterSchema,
-  })
-  .strict();
-
 export const kbMemoListQuerySchema = z
   .object({
     projectRoot: projectRootSchema,
-    owner: optionalTextFilterSchema,
-  })
-  .strict();
-
-export const kbMemoDeleteSchema = z
-  .object({
-    pattern: textFilterSchema,
-    owner: optionalTextFilterSchema,
-  })
-  .strict();
-
-export const kbMemoPurgeSchema = z
-  .object({
     owner: optionalTextFilterSchema,
   })
   .strict();
@@ -263,14 +240,6 @@ export const kbMemoDeleteQuerySchema = z
   .refine((data) => (data.pattern !== undefined) !== (data.all === true), {
     message: 'Exactly one of pattern or all=true must be provided',
   });
-
-export const kbPrinciplesSchema = z
-  .object({
-    query: optionalSearchQueryTextSchema,
-    verbose: z.boolean().optional(),
-    top_k: z.number().int().positive().optional(),
-  })
-  .strict();
 
 export const kbPrinciplesQuerySchema = z
   .object({
@@ -363,5 +332,4 @@ export const kbMemoDeleteRequestSchema = z
   .refine((data) => (data.pattern !== undefined) !== (data.all === true), {
     message: 'Exactly one of pattern or all=true must be provided',
   });
-export const kbDiagnoseSchema = z.object({}).strict();
 export const kbDiagnoseRequestSchema = z.object({}).strict();

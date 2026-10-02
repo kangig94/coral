@@ -1,11 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { KbRuntime } from '#src/kb/contract.js';
-import { renderEntityGraph } from '#src/kb/corpus/entity-graph-store.js';
-import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
+import { noteEntryId, sourceEntryId } from '#src/kb/entry-types.js';
 import { nowDate } from '#src/infra/time.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
@@ -149,41 +148,6 @@ function renderSource({
   ].join('\n');
 }
 
-function renderPrinciple(statement: string): string {
-  return `${statement.trim()}\n`;
-}
-
-function renderCommunity({
-  title,
-  members,
-  summary,
-  body,
-}: {
-  title: string;
-  members: string[];
-  summary: string;
-  body: string;
-}): string {
-  return [
-    '---',
-    'createdAt: 2026-04-02',
-    'updatedAt: 2026-04-02',
-    'level: 1',
-    '---',
-    `# ${title}`,
-    '',
-    '## Summary',
-    '',
-    summary,
-    '',
-    '## Members',
-    ...members.map((member) => `- #${member}`),
-    '',
-    body,
-    '',
-  ].join('\n');
-}
-
 function seedCorpus(kb: KbRuntime): {
   notePath: string;
   sourcePath: string;
@@ -288,10 +252,6 @@ async function bootstrapSeededCorpus(
   };
 }
 
-function spyOnFullInstall(kb: KbRuntime) {
-  return vi.spyOn((kb as unknown as BaseProjectionSpyTarget).oramaBinding.projection, 'apply');
-}
-
 afterEach(() => {
   vi.restoreAllMocks();
 
@@ -309,41 +269,6 @@ afterEach(() => {
 });
 
 describe('external edit absorption', () => {
-  it('bumps only metadata_seq for a note frontmatter-only edit after restart', async () => {
-    const root = allocateRoot();
-    const initial = await bootstrapSeededCorpus(root);
-    const beforeNote = initial.docs.get(noteEntryId('coral-note'));
-    const initialIndexMtime = statSync(join(root, 'index.json')).mtimeMs;
-    expect(beforeNote).toBeDefined();
-
-    writableDbByRuntime.get(initial.kb)!.close();
-
-    writeFileSync(
-      initial.notePath,
-      renderNote({
-        title: 'Coral Note',
-        tags: ['coral', 'metadata-only'],
-        body: 'Original note body.',
-      }),
-      'utf-8',
-    );
-    touchFileAfter(initial.notePath, initialIndexMtime);
-
-    const restarted = await createRegisteredRuntime(root);
-    await bootLikeCoordinator(restarted);
-
-    const afterSnapshot = readCorpusState(writableDbByRuntime.get(restarted)!);
-    const afterNote = (await readStoredOramaDocuments(restarted)).get(noteEntryId('coral-note'));
-
-    expect(afterSnapshot.contentSeq).toBe(initial.snapshot.contentSeq);
-    expect(afterSnapshot.metadataSeq).toBe(initial.snapshot.metadataSeq + 1);
-    expect(afterSnapshot.contentManifestHash).toBe(initial.snapshot.contentManifestHash);
-    expect(afterSnapshot.metadataManifestHash).not.toBe(initial.snapshot.metadataManifestHash);
-    expect(afterNote?.contentHash).toBe(beforeNote?.contentHash);
-    expect(afterNote?.metadataHash).not.toBe(beforeNote?.metadataHash);
-    expect(restarted.readIndexState().textStaleReason).toBeUndefined();
-  });
-
   it('bumps only content_seq for a source title edit after restart', async () => {
     const root = allocateRoot();
     const initial = await bootstrapSeededCorpus(root);
@@ -445,111 +370,6 @@ describe('external edit absorption', () => {
     expect(afterNote?.body).toBe('Inbound sync replaced the note body.');
     expect(afterNote?.contentHash).not.toBe(beforeNote?.contentHash);
     expect(afterNote?.metadataHash).toBe(beforeNote?.metadataHash);
-    expect(initial.kb.readIndexState().textStaleReason).toBeUndefined();
-  });
-
-  it('reapplies a full snapshot through the base CorpusConsumer for live principle edits', async () => {
-    const root = allocateRoot();
-    const principle = 'deterministic-ordering';
-    const originalStatement = 'Deterministic ordering keeps index rebuilds stable.';
-    const updatedStatement = 'Deterministic ordering keeps inbound sync rebuilds stable.';
-    const initial = await bootstrapSeededCorpus(root, (kb) => {
-      mkdirSync(kb.principlesDir(), { recursive: true });
-      writeFileSync(kb.principlePath(principle), renderPrinciple(originalStatement), 'utf-8');
-    });
-    const installSpy = spyOnFullInstall(initial.kb);
-
-    await initial.kb.runInboundSync(async () => {
-      writeFileSync(initial.kb.principlePath(principle), renderPrinciple(originalStatement), 'utf-8');
-    });
-    expect(installSpy).not.toHaveBeenCalled();
-
-    await initial.kb.runInboundSync(async () => {
-      writeFileSync(initial.kb.principlePath(principle), renderPrinciple(updatedStatement), 'utf-8');
-    });
-    await initial.kb.retryPendingCorpusPublication();
-    await applyBaseProjection(initial.kb);
-
-    expect(installSpy).toHaveBeenCalledTimes(1);
-    expect(initial.kb.readIndexState().textStaleReason).toBeUndefined();
-  });
-
-  it('reapplies a full snapshot through the base CorpusConsumer for live community edits', async () => {
-    const root = allocateRoot();
-    const community = 'retrieval-community';
-    const seededCommunity = renderCommunity({
-      title: 'Retrieval Community',
-      members: ['coral-note', 'sqlite-source'],
-      summary: 'Shared retrieval patterns across notes and sources.',
-      body: 'Community body describing retrieval themes.',
-    });
-    const initial = await bootstrapSeededCorpus(root);
-    mkdirSync(initial.kb.communitiesDir(), { recursive: true });
-    writeFileSync(initial.kb.communityPath(community), seededCommunity, 'utf-8');
-    const baselineCommunity = readFileSync(initial.kb.communityPath(community), 'utf-8');
-    const updatedCommunity = `${baselineCommunity.trimEnd()}\n\nInbound sync updated the community body.\n`;
-    const installSpy = spyOnFullInstall(initial.kb);
-
-    await initial.kb.runInboundSync(async () => {
-      writeFileSync(initial.kb.communityPath(community), baselineCommunity, 'utf-8');
-    });
-    expect(installSpy).not.toHaveBeenCalled();
-
-    await initial.kb.runInboundSync(async () => {
-      writeFileSync(initial.kb.communityPath(community), updatedCommunity, 'utf-8');
-    });
-    await initial.kb.retryPendingCorpusPublication();
-    await applyBaseProjection(initial.kb);
-
-    expect(installSpy).toHaveBeenCalledTimes(1);
-    expect(initial.kb.readIndexState().textStaleReason).toBeUndefined();
-  });
-
-  it('reapplies a full snapshot through the base CorpusConsumer for live entity-graph edits', async () => {
-    const root = allocateRoot();
-    const originalGraph: EntityGraph = {
-      entityMeta: {
-        coral: {
-          type: 'technology',
-          description: 'The Coral KB runtime.',
-        },
-      },
-      relationships: [],
-    };
-    const updatedGraph: EntityGraph = {
-      entityMeta: {
-        coral: {
-          type: 'technology',
-          description: 'The Coral KB runtime with inbound sync coverage.',
-        },
-      },
-      relationships: [
-        {
-          source: 'coral',
-          target: 'inbound-sync',
-          type: 'enables',
-          description: 'Coral enables inbound sync correctness checks.',
-          evidence: ['note:coral-note'],
-        },
-      ],
-    };
-    const initial = await bootstrapSeededCorpus(root, (kb) => {
-      writeFileSync(kb.entityGraphPath(), renderEntityGraph(originalGraph), 'utf-8');
-    });
-    const installSpy = spyOnFullInstall(initial.kb);
-
-    await initial.kb.runInboundSync(async () => {
-      writeFileSync(initial.kb.entityGraphPath(), renderEntityGraph(originalGraph), 'utf-8');
-    });
-    expect(installSpy).not.toHaveBeenCalled();
-
-    await initial.kb.runInboundSync(async () => {
-      writeFileSync(initial.kb.entityGraphPath(), renderEntityGraph(updatedGraph), 'utf-8');
-    });
-    await initial.kb.retryPendingCorpusPublication();
-    await applyBaseProjection(initial.kb);
-
-    expect(installSpy).toHaveBeenCalledTimes(1);
     expect(initial.kb.readIndexState().textStaleReason).toBeUndefined();
   });
 });

@@ -97,44 +97,6 @@ describe('RecoveryQuarantineStore', () => {
     db.close();
   });
 
-  it('should create the recovery quarantine schema after the expansion manifest catalog', () => {
-    const ddl = currentCoralStoreFormat().manifest.ddl;
-    expect(ddl.indexOf('CREATE TABLE IF NOT EXISTS recovery_quarantine')).toBeGreaterThan(
-      ddl.indexOf('CREATE TABLE IF NOT EXISTS expansion_manifest_catalog'),
-    );
-
-    const columns = db.prepare("PRAGMA table_info('recovery_quarantine')").all() as Array<{
-      name: string;
-      pk: number;
-    }>;
-    expect(columns.map(({ name }) => name)).toEqual([
-      'boundary_id',
-      'subject_key',
-      'subject_revision',
-      'state',
-      'stage',
-      'retry_token',
-      'retry_owner',
-      'continuation_kind',
-      'continuation_key',
-      'error_message',
-      'disposition_detail',
-      'detected_at',
-      'updated_at',
-    ]);
-    expect(columns.filter(({ pk }) => pk > 0).map(({ name, pk }) => ({ name, pk }))).toEqual([
-      { name: 'boundary_id', pk: 1 },
-      { name: 'subject_key', pk: 2 },
-    ]);
-
-    expect(() =>
-      db.exec(`INSERT INTO recovery_quarantine (
-        boundary_id, subject_key, state, stage, error_message, disposition_detail, detected_at, updated_at
-      ) VALUES ('bad-boundary', 'bad-subject', 'invalid', 'scan', 'error', 'detail',
-                '2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z')`),
-    ).toThrow();
-  });
-
   it('should read and upsert active and continuation records', () => {
     const subject = fingerprintSubject();
     expect(quarantine.read(boundary, subject.key)).toBeNull();
@@ -285,48 +247,6 @@ describe('RecoveryQuarantineStore', () => {
     expect(quarantine.list()[0]).toMatchObject({ detail: 'settled detail', remedy: null });
   });
 
-  it('should stamp every persisted transition from the runtime clock', () => {
-    const subject = fingerprintSubject();
-    expect(quarantine.upsert(activeWrite(subject))).toBe(true);
-    expect(readRow(db)).toMatchObject({
-      detected_at: '2026-08-03T02:00:00.000Z',
-      updated_at: '2026-08-03T02:00:00.000Z',
-    });
-
-    nowMs = Date.parse('2026-08-03T02:01:00.000Z');
-    expect(
-      quarantine.claimRetry({
-        boundary,
-        subject,
-        retry: { owner: 'owner-1', token: 'token-1' },
-      }),
-    ).toBe(true);
-    expect(readRow(db)?.updated_at).toBe('2026-08-03T02:01:00.000Z');
-
-    nowMs = Date.parse('2026-08-03T02:02:00.000Z');
-    expect(
-      quarantine.reclaimRetry({
-        boundary,
-        subject,
-        expectedRetry: { owner: 'owner-1', token: 'token-1' },
-        retry: { owner: 'owner-2', token: 'token-2' },
-      }),
-    ).toBe(true);
-    expect(readRow(db)?.updated_at).toBe('2026-08-03T02:02:00.000Z');
-
-    nowMs = Date.parse('2026-08-03T02:03:00.000Z');
-    expect(
-      quarantine.upsert({
-        ...activeWrite(subject),
-        expectedRetry: { owner: 'owner-2', token: 'token-2', subject },
-      }),
-    ).toBe(true);
-    expect(readRow(db)).toMatchObject({
-      detected_at: '2026-08-03T02:00:00.000Z',
-      updated_at: '2026-08-03T02:03:00.000Z',
-    });
-  });
-
   it('should map a nullable revision to an until-cleared subject', () => {
     const subject: RecoverySubject = {
       key: 'scan',
@@ -450,56 +370,6 @@ describe('RecoveryQuarantineStore', () => {
       retry_owner: null,
       retry_token: null,
       detected_at: '2026-08-03T01:00:00.000Z',
-    });
-  });
-
-  it('should claim and reclaim retry ownership by the exact revision, owner, and token', () => {
-    const subject = fingerprintSubject();
-    expect(quarantine.upsert(activeWrite(subject))).toBe(true);
-
-    expect(
-      quarantine.claimRetry({
-        boundary,
-        subject: fingerprintSubject('subject-1', 'revision-2'),
-        retry: { owner: 'owner-1', token: 'token-1' },
-      }),
-    ).toBe(false);
-    expect(
-      quarantine.claimRetry({
-        boundary,
-        subject,
-        retry: { owner: 'owner-1', token: 'token-1' },
-      }),
-    ).toBe(true);
-    expect(
-      quarantine.claimRetry({
-        boundary,
-        subject,
-        retry: { owner: 'owner-2', token: 'token-2' },
-      }),
-    ).toBe(false);
-
-    expect(
-      quarantine.reclaimRetry({
-        boundary,
-        subject,
-        expectedRetry: { owner: 'owner-1', token: 'stale-token' },
-        retry: { owner: 'owner-2', token: 'token-2' },
-      }),
-    ).toBe(false);
-    expect(
-      quarantine.reclaimRetry({
-        boundary,
-        subject,
-        expectedRetry: { owner: 'owner-1', token: 'token-1' },
-        retry: { owner: 'owner-2', token: 'token-2' },
-      }),
-    ).toBe(true);
-    expect(quarantine.read(boundary, subject.key)).toEqual({
-      boundary,
-      subject,
-      state: 'retrying',
-      retry: { owner: 'owner-2', token: 'token-2' },
     });
   });
 

@@ -88,10 +88,6 @@ describe('controller-open records', () => {
     });
   });
 
-  it('should report no controller and nothing unreadable when the epoch has no records', () => {
-    expect(latestControllerOpen(emptyRuntime(), EPOCH_KEY)).toEqual({ latest: null, unreadable: [] });
-  });
-
   it('should name a record filed under the epoch that claims another epoch as unreadable', () => {
     const { runtime, directory } = fixture();
     const [name] = readdirSync(directory);

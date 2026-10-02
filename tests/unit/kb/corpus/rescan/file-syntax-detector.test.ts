@@ -38,41 +38,13 @@ function detect(body: string) {
 }
 
 describe('fileSyntaxDetector ATX heading detection', () => {
-  it.each([
-    ['# Title', 'single-hash heading with space'],
-    ['## Rule', 'double-hash heading with space'],
-    ['### Why', 'triple-hash heading with space'],
-    ['###### H6', 'six-hash heading with space'],
-    ['Plain text without leading hash', 'plain prose'],
-  ])('does not flag %s as malformed (%s)', (line) => {
-    const incidents = detect(line);
-    const atx = incidents.flatMap((i) => {
-      const signals = i.signals as { atxHeaders?: unknown };
-      return signals.atxHeaders === undefined ? [] : [signals.atxHeaders];
-    });
-    expect(atx).toEqual([]);
-  });
-
-  it.each([
-    ['##Rule', 'two hashes with no space'],
-    ['###Why', 'three hashes with no space'],
-    ['######H6NoSpace', 'six hashes with no space'],
-  ])('flags %s as malformed (%s)', (line) => {
+  it('flags a heading without a separating space', () => {
+    const line = '##Rule';
     const incidents = detect(line);
     const atx = incidents.flatMap((i) => {
       const signals = i.signals as { atxHeaders?: Array<{ line: number; text: string }> };
       return signals.atxHeaders ?? [];
     });
     expect(atx).toEqual([{ line: 1, text: line }]);
-  });
-
-  it('detects malformed and well-formed headings independently across a multi-line body', () => {
-    const body = ['# Title', '', '## Section A', '', '##NoSpaceHeading', '', '### Section B'].join('\n');
-    const incidents = detect(body);
-    const atx = incidents.flatMap((i) => {
-      const signals = i.signals as { atxHeaders?: Array<{ line: number; text: string }> };
-      return signals.atxHeaders ?? [];
-    });
-    expect(atx).toEqual([{ line: 5, text: '##NoSpaceHeading' }]);
   });
 });

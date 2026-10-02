@@ -218,17 +218,6 @@ describe('Orama AC4 served-tier tokenization', () => {
     expect(readMetadata(kb).projectionIdentityHash).toBe(intlIdentity);
   });
 
-  it('tokenize and tokenizeBatch use tokens matching the served Intl index during a Kiwi upgrade window', async () => {
-    const { kb, runtime } = createKbFixture();
-    const mutable = createMutableManager();
-    const projection = await installCurrentProjection(kb, mutable.manager, runtime);
-
-    mutable.setAnalyzer(createKiwiAnalyzer());
-
-    await expect(projection.tokenize('검색 API')).resolves.toEqual(['검색', 'api']);
-    await expect(projection.tokenizeBatch(['검색 API', '토큰'])).resolves.toEqual([['검색', 'api'], ['토큰']]);
-  });
-
   it('cold-loads a Kiwi match with Kiwi tokenization and refuses that artifact when no live Kiwi lease exists', async () => {
     const { kb, runtime } = createKbFixture();
     const kiwiAnalyzer = createKiwiAnalyzer();

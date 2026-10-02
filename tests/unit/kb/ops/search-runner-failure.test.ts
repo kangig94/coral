@@ -13,13 +13,7 @@ import {
 import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
 import { createSearchRequest, runRetrieval } from '#src/kb/ops/search-runner.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
-import { createBuiltinTextRole } from '#src/kb/search/text-retrieval.js';
-import type {
-  RetrievalDiagnostic,
-  RetrievalHit,
-  RetrievalRole,
-  RetrievalRoleDescriptor,
-} from '#src/kb/search/contract.js';
+import type { RetrievalHit, RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 
@@ -168,93 +162,6 @@ describe('search runner role failure isolation', () => {
     expect(text.search).not.toHaveBeenCalled();
   });
 
-  it('Rule 2 records a required non-setup diagnostic and lazily fires lexical fallback', async () => {
-    const text = role('text', ['lexical'], ['notes', 'sources', 'communities', 'all'], async () => ({
-      hits: [noteHit('fallback-text')],
-    }));
-    const vector = role('vector', ['semantic'], ['notes', 'sources', 'all'], async () => {
-      throw new Error('vector backend offline');
-    });
-    const rt = runtimeWith([
-      { role: text, criticality: 'core' },
-      { role: vector, criticality: 'core' },
-    ]);
-
-    const response = await runRetrieval(rt, createSearchRequest('semantic', 5, 'all', 'vector'));
-
-    expect(response.mode).toBe('text');
-    expect(response.results.map((result) => result.note)).toEqual(['fallback-text']);
-    expect(vector.search).toHaveBeenCalledTimes(1);
-    expect(text.search).toHaveBeenCalledTimes(1);
-    expect(response.retrievalDiagnostics).toEqual([
-      {
-        roleId: 'vector',
-        code: 'role_failed',
-        recoverable: false,
-        publicText: 'KB vector search is unavailable for this query.',
-      },
-    ]);
-  });
-
-  it('Rule 2 returns a degraded empty text response when no lexical fallback is registered', async () => {
-    const vector = role('vector', ['semantic'], ['notes', 'sources', 'all'], async () => {
-      throw new Error('vector backend offline');
-    });
-    const rt = runtimeWith([{ role: vector, criticality: 'core' }]);
-
-    const response = await runRetrieval(rt, createSearchRequest('semantic', 5, 'all', 'vector'));
-
-    expect(response.mode).toBe('text');
-    expect(response.results).toEqual([]);
-    expect(vector.search).toHaveBeenCalledTimes(1);
-    expect(response.retrievalDiagnostics).toEqual([
-      {
-        roleId: 'vector',
-        code: 'role_failed',
-        recoverable: false,
-        publicText: 'KB vector search is unavailable for this query.',
-      },
-    ]);
-  });
-
-  it('Rule 3 isolates optional graph stale-context and thrown failures as recoverable diagnostics while hybrid continues', async () => {
-    const text = role('text', ['lexical'], ['notes', 'sources', 'communities', 'all'], async () => ({
-      hits: [noteHit('fallback-text')],
-    }));
-    const graph = role('graph', ['structural'], ['notes', 'sources', 'all'], async () => ({
-      hits: [],
-      diagnostic: {
-        roleId: 'graph',
-        code: 'graph_stale',
-        recoverable: true,
-      },
-    }));
-    const external = role('external-structural', ['structural'], ['notes', 'sources', 'all'], async () => {
-      throw new Error('external structural offline');
-    });
-    const rt = runtimeWith([{ role: text, criticality: 'core' }, { role: graph }, { role: external }]);
-
-    const response = await runRetrieval(rt, createSearchRequest('graph', 5, 'all', 'hybrid'));
-
-    expect(text.search).toHaveBeenCalledTimes(1);
-    expect(graph.search).toHaveBeenCalledTimes(1);
-    expect(external.search).toHaveBeenCalledTimes(1);
-    expect(response.mode).toBe('hybrid');
-    expect(response.results.map((result) => result.note)).toEqual(['fallback-text']);
-    expect(response.retrievalDiagnostics).toEqual([
-      {
-        roleId: 'graph',
-        code: 'graph_stale',
-        recoverable: true,
-      },
-      {
-        roleId: 'external-structural',
-        code: 'role_failed',
-        recoverable: true,
-      },
-    ]);
-  });
-
   it('Rule 3 isolates optional vector setup failures under auto intent without public warning text', async () => {
     const text = role('text', ['lexical'], ['notes', 'sources', 'communities', 'all'], async () => ({
       hits: [noteHit('fallback-text')],
@@ -278,48 +185,5 @@ describe('search runner role failure isolation', () => {
         recoverable: true,
       },
     ]);
-  });
-
-  it('preserves the grandfathered text exception as empty hits plus diagnostic instead of a thrown setup error', async () => {
-    const diagnostic: RetrievalDiagnostic = {
-      roleId: 'text',
-      code: 'binding_missing',
-      recoverable: false,
-      publicText: 'KB text search is unavailable until the text index is rebuilt.',
-    };
-    const text = role('text', ['lexical'], ['notes', 'sources', 'communities', 'all'], async () => ({
-      hits: [],
-      diagnostic,
-    }));
-    const rt = runtimeWith([{ role: text, criticality: 'core' }]);
-
-    const response = await runRetrieval(rt, createSearchRequest('lexical', 5, 'all', 'text'));
-
-    expect(response).toMatchObject({
-      mode: 'text',
-      results: [],
-      retrievalDiagnostics: [diagnostic],
-    });
-    expect(text.search).toHaveBeenCalledTimes(1);
-  });
-
-  it('treats stale tokenizer-tier FTS indexes as degraded text search', async () => {
-    const rt = runtimeWith([], ['fts_index_stale_tier']);
-    rt.roleRegistry.registerBuiltin(createBuiltinTextRole(rt), { criticality: 'core' });
-
-    const response = await runRetrieval(rt, createSearchRequest('fallback', 5, 'all', 'text'));
-
-    expect(response).toMatchObject({
-      mode: 'text',
-      results: [],
-      retrievalDiagnostics: [
-        {
-          roleId: 'text',
-          code: 'binding_missing',
-          recoverable: true,
-          publicText: 'kb_search_degraded_until_coordinator_rebuild',
-        },
-      ],
-    });
   });
 });

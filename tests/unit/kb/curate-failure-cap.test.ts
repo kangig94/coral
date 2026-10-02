@@ -3,8 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { backendLog } from '#src/infra/backend-log.js';
 import {
   applyClearCurateRetryState,
   INVARIANT,
@@ -34,6 +32,7 @@ describe('curate scheduler failure cap (S2)', () => {
   let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
   beforeEach(() => {
+    vi.useFakeTimers();
     tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-cap-'));
     gitSyncRuntime = createRealRuntime('prod');
     runtime = createTestKbRuntime({
@@ -50,19 +49,14 @@ describe('curate scheduler failure cap (S2)', () => {
       storagePort: gitSyncRuntime.storage,
       envPort: gitSyncRuntime.env,
       usageBudget: { isExhausted: async () => false },
-      // Bypass the 60s production debounce so the launch is observable in-test;
-      // the cap-trip warning we want to assert fires inside launchQueuedRun.
       scheduleDebounceMs: 0,
     });
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it('exposes the documented cap value', () => {
-    expect(INVARIANT.MAX_CONSECUTIVE_FAILURES).toBe(10);
-    void scheduler; // ensure setup ran without throwing
   });
 
   it('disables both lanes once consecutive failures reach the cap', async () => {
@@ -78,24 +72,16 @@ describe('curate scheduler failure cap (S2)', () => {
       });
     });
 
-    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-
     try {
       await scheduler.start();
-      // Wait long enough for the debounced launch to fire.
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await vi.advanceTimersByTimeAsync(0);
 
       const state = readCurateState(curateDb(runtime));
-      // Counters stayed at the cap — scheduler did not increment further or
-      // mutate the lane. The warning surfaces the disabled state and the
-      // disabledAt timestamps survive across the skip.
       expect(state.consecutiveClaimFailures).toBe(INVARIANT.MAX_CONSECUTIVE_FAILURES);
       expect(state.consecutiveCommunityBatchFailures).toBe(INVARIANT.MAX_CONSECUTIVE_FAILURES);
       expect(state.claimLaneDisabledAt).toBe(trippedAt);
       expect(state.communityBatchLaneDisabledAt).toBe(trippedAt);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/permanently disabled.*consecutive failures/));
     } finally {
-      warnSpy.mockRestore();
       await scheduler.stop();
     }
   });

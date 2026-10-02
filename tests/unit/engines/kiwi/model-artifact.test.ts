@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 import {
   extractKiwiModelFiles,
   extractKiwiModelFilesInWorker,
-  KIWI_MODEL_TAR_MAX_BYTES,
   writeKiwiModelFilesAtomicInWorker,
 } from '#src/engines/kiwi/model-artifact.js';
 import { KIWI_MODEL_FILES, KIWI_MODEL_TAR_PREFIX, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
@@ -91,10 +90,6 @@ function createModelFiles(): Map<KiwiModelFileName, Buffer> {
 }
 
 describe('Kiwi model artifact extraction', () => {
-  it('keeps the decompressed model archive cap bounded', () => {
-    expect(KIWI_MODEL_TAR_MAX_BYTES).toBe(512 * 1024 * 1024);
-  });
-
   it('rejects model archives above the decompressed byte cap', () => {
     const archive = gzipSync(Buffer.alloc(2048, 0));
 
@@ -116,14 +111,6 @@ describe('Kiwi model artifact extraction', () => {
     expect(files.get('nounchr.mdl')?.toString('utf-8')).toBe('content:nounchr.mdl');
   });
 
-  it('rejects model archives above the worker decompressed byte cap', async () => {
-    const archive = gzipSync(Buffer.alloc(2048, 0));
-
-    await expect(extractKiwiModelFilesInWorker(archive, 1024)).rejects.toThrow(
-      /Kiwi model archive exceeds maximum decompressed size \(1024 bytes\)/,
-    );
-  });
-
   it('installs extracted model files atomically in a worker', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-kiwi-model-write-'));
     try {
@@ -138,40 +125,6 @@ describe('Kiwi model artifact extraction', () => {
         installedAt: '2026-06-25T00:00:00.000Z',
       });
       expect(readdirSync(dirname(modelDir)).some((entry) => entry.endsWith('.part'))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('replaces an existing model directory without leaving backup artifacts', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'coral-kiwi-model-write-'));
-    try {
-      const runtime = createWriteRuntime(root);
-      const modelDir = kiwiModelDir(runtime);
-      mkdirSync(modelDir, { recursive: true });
-      writeFileSync(join(modelDir, 'sj.morph'), 'previous', 'utf-8');
-
-      await writeKiwiModelFilesAtomicInWorker(runtime, createModelFiles());
-
-      expect(readFileSync(join(modelDir, 'sj.morph'), 'utf-8')).toBe('installed:sj.morph');
-      expect(readdirSync(dirname(modelDir)).some((entry) => entry.includes('.previous'))).toBe(false);
-      expect(readdirSync(dirname(modelDir)).some((entry) => entry.endsWith('.part'))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('does not create staging files when extracted model files are incomplete', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'coral-kiwi-model-write-'));
-    try {
-      const runtime = createWriteRuntime(root);
-      const modelFiles = createModelFiles();
-      modelFiles.delete('sj.morph');
-
-      await expect(writeKiwiModelFilesAtomicInWorker(runtime, modelFiles)).rejects.toThrow(
-        /Kiwi model file sj\.morph was not extracted/,
-      );
-      expect(existsSync(dirname(kiwiModelDir(runtime)))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

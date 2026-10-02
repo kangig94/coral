@@ -1,12 +1,11 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { createServer, type Server } from 'node:http';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createServer, IncomingMessage, ServerResponse, type Server } from 'node:http';
+import { Socket } from 'node:net';
+import { describe, expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createMockKbDaemonSupervisor, createOnlineKbDaemonHealth } from '#tools/testing/kb-daemon-supervisor.js';
-
-const openServers = new Set<Server>();
 
 function makeRuntime(): Runtime {
   return {
@@ -87,39 +86,26 @@ function makeRuntime(): Runtime {
   } as unknown as Runtime;
 }
 
-async function listen(server: Server): Promise<number> {
-  openServers.add(server);
-  return await new Promise<number>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject);
-      const address = server.address();
-      if (!address || typeof address === 'string') {
-        reject(new Error('server did not bind to a TCP port'));
-        return;
-      }
-      resolve(address.port);
-    });
+function request(
+  server: Server,
+  url: string,
+  options: { method?: string; headers: Record<string, string>; body?: string },
+) {
+  const incoming = new IncomingMessage(new Socket());
+  incoming.method = options.method ?? 'GET';
+  incoming.url = url;
+  incoming.headers = options.headers;
+  incoming.push(options.body ?? null);
+  if (options.body !== undefined) incoming.push(null);
+  const response = new ServerResponse(incoming);
+  return new Promise<Response>((resolve) => {
+    response.end = ((body: string) => {
+      resolve(new Response(body, { status: response.statusCode }));
+      return response;
+    }) as typeof response.end;
+    server.emit('request', incoming, response);
   });
 }
-
-async function closeServer(server: Server): Promise<void> {
-  if (!server.listening) {
-    openServers.delete(server);
-    return;
-  }
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      openServers.delete(server);
-      if (error) reject(error);
-      else resolve();
-    });
-  });
-}
-
-afterEach(async () => {
-  await Promise.all([...openServers].map(closeServer));
-});
 
 describe('expansion RPC before store services exist', () => {
   it('routes through the KB daemon supervisor on a never-started server', async () => {
@@ -158,8 +144,7 @@ describe('expansion RPC before store services exist', () => {
       async () => [],
     );
 
-    const port = await listen(core.server);
-    const response = await fetch(`http://127.0.0.1:${port}/coordinator/expansion`, {
+    const response = await request(core.server, '/coordinator/expansion', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -238,8 +223,7 @@ describe('expansion RPC before store services exist', () => {
       async () => [],
     );
 
-    const port = await listen(core.server);
-    const response = await fetch(`http://127.0.0.1:${port}/coordinator/expansion`, {
+    const response = await request(core.server, '/coordinator/expansion', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -289,8 +273,7 @@ describe('expansion RPC before store services exist', () => {
       async () => [],
     );
 
-    const port = await listen(core.server);
-    const response = await fetch(`http://127.0.0.1:${port}/health?detailed=1`, {
+    const response = await request(core.server, '/health?detailed=1', {
       headers: { 'x-coral-boot-token': bootToken },
     });
     const body = (await response.json()) as {

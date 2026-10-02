@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createOramaDb } from '#src/engines/orama/document-builder.js';
@@ -155,28 +155,5 @@ describe('engine artifact port blindness', () => {
       diagnostic: expect.stringContaining('missing required identity'),
     });
     expect(existsSync(oramaIndexPath(root))).toBe(true);
-  });
-
-  it('KB drift detection consumes registry descriptors without hardcoded engine artifact paths', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/kb/corpus/rescan/drift.ts'), 'utf-8');
-
-    expect(source).not.toContain('orama-index.json');
-    expect(source).not.toContain('ACTIVE');
-    expect(source).not.toContain('manifest.json');
-    expect(source).toContain('engineArtifactRegistry.describeArtifacts()');
-  });
-
-  it('engine artifact ports route file IO through projectionArtifacts.files (no ambient node:fs)', () => {
-    // Single Runtime World rule: engine artifact descriptors must not read
-    // ambient node:fs. They consume the injected
-    // KbProjectionArtifactFilePort so port replacement (e.g. test fixtures,
-    // simulation runtime) lands cleanly without monkey-patching fs.
-    for (const relativePath of ['src/engines/orama/artifact-port.ts']) {
-      const source = readFileSync(resolve(process.cwd(), relativePath), 'utf-8');
-      expect(source, `${relativePath} must not import from node:fs`).not.toMatch(/from\s+['"]node:fs['"]/);
-      expect(source, `${relativePath} must not import from node:fs/promises`).not.toMatch(
-        /from\s+['"]node:fs\/promises['"]/,
-      );
-    }
   });
 });

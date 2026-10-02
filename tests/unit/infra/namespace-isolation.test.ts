@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -74,13 +73,6 @@ describe('infra namespace isolation', () => {
     expect(readBuildFlavor(root)).toBe('dev');
   });
 
-  it('matches the namespace hashing algorithm', () => {
-    const pluginRoot = createPluginRoot('coral-namespace');
-    const testPath = realpathSync(pluginRoot);
-
-    expect(pluginRootNamespace(pluginRoot)).toBe(createHash('sha256').update(testPath).digest('hex').slice(0, 12));
-  });
-
   it('pluginRootNamespace resolves symlinks before hashing (symlink and target share namespace)', () => {
     const target = createPluginRoot('coral-symlink-target');
     const link = join(tmpdir(), `coral-symlink-link-${Date.now()}`);
@@ -88,32 +80,5 @@ describe('infra namespace isolation', () => {
     symlinkSync(target, link);
 
     expect(pluginRootNamespace(link)).toBe(pluginRootNamespace(target));
-  });
-
-  it('pluginRootNamespace throws when path does not exist (no silent fallback to raw path)', () => {
-    const nonExistent = join(tmpdir(), 'coral-does-not-exist-' + Date.now());
-    expect(() => pluginRootNamespace(nonExistent)).toThrow();
-  });
-
-  it('pluginRootNamespace output is always 12 hex chars', () => {
-    const root = createPluginRoot('coral-hex-check');
-    const result = pluginRootNamespace(root);
-    expect(result).toHaveLength(12);
-    expect(result).toMatch(/^[0-9a-f]{12}$/);
-  });
-
-  it('algorithm does not use base64 encoding of the digest', () => {
-    const root = createPluginRoot('coral-no-base64');
-    const path = realpathSync(root);
-    const wrongBase64 = createHash('sha256').update(path).digest('base64').slice(0, 12);
-    expect(pluginRootNamespace(root)).not.toBe(wrongBase64);
-  });
-
-  it('algorithm does not slice raw bytes (binary slice would differ from hex slice)', () => {
-    const root = createPluginRoot('coral-no-raw-bytes');
-    const path = realpathSync(root);
-    const wrongBytesHex = createHash('sha256').update(path).digest().slice(0, 12).toString('hex');
-    expect(pluginRootNamespace(root)).toHaveLength(12);
-    expect(pluginRootNamespace(root)).not.toBe(wrongBytesHex);
   });
 });

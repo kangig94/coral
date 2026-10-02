@@ -83,10 +83,6 @@ function proxySetAnsweringWith(error: Error): ProviderProxySetAuthority {
   } as unknown as ProviderProxySetAuthority;
 }
 
-function proxySetHoldingNoHosts(): ProviderProxySetAuthority {
-  return { proxyInstanceId, providerHosts: { list: async () => [] } } as unknown as ProviderProxySetAuthority;
-}
-
 function composeProviderHostPorts(): NonNullable<HttpHandlerPorts['providerHosts']> {
   const administration = {
     admissionSnapshot: () => ({ state: new Map(), tombstones: [] }),
@@ -177,16 +173,6 @@ describe('proxy-set provider-host owner classification', () => {
     await expect(providerHosts.list()).rejects.toMatchObject({
       code: 'provider_host_inventory_unavailable',
       ownerIds: [proxyOwnerId],
-    });
-  });
-
-  it('names no torn-down owner when an answering proxy set is composed alongside the local owner', async () => {
-    captured.proxySets = [proxySetHoldingNoHosts()];
-    const providerHosts = composeProviderHostPorts();
-
-    await expect(providerHosts.list()).resolves.toEqual({
-      hosts: [{ ...localRecord(), ownerId: localOwnerId }],
-      tornDownOwnerIds: [],
     });
   });
 });

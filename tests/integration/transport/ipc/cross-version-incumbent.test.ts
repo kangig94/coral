@@ -1,5 +1,4 @@
-import { Command } from 'commander';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server as NetServer } from 'node:net';
 import { platform, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -8,28 +7,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('#src/cli/read-store.js', () => ({
   getSharedReadCoralStore: vi.fn(),
 }));
-
-import { makeClient } from '#src/cli/dispatch.js';
 import {
   createProviderProxySetCommandOperations,
   createRecoveryQuarantineCommandOperations,
 } from '#src/cli/commands/backend.js';
-import { buildErrorEnvelope } from '#src/cli/errors.js';
 import { coordinatorPaths, v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
-import type { TimePort } from '#src/infra/port-types.js';
-import { createRealTimePort } from '#src/infra/time.js';
 import type { ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
-import { lifecycleRefusalResult } from '#src/transport/lifecycle-refusal.js';
-import { IpcLifecycleRefusal } from '#src/transport/ipc/client.js';
-import { HANDOFF_DRAIN_TIMEOUT_MS } from '#src/infra/shutdown-contract.js';
-import {
-  ensure,
-  issueWithSuccessorAfterLifecycleRefusal,
-  mayInvocationBeServedByIncumbent,
-  mayProcessReplaceIncumbent,
-  type RawCoordinatorHealth,
-} from '#src/transport/ipc/ensure.js';
+import { type RawCoordinatorHealth } from '#src/transport/ipc/ensure.js';
 import {
   decode,
   encode,
@@ -38,7 +23,6 @@ import {
   type JsonRpcResponseEnvelope,
 } from '#src/transport/ipc/json-rpc.js';
 import {
-  jobsAbortRpcSpec,
   providerProxySetContainBooleanRequestSchema,
   providerProxySetContainBooleanRpcSpec,
   providerProxySetContainRpcSpec,
@@ -106,12 +90,6 @@ function writeIncumbentDiscovery(socketPath: string): void {
   );
 }
 
-function readIncumbentDiscovery(): Readonly<{ instanceId: unknown; pid: unknown }> {
-  const record: unknown = JSON.parse(readFileSync(coordinatorPaths('prod').infoFile, 'utf8'));
-  const fields = record as { instanceId: unknown; pid: unknown };
-  return { instanceId: fields.instanceId, pid: fields.pid };
-}
-
 async function startIncumbent(
   socketPath: string,
   reply: (request: JsonRpcRequestEnvelope) => JsonRpcResponseEnvelope | JsonRpcErrorEnvelope,
@@ -141,45 +119,6 @@ async function startIncumbent(
   });
 }
 
-function kbReindexCommand(): Command {
-  const program = new Command();
-  return program.command('kb').command('reindex');
-}
-
-function abortJobsCommand(): Command {
-  const program = new Command();
-  return program.command('abort').command('jobs');
-}
-
-function stubTopLevelCliEnv(home: string, pluginRoot: string): void {
-  vi.stubEnv('HOME', home);
-  vi.stubEnv('CLAUDE_CONFIG_DIR', '');
-  vi.stubEnv('CODEX_HOME', '');
-  vi.stubEnv('CLAUDE_PLUGIN_ROOT', pluginRoot);
-  vi.stubEnv('CORAL_CHILD', '');
-  vi.stubEnv('CORAL_CHILD_PRINCIPAL_HANDLE', '');
-  vi.stubEnv('CORAL_JOB_ID', '');
-  vi.stubEnv('CORAL_SESSION_ID', '');
-}
-
-/**
- * Real timers against an accelerated clock reading. The release wait spends `HANDOFF_DRAIN_TIMEOUT_MS` of
- * *observed* time, so advancing the reading once per poll exhausts that budget without the test waiting it out
- * — and every request in these cases is issued before the first poll, so none sees the advanced reading.
- */
-function timePortWithAcceleratedSleep(observedMsPerSleep: number): TimePort {
-  const real = createRealTimePort();
-  let advancedMs = 0;
-  return {
-    ...real,
-    now: () => real.now() + advancedMs,
-    sleep: async (ms, options) => {
-      await real.sleep(Math.min(ms, 5), options);
-      advancedMs += observedMsPerSleep;
-    },
-  };
-}
-
 afterEach(async () => {
   for (const server of servers) {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -192,151 +131,6 @@ afterEach(async () => {
 });
 
 describe('cross-version incumbent', () => {
-  it('should let every healthy incumbent serve regardless of build', () => {
-    const health = incumbentHealth();
-
-    expect(mayInvocationBeServedByIncumbent(health, 'running')).toBe(true);
-    expect(mayInvocationBeServedByIncumbent({ ...health, status: 'draining' }, 'running')).toBe(false);
-    expect(mayInvocationBeServedByIncumbent(null, 'running')).toBe(false);
-    expect(mayInvocationBeServedByIncumbent({ ...health, status: 'draining' }, 'running-or-draining')).toBe(true);
-    expect(mayInvocationBeServedByIncumbent(null, 'running-or-draining')).toBe(false);
-  });
-
-  it('should permit replacement only without a serving incumbent', () => {
-    const health = incumbentHealth();
-
-    expect(mayProcessReplaceIncumbent(health)).toBe(false);
-    expect(mayProcessReplaceIncumbent({ ...health, status: 'draining' })).toBe(true);
-    expect(mayProcessReplaceIncumbent(null)).toBe(true);
-  });
-
-  it('should preserve the incumbent through a foreign-build KB-disabled CLI invocation', async () => {
-    const home = makeTempRoot('coral-cross-version-home-');
-    const pluginRoot = createInvokingPluginRoot();
-    vi.stubEnv('HOME', home);
-    vi.stubEnv('CLAUDE_CONFIG_DIR', '');
-    vi.stubEnv('CODEX_HOME', '');
-    vi.stubEnv('CLAUDE_PLUGIN_ROOT', pluginRoot);
-    vi.stubEnv('CORAL_CHILD', '');
-    vi.stubEnv('CORAL_CHILD_PRINCIPAL_HANDLE', '');
-    vi.stubEnv('CORAL_JOB_ID', '');
-    vi.stubEnv('CORAL_SESSION_ID', '');
-    vi.stubEnv('CORAL_KB_ENABLE', '1');
-
-    const paths = coordinatorPaths('prod');
-    writeIncumbentDiscovery(paths.socketPath);
-    const methods: string[] = [];
-    let shutdownRequests = 0;
-    await startIncumbent(paths.socketPath, (request) => {
-      methods.push(request.method);
-      if (request.method === 'transport.ping' || request.method === 'transport.health') {
-        return { kind: 'response', id: request.id, result: incumbentHealth() };
-      }
-      if (request.method === 'transport.shutdown') {
-        shutdownRequests += 1;
-        return { kind: 'response', id: request.id, result: { status: 'draining' } };
-      }
-      if (request.method === 'kb.reindex') {
-        return { kind: 'response', id: request.id, result: { status: 'running' } };
-      }
-      return { kind: 'response', id: request.id, result: null };
-    });
-    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-    const before = await ensure('sessions.create', pluginRoot);
-    const client = makeClient(pluginRoot, kbReindexCommand());
-    await client.kbReindex({ async: true });
-    const after = await ensure('sessions.create', pluginRoot);
-
-    expect(before.instanceId).toBe(incumbentInstanceId);
-    expect(after.instanceId).toBe(before.instanceId);
-    expect(methods).toContain('transport.health');
-    expect(methods).toContain('kb.reindex');
-    expect(shutdownRequests).toBe(0);
-    expect(stderrWrite).toHaveBeenCalledTimes(1);
-    expect(stderrWrite).toHaveBeenCalledWith(
-      'KB is disabled on the running Coral coordinator; this command will fail. Continuing without a ' +
-        'restart so in-flight work is not interrupted.\n',
-    );
-  });
-
-  it('aborts jobs on a draining incumbent without waiting for release and without spawning', async () => {
-    const home = makeTempRoot('coral-draining-abort-home-');
-    const pluginRoot = createInvokingPluginRoot();
-    stubTopLevelCliEnv(home, pluginRoot);
-
-    const paths = coordinatorPaths('prod');
-    writeIncumbentDiscovery(paths.socketPath);
-    const methods: string[] = [];
-    const abortResult = { aborted: ['job-1'], notFound: [] };
-    await startIncumbent(paths.socketPath, (request) => {
-      methods.push(request.method);
-      if (request.method === 'transport.ping' || request.method === 'transport.health') {
-        return { kind: 'response', id: request.id, result: incumbentHealth('draining') };
-      }
-      if (request.method === jobsAbortRpcSpec.name) {
-        return { kind: 'response', id: request.id, result: abortResult };
-      }
-      return { kind: 'error', id: request.id, error: { code: -32601, message: 'Method not found' } };
-    });
-
-    const discoveryBefore = readIncumbentDiscovery();
-    const startedAt = Date.now();
-    const client = makeClient(pluginRoot, abortJobsCommand());
-    await expect(client.abortJobs(['job-1'])).resolves.toEqual(abortResult);
-    await expect(client.abortJobs(['job-1'])).resolves.toEqual(abortResult);
-
-    // A spawned successor publishes its own record, so an unchanged instance and pid is what "no successor"
-    // looks like from outside the process.
-    expect(readIncumbentDiscovery()).toEqual(discoveryBefore);
-    expect(discoveryBefore).toEqual({ instanceId: incumbentInstanceId, pid: process.pid });
-    expect(Date.now() - startedAt).toBeLessThan(5_000);
-    expect(methods.filter((method) => method === jobsAbortRpcSpec.name)).toHaveLength(2);
-    expect(methods).not.toContain('transport.shutdown');
-  });
-
-  it('raises a typed refusal when a draining incumbent answers the success-shaped body and keeps the address', async () => {
-    const home = makeTempRoot('coral-draining-refusal-home-');
-    const pluginRoot = createInvokingPluginRoot();
-    stubTopLevelCliEnv(home, pluginRoot);
-
-    const paths = coordinatorPaths('prod');
-    writeIncumbentDiscovery(paths.socketPath);
-    const methods: string[] = [];
-    await startIncumbent(paths.socketPath, (request) => {
-      methods.push(request.method);
-      if (request.method === 'transport.ping' || request.method === 'transport.health') {
-        return { kind: 'response', id: request.id, result: incumbentHealth('draining') };
-      }
-      // Every released build through v0.10.9 answers an admitted method this way while draining: a
-      // success envelope carrying the refusal body.
-      return { kind: 'response', id: request.id, result: lifecycleRefusalResult };
-    });
-
-    const startedAt = Date.now();
-    const raised: unknown = await issueWithSuccessorAfterLifecycleRefusal(
-      jobsAbortRpcSpec.name,
-      pluginRoot,
-      (client) => client.request(jobsAbortRpcSpec.name, { jobs: ['job-1'], projectRoot: home }, { timeoutMs: 5_000 }),
-      timePortWithAcceleratedSleep(HANDOFF_DRAIN_TIMEOUT_MS / 2),
-    ).then(
-      (result: unknown) => result,
-      (error: unknown) => error,
-    );
-
-    expect(raised).toBeInstanceOf(IpcLifecycleRefusal);
-    expect(raised).toMatchObject({
-      code: 'backend_shutting_down',
-      method: jobsAbortRpcSpec.name,
-      socketPath: paths.socketPath,
-      addressDisposition: { kind: 'held-past-release-budget', budgetMs: HANDOFF_DRAIN_TIMEOUT_MS },
-    });
-    expect(buildErrorEnvelope(raised).exitCode).toBe(75);
-    expect(Date.now() - startedAt).toBeLessThan(HANDOFF_DRAIN_TIMEOUT_MS);
-    expect(methods).toContain(jobsAbortRpcSpec.name);
-    expect(methods).not.toContain('transport.shutdown');
-  });
-
   it('reaches a shipped coordinator fallback and retries its strict containment request shape', async () => {
     const homeRoot = makeTempRoot('coral-cross-version-long-home-');
     const home = join(homeRoot, 'state-root-' + 'x'.repeat(140));

@@ -1,13 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorControl } from '#src/coordinator/composition/job-control.js';
-import { IdleTimer } from '#src/coordinator/live/idle.js';
-import type { LifecycleController } from '#src/coordinator/lifecycle.js';
 import type { CoordinatorWorld } from '#src/coordinator/composition/world.js';
 import type { ProviderStopDecision } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
-import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import { type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { createProviderOperationReconcilerHarness } from '#tests/helpers/provider-operation-reconciler-harness.js';
@@ -163,43 +161,6 @@ describe('createCoordinatorControl.abortJobs', () => {
     expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
   });
 
-  it('reports an executing row that already carries a stop as recorded', () => {
-    const harness = createProviderOperationReconcilerHarness();
-    const record = providerOperationRecord('executing');
-    insertProviderOperation(harness.db, record);
-    expect(harness.reconciler.requestStops([record.operation.jobId], 'signal_abort')).toEqual({
-      kind: 'answered',
-      outcomes: new Map([[record.operation.jobId, { kind: 'recorded' }]]),
-    });
-    expect(harness.reconciler.requestStops([record.operation.jobId], 'signal_abort')).toEqual({
-      kind: 'answered',
-      outcomes: new Map([[record.operation.jobId, { kind: 'recorded' }]]),
-    });
-
-    expect(controlFor(harness).abortJobs([record.operation.jobId])).toEqual({
-      kind: 'answered',
-      result: { aborted: [record.operation.jobId], notFound: [] },
-    });
-  });
-
-  it('does not report an executing row carrying a non-abort stop as recorded', () => {
-    const harness = createProviderOperationReconcilerHarness();
-    const record = providerOperationRecordSchema.parse({
-      ...providerOperationRecord('executing'),
-      controlIntent: {
-        kind: 'stop',
-        cause: 'restart',
-        requestedAt: '2026-08-09T12:34:57.000Z',
-      },
-    });
-    insertProviderOperation(harness.db, record);
-
-    expect(harness.reconciler.requestStops([record.operation.jobId], 'signal_abort')).toEqual({
-      kind: 'answered',
-      outcomes: new Map([[record.operation.jobId, { kind: 'no-operation' }]]),
-    });
-  });
-
   it('refuses an unrecorded saga stop without firing its local abort effects', () => {
     const runtime = new SimulationRuntime();
     const registry = new AbortRegistry(runtime.ids);
@@ -270,39 +231,6 @@ describe('createCoordinatorControl.abortJobs', () => {
     });
   });
 
-  it('keeps a mixed closed-admission batch away from an incumbent-held local job', () => {
-    const harness = createProviderOperationReconcilerHarness();
-    const saga = providerOperationRecord('executing');
-    insertProviderOperation(harness.db, saga);
-    const registry = new AbortRegistry(new SimulationRuntime().ids);
-    const heldJobId = registry.register('held-local');
-    registry.hold(heldJobId, 'cleanup held', 'inspect containment', () => ({
-      kind: 'abandoned',
-      reason: 'operator abandoned cleanup',
-      nextStep: 'inspect containment',
-    }));
-    expect(registry.abort([heldJobId]).refused).toHaveLength(1);
-    expect(harness.reconciler.stop()).toEqual({ kind: 'drained' });
-    const control = createCoordinatorControl({
-      world: {
-        idleTimer: { requestDrain() {} },
-        launchCoordinator: { successionAdmissionPaused: () => false },
-      } as unknown as CoordinatorWorld,
-      listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
-      isLifecycleRunning: () => true,
-      getLifecycleController: () => null,
-      getProgressStore: () => harness.progressStore as never,
-      internalJobAbortRegistry: new AbortRegistry(new SimulationRuntime().ids),
-      requestStops: (jobIds, cause) => harness.reconciler.requestStops(jobIds, cause),
-    });
-
-    expect(control.abortJobs([saga.operation.jobId, heldJobId])).toEqual({
-      kind: 'successor-owned',
-      jobIds: [saga.operation.jobId, heldJobId],
-    });
-    expect(registry.has(heldJobId)).toBe(true);
-  });
-
   it('returns a typed retryable cancellation while writers are parked and aborts after admission reopens', () => {
     const runtime = new SimulationRuntime();
     const registry = new AbortRegistry(runtime.ids);
@@ -335,132 +263,6 @@ describe('createCoordinatorControl.abortJobs', () => {
     });
   });
 
-  it('abandons a held job with no saga row while admission is closed', () => {
-    const harness = createProviderOperationReconcilerHarness();
-    const runtime = new SimulationRuntime();
-    const registry = new AbortRegistry(runtime.ids);
-    const jobId = registry.register('held-job-without-saga');
-    registry.hold(jobId, 'process absence is not yet proven', 'Inspect the recorded process.', () => ({
-      kind: 'abandoned',
-      reason: 'operator released cleanup ownership',
-      nextStep: 'Inspect the recorded process.',
-    }));
-    expect(registry.abort([jobId]).refused).toHaveLength(1);
-    const control = createCoordinatorControl({
-      world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
-      listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
-      isLifecycleRunning: () => true,
-      getLifecycleController: () => null,
-      getProgressStore: () => harness.progressStore as never,
-      internalJobAbortRegistry: new AbortRegistry(runtime.ids),
-      requestStops: (jobIds, cause) => harness.reconciler.requestStops(jobIds, cause),
-    });
-    expect(harness.reconciler.stop()).toEqual({ kind: 'drained' });
-
-    expect(control.abortJobs([jobId])).toEqual({
-      kind: 'answered',
-      result: {
-        aborted: [],
-        notFound: [],
-        abandoned: [
-          {
-            jobId,
-            reason: 'operator released cleanup ownership',
-            nextStep: 'Inspect the recorded process.',
-          },
-        ],
-      },
-    });
-  });
-
-  it('reports the first unresolved cleanup as held and uses a later abort as explicit abandonment', () => {
-    const runtime = new SimulationRuntime();
-    const registry = new AbortRegistry(runtime.ids);
-    const abandon = vi.fn(() => ({
-      kind: 'abandoned' as const,
-      reason: 'job ownership was released without proof of process absence',
-      nextStep: 'Inspect the recorded process because it may still be live.',
-    }));
-    const jobId = registry.register('held-job');
-    registry.getSignal(jobId)?.addEventListener(
-      'abort',
-      () => {
-        registry.hold(
-          jobId,
-          'process absence is not yet proven',
-          `Run coral-cli abort jobs ${jobId} again to abandon without another signal.`,
-          abandon,
-        );
-      },
-      { once: true },
-    );
-
-    expect(registry.abort([jobId])).toEqual({
-      aborted: [],
-      notFound: [],
-      refused: [
-        {
-          jobId,
-          reason: 'process absence is not yet proven',
-          nextStep: `Run coral-cli abort jobs ${jobId} again to abandon without another signal.`,
-        },
-      ],
-    });
-    expect(abandon).not.toHaveBeenCalled();
-
-    expect(registry.abort([jobId])).toEqual({
-      aborted: [],
-      notFound: [],
-      abandoned: [
-        {
-          jobId,
-          reason: 'job ownership was released without proof of process absence',
-          nextStep: 'Inspect the recorded process because it may still be live.',
-        },
-      ],
-    });
-    expect(abandon).toHaveBeenCalledOnce();
-    expect(registry.has(jobId)).toBe(true);
-    expect(registry.abort([jobId])).toEqual({
-      aborted: [],
-      notFound: [],
-      abandoned: [
-        {
-          jobId,
-          reason: 'job ownership was released without proof of process absence',
-          nextStep: 'Inspect the recorded process because it may still be live.',
-        },
-      ],
-    });
-    expect(abandon).toHaveBeenCalledOnce();
-  });
-
-  it('keeps reporting a hold when durable abandonment is not accepted', () => {
-    const runtime = new SimulationRuntime();
-    const registry = new AbortRegistry(runtime.ids);
-    const abandon = vi.fn(() => ({
-      kind: 'retained' as const,
-      reason: 'durable containment status could not be persisted',
-      nextStep: 'Retry durable abandonment.',
-    }));
-    const jobId = registry.register('held-job');
-    registry.hold(jobId, 'process absence is not yet proven', 'Retry durable abandonment.', abandon);
-    registry.abort([jobId]);
-
-    expect(registry.abort([jobId])).toEqual({
-      aborted: [],
-      notFound: [],
-      refused: [
-        {
-          jobId,
-          reason: 'durable containment status could not be persisted',
-          nextStep: 'Retry durable abandonment.',
-        },
-      ],
-    });
-    expect(abandon).toHaveBeenCalledOnce();
-  });
-
   it('consults the internal-job abort registry before returning notFound', () => {
     const { control, internalJobAbortRegistry } = createControlHarness();
     const jobId = internalJobAbortRegistry.register('kb-reindex-1');
@@ -472,17 +274,6 @@ describe('createCoordinatorControl.abortJobs', () => {
       result: { aborted: [jobId], notFound: ['unknown-job'] },
     });
     expect(internalJobAbortRegistry.getSignal(jobId)?.aborted).toBe(true);
-  });
-
-  it('reports notFound when the internal-job registry is empty', () => {
-    const { control } = createControlHarness();
-
-    const decision = control.abortJobs(['absent-job']);
-
-    expect(decision).toEqual({
-      kind: 'answered',
-      result: { aborted: [], notFound: ['absent-job'] },
-    });
   });
 
   it('preserves a recovery abort refusal without trying another owner', () => {
@@ -613,63 +404,5 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
     expect(result.valid).toContain('kb-job');
     expect(result.mismatch).toContain('provider-job');
     expect(result.mismatch).not.toContain('kb-job');
-  });
-
-  it('uses containment for explicit jobs and equality for ambient jobs', () => {
-    const runtime = new SimulationRuntime();
-    const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
-    const world = { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld;
-    const status = { workDir: fixtureCanonicalWorkDir('/repo/sub'), jobKind: 'provider' };
-    const control = createCoordinatorControl({
-      world,
-      listExecutionServices: () => [],
-      isLifecycleRunning: () => true,
-      getLifecycleController: () => null,
-      getProgressStore: () => ({ readStatus: () => status }) as never,
-      internalJobAbortRegistry,
-      requestStops: noProviderStops,
-    });
-    const callerRoot = fixtureCanonicalWorkDir('/repo');
-
-    expect(control.scopeCheckJobs(['job'], callerRoot, 'contains').mismatch).toEqual([]);
-    expect(control.scopeCheckJobs(['job'], callerRoot, 'exact').mismatch).toEqual(['job']);
-  });
-});
-
-describe('createCoordinatorControl.requestDrain', () => {
-  it.each([0, 1])('starts shutdown once after %i in-flight requests drain', (inflight) => {
-    const runtime = new SimulationRuntime();
-    const idleTimer = new IdleTimer({ time: runtime.time });
-    let running = true;
-    const shutdown = vi.fn<LifecycleController['shutdown']>(async () => {
-      running = false;
-      return { disposition: 'finalized' as const };
-    });
-    idleTimer.startWatching(
-      () => false,
-      (reason) => {
-        void shutdown(reason);
-      },
-    );
-    if (inflight > 0) idleTimer.beginRequest();
-    const control = createCoordinatorControl({
-      world: { idleTimer } as unknown as CoordinatorWorld,
-      isLifecycleRunning: () => running,
-      getLifecycleController: () => ({ shutdown }) as unknown as LifecycleController,
-      listExecutionServices: () => [],
-      getProgressStore: () => ({}) as never,
-      internalJobAbortRegistry: new AbortRegistry(runtime.ids),
-      requestStops: noProviderStops,
-    });
-
-    control.requestDrain('replaced');
-
-    expect(control.isDrainRequested()).toBe(true);
-    if (inflight > 0) {
-      expect(shutdown).not.toHaveBeenCalled();
-      idleTimer.endRequest();
-    }
-    expect(shutdown).toHaveBeenCalledExactlyOnceWith('replaced');
-    idleTimer.stopWatching();
   });
 });

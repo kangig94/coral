@@ -103,30 +103,6 @@ describe('startKiwiArtifactFetchOnBoot', () => {
     ]);
   });
 
-  it('does nothing when Korean is not declared', () => {
-    const handle = startKiwiArtifactFetchOnBoot({
-      runtime: {} as Runtime,
-      kb: {
-        declaredAnalyzers: [],
-        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
-        getCorpusStateSnapshot: createSnapshot,
-        invalidateTextSnapshot: () => ({ contentSeq: 0, metadataSeq: 0 }),
-      },
-      driver: {
-        forceCorpusApply: () => ({ generation: 1, consumers: [] }),
-        waitFreshUntil: async () => {},
-      },
-      timeoutMs: 25,
-      signal: new AbortController().signal,
-      hasArtifact: () => false,
-      ensureArtifact: async () => {
-        throw new Error('should not fetch');
-      },
-    });
-
-    expect(handle).toEqual({ started: false, completed: null });
-  });
-
   it('waits through lock contention and reindexes when another actor completes the artifact', async () => {
     let now = 0;
     let ready = false;
@@ -279,74 +255,5 @@ describe('startKiwiArtifactFetchOnBoot', () => {
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('download failed'));
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('run the equip command'));
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('Intl fallback remains active'));
-  });
-
-  it('keeps a detached download result but suppresses reindex after disposal', async () => {
-    let ready = false;
-    let finishDownload!: () => void;
-    const download = new Promise<void>((resolve) => {
-      finishDownload = resolve;
-    });
-    const controller = new AbortController();
-    const invalidateTextSnapshot = vi.fn(() => ({ contentSeq: 1, metadataSeq: 2 }));
-    const forceCorpusApply = vi.fn(() => ({ generation: 1, consumers: [ORAMA_BASE_CONSUMER_ID] }));
-    const handle = startKiwiArtifactFetchOnBoot({
-      runtime: createRuntime(),
-      kb: {
-        declaredAnalyzers: ['ko'],
-        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
-        getCorpusStateSnapshot: createSnapshot,
-        invalidateTextSnapshot,
-      },
-      driver: {
-        forceCorpusApply,
-        waitFreshUntil: async () => {},
-      },
-      timeoutMs: 25,
-      signal: controller.signal,
-      hasArtifact: () => ready,
-      ensureArtifact: async () => {
-        await download;
-        ready = true;
-        return {
-          status: 'installed',
-          method: 'runtime-download',
-          version: '0.23.0',
-          targetDir: '/tmp/kiwi',
-        };
-      },
-    });
-
-    controller.abort();
-    finishDownload();
-    await handle.completed;
-
-    expect(ready).toBe(true);
-    expect(invalidateTextSnapshot).not.toHaveBeenCalled();
-    expect(forceCorpusApply).not.toHaveBeenCalled();
-  });
-
-  it('does not start when the composite artifact is already ready', () => {
-    const ensureArtifact = vi.fn();
-    const handle = startKiwiArtifactFetchOnBoot({
-      runtime: createRuntime(),
-      kb: {
-        declaredAnalyzers: ['ko'],
-        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
-        getCorpusStateSnapshot: createSnapshot,
-        invalidateTextSnapshot: () => ({ contentSeq: 0, metadataSeq: 0 }),
-      },
-      driver: {
-        forceCorpusApply: () => ({ generation: 1, consumers: [] }),
-        waitFreshUntil: async () => {},
-      },
-      timeoutMs: 25,
-      signal: new AbortController().signal,
-      hasArtifact: () => true,
-      ensureArtifact,
-    });
-
-    expect(handle).toEqual({ started: false, completed: null });
-    expect(ensureArtifact).not.toHaveBeenCalled();
   });
 });

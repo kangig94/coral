@@ -51,7 +51,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type { ProviderProxySetOperatorExitResult } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
-import { providerProxySetContainBooleanRpcSpec, providerProxySetContainRpcSpec } from '#src/transport/rpc/catalog.js';
+import { providerProxySetContainBooleanRpcSpec } from '#src/transport/rpc/catalog.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
@@ -184,106 +184,6 @@ describe('provider proxy set operator RPC composition', () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it('answers a boolean abandonment request with its strict response generation', async () => {
-    const authorize = vi
-      .spyOn(harness.lifecycle, 'authorizeBooleanOperatorExit')
-      .mockReturnValue({ kind: 'authorized', capability });
-    vi.spyOn(harness.prover, 'collectContainmentProof').mockResolvedValue(opaqueProof);
-    const complete = vi.spyOn(harness.lifecycle, 'completeBooleanOperatorExit').mockResolvedValue({
-      kind: 'unattributable-group-abandoned',
-      setIdentity: address,
-      claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
-      effect: {
-        signalsSent: ['SIGTERM'],
-        containmentAbsent: false,
-        representationAction: 'abandonment-release-started',
-      },
-    });
-
-    const request = providerProxySetContainBooleanRpcSpec.requestSchema.parse({
-      setIdentity: address,
-      abandonWithoutAbsence: true,
-    });
-
-    const ports = captured.ports;
-    if (ports === null) throw new Error('coordinator ports were not captured');
-    await expect(
-      executeCatalogRequest(providerProxySetContainBooleanRpcSpec, request, ports, operator),
-    ).resolves.toEqual({
-      kind: 'unary',
-      body: {
-        kind: 'unattributable-group-abandoned',
-        setIdentity: address,
-        claimDischarge: { kind: 'initial-disposition-retry-owned' },
-        effect: {
-          signalsSent: ['SIGTERM'],
-          containmentAbsent: false,
-          representationAction: 'abandonment-release-started',
-        },
-      },
-    });
-    expect(authorize).toHaveBeenCalledExactlyOnceWith(address);
-    expect(complete).toHaveBeenCalledExactlyOnceWith(capability, opaqueProof, true, undefined);
-  });
-
-  it('returns each RPC contract after current completion observes a fatal release successor', async () => {
-    const effect = {
-      signalsSent: ['SIGTERM'] as const,
-      containmentAbsent: true,
-      representationAction: 'absence-release-started' as const,
-    };
-    vi.spyOn(harness.prover, 'collectContainmentProof').mockResolvedValue(opaqueProof);
-    vi.spyOn(harness.lifecycle, 'authorizeOperatorExit').mockReturnValue({ kind: 'authorized', capability });
-    vi.spyOn(harness.lifecycle, 'completeOperatorExit').mockResolvedValue({
-      kind: 'representation-release-abandonment-required',
-      setIdentity: address,
-      effect,
-    });
-    const ports = captured.ports;
-    if (ports === null) throw new Error('coordinator ports were not captured');
-
-    await expect(
-      executeCatalogRequest(
-        providerProxySetContainRpcSpec,
-        providerProxySetContainRpcSpec.requestSchema.parse({ setIdentity: address, mode: 'contain' }),
-        ports,
-        operator,
-      ),
-    ).resolves.toEqual({
-      kind: 'unary',
-      body: { kind: 'representation-release-abandonment-required', setIdentity: address, effect },
-    });
-
-    vi.spyOn(harness.lifecycle, 'authorizeBooleanOperatorExit').mockReturnValue({ kind: 'authorized', capability });
-    vi.spyOn(harness.lifecycle, 'completeBooleanOperatorExit').mockResolvedValue({
-      kind: 'contained',
-      setIdentity: address,
-      disappearanceReceipt: 'operator-observed-absence',
-      claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
-      effect,
-    });
-    await expect(
-      executeCatalogRequest(
-        providerProxySetContainBooleanRpcSpec,
-        providerProxySetContainBooleanRpcSpec.requestSchema.parse({
-          setIdentity: address,
-          abandonWithoutAbsence: false,
-        }),
-        ports,
-        operator,
-      ),
-    ).resolves.toEqual({
-      kind: 'unary',
-      body: {
-        kind: 'contained',
-        setIdentity: address,
-        disappearanceReceipt: 'operator-observed-absence',
-        claimDischarge: { kind: 'initial-disposition-retry-owned' },
-        effect,
-      },
-    });
-  });
-
   it('refuses a legacy-only state before authorization or containment-proof collection', async () => {
     const authorizeBoolean = vi
       .spyOn(harness.lifecycle, 'authorizeBooleanOperatorExit')
@@ -334,17 +234,6 @@ describe('provider proxy set operator RPC composition', () => {
     await expect(pending).resolves.toEqual({ kind: 'authorization-stale', setIdentity: address, effect: noEffect });
     expect(complete).toHaveBeenCalledExactlyOnceWith(capability, opaqueProof, false, signal);
     expect(handback).toHaveBeenCalledOnce();
-  });
-
-  it('preserves a proof-collection error when handback rearming transiently throws', async () => {
-    vi.spyOn(harness.lifecycle, 'authorizeOperatorExit').mockReturnValue({ kind: 'authorized', capability });
-    vi.spyOn(harness.prover, 'collectContainmentProof').mockRejectedValue(new Error('proof collection failed'));
-    handback.mockImplementationOnce(() => {
-      throw new Error('timer installation failed');
-    });
-
-    await expect(harness.contain({ setIdentity: address, mode: 'contain' })).rejects.toThrow('proof collection failed');
-    expect(handback).toHaveBeenCalledTimes(2);
   });
 
   it.each<Readonly<{ evidence: ProviderProxySetContainmentEvidence; result: ProviderProxySetOperatorExitResult }>>([

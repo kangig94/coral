@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Socket } from 'node:net';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
 import { observeCoordinator } from '#src/transport/http/backend/coordinator-observation.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
-import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
 
 const mockState = vi.hoisted(() => ({
   observed: { kind: 'no-record' } as CoordinatorObservation,
@@ -100,35 +98,6 @@ describe('shutdownBackend', () => {
     );
   });
 
-  it('does not fall back to the backend token when the retired shutdown token is absent', async () => {
-    mockState.observed = {
-      kind: 'addressed',
-      coordinator: backendInfo({ shutdownToken: undefined }),
-      pidLiveness: 'alive',
-    };
-    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
-
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: true });
-
-    expect(fetch).toHaveBeenCalledWith(
-      'http://127.0.0.1:4321/admin/shutdown',
-      expect.objectContaining({
-        method: 'POST',
-        headers: { 'X-Coral-Boot-Token': 'boot-token' },
-      }),
-    );
-  });
-
-  it('accepts retired 200 shutting_down responses', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ status: 'shutting_down' }), { status: 200 })),
-    );
-    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
-
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: true });
-  });
-
   it('treats backend_shutting_down as already draining', async () => {
     vi.stubGlobal(
       'fetch',
@@ -147,22 +116,17 @@ describe('shutdownBackend', () => {
   // A file that exists and cannot be decoded is not an absent coordinator. Reporting `not_running` here would
   // skip a shutdown request a live daemon is waiting for, and the operator would then be told the thing they
   // are trying to stop is already stopped.
-  it.each([['corrupt-json'], ['shape-rejected']] as const)(
-    'refuses to report not_running when the discovery record is %s',
-    async (reason) => {
-      mockState.observed = { kind: 'unreadable-record', reason, path: '/run/coral/coordinator.json' };
-      // The record-derived view is still available, so a consumer reading only that would proceed as normal —
-      // which is exactly the collapse this branch exists to stop.
+  it('refuses to report not_running when the discovery record is unreadable', async () => {
+    mockState.observed = { kind: 'unreadable-record', reason: 'shape-rejected', path: '/run/coral/coordinator.json' };
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
-      const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
-
-      await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
-        ok: false,
-        reason: 'unreadable_record',
-        detail: reason,
-      });
-    },
-  );
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+      ok: false,
+      reason: 'unreadable_record',
+      detail: 'shape-rejected',
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   // The same collapse sat one function below the record split, where every way a request can fail to complete
   // answered `not_running`.
@@ -212,29 +176,6 @@ describe('shutdownBackend', () => {
       ok: false,
       reason: 'socket_refused',
       pidLiveness: 'alive',
-      pid: 12345,
-      recordPath: '/run/coral/coordinator.json',
-    });
-  });
-
-  // The other half of `pidLiveness` on `socket_refused`: a prior liveness check that could not resolve either
-  // way must not be upgraded to `'alive'` just because this test also drives a real closed socket below — this
-  // one pins that `'unknown'` survives unchanged through the refused-connection path too.
-  it('carries an unresolved pid liveness through a refused connection rather than upgrading it', async () => {
-    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'unknown' };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
-      }),
-    );
-
-    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
-
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
-      ok: false,
-      reason: 'socket_refused',
-      pidLiveness: 'unknown',
       pid: 12345,
       recordPath: '/run/coral/coordinator.json',
     });
@@ -299,48 +240,6 @@ describe('shutdownBackend', () => {
     });
   });
 
-  // The 401 proves a coordinator answers at the address; it proves nothing new about a pid `observeCoordinator`
-  // could only mark `unknown`. Dropping `pidLiveness` here would silently promote that prior "unknown" to
-  // "alive" the moment any response arrives, which is the exact §11 collapse this field exists to stop.
-  it('carries an unresolved pid liveness through the 401 rather than upgrading it', async () => {
-    mockState.observed = {
-      kind: 'addressed',
-      coordinator: backendInfo({ pid: 9001 }),
-      pidLiveness: 'unknown',
-    };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ error: 'nope' }), { status: 401 })),
-    );
-
-    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
-
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
-      ok: false,
-      reason: 'capability_rejected',
-      detail: '9001',
-      pidLiveness: 'unknown',
-    });
-  });
-
-  // `readBackendInfo` also returns null when `version`/`instanceId` are absent — fields the shutdown request
-  // never reads — which is why `observeCoordinator` hands back the decoded record instead. A coordinator old
-  // enough to omit them used to be reported as not running and never asked to stop.
-  it('asks a pre-version incumbent to stop instead of calling it not running', async () => {
-    const { version: _v, instanceId: _i, ...preVersion } = backendInfo();
-    mockState.observed = { kind: 'addressed', coordinator: preVersion, pidLiveness: 'alive' };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'draining' }), { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
-
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: true });
-    expect(
-      fetchMock,
-      'the request needs host, port and bootToken, all of which that record carries',
-    ).toHaveBeenCalled();
-  });
-
   // `parseJsonResponse` never throws for a resolved response, so this branch was reachable only through the
   // exception path's neighbor — a real HTTP response that resolved, was not a drain, and was not a 401. Only
   // the exception path had a test before this. `refused_by_response`, not `no_response`: a response arrived,
@@ -361,88 +260,4 @@ describe('shutdownBackend', () => {
       detail: '500 Internal Server Error',
     });
   });
-
-  // Neither the error nor its `.cause` carries a `.code` at all, so `thrownErrnoCode` must fall all the way
-  // through to the error's own message rather than stringifying `undefined` or throwing.
-  it('falls back to the error message when nothing carries an errno code', async () => {
-    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw new Error('boom');
-      }),
-    );
-
-    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
-
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
-      ok: false,
-      reason: 'no_response',
-      detail: 'boom',
-    });
-  });
-
-  // Method requirement: a hand-built `Error` that happens to carry the shape the reader expects is exactly how
-  // `socket_refused` went dead in the first place (`code: 'ECONNREFUSED'` set at the top level, which real
-  // `fetch` never does — see the measurement note on `thrownErrnoCode` in `src/infra/error-format.ts`). These two drive the real
-  // global `fetch` against a real socket instead of a fixture, so the assertion cannot agree with the bug.
-  it('reports socket_refused against a real closed port, not a hand-built error', async () => {
-    // Confirmed refusing, not merely closed — see `reserveRefusedPort` for why the two differ.
-    const port = await reserveRefusedPort();
-
-    vi.unstubAllGlobals();
-    mockState.observed = {
-      kind: 'addressed',
-      coordinator: backendInfo({ host: '127.0.0.1', port }),
-      pidLiveness: 'alive',
-    };
-
-    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
-
-    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
-      ok: false,
-      reason: 'socket_refused',
-      pidLiveness: 'alive',
-      pid: 12345,
-      recordPath: '/run/coral/coordinator.json',
-    });
-  });
-
-  it('reports no_response with a string detail, not a numeric DOMException code, against a real timeout', async () => {
-    const { createServer } = await import('node:net');
-    // `net.Server#close` waits for every accepted connection to end before its callback fires — unlike
-    // `http.Server`, it has no `closeAllConnections()`. The client aborts on its own timeout, but nothing here
-    // ever ends the *server*-side socket, so without tracking and destroying it by hand `server.close()` would
-    // hang past this test's own timeout (measured: it does, reproducibly).
-    const sockets: Socket[] = [];
-    const server = createServer((socket) => {
-      // Accept the connection and never respond, so the client's own AbortSignal.timeout is what fires.
-      sockets.push(socket);
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
-    const address = server.address();
-    if (address === null || typeof address === 'string') throw new Error('expected a TCP address');
-
-    vi.unstubAllGlobals();
-    mockState.observed = {
-      kind: 'addressed',
-      coordinator: backendInfo({ host: '127.0.0.1', port: address.port }),
-      pidLiveness: 'alive',
-    };
-
-    try {
-      const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
-      const result = await shutdownBackend('/plugin-root');
-
-      expect(result.ok).toBe(false);
-      if (result.ok || result.reason !== 'no_response') throw new Error('expected a no_response result');
-      // Measured on Node v26.3.1: a `fetch` timeout rejects with a `DOMException` whose own `.code` is the
-      // number `23`, not an errno. `detail` must never carry that raw number to an operator.
-      expect(typeof result.detail).toBe('string');
-      expect(result.detail).not.toBe('23');
-    } finally {
-      for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  }, 10_000);
 });

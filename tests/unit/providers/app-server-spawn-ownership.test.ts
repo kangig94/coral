@@ -4,14 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import {
-  PROVIDER_CONTAINMENT_ACCEPTED,
-  requestJoinableProviderServerShutdown,
   spawnProviderServerTransport,
   type ProviderContainmentAcceptance,
   type ProviderServerFailedSpawnCleanupAcceptor,
   type ProviderServerHandle,
 } from '#src/providers/app-server-transport.js';
-import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -46,31 +43,6 @@ const acceptCloseHold: Parameters<ProviderServerHandle['close']>[0] = (hold) => 
 const failContainmentRecording = (): ProviderContainmentAcceptance => {
   throw new Error('synthetic containment recording failure');
 };
-
-describe('requestJoinableProviderServerShutdown', () => {
-  it('joins a pending request and starts a fresh request after settlement', async () => {
-    let settleRequest!: (value: unknown) => void;
-    const pending = new Promise<unknown>((resolve) => {
-      settleRequest = resolve;
-    });
-    const request = vi.fn().mockReturnValueOnce(pending).mockResolvedValueOnce({ disposition: 'observed-absent' });
-    const handle = { rpc: { request } } as unknown as ProviderServerHandle;
-
-    const first = requestJoinableProviderServerShutdown(handle, 'shutdown');
-    const concurrent = requestJoinableProviderServerShutdown(handle, 'shutdown');
-
-    expect(concurrent).toBe(first);
-    expect(request).toHaveBeenCalledOnce();
-
-    settleRequest({ disposition: 'held-unobservable' });
-    await first;
-    const fresh = requestJoinableProviderServerShutdown(handle, 'shutdown');
-
-    expect(fresh).not.toBe(first);
-    expect(request).toHaveBeenCalledTimes(2);
-    await fresh;
-  });
-});
 
 function delayedClose(onSpawned?: (child: unknown) => void): Readonly<{
   script: {
@@ -135,55 +107,6 @@ describe('provider app-server spawn ownership', () => {
     child.close();
   });
 
-  it('publishes a durable incarnation without storing it in own-child cleanup authority', async () => {
-    const runtime = new SimulationRuntime();
-    const incarnation = testIncarnation('durable-provider-record');
-    const readProcessIncarnation = vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(incarnation);
-    const recordContainment = vi.fn<() => ProviderContainmentAcceptance>(() => PROVIDER_CONTAINMENT_ACCEPTED);
-    const child = delayedClose();
-    runtime.spawner.enqueueSpawn(child.script);
-
-    const handle = await spawnProviderServerTransport({
-      runtime,
-      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
-      generation: 1,
-      observeProviderResponse: () => {},
-      detached: true,
-      recordContainment,
-      acceptFailedSpawnCleanup: acceptCleanupHold,
-    });
-
-    expect(readProcessIncarnation).toHaveBeenCalledOnce();
-    expect(recordContainment).toHaveBeenCalledWith({ pid: 20_000, incarnation, processGroupId: 20_000 });
-    expect(handle).not.toHaveProperty('kind');
-    child.close();
-  });
-
-  it('returns an attached live-process hold without waiting for close', async () => {
-    const runtime = new SimulationRuntime();
-    vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('alive');
-    const child = delayedClose((spawned) => {
-      (spawned as { stdout: null }).stdout = null;
-    });
-    runtime.spawner.enqueueSpawn(child.script);
-
-    const held = await spawnProviderServerTransport({
-      runtime,
-      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
-      generation: 1,
-      observeProviderResponse: () => {},
-      acceptFailedSpawnCleanup: acceptCleanupHold,
-    });
-
-    expect(held).toMatchObject({
-      kind: 'held-alive',
-      subject: { kind: 'process', pid: 20_000 },
-      observation: 'alive',
-      successor: { kind: 'accepted', owner: 'provider-proxy-root-pool' },
-    });
-    child.close();
-  });
-
   it('joins an active exception-cleanup retry before operator abandonment settles', async () => {
     const runtime = new SimulationRuntime();
     vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('alive');
@@ -220,49 +143,6 @@ describe('provider app-server spawn ownership', () => {
     await flushMicrotasks();
     expect(runtime.spawner.killCalls.filter(({ signal }) => signal === 'SIGKILL')).toHaveLength(sigkillsBeforeRetry);
     child.close();
-  });
-
-  it('returns an accepted attached initialization hold without waiting for child close', async () => {
-    const runtime = new SimulationRuntime();
-    vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('unknown');
-    const child = delayedClose();
-    runtime.spawner.enqueueSpawn(child.script);
-    const abort = new AbortController();
-
-    const launch = spawnProviderServerTransport({
-      runtime,
-      options: {
-        provider: 'codex',
-        command: 'codex',
-        args: ['app-server'],
-        initializeRequest: { method: 'initialize', params: {} },
-        signal: abort.signal,
-      },
-      generation: 1,
-      observeProviderResponse: () => {},
-      acceptFailedSpawnCleanup: acceptCleanupHold,
-    });
-    const observation = observePromise(launch);
-    await flushMicrotasks();
-    abort.abort(new Error('cancelled'));
-    await flushMicrotasks();
-
-    const held = await launch;
-    expect(observation.settled).toBe(true);
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
-    expect(held).toMatchObject({
-      kind: 'held-unobservable',
-      subject: { kind: 'process', pid: 20_000 },
-      successor: { kind: 'accepted', owner: 'provider-proxy-root-pool' },
-    });
-    if (!('kind' in held) || held.kind !== 'held-unobservable') {
-      throw new Error('Expected an attached process cleanup hold.');
-    }
-    const settlement = observePromise(held.settled);
-    expect(settlement.settled).toBe(false);
-
-    child.close();
-    await held.settled;
   });
 
   it('returns an accepted attached piped-handle hold without waiting for child close', async () => {

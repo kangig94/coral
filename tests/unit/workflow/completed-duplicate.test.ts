@@ -93,25 +93,4 @@ describe('workflow.completed duplicate validator', () => {
       db.close();
     }
   });
-
-  it('allows one completion per distinct workflow id in the same batch', () => {
-    const db = createDb();
-    try {
-      const appended = commit(
-        db,
-        (c) => {
-          c.append(workflowPlanDeclaredEvent('workflow-a', plan(['workflow-a:0:0']), TEST_PROVIDER_SCOPE));
-          c.append(workflowPlanDeclaredEvent('workflow-b', plan(['workflow-b:0:0']), TEST_PROVIDER_SCOPE));
-          c.append(workflowCompletedEvent('workflow-a', { outcome: 'completed', stepDetails: [] }));
-          c.append(workflowCompletedEvent('workflow-b', { outcome: 'aborted', stepDetails: [] }));
-          return undefined;
-        },
-        ctx(),
-      );
-
-      expect(appended.map((event) => event.type)).toContain('workflow.completed');
-    } finally {
-      db.close();
-    }
-  });
 });

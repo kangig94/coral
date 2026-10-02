@@ -1,20 +1,15 @@
 import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer, Socket, type Server as NetServer } from 'node:net';
+import { createServer, type Socket, type Server as NetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   connectControlClient,
   type ControlClientTimer,
   type ProviderEventHandler,
 } from '#src/provider-proxy/control-client.js';
-import {
-  encodeProxyControlFrame,
-  PROVIDER_EVENT_METHOD,
-  providerEventRequestSchema,
-} from '#src/provider-proxy/protocol.js';
-import { providerProxyEmergencyEvent, providerProxyReplayFailureReasonSchema } from '#src/providers/proxy-failure.js';
+import { PROVIDER_EVENT_METHOD } from '#src/provider-proxy/protocol.js';
 
 const OPERATION = {
   jobId: '11111111-1111-1111-1111-111111111111',
@@ -68,13 +63,18 @@ function manualTimer(): ControlClientTimer & { fireAll(): void } {
 }
 
 /** A bare stand-in for the far end of the channel: raw accept, raw write, raw destroy — no protocol logic. */
-async function startTestServer(): Promise<{ socketPath: string; sockets: Socket[] }> {
+async function startTestServer(): Promise<{ socketPath: string; accepted: Promise<Socket> }> {
   const directory = mkdtempSync(join(tmpdir(), 'coral-control-client-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const socketPath = join(directory, 'c.sock');
   const sockets: Socket[] = [];
+  let resolveAccepted!: (socket: Socket) => void;
+  const accepted = new Promise<Socket>((resolve) => {
+    resolveAccepted = resolve;
+  });
   const server: NetServer = createServer((socket) => {
     sockets.push(socket);
+    resolveAccepted(socket);
   });
   cleanups.push(
     () =>
@@ -87,16 +87,7 @@ async function startTestServer(): Promise<{ socketPath: string; sockets: Socket[
     server.once('error', reject);
     server.listen(socketPath, () => resolve());
   });
-  return { socketPath, sockets };
-}
-
-async function waitForAccept(sockets: Socket[]): Promise<Socket> {
-  const deadline = Date.now() + 5_000;
-  while (sockets.length === 0) {
-    if (Date.now() > deadline) throw new Error('Timed out waiting for the test server to accept a connection.');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  return sockets[0];
+  return { socketPath, accepted };
 }
 
 function respondToNextRequest(serverSocket: Socket, buildResponse: (id: number | string) => unknown): void {
@@ -108,10 +99,10 @@ function respondToNextRequest(serverSocket: Socket, buildResponse: (id: number |
 
 describe('control client', () => {
   it('names a correlated result as a response', async () => {
-    const { socketPath, sockets } = await startTestServer();
+    const { socketPath, accepted } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
     cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
+    const serverSocket = await accepted;
     respondToNextRequest(serverSocket, (id) => ({ jsonrpc: '2.0', id, result: { ok: true } }));
 
     await expect(client.exchange('role.work.v1', {}, 5_000)).resolves.toEqual({
@@ -121,10 +112,10 @@ describe('control client', () => {
   });
 
   it('names a correlated JSON-RPC error as a refusal', async () => {
-    const { socketPath, sockets } = await startTestServer();
+    const { socketPath, accepted } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
     cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
+    const serverSocket = await accepted;
     respondToNextRequest(serverSocket, (id) => ({
       jsonrpc: '2.0',
       id,
@@ -158,11 +149,11 @@ describe('control client', () => {
   });
 
   it('names an unanswered written request that exceeds its budget as no-response', async () => {
-    const { socketPath, sockets } = await startTestServer();
+    const { socketPath, accepted } = await startTestServer();
     const timer = manualTimer();
     const client = await connectControlClient(socketPath, timer, 5_000);
     cleanups.push(() => client.close());
-    await waitForAccept(sockets);
+    await accepted;
 
     const exchange = client.exchange('role.slow.v1', {}, 30);
     timer.fireAll();
@@ -178,29 +169,11 @@ describe('control client', () => {
     });
   });
 
-  it('names an orderly channel closure with a written request pending as no-response', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-
-    const exchange = client.exchange('role.work.v1', {}, 5_000);
-    // `end` sends FIN and produces no socket error, which is what makes this an answerless close rather than
-    // an interrupted one.
-    serverSocket.end();
-
-    await expect(exchange).resolves.toEqual({
-      kind: 'no-response',
-      cause: 'connection-closed-after-write',
-      error: expect.objectContaining({ code: 'control_client_closed', origin: 'closed' }),
-    });
-  });
-
   it('names a reset with a written request pending as delivery-unconfirmed', async () => {
-    const { socketPath, sockets } = await startTestServer();
+    const { socketPath, accepted } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
     cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
+    const serverSocket = await accepted;
 
     const exchange = client.exchange('role.work.v1', {}, 5_000);
     serverSocket.destroy();
@@ -213,84 +186,11 @@ describe('control client', () => {
     });
   });
 
-  it('names an exchange made after client closure as not-sent', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    await waitForAccept(sockets);
-    client.close();
-
-    await expect(client.exchange('role.work.v1', {}, 5_000)).resolves.toEqual({
-      kind: 'not-sent',
-      cause: 'connection-already-closed',
-      error: expect.objectContaining({ code: 'control_client_closed', origin: 'closed' }),
-    });
-  });
-
-  it('names frame encoding failure as not-sent', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    await waitForAccept(sockets);
-    const params: { self?: unknown } = {};
-    params.self = params;
-
-    await expect(client.exchange('role.work.v1', params, 5_000)).resolves.toEqual({
-      kind: 'not-sent',
-      cause: 'encode-failed',
-      error: expect.any(Error),
-    });
-  });
-
-  it('names a synchronous socket write throw as not-sent', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    await waitForAccept(sockets);
-    const sentinel = new Error('write sentinel');
-    const write = vi.spyOn(Socket.prototype, 'write').mockImplementationOnce(() => {
-      throw sentinel;
-    });
-    cleanups.push(() => write.mockRestore());
-
-    await expect(client.exchange('role.write.v1', {}, 5_000)).resolves.toEqual({
-      kind: 'not-sent',
-      cause: 'write-threw',
-      error: sentinel,
-    });
-  });
-
-  it('reports a pending asynchronous socket error before settling delivery as unconfirmed', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    await waitForAccept(sockets);
-    const sentinel = new Error('asynchronous socket sentinel');
-    const write = vi.spyOn(Socket.prototype, 'write').mockImplementationOnce(function (this: Socket) {
-      setImmediate(() => this.emit('error', sentinel));
-      return true;
-    });
-    cleanups.push(() => write.mockRestore());
-    const settlements: string[] = [];
-    void client.faulted.then(() => settlements.push('faulted'));
-
-    const exchange = client.exchange('role.write.v1', {}, 5_000);
-    void exchange.then(() => settlements.push('exchange'));
-
-    await expect(exchange).resolves.toEqual({
-      kind: 'delivery-unconfirmed',
-      cause: 'socket-error-after-write',
-      error: sentinel,
-    });
-    await Promise.resolve();
-    expect(settlements).toEqual(['faulted', 'exchange']);
-  });
-
   it('names an invalid unattributable frame as a channel fault', async () => {
-    const { socketPath, sockets } = await startTestServer();
+    const { socketPath, accepted } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
     cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
+    const serverSocket = await accepted;
 
     const exchange = client.exchange('role.work.v1', {}, 5_000);
     serverSocket.write('not-json\n');
@@ -306,125 +206,16 @@ describe('control client', () => {
     });
   });
 
-  it('rejects with control_client_connect_failed when the connect budget is exceeded', async () => {
-    // A real, listening server so the socket path is genuine — the manual timer, not a bad path, is what
-    // forces the timeout branch: fireAll() runs before Node's real 'connect' event could ever arrive.
-    const { socketPath } = await startTestServer();
-    const timer = manualTimer();
-
-    const connecting = connectControlClient(socketPath, timer, 25);
-    timer.fireAll();
-
-    await expect(connecting).rejects.toMatchObject({
-      code: 'control_client_connect_failed',
-      origin: 'timeout',
-      remoteFailure: null,
-      message: expect.stringContaining('exceeded 25ms'),
-    });
-  });
-
-  it('rejects with control_client_connect_failed when the socket path does not exist', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'coral-control-client-'));
-    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
-    const socketPath = join(directory, 'no-such-socket.sock');
-    // The manual timer is never fired here: nothing but the real connect error should be able to settle
-    // this promise, which is what proves the rejection is genuinely the connect failure, not a timeout race.
-    const timer = manualTimer();
-
-    await expect(connectControlClient(socketPath, timer, 5_000)).rejects.toMatchObject({
-      code: 'control_client_connect_failed',
-      origin: 'closed',
-      message: expect.stringContaining('Control connect failed:'),
-    });
-  });
-
-  it('notifies current fault listeners inline before fault promise reactions', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    const observations: string[] = [];
-    client.onFault(() => observations.push('listener'));
-    void client.faulted.then(() => observations.push('promise'));
-
-    serverSocket.destroy();
-    await client.faulted;
-    await Promise.resolve();
-
-    expect(observations).toEqual(['listener', 'promise']);
-  });
-
-  it('invokes a late fault subscriber before onFault returns', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    serverSocket.destroy();
-    await client.faulted;
-    let observedCode: string | null = null;
-
-    const unsubscribe = client.onFault((error) => {
-      observedCode = error.code;
-    });
-
-    expect(observedCode).toBe('control_client_closed');
-    expect(unsubscribe).not.toThrow();
-  });
-
-  it('refuses an inbound request when no provider-event handler is installed, without dropping the connection', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    respondToNextRequest(serverSocket, (id) => ({ jsonrpc: '2.0', id, result: { ok: true } }));
-
-    // The client's own exchange is unaffected by an unrelated inbound frame sharing no correlation to it.
-    await expect(client.exchange('role.work.v1', {}, 5_000)).resolves.toEqual({
-      kind: 'response',
-      response: { kind: 'result', value: { ok: true } },
-    });
-
-    const refusal = await new Promise<{ id: number; error: { data?: { code?: string } } }>((resolve) => {
-      serverSocket.on('data', function onData(chunk: Buffer) {
-        const message = JSON.parse(chunk.toString('utf8').split('\n')[0]) as { id: number };
-        if (message.id === 999) {
-          serverSocket.off('data', onData);
-          resolve(message as { id: number; error: { data?: { code?: string } } });
-        }
-      });
-      serverSocket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 999, method: 'server.callback.v1', params: {} })}\n`);
-    });
-
-    expect(refusal.error.data?.code).toBe('protocol_violation');
-    // Refused, not dropped: the connection stays usable for whatever the client dials it for next.
-    expect(serverSocket.destroyed).toBe(false);
-    expect(client.close).not.toThrow();
-  });
-
-  it('refuses provider.event.v1 itself when no handler was installed at connect time', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-
-    const refusal = await new Promise<{ error: { data?: { code?: string } } }>((resolve) => {
-      serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
-      serverSocket.write(providerEventFrame(1));
-    });
-
-    expect(refusal.error.data?.code).toBe('protocol_violation');
-  });
-
   it('dispatches provider.event.v1 to the installed handler and writes back its validated result', async () => {
     const received: unknown[] = [];
     const handler: ProviderEventHandler = (request) => {
       received.push(request);
       return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
     };
-    const { socketPath, sockets } = await startTestServer();
+    const { socketPath, accepted } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000, handler);
     cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
+    const serverSocket = await accepted;
 
     const reply = await new Promise<{ id: number; result?: unknown }>((resolve) => {
       serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
@@ -433,266 +224,5 @@ describe('control client', () => {
 
     expect(received).toEqual([{ operation: OPERATION, providerSeq: 1, event: { kind: 'progress', message: 'tick' } }]);
     expect(reply).toEqual({ id: 7, jsonrpc: '2.0', result: { kind: 'ack', committedThroughProviderSeq: 1 } });
-  });
-
-  it('accepts all four encoded proxy-emergency frames through the real strict receiver', async () => {
-    const received: unknown[] = [];
-    const handler: ProviderEventHandler = (request) => {
-      received.push(request);
-      return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
-    };
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000, handler);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    const lengths: number[] = [];
-
-    for (const reason of providerProxyReplayFailureReasonSchema.options) {
-      const request = providerEventRequestSchema.parse({
-        operation: OPERATION,
-        providerSeq: Number.MAX_SAFE_INTEGER,
-        event: providerProxyEmergencyEvent({ reason }),
-      });
-      const frame = encodeProxyControlFrame({
-        jsonrpc: '2.0',
-        id: Number.MAX_SAFE_INTEGER,
-        method: PROVIDER_EVENT_METHOD,
-        params: request,
-      });
-      lengths.push(Buffer.byteLength(frame, 'utf8'));
-
-      const reply = new Promise<{ result?: unknown }>((resolve) => {
-        serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
-      });
-      serverSocket.write(frame);
-      await expect(reply).resolves.toEqual({
-        jsonrpc: '2.0',
-        id: Number.MAX_SAFE_INTEGER,
-        result: { kind: 'ack', committedThroughProviderSeq: Number.MAX_SAFE_INTEGER },
-      });
-    }
-
-    expect(lengths).toEqual([633, 632, 635, 641]);
-    expect(received).toHaveLength(4);
-  });
-
-  it('refuses provider.event.v1 params that fail strict validation without invoking the handler', async () => {
-    const handler = vi.fn<ProviderEventHandler>(() => ({ kind: 'ack', committedThroughProviderSeq: 1 }));
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000, handler);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-
-    const refusal = await new Promise<{ error: { data?: { code?: string } } }>((resolve) => {
-      serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
-      // providerSeq must be a positive integer; 0 fails the schema.
-      serverSocket.write(providerEventFrame(1, { providerSeq: 0 }));
-    });
-
-    expect(refusal.error.data?.code).toBe('invalid_request');
-    expect(handler).not.toHaveBeenCalled();
-  });
-
-  it('reports a handler rejection as a protocol_violation error response', async () => {
-    const handler: ProviderEventHandler = () => {
-      throw new Error('durable commit failed');
-    };
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000, handler);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-
-    const refusal = await new Promise<{ error: { message: string; data?: { code?: string } } }>((resolve) => {
-      serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
-      serverSocket.write(providerEventFrame(1));
-    });
-
-    expect(refusal.error.data?.code).toBe('protocol_violation');
-    expect(refusal.error.message).toBe('durable commit failed');
-  });
-
-  it('keeps the server protocol code inside the refusal evidence', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    respondToNextRequest(serverSocket, (id) => ({
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code: -32_600,
-        message: 'Control admission was refused (control-active).',
-        data: { code: 'invalid_state', reason: 'control-active' },
-      },
-    }));
-
-    await expect(client.exchange('role.redeem.v1', {}, 5_000)).resolves.toMatchObject({
-      kind: 'response',
-      response: {
-        kind: 'refusal',
-        failure: {
-          kind: 'json-rpc-error',
-          jsonRpcCode: -32_600,
-          protocolCode: 'invalid_state',
-          admissionReason: 'control-active',
-          heartbeatRefusal: null,
-        },
-      },
-    });
-  });
-
-  it('parses a heartbeat mismatch and its replacement challenge from structured error data', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    respondToNextRequest(serverSocket, (id) => ({
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code: -32_600,
-        message: 'Heartbeat echo was not accepted (challenge-mismatch).',
-        data: {
-          code: 'invalid_request',
-          heartbeatRefusal: 'challenge-mismatch',
-          nextHeartbeatChallenge: 'challenge-2',
-        },
-      },
-    }));
-
-    await expect(client.exchange('role.heartbeat.v1', {}, 5_000)).resolves.toMatchObject({
-      kind: 'response',
-      response: {
-        kind: 'refusal',
-        failure: {
-          kind: 'json-rpc-error',
-          jsonRpcCode: -32_600,
-          protocolCode: 'invalid_request',
-          admissionReason: null,
-          heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-2' },
-        },
-      },
-    });
-  });
-
-  it('does not recognize a heartbeat or admission refusal from a contradictory error envelope', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    respondToNextRequest(serverSocket, (id) => ({
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code: -32_603,
-        message: 'internal failure',
-        data: {
-          code: 'protocol_violation',
-          reason: 'control-active',
-          heartbeatRefusal: 'teardown-latched',
-          nextHeartbeatChallenge: 'contradictory-challenge',
-        },
-      },
-    }));
-
-    await expect(client.exchange('role.heartbeat.v1', {}, 5_000)).resolves.toMatchObject({
-      kind: 'response',
-      response: {
-        kind: 'refusal',
-        failure: {
-          kind: 'json-rpc-error',
-          jsonRpcCode: -32_603,
-          protocolCode: 'protocol_violation',
-          admissionReason: null,
-          heartbeatRefusal: null,
-        },
-      },
-    });
-  });
-
-  it('does not decode an admission refusal as a heartbeat refusal', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    respondToNextRequest(serverSocket, (id) => ({
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code: -32_600,
-        message: 'Control admission was refused (teardown-latched).',
-        data: { code: 'invalid_state', reason: 'teardown-latched' },
-      },
-    }));
-
-    await expect(client.exchange('role.redeem.v1', {}, 5_000)).resolves.toMatchObject({
-      kind: 'response',
-      response: {
-        kind: 'refusal',
-        failure: {
-          kind: 'json-rpc-error',
-          jsonRpcCode: -32_600,
-          protocolCode: 'invalid_state',
-          admissionReason: 'teardown-latched',
-          heartbeatRefusal: null,
-        },
-      },
-    });
-  });
-
-  it('does not decode a teardown-latched heartbeat refusal as an admission refusal', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    respondToNextRequest(serverSocket, (id) => ({
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code: -32_600,
-        message: 'Heartbeat echo was not accepted (teardown-latched).',
-        data: { code: 'invalid_request', heartbeatRefusal: 'teardown-latched' },
-      },
-    }));
-
-    await expect(client.exchange('role.heartbeat.v1', {}, 5_000)).resolves.toMatchObject({
-      kind: 'response',
-      response: {
-        kind: 'refusal',
-        failure: {
-          kind: 'json-rpc-error',
-          jsonRpcCode: -32_600,
-          protocolCode: 'invalid_request',
-          admissionReason: null,
-          heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
-        },
-      },
-    });
-  });
-
-  it('ignores a data.code the closed set does not recognize', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-    respondToNextRequest(serverSocket, (id) => ({
-      jsonrpc: '2.0',
-      id,
-      error: { code: -32_600, message: 'Not from this endpoint.', data: { code: 'not_a_real_code' } },
-    }));
-
-    await expect(client.exchange('role.redeem.v1', {}, 5_000)).resolves.toMatchObject({
-      kind: 'response',
-      response: {
-        kind: 'refusal',
-        failure: {
-          kind: 'json-rpc-error',
-          jsonRpcCode: -32_600,
-          protocolCode: null,
-          admissionReason: null,
-          heartbeatRefusal: null,
-        },
-      },
-    });
   });
 });

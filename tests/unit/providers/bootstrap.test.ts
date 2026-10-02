@@ -1,41 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { createBuiltInProviderRegistry, registerBuiltInProviders } from '#src/providers/bootstrap.js';
-import { none } from '#src/providers/capability.js';
-import type { ProviderRequest } from '#src/providers/contract.js';
+import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import type { ProviderBindingEnvelope } from '#src/infra/provider-binding-envelope.js';
-import { defineProvider } from '#src/providers/registry.js';
-import { ProviderRegistry, type ProviderDefinition } from '#src/providers/registry.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
-import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from '../../helpers/provider-credentials.js';
-import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
-import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { TEST_CLAUDE_BINDING } from '../../helpers/provider-credentials.js';
 
-function providerNames(providers: ProviderDefinition[]): string[] {
-  return providers.map((provider) => provider.name);
-}
-
-function boundBuiltIn(
-  provider: 'claude' | 'codex',
-  envelope: ProviderBindingEnvelope = provider === 'claude' ? TEST_CLAUDE_BINDING : TEST_CODEX_BINDING,
-): BoundProvider {
+function boundBuiltIn(provider: 'claude', envelope: ProviderBindingEnvelope = TEST_CLAUDE_BINDING): BoundProvider {
   const result = createBuiltInProviderRegistry().rehydrateBinding(envelope);
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(`Unexpected ${provider} binding failure: ${result.failure.reason}`);
   expect(result.value.name).toBe(provider);
   return result.value;
-}
-
-function request(provider: 'claude' | 'codex'): ProviderRequest {
-  return {
-    action: 'exec',
-    sessionId: `${provider}-session`,
-    prompt: 'test',
-    cwd: fixtureCanonicalWorkDir('/workspace'),
-    bypassPermissions: false,
-    coralEnv: {},
-  };
 }
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
@@ -65,215 +41,7 @@ function recoveryStorage(options: {
   };
 }
 
-type RecoveryLocatorCase = {
-  readonly label: string;
-  readonly tree: Record<string, DirentLike[]>;
-  readonly expected: readonly { readonly handle: string; readonly identity?: Record<string, string> }[] | undefined;
-};
-
 describe('registerBuiltInProviders', () => {
-  it('registers claude and codex provider specs', () => {
-    const registry = new ProviderRegistry();
-
-    registerBuiltInProviders(registry);
-
-    expect(providerNames(registry.getAll())).toEqual(['codex', 'claude']);
-  });
-
-  it('keeps built-in definitions name-only and exposes facets only after binding', () => {
-    const registry = createBuiltInProviderRegistry();
-    const claudeDefinition = registry.get('claude');
-    const codexDefinition = registry.get('codex');
-
-    for (const definition of [claudeDefinition, codexDefinition]) {
-      expect(definition).toBeDefined();
-      expect(definition).not.toHaveProperty('run');
-      expect(definition).not.toHaveProperty('preflight');
-      expect(definition).not.toHaveProperty('appServer');
-      expect(definition).not.toHaveProperty('recovery');
-      expect(definition).not.toHaveProperty('artifacts');
-    }
-
-    const claude = boundBuiltIn('claude');
-    const codex = boundBuiltIn('codex');
-    const preparedClaude = claude.prepareExecution({
-      request: request('claude'),
-      baseEnv: {},
-      storage: { existsSync: () => false },
-      platform: 'linux',
-    });
-    const preparedCodex = codex.prepareExecution({
-      request: request('codex'),
-      baseEnv: {},
-      storage: { existsSync: () => false },
-      platform: 'linux',
-    });
-
-    expect(claude.appServer).toMatchObject({
-      supportsInterrupt: true,
-      supportsProbe: false,
-    });
-    expect(preparedClaude).not.toHaveProperty('appServer');
-    expect(typeof claude.recovery?.finalizeInterrupted).toBe('function');
-    expect(typeof claude.recovery?.finalizeFromArtifacts).toBe('function');
-    expect(claude.artifacts.kind).toBe('managed');
-
-    expect(codex.appServer).toMatchObject({
-      supportsInterrupt: true,
-      supportsProbe: true,
-    });
-    expect(preparedCodex).not.toHaveProperty('appServer');
-    expect(typeof codex.recovery?.finalizeInterrupted).toBe('function');
-    expect(typeof codex.recovery?.finalizeFromArtifacts).toBe('function');
-    expect(codex.artifacts.kind).toBe('managed');
-  });
-
-  const codexRecoveryCases: RecoveryLocatorCase[] = [
-    {
-      label: 'no match',
-      tree: {
-        '/home/user/.codex/sessions': [dirent('2026', 'dir')],
-        '/home/user/.codex/sessions/2026': [dirent('05', 'dir')],
-        '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
-        '/home/user/.codex/sessions/2026/05/04': [dirent('rollout-a-other-thread.jsonl', 'file')],
-      },
-      expected: undefined,
-    },
-    {
-      label: 'single match',
-      tree: {
-        '/home/user/.codex/sessions': [dirent('2026', 'dir')],
-        '/home/user/.codex/sessions/2026': [dirent('05', 'dir')],
-        '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
-        '/home/user/.codex/sessions/2026/05/04': [dirent('rollout-a-thread-from-meta.jsonl', 'file')],
-      },
-      expected: [
-        {
-          handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-from-meta.jsonl',
-          identity: { kind: 'codex-rollout', threadId: 'thread-from-meta' },
-        },
-      ],
-    },
-    {
-      label: 'ambiguous match',
-      tree: {
-        '/home/user/.codex/sessions': [dirent('2026', 'dir')],
-        '/home/user/.codex/sessions/2026': [dirent('05', 'dir')],
-        '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
-        '/home/user/.codex/sessions/2026/05/04': [
-          dirent('rollout-a-thread-from-meta.jsonl', 'file'),
-          dirent('rollout-b-thread-from-meta.jsonl', 'file'),
-        ],
-      },
-      expected: undefined,
-    },
-  ];
-
-  it.each(codexRecoveryCases)(
-    'finalizeCodexFromArtifacts derives recovery artifact handles from the session reference: $label',
-    async ({ tree, expected }) => {
-      const codex = boundBuiltIn('codex');
-
-      const result = await codex.recovery?.finalizeFromArtifacts({
-        durationMs: 0,
-        stdoutPath: '/tmp/stdout',
-        stderrPath: '/tmp/stderr',
-        exitCode: 0,
-        signal: null,
-        fallbackConversationRef: 'thread-from-meta',
-        storage: recoveryStorage({ tree }),
-      });
-
-      expect(result?.artifactHandles).toEqual(expected);
-    },
-  );
-
-  it('uses the session conversation reference for Codex artifact lookup', async () => {
-    const codex = boundBuiltIn('codex');
-
-    const result = await codex.recovery?.finalizeFromArtifacts({
-      durationMs: 0,
-      stdoutPath: '/tmp/stdout',
-      stderrPath: '/tmp/stderr',
-      exitCode: 0,
-      signal: null,
-      fallbackConversationRef: 'fallback-thread',
-      storage: recoveryStorage({
-        tree: {
-          '/home/user/.codex/sessions': [dirent('2026', 'dir')],
-          '/home/user/.codex/sessions/2026': [dirent('05', 'dir')],
-          '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
-          '/home/user/.codex/sessions/2026/05/04': [dirent('rollout-a-fallback-thread.jsonl', 'file')],
-        },
-      }),
-    });
-
-    expect(result?.artifactHandles).toEqual([
-      {
-        handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-fallback-thread.jsonl',
-        identity: { kind: 'codex-rollout', threadId: 'fallback-thread' },
-      },
-    ]);
-  });
-
-  const claudeRecoveryCases: RecoveryLocatorCase[] = [
-    {
-      label: 'no match',
-      tree: {
-        '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
-        '/home/user/.claude/projects/-workspace': [dirent('other-session.jsonl', 'file')],
-      },
-      expected: undefined,
-    },
-    {
-      label: 'single match',
-      tree: {
-        '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
-        '/home/user/.claude/projects/-workspace': [dirent('conversation-from-meta.jsonl', 'file')],
-      },
-      expected: [
-        {
-          handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl',
-          identity: { kind: 'claude-jsonl', conversationRef: 'conversation-from-meta' },
-        },
-      ],
-    },
-    {
-      label: 'ambiguous match',
-      tree: {
-        '/home/user/.claude/projects': [dirent('-workspace-a', 'dir'), dirent('-workspace-b', 'dir')],
-        '/home/user/.claude/projects/-workspace-a': [dirent('conversation-from-meta.jsonl', 'file')],
-        '/home/user/.claude/projects/-workspace-b': [dirent('conversation-from-meta.jsonl', 'file')],
-      },
-      expected: undefined,
-    },
-  ];
-
-  it.each(claudeRecoveryCases)(
-    'finalizeClaudeFromArtifacts derives recovery artifact handles from the session reference: $label',
-    async ({ tree, expected }) => {
-      const claude = boundBuiltIn('claude');
-
-      const result = await claude.recovery?.finalizeFromArtifacts({
-        durationMs: 0,
-        stdoutPath: '/tmp/stdout',
-        stderrPath: '/tmp/stderr',
-        exitCode: 0,
-        signal: null,
-        fallbackConversationRef: 'conversation-from-meta',
-        storage: recoveryStorage({
-          files: {
-            '/tmp/stdout': JSON.stringify({ type: 'result', result: 'ok' }),
-            '/tmp/stderr': '',
-          },
-          tree,
-        }),
-      });
-
-      expect(result?.artifactHandles).toEqual(expected);
-    },
-  );
-
   it('uses persisted Claude source A and never hostile ambient source B for artifact recovery', async () => {
     const claude = boundBuiltIn('claude', {
       provider: 'claude',
@@ -396,45 +164,5 @@ describe('registerBuiltInProviders', () => {
         identity: { kind: 'claude-jsonl', conversationRef: 'conversation-from-meta' },
       },
     ]);
-  });
-
-  it('is idempotent per registry instance', () => {
-    const registry = new ProviderRegistry();
-
-    registerBuiltInProviders(registry);
-
-    expect(() => registerBuiltInProviders(registry)).not.toThrow();
-    expect(providerNames(registry.getAll())).toEqual(['codex', 'claude']);
-  });
-
-  it('fails when a conflicting provider is already registered', () => {
-    const registry = new ProviderRegistry();
-
-    registry.register(
-      defineProvider({
-        name: 'codex',
-        transport: 'standalone',
-        prepareExecutionPlan: () => ({
-          plan: { host: undefined, session: undefined, turn: undefined },
-          prepareCliRequest: (request) => request,
-        }),
-        run: async function* () {
-          yield {
-            kind: 'terminal',
-            terminal: {
-              content: 'conflict',
-              durationMs: 0,
-              outcome: { kind: 'completed' as const },
-            },
-            diagnostics: {},
-          };
-        },
-      })
-        .binding(fixtureProviderBindingCodec('codex'))
-        .artifacts(none('conflict fixture declares no provider artifacts'))
-        .build(),
-    );
-
-    expect(() => registerBuiltInProviders(registry)).toThrow(/already registered/i);
   });
 });

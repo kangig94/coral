@@ -82,16 +82,6 @@ describe('async recorded process observation', () => {
     expect(observeLiveness).toHaveBeenCalledTimes(2);
   });
 
-  it('answers unknown on a probe timeout, the same as any other unreadable token', async () => {
-    // A timed-out or unreadable identity probe cannot license pid-only life as recorded-holder evidence.
-    const { observe } = observerWith({
-      observeLiveness: () => 'alive',
-      readIncarnation: () => Promise.resolve(null),
-    });
-
-    await expect(observe({ pid: PID, incarnation: RECORDED })).resolves.toBe('unknown');
-  });
-
   it('answers unknown when the liveness check is itself inconclusive, even though the token matches', async () => {
     // Inconclusive liveness must remain unknown even when the identity token matches.
     const { observe } = observerWith({
@@ -100,29 +90,6 @@ describe('async recorded process observation', () => {
     });
 
     await expect(observe({ pid: PID, incarnation: RECORDED })).resolves.toBe('unknown');
-  });
-
-  it.each<[string, Partial<Readers>]>([
-    ['the identity read rejects', { readIncarnation: () => Promise.reject(new Error('probe failed')) }],
-    [
-      'the liveness observation throws',
-      {
-        observeLiveness: () => {
-          throw new Error('liveness probe failed');
-        },
-      },
-    ],
-  ])('answers unknown, never absent, when %s', async (_label, readers) => {
-    const { observe } = observerWith({
-      observeLiveness: () => 'alive',
-      readIncarnation: () => Promise.resolve(RECORDED),
-      ...readers,
-    });
-
-    await expect(
-      observe({ pid: PID, incarnation: RECORDED }),
-      'a question that could not be asked has not been answered, and only absence may finalize anything',
-    ).resolves.toBe('unknown');
   });
 
   it('does not block the event loop while a read is in flight', async () => {

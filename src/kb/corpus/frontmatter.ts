@@ -381,10 +381,6 @@ export function replaceSourceFrontmatter(content: string, meta: KbSourceFrontmat
   return replaceFrontmatterBlock(content, serializeSourceFrontmatter(meta));
 }
 
-export function replaceCommunityFrontmatter(content: string, meta: CommunityFrontmatter): string {
-  return replaceFrontmatterBlock(content, serializeCommunityFrontmatter(meta));
-}
-
 export function extractTitle(content: string): string {
   const title = content.match(/^# (.+)$/m)?.[1];
   if (!title) {

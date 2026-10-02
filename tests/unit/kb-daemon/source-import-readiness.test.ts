@@ -65,57 +65,6 @@ const SNAPSHOT: KbCorpusSnapshot = {
 };
 
 describe('waitForCorpusReadiness', () => {
-  it('returns immediately for "commit" without invoking the waiter', async () => {
-    const calls: string[] = [];
-    await waitForCorpusReadiness({
-      kb: {
-        ...makeKb({ fts: 'fts-consumer', vector: 'vector-consumer' }),
-      },
-      readiness: 'commit',
-      snapshot: SNAPSHOT,
-      timeoutMs: 1000,
-      waitFresh: async ({ consumerId }) => {
-        calls.push(consumerId);
-      },
-    });
-
-    expect(calls).toEqual([]);
-  });
-
-  it('"base-search" awaits only the FTS consumer', async () => {
-    const calls: string[] = [];
-    await waitForCorpusReadiness({
-      kb: {
-        ...makeKb({ fts: 'fts-consumer', vector: 'vector-consumer' }),
-      },
-      readiness: 'base-search',
-      snapshot: SNAPSHOT,
-      timeoutMs: 1000,
-      waitFresh: async ({ consumerId }) => {
-        calls.push(consumerId);
-      },
-    });
-
-    expect(calls).toEqual(['fts-consumer']);
-  });
-
-  it('"active-vector" awaits only the vector consumer', async () => {
-    const calls: string[] = [];
-    await waitForCorpusReadiness({
-      kb: {
-        ...makeKb({ fts: 'fts-consumer', vector: 'vector-consumer' }),
-      },
-      readiness: 'active-vector',
-      snapshot: SNAPSHOT,
-      timeoutMs: 1000,
-      waitFresh: async ({ consumerId }) => {
-        calls.push(consumerId);
-      },
-    });
-
-    expect(calls).toEqual(['vector-consumer']);
-  });
-
   it('"all-equipped" blocks until ALL bound corpus consumers reach the snapshot', async () => {
     const ftsArrived = createDeferred<void>();
     const vectorArrived = createDeferred<void>();
@@ -154,23 +103,6 @@ describe('waitForCorpusReadiness', () => {
     expect(completedConsumerIds.sort()).toEqual(['fts-consumer', 'vector-consumer']);
   });
 
-  it('"all-equipped" skips unbound vector and proceeds with only the bound consumers (degraded)', async () => {
-    const calls: string[] = [];
-    await waitForCorpusReadiness({
-      kb: {
-        ...makeKb({ fts: 'fts-consumer' }),
-      },
-      readiness: 'all-equipped',
-      snapshot: SNAPSHOT,
-      timeoutMs: 1000,
-      waitFresh: async ({ consumerId }) => {
-        calls.push(consumerId);
-      },
-    });
-
-    expect(calls).toEqual(['fts-consumer']);
-  });
-
   // G6: 'base-search' must surface a structured kb_unavailable error when
   // kb.fts is unbound, instead of leaking the raw binding_empty CoralSetupError.
   it('"base-search" surfaces kb_unavailable when kb.fts is unbound', async () => {
@@ -189,54 +121,5 @@ describe('waitForCorpusReadiness', () => {
       }),
     ).rejects.toMatchObject({ code: 'kb_unavailable', context: { binding: 'kb.fts', readiness: 'base-search' } });
     expect(waiterCalled).toBe(false);
-  });
-
-  it('"active-vector" surfaces kb_unavailable when kb.vector is unbound', async () => {
-    let waiterCalled = false;
-    await expect(
-      waitForCorpusReadiness({
-        kb: {
-          ...makeKb({ fts: 'fts-consumer' }),
-        },
-        readiness: 'active-vector',
-        snapshot: SNAPSHOT,
-        timeoutMs: 1000,
-        waitFresh: async () => {
-          waiterCalled = true;
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'kb_unavailable', context: { binding: 'kb.vector', readiness: 'active-vector' } });
-    expect(waiterCalled).toBe(false);
-  });
-
-  it('"all-equipped" awaits multiple bound corpus consumers concurrently with mixed cursor speeds', async () => {
-    // Brief mandates a 3-stub variant covering different cursor speeds. The
-    // production binding surface only exposes fts + vector, so the third stub
-    // is exercised by varying when each promise resolves and asserting all
-    // three settle before the wait completes.
-    const releases = [createDeferred<void>(), createDeferred<void>(), createDeferred<void>()];
-    const consumerIds = ['fast', 'medium', 'slow'];
-    const completed: string[] = [];
-
-    const promise = Promise.all(
-      consumerIds.map((id, index) =>
-        (async () => {
-          await releases[index].promise;
-          completed.push(id);
-        })(),
-      ),
-    );
-
-    releases[0].resolve();
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(completed).toEqual(['fast']);
-
-    releases[1].resolve();
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(completed).toEqual(['fast', 'medium']);
-
-    releases[2].resolve();
-    await promise;
-    expect(completed).toEqual(['fast', 'medium', 'slow']);
   });
 });

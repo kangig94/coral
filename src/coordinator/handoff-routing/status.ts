@@ -308,7 +308,7 @@ export const HANDOFF_ROUTING_BASIS_POLICIES: Readonly<
 
 type HandoffContinuationReasonObligations = typeof HANDOFF_CONTINUATION_REASON_OBLIGATIONS;
 
-export const HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS: Readonly<{
+const _HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS: Readonly<{
   [Kind in keyof HandoffContinuationReasonObligations]: ObligationPolicyProjectionFor<
     HandoffContinuationReasonObligations[Kind]
   >;
@@ -328,12 +328,11 @@ export const HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS: Readonly<{
   },
 });
 
-export const ABSENT_HANDOFF_RESULT_POLICY_PROJECTION: ObligationPolicyProjectionFor<
-  typeof ABSENT_HANDOFF_RESULT_OBLIGATION
-> = Object.freeze({
-  kind: 'ephemeral',
-  policy: { durability: 'ephemeral', severity: 'info', exitContribution: 0 },
-} as const);
+const _ABSENT_HANDOFF_RESULT_POLICY_PROJECTION: ObligationPolicyProjectionFor<typeof ABSENT_HANDOFF_RESULT_OBLIGATION> =
+  Object.freeze({
+    kind: 'ephemeral',
+    policy: { durability: 'ephemeral', severity: 'info', exitContribution: 0 },
+  } as const);
 
 const selectedDispositionSchema = z.union([
   z

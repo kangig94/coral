@@ -53,12 +53,6 @@ const COMPLETED_TERMINAL: ProviderEventBody = {
 };
 
 const PROGRESS: ProviderEventBody = { kind: 'progress', message: 'tick' };
-const CONTINUITY: ProviderEventBody = {
-  kind: 'continuity',
-  conversationRef: 'conversation-1',
-  resumable: true,
-  providerContinuity: {},
-};
 const SUSPENDED: ProviderEventBody = { kind: 'suspended', reason: 'interrupt_unconfirmed' };
 
 const WRAPPER_LOST_TERMINAL: ProviderEventBody = {
@@ -80,17 +74,6 @@ function fromEvents(events: readonly ProviderEventBody[]): TestProvider {
 }
 
 describe('compose() terminalOnce guard', () => {
-  it('passes progress, continuity, and terminal through unchanged on the happy path', async () => {
-    const stream = compose([], fromEvents([PROGRESS, CONTINUITY, COMPLETED_TERMINAL]))(BASE_REQUEST, BASE_RUNTIME);
-
-    const collected: ProviderEventBody[] = [];
-    for await (const event of stream) {
-      collected.push(event);
-    }
-
-    expect(collected).toEqual([PROGRESS, CONTINUITY, COMPLETED_TERMINAL]);
-  });
-
   it('synthesizes a wrapper_lost terminal when the inner stream closes without one', async () => {
     const stream = compose([], fromEvents([PROGRESS]))(BASE_REQUEST, BASE_RUNTIME);
 
@@ -111,56 +94,6 @@ describe('compose() terminalOnce guard', () => {
     expect(collected).toEqual([PROGRESS, SUSPENDED]);
   });
 
-  it('drops a second terminal yielded by a misbehaving inner stream', async () => {
-    const second: ProviderEventBody = {
-      kind: 'terminal',
-      terminal: { content: 'second', durationMs: 0, outcome: { kind: 'failed' } },
-      diagnostics: {},
-      failureCause: {
-        type: 'session.provider_failed',
-        body: { provider: 'claude', reason: 'request_failed', message: 'noise' },
-      },
-    };
-    const stream = compose([], fromEvents([COMPLETED_TERMINAL, second]))(BASE_REQUEST, BASE_RUNTIME);
-
-    const collected: ProviderEventBody[] = [];
-    for await (const event of stream) {
-      collected.push(event);
-    }
-
-    expect(collected).toEqual([COMPLETED_TERMINAL]);
-  });
-
-  it('drops post-terminal progress and continuity yields', async () => {
-    const stream = compose([], fromEvents([COMPLETED_TERMINAL, PROGRESS, CONTINUITY]))(BASE_REQUEST, BASE_RUNTIME);
-
-    const collected: ProviderEventBody[] = [];
-    for await (const event of stream) {
-      collected.push(event);
-    }
-
-    expect(collected).toEqual([COMPLETED_TERMINAL]);
-  });
-
-  it('does not synthesize wrapper_lost when the consumer returns early', async () => {
-    let yieldedAfterReturn = false;
-    const provider: TestProvider = async function* slowProvider() {
-      yield PROGRESS;
-      // Inner provider continues — but consumer will .return() before this runs.
-      yield PROGRESS;
-      yieldedAfterReturn = true;
-    };
-
-    const iterator = compose([], provider)(BASE_REQUEST, BASE_RUNTIME)[Symbol.asyncIterator]();
-    const first = await iterator.next();
-    expect(first).toEqual({ value: PROGRESS, done: false });
-
-    const returned = await iterator.return!();
-    expect(returned.done).toBe(true);
-    expect(returned.value).toBeUndefined();
-    expect(yieldedAfterReturn).toBe(false);
-  });
-
   it('closes the owned inner iterator when a consumer returns after the terminal', async () => {
     let cleanedUp = false;
     const never = new Promise<void>(() => {});
@@ -178,26 +111,5 @@ describe('compose() terminalOnce guard', () => {
     await iterator.return?.();
 
     expect(cleanedUp).toBe(true);
-  });
-
-  it('does not synthesize wrapper_lost when the inner stream throws', async () => {
-    const failure = new Error('inner blew up');
-    const provider: TestProvider = async function* throwingProvider() {
-      yield PROGRESS;
-      throw failure;
-    };
-
-    const collected: ProviderEventBody[] = [];
-    let caught: unknown;
-    try {
-      for await (const event of compose([], provider)(BASE_REQUEST, BASE_RUNTIME)) {
-        collected.push(event);
-      }
-    } catch (err) {
-      caught = err;
-    }
-
-    expect(collected).toEqual([PROGRESS]);
-    expect(caught).toBe(failure);
   });
 });

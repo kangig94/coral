@@ -25,7 +25,7 @@ import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
-import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 
 describe('provider proxy loss recovery', () => {
   it.each(['executing', 'settlement-pending'] as const)(
@@ -146,16 +146,15 @@ describe('provider proxy loss recovery', () => {
           cause: 'closed',
           error: new ControlClientError('control_client_closed', 'proxy gone', 'closed'),
         });
-        await vi.waitFor(() => expect(guardianCommit).toHaveBeenCalled());
+        await flushMicrotasks(100);
+        expect(guardianCommit).toHaveBeenCalled();
         expect(claims.size).toBe(2);
         expect(harness.appended).toEqual([]);
         expect(guardianClose).not.toHaveBeenCalled();
         confirmed = true;
-        for (let index = 0; index < 60 && claims.size > 0; index++) {
-          time.tick(1_000);
-          await new Promise((resolve) => setTimeout(resolve, 1));
-        }
-        await vi.waitFor(() => expect(claims.size).toBe(0));
+        time.tick(60_000);
+        await flushMicrotasks(100);
+        expect(claims.size).toBe(0);
         expect(readProviderOperations(harness.db).records).toEqual([]);
         const terminals = harness.appended.filter(
           (event) => (event as { type: string }).type === 'job.terminal.recorded',

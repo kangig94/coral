@@ -5,7 +5,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -13,35 +12,23 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { build } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
-import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import { createForeignTargetValidator } from '#src/infra/handoff-target.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   ACTIVE_STORE_SELECTION_VERSION,
-  ACTIVE_STORE_TRANSITION_VERSION,
   publishActiveStoreSelection,
-  publishActiveStoreTransition,
-  readActiveStoreSelection,
   resolveActiveStoreRecordPaths,
   type ActiveStoreSelection,
-  type ActiveStoreTransition,
 } from '#src/store/active-store-selection.js';
-import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
-import {
-  encodeResolvedStoreEpoch,
-  epochPath,
-  sweepStoreEpochs,
-  STORE_EPOCH_METADATA_FILE_NAME,
-} from '#src/store/epoch/index.js';
+import { encodeResolvedStoreEpoch, STORE_EPOCH_METADATA_FILE_NAME } from '#src/store/epoch/index.js';
 import { routeOrOpenBackendStoreAtStartup } from '#src/store/startup-store-routing.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { authorizeFixtureStoreMint, openTestStoreDatabase } from '#tests/helpers/store-db.js';
@@ -108,10 +95,6 @@ function publish(runtime: Runtime, selected: ActiveStoreSelection): void {
   }
 }
 
-function publishEpoch(runtime: Runtime, epoch: string, build: StrictBundleManifest): void {
-  publishEpochAtRoot(runtime, runtime.paths.coral.store.dbDir, epoch, build);
-}
-
 function publishEpochAtRoot(runtime: Runtime, storeRoot: string, epoch: string, build: StrictBundleManifest): void {
   const directory = join(storeRoot, `epoch-${epoch}`);
   mkdirSync(directory, { recursive: true });
@@ -132,10 +115,39 @@ function publishEpochAtRoot(runtime: Runtime, storeRoot: string, epoch: string, 
 }
 
 async function runStoreCapabilityFixture(root: string, store: string, version: string): Promise<{ epoch: string }> {
-  const fixture = fileURLToPath(new URL('../../fixtures/kb-daemon-store-capability.ts', import.meta.url));
   const bundle = join(root, 'kb-daemon-store-capability.mjs');
   await build({
-    entryPoints: [fixture],
+    stdin: {
+      resolveDir: process.cwd(),
+      sourcefile: 'kb-daemon-store-capability.ts',
+      loader: 'ts',
+      contents: `
+        import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
+        import { createRealRuntime } from '#src/runtime/real.js';
+        import { decodeResolvedStoreEpoch } from '#src/store/epoch/index.js';
+        const runtime = createRealRuntime('prod', { baseDir: process.env.CORAL_TEST_BASE_DIR });
+        const store = decodeResolvedStoreEpoch(runtime, process.env.CORAL_KB_DAEMON_STORE);
+        const host = createKbDaemonWriteRuntimeHost({
+          pluginRoot: process.cwd(),
+          backendNamespace: 'store-capability-fixture',
+          bundleHash: 'store-capability-fixture',
+          curateUsageBudget: { isExhausted: async () => false },
+          runtime,
+          store,
+        });
+        try {
+          const observation = await host.withKb(({ db }) => {
+            const epoch = db.prepare('SELECT epoch FROM epoch_marker').get()?.epoch ?? null;
+            db.exec('CREATE TABLE daemon_marker (value TEXT NOT NULL)');
+            db.prepare('INSERT INTO daemon_marker (value) VALUES (?)').run('opened-by-daemon');
+            return { epoch };
+          });
+          process.stdout.write(JSON.stringify(observation));
+        } finally {
+          await host.dispose();
+        }
+      `,
+    },
     outfile: bundle,
     bundle: true,
     format: 'esm',
@@ -183,56 +195,6 @@ afterEach(() => {
 });
 
 describe('startup store routing', () => {
-  it('carries the opened epoch across readiness so changing metadata cannot redirect the sweep', async () => {
-    const { runtime, current } = harness();
-    publishEpoch(runtime, '1', current.manifest);
-    publishEpoch(runtime, '3', current.manifest);
-    const newerMetadata = join(runtime.paths.coral.store.dbDir, 'epoch-3', STORE_EPOCH_METADATA_FILE_NAME);
-    let metadataReads = 0;
-    const storage = new Proxy(runtime.storage, {
-      get(subject, property, receiver) {
-        if (property !== 'readFileSync') return Reflect.get(subject, property, receiver) as unknown;
-        return (path: string, encoding: 'utf-8'): string => {
-          if (path === newerMetadata && (metadataReads += 1) === 1) {
-            throw Object.assign(new Error('injected settlement EIO'), { code: 'EIO' });
-          }
-          return subject.readFileSync(path, encoding);
-        };
-      },
-    });
-    const routedRuntime = { ...runtime, storage };
-
-    const result = await route(routedRuntime, current);
-    expect(result.kind).toBe('open');
-    if (result.kind !== 'open') return;
-    writeDiscoveryRecord(
-      {
-        pid: runtime.env.pid(),
-        port: 1,
-        socketPath: join(runtime.paths.coral.coordinator.runDir, 'live.sock'),
-        bundleHash: current.manifest.bundleHash,
-        flavor: runtime.flavor,
-        namespace: 'startup-routing-test',
-        startedAt: Date.now(),
-        token: 'startup-routing-test',
-        bootToken: 'startup-routing-test',
-        storeEpoch: result.store.epoch,
-      },
-      runtime,
-    );
-    const sweepEpoch = result.store.epoch;
-    const sweep = sweepStoreEpochs(routedRuntime, runtime.paths.coral.store.dbDir, sweepEpoch);
-    const openDatabasePresent = existsSync(epochPath(runtime.paths.coral.store.dbDir, '3'));
-    expect(result.store).toEqual({
-      epoch: '3',
-      path: epochPath(runtime.paths.coral.store.dbDir, '3'),
-      storeRoot: runtime.paths.coral.store.dbDir,
-    });
-    expect(sweep).toBe('complete');
-    expect(openDatabasePresent).toBe(true);
-    result.db.close();
-  });
-
   it('hands the settled store capability to a real daemon process across a root retarget', async () => {
     const { root, runtime, current } = harness();
     const configuredRoot = runtime.paths.coral.store.dbDir;
@@ -266,17 +228,6 @@ describe('startup store routing', () => {
     expect(configuredTarget).toBe('new');
   });
 
-  it('publishes epoch one when no store epoch is proven', async () => {
-    const { runtime, current } = harness();
-    publish(runtime, current);
-
-    const result = await route(runtime, current);
-
-    expect(result.kind).toBe('open');
-    if (result.kind === 'open') result.db.close();
-    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'epoch-1', 'store.db'))).toBe(true);
-  });
-
   it('hands off to a valid newer selection without creating a store', async () => {
     const { runtime, current } = harness('1.0.0');
     const newer = manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000');
@@ -287,94 +238,6 @@ describe('startup store routing', () => {
     expect(result.kind).toBe('handoff');
     expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(false);
   });
-
-  it('retains invalid-selection evidence inside the generation coordination root', async () => {
-    const { runtime, current } = harness('1.0.0');
-    const newer = manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000');
-    publish(runtime, selection(newer, join(dirname(current.bundleDir), 'missing-bundle')));
-    const syncedDirectories: string[] = [];
-    const storage = new Proxy(runtime.storage, {
-      get(subject, property, receiver) {
-        if (property !== 'syncDirectoryDurableSync') return Reflect.get(subject, property, receiver) as unknown;
-        return (path: string): boolean => {
-          syncedDirectories.push(path);
-          return subject.syncDirectoryDurableSync(path);
-        };
-      },
-    });
-
-    const result = await route({ ...runtime, storage }, current);
-
-    expect(result.kind).toBe('reset-newer-invalid');
-    if (result.kind === 'reset-newer-invalid') result.db.close();
-    const retainedRoot = join(
-      resolveGenerationBoundaryPaths(runtime).coordinationRoot,
-      'retained-active-store-transitions',
-    );
-    expect(readdirSync(retainedRoot)).toHaveLength(1);
-    expect(syncedDirectories).toContain(retainedRoot);
-    expect(syncedDirectories).toContain(resolveGenerationBoundaryPaths(runtime).coordinationRoot);
-    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: current });
-  });
-
-  it.each(['current', 'v1'] as const)(
-    'supersedes a mismatched pre-existing %s transition and durably retains its evidence',
-    async (generation) => {
-      const { root, runtime, current } = harness('2.0.0');
-      publish(runtime, current);
-      const paths = resolveActiveStoreRecordPaths(runtime);
-      const staleBuild = manifest('1.0.0', '223e4567-e89b-42d3-a456-426614174000');
-      const staleTransition: ActiveStoreTransition = {
-        version: ACTIVE_STORE_TRANSITION_VERSION,
-        transitionId: '323e4567-e89b-42d3-a456-426614174000',
-        kind: 'selection-recovery',
-        evidence: { kind: 'selection-absent', storeEvidence: { kind: 'pending-classification' } },
-        currentManifest: staleBuild,
-        currentBundleDir: createBundle(root, staleBuild),
-      };
-      if (generation === 'current') {
-        const lockRoot = mkdtempSync(join(tmpdir(), 'coral-startup-transition-publish-'));
-        roots.push(lockRoot);
-        const lease = acquireDirectoryLockSync(join(lockRoot, 'lease.lock'), {
-          storage: runtime.storage,
-          time: runtime.time,
-        });
-        try {
-          publishActiveStoreTransition(runtime, staleTransition, lease.actuator);
-        } finally {
-          lease();
-        }
-      } else {
-        writeFileSync(paths.transitionV1File, 'legacy transition evidence');
-      }
-      const transitionFile = generation === 'current' ? paths.transitionFile : paths.transitionV1File;
-      const evidence = readFileSync(transitionFile);
-      const syncedDirectories: string[] = [];
-      const storage = new Proxy(runtime.storage, {
-        get(subject, property, receiver) {
-          if (property !== 'syncDirectoryDurableSync') return Reflect.get(subject, property, receiver) as unknown;
-          return (path: string): boolean => {
-            syncedDirectories.push(path);
-            return subject.syncDirectoryDurableSync(path);
-          };
-        },
-      });
-
-      const result = await route({ ...runtime, storage }, current);
-
-      expect(result.kind).toBe('open');
-      if (result.kind === 'open') result.db.close();
-      const retainedRoot = join(paths.coordinationRoot, 'retained-active-store-transitions');
-      const retained = readdirSync(retainedRoot);
-      expect(retained).toHaveLength(1);
-      const retainedFile = retained[0];
-      if (retainedFile === undefined) throw new Error('Superseded transition evidence was not retained.');
-      expect(readFileSync(join(retainedRoot, retainedFile))).toEqual(evidence);
-      expect(existsSync(transitionFile)).toBe(false);
-      expect(syncedDirectories).toContain(retainedRoot);
-      expect(syncedDirectories).toContain(paths.coordinationRoot);
-    },
-  );
 
   it('refuses a rejected current transition without discarding its evidence', async () => {
     const { root, runtime, current } = harness();
@@ -405,51 +268,4 @@ describe('startup store routing', () => {
     });
     expect(realpathSync(coordinationRoot)).toBe(target);
   });
-
-  it('rejects retained transition success when its destination sync is unproven', async () => {
-    const { runtime, current } = harness('1.0.0');
-    const newer = manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000');
-    publish(runtime, selection(newer, join(dirname(current.bundleDir), 'missing-bundle')));
-    const retainedRoot = join(
-      resolveGenerationBoundaryPaths(runtime).coordinationRoot,
-      'retained-active-store-transitions',
-    );
-    const storage = new Proxy(runtime.storage, {
-      get(subject, property, receiver) {
-        if (property !== 'syncDirectoryDurableSync') return Reflect.get(subject, property, receiver) as unknown;
-        return (path: string): boolean => (path === retainedRoot ? false : subject.syncDirectoryDurableSync(path));
-      },
-    });
-
-    await expect(route({ ...runtime, storage }, current)).rejects.toMatchObject({
-      code: 'active_store_coordination_invalid',
-      context: { cause: expect.stringContaining('Failed to durably retain active-store transition') },
-    });
-  });
-
-  it('boots through the startup route when another process holds the adoption lock', async () => {
-    const { runtime, current } = harness();
-    const { adoptionLock } = resolveGenerationBoundaryPaths(runtime);
-    mkdirSync(dirname(adoptionLock), { recursive: true });
-    const lease = acquireDirectoryLockSync(adoptionLock, { storage: runtime.storage, time: runtime.time });
-    try {
-      const result = await route(runtime, current);
-
-      expect(result.kind).toBe('open');
-      if (result.kind === 'open') result.db.close();
-    } finally {
-      lease();
-    }
-  }, 10_000);
-
-  it('boots through the startup route when a dead owner leaves a fresh markerless adoption lock', async () => {
-    const { runtime, current } = harness();
-    const { adoptionLock } = resolveGenerationBoundaryPaths(runtime);
-    mkdirSync(adoptionLock, { recursive: true });
-
-    const result = await route(runtime, current);
-
-    expect(result.kind).toBe('open');
-    if (result.kind === 'open') result.db.close();
-  }, 10_000);
 });

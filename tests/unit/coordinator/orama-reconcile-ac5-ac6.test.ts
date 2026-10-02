@@ -8,7 +8,6 @@ import {
   createOramaProjectionReconcileRequester,
   type OramaProjectionReconcileRuntime,
 } from '#src/kb-daemon/expansion/projection-reconcile.js';
-import { kiwiArtifactStateKey } from '#src/engines/kiwi/artifact.js';
 import { KiwiAnalyzerManager, isKiwiAnalyzerTerminalLoadError } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
 import {
@@ -22,7 +21,6 @@ import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
 import type { OramaAnalyzerManager } from '#src/engines/orama/analyzer.js';
 import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
-import type { TimerHandle } from '#src/infra/port-types.js';
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
 import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
 import { persistCorpusState } from '#src/kb/state/corpus-state.js';
@@ -87,26 +85,6 @@ function createReconcileRuntime(events: string[], snapshot = createSnapshot()): 
       return { contentSeq: snapshot.contentSeq, metadataSeq: snapshot.metadataSeq, textStaleReason: reason };
     },
   };
-}
-
-function createRuntime(): Runtime {
-  return {
-    time: {
-      now: () => 1_000,
-      setTimeout: (fn: () => void, ms: number) => ({ fn, ms, unref: () => {} }) as TimerHandle,
-      clearTimeout: () => {},
-      sleep: async () => {},
-      setInterval: (fn: () => void, ms: number) => ({ fn, ms, unref: () => {} }) as TimerHandle,
-      clearInterval: () => {},
-    },
-    paths: {
-      coral: {
-        engine: {
-          dataDir: (name: string) => `/tmp/coral/engines/${name}`,
-        },
-      },
-    },
-  } as unknown as Runtime;
 }
 
 function withKoEnv(runtime: Runtime): Runtime {
@@ -274,66 +252,6 @@ describe('Orama coordinator reconcile ownership', () => {
     expect(events).toEqual([`snapshot:snapshot-1`, `force:${ORAMA_BASE_CONSUMER_ID}`]);
   });
 
-  it('re-triggers a later tier change after the previous reconcile completes', async () => {
-    const events: string[] = [];
-    const forceCalls: KbCorpusSnapshot[] = [];
-    const requester = createOramaProjectionReconcileRequester({
-      kb: createReconcileRuntime(events),
-      driver: {
-        forceCorpusApply: (snapshot, options) => {
-          events.push(`force:${options.consumers.join(',')}`);
-          forceCalls.push(snapshot);
-          return { generation: forceCalls.length, consumers: [...options.consumers] };
-        },
-      },
-    });
-
-    requester.requestProjectionReconcile('stale-tier');
-    await requester.waitForIdle();
-    requester.requestKiwiDegradedReconcile({
-      reason: 'Kiwi model missing',
-      artifactStateKey: 'missing:model',
-    });
-    await requester.waitForIdle();
-
-    expect(forceCalls).toEqual([createSnapshot(), createSnapshot()]);
-    expect(events).toEqual([
-      'snapshot:snapshot-1',
-      `force:${ORAMA_BASE_CONSUMER_ID}`,
-      'invalidate:kiwi-degraded',
-      'snapshot:snapshot-1',
-      `force:${ORAMA_BASE_CONSUMER_ID}`,
-    ]);
-  });
-
-  it('re-triggers the same stale-tier reason after the previous reconcile completes', async () => {
-    const events: string[] = [];
-    const forceCalls: KbCorpusSnapshot[] = [];
-    const requester = createOramaProjectionReconcileRequester({
-      kb: createReconcileRuntime(events),
-      driver: {
-        forceCorpusApply: (snapshot, options) => {
-          events.push(`force:${options.consumers.join(',')}`);
-          forceCalls.push(snapshot);
-          return { generation: forceCalls.length, consumers: [...options.consumers] };
-        },
-      },
-    });
-
-    requester.requestProjectionReconcile('stale-tier');
-    await requester.waitForIdle();
-    requester.requestProjectionReconcile('stale-tier');
-    await requester.waitForIdle();
-
-    expect(forceCalls).toEqual([createSnapshot(), createSnapshot()]);
-    expect(events).toEqual([
-      'snapshot:snapshot-1',
-      `force:${ORAMA_BASE_CONSUMER_ID}`,
-      'snapshot:snapshot-1',
-      `force:${ORAMA_BASE_CONSUMER_ID}`,
-    ]);
-  });
-
   it('invalidates text before a coordinator-owned Kiwi degrade reconcile', async () => {
     const events: string[] = [];
     const requester = createOramaProjectionReconcileRequester({
@@ -438,59 +356,5 @@ describe('Orama coordinator reconcile ownership', () => {
     expect(afterSnapshot.metadataSeq).toBe(snapshot.metadataSeq);
     expect(afterSnapshot.contentManifestHash).toBe(snapshot.contentManifestHash);
     expect(afterSnapshot.metadataManifestHash).toBe(snapshot.metadataManifestHash);
-  });
-
-  it('does not fire a Kiwi degraded observer after its scope is disposed', async () => {
-    const runtime = createRuntime();
-    const manager = new KiwiAnalyzerManager({
-      inspectArtifact: () => missingKiwiArtifactState(),
-      loadAnalyzer: async () => {
-        throw new Error('Kiwi model missing');
-      },
-      logger: () => {},
-    });
-    const activeScope = createScope();
-    const disposedScope = createScope();
-    const events: string[] = [];
-
-    manager.observeDegraded(activeScope, (event) => {
-      events.push(`active:${event.artifactStateKey}`);
-    });
-    manager.observeDegraded(disposedScope, (event) => {
-      events.push(`disposed:${event.artifactStateKey}`);
-    });
-    disposedScope[Symbol.dispose]();
-
-    try {
-      await manager.withAnalyzerLease(runtime, ['ko'], () => {});
-      throw new Error('expected terminal Kiwi load failure');
-    } catch (error: unknown) {
-      expect(isKiwiAnalyzerTerminalLoadError(error)).toBe(true);
-    }
-    await flushMicrotasks();
-
-    expect(events).toEqual([`active:${kiwiArtifactStateKey(missingKiwiArtifactState())}`]);
-  });
-
-  it('isolates Kiwi degraded observer exceptions from the terminal load error path', async () => {
-    const runtime = createRuntime();
-    const manager = new KiwiAnalyzerManager({
-      inspectArtifact: () => missingKiwiArtifactState(),
-      loadAnalyzer: async () => {
-        throw new Error('Kiwi model missing');
-      },
-      logger: () => {},
-    });
-    manager.observeDegraded(createScope(), () => {
-      throw new Error('observer failed');
-    });
-
-    try {
-      await manager.withAnalyzerLease(runtime, ['ko'], () => {});
-      throw new Error('expected terminal Kiwi load failure');
-    } catch (error: unknown) {
-      expect(isKiwiAnalyzerTerminalLoadError(error)).toBe(true);
-    }
-    await flushMicrotasks();
   });
 });

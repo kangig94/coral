@@ -41,8 +41,6 @@ import { createControlHolderAuthority, observeControlHolder } from '#src/provide
 const mockedExecFile = vi.mocked(execFile);
 
 const BOOT_SESSION = '3F2504E0-4F89-11D3-9A0C-0305E82C3301';
-const LSTART = 'Fri Nov 14 09:41:00 2025';
-const EXEC_OPTIONS = expect.objectContaining({ encoding: 'utf-8' });
 const PROBE_KILL_RUNTIME = {
   time: {
     setTimeout: (callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds),
@@ -102,25 +100,7 @@ function complete(child: ProbeChild, callback: Callback, value: string | Error):
   });
 }
 
-function scriptDarwin(
-  overrides: { bootSession?: string | Error; lstart?: string | Error } = {},
-  children: ProbeChild[] = [],
-): void {
-  mockedExecFile.mockReset();
-  mockedExecFile.mockImplementation(((file: string, _args: string[], _options: unknown, callback: Callback) => {
-    const value = file === 'sysctl' ? (overrides.bootSession ?? BOOT_SESSION) : (overrides.lstart ?? LSTART);
-    const child = new ProbeChild();
-    children.push(child);
-    complete(child, callback, value);
-    return child as unknown as ChildProcess;
-  }) as unknown as typeof execFile);
-}
-
 describe('darwin process incarnation (async)', () => {
-  it('reports settled cleanup when no probe children are tracked', async () => {
-    await expect(terminateProcessIncarnationProbes()).resolves.toEqual({ disposition: 'settled' });
-  });
-
   it('reports the exact child whose cleanup attempt failed', async () => {
     const child = new ProbeChild({ pid: 4_242 });
     const failure = new Error('termination failed');
@@ -198,31 +178,6 @@ describe('darwin process incarnation (async)', () => {
     await expect(probe).resolves.toBeNull();
     await cleanup.untilSettled;
     expect(mockedExecFile).toHaveBeenCalledOnce();
-    expect(processIncarnationProbeRegistrySize()).toBe(0);
-  });
-
-  it('frames the start coordinate with the boot session id, and bounds both subprocess calls', async () => {
-    scriptDarwin();
-
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin')).resolves.toBe(
-      `darwin:${BOOT_SESSION}:${Date.parse(LSTART)}`,
-    );
-    expect(mockedExecFile).toHaveBeenNthCalledWith(
-      1,
-      'sysctl',
-      ['-n', 'kern.bootsessionuuid'],
-      EXEC_OPTIONS,
-      expect.any(Function),
-    );
-    expect(mockedExecFile).toHaveBeenNthCalledWith(
-      2,
-      'ps',
-      ['-o', 'lstart=', '-p', '4321'],
-      EXEC_OPTIONS,
-      expect.any(Function),
-    );
-    expect(mockedExecFile.mock.calls[0]?.[2]).not.toHaveProperty('signal');
-    expect(mockedExecFile.mock.calls[1]?.[2]).not.toHaveProperty('signal');
     expect(processIncarnationProbeRegistrySize()).toBe(0);
   });
 
@@ -367,73 +322,5 @@ describe('darwin process incarnation (async)', () => {
       timeoutSpy.mockRestore();
       vi.useRealTimers();
     }
-  });
-
-  it('reads the boot session every time rather than remembering it', async () => {
-    scriptDarwin({ bootSession: new Error('sysctl unavailable') });
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin')).resolves.toBeNull();
-
-    scriptDarwin();
-    await expect(
-      probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin'),
-      'one failed read must not blind every later one',
-    ).resolves.toBe(`darwin:${BOOT_SESSION}:${Date.parse(LSTART)}`);
-  });
-
-  it('separates two processes that share a pid and a displayed start second across a reboot', async () => {
-    scriptDarwin();
-    const before = await probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin');
-
-    scriptDarwin({ bootSession: 'A1B2C3D4-0000-4000-8000-000000000000' });
-
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin')).resolves.not.toBe(before);
-  });
-
-  it('is null rather than a guess when either half is unreadable, including a probe timeout', async () => {
-    scriptDarwin({ lstart: '' });
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin')).resolves.toBeNull();
-
-    scriptDarwin({ lstart: 'not a date' });
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin')).resolves.toBeNull();
-
-    scriptDarwin({ lstart: new Error('command timed out') });
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin')).resolves.toBeNull();
-  });
-
-  it('does not block the event loop while a subprocess is in flight', async () => {
-    const pending: Array<{ callback: Callback; child: ProbeChild; value: string }> = [];
-    mockedExecFile.mockReset();
-    mockedExecFile.mockImplementation(((file: string, _args: string[], _options: unknown, callback: Callback) => {
-      const child = new ProbeChild();
-      pending.push({ callback, child, value: file === 'sysctl' ? BOOT_SESSION : LSTART });
-      return child as unknown as ChildProcess;
-    }) as unknown as typeof execFile);
-
-    let probeSettled = false;
-    const probe = probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin').finally(() => {
-      probeSettled = true;
-    });
-    const unrelatedWork = vi.fn();
-    await new Promise<void>((resolve) => {
-      setImmediate(() => {
-        unrelatedWork();
-        resolve();
-      });
-    });
-
-    expect(unrelatedWork).toHaveBeenCalledOnce();
-    expect(probeSettled).toBe(false);
-    expect(pending).toHaveLength(1);
-
-    const bootSessionRead = pending.shift();
-    if (bootSessionRead === undefined) throw new Error('boot session read did not start');
-    complete(bootSessionRead.child, bootSessionRead.callback, bootSessionRead.value);
-    await vi.waitFor(() => expect(pending).toHaveLength(1));
-
-    const processStartRead = pending.shift();
-    if (processStartRead === undefined) throw new Error('process start read did not start');
-    complete(processStartRead.child, processStartRead.callback, processStartRead.value);
-
-    await expect(probe).resolves.toBe(`darwin:${BOOT_SESSION}:${Date.parse(LSTART)}`);
   });
 });

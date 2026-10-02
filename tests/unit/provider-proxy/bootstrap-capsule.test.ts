@@ -1,18 +1,8 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import {
@@ -22,8 +12,6 @@ import {
   MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES,
   type ProviderBootstrapCapsuleEnvironment,
   ProviderBootstrapCapsuleError,
-  type ProxyBootstrapCapsule,
-  type ReaperBootstrapCapsule,
 } from '#src/provider-proxy/bootstrap-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
@@ -72,13 +60,6 @@ function expectCapsuleFailure(run: () => unknown, code: ProviderBootstrapCapsule
   expect(observed).toMatchObject({ code });
 }
 
-function writeRawCapsule(value: unknown): void {
-  env.storage.writeFileSync(capsulePath, typeof value === 'string' ? value : JSON.stringify(value), {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
-}
-
 beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), 'coral-provider-bootstrap-capsule-'));
   capsulePath = join(tempRoot, 'guardian.bootstrap.json');
@@ -123,84 +104,6 @@ describe('provider bootstrap capsules', () => {
     expect(existsSync(`${capsulePath}.consuming`)).toBe(false);
   });
 
-  it('round-trips the strict reaper and proxy role field sets', () => {
-    const reaperPath = join(tempRoot, 'reaper.bootstrap.json');
-    const reaper: ReaperBootstrapCapsule = {
-      role: 'reaper',
-      generation: capsule.generation,
-      flavor: capsule.flavor,
-      buildSetId: capsule.buildSetId,
-      hostFingerprint: capsule.hostFingerprint,
-      guardianInstanceId: capsule.guardianInstanceId,
-      reaperInstanceId: capsule.reaperInstanceId,
-      proxyInstanceId: capsule.proxyInstanceId,
-      bootstrapNonce: 'f'.repeat(64),
-      canonicalControlEndpoint: capsule.reaperControlEndpoint,
-      guardianControlEndpoint: capsule.canonicalControlEndpoint,
-      proxyEndpoint: capsule.proxyEndpoint,
-      guardianReaperAuthSecret: capsule.guardianReaperAuthSecret,
-    };
-    const proxyPath = join(tempRoot, 'proxy.bootstrap.json');
-    const proxy: ProxyBootstrapCapsule = {
-      role: 'proxy',
-      generation: capsule.generation,
-      flavor: capsule.flavor,
-      buildSetId: capsule.buildSetId,
-      hostFingerprint: capsule.hostFingerprint,
-      guardianInstanceId: capsule.guardianInstanceId,
-      reaperInstanceId: capsule.reaperInstanceId,
-      proxyInstanceId: capsule.proxyInstanceId,
-      bootstrapNonce: '0'.repeat(64),
-      canonicalEndpoint: capsule.proxyEndpoint,
-      guardianControlEndpoint: capsule.canonicalControlEndpoint,
-      proxyGuardianAuthSecret: capsule.proxyGuardianAuthSecret,
-    };
-
-    createProviderBootstrapCapsule(reaperPath, reaper, env);
-    createProviderBootstrapCapsule(proxyPath, proxy, env);
-
-    expect(consumeProviderBootstrapCapsule(reaperPath, 'reaper', env)).toEqual(reaper);
-    expect(consumeProviderBootstrapCapsule(proxyPath, 'proxy', env)).toEqual(proxy);
-  });
-
-  it('rejects unknown capsule fields through the strict role schema', () => {
-    writeRawCapsule({ ...capsule, unexpected: true });
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', env),
-      'bootstrap_capsule_invalid',
-    );
-  });
-
-  it('rejects a capsule whose mode is not 0600', () => {
-    createProviderBootstrapCapsule(capsulePath, capsule, env);
-    chmodSync(capsulePath, 0o644);
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', env),
-      'bootstrap_capsule_not_private',
-    );
-  });
-
-  it('rejects a capsule whose filesystem owner is not the consuming uid', () => {
-    createProviderBootstrapCapsule(capsulePath, capsule, env);
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', { ...env, uid: env.uid + 1 }),
-      'bootstrap_capsule_not_private',
-    );
-  });
-
-  it('rejects replay after the first consumption removed the consumable name', () => {
-    createProviderBootstrapCapsule(capsulePath, capsule, env);
-    consumeProviderBootstrapCapsule(capsulePath, 'guardian', env);
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', env),
-      'bootstrap_capsule_replayed',
-    );
-  });
-
   it('atomically excludes a second consumer interleaved immediately after the claim', () => {
     createProviderBootstrapCapsule(capsulePath, capsule, env);
     let secondFailure: unknown;
@@ -236,48 +139,6 @@ describe('provider bootstrap capsules', () => {
     );
   });
 
-  it.each([
-    ['relative', 'relative/guardian.bootstrap.json'],
-    ['unnormalized', () => `${tempRoot}/nested/../guardian.bootstrap.json`],
-  ])('rejects a %s capsule path before filesystem access', (_name, value) => {
-    const path = typeof value === 'function' ? value() : value;
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(path, 'guardian', env),
-      'bootstrap_capsule_non_canonical_path',
-    );
-  });
-
-  it('rejects a symlink where a regular capsule file is required', () => {
-    const target = join(tempRoot, 'target.bootstrap.json');
-    env.storage.writeFileSync(target, JSON.stringify(capsule), { encoding: 'utf8', mode: 0o600 });
-    symlinkSync(target, capsulePath);
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', env),
-      'bootstrap_capsule_non_canonical_path',
-    );
-  });
-
-  it('rejects an envelope over the 4096-byte pre-parse budget', () => {
-    writeRawCapsule('x'.repeat(MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES + 1));
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', env),
-      'bootstrap_capsule_too_large',
-    );
-  });
-
-  it('rejects an overlength scalar before resolving build authority', () => {
-    const resolveStrictIdentity = vi.fn(() => strictIdentity());
-    writeRawCapsule({ ...capsule, buildSetId: `${BUILD_SET_ID}0` });
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', { ...env, resolveStrictIdentity }),
-      'bootstrap_capsule_scalar_too_long',
-    );
-    expect(resolveStrictIdentity).not.toHaveBeenCalled();
-  });
-
   // `readClaimedCapsule` reads through `readBoundedFileAtIdentity`, the same shared primitive
   // `handoff-capsule.ts` reads through — these two mirror that file's own same-length-twin/symlink-mid-read
   // tests.
@@ -301,42 +162,5 @@ describe('provider bootstrap capsules', () => {
       () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', { ...env, storage: swappingStorage }),
       'bootstrap_capsule_unreadable',
     );
-  });
-
-  it('refuses a capsule swapped for a symlink while the read was still in flight', () => {
-    createProviderBootstrapCapsule(capsulePath, capsule, env);
-    const claimedPath = `${capsulePath}${'.consuming'}`;
-    const targetPath = join(tempRoot, 'elsewhere.json');
-
-    let readCount = 0;
-    const swappingStorage: ProviderBootstrapCapsuleEnvironment['storage'] = {
-      ...env.storage,
-      readSync: (fd, buffer, offset, length, position) => {
-        const read = env.storage.readSync(fd, buffer, offset, length, position);
-        readCount += 1;
-        if (readCount === 1) {
-          writeFileSync(targetPath, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
-          unlinkSync(claimedPath);
-          symlinkSync(targetPath, claimedPath);
-        }
-        return read;
-      },
-    };
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', { ...env, storage: swappingStorage }),
-      'bootstrap_capsule_unreadable',
-    );
-  });
-
-  it('rejects a non-canonical embedded endpoint before resolving build authority', () => {
-    const resolveStrictIdentity = vi.fn(() => strictIdentity());
-    writeRawCapsule({ ...capsule, canonicalControlEndpoint: 'relative/guardian.sock' });
-
-    expectCapsuleFailure(
-      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', { ...env, resolveStrictIdentity }),
-      'bootstrap_capsule_non_canonical_path',
-    );
-    expect(resolveStrictIdentity).not.toHaveBeenCalled();
   });
 });

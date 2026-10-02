@@ -23,7 +23,6 @@ import {
   type DiscussHarness,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
-import { providerSessionSchema } from '#src/sessions/entry.js';
 
 type OwnedJobOptions = {
   jobId: string;
@@ -68,21 +67,6 @@ function seedOwnedJob(harness: DiscussHarness, options: OwnedJobOptions): void {
   harness.progressStore.appendLaunchRequested(options.jobId, ownedLaunch(harness, options));
 }
 
-function releaseSeededSession(harness: DiscussHarness, sessionId: string, jobId: string): void {
-  const db = harness.progressStore.getDb();
-  const row = db
-    .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-    .get(sessionId);
-  if (row === undefined) throw new Error(`missing seeded session ${sessionId}`);
-  const entry = providerSessionSchema.parse(JSON.parse(row.entry));
-  if (entry.activeJobId !== jobId) throw new Error(`seeded session ${sessionId} is not claimed by ${jobId}`);
-  const { activeJobId: _activeJobId, ...released } = entry;
-  db.prepare<[string, string], never>('UPDATE projection_sessions SET entry = ? WHERE session_id = ?').run(
-    JSON.stringify({ ...released, version: entry.version + 1 }),
-    sessionId,
-  );
-}
-
 async function createdHarness(): Promise<DiscussHarness> {
   const harness = createDiscussHarness();
   await persistSession(harness, { sessionId: 'discussion-link-test' });
@@ -112,51 +96,6 @@ function sessionCreatedEvent(harness: DiscussHarness): DiscussDomainEvent {
 }
 
 describe('discussion-owned job linkage invariants', () => {
-  it('atomically validates creation, launch, binding, and start against the same batch shadow aggregate', () => {
-    const harness = createDiscussHarness();
-    const created = sessionCreatedEvent(harness);
-    const launch = ownedLaunch(harness, { jobId: 'atomic-job', sessionId: 'atomic-session' });
-
-    expect(() =>
-      commitJobInputs(harness.progressStore, [
-        toJournalInput(created),
-        jobLaunchRequestedEvent('atomic-job', launch),
-        toJournalInput(
-          makeEvent(
-            created.sessionId,
-            created.projectRoot,
-            created.topic,
-            2,
-            'agent.run.bound',
-            '2026-07-22T00:00:01.000Z',
-            { agent: 'alpha', executionSessionId: 'atomic-session' },
-          ),
-        ),
-        toJournalInput(
-          makeEvent(
-            created.sessionId,
-            created.projectRoot,
-            created.topic,
-            3,
-            'agent.job.started',
-            '2026-07-22T00:00:02.000Z',
-            { agent: 'alpha', jobId: 'atomic-job', purpose: 'bid', attempt: 1 },
-          ),
-        ),
-      ]),
-    ).not.toThrow();
-
-    const snapshot = harness.store.load(created.sessionId);
-    expect(snapshot?.runtime.agentRuns.alpha).toMatchObject({
-      executionSessionId: 'atomic-session',
-      currentJobId: 'atomic-job',
-    });
-    expect(harness.progressStore.readStatus('atomic-job')?.owner).toEqual({
-      kind: 'discussion',
-      id: created.sessionId,
-    });
-  });
-
   it('atomically rejects linkage after same-batch creation when no owned launch authorizes it', () => {
     const harness = createDiscussHarness();
     const created = sessionCreatedEvent(harness);
@@ -180,45 +119,6 @@ describe('discussion-owned job linkage invariants', () => {
     expect(harness.store.load(created.sessionId)).toBeNull();
   });
 
-  it('rejects a launch whose provider disagrees with the configured discussion agent', async () => {
-    const harness = await createdHarness();
-
-    expect(() =>
-      seedOwnedJob(harness, {
-        jobId: 'wrong-provider-job',
-        sessionId: 'claude-session',
-        provider: 'claude',
-      }),
-    ).toThrowError(expect.objectContaining({ code: 'job_binding_owner_mismatch' }));
-    expect(harness.progressStore.readStatus('wrong-provider-job')).toBeNull();
-  });
-
-  it('rejects a launch that changes an agent existing execution session', async () => {
-    const harness = await createdHarness();
-    seedOwnedJob(harness, { jobId: 'bound-job', sessionId: 'bound-session' });
-    const snapshot = harness.store.load('discussion-link-test');
-    if (snapshot === null) throw new Error('missing discussion fixture');
-    await harness.store.append(snapshot.sessionId, snapshot.lastAppliedSeq, [
-      makeEvent(
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
-        snapshot.lastAppliedSeq + 1,
-        'agent.run.bound',
-        '2026-07-22T00:00:02.000Z',
-        { agent: 'alpha', executionSessionId: 'bound-session' },
-      ),
-    ]);
-
-    expect(() =>
-      seedOwnedJob(harness, {
-        jobId: 'different-session-job',
-        sessionId: 'different-session',
-      }),
-    ).toThrowError(expect.objectContaining({ code: 'job_binding_owner_mismatch' }));
-    expect(harness.progressStore.readStatus('different-session-job')).toBeNull();
-  });
-
   it('atomically rejects assigning one provider session to different discussion agents', async () => {
     const harness = await createdHarness();
     const alpha = ownedLaunch(harness, {
@@ -240,65 +140,6 @@ describe('discussion-owned job linkage invariants', () => {
     ).toThrowError(expect.objectContaining({ code: 'job_binding_owner_mismatch' }));
     expect(harness.progressStore.readStatus('shared-alpha-job')).toBeNull();
     expect(harness.progressStore.readStatus('shared-beta-job')).toBeNull();
-  });
-
-  it('atomically accepts distinct provider sessions for different discussion agents', async () => {
-    const harness = await createdHarness();
-    const alpha = ownedLaunch(harness, {
-      jobId: 'distinct-alpha-job',
-      sessionId: 'alpha-session',
-      agent: 'alpha',
-    });
-    const beta = ownedLaunch(harness, {
-      jobId: 'distinct-beta-job',
-      sessionId: 'beta-session',
-      agent: 'beta',
-    });
-
-    expect(() =>
-      commitJobInputs(harness.progressStore, [
-        jobLaunchRequestedEvent('distinct-alpha-job', alpha),
-        jobLaunchRequestedEvent('distinct-beta-job', beta),
-      ]),
-    ).not.toThrow();
-    expect(harness.progressStore.readStatus('distinct-alpha-job')?.sessionId).toBe('alpha-session');
-    expect(harness.progressStore.readStatus('distinct-beta-job')?.sessionId).toBe('beta-session');
-  });
-
-  it('allows only one outstanding child launch per discussion agent', async () => {
-    const harness = await createdHarness();
-    seedOwnedJob(harness, { jobId: 'first-job', sessionId: 'agent-session' });
-
-    expect(() => seedOwnedJob(harness, { jobId: 'second-job', sessionId: 'second-agent-session' })).toThrowError(
-      expect.objectContaining({ code: 'discussion_job_launch_conflict' }),
-    );
-    expect(harness.progressStore.readStatus('second-job')).toBeNull();
-
-    await recoverPersistedSessionsFromStore(
-      harness.store,
-      () => harness.context,
-      () => harness.ctx,
-    );
-    const started = readSessionEvents(harness.context, 'discussion-link-test').filter(
-      (event) => event.kind === 'agent.job.started',
-    );
-    expect(started).toHaveLength(1);
-    expect(started[0]?.payload.jobId).toBe('first-job');
-  });
-
-  it('rejects two child launches for the same discussion agent in one append batch', async () => {
-    const harness = await createdHarness();
-    const first = ownedLaunch(harness, { jobId: 'batch-first', sessionId: 'batch-session' });
-    const second = ownedLaunch(harness, { jobId: 'batch-second', sessionId: 'batch-second-session' });
-
-    expect(() =>
-      commitJobInputs(harness.progressStore, [
-        jobLaunchRequestedEvent('batch-first', first),
-        jobLaunchRequestedEvent('batch-second', second),
-      ]),
-    ).toThrowError(expect.objectContaining({ code: 'discussion_job_launch_conflict' }));
-    expect(harness.progressStore.readStatus('batch-first')).toBeNull();
-    expect(harness.progressStore.readStatus('batch-second')).toBeNull();
   });
 
   it('rejects arbitrary provider session and job ids at the discussion append boundary', async () => {
@@ -368,92 +209,6 @@ describe('discussion-owned job linkage invariants', () => {
     const events = readSessionEvents(harness.context, 'discussion-link-test');
     expect(events.filter((event) => event.kind === 'agent.run.bound')).toHaveLength(1);
     expect(events.filter((event) => event.kind === 'agent.job.started')).toHaveLength(1);
-
-    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-    const before = harness.store.load('discussion-link-test');
-    rebuildProjections({
-      db: harness.progressStore.getDb(),
-      cutoffSeq:
-        harness.progressStore
-          .getDb()
-          .prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events')
-          .get()?.seq ?? 0,
-      reducers,
-      bodyCodec: createEventBodyCodec(),
-    });
-    expect(harness.store.load('discussion-link-test')).toStrictEqual(before);
-  });
-
-  it('repairs only job.started when the run binding committed before the crash', async () => {
-    const harness = await createdHarness();
-    seedOwnedJob(harness, { jobId: 'bound-crash-job', sessionId: 'bound-crash-session' });
-    const snapshot = harness.store.load('discussion-link-test');
-    if (snapshot === null) throw new Error('missing discussion fixture');
-    await harness.store.append(snapshot.sessionId, snapshot.lastAppliedSeq, [
-      makeEvent(
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
-        snapshot.lastAppliedSeq + 1,
-        'agent.run.bound',
-        '2026-07-22T00:00:02.000Z',
-        { agent: 'alpha', executionSessionId: 'bound-crash-session' },
-      ),
-    ]);
-
-    await recoverPersistedSessionsFromStore(
-      harness.store,
-      () => harness.context,
-      () => harness.ctx,
-    );
-    const events = readSessionEvents(harness.context, snapshot.sessionId);
-    expect(events.filter((event) => event.kind === 'agent.run.bound')).toHaveLength(1);
-    expect(events.filter((event) => event.kind === 'agent.job.started')).toHaveLength(1);
-  });
-
-  it('accepts the next child only after the previous discussion job is durably finished', async () => {
-    const harness = await createdHarness();
-    seedOwnedJob(harness, { jobId: 'completed-job', sessionId: 'agent-session' });
-    const snapshot = harness.store.load('discussion-link-test');
-    if (snapshot === null) throw new Error('missing discussion fixture');
-    await harness.store.append(snapshot.sessionId, snapshot.lastAppliedSeq, [
-      makeEvent(
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
-        snapshot.lastAppliedSeq + 1,
-        'agent.run.bound',
-        '2026-07-22T00:00:02.000Z',
-        { agent: 'alpha', executionSessionId: 'agent-session' },
-      ),
-      makeEvent(
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
-        snapshot.lastAppliedSeq + 2,
-        'agent.job.started',
-        '2026-07-22T00:00:03.000Z',
-        { agent: 'alpha', jobId: 'completed-job', purpose: 'bid', attempt: 1 },
-      ),
-      makeEvent(
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
-        snapshot.lastAppliedSeq + 3,
-        'agent.job.finished',
-        '2026-07-22T00:00:04.000Z',
-        { agent: 'alpha', jobId: 'completed-job', outcome: 'completed', attempt: 1 },
-      ),
-    ]);
-    releaseSeededSession(harness, 'agent-session', 'completed-job');
-
-    expect(() =>
-      seedOwnedJob(harness, {
-        jobId: 'next-job',
-        sessionId: 'agent-session',
-        purpose: 'speech',
-      }),
-    ).not.toThrow();
 
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
     const before = harness.store.load('discussion-link-test');

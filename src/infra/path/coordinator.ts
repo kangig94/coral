@@ -58,14 +58,6 @@ export function supervisorLockPath(runDir: string): string {
   return join(runDir, 'namespace-supervisor.v1.lock');
 }
 
-export function handoffRoutingStatusPath(
-  flavor: BuildFlavor,
-  generation: number,
-  opts?: CoordinatorPathOptions,
-): string {
-  return handoffRoutingStatusPathForRunDir(generationRunDir(flavor, opts), generation);
-}
-
 export function handoffRoutingStatusPathForRunDir(runDir: string, generation: number): string {
   return join(runDir, `handoff-routing.${generation}.db`);
 }
