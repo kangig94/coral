@@ -131,13 +131,7 @@ async function requestContendedUpgrade(
   return 'retry';
 }
 
-export async function acquireLaunchOwnership(
-  runDir: string,
-  executable: string,
-  manifest: StrictBundleManifest,
-): Promise<OwnershipAcquisition> {
-  const incarnation = probeProcessIncarnation(process.pid);
-  if (incarnation === null) return { kind: 'finished', exitCode: 1 };
+function observeReplacementLaunchOffer() {
   const sourcePid = Number(process.env.CORAL_RECOVERY_SOURCE_PID);
   const recoveryChallenge = process.env.CORAL_RECOVERY_CHALLENGE;
   const sourceIncarnation = process.env.CORAL_RECOVERY_SOURCE_INCARNATION;
@@ -167,56 +161,103 @@ export async function acquireLaunchOwnership(
     process.on('message', onOffer);
     process.send?.({ kind: 'coral-recovery-ready', challenge: recoveryChallenge });
   }
+  return {
+    replacement,
+    sourcePid,
+    recoveryChallenge,
+    offered: () => offered,
+    release: () => {
+      if (replacement) process.off('message', onOffer);
+    },
+  };
+}
+
+function launchParentAuthorityLost({
+  replacement,
+  sourcePid,
+}: ReturnType<typeof observeReplacementLaunchOffer>): boolean {
+  return (
+    ((replacement || process.env.CORAL_OBSERVATION_CHALLENGE !== undefined) && !process.connected) ||
+    (replacement && process.ppid !== sourcePid)
+  );
+}
+
+function recordLaunchLockHold(
+  runDir: string,
+  path: string,
+  { replacement, recoveryChallenge }: ReturnType<typeof observeReplacementLaunchOffer>,
+  cause: unknown,
+): void {
+  updateLaunchStatus(runDir, (status) => ({
+    ...status,
+    lockHold: { path, disposition: 'supervisor-lock-unobservable', observation: String(cause) },
+  }));
+  const status = currentLaunchStatus(runDir);
+  if (replacement && status !== undefined)
+    process.send?.({ kind: 'coral-launch-status', challenge: recoveryChallenge, status });
+}
+
+type LaunchOwnershipAttempt = Readonly<{
+  runDir: string;
+  manifest: StrictBundleManifest;
+  incarnation: NonNullable<ReturnType<typeof probeProcessIncarnation>>;
+  gate: ReturnType<typeof observeReplacementLaunchOffer>;
+  path: string;
+  holdLock: (cause: unknown) => void;
+}>;
+
+function attemptLaunchOwnership(
+  { runDir, manifest, incarnation, gate: { replacement, recoveryChallenge }, path, holdLock }: LaunchOwnershipAttempt,
+  requested: boolean,
+): OwnershipAcquisition | { kind: 'retry'; immediate: boolean } | { kind: 'contended' } {
+  if (requested && !upgradeOutstanding(runDir, manifest.buildSetId)) return { kind: 'finished', exitCode: 0 };
+  const attempt = attemptLaunchLock(path, holdLock);
+  if (attempt.kind === 'acquired')
+    return claimLaunchOwnership(runDir, manifest, incarnation, replacement, recoveryChallenge, attempt.lease);
+  if (attempt.kind === 'retry') return attempt;
+  if (!replacement && process.env.CORAL_OBSERVATION_CHALLENGE !== undefined) {
+    process.send?.({ kind: 'coral-observation-owned', challenge: process.env.CORAL_OBSERVATION_CHALLENGE });
+    return { kind: 'finished', exitCode: 0 };
+  }
+  if (replacement || requested) return { kind: 'retry', immediate: false };
+  return { kind: 'contended' };
+}
+
+export async function acquireLaunchOwnership(
+  runDir: string,
+  executable: string,
+  manifest: StrictBundleManifest,
+): Promise<OwnershipAcquisition> {
+  const incarnation = probeProcessIncarnation(process.pid);
+  if (incarnation === null) return { kind: 'finished', exitCode: 1 };
+  const gate = observeReplacementLaunchOffer();
   try {
     const path = supervisorLockPath(runDir);
-    const holdLock = (cause: unknown): void => {
-      updateLaunchStatus(runDir, (status) => ({
-        ...status,
-        lockHold: { path, disposition: 'supervisor-lock-unobservable', observation: String(cause) },
-      }));
-      const status = currentLaunchStatus(runDir);
-      if (replacement && status !== undefined)
-        process.send?.({ kind: 'coral-launch-status', challenge: recoveryChallenge, status });
-    };
+    const holdLock = (cause: unknown): void => recordLaunchLockHold(runDir, path, gate, cause);
+    const context = { runDir, manifest, incarnation, gate, path, holdLock };
     let requested = false;
-    for (let retry = 0; !replacement || retry < 150; retry += 1) {
-      if (
-        ((replacement || process.env.CORAL_OBSERVATION_CHALLENGE !== undefined) && !process.connected) ||
-        (replacement && process.ppid !== sourcePid)
-      )
-        return { kind: 'finished', exitCode: 1 };
-      if (replacement && !offered) {
+    for (let retry = 0; !gate.replacement || retry < 150; retry += 1) {
+      if (launchParentAuthorityLost(gate)) return { kind: 'finished', exitCode: 1 };
+      if (gate.replacement && !gate.offered()) {
         await sleep(POLL_MS);
         continue;
       }
-      if (requested && !upgradeOutstanding(runDir, manifest.buildSetId)) return { kind: 'finished', exitCode: 0 };
-      const attempt = attemptLaunchLock(path, holdLock);
-      if (attempt.kind === 'acquired')
-        return claimLaunchOwnership(runDir, manifest, incarnation, replacement, recoveryChallenge, attempt.lease);
+      const attempt = attemptLaunchOwnership(context, requested);
+      if (attempt.kind === 'owned' || attempt.kind === 'finished') return attempt;
       if (attempt.kind === 'retry') {
         if (!attempt.immediate) await sleep(POLL_MS);
         continue;
       }
-      if (!replacement) {
-        if (process.env.CORAL_OBSERVATION_CHALLENGE !== undefined) {
-          process.send?.({ kind: 'coral-observation-owned', challenge: process.env.CORAL_OBSERVATION_CHALLENGE });
-          return { kind: 'finished', exitCode: 0 };
-        }
-        if (requested) {
-          await sleep(POLL_MS);
-          continue;
-        }
-        const negotiation = await requestContendedUpgrade(runDir, executable, manifest);
-        if (negotiation === 'finished') return { kind: 'finished', exitCode: 0 };
-        if (negotiation === 'waiting') {
-          requested = true;
-          continue;
-        }
+      const negotiation = await requestContendedUpgrade(runDir, executable, manifest);
+      if (negotiation === 'finished') return { kind: 'finished', exitCode: 0 };
+      if (negotiation === 'waiting') {
+        requested = true;
+        continue;
       }
       await sleep(POLL_MS);
     }
     return { kind: 'finished', exitCode: 1 };
   } finally {
-    if (replacement) process.off('message', onOffer);
+    gate.release();
   }
 }

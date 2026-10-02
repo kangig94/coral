@@ -323,38 +323,19 @@ function watchDetachedChild({
   }, POLL_MS);
 }
 
-export async function watchChild({
-  running: { child, manifest, identity, sentinelId },
-  reservation,
-  record,
-  runDir,
-  owner,
-  timing,
-  startupBudgetMs,
-  retirement,
-  route = () => false,
-  forwardParentMessages = true,
-}: WatchChildContext): Promise<WatchResult> {
-  const state = record.childWatch(reservation, startupBudgetMs);
+type WatchedChildContext = WatchChildContext & {
+  state: ChildWatchState;
+  route: (message: unknown, handle: unknown) => boolean;
+  forwardParentMessages: boolean;
+};
 
-  const childExit = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
-  });
-  child.on('message', (message: unknown, handle: unknown) =>
-    relayWatchedChildMessage({
-      message,
-      handle,
-      child,
-      reservation,
-      identity,
-      runDir,
-      sentinelId,
-      owner,
-      record,
-      state,
-      route,
-    }),
-  );
+function forwardWatchedParentMessages(input: WatchedChildContext) {
+  const {
+    running: { child },
+    owner,
+    record,
+    forwardParentMessages,
+  } = input;
   const parentMessage = (message: unknown, handle: unknown): void => {
     if (owner.lost || !record.hasAuthority(owner.current)) {
       closeHandle(handle);
@@ -365,13 +346,18 @@ export async function watchChild({
     else closeHandle(handle);
   };
   if (forwardParentMessages) process.on('message', parentMessage);
-  const escalateChild = (now: number): 'sent' | 'absent' | 'held' | 'refused' =>
-    escalateWatchedChild({ child, record, owner, reservation, identity, timing, now });
-  const interval = setInterval(
-    () =>
-      monitorChildHeartbeat({ child, record, owner, reservation, identity, timing, retirement, state, escalateChild }),
-    timing.challengeMs,
-  );
+  return parentMessage;
+}
+
+function admitWatchedChildOnSpawn(input: WatchedChildContext): void {
+  const {
+    running: { child, manifest, sentinelId },
+    reservation,
+    record,
+    runDir,
+    owner,
+    state,
+  } = input;
   const spawnAuthority = owner.current;
   child.once('spawn', () => {
     if (!record.hasAuthority(spawnAuthority)) return;
@@ -391,6 +377,60 @@ export async function watchChild({
     state.armed = true;
     if (state.pendingHello) child.send({ kind: 'coral-sentinel-armed', id: sentinelId });
   });
+}
+
+function observeWatchedChildEvents(input: WatchedChildContext) {
+  const {
+    running: { child, identity, sentinelId },
+    reservation,
+    record,
+    runDir,
+    owner,
+    state,
+    route,
+  } = input;
+  const childExit = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
+  });
+  child.on('message', (message: unknown, handle: unknown) =>
+    relayWatchedChildMessage({
+      message,
+      handle,
+      child,
+      reservation,
+      identity,
+      runDir,
+      sentinelId,
+      owner,
+      record,
+      state,
+      route,
+    }),
+  );
+  return childExit;
+}
+
+function startChildWatch(input: WatchedChildContext) {
+  const {
+    running: { child, manifest, identity },
+    reservation,
+    record,
+    runDir,
+    owner,
+    timing,
+    retirement,
+    state,
+  } = input;
+  const childExit = observeWatchedChildEvents(input);
+  const parentMessage = forwardWatchedParentMessages(input);
+  const escalateChild = (now: number): 'sent' | 'absent' | 'held' | 'refused' =>
+    escalateWatchedChild({ child, record, owner, reservation, identity, timing, now });
+  const interval = setInterval(
+    () =>
+      monitorChildHeartbeat({ child, record, owner, reservation, identity, timing, retirement, state, escalateChild }),
+    timing.challengeMs,
+  );
+  admitWatchedChildOnSpawn(input);
   const servingPoll = setInterval(
     () => pollWatchedChildServing({ child, manifest, reservation, identity, record, runDir, state }),
     POLL_MS,
@@ -407,7 +447,19 @@ export async function watchChild({
     timing,
     state,
   });
-  const { exitCode, signal } = await childExit;
+  return { childExit, interval, servingPoll, detachedHealthPoll, parentMessage };
+}
+
+function settleExitedChildWatch(input: WatchedChildContext, watch: ReturnType<typeof startChildWatch>): void {
+  const {
+    running: { identity },
+    reservation,
+    record,
+    runDir,
+    owner,
+    forwardParentMessages,
+  } = input;
+  const { interval, servingPoll, detachedHealthPoll, parentMessage } = watch;
   clearInterval(interval);
   clearInterval(servingPoll);
   clearInterval(detachedHealthPoll);
@@ -417,5 +469,17 @@ export async function watchChild({
     if (!record.exited(reservation, identity)) record.cancelReservation(reservation);
     record.reconcileAdmissions();
   }
+}
+
+export async function watchChild({
+  route = () => false,
+  forwardParentMessages = true,
+  ...input
+}: WatchChildContext): Promise<WatchResult> {
+  const state = input.record.childWatch(input.reservation, input.startupBudgetMs);
+  const context = { ...input, route, forwardParentMessages, state };
+  const watch = startChildWatch(context);
+  const { exitCode, signal } = await watch.childExit;
+  settleExitedChildWatch(context, watch);
   return { exitCode, signal, served: state.served || (state.discovered && exitCode === 0), wedged: state.wedged };
 }

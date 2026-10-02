@@ -13,7 +13,7 @@ import { closeUnavailableLegacyRequest, pendingExecutable, pendingIntent } from 
 import { type createRepairBridge, type RepairChild } from './repair-bridge.js';
 import { type SupervisorLaunchMemory, type LaunchReservation } from './state.js';
 
-function dispatchPendingRequest(input: {
+type PendingRequestDispatch = {
   record: SupervisorLaunchMemory;
   owner: OwnerHandle;
   current: RunningChild;
@@ -23,8 +23,60 @@ function dispatchPendingRequest(input: {
   timing: SentinelTiming;
   startupBudgetMs: number;
   route: (source: ChildProcess, message: unknown, handle: unknown) => boolean;
-}): void {
-  const { record, owner, current, pending, lastDispatch, runDir, timing, startupBudgetMs, route } = input;
+};
+
+function pendingRequestCandidate(runDir: string, current: RunningChild, lastDispatch: Map<string, number>) {
+  const intent = pendingIntent(runDir);
+  if (
+    intent === null ||
+    intent.target.build.buildSetId === current.manifest.buildSetId ||
+    Date.now() - (lastDispatch.get(intent.requestId) ?? 0) < 10_000
+  )
+    return null;
+  const executable = pendingExecutable(intent);
+  const manifest = targetValidation(executable);
+  if (manifest === 'absent') {
+    void closeUnavailableLegacyRequest(runDir, intent.requestId);
+    return null;
+  }
+  if (manifest === 'indeterminate' || manifest.buildSetId !== intent.target.build.buildSetId) return null;
+  return { requestId: intent.requestId, executable, manifest };
+}
+
+function createPendingAttempt(
+  {
+    record,
+    owner,
+    lastDispatch,
+    runDir,
+    timing,
+    startupBudgetMs,
+    route,
+  }: Omit<PendingRequestDispatch, 'current' | 'pending'>,
+  candidate: NonNullable<ReturnType<typeof pendingRequestCandidate>>,
+): PendingAttempt | null {
+  const contenderReservation = record.reserve(owner.current, candidate.manifest.buildSetId, 'contender');
+  if (contenderReservation === null) return null;
+  lastDispatch.set(candidate.requestId, Date.now());
+  const running = spawnAdmittedChild(record, owner.current, contenderReservation, candidate.executable, [], runDir);
+  if (running === null) return null;
+  const retirement = record.childRetirement(contenderReservation);
+  const watch = watchChild({
+    running,
+    reservation: contenderReservation,
+    record,
+    runDir,
+    owner,
+    timing,
+    startupBudgetMs,
+    retirement,
+    route: (message, handle) => route(running.child, message, handle),
+  });
+  return { reservation: contenderReservation, running, retirement, watch };
+}
+
+function dispatchPendingRequest(input: PendingRequestDispatch): void {
+  const { record, owner, current, pending, lastDispatch, runDir } = input;
   try {
     if (
       owner.lost ||
@@ -36,43 +88,15 @@ function dispatchPendingRequest(input: {
       return;
     const state = record.read();
     if (state.launch?.phase !== 'serving' || state.launch.child?.pid !== current.identity.pid) return;
-    const intent = pendingIntent(runDir);
-    if (
-      intent === null ||
-      intent.target.build.buildSetId === current.manifest.buildSetId ||
-      Date.now() - (lastDispatch.get(intent.requestId) ?? 0) < 10_000
-    )
-      return;
-    const executable = pendingExecutable(intent);
-    const manifest = targetValidation(executable);
-    if (manifest === 'absent') {
-      void closeUnavailableLegacyRequest(runDir, intent.requestId);
-      return;
-    }
-    if (manifest === 'indeterminate' || manifest.buildSetId !== intent.target.build.buildSetId) return;
-    {
-      const contenderReservation = record.reserve(owner.current, manifest.buildSetId, 'contender');
-      if (contenderReservation === null) return;
-      lastDispatch.set(intent.requestId, Date.now());
-      const running = spawnAdmittedChild(record, owner.current, contenderReservation, executable, [], runDir);
-      if (running === null) return;
-      const retirement = record.childRetirement(contenderReservation);
-      const watch = watchChild({
-        running,
-        reservation: contenderReservation,
-        record,
-        runDir,
-        owner,
-        timing,
-        startupBudgetMs,
-        retirement,
-        route: (message, handle) => route(running.child, message, handle),
-      });
-      pending.value = { reservation: contenderReservation, running, retirement, watch };
-      void watch.then(() => {
-        if (pending.value?.running.child === running.child && current.child !== running.child) pending.value = null;
-      });
-    }
+    const candidate = pendingRequestCandidate(runDir, current, lastDispatch);
+    if (candidate === null) return;
+    const attempt = createPendingAttempt(input, candidate);
+    if (attempt === null) return;
+    pending.value = attempt;
+    const { running, watch } = attempt;
+    void watch.then(() => {
+      if (pending.value?.running.child === running.child && current.child !== running.child) pending.value = null;
+    });
   } catch (error: unknown) {
     process.stderr.write(`Coordinator request observation failed: ${String(error)}\n`);
   }

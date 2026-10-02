@@ -222,8 +222,10 @@ describe('write-once store epoch invariants', () => {
   });
 
   it('keeps list publication provenance on the sidecar without opening SQLite', () => {
-    const list = functionSource('src/store/epoch/inventory.ts', 'listStoreEpochs');
-    expect(list).not.toMatch(/classifyStoreFile|acquireSharedFileLockSync|openStoreDatabase/u);
+    const list = functionSource('src/store/epoch/inventory.ts', 'storeEpochInventoryEntry');
+    expect(source('src/store/epoch/inventory.ts')).not.toMatch(
+      /classifyStoreFile|acquireSharedFileLockSync|openStoreDatabase/u,
+    );
     expect(list).toContain('publicationReason');
     expect(list).toContain('observation.epochJson.value.classification');
   });

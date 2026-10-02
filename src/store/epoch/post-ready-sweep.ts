@@ -102,89 +102,120 @@ async function removeAfterReapingRenameAsync(
   return (await removeDuringPostReadySweep(runtime.storage, dbDir, reapingPath)) ? 'removed' : 'target-failed';
 }
 
-async function removeAbandonedStoreDirectory(
+type ProvenSweepDirectory = Extract<Awaited<ReturnType<typeof observeContainedDirectoryAsync>>, { kind: 'proven' }>;
+type AbandonedDirectoryRemoval = LockedRemoval | 'retained' | 'unobservable';
+
+async function retainUnmarkedReapingDirectory(
   runtime: Runtime,
   dbDir: string,
   path: string,
-  resultsReleased?: (epochKey: string) => boolean,
-): Promise<LockedRemoval | 'retained' | 'unobservable'> {
-  const root = await observeContainedDirectoryAsync(runtime.storage, dbDir, path);
-  if (root.kind === 'unobservable') return 'unobservable';
-  if (root.kind === 'disproven') return removeAfterReapingRenameAsync(runtime, dbDir, path);
-  if (basename(path).startsWith(REAPING_DIRECTORY_PREFIX)) {
-    const database = await observeContainedRegularFileAsync(
-      runtime.storage,
-      path,
-      join(path, STORE_DATABASE_FILE_NAME),
-      root,
-    );
-    if (database.kind === 'disproven') return removeAfterReapingRenameAsync(runtime, dbDir, path);
-    const markerPath = join(path, '.coral-closed-reaping.v1.json');
-    const markerProof = await observeContainedRegularFileAsync(runtime.storage, path, markerPath, root);
-    if (markerProof.kind === 'disproven') {
-      const lockPath = join(path, STORE_LOCK_FILE_NAME);
-      const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
-      if (lock.kind === 'unobservable') return 'unobservable';
-      let release: FileLockLease | undefined;
-      if (lock.kind === 'proven') {
-        const attempt = attemptExclusiveFileLockSync(lockPath);
-        if (attempt.kind === 'contended') return 'locked';
-        if (attempt.kind === 'malformed') return 'unobservable';
-        if (attempt.kind === 'unobservable') {
-          auditSweepFailure(lockPath, attempt.cause);
-          return 'target-failed';
-        }
-        release = attempt.lease;
-      }
-      const retained = join(dbDir, `${RETAINED_REAPING_DIRECTORY_PREFIX}${runtime.ids.uuid()}`);
-      let outcome: LockedRemoval | 'retained';
-      try {
-        runtime.storage.renameSync(path, retained);
-        outcome = runtime.storage.syncDirectoryDurableSync(dbDir) ? 'retained' : 'target-failed';
-      } catch (error: unknown) {
-        auditSweepFailure(path, error);
-        outcome = 'target-failed';
-      }
-      if (release !== undefined) {
-        try {
-          release();
-        } catch (error: unknown) {
-          auditSweepFailure(lockPath, error);
-          return 'lock-release-failed';
-        }
-      }
-      return outcome;
+  root: ProvenSweepDirectory,
+): Promise<AbandonedDirectoryRemoval> {
+  const lockPath = join(path, STORE_LOCK_FILE_NAME);
+  const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
+  if (lock.kind === 'unobservable') return 'unobservable';
+  let release: FileLockLease | undefined;
+  if (lock.kind === 'proven') {
+    const attempt = attemptExclusiveFileLockSync(lockPath);
+    if (attempt.kind === 'contended') return 'locked';
+    if (attempt.kind === 'malformed') return 'unobservable';
+    if (attempt.kind === 'unobservable') {
+      auditSweepFailure(lockPath, attempt.cause);
+      return 'target-failed';
     }
-    if (markerProof.kind !== 'proven' || resultsReleased === undefined) return 'unobservable';
-    try {
-      const marker = JSON.parse(runtime.storage.readFileSync(markerPath, 'utf-8')) as unknown;
-      if (
-        typeof marker !== 'object' ||
-        marker === null ||
-        !('version' in marker) ||
-        marker.version !== 'v1' ||
-        !('epoch' in marker) ||
-        typeof marker.epoch !== 'string' ||
-        !EPOCH_DIRECTORY_PATTERN.test(`epoch-${marker.epoch}`) ||
-        !('epochKey' in marker) ||
-        typeof marker.epochKey !== 'string' ||
-        !marker.epochKey.endsWith(`:${marker.epoch}`) ||
-        readEpochKey(runtime, {
-          ...resolvedStoreEpoch(dbDir, marker.epoch),
-          path: join(path, STORE_DATABASE_FILE_NAME),
-        }) !== marker.epochKey ||
-        observeStorePath(runtime.storage, epochDirectory(dbDir, marker.epoch)) !== 'absent' ||
-        closureCapability(runtime, runtime.paths.coral.generation.dataRoot, marker.epochKey) === null ||
-        !resultsReleased(lineageJobEpochKey(dbDir, marker.epochKey))
-      )
-        return 'unobservable';
-    } catch {
-      return 'unobservable';
-    }
-    const lockPath = join(path, STORE_LOCK_FILE_NAME);
-    const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
-    return lock.kind === 'proven' ? removeWhileExclusivelyLockedAsync(runtime, dbDir, lockPath, path) : 'unobservable';
+    release = attempt.lease;
   }
+  const retained = join(dbDir, `${RETAINED_REAPING_DIRECTORY_PREFIX}${runtime.ids.uuid()}`);
+  let outcome: LockedRemoval | 'retained';
+  try {
+    runtime.storage.renameSync(path, retained);
+    outcome = runtime.storage.syncDirectoryDurableSync(dbDir) ? 'retained' : 'target-failed';
+  } catch (error: unknown) {
+    auditSweepFailure(path, error);
+    outcome = 'target-failed';
+  }
+  if (release !== undefined) {
+    try {
+      release();
+    } catch (error: unknown) {
+      auditSweepFailure(lockPath, error);
+      return 'lock-release-failed';
+    }
+  }
+  return outcome;
+}
+
+function validClosedReapingMarker(marker: unknown): marker is { version: 'v1'; epoch: string; epochKey: string } {
+  return !(
+    typeof marker !== 'object' ||
+    marker === null ||
+    !('version' in marker) ||
+    marker.version !== 'v1' ||
+    !('epoch' in marker) ||
+    typeof marker.epoch !== 'string' ||
+    !EPOCH_DIRECTORY_PATTERN.test(`epoch-${marker.epoch}`) ||
+    !('epochKey' in marker) ||
+    typeof marker.epochKey !== 'string' ||
+    !marker.epochKey.endsWith(`:${marker.epoch}`)
+  );
+}
+
+function closedReapingDirectoryRemovable(
+  runtime: Runtime,
+  dbDir: string,
+  path: string,
+  markerPath: string,
+  resultsReleased: (epochKey: string) => boolean,
+): boolean {
+  try {
+    const marker = JSON.parse(runtime.storage.readFileSync(markerPath, 'utf-8')) as unknown;
+    if (
+      !validClosedReapingMarker(marker) ||
+      readEpochKey(runtime, {
+        ...resolvedStoreEpoch(dbDir, marker.epoch),
+        path: join(path, STORE_DATABASE_FILE_NAME),
+      }) !== marker.epochKey ||
+      observeStorePath(runtime.storage, epochDirectory(dbDir, marker.epoch)) !== 'absent' ||
+      closureCapability(runtime, runtime.paths.coral.generation.dataRoot, marker.epochKey) === null ||
+      !resultsReleased(lineageJobEpochKey(dbDir, marker.epochKey))
+    )
+      return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function removeReapingStoreDirectory(
+  runtime: Runtime,
+  dbDir: string,
+  path: string,
+  root: ProvenSweepDirectory,
+  resultsReleased: ((epochKey: string) => boolean) | undefined,
+): Promise<AbandonedDirectoryRemoval> {
+  const database = await observeContainedRegularFileAsync(
+    runtime.storage,
+    path,
+    join(path, STORE_DATABASE_FILE_NAME),
+    root,
+  );
+  if (database.kind === 'disproven') return removeAfterReapingRenameAsync(runtime, dbDir, path);
+  const markerPath = join(path, '.coral-closed-reaping.v1.json');
+  const markerProof = await observeContainedRegularFileAsync(runtime.storage, path, markerPath, root);
+  if (markerProof.kind === 'disproven') return retainUnmarkedReapingDirectory(runtime, dbDir, path, root);
+  if (markerProof.kind !== 'proven' || resultsReleased === undefined) return 'unobservable';
+  if (!closedReapingDirectoryRemovable(runtime, dbDir, path, markerPath, resultsReleased)) return 'unobservable';
+  const lockPath = join(path, STORE_LOCK_FILE_NAME);
+  const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
+  return lock.kind === 'proven' ? removeWhileExclusivelyLockedAsync(runtime, dbDir, lockPath, path) : 'unobservable';
+}
+
+async function removeOrdinaryStoreDirectory(
+  runtime: Runtime,
+  dbDir: string,
+  path: string,
+  root: ProvenSweepDirectory,
+): Promise<AbandonedDirectoryRemoval> {
   const lockPath = join(path, STORE_LOCK_FILE_NAME);
   const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
   if (lock.kind === 'unobservable') return 'unobservable';
@@ -201,6 +232,20 @@ async function removeAbandonedStoreDirectory(
     }
   }
   return removeWhileExclusivelyLockedAsync(runtime, dbDir, lockPath, path);
+}
+
+async function removeAbandonedStoreDirectory(
+  runtime: Runtime,
+  dbDir: string,
+  path: string,
+  resultsReleased?: (epochKey: string) => boolean,
+): Promise<AbandonedDirectoryRemoval> {
+  const root = await observeContainedDirectoryAsync(runtime.storage, dbDir, path);
+  if (root.kind === 'unobservable') return 'unobservable';
+  if (root.kind === 'disproven') return removeAfterReapingRenameAsync(runtime, dbDir, path);
+  return basename(path).startsWith(REAPING_DIRECTORY_PREFIX)
+    ? removeReapingStoreDirectory(runtime, dbDir, path, root, resultsReleased)
+    : removeOrdinaryStoreDirectory(runtime, dbDir, path, root);
 }
 
 async function syncDirectoryDurable(storage: StoragePort, path: string): Promise<boolean> {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
-import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
+import { readDiscoveryRecordDisposition, type CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
 import { updateLaunchStatus, type LaunchStatus } from '../infra/launch-status.js';
 import {
   listLaunchSubjects,
@@ -170,6 +170,62 @@ function fromAdmission(admission: LaunchAdmission): LaunchReservation {
   };
 }
 
+function discoveryLaunchReservation(record: CoordinatorDiscoveryRecord): LaunchReservation {
+  const identity =
+    record.incarnation === undefined
+      ? { unidentifiedPid: record.pid, recoveryHold: 'identity-unavailable' as const }
+      : { child: { pid: record.pid, incarnation: record.incarnation } };
+  const { supervision } = record;
+  if (supervision === undefined) {
+    return {
+      id: `discovery:${record.bootToken}`,
+      buildSetId: 'unknown',
+      purpose: 'legacy-retirement',
+      phase: 'serving',
+      ...identity,
+    };
+  }
+  return {
+    id: supervision.launchId,
+    buildSetId: supervision.buildSetId,
+    purpose: supervision.purpose,
+    phase: 'serving',
+    admittedAt: supervision.admittedAt,
+    parent: supervision.parent,
+    ...identity,
+  };
+}
+
+function discoveryBuildConflicts(
+  admitted: LaunchAdmission,
+  discovered: LaunchReservation,
+  record: CoordinatorDiscoveryRecord,
+): boolean {
+  return (
+    admitted.build.buildSetId !== discovered.buildSetId ||
+    admitted.build.bundleHash !== record.bundleHash ||
+    admitted.build.flavor !== record.flavor ||
+    (record.version !== undefined && admitted.build.version !== record.version)
+  );
+}
+
+function discoveryAdmissionConflicts(
+  admitted: LaunchAdmission | undefined,
+  discovered: LaunchReservation,
+  record: CoordinatorDiscoveryRecord,
+): admitted is LaunchAdmission {
+  return (
+    admitted !== undefined &&
+    (admitted.admittedAt !== discovered.admittedAt ||
+      discoveryBuildConflicts(admitted, discovered, record) ||
+      admitted.purpose !== discovered.purpose ||
+      admitted.parent?.pid !== discovered.parent?.pid ||
+      admitted.parent?.incarnation !== discovered.parent?.incarnation ||
+      admitted.child.pid !== record.pid ||
+      (record.incarnation !== undefined && admitted.child.incarnation !== record.incarnation))
+  );
+}
+
 export class SupervisorLaunchMemory {
   #state: SupervisorState;
   readonly #runDir: string;
@@ -313,59 +369,21 @@ export class SupervisorLaunchMemory {
       baseDir: dirname(dirname(runDir)),
     });
     const discovery = readDiscoveryRecordDisposition(runtime, join(runDir, 'coordinator.json'));
-    if (discovery.kind === 'record' && discovery.record.supervision === undefined) {
-      const discovered: LaunchReservation = {
-        id: `discovery:${discovery.record.bootToken}`,
-        buildSetId: 'unknown',
-        purpose: 'legacy-retirement',
-        phase: 'serving',
-        ...(discovery.record.incarnation === undefined
-          ? { unidentifiedPid: discovery.record.pid, recoveryHold: 'identity-unavailable' as const }
-          : { child: { pid: discovery.record.pid, incarnation: discovery.record.incarnation } }),
-      };
+    if (discovery.kind !== 'record') return null;
+    const discovered = discoveryLaunchReservation(discovery.record);
+    if (discovery.record.supervision === undefined)
       return reservationDisposition(discovered) === 'absent' ? null : discovered;
+    const subject = this.#subjects.find((entry) => entry.admission?.launchId === discovered.id);
+    const admitted = subject?.admission;
+    if (discoveryAdmissionConflicts(admitted, discovered, discovery.record) && subject !== undefined) {
+      this.#subjects = this.#subjects.map((entry) =>
+        entry === subject ? { ...entry, problem: 'envelope-conflict' } : entry,
+      );
+      if (admitted?.child.pid === discovered.child?.pid && admitted.child.incarnation === discovered.child.incarnation)
+        return null;
+      return { ...discovered, recoveryHold: 'envelope-conflict' };
     }
-    if (discovery.kind === 'record' && discovery.record.supervision !== undefined) {
-      const { supervision } = discovery.record;
-      const discovered: LaunchReservation = {
-        id: supervision.launchId,
-        buildSetId: supervision.buildSetId,
-        purpose: supervision.purpose,
-        phase: 'serving',
-        admittedAt: supervision.admittedAt,
-        parent: supervision.parent,
-        ...(discovery.record.incarnation === undefined
-          ? { unidentifiedPid: discovery.record.pid, recoveryHold: 'identity-unavailable' as const }
-          : { child: { pid: discovery.record.pid, incarnation: discovery.record.incarnation } }),
-      };
-      const subject = this.#subjects.find((entry) => entry.admission?.launchId === discovered.id);
-      const admitted = subject?.admission;
-      const conflict =
-        admitted !== undefined &&
-        (admitted.admittedAt !== discovered.admittedAt ||
-          admitted.build.buildSetId !== discovered.buildSetId ||
-          admitted.build.bundleHash !== discovery.record.bundleHash ||
-          admitted.build.flavor !== discovery.record.flavor ||
-          (discovery.record.version !== undefined && admitted.build.version !== discovery.record.version) ||
-          admitted.purpose !== discovered.purpose ||
-          admitted.parent?.pid !== discovered.parent?.pid ||
-          admitted.parent?.incarnation !== discovered.parent?.incarnation ||
-          admitted.child.pid !== discovery.record.pid ||
-          (discovery.record.incarnation !== undefined && admitted.child.incarnation !== discovery.record.incarnation));
-      if (conflict && subject !== undefined) {
-        this.#subjects = this.#subjects.map((entry) =>
-          entry === subject ? { ...entry, problem: 'envelope-conflict' } : entry,
-        );
-        if (
-          admitted?.child.pid === discovered.child?.pid &&
-          admitted.child.incarnation === discovered.child.incarnation
-        )
-          return null;
-        return { ...discovered, recoveryHold: 'envelope-conflict' };
-      }
-      if (reservationDisposition(discovered) !== 'absent') return discovered;
-    }
-    return null;
+    return reservationDisposition(discovered) === 'absent' ? null : discovered;
   }
 
   childWatch(reservation: LaunchReservation, startupBudgetMs: number): ChildWatchState {

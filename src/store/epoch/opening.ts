@@ -370,38 +370,50 @@ function openProtectedStoreEpoch(
   return { kind: 'opened', settlement: { db: opened.db, store: opened.store } };
 }
 
-function mintSelectedStoreEpoch(
+type StoreEpochSelection = Readonly<{
+  dbDir: string;
+  observations: ReturnType<typeof observeStoreEpochs>;
+  current: ProvenStoreEpochObservation | null;
+  protectedIncumbent: ResolvedStoreEpoch | null;
+  protectedAddresses: ReturnType<typeof knownProtectedEpochAddresses>;
+}>;
+
+function latestUnprovenStoreIncumbent(
   runtime: Runtime,
-  options: StoreEpochOptions,
-  dbDir: string,
-  observations: ReturnType<typeof observeStoreEpochs>,
-  current: ProvenStoreEpochObservation | null,
-  protectedIncumbent: ResolvedStoreEpoch | null,
-  protectedAddresses: ReturnType<typeof knownProtectedEpochAddresses>,
-  classification: StoreEpochClassification,
-): StoreEpochSettlement | null {
-  const unprovenCurrent =
-    current === null
-      ? observations
-          .filter((observation) => {
-            if (observation.proof.kind === 'proven') return false;
-            const directory = epochDirectory(dbDir, observation.epoch);
-            const contained = observeContainedDirectory(runtime.storage, dbDir, directory);
-            return (
-              contained.kind === 'proven' &&
-              observeContainedRegularFile(runtime.storage, directory, epochPath(dbDir, observation.epoch), contained)
-                .kind === 'proven' &&
-              observeStoreEpochLock(runtime.storage, dbDir, observation.epoch, contained).kind === 'proven'
-            );
-          })
-          .reduce<StoreEpochObservation | null>(
-            (latest, observation) =>
-              latest === null || compareEpoch(observation.epoch, latest.epoch) > 0 ? observation : latest,
-            null,
-          )
-      : null;
+  { dbDir, observations }: StoreEpochSelection,
+): StoreEpochObservation | null {
+  return observations
+    .filter((observation) => {
+      if (observation.proof.kind === 'proven') return false;
+      const directory = epochDirectory(dbDir, observation.epoch);
+      const contained = observeContainedDirectory(runtime.storage, dbDir, directory);
+      return (
+        contained.kind === 'proven' &&
+        observeContainedRegularFile(runtime.storage, directory, epochPath(dbDir, observation.epoch), contained).kind ===
+          'proven' &&
+        observeStoreEpochLock(runtime.storage, dbDir, observation.epoch, contained).kind === 'proven'
+      );
+    })
+    .reduce<StoreEpochObservation | null>(
+      (latest, observation) =>
+        latest === null || compareEpoch(observation.epoch, latest.epoch) > 0 ? observation : latest,
+      null,
+    );
+}
+
+function resolveStoreMintPredecessor(runtime: Runtime, selection: StoreEpochSelection) {
+  const { dbDir, current, protectedIncumbent } = selection;
+  const unprovenCurrent = current === null ? latestUnprovenStoreIncumbent(runtime, selection) : null;
   const predecessor = current === null ? protectedIncumbent : resolvedStoreEpoch(dbDir, current.epoch);
   const incumbent = predecessor ?? (unprovenCurrent === null ? null : resolvedStoreEpoch(dbDir, unprovenCurrent.epoch));
+  return { predecessor, incumbent };
+}
+
+function identifyStoreMintIncumbent(
+  runtime: Runtime,
+  incumbent: ResolvedStoreEpoch | null,
+  classification: StoreEpochClassification,
+): string | null {
   let incumbentEpochKey: string | null = null;
   if (incumbent !== null) {
     if (classification.kind === 'unavailable') {
@@ -420,12 +432,22 @@ function mintSelectedStoreEpoch(
   if (incumbent !== null && incumbentEpochKey === null) {
     throw new Error('Store epoch mint cannot identify its unavailable predecessor.');
   }
+  return incumbentEpochKey;
+}
+
+function authorizeStoreMintDisposition(
+  options: StoreEpochOptions,
+  incumbent: ResolvedStoreEpoch | null,
+  incumbentEpochKey: string | null,
+  classification: StoreEpochClassification,
+  observedEpochCount: number,
+): void {
   const disposition =
     options.authorizeMint?.({
       incumbent,
       incumbentEpochKey,
       classification,
-      observedEpochCount: observations.length + protectedAddresses.length,
+      observedEpochCount,
     }) ?? null;
   if (options.path === undefined && disposition === null) {
     throw new Error('Store epoch mint has no coordinator retirement disposition.');
@@ -433,15 +455,31 @@ function mintSelectedStoreEpoch(
   if (disposition !== null) {
     if (
       disposition.incumbentEpochKey !== incumbentEpochKey ||
-      (incumbent === null && observations.length + protectedAddresses.length === 0 && disposition.kind !== 'initial') ||
-      (incumbent === null &&
-        observations.length + protectedAddresses.length > 0 &&
-        disposition.kind !== 'unopenable') ||
+      (incumbent === null && observedEpochCount === 0 && disposition.kind !== 'initial') ||
+      (incumbent === null && observedEpochCount > 0 && disposition.kind !== 'unopenable') ||
       (incumbent !== null && disposition.kind === 'initial')
     ) {
       throw new Error('Store epoch mint disposition does not match the observed predecessor.');
     }
   }
+}
+
+function mintSelectedStoreEpoch(
+  runtime: Runtime,
+  options: StoreEpochOptions,
+  selection: StoreEpochSelection,
+  classification: StoreEpochClassification,
+): StoreEpochSettlement | null {
+  const { dbDir, observations, protectedAddresses } = selection;
+  const { predecessor, incumbent } = resolveStoreMintPredecessor(runtime, selection);
+  const incumbentEpochKey = identifyStoreMintIncumbent(runtime, incumbent, classification);
+  authorizeStoreMintDisposition(
+    options,
+    incumbent,
+    incumbentEpochKey,
+    classification,
+    observations.length + protectedAddresses.length,
+  );
   const highestProtectedEpoch = protectedAddresses.reduce<StoreEpoch | null>((highest, address) => {
     const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
     return highest === null || compareEpoch(epoch, highest) > 0 ? epoch : highest;
@@ -559,77 +597,88 @@ function openProvenStoreEpoch(
   return { kind: 'classified', classification };
 }
 
+function openInMemoryStoreEpoch(runtime: Runtime, options: StoreEpochOptions): StoreEpochSettlement {
+  const opened = openWritableStoreDatabase({
+    path: ':memory:',
+    storage: runtime.storage,
+    storeFormat: options.storeFormat,
+    flavor: runtime.flavor,
+    busyTimeoutMs: options.startupBusyTimeoutMs,
+  });
+  if (opened.kind !== 'opened') throw new Error('An in-memory store cannot be incompatible before opening.');
+  return { db: opened.db, store: { storeRoot: ':memory:', epoch: '1', path: ':memory:' } };
+}
+
+function selectStoreEpoch(runtime: Runtime, options: StoreEpochOptions, dbDir: string): StoreEpochSelection {
+  const observations = observeStoreEpochs(runtime.storage, dbDir);
+  const current = currentProvenEpoch(observations);
+  const protectedAddresses = knownProtectedEpochAddresses(runtime, dbDir);
+  const selectedKey =
+    current === null
+      ? protectedAddresses.length === 1
+        ? protectedAddresses[0].epochKey
+        : (options.selectProtectedPredecessor?.(protectedAddresses) ?? null)
+      : null;
+  const selectedProtected = protectedAddresses.find((address) => address.epochKey === selectedKey);
+  const protectedIncumbent =
+    selectedProtected === undefined ? null : resolveProtectedEpoch(runtime, dbDir, selectedProtected.epochKey);
+  return { dbDir, observations, current, protectedAddresses, protectedIncumbent };
+}
+
+function openSelectedStoreEpoch(
+  runtime: Runtime,
+  options: StoreEpochOptions,
+  selection: StoreEpochSelection,
+  minimumAttemptMs: number,
+  retry: StoreEpochRetryState,
+): ReturnType<typeof openProvenStoreEpoch> {
+  const { dbDir, observations, current, protectedIncumbent } = selection;
+  const shouldReobserve = hasHigherUnobservableCandidate(observations, current);
+  let classification = absentClassification(observations);
+  if (current !== null) {
+    const proven = openProvenStoreEpoch(
+      runtime,
+      options,
+      dbDir,
+      current,
+      shouldReobserve,
+      minimumAttemptMs,
+      retry,
+      classification,
+    );
+    if (proven.kind === 'settled') return proven;
+    if (proven.kind === 'retry') return proven;
+    classification = proven.classification;
+  } else if (shouldReobserve) {
+    retry.attempts += 1;
+    if (waitForStoreEpochRetry(runtime, storeEpochRetryDeadlineForEvidence(runtime, retry), minimumAttemptMs))
+      return { kind: 'retry' };
+  }
+  if (current === null && retry.attempts > 0) {
+    classification = classificationWithAttempts(classification, retry.attempts);
+  }
+  if (protectedIncumbent !== null) {
+    const protectedOpen = openProtectedStoreEpoch(runtime, options, dbDir, protectedIncumbent);
+    if (protectedOpen.kind === 'opened') return { kind: 'settled', settlement: protectedOpen.settlement };
+    classification = protectedOpen.classification;
+  }
+  return { kind: 'classified', classification };
+}
+
 export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): StoreEpochSettlement {
   const configuredDbDir = resolveStoreDbDir(runtime, options.path);
-  if (configuredDbDir === ':memory:') {
-    const opened = openWritableStoreDatabase({
-      path: ':memory:',
-      storage: runtime.storage,
-      storeFormat: options.storeFormat,
-      flavor: runtime.flavor,
-      busyTimeoutMs: options.startupBusyTimeoutMs,
-    });
-    if (opened.kind !== 'opened') throw new Error('An in-memory store cannot be incompatible before opening.');
-    return { db: opened.db, store: { storeRoot: ':memory:', epoch: '1', path: ':memory:' } };
-  }
-
+  if (configuredDbDir === ':memory:') return openInMemoryStoreEpoch(runtime, options);
   runtime.storage.mkdirSync(configuredDbDir, { recursive: true, mode: 0o700 });
   const dbDir = runtime.storage.realpathSync(configuredDbDir);
   reconcileProtectedEpochs(runtime, dbDir);
   const retry: StoreEpochRetryState = { deadline: null, attempts: 0, lastFailure: null };
   const minimumAttemptMs = Math.max(1, options.startupBusyTimeoutMs ?? STORE_EPOCH_OPEN_RETRY_INTERVAL_MS);
   for (;;) {
-    const observations = observeStoreEpochs(runtime.storage, dbDir);
-    const current = currentProvenEpoch(observations);
-    const protectedAddresses = knownProtectedEpochAddresses(runtime, dbDir);
-    const selectedKey =
-      current === null
-        ? protectedAddresses.length === 1
-          ? protectedAddresses[0].epochKey
-          : (options.selectProtectedPredecessor?.(protectedAddresses) ?? null)
-        : null;
-    const selectedProtected = protectedAddresses.find((address) => address.epochKey === selectedKey);
-    const protectedIncumbent =
-      selectedProtected === undefined ? null : resolveProtectedEpoch(runtime, dbDir, selectedProtected.epochKey);
-    const shouldReobserve = hasHigherUnobservableCandidate(observations, current);
-    let classification = absentClassification(observations);
-    if (current !== null) {
-      const proven = openProvenStoreEpoch(
-        runtime,
-        options,
-        dbDir,
-        current,
-        shouldReobserve,
-        minimumAttemptMs,
-        retry,
-        classification,
-      );
-      if (proven.kind === 'settled') return proven.settlement;
-      if (proven.kind === 'retry') continue;
-      classification = proven.classification;
-    } else if (shouldReobserve) {
-      retry.attempts += 1;
-      if (waitForStoreEpochRetry(runtime, storeEpochRetryDeadlineForEvidence(runtime, retry), minimumAttemptMs))
-        continue;
-    }
-    if (current === null && retry.attempts > 0) {
-      classification = classificationWithAttempts(classification, retry.attempts);
-    }
-    if (protectedIncumbent !== null) {
-      const protectedOpen = openProtectedStoreEpoch(runtime, options, dbDir, protectedIncumbent);
-      if (protectedOpen.kind === 'opened') return protectedOpen.settlement;
-      classification = protectedOpen.classification;
-    }
-    const minted = mintSelectedStoreEpoch(
-      runtime,
-      options,
-      dbDir,
-      observations,
-      current,
-      protectedIncumbent,
-      protectedAddresses,
-      classification,
-    );
+    const selection = selectStoreEpoch(runtime, options, dbDir);
+    const opened = openSelectedStoreEpoch(runtime, options, selection, minimumAttemptMs, retry);
+    if (opened.kind === 'settled') return opened.settlement;
+    if (opened.kind === 'retry') continue;
+    const minted = mintSelectedStoreEpoch(runtime, options, selection, opened.classification);
     if (minted !== null) return minted;
     retry.deadline = null;
     retry.attempts = 0;
