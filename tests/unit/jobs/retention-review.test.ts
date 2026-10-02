@@ -135,14 +135,14 @@ describe('retention round-one probes', () => {
     expect(JSON.stringify(plan)).not.toContain('SCAN events');
   });
 
-  it('keeps missing locations without synchronously scanning epoch certificates per export', () => {
+  it('releases absent locations even after ordinary epoch registration without scanning certificates', () => {
     const f = fixture();
     mkdirSync(join(f.runtime.paths.coral.generation.dataRoot, 'job-locations.v1', 'epochs', 'known'), {
       recursive: true,
     });
     const scan = vi.spyOn(f.runtime.storage, 'readDirectoryBoundedSync');
     const locations = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
-    expect(locations.exportResultRetention('absent', 'active')).toBe('unknown');
+    expect(locations.exportResultRetention('absent', 'active')).toBe('released');
     expect(scan).not.toHaveBeenCalled();
   });
 

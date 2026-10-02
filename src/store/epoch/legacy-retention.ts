@@ -7,11 +7,11 @@ import { readSuccessionWriterGeneration } from '../succession-writer-generation.
 import type { RetentionOutcome } from '../retention-outcome.js';
 import { observeStoreEpoch } from './observation.js';
 
-/** Serving owns every shipped namespace socket; a pre-epoch coordinator cannot also serve or write. */
+/** Retire only an expired flat-store family beside a proven current epoch. */
 export async function removeLegacyStore(
   runtime: Runtime,
   canContinue: () => boolean,
-  hasNamespaceAuthority: () => boolean,
+  cutoff: number,
   mutate: <T>(operation: () => T) => T,
   afterName = '',
   checkpoint: (nextName: string) => void = () => {},
@@ -22,7 +22,6 @@ export async function removeLegacyStore(
   let deleting = false;
   try {
     if (!canContinue()) return keep('run-interrupted');
-    if (!hasNamespaceAuthority()) return keep('namespace-authority-unproven');
     const selection = readActiveStoreSelectionForCoordination(runtime);
     const writer = readSuccessionWriterGeneration(runtime);
     const storeRoot = runtime.storage.realpathSync(root);
@@ -32,9 +31,33 @@ export async function removeLegacyStore(
       return keep('current-epoch-unproven');
     const family = /^store\.db(?:-wal|-shm|\.format|(?:\..*)?\.bak)?$/u;
     const prefix = '.legacy-retention-';
+    const expired = (name: string): boolean => {
+      const entry = runtime.storage.lstatSync(join(root, name), { bigint: true });
+      return entry.isFile() && entry.mtimeNs < BigInt(Math.floor(cutoff)) * 1_000_000n;
+    };
+    const names: string[] = [];
+    for await (const name of runtime.storage.iterateDirectory(root)) {
+      if (!canContinue()) return keep('scan-pending');
+      const originalName = name.startsWith(prefix) ? name.slice(prefix.length) : name;
+      if (family.test(originalName)) {
+        if (!expired(name)) return keep('legacy-not-expired-or-unknown');
+        names.push(name);
+      }
+      await setImmediate();
+    }
+    if (!canContinue()) return keep('scan-pending');
+    if (!names.every(expired)) return keep('legacy-not-expired-or-unknown');
+    for (const suffix of ['', '-wal', '-shm', '.format']) {
+      try {
+        if (!expired('store.db' + suffix)) return keep('legacy-not-expired-or-unknown');
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
     let count = 0;
     const retire = (name: string): void => {
-      if (!canContinue() || !hasNamespaceAuthority()) throw new Error('scan-pending');
+      if (!canContinue()) throw new Error('scan-pending');
+      if (!expired(name)) throw new Error('legacy-not-expired-or-unknown');
       const path = join(root, name);
       const entry = runtime.storage.lstatSync(path);
       if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('legacy-files-unproven');
@@ -56,33 +79,23 @@ export async function removeLegacyStore(
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
     }
-    let resume = afterName !== '';
-    const iterator = runtime.storage.iterateDirectory(root)[Symbol.asyncIterator]();
-    try {
-      let currentEntry = await iterator.next();
-      while (!currentEntry.done) {
-        const name = currentEntry.value;
-        if (!canContinue()) {
-          checkpoint(name);
-          return keep('scan-pending');
-        }
-        if (resume && name !== afterName) {
-          currentEntry = await iterator.next();
-          await setImmediate();
-          continue;
-        }
-        resume = false;
-        const originalName = name.startsWith(prefix) ? name.slice(prefix.length) : name;
-        if (originalName !== 'store.db' && family.test(originalName)) retire(name);
-        currentEntry = await iterator.next();
-        checkpoint(currentEntry.done ? '' : currentEntry.value);
-        await setImmediate();
-      }
+    const siblings = names.filter((name) => name !== 'store.db' && name !== prefix + 'store.db');
+    const start = afterName === '' ? 0 : siblings.indexOf(afterName);
+    if (start < 0) {
       checkpoint('');
-      if (resume) return keep('scan-pending');
-    } finally {
-      await iterator.return?.();
+      return keep('scan-pending');
     }
+    for (let index = start; index < siblings.length; index += 1) {
+      const name = siblings[index];
+      if (!canContinue()) {
+        checkpoint(name);
+        return keep('scan-pending');
+      }
+      retire(name);
+      checkpoint(siblings[index + 1] ?? '');
+      await setImmediate();
+    }
+    checkpoint('');
     return count > 0 ? { kind: 'deleted', subject, count } : keep('legacy-absent');
   } catch (error: unknown) {
     return { kind: deleting ? 'failed' : 'kept', subject, reason: errorMessage(error) };

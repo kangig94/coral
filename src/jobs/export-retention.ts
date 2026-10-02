@@ -7,10 +7,11 @@ import type { Database } from '../store/db.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
 import { jobTerminalRecordedBodySchema } from './terminal/result.js';
+import { readJobTerminalAge } from './terminal-age.js';
 
 export type ExportJobRetentionState =
   | Readonly<{ kind: 'terminal'; terminalAt: number }>
-  | Readonly<{ kind: 'nonterminal' | 'unknown' | 'absent' }>;
+  | Readonly<{ kind: 'nonterminal' | 'unknown' | 'absent' | 'regression' }>;
 
 export function readExportJobState(db: Database, readCtx: StoreReadContext, jobId: string): ExportJobRetentionState {
   try {
@@ -23,8 +24,8 @@ export function readExportJobState(db: Database, readCtx: StoreReadContext, jobI
     if (latest === undefined) return { kind: 'absent' };
     if (latest.type !== 'job.terminal.recorded') return { kind: 'nonterminal' };
     decodeBody(latest, jobTerminalRecordedBodySchema, readCtx);
-    const terminalAt = Date.parse(latest.ts);
-    return Number.isFinite(terminalAt) ? { kind: 'terminal', terminalAt } : { kind: 'unknown' };
+    const terminalAt = readJobTerminalAge(db, latest);
+    return typeof terminalAt === 'number' ? { kind: 'terminal', terminalAt } : { kind: terminalAt };
   } catch {
     return { kind: 'unknown' };
   }
@@ -39,11 +40,16 @@ async function exportTreeExpired(
   if (!budget.canContinue()) return false;
   const entry = runtime.storage.lstatSync(path, { bigint: true });
   if (entry.mtimeNs >= BigInt(Math.floor(cutoff)) * 1_000_000n) return false;
-  if (entry.isDirectory()) {
-    for await (const child of runtime.storage.iterateDirectory(path)) {
-      if (!budget.canContinue() || !(await exportTreeExpired(runtime, join(path, child), cutoff, budget))) return false;
-      await setImmediate();
+  let batchRemaining = 0;
+  for await (const child of runtime.storage.iterateDirectory(path)) {
+    if (batchRemaining === 0) {
+      if (!budget.canContinue()) return false;
+      batchRemaining = 64;
     }
+    batchRemaining -= 1;
+    const childEntry = runtime.storage.lstatSync(join(path, child), { bigint: true });
+    if (childEntry.mtimeNs >= BigInt(Math.floor(cutoff)) * 1_000_000n) return false;
+    await setImmediate();
   }
   return true;
 }
@@ -115,6 +121,8 @@ export async function pruneJobExports(input: {
         const state = input.jobState(id);
         if (!entry.isDirectory() || entry.isSymbolicLink())
           outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
+        else if (state.kind === 'regression')
+          outcome = { kind: 'kept', subject: path, reason: 'terminal-clock-regression' };
         else if (state.kind === 'unknown' || state.kind === 'nonterminal')
           outcome = { kind: 'kept', subject: path, reason: state.kind };
         else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))

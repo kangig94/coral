@@ -883,7 +883,6 @@ export type LifecycleDeps = {
   ) => ValidatedHandoffTarget | null;
   readonly onRetiredEpochOpened?: (epoch: ResolvedStoreEpoch, disposition: RetirementDisposition) => void;
   readonly startStorageRetentionFn?: () => void;
-  readonly prepareStorageRetentionFn?: (signal: AbortSignal) => Promise<void>;
   readonly stopStoreEpochSweepFn?: () => Promise<void>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
@@ -2267,7 +2266,6 @@ async function runStartupKernel(
     replaceStoreServices,
   });
   const { storeDb, openedStore, storeServices } = registered;
-  await deps.prepareStorageRetentionFn?.(signal);
   signal.throwIfAborted();
   committedState.recovery = registered.committedRecovery;
   const progressStore = storeServices.progressStore;

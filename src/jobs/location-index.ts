@@ -543,9 +543,7 @@ export class JobLocationIndex {
       const location = this.read(jobId);
       if (location === null) {
         if (observeStorePath(this.runtime.storage, this.jobPath(jobId)) !== 'absent') return 'unknown';
-        const epochs = join(this.root, 'epochs');
-        if (observeStorePath(this.runtime.storage, epochs) === 'absent') return 'released';
-        return 'unknown';
+        return 'released';
       }
       if (location.epochKey === activeEpochKey) return 'released';
       const epoch = observeResolvedStoreEpoch(this.runtime, location.epochKey);

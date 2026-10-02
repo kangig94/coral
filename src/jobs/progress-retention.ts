@@ -1,3 +1,4 @@
+import { readJobTerminalAge } from './terminal-age.js';
 import { setImmediate } from 'node:timers/promises';
 import { decodeBody, StoreCodecError, StoreDecodeError, type StoreReadContext } from '../store/body-codec.js';
 import { withImmediate, type Database } from '../store/db.js';
@@ -33,11 +34,25 @@ export async function pruneJobProgress(input: {
     cursor.progressSeq < 0
   )
     throw new Error('retention-progress-cursor-unobservable');
+  const write = <T>(operation: () => T): T => {
+    const timeout = db.prepare<[], { timeout: number }>('PRAGMA busy_timeout').get()?.timeout;
+    if (timeout === undefined) throw new Error('progress-write-settings-unknown');
+    try {
+      db.exec('PRAGMA busy_timeout = 25');
+      return withImmediate(db, operation);
+    } finally {
+      db.exec(`PRAGMA busy_timeout = ${timeout}`);
+    }
+  };
   const save = (): void => {
-    db.prepare<[string, string]>('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
-      CURSOR_KEY,
-      JSON.stringify(cursor),
-    );
+    const persist = (): void => {
+      db.prepare<[string, string]>('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
+        CURSOR_KEY,
+        JSON.stringify(cursor),
+      );
+    };
+    if (db.isTransaction) persist();
+    else write(persist);
   };
   const advance = (seq: number): void => {
     cursor.afterSeq = seq;
@@ -69,10 +84,12 @@ export async function pruneJobProgress(input: {
             { seq: number }
           >("SELECT seq FROM events INDEXED BY events_retention_stream WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
           .get(terminal.stream_id);
-        const terminalAt = Date.parse(terminal.ts);
+        const terminalAt = readJobTerminalAge(db, terminal);
         if (latest?.seq !== terminal.seq) {
           budget.record({ kind: 'kept', subject, reason: 'terminal-state-unproven' });
-        } else if (!Number.isFinite(terminalAt) || terminalAt >= cutoff) {
+        } else if (terminalAt === 'regression') {
+          budget.record({ kind: 'kept', subject, reason: 'terminal-clock-regression' });
+        } else if (terminalAt === 'unknown' || terminalAt >= cutoff) {
           budget.record({ kind: 'kept', subject, reason: 'terminal-not-expired-or-unknown' });
         } else {
           while (budget.canContinue()) {
@@ -92,7 +109,7 @@ export async function pruneJobProgress(input: {
               );
             });
             if (!budget.canContinue()) break;
-            withImmediate(db, () => {
+            write(() => {
               const unknown = db
                 .prepare(
                   `SELECT seq FROM events INDEXED BY events_retention_unknown_cause WHERE ${unknownRetentionCause} LIMIT 1`,
@@ -133,6 +150,10 @@ export async function pruneJobProgress(input: {
         }
         advance(terminal.seq);
       } catch (error: unknown) {
+        if ([5, 6].includes((error as { errcode?: number }).errcode ?? 0)) {
+          budget.record({ kind: 'kept', subject, reason: 'scan-pending' });
+          return cursor.afterSeq || terminal.seq;
+        }
         budget.record({
           kind: error instanceof StoreCodecError || error instanceof StoreDecodeError ? 'kept' : 'failed',
           subject,

@@ -19,25 +19,23 @@ export async function vacuumRetainedJournal(
     }
     if (free === 0) return { kind: 'kept', subject, reason: 'no-free-pages' };
     if (db.isTransaction) return { kind: 'kept', subject, reason: 'writer-transaction-active' };
-    if (mode !== 2) return { kind: 'kept', subject, reason: 'startup-conversion-required' };
+    if (mode !== 2) return { kind: 'kept', subject, reason: 'free-pages-reusable-until-next-epoch' };
     const timeout = db.prepare<[], { timeout: number }>('PRAGMA busy_timeout').get()?.timeout;
     if (timeout === undefined) return { kind: 'kept', subject, reason: 'busy-timeout-unknown' };
-    try {
-      db.exec('PRAGMA busy_timeout = 25');
-      let remaining = free;
-      while (remaining > 0 && budget.canContinue()) {
+    let remaining = free;
+    while (remaining > 0 && budget.canContinue()) {
+      try {
+        db.exec('PRAGMA busy_timeout = 25');
         db.exec('PRAGMA incremental_vacuum(32)');
-        const next =
-          db.prepare<[], { freelist_count: number }>('PRAGMA freelist_count').get()?.freelist_count ?? remaining;
-        if (next >= remaining) break;
-        remaining = next;
-        await setImmediate();
+      } finally {
+        db.exec(`PRAGMA busy_timeout = ${timeout}`);
       }
-      if (budget.canContinue()) db.exec('PRAGMA wal_checkpoint(PASSIVE)');
-    } finally {
-      db.exec(`PRAGMA busy_timeout = ${timeout}`);
+      const next =
+        db.prepare<[], { freelist_count: number }>('PRAGMA freelist_count').get()?.freelist_count ?? remaining;
+      if (next >= remaining) break;
+      remaining = next;
+      await setImmediate();
     }
-    const remaining = db.prepare<[], { freelist_count: number }>('PRAGMA freelist_count').get()?.freelist_count ?? free;
     return { kind: 'deleted', subject, count: free - remaining };
   } catch (error: unknown) {
     return { kind: 'failed', subject, reason: errorMessage(error) };

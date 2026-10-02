@@ -319,6 +319,12 @@ export class InMemoryStorage implements StoragePort {
     return this.readdirSync(path);
   }
 
+  async *iterateDirectory(path: string): AsyncIterable<string> {
+    const normalized = normalizePathForStorage(path);
+    this.requireDirectory(normalized);
+    for (const name of this.childIndex.get(normalized) ?? []) yield storageNameString(name);
+  }
+
   readFileSync(path: StoragePath, encoding: 'utf-8'): string {
     const normalized = normalizePathForStorage(path);
     const file = this.fileNode(normalized);

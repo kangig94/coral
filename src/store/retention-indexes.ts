@@ -11,11 +11,17 @@ export const unknownRetentionCause = `CASE WHEN json_valid(body) THEN
   ELSE 1 END`;
 
 /** Maintenance indexes are additive; they do not change the released store-format fingerprint. */
-export function ensureRetentionIndexes(db: Database): void {
-  for (const sql of retentionIndexStatements) db.exec(sql);
+export function ensureRetentionIndexes(db: Database, beforeOperation?: () => void): void {
+  beforeOperation?.();
+  if (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'events'").get() === undefined) return;
+  for (const sql of retentionIndexStatements) {
+    beforeOperation?.();
+    db.exec(sql);
+  }
 }
 
 export const retentionIndexStatements = [
+  'CREATE INDEX IF NOT EXISTS events_retention_age ON events(stream_kind, stream_id, ts, seq)',
   'CREATE INDEX IF NOT EXISTS events_retention_stream ON events(stream_kind, stream_id, seq)',
   'CREATE INDEX IF NOT EXISTS events_retention_causation ON events(causation_seq)',
   ...retentionCausePaths.map(

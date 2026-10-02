@@ -11,7 +11,6 @@ import type { ResolvedStoreEpoch } from '../../store/epoch/types.js';
 import { joinSuccessionWriterGeneration } from '../../store/succession-writer-generation.js';
 import type { RetentionOutcome, RetentionRunBudget, RetentionRunStatus } from '../../store/retention-outcome.js';
 import { vacuumRetainedJournal } from '../../store/retention-vacuum.js';
-import { convertRetentionJournalAtStartup } from '../../store/retention-startup.js';
 import { resolveJobRetentionMs } from '../lifecycle.js';
 
 const DAILY_MS = 24 * 60 * 60 * 1000;
@@ -23,21 +22,17 @@ export function createStorageRetentionScheduler(input: {
   getProgressStore(): JobStore | null;
   openEpoch(): ResolvedStoreEpoch | null;
   activeEpochKey(): string | null;
-  hasNamespaceAuthority(): boolean;
   jobLocations: JobLocationIndex;
   log(message: string): void;
   publish(status: RetentionRunStatus): void;
   cleanupScratch(signal: AbortSignal): void | Promise<void>;
-}): Readonly<{ prepare(signal: AbortSignal): Promise<void>; start(): void; stop(): Promise<void> }> {
+}): Readonly<{ start(): void; stop(): Promise<void> }> {
   const { runtime } = input;
   const abort = new AbortController();
   let timer: TimerHandle | null = null;
   let running = Promise.resolve();
   let started = false;
-  let bootJournalAt: number | null = null;
-  let bootMonotonic = 0n;
   let previous: { wall: number; monotonic: bigint } | null = null;
-  let startupOutcome: RetentionOutcome | null = null;
   const retentionMs = resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
   const statusAtStart = (): RetentionRunStatus => ({
     startedAt: runtime.time.now(),
@@ -48,59 +43,43 @@ export function createStorageRetentionScheduler(input: {
     failed: 0,
     outcomes: [],
   });
-  const captureBootJournal = (store: JobStore): void => {
-    const newest = store.getDb().prepare<[], { ts: string }>('SELECT ts FROM events ORDER BY seq DESC LIMIT 1').get();
-    bootJournalAt = newest === undefined ? runtime.time.now() : Date.parse(newest.ts);
-    bootMonotonic = runtime.time.monotonicNow();
-    previous = { wall: runtime.time.now(), monotonic: bootMonotonic };
-  };
-
-  const prepare = async (signal: AbortSignal): Promise<void> => {
-    const store = input.getProgressStore();
-    const epoch = input.openEpoch();
-    if (store === null || epoch === null) return;
-    captureBootJournal(store);
-    const status = statusAtStart();
-    status.outcomes.push({
-      kind: 'kept',
-      subject: 'journal-startup-conversion',
-      reason: 'conversion-running; deadline=30000ms',
-    });
-    input.publish(status);
-    startupOutcome = await convertRetentionJournalAtStartup({
-      runtime,
-      db: store.getDb(),
-      path: epoch.path,
-      signal,
-      writer: joinSuccessionWriterGeneration(runtime, {
-        storeRoot: epoch.canonicalStoreRoot ?? epoch.storeRoot,
-        epoch: epoch.epoch,
-      }),
-    });
-    status.outcomes = [startupOutcome];
-    status.finishedAt = runtime.time.now();
-    status.phase = startupOutcome.kind === 'failed' ? 'failed' : 'completed';
-    input.publish(status);
-    input.log(`Storage retention startup conversion: ${JSON.stringify(startupOutcome)}.\n`);
-  };
-
   const run = async (): Promise<void> => {
     const status = statusAtStart();
     let partial = false;
     const record = (outcome: RetentionOutcome): void => {
       status[outcome.kind === 'deleted' ? 'deleted' : outcome.kind === 'kept' ? 'kept' : 'failed'] +=
         outcome.kind === 'deleted' ? outcome.count : 1;
-      if (outcome.kind === 'kept' && ['scan-pending', 'startup-conversion-required'].includes(outcome.reason))
+      if (
+        outcome.kind === 'kept' &&
+        [
+          'scan-pending',
+          'wall-clock-age-unknown',
+          'terminal-not-expired-or-unknown',
+          'terminal-clock-regression',
+          'residue-recent-or-unobservable',
+          'epoch-result-proof-required-or-unknown',
+          'legacy-not-expired-or-unknown',
+        ].includes(outcome.reason)
+      )
         partial = true;
       if (status.outcomes.length < 100) status.outcomes.push(outcome);
       else if (
         outcome.kind === 'failed' ||
-        (outcome.kind === 'kept' &&
-          !['nonterminal', 'terminal-not-expired-or-unknown', 'no-free-pages', 'legacy-absent'].includes(
-            outcome.reason,
-          ))
+        (outcome.kind === 'kept' && !['nonterminal', 'no-free-pages', 'legacy-absent'].includes(outcome.reason))
       ) {
-        const replace = status.outcomes.findIndex((entry) => entry.kind !== 'failed');
+        let replace = status.outcomes.findIndex(
+          (entry) =>
+            entry.kind === 'deleted' ||
+            (entry.kind === 'kept' && ['nonterminal', 'no-free-pages', 'legacy-absent'].includes(entry.reason)),
+        );
+        if (replace < 0)
+          replace = status.outcomes.findIndex(
+            (entry, index) =>
+              entry.kind === 'kept' &&
+              status.outcomes.some(
+                (other, otherIndex) => otherIndex !== index && other.kind === 'kept' && other.reason === entry.reason,
+              ),
+          );
         if (replace >= 0) status.outcomes[replace] = outcome;
       }
     };
@@ -112,11 +91,10 @@ export function createStorageRetentionScheduler(input: {
         partial = true;
         record({ kind: 'kept', subject: 'storage-retention', reason: 'selected-store-unavailable' });
       } else {
-        if (bootJournalAt === null) captureBootJournal(progressStore);
         const now = { wall: status.startedAt, monotonic: runtime.time.monotonicNow() };
         const jump = previous === null ? 0 : now.wall - previous.wall - Number(now.monotonic - previous.monotonic);
         previous = now;
-        if (bootJournalAt === null || !Number.isFinite(bootJournalAt) || jump > CLOCK_JUMP_TOLERANCE_MS) {
+        if (jump > CLOCK_JUMP_TOLERANCE_MS) {
           partial = true;
           record({ kind: 'kept', subject: 'storage-retention', reason: 'wall-clock-age-unknown' });
         } else {
@@ -125,11 +103,7 @@ export function createStorageRetentionScheduler(input: {
             storeRoot: epoch.canonicalStoreRoot ?? epoch.storeRoot,
             epoch: epoch.epoch,
           });
-          const cutoff = Math.min(now.wall, bootJournalAt + Number(now.monotonic - bootMonotonic)) - retentionMs;
-          if (startupOutcome !== null) {
-            record(startupOutcome);
-            startupOutcome = null;
-          }
+          const cutoff = now.wall - retentionMs;
           const step = async (
             subject: string,
             operation: (budget: RetentionRunBudget, signal: AbortSignal) => void | Promise<void>,
@@ -210,16 +184,9 @@ export function createStorageRetentionScheduler(input: {
           });
           await step('legacy-store', async (budget, signal) => {
             record(
-              await removeLegacyStore(
-                runtime,
-                budget.canContinue,
-                input.hasNamespaceAuthority,
-                mutate,
-                readCursor('legacy'),
-                (value) => {
-                  if (!signal.aborted) saveCursor('legacy', value);
-                },
-              ),
+              await removeLegacyStore(runtime, budget.canContinue, cutoff, mutate, readCursor('legacy'), (value) => {
+                if (!signal.aborted) saveCursor('legacy', value);
+              }),
             );
           });
           await step('epoch-holders', async (budget, signal) => {
@@ -261,10 +228,10 @@ export function createStorageRetentionScheduler(input: {
     timer.unref?.();
   };
   return {
-    prepare,
     start: () => {
       if (started || abort.signal.aborted) return;
       started = true;
+      previous = { wall: runtime.time.now(), monotonic: runtime.time.monotonicNow() };
       schedule(0);
     },
     stop: async () => {

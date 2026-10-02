@@ -531,6 +531,7 @@ function openPhysicalWritableStoreDatabase(
     }
     const classification = classifyStoreFormat(db, options.storeFormat, beforeOperation);
     if (classification.kind === 'compatible') {
+      ensureRetentionIndexes(db, beforeOperation);
       applyJournalPragmas(
         db,
         {
@@ -660,29 +661,7 @@ function reopenableWritableStoreDatabase(
       return typeof value === 'function' ? value.bind(active) : value;
     },
   });
-  Object.defineProperty(database, maintenanceRefreshSymbol, {
-    value: () => {
-      if (active === null || active.isTransaction) throw unavailable();
-      active.close();
-      const reopened = openPhysicalWritableStoreDatabase(options, true);
-      if (reopened.kind !== 'opened') throw new Error('Maintenance cannot reopen the selected store.');
-      active = reopened.db;
-      revision += 1;
-    },
-  });
   return database;
-}
-
-const maintenanceRefreshSymbol = Symbol('StoreMaintenanceRefresh');
-
-/** VACUUM in another connection changes header flags that SQLite caches until reopen. */
-export function refreshStoreDatabaseAfterMaintenance(db: Database): void {
-  const refresh: unknown = Reflect.get(db, maintenanceRefreshSymbol);
-  if (typeof refresh === 'function') refresh();
-  else {
-    db.close();
-    db.open();
-  }
 }
 
 export function openWritableStoreDatabase(options: AuthorizedWritableStoreOptions): WritableStoreOpenDecision {

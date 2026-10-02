@@ -27,10 +27,11 @@ vi.mock('#src/store/epoch/holder.js', async (original) => ({
 afterEach(() => vi.useRealTimers());
 
 describe('retention startup composition', () => {
-  it('publishes running before starting cleanup and shuts down during a stalled cleanup', async () => {
+  it('serves a NONE-mode store without a helper and shuts down during stalled cleanup', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const f = createRetentionFixture();
     let serving = false;
+    let storeMode: () => unknown = () => undefined;
     const cleanup = vi.fn(() => {
       if (!serving) throw new Error('cleanup delayed running');
       return new Promise<void>(() => {});
@@ -55,6 +56,7 @@ describe('retention startup composition', () => {
         createStoreServicesFromDbFn: (db) => {
           db.exec('PRAGMA auto_vacuum=NONE');
           db.exec('VACUUM');
+          storeMode = () => db.prepare('PRAGMA auto_vacuum').get();
           return {
             storeDb: db,
             progressStore: new JobStore('retention-startup', f.runtime, createEventBodyCodec(), {
@@ -78,15 +80,11 @@ describe('retention startup composition', () => {
       },
       async () => [],
     );
-    const spawn = f.runtime.process.spawn;
-    const conversion = vi.fn((options: Parameters<typeof spawn>[0]) => {
-      expect(core.runtimeState.getLifecycle()).toBe('starting');
-      return spawn(options);
-    });
-    f.runtime.process.spawn = conversion;
+    const spawn = vi.spyOn(f.runtime.process, 'spawn');
     try {
       await core.lifecycleController.start();
-      expect(conversion).toHaveBeenCalledOnce();
+      expect(spawn).not.toHaveBeenCalled();
+      expect(storeMode()).toEqual({ auto_vacuum: 0 });
       expect(core.runtimeState.getLifecycle()).toBe('running');
       expect(cleanup).not.toHaveBeenCalled();
       serving = true;

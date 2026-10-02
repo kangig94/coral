@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStorageRetentionScheduler } from '#src/coordinator/composition/storage-retention-scheduler.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
-import type { RetentionRunStatus } from '#src/store/retention-outcome.js';
+import type { RetentionRunBudget, RetentionRunStatus } from '#src/store/retention-outcome.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
 
 const owners = vi.hoisted(() => ({
   exports: vi.fn(async () => ''),
-  progress: vi.fn(async () => 0),
+  progress: vi.fn(async (_input: { budget: RetentionRunBudget }) => 0),
   vacuum: vi.fn(async () => ({ kind: 'kept', subject: 'vacuum', reason: 'no-free-pages' })),
   legacy: vi.fn(() => ({ kind: 'kept', subject: 'legacy', reason: 'legacy-absent' })),
   holders: vi.fn(async () => {}),
@@ -58,7 +58,6 @@ function fixture(f = createRetentionFixture()) {
       path: '/tmp/fixture/epoch-1/store.db',
     }),
     activeEpochKey: () => 'active',
-    hasNamespaceAuthority: () => true,
     jobLocations: new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot),
     log: vi.fn(),
     publish: (status) => statuses.push({ ...status, outcomes: [...status.outcomes] }),
@@ -69,19 +68,61 @@ function fixture(f = createRetentionFixture()) {
 }
 
 describe('storage retention schedule', () => {
-  it('requires pre-boot journal age when a clock correction happened before restart', async () => {
-    const { f, scheduler } = fixture();
-    f.db
-      .prepare(
-        "INSERT INTO events(ts, type, stream_kind, stream_id, body) VALUES (?, 'job.progress.emitted', 'job', 'preboot', ?)",
-      )
-      .run(new Date(1).toISOString(), Buffer.from('{}'));
-    f.runtime.time.monotonicNow = () => 0n;
-    f.setNow(f.runtime.time.now() + 15 * 86_400_000);
+  it('uses the wall-clock cutoff across idle restarts without a boot anchor', async () => {
+    const first = fixture();
+    first.f.setNow(first.f.runtime.time.now() + 30 * 86_400_000);
+    first.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(owners.progress).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        cutoff: first.f.runtime.time.now() - 14 * 86_400_000,
+      }),
+    );
+    await first.scheduler.stop();
+    first.f.setNow(first.f.runtime.time.now() + 86_400_000);
+    const second = fixture(first.f);
+    second.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(owners.progress).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        cutoff: first.f.runtime.time.now() - 14 * 86_400_000,
+      }),
+    );
+  });
+
+  it.each(['terminal-not-expired-or-unknown', 'terminal-clock-regression', 'residue-recent-or-unobservable'])(
+    'reports %s as a visible pending hold',
+    async (reason) => {
+      owners.progress.mockImplementationOnce(async ({ budget }) => {
+        budget.record({ kind: 'kept', subject: 'held-job', reason });
+        return 0;
+      });
+      const { scheduler, statuses } = fixture();
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(statuses.at(-1)?.phase).toBe('partial');
+      expect(statuses.at(-1)?.outcomes).toContainEqual({ kind: 'kept', subject: 'held-job', reason });
+    },
+  );
+
+  it('keeps distinct pending reasons visible when the outcome list fills with age holds', async () => {
+    owners.progress.mockImplementationOnce(async ({ budget }) => {
+      for (let i = 0; i < 110; i += 1)
+        budget.record({ kind: 'kept', subject: `age-${i}`, reason: 'terminal-not-expired-or-unknown' });
+      budget.record({ kind: 'kept', subject: 'regression', reason: 'terminal-clock-regression' });
+      budget.record({ kind: 'kept', subject: 'residue', reason: 'residue-recent-or-unobservable' });
+      return 0;
+    });
+    const { scheduler, statuses } = fixture();
     scheduler.start();
     await vi.advanceTimersByTimeAsync(0);
-    expect(owners.exports).toHaveBeenCalledWith(expect.objectContaining({ cutoff: 1 - 14 * 86_400_000 }));
-    expect(owners.progress).toHaveBeenCalledWith(expect.objectContaining({ cutoff: 1 - 14 * 86_400_000 }));
+    expect(statuses.at(-1)?.phase).toBe('partial');
+    for (const reason of [
+      'terminal-not-expired-or-unknown',
+      'terminal-clock-regression',
+      'residue-recent-or-unobservable',
+    ])
+      expect(statuses.at(-1)?.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', reason }));
   });
 
   it('persists the export continuation across scheduler instances', async () => {

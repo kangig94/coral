@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { removeLegacyStore } from '#src/store/epoch/legacy-retention.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import type { Runtime } from '#src/runtime/ports.js';
 
 const selection = vi.hoisted(() => ({ kind: 'valid' }));
 vi.mock('#src/store/active-store-selection.js', async (original) => ({
@@ -19,7 +18,9 @@ afterEach(() => {
 beforeEach(() => {
   selection.kind = 'valid';
 });
-function fixture(): ReturnType<typeof createRetentionFixture> & { runtime: Runtime; legacy: string } {
+const cutoff = Date.now() - 14 * 86_400_000;
+const siblings = ['', '-wal', '-shm', '.format', '.bak', '.timestamp.bak'];
+function fixture() {
   const f = createRetentionFixture();
   fixtures.push(f);
   openSettledTestStoreDb(f.runtime).close();
@@ -27,96 +28,49 @@ function fixture(): ReturnType<typeof createRetentionFixture> & { runtime: Runti
   const db = newRawDatabase(legacy);
   db.exec('CREATE TABLE legacy_fixture (value TEXT)');
   db.close();
-  for (const suffix of ['-wal', '-shm', '.format', '.bak', '.timestamp.bak']) writeFileSync(legacy + suffix, 'residue');
-  const runtime = {
-    ...f.runtime,
-    storage: {
-      ...f.runtime.storage,
-      readDirectoryBoundedSync: ((...args: Parameters<Runtime['storage']['readDirectoryBoundedSync']>) =>
-        args[0] === '/proc'
-          ? { entries: [], overflow: false }
-          : f.runtime.storage.readDirectoryBoundedSync(...args)) as Runtime['storage']['readDirectoryBoundedSync'],
-    },
-  };
-  return { ...f, runtime, legacy };
+  for (const suffix of siblings.slice(1)) writeFileSync(legacy + suffix, 'residue');
+  for (const suffix of siblings) utimesSync(legacy + suffix, 1, 1);
+  return { ...f, legacy };
+}
+function retire(f: ReturnType<typeof fixture>, canContinue = () => true) {
+  return removeLegacyStore(f.runtime, canContinue, cutoff, (operation) => operation());
 }
 
-describe('legacy store retention', async () => {
-  it('proves the selected writer epoch without enumerating the entire store root', async () => {
+describe('legacy store retention', () => {
+  it.each(siblings)('keeps the entire family when %s is recent', async (suffix) => {
     const f = fixture();
-    const scan = vi.spyOn(f.runtime.storage, 'readdirSync');
-    expect(
-      (
-        await removeLegacyStore(
-          f.runtime,
-          () => true,
-          () => true,
-          (operation) => operation(),
-        )
-      ).kind,
-    ).toBe('deleted');
-    expect(scan).not.toHaveBeenCalled();
+    utimesSync(f.legacy + suffix, new Date(cutoff + 1000), new Date(cutoff + 1000));
+    expect(await retire(f)).toMatchObject({ kind: 'kept', reason: 'legacy-not-expired-or-unknown' });
+    for (const sibling of siblings) expect(existsSync(f.legacy + sibling)).toBe(true);
   });
-  it.each(['linux', 'darwin'] as const)(
-    'retires by namespace authority on %s without observing other users descriptors',
-    async (platform) => {
-      const f = fixture();
-      const runtime = {
-        ...f.runtime,
-        env: { ...f.runtime.env, platform: () => platform },
-        storage: {
-          ...f.runtime.storage,
-          readDirectoryBoundedSync: ((...args: Parameters<Runtime['storage']['readDirectoryBoundedSync']>) => {
-            if (args[0] === '/proc')
-              throw Object.assign(new Error('other users fd directories are inaccessible'), { code: 'EACCES' });
-            return f.runtime.storage.readDirectoryBoundedSync(...args);
-          }) as Runtime['storage']['readDirectoryBoundedSync'],
-        },
-      };
-      expect(
-        (
-          await removeLegacyStore(
-            runtime,
-            () => true,
-            () => true,
-            (operation) => operation(),
-          )
-        ).kind,
-      ).toBe('deleted');
-      expect(existsSync(f.legacy)).toBe(false);
-    },
-  );
 
-  it('quarantines the pathname before deletion and leaves an already-open reader usable', async () => {
+  it('keeps a recent live legacy writer regardless of its socket or TMPDIR', async () => {
     const f = fixture();
-    const reader = newRawDatabase(f.legacy, { readonly: true });
-    let quarantined = false;
-    const runtime = {
-      ...f.runtime,
-      storage: {
-        ...f.runtime.storage,
-        unlinkSync: (path: string | Buffer) => {
-          if (String(path).includes('store.db')) {
-            expect(String(path)).toContain('.legacy-retention-');
-            expect(existsSync(f.legacy)).toBe(false);
-            quarantined = true;
-          }
-          f.runtime.storage.unlinkSync(path);
-        },
-      },
-    };
+    for (const suffix of ['-wal', '-shm']) f.runtime.storage.unlinkSync(f.legacy + suffix);
+    const writer = newRawDatabase(f.legacy);
     try {
-      expect(
-        (
-          await removeLegacyStore(
-            runtime,
-            () => true,
-            () => true,
-            (operation) => operation(),
-          )
-        ).kind,
-      ).toBe('deleted');
-      expect(quarantined).toBe(true);
+      writer.exec("PRAGMA journal_mode=WAL; INSERT INTO legacy_fixture VALUES ('live')");
+      expect(await retire(f)).toMatchObject({ kind: 'kept', reason: 'legacy-not-expired-or-unknown' });
+      expect(existsSync(f.legacy)).toBe(true);
+      writer.exec("INSERT INTO legacy_fixture VALUES ('still live')");
+      expect(writer.prepare('SELECT count(*) AS n FROM legacy_fixture').get()).toEqual({ n: 2 });
+    } finally {
+      writer.close();
+    }
+  });
+
+  it('quarantines an expired family before unlink, preserving readers and unrelated files', async () => {
+    const f = fixture();
+    const unrelated = join(f.runtime.paths.coral.store.dbDir, 'unrelated.bak');
+    writeFileSync(unrelated, 'keep');
+    const reader = newRawDatabase(f.legacy, { readonly: true });
+    const unlink = vi.spyOn(f.runtime.storage, 'unlinkSync');
+    try {
+      expect(await retire(f)).toEqual({ kind: 'deleted', subject: f.legacy, count: 6 });
+      for (const [path] of unlink.mock.calls) expect(String(path)).toContain('.legacy-retention-');
+      for (const suffix of siblings) expect(existsSync(f.legacy + suffix)).toBe(false);
+      expect(existsSync(unrelated)).toBe(true);
+      expect(existsSync(join(f.runtime.paths.coral.store.dbDir, 'epoch-1', 'store.db'))).toBe(true);
       expect(reader.prepare('SELECT * FROM legacy_fixture').all()).toEqual([]);
       const rollback = newRawDatabase(f.legacy);
       expect(rollback.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
@@ -125,92 +79,33 @@ describe('legacy store retention', async () => {
       reader.close();
     }
   });
-  it('removes precisely the legacy store family under proven current selection and exclusive lock', async () => {
-    const f = fixture();
-    const unrelated = join(f.runtime.paths.coral.store.dbDir, 'unrelated.bak');
-    writeFileSync(unrelated, 'keep');
-    expect(
-      await removeLegacyStore(
-        f.runtime,
-        () => true,
-        () => true,
-        (operation) => operation(),
-      ),
-    ).toEqual({ kind: 'deleted', subject: f.legacy, count: 6 });
-    for (const suffix of ['', '-wal', '-shm', '.format', '.bak', '.timestamp.bak'])
-      expect(existsSync(f.legacy + suffix)).toBe(false);
-    expect(existsSync(unrelated)).toBe(true);
-    expect(existsSync(join(f.runtime.paths.coral.store.dbDir, 'epoch-1', 'store.db'))).toBe(true);
-  });
 
-  it('keeps unknown selection, unproven epoch, interrupted work and missing namespace authority', async () => {
+  it('keeps an unknown selection, unproven epoch and interrupted work', async () => {
     const f = fixture();
     selection.kind = 'rejected';
-    expect(
-      (
-        await removeLegacyStore(
-          f.runtime,
-          () => true,
-          () => true,
-          (operation) => operation(),
-        )
-      ).kind,
-    ).toBe('kept');
+    expect(await retire(f)).toMatchObject({ kind: 'kept', reason: 'active-selection-unknown-or-legacy' });
     selection.kind = 'valid';
-    expect(
-      (
-        await removeLegacyStore(
-          f.runtime,
-          () => false,
-          () => true,
-          (operation) => operation(),
-        )
-      ).kind,
-    ).toBe('kept');
-    expect(
-      (
-        await removeLegacyStore(
-          f.runtime,
-          () => true,
-          () => false,
-          (operation) => operation(),
-        )
-      ).kind,
-    ).toBe('kept');
-    expect(existsSync(f.legacy)).toBe(true);
+    expect(await retire(f, () => false)).toMatchObject({ kind: 'kept', reason: 'run-interrupted' });
     f.runtime.storage.unlinkSync(join(f.runtime.paths.coral.store.dbDir, 'epoch-1', 'epoch.json'));
-    expect(
-      (
-        await removeLegacyStore(
-          f.runtime,
-          () => true,
-          () => true,
-          (operation) => operation(),
-        )
-      ).kind,
-    ).toBe('kept');
+    expect(await retire(f)).toMatchObject({ kind: 'kept', reason: 'current-epoch-unproven' });
     expect(existsSync(f.legacy)).toBe(true);
   });
 
-  it('lets existing rollback and WAL readers finish on the retired inode', async () => {
-    const f = fixture();
-    for (const suffix of ['-wal', '-shm']) f.runtime.storage.unlinkSync(f.legacy + suffix);
-    const reader = newRawDatabase(f.legacy);
-    reader.exec('PRAGMA journal_mode=WAL; SELECT * FROM legacy_fixture');
-    try {
-      expect(
-        (
-          await removeLegacyStore(
-            f.runtime,
-            () => true,
-            () => true,
-            (operation) => operation(),
-          )
-        ).kind,
-      ).toBe('deleted');
-      expect(reader.prepare('SELECT * FROM legacy_fixture').all()).toEqual([]);
-    } finally {
-      reader.close();
-    }
-  });
+  it.each(['existing', 'new'])(
+    'rechecks %s siblings after the eligibility scan before deleting anything',
+    async (state) => {
+      const f = fixture();
+      if (state === 'new') f.runtime.storage.unlinkSync(f.legacy + '-wal');
+      const iterate = f.runtime.storage.iterateDirectory;
+      f.runtime.storage.iterateDirectory = async function* (path) {
+        yield* iterate(path);
+        if (path === f.runtime.paths.coral.store.dbDir) {
+          if (state === 'new') writeFileSync(f.legacy + '-wal', 'new writer WAL');
+          utimesSync(f.legacy + '-wal', new Date(), new Date());
+        }
+      };
+      expect(await retire(f)).toMatchObject({ kind: 'kept', reason: 'legacy-not-expired-or-unknown' });
+      expect(existsSync(f.legacy)).toBe(true);
+    },
+  );
 });

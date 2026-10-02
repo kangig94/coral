@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, symlinkSync, utimesSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import { pruneJobExports, readExportJobState, type ExportJobRetentionState } from '#src/jobs/export-retention.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
-import { createRetentionFixture, RETENTION_CUTOFF } from '#tests/helpers/storage-retention.js';
+import { createRetentionFixture, RETENTION_CUTOFF, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
 import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 
@@ -62,7 +62,7 @@ describe('export retention', () => {
     expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'deleted', count: 1 }));
   });
 
-  it('checks every descendant of unknown residue and never follows a job symlink', async () => {
+  it('checks top-level residue ages and never follows a job symlink', async () => {
     const f = fixture();
     const old = exported(f, 'old');
     const changed = exported(f, 'changed');
@@ -70,11 +70,8 @@ describe('export retention', () => {
       for (const child of ['result.md', 'provider-artifacts/original.jsonl', 'provider-artifacts', ''])
         utimesSync(join(path, child), 1, 1);
     }
-    utimesSync(
-      join(changed, 'provider-artifacts', 'original.jsonl'),
-      new Date(RETENTION_CUTOFF),
-      new Date(RETENTION_CUTOFF),
-    );
+    utimesSync(join(old, 'provider-artifacts', 'original.jsonl'), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+    utimesSync(join(changed, 'provider-artifacts'), new Date(RETENTION_CUTOFF), new Date(RETENTION_CUTOFF));
     symlinkSync(changed, join(f.runtime.paths.coral.exports.jobsRoot, 'link'));
     await prune(f, {});
     expect(existsSync(old)).toBe(false);
