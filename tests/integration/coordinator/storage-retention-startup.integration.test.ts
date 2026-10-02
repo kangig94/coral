@@ -16,9 +16,6 @@ vi.mock('#src/jobs/progress-retention.js', () => ({ pruneJobProgress: async () =
 vi.mock('#src/store/retention-vacuum.js', () => ({
   vacuumRetainedJournal: async () => ({ kind: 'kept', subject: 'vacuum', reason: 'no-free-pages', pending: false }),
 }));
-vi.mock('#src/store/epoch/legacy-retention.js', () => ({
-  removeLegacyStore: () => ({ kind: 'kept', subject: 'legacy', reason: 'legacy-absent', pending: false }),
-}));
 vi.mock('#src/store/epoch/holder.js', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   pruneStoreEpochHolders: async () => {},

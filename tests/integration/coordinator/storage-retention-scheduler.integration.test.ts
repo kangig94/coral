@@ -9,12 +9,14 @@ import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import { createRetentionFixture, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
 import type { RetentionRunStatus } from '#src/store/retention-outcome.js';
+import { cleanupStaleJobs } from '#src/coordinator/lifecycle.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 
 const DAY = 86_400_000;
 const fixtures: ReturnType<typeof createRetentionFixture>[] = [];
 afterEach(() => {
   for (const f of fixtures.splice(0)) f.close();
-  selection.kind = 'valid';
 });
 function fixture() {
   const f = createRetentionFixture();
@@ -39,7 +41,10 @@ function finish(f: ReturnType<typeof fixture>, id: string) {
   writeFileSync(join(path, 'result.md'), 'result');
   return path;
 }
-function scheduler(f: ReturnType<typeof fixture>) {
+function scheduler(
+  f: ReturnType<typeof fixture>,
+  cleanupScratch: (signal: AbortSignal) => void | Promise<void> = () => {},
+) {
   let monotonic = 0n;
   let scheduled: (() => void) | undefined;
   let finished: ((status: RetentionRunStatus) => void) | undefined;
@@ -66,7 +71,7 @@ function scheduler(f: ReturnType<typeof fixture>) {
     activeEpochKey: () => 'active',
     jobLocations: new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot),
     log: () => {},
-    cleanupScratch: () => {},
+    cleanupScratch,
     publish: (status) => {
       if (status.finishedAt !== null) finished?.(status);
     },
@@ -87,13 +92,116 @@ function scheduler(f: ReturnType<typeof fixture>) {
   };
 }
 
-const selection = vi.hoisted(() => ({ kind: 'valid' }));
-vi.mock('#src/store/active-store-selection.js', async (original) => ({
-  ...(await original<Record<string, unknown>>()),
-  readActiveStoreSelectionForCoordination: () => ({ kind: selection.kind }),
-}));
-
 describe('storage retention scheduler owner composition', () => {
+  it('keeps scratch retry evidence when shutdown has already aborted cleanup', async () => {
+    const f = fixture();
+    const quarantine = new RecoveryQuarantineStore(f.db, f.runtime.time);
+    quarantine.upsert({
+      boundary: 'stale-job-cleanup',
+      subject: { key: 'scratch-pending', revision: { kind: 'until-cleared' } },
+      stage: 'settle',
+      state: 'active',
+      errorMessage: 'scratch deletion denied',
+      detail: 'stale job artifact cleanup failed',
+    });
+    const abort = new AbortController();
+    abort.abort();
+    await expect(
+      cleanupStaleJobs(f.store, 'test-bundle', () => {}, f.runtime.storage, RETENTION_NOW, 14 * DAY, abort.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(quarantine.read('stale-job-cleanup', 'scratch-pending')).not.toBeNull();
+  });
+
+  it('leaves legacy SQLite writers and their family untouched without legacy status or cursors', async () => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.store.dbDir;
+    const legacy = join(root, 'store.db');
+    const writer = newRawDatabase(legacy);
+    writer.exec(
+      "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE old(v); INSERT INTO old VALUES('initial'); PRAGMA wal_checkpoint(TRUNCATE)",
+    );
+    for (const suffix of ['', '-wal', '-shm']) utimesSync(legacy + suffix, 1, 1);
+    for (const suffix of ['.format', '.bak']) {
+      writeFileSync(legacy + suffix, 'legacy sidecar');
+      utimesSync(legacy + suffix, 1, 1);
+    }
+    const quarantine = join(root, '.legacy-retention-family', 'store.db');
+    mkdirSync(join(root, '.legacy-retention-family'));
+    writeFileSync(quarantine, 'interrupted legacy retirement');
+    utimesSync(quarantine, 1, 1);
+    f.db.prepare('INSERT INTO meta(key, value) VALUES (?, ?)').run('storage-retention.legacy.v1', 'store.db');
+    const rename = vi.spyOn(f.runtime.storage, 'renameSync');
+    const unlink = vi.spyOn(f.runtime.storage, 'unlinkSync');
+    const s = scheduler(f);
+    try {
+      const status = await s.run();
+      expect(rename.mock.calls.filter(([path]) => String(path).startsWith(legacy))).toEqual([]);
+      expect(unlink.mock.calls.filter(([path]) => String(path).startsWith(legacy))).toEqual([]);
+      for (const suffix of ['', '-wal', '-shm', '.format', '.bak']) expect(existsSync(legacy + suffix)).toBe(true);
+      expect(existsSync(quarantine)).toBe(true);
+      writer.exec("INSERT INTO old VALUES('after retention')");
+      expect(writer.prepare('SELECT * FROM old').all()).toEqual([{ v: 'initial' }, { v: 'after retention' }]);
+      expect(status.outcomes.some((outcome) => outcome.subject === legacy || outcome.subject === 'legacy-store')).toBe(
+        false,
+      );
+      expect(f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.legacy.v1')).toBeUndefined();
+    } finally {
+      await s.stop();
+      writer.close();
+    }
+  });
+
+  it.each([false, true])(
+    'reports scratch deletion failure and retries next cycle (prior quarantine: %s)',
+    async (quarantined) => {
+      const f = fixture();
+      f.setNow(1);
+      launch(f, 'scratch-fail');
+      finish(f, 'scratch-fail');
+      const scratch = f.store.jobDir('scratch-fail');
+      mkdirSync(scratch, { recursive: true });
+      writeFileSync(join(scratch, 'result.md'), 'result');
+      if (quarantined)
+        new RecoveryQuarantineStore(f.db, f.runtime.time).upsert({
+          boundary: 'stale-job-cleanup',
+          subject: { key: 'scratch-fail', revision: { kind: 'until-cleared' } },
+          stage: 'settle',
+          state: 'active',
+          errorMessage: 'previous scratch deletion denied',
+          detail: 'stale job artifact cleanup failed',
+        });
+      const rm = f.runtime.storage.rmSync;
+      let denied = true;
+      let calls = 0;
+      f.runtime.storage.rmSync = (path, options) => {
+        if (String(path) === scratch) {
+          calls += 1;
+          if (denied) throw Object.assign(new Error('scratch deletion denied'), { code: 'EACCES' });
+        }
+        return rm(path, options);
+      };
+      f.setNow(RETENTION_NOW);
+      const s = scheduler(f, (signal) =>
+        cleanupStaleJobs(f.store, 'test-bundle', () => {}, f.runtime.storage, f.runtime.time.now(), 14 * DAY, signal),
+      );
+      try {
+        const status = await s.run();
+        expect(['failed', 'partial']).toContain(status.phase);
+        expect(status.failed).toBeGreaterThan(0);
+        expect(status.outcomes).toContainEqual(expect.objectContaining({ kind: 'failed', subject: 'scratch-jobs' }));
+        expect(existsSync(scratch)).toBe(true);
+        denied = false;
+        f.setNow(RETENTION_NOW + DAY);
+        const retry = await s.run(DAY);
+        expect(calls).toBe(2);
+        expect(existsSync(scratch)).toBe(false);
+        expect(retry.failed).toBe(0);
+      } finally {
+        await s.stop();
+      }
+    },
+  );
+
   it('keeps a terminal regression witnessed by any preceding event of that job between daily samples', async () => {
     const f = fixture();
     const seq = launch(f, 'regressed');
@@ -153,43 +261,23 @@ describe('storage retention scheduler owner composition', () => {
     }
   });
 
-  it.each(['selection', 'epoch', 'terminal'])(
-    'reports unknown %s evidence as partial and keeps the data',
-    async (evidence) => {
-      const f = fixture();
-      f.setNow(1);
-      const seq = launch(f, 'held');
-      const path = finish(f, 'held');
-      const legacy = join(f.runtime.paths.coral.store.dbDir, 'store.db');
-      writeFileSync(legacy, 'old legacy data');
-      utimesSync(legacy, 1, 1);
-      if (evidence === 'selection') selection.kind = 'rejected';
-      if (evidence === 'epoch')
-        f.runtime.storage.unlinkSync(join(f.runtime.paths.coral.store.dbDir, 'epoch-1', 'epoch.json'));
-      if (evidence === 'terminal')
-        f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.terminal.recorded'").run(Buffer.from('{}'));
-      f.setNow(RETENTION_NOW);
-      const s = scheduler(f);
-      try {
-        const status = await s.run();
-        expect(status.phase).toBe('partial');
-        if (evidence === 'terminal') {
-          expect(existsSync(path)).toBe(true);
-          expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeDefined();
-          expect(status.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', reason: 'unknown' }));
-          expect(status.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', subject: 'progress:held' }));
-        } else {
-          expect(existsSync(legacy)).toBe(true);
-          expect(status.outcomes).toContainEqual(
-            expect.objectContaining({
-              kind: 'kept',
-              reason: evidence === 'epoch' ? 'current-epoch-unproven' : 'active-selection-unknown-or-legacy',
-            }),
-          );
-        }
-      } finally {
-        await s.stop();
-      }
-    },
-  );
+  it('reports unknown terminal evidence as partial and keeps the data', async () => {
+    const f = fixture();
+    f.setNow(1);
+    const seq = launch(f, 'held');
+    const path = finish(f, 'held');
+    f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.terminal.recorded'").run(Buffer.from('{}'));
+    f.setNow(RETENTION_NOW);
+    const s = scheduler(f);
+    try {
+      const status = await s.run();
+      expect(status.phase).toBe('partial');
+      expect(existsSync(path)).toBe(true);
+      expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeDefined();
+      expect(status.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', reason: 'unknown' }));
+      expect(status.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', subject: 'progress:held' }));
+    } finally {
+      await s.stop();
+    }
+  });
 });

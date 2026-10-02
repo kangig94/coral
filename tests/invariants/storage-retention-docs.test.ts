@@ -7,7 +7,6 @@ describe('storage retention documentation', () => {
     const row = configuration.split('\n').find((line) => line.startsWith('| `CORAL_JOBS_RETENTION_DAYS`'))!;
     for (const text of ['14', 'provider-artifacts/', 'journal progress', 'startup', '24 h', 'Live or unknown'])
       expect(row).toContain(text);
-    expect(configuration).not.toContain('never opened, locked, or deleted by this build');
   });
 
   it('records the settled lifetime and leaves provider-session restore open', () => {
@@ -15,8 +14,8 @@ describe('storage retention documentation', () => {
     expect(todo).toContain('retention decided; restore design remains open');
     expect(todo).toContain('Expired exports');
     expect(todo).toContain('collision rule');
-    expect(todo).toContain('directory and its top-level entries');
-    expect(todo).not.toContain('every descendant');
+    expect(todo).toContain('newest content-file mtime across its tree');
+    expect(todo).toContain('directory mtimes are excluded');
   });
 
   it('records domain owners and coordinator scheduling in both architecture guides', () => {
@@ -25,17 +24,18 @@ describe('storage retention documentation', () => {
       for (const owner of [
         'jobs/export-retention.ts',
         'jobs/progress-retention.ts',
-        'store/epoch/legacy-retention.ts',
         'store/retention-vacuum.ts',
         'coordinator/composition/storage-retention-scheduler.ts',
       ])
         expect(document).toContain(owner);
-      expect(document).not.toContain('this build never deletes');
+      expect(document).not.toContain('store/epoch/legacy-retention.ts');
+      expect(document).toContain('one-time residue because pre-epoch writers cannot be excluded');
     }
   });
 
-  it('states the filesystem mtime dependency of legacy retirement', () => {
+  it('describes legacy preservation without promising SQLite writer exclusion', () => {
     const architecture = readFileSync(new URL('../../docs/architecture.md', import.meta.url), 'utf-8');
-    expect(architecture).toContain('R1 depends on the filesystem updating mtime on writes');
+    expect(architecture).not.toContain('absent legacy holders under an exclusive SQLite lock');
+    expect(architecture).not.toContain('R1 depends on the filesystem updating mtime on writes');
   });
 });

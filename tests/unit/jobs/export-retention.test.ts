@@ -3,7 +3,16 @@ import { protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/pro
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, renameSync, unlinkSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { pruneJobExports, readExportJobState, type ExportJobRetentionState } from '#src/jobs/export-retention.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
@@ -45,6 +54,98 @@ async function prune(
 }
 
 describe('export retention', () => {
+  it.each([false, true])('retries partial residue deletion without resetting age (new content: %s)', async (fresh) => {
+    const f = fixture();
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, 'residue');
+    const cutoff = Date.now() - 14 * 86_400_000;
+    mkdirSync(path, { recursive: true });
+    for (let i = 0; i < 10; i += 1) {
+      const child = join(path, `old-${i}`);
+      writeFileSync(child, 'old artifact');
+      utimesSync(child, 1, 1);
+    }
+    utimesSync(path, 1, 1);
+    let operations = 0;
+    f.budget.canContinue = () => ++operations <= 18;
+    const run = (when: number) =>
+      pruneJobExports({
+        runtime: f.runtime,
+        cutoff: when,
+        afterId: '',
+        budget: f.budget,
+        jobState: () => ({ kind: 'absent' }),
+        resultHold: () => 'released',
+        mutate: (operation) => operation(),
+      });
+    await run(cutoff);
+    const remaining = readdirSync(path);
+    expect(remaining.length).toBeGreaterThan(0);
+    expect(remaining.length).toBeLessThan(10);
+    expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'failed' }));
+    if (fresh) {
+      writeFileSync(join(path, 'new-content'), 'new activity');
+      utimesSync(join(path, 'new-content'), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+    }
+    f.budget.canContinue = () => true;
+    await run(cutoff + 86_400_000);
+    expect(existsSync(path)).toBe(fresh);
+    if (fresh) expect(readdirSync(path).sort()).toEqual([...remaining, 'new-content'].sort());
+  });
+
+  it('reaches an expired export after a retained 20,010-entry prefix', async () => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.exports.jobsRoot;
+    for (let i = 0; i < 20_010; i += 1)
+      mkdirSync(join(root, `recent-${String(i).padStart(5, '0')}`), { recursive: true });
+    const expired = join(root, 'z-expired');
+    mkdirSync(expired);
+    let afterId = '';
+    const cursors: string[] = [];
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      let operations = 0;
+      afterId = await pruneJobExports({
+        runtime: f.runtime,
+        cutoff: RETENTION_CUTOFF,
+        afterId,
+        budget: { canContinue: () => ++operations <= 20_000, record: f.budget.record },
+        jobState: (id) => (id === 'z-expired' ? { kind: 'terminal', terminalAt: 1 } : { kind: 'unknown' }),
+        resultHold: () => 'released',
+        mutate: (operation) => operation(),
+      });
+      cursors.push(afterId);
+      if (!existsSync(expired)) break;
+    }
+    expect(cursors[0]).not.toBe('');
+    expect(cursors.at(-1)).toBe('');
+    expect(existsSync(expired)).toBe(false);
+    expect(existsSync(join(root, 'recent-00000'))).toBe(true);
+  });
+
+  it('resumes strictly after a removed cursor without spending the budget on earlier names', async () => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.exports.jobsRoot;
+    for (const id of ['a-kept', 'b-cursor', 'c-expired']) mkdirSync(join(root, id), { recursive: true });
+    f.runtime.storage.rmdirSync(join(root, 'b-cursor'));
+    let operations = 0;
+    const visited: string[] = [];
+    const next = await pruneJobExports({
+      runtime: f.runtime,
+      cutoff: RETENTION_CUTOFF,
+      afterId: 'b-cursor',
+      budget: { canContinue: () => ++operations <= 5, record: f.budget.record },
+      jobState: (id) => {
+        visited.push(id);
+        return { kind: 'terminal', terminalAt: 1 };
+      },
+      resultHold: () => 'released',
+      mutate: (operation) => operation(),
+    });
+    expect(visited).toEqual(['c-expired']);
+    expect(existsSync(join(root, 'a-kept'))).toBe(true);
+    expect(existsSync(join(root, 'c-expired'))).toBe(false);
+    expect(next).toBe('');
+  });
+
   it('deletes the entire expired terminal export, keeping live, unknown, recent and epoch-required results', async () => {
     const f = fixture();
     for (const id of ['expired', 'live', 'unknown', 'recent', 'required', 'hold-unknown']) exported(f, id);
@@ -66,7 +167,7 @@ describe('export retention', () => {
     expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'deleted', count: 1 }));
   });
 
-  it('checks top-level residue ages and never follows a job symlink', async () => {
+  it('checks content file ages through nested directories and never follows a job symlink', async () => {
     const f = fixture();
     const old = exported(f, 'old');
     const changed = exported(f, 'changed');
@@ -74,8 +175,7 @@ describe('export retention', () => {
       for (const child of ['result.md', 'provider-artifacts/original.jsonl', 'provider-artifacts', ''])
         utimesSync(join(path, child), 1, 1);
     }
-    utimesSync(join(old, 'provider-artifacts', 'original.jsonl'), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
-    utimesSync(join(changed, 'provider-artifacts'), new Date(RETENTION_CUTOFF), new Date(RETENTION_CUTOFF));
+    utimesSync(join(changed, 'provider-artifacts', 'original.jsonl'), new Date(RETENTION_NOW), new Date(RETENTION_NOW));
     symlinkSync(changed, join(f.runtime.paths.coral.exports.jobsRoot, 'link'));
     await prune(f, {});
     expect(existsSync(old)).toBe(false);
@@ -185,48 +285,31 @@ describe('export retention', () => {
       const path = join(f.runtime.paths.coral.exports.jobsRoot, 'large');
       const descendants = layout === 'nested' ? join(path, 'provider-artifacts') : path;
       mkdirSync(descendants, { recursive: true });
-      writeFileSync(join(descendants, 'evidence'), 'old');
-      for (const p of [path, descendants, join(descendants, 'evidence')]) utimesSync(p, 1, 1);
-      const iterate = f.runtime.storage.iterateDirectory;
-      let remaining = 20_001;
-      let visited = 0;
-      const stat = f.runtime.storage.lstatSync;
-      const unlink = f.runtime.storage.unlinkSync;
-      f.runtime.storage.iterateDirectory = async function* (p) {
-        if (p === descendants) {
-          for (let i = 0; i < remaining; i += 1) yield `virtual-${i}`;
-          yield 'evidence';
-        } else yield* iterate(p);
-      };
-      vi.spyOn(f.runtime.storage, 'lstatSync').mockImplementation((...args) => {
-        if (String(args[0]).startsWith(descendants + '/virtual-')) {
-          visited += 1;
-          return stat(join(descendants, 'evidence'), args[1]);
-        }
-        return stat(...args);
-      });
-      const remove = vi.spyOn(f.runtime.storage, 'unlinkSync').mockImplementation((p) => {
-        if (String(p).startsWith(descendants + '/virtual-')) return;
-        unlink(p);
-      });
+      for (let i = 0; i < 20_001; i += 1) {
+        const child = join(descendants, `evidence-${i}`);
+        writeFileSync(child, 'old');
+        utimesSync(child, 1, 1);
+      }
+      for (const p of [path, descendants]) utimesSync(p, 1, 1);
       let cycles = 0;
-      while (remaining > 0) {
+      let previousRemaining = 20_001;
+      while (existsSync(path)) {
         let operations = 0;
-        const countVirtual = () => remove.mock.calls.filter(([p]) => String(p).includes('/virtual-')).length;
-        const before = countVirtual();
         await pruneJobExports({
           runtime: f.runtime,
-          cutoff: RETENTION_CUTOFF,
+          cutoff: Date.now() - 14 * 86_400_000,
           afterId: '',
           budget: { record: () => {}, canContinue: () => ++operations <= 20_000 },
           jobState: () => ({ kind: 'absent' }),
           resultHold: () => 'released',
           mutate: (operation) => operation(),
         });
-        remaining -= countVirtual() - before;
+        const remaining = existsSync(descendants) ? readdirSync(descendants).length : 0;
+        expect(remaining).toBeLessThan(previousRemaining);
+        previousRemaining = remaining;
         expect(++cycles).toBeLessThan(10);
       }
-      expect(visited).toBeGreaterThan(20_001);
+      expect(cycles).toBeGreaterThan(1);
       expect(existsSync(path)).toBe(false);
     },
   );

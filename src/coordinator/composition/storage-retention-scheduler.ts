@@ -6,7 +6,6 @@ import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { JobStore } from '../../jobs/store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { pruneStoreEpochHolders } from '../../store/epoch/holder.js';
-import { removeLegacyStore } from '../../store/epoch/legacy-retention.js';
 import type { ResolvedStoreEpoch } from '../../store/epoch/types.js';
 import { joinSuccessionWriterGeneration } from '../../store/succession-writer-generation.js';
 import type { RetentionOutcome, RetentionRunBudget, RetentionRunStatus } from '../../store/retention-outcome.js';
@@ -143,6 +142,7 @@ export function createStorageRetentionScheduler(input: {
             );
           };
           await step('exports', async (budget, signal) => {
+            mutate(() => db.prepare('DELETE FROM meta WHERE key = ?').run('storage-retention.legacy.v1'));
             const next = await pruneJobExports({
               runtime,
               cutoff,
@@ -164,13 +164,6 @@ export function createStorageRetentionScheduler(input: {
           });
           await step('journal-vacuum', async (budget) => {
             record(await vacuumRetainedJournal(db, budget));
-          });
-          await step('legacy-store', async (budget, signal) => {
-            record(
-              await removeLegacyStore(runtime, budget.canContinue, cutoff, mutate, readCursor('legacy'), (value) => {
-                if (!signal.aborted) saveCursor('legacy', value);
-              }),
-            );
           });
           await step('epoch-holders', async (budget, signal) => {
             const next = await pruneStoreEpochHolders(runtime, budget, mutate, readCursor('holders'), (value) => {

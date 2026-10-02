@@ -8,7 +8,6 @@ const owners = vi.hoisted(() => ({
   exports: vi.fn(async () => ''),
   progress: vi.fn(async (_input: { budget: RetentionRunBudget }) => 0),
   vacuum: vi.fn(async () => ({ kind: 'kept', subject: 'vacuum', reason: 'no-free-pages', pending: false })),
-  legacy: vi.fn(() => ({ kind: 'kept', subject: 'legacy', reason: 'legacy-absent', pending: false })),
   holders: vi.fn(async () => {}),
   parked: false,
 }));
@@ -18,7 +17,6 @@ vi.mock('#src/jobs/export-retention.js', async (original) => ({
 }));
 vi.mock('#src/jobs/progress-retention.js', () => ({ pruneJobProgress: owners.progress }));
 vi.mock('#src/store/retention-vacuum.js', () => ({ vacuumRetainedJournal: owners.vacuum }));
-vi.mock('#src/store/epoch/legacy-retention.js', () => ({ removeLegacyStore: owners.legacy }));
 vi.mock('#src/store/epoch/holder.js', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   pruneStoreEpochHolders: owners.holders,
@@ -30,7 +28,10 @@ vi.mock('#src/store/succession-writer-generation.js', async (original) => ({
       if (owners.parked) throw new Error('parked');
     },
     beginWriteTurn: () => () => {},
-    withWriteTurn: <T>(operation: () => T) => operation(),
+    withWriteTurn: <T>(operation: () => T) => {
+      if (owners.parked) throw new Error('parked');
+      return operation();
+    },
   }),
 }));
 
@@ -172,7 +173,6 @@ describe('storage retention schedule', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(owners.progress).toHaveBeenCalledOnce();
     expect(owners.vacuum).toHaveBeenCalledOnce();
-    expect(owners.legacy).toHaveBeenCalledOnce();
     expect(owners.holders).toHaveBeenCalledOnce();
     expect(statuses.at(-1)?.phase).toBe('partial');
   });

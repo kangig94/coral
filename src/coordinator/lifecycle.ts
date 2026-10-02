@@ -727,17 +727,36 @@ export async function cleanupStaleJobs(
   retentionMs: number,
   signal: AbortSignal,
 ): Promise<void> {
+  signal.throwIfAborted();
   const context = { progressStore, currentBundleHash, log, storage, nowMs, retentionMs };
   staleJobCleanupRetryContexts.set(progressStore.getDb(), context);
+  const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs });
+  for (const entry of quarantine.list()) {
+    if (entry.boundary === 'stale-job-cleanup' && entry.stage === 'settle' && entry.state === 'active')
+      quarantine.delete({ boundary: entry.boundary, subject: entry.subject });
+  }
+  const cleanupPolicy = createStaleJobCleanupPolicy(context);
+  const failures: string[] = [];
   const policy: RecoveryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> = {
     signal,
-    quarantine: new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs }),
-    ...createStaleJobCleanupPolicy(context),
+    quarantine,
+    ...cleanupPolicy,
+    onFault: (fault) => {
+      const disposition = cleanupPolicy.onFault(fault);
+      failures.push(`${fault.subject.key}: ${errorMessage(fault.error)}`);
+      if (fault.stage !== 'settle') return disposition;
+      return {
+        kind: 'deferred',
+        authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
+        detail: 'stale job artifact cleanup failed; retry next cycle',
+      };
+    },
   };
   await runStartupStaleArtifactPrune({
     source: staleJobCleanupSource(progressStore.getDb()),
     policy,
   });
+  if (failures.length > 0) throw new Error(`Scratch cleanup failed: ${failures.join('; ')}`);
 }
 
 export async function markJobsAsError(
