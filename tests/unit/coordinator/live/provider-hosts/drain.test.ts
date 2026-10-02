@@ -209,7 +209,7 @@ describe('provider host drain properties', () => {
   });
 });
 
-it('refuses admission while idle reclamation awaits close, then admits a fresh host', async () => {
+it('waits for idle reclamation to close before admitting a fresh host', async () => {
   vi.useFakeTimers();
   const closeWindow = createDeferred<void>();
   const closingServer = createFakeProviderServerHandle({ generation: 811 });
@@ -230,12 +230,12 @@ it('refuses admission while idle reclamation awaits close, then admits a fresh h
     first.close();
     await vi.advanceTimersByTimeAsync(10);
 
-    await expect(manager.openSession(spec)).rejects.toThrow(/^provider_host_draining:/u);
+    const arriving = manager.openSession(spec);
+    await vi.advanceTimersByTimeAsync(0);
     expect(spawnProviderServer).toHaveBeenCalledOnce();
 
     closeWindow.resolve();
-    await vi.waitFor(() => expect(manager.admissionSnapshot().state.size).toBe(0));
-    const fresh = await manager.openSession(spec);
+    const fresh = await arriving;
     expect(fresh.hostRef).not.toEqual(first.hostRef);
     expect(spawnProviderServer).toHaveBeenCalledTimes(2);
     fresh.close();

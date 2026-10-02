@@ -331,9 +331,11 @@ function waitForAcquisitionOutcome(
 
 const MAX_AUTOMATIC_RECLAMATION_ATTEMPTS = 3;
 const AUTOMATIC_RECLAMATION_RETRY_DELAY_MS = 1_000;
+const IDLE_CLOSE_ACQUISITION_WAIT_MS = 30_000;
 
 type ProviderHostClosingRecord = Readonly<{
   ref: HostRef;
+  detail: string;
   operation: Promise<ProviderHostShutdownDisposition>;
   token: symbol;
   attempt: number;
@@ -974,6 +976,7 @@ export class DefaultProviderHostManager
     const slot = this.admissionSlotFor(spec, options?.jobId);
     try {
       return await this.admission.withFreshPlacement(slot, async (reservation) => {
+        await this.waitForIdleClose(slot, options?.signal);
         this.assertAdmissionSlotNotClosing(slot);
         const { lease, entry } = await this.acquireHostLease(spec, options, { slot, reservation });
         return this.managedSession(lease, hostRefFromEntry(entry));
@@ -1416,6 +1419,31 @@ export class DefaultProviderHostManager
     throw new Error(`provider_host_draining: ${cause.message}`, { cause });
   }
 
+  private async waitForIdleClose(slot: AdmissionSlotKey, signal?: AbortSignal): Promise<void> {
+    const match = [...this.closingEntries.entries()].find(
+      ([entry, closing]) =>
+        this.admissionSlotFor(entry.spec, entry.jobId) === slot &&
+        closing.detail === 'idle timeout expired' &&
+        entry.closePromise === closing.operation,
+    );
+    if (match === undefined) return;
+    const [, closing] = match;
+    const deadline = new AbortController();
+    const timer = this.runtime.time.setTimeout(() => deadline.abort(), IDLE_CLOSE_ACQUISITION_WAIT_MS);
+    try {
+      await waitForClose(
+        closing.operation,
+        AbortSignal.any([
+          deadline.signal,
+          this.proxySetAcquisitionStop.signal,
+          ...(signal === undefined ? [] : [signal]),
+        ]),
+      );
+    } finally {
+      this.runtime.time.clearTimeout(timer);
+    }
+  }
+
   private async closeProviderServerEntry(
     entry: ProviderHostEntry,
     detail: string,
@@ -1433,6 +1461,7 @@ export class DefaultProviderHostManager
           entry,
           Object.freeze({
             ref,
+            detail,
             operation,
             token,
             attempt: 1,
