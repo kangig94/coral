@@ -1,4 +1,8 @@
 import { createStorageRetentionScheduler } from './storage-retention-scheduler.js';
+import { createHandoffRoutingReconciler } from '../handoff-routing/reconciler.js';
+import { handoffRoutingStatusStoreSchema } from '../handoff-routing/status.js';
+import { handoffRoutingStatusGeneration } from '../../store/handoff-routing-status-store/index.js';
+import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { dirname } from 'node:path';
 import { knownDiscussSources } from '../../discuss/shell/session-read-service.js';
 import { readOrCreateEpochKey } from '../../store/epoch/index.js';
@@ -64,6 +68,7 @@ function createCoordinatorLifecycleDeps(
   input: LifecycleAssemblyInput,
   storeEpochSweep: ReturnType<typeof createStoreEpochSweepScheduler>,
   storageRetention: ReturnType<typeof createStorageRetentionScheduler>,
+  routingReconciler: ReturnType<typeof createHandoffRoutingReconciler>,
 ): LifecycleDeps {
   const { core, options, execution, jobView, successionAssembly, transport, hostedKb } = input;
   const {
@@ -88,7 +93,14 @@ function createCoordinatorLifecycleDeps(
     storeFormat: options.storeFormat,
     runtime,
     backendPid: world.backendPid,
-    runtimeState,
+    runtimeState: {
+      ...runtimeState,
+      setLifecycle: (phase) => {
+        runtimeState.setLifecycle(phase);
+        if (phase === 'kernel-ready' || phase === 'running') routingReconciler.start();
+        if (phase === 'draining' || phase === 'stopped') routingReconciler.stop();
+      },
+    },
     idleTimer: world.idleTimer,
     storeServicesRef,
     createStoreServicesFromDbFn,
@@ -211,7 +223,15 @@ export function createCoordinatorLifecycleAssembly(input: LifecycleAssemblyInput
     cleanupScratch: (signal, budget) =>
       input.execution.defaults.cleanupStaleJobsFn(core.identity.bundleHash, signal, budget),
   });
-  const lifecycleDeps = createCoordinatorLifecycleDeps(input, storeEpochSweep, storageRetention);
+  const routingReconciler = createHandoffRoutingReconciler(
+    runtime,
+    handoffRoutingStatusPathForRunDir(
+      runtime.paths.coral.coordinator.runDir,
+      handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema()),
+    ),
+    () => world.log('Routing reconciliation failed; retained selections will be retried.\n'),
+  );
+  const lifecycleDeps = createCoordinatorLifecycleDeps(input, storeEpochSweep, storageRetention, routingReconciler);
   state.lifecycleController = createLifecycle(lifecycleDeps, runStartupRecovery);
   const resolvedLifecycleController = state.lifecycleController;
   ipcServer.onShutdownRecoveryAccepted = () => {

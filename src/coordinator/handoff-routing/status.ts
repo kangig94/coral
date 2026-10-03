@@ -1311,12 +1311,22 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
 }
 
 function publishOnce(
-  runtime: Pick<HandoffRoutingPublicationPorts, 'storage' | 'ids'>,
+  runtime: HandoffRoutingPublicationPorts,
   path: string,
   transitions: readonly HandoffRoutingMutation[],
+  signal?: AbortSignal,
+  ownerObservationDeadline?: bigint,
 ): PublicationOutcome {
   const parsed = z.array(handoffRoutingMutationSchema).min(1).safeParse(transitions);
   if (!parsed.success) return { kind: 'not-published', cause: 'rejected-transition' };
+  const assertPublicationAuthority = (): void => {
+    if (
+      signal?.aborted ||
+      (ownerObservationDeadline !== undefined && runtime.time.monotonicNow() >= ownerObservationDeadline)
+    ) {
+      throw new RejectedTransitionError();
+    }
+  };
 
   const publication = publishHandoffRoutingStoreTransaction(
     runtime.storage,
@@ -1325,6 +1335,7 @@ function publishOnce(
     publicationActionForClassification,
     admitStatusSnapshot,
     (transaction) => {
+      assertPublicationAuthority();
       const observedAt = mutationObservedAt(parsed.data);
       compactExpiredCompletedPairs(transaction, runtime.ids, observedAt);
       let publishedSequence = 0;
@@ -1332,6 +1343,7 @@ function publishOnce(
         publishedSequence = applyRoutingMutation(transaction, runtime.ids, transition);
       }
       compactExpiredCompletedPairs(transaction, runtime.ids, observedAt);
+      assertPublicationAuthority();
       return publishedSequence;
     },
   );
@@ -1358,9 +1370,15 @@ async function publishHandoffRoutingTransitionsWithinWindow(
   transitions: readonly HandoffRoutingMutation[],
   window: ReturnType<typeof publicationContentionWindow>,
   signal?: AbortSignal,
+  ownerObservationDeadline?: bigint,
 ): Promise<PublicationOutcome> {
   while (true) {
-    const outcome = publishOnce(runtime, path, transitions);
+    if (
+      signal?.aborted ||
+      (ownerObservationDeadline !== undefined && runtime.time.monotonicNow() >= ownerObservationDeadline)
+    )
+      return { kind: 'not-published', cause: 'rejected-transition' };
+    const outcome = publishOnce(runtime, path, transitions, signal, ownerObservationDeadline);
     if (outcome.kind !== 'not-published' || outcome.cause !== 'contended') return outcome;
     if (signal?.aborted === true || window.clock.compare(window.clock.now(), window.deadline) >= 0) return outcome;
     try {
@@ -1376,6 +1394,7 @@ export async function publishGenerationCoordinatedHandoffRoutingTransitions(
   path: string,
   transitions: readonly HandoffRoutingMutation[],
   signal?: AbortSignal,
+  ownerObservationDeadline?: bigint,
 ): Promise<PublicationOutcome> {
   const window = publicationContentionWindow(runtime);
   let writer: GenerationWriterLease;
@@ -1411,7 +1430,14 @@ export async function publishGenerationCoordinatedHandoffRoutingTransitions(
     } catch {
       return { kind: 'not-published', cause: 'coordination-unavailable' };
     }
-    return await publishHandoffRoutingTransitionsWithinWindow(runtime, path, transitions, window, signal);
+    return await publishHandoffRoutingTransitionsWithinWindow(
+      runtime,
+      path,
+      transitions,
+      window,
+      signal,
+      ownerObservationDeadline,
+    );
   } finally {
     writer.release();
   }
@@ -2252,6 +2278,39 @@ function statusInvocationId(status: HandoffRoutingInvocationStatus): string {
   }
 }
 
+export async function reconcileHandoffRoutingStatus(
+  runtime: Runtime,
+  path: string,
+  signal: AbortSignal,
+): Promise<readonly HandoffRoutingResolveResult[]> {
+  const observationDeadline = runtime.time.monotonicNow() + BigInt(MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS);
+  const budget = new AbortController();
+  const boundedSignal = AbortSignal.any([signal, budget.signal]);
+  const timer = runtime.time.setTimeout(() => budget.abort(), MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS);
+  try {
+    const statusRead = await readHandoffRoutingStatusWithOwnerObservations(runtime, path);
+    if (statusRead.kind !== 'current') return [];
+    const outcomes: HandoffRoutingResolveResult[] = [];
+    for (const status of statusRead.statuses) {
+      if (boundedSignal.aborted || runtime.time.monotonicNow() >= observationDeadline) break;
+      if (status.kind !== 'unresolved' || status.ownerLiveness.kind !== 'absent') continue;
+      outcomes.push(
+        await publishOwnerResolution(
+          runtime,
+          path,
+          status.selection,
+          'owner-absent',
+          boundedSignal,
+          observationDeadline,
+        ),
+      );
+    }
+    return outcomes;
+  } finally {
+    runtime.time.clearTimeout(timer);
+  }
+}
+
 export async function resolveHandoffRoutingStatus(
   runtime: Runtime,
   path: string,
@@ -2323,6 +2382,17 @@ export async function resolveHandoffRoutingStatus(
       return assertNever(status.ownerLiveness);
   }
 
+  return publishOwnerResolution(runtime, path, status.selection, reason, signal);
+}
+
+async function publishOwnerResolution(
+  runtime: Runtime,
+  path: string,
+  selection: Extract<HandoffRoutingInvocationStatus, { kind: 'unresolved' }>['selection'],
+  reason: 'owner-absent' | 'operator-abandoned-unobservable',
+  signal?: AbortSignal,
+  ownerObservationDeadline?: bigint,
+): Promise<HandoffRoutingResolveResult> {
   const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(
     runtime,
     path,
@@ -2330,18 +2400,19 @@ export async function resolveHandoffRoutingStatus(
       {
         kind: 'operator-resolved',
         eventId: runtime.ids.uuid(),
-        invocationId: request.invocationId,
+        invocationId: selection.invocationId,
         observedAt: new Date(runtime.time.now()).toISOString(),
-        selectionSequence: status.selection.sequence,
+        selectionSequence: selection.sequence,
         reason,
       },
     ],
     signal,
+    ownerObservationDeadline,
   );
   if (outcome.kind === 'committed') {
-    return { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence };
+    return { kind: 'resolved', invocationId: selection.invocationId, reason, sequence: outcome.sequence };
   }
-  return { invocationId: request.invocationId, ...outcome };
+  return { invocationId: selection.invocationId, ...outcome };
 }
 
 export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatusReadResult): 0 | 75 {
@@ -2354,17 +2425,7 @@ export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatu
       }
       continue;
     }
-    if (status.kind === 'retired') {
-      if (
-        persistedHandoffDispositionPolicy({
-          kind: status.tombstone.retirementCause,
-          terminalExisted: status.tombstone.terminalExisted,
-        }).exitContribution === 75
-      ) {
-        return 75;
-      }
-      continue;
-    }
+    if (status.kind === 'retired') continue;
     if (persistedHandoffDispositionPolicy(status.terminal.disposition).exitContribution === 75) return 75;
   }
   return 0;

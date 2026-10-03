@@ -735,6 +735,7 @@ const SHUTDOWN_UNPUBLISHED_COORDINATOR_NEXT_STEP =
   'Next step: retry shortly in case a coordinator is still publishing its discovery record. If this persists, verify that no other Coral coordinator process is running before treating the backend as stopped.';
 
 type RoutingCommandAvailability = 'available' | 'deferred-to-live-drain' | 'blocked-by-failed-automatic-retry';
+type RoutingReconciliationAvailability = 'active' | 'awaiting-kernel' | 'inactive';
 
 type LiveShutdownGuidance = Readonly<{
   lines: string[];
@@ -895,7 +896,15 @@ export function formatBackendStatus(
     );
   }
   const draining = daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining';
-  const routingStatusText = formatHandoffRoutingStatus(routingStatus, liveShutdownGuidance.routingCommandAvailability);
+  const routingStatusText = formatHandoffRoutingStatus(
+    routingStatus,
+    liveShutdownGuidance.routingCommandAvailability,
+    daemonStatus.status !== 'ok' || draining
+      ? 'inactive'
+      : daemonStatus.health.kernel.phase === 'starting'
+        ? 'awaiting-kernel'
+        : 'active',
+  );
   if (routingStatusText !== null) sections.push(routingStatusText);
   if (!draining && liveHandoffResultObligation(liveHandoffResult).severity === 'warning') {
     const liveHandoffText = formatLiveHandoffResult(liveHandoffResult);
@@ -1122,9 +1131,14 @@ function formatRoutingOwnerLiveness(
   invocationId: string,
   disposition: SelectedHandoffDisposition,
   liveness: OwnerLiveness,
-  commandAvailability: RoutingCommandAvailability,
+  reconciliation: RoutingReconciliationAvailability,
 ): string {
   const selectionEvidence = `Selected routing: ${formatSelectedRoutingDisposition(disposition)}.`;
+  const nextObservation = {
+    active: 'Coordinator reconciliation will retry within 1s.',
+    'awaiting-kernel': 'Reconciliation begins when this coordinator reaches kernel readiness.',
+    inactive: 'Reconciliation will resume when a coordinator starts.',
+  }[reconciliation];
   switch (liveness.kind) {
     case 'alive':
       return `Routing invocation ${invocationId}: in flight; its recorded owner is alive.`;
@@ -1132,35 +1146,16 @@ function formatRoutingOwnerLiveness(
       return [
         `Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`,
         selectionEvidence,
-        ...formatRoutingHoldAction(
-          commandAvailability,
-          'Routing hold: run the resolution command below.',
-          'Routing hold: resolution remains required if this invocation survives the live drain.',
-          { kind: 'routing-status-resolve', invocationId, forceUnobservable: false },
-        ),
+        reconciliation === 'active'
+          ? 'Coordinator reconciliation will retire this selection within 1s, if its commit succeeds.'
+          : nextObservation,
       ].join('\n');
     case 'unobservable':
-      return liveness.cause === 'deadline-expired'
-        ? [
-            `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
-            selectionEvidence,
-            ...formatRoutingHoldAction(
-              commandAvailability,
-              'Routing hold: inspect backend status again; an expired sweep cannot authorize resolution.',
-              'Routing hold: owner observation expired; inspect again through the live drain guidance below.',
-              { kind: 'backend-status' },
-            ),
-          ].join('\n')
-        : [
-            `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
-            selectionEvidence,
-            ...formatRoutingHoldAction(
-              commandAvailability,
-              'Routing hold: verify the owner externally, then run the forced resolution command below to abandon it.',
-              'Routing hold: external owner verification and forced resolution remain required if this invocation survives the live drain.',
-              { kind: 'routing-status-resolve', invocationId, forceUnobservable: true },
-            ),
-          ].join('\n');
+      return [
+        `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
+        selectionEvidence,
+        nextObservation,
+      ].join('\n');
     default:
       return assertNever(liveness);
   }
@@ -1219,7 +1214,7 @@ const ROUTING_INVOCATION_RENDER_LIMIT = 20;
 
 function formatRoutingInvocationStatus(
   status: HandoffRoutingInvocationStatus,
-  commandAvailability: RoutingCommandAvailability,
+  reconciliation: RoutingReconciliationAvailability,
 ): string {
   switch (status.kind) {
     case 'unresolved':
@@ -1227,7 +1222,7 @@ function formatRoutingInvocationStatus(
         status.selection.invocationId,
         status.selection.disposition,
         status.ownerLiveness,
-        commandAvailability,
+        reconciliation,
       );
     case 'terminal':
       return `Routing invocation ${status.terminal.invocationId}: terminal; ${formatStoredTerminalDisposition(status.terminal.disposition)}.`;
@@ -1240,16 +1235,7 @@ function formatRoutingInvocationStatus(
           return [
             `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity; ${terminalEvidence}).`,
             `Selected routing: ${formatSelectedRoutingDisposition(status.tombstone.selectedDisposition)}.`,
-            ...formatRoutingHoldAction(
-              commandAvailability,
-              'Routing hold: run the resolution command below to acknowledge the retained capacity eviction.',
-              'Routing hold: resolution acknowledgement remains required if this capacity eviction survives the live drain.',
-              {
-                kind: 'routing-status-resolve',
-                invocationId: status.tombstone.invocationId,
-                forceUnobservable: false,
-              },
-            ),
+            'Routing capacity eviction is retained history. No action is needed.',
           ].join('\n');
         }
         case 'completed-pair-compaction':
@@ -1275,6 +1261,7 @@ function formatRetirementHistoryTruncated(history: RetirementHistoryTruncated): 
 export function formatHandoffRoutingStatus(
   result: HandoffRoutingStatusReadResult,
   commandAvailability: RoutingCommandAvailability = 'available',
+  reconciliation: RoutingReconciliationAvailability = 'inactive',
 ): string | null {
   const renderKey = HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[result.kind].renderKey;
   switch (renderKey) {
@@ -1332,7 +1319,7 @@ export function formatHandoffRoutingStatus(
       // A hold may not be withheld, so the cap may only ever drop `history`.
       const holds = result.statuses.filter((status) => handoffRoutingInvocationClassification(status) === 'hold');
       const rendered = result.statuses.length <= ROUTING_INVOCATION_RENDER_LIMIT ? result.statuses : holds;
-      const sections = rendered.map((status) => formatRoutingInvocationStatus(status, commandAvailability));
+      const sections = rendered.map((status) => formatRoutingInvocationStatus(status, reconciliation));
       const collapsed = result.statuses.length - rendered.length;
       if (collapsed > 0) sections.push(`Routing invocations already history, needing no action: ${collapsed}.`);
       const truncatedHistory = formatRetirementHistoryTruncated(result.retirementHistoryTruncated);
@@ -2451,6 +2438,12 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
   const startup = health.diagnostics?.providerOperationStartupReconciliation;
   return [
     ...formatRunningOverviewLines(health),
+    ...(health.status === 'starting'
+      ? [
+          'Startup recovery is incomplete; retry in about 1 s.',
+          formatBackendOperatorCommand({ kind: 'backend-status' }),
+        ]
+      : []),
     ...(startup === undefined
       ? []
       : [

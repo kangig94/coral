@@ -1927,6 +1927,7 @@ function registerBackendLifecycleCommands(
     const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
     const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
       BACKEND_STATUS_EXIT_CODES[status.status],
+      status.status === 'ok' && status.health.status === 'starting' ? 75 : 0,
       liveHandoffObligation.exitContribution,
       handoffRoutingStatusExitContribution(routingStatusRead),
       handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
