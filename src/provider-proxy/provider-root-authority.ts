@@ -698,7 +698,7 @@ class ProxyProviderRootPool {
       this.closingEntries.delete(entry);
       this.admission.observeRetired(hostRefFor(entry, this.runtime), 'closed');
     };
-    handle.child.on('close', retire);
+    void handle.processCessation.then(retire);
   }
 
   private async compensateFailedSpawn(transaction: RootSpawnTransaction): Promise<void> {
@@ -750,7 +750,7 @@ class ProxyProviderRootPool {
   ): Promise<ProviderServerFailedSpawnCleanupDisposition> {
     let hold = initialHold;
     while (true) {
-      await hold.settled;
+      await Promise.race([hold.settled, this.runtime.time.sleep(1_000)]);
       if (transaction.cleanupHold?.operatorExit !== hold.operatorExit) {
         return transaction.cleanupHold ?? hold;
       }
@@ -792,7 +792,19 @@ class ProxyProviderRootPool {
       ...hold,
       error: new Error(`Provider server ${entry.spec.provider} close held.`),
     };
+    if (entry.cleanupAttempts === 1) void this.retryCloseCleanup(entry);
     return { kind: 'accepted', owner: 'provider-proxy-root-pool', settlement: hold.settled };
+  }
+
+  private async retryCloseCleanup(entry: HostPoolEntry): Promise<void> {
+    while (!entry.rootTokenReleased && entry.cleanupHold !== null) {
+      await Promise.race([entry.cleanupHold.settled, this.runtime.time.sleep(1_000)]);
+      try {
+        await this.close(entry);
+      } catch (error: unknown) {
+        backendLog.error(`Provider host retirement retry failed for ${entry.spec.provider}`, error);
+      }
+    }
   }
 
   failedSpawnCleanup(hostRef: HostRef): RootSpawnTransaction | undefined {

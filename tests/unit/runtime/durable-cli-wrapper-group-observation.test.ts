@@ -13,7 +13,8 @@ const processHarness = vi.hoisted(() => ({
 }));
 
 vi.mock('node:child_process', () => ({ spawn: processHarness.spawn }));
-vi.mock('#src/infra/node-process.js', () => ({
+vi.mock('#src/infra/node-process.js', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
   observeProcessLiveness: processHarness.observeProcessLiveness,
   probeProcessIncarnation: vi.fn(),
 }));

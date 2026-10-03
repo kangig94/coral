@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { readRetentionMeta } from '../store/retention-meta.js';
 import { readJobTerminalAge } from './terminal-age.js';
 import { setImmediate } from 'node:timers/promises';
 import { decodeBody, StoreCodecError, StoreDecodeError, type StoreReadContext } from '../store/body-codec.js';
@@ -22,18 +24,6 @@ export async function pruneJobProgress(input: {
 }): Promise<number> {
   const { db, readCtx, cutoff, budget } = input;
   if (!budget.canContinue()) return input.afterSeq;
-  const stored = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(CURSOR_KEY);
-  const cursor: { afterSeq: number; progressSeq: number } =
-    stored === undefined
-      ? { afterSeq: input.afterSeq, progressSeq: 0 }
-      : (JSON.parse(stored.value) as { afterSeq: number; progressSeq: number });
-  if (
-    !Number.isSafeInteger(cursor.afterSeq) ||
-    !Number.isSafeInteger(cursor.progressSeq) ||
-    cursor.afterSeq < 0 ||
-    cursor.progressSeq < 0
-  )
-    throw new Error('retention-progress-cursor-unobservable');
   const write = <T>(operation: () => T): T => {
     const timeout = db.prepare<[], { timeout: number }>('PRAGMA busy_timeout').get()?.timeout;
     if (timeout === undefined) throw new Error('progress-write-settings-unknown');
@@ -44,6 +34,20 @@ export async function pruneJobProgress(input: {
       db.exec(`PRAGMA busy_timeout = ${timeout}`);
     }
   };
+  const { value: cursor } = readRetentionMeta({
+    db,
+    key: CURSOR_KEY,
+    decode: (value) =>
+      z
+        .object({
+          afterSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+          progressSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        })
+        .parse(JSON.parse(value)),
+    fresh: (reset) => ({ afterSeq: reset ? 0 : input.afterSeq, progressSeq: 0 }),
+    mutate: write,
+    record: budget.record,
+  });
   const save = (): void => {
     const persist = (): void => {
       db.prepare<[string, string]>('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(

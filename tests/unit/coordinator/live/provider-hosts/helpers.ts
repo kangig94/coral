@@ -149,6 +149,7 @@ export function createFakeProviderServerHandle(options?: {
       },
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise: closed.promise,
+      processCessation: closed.promise.then(() => undefined),
       isClosed: () => isClosed,
       inspectDiagnostics: () => ({
         hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },

@@ -63,9 +63,12 @@ async function reconcileInheritedChild(
     terminationAt: slot.terminationAt ?? null,
   };
   inheritedWatch.set(slot.id, watch);
-  const healthy =
-    probeProcessIncarnation(child.pid) === child.incarnation &&
-    (await replacementServing(runDir, originalManifest.flavor, child.pid));
+  const health =
+    probeProcessIncarnation(child.pid) === child.incarnation
+      ? await replacementServing(runDir, originalManifest.flavor, child.pid)
+      : 'unknown';
+  if (health === 'unknown') return repairBridge;
+  const healthy = health === true;
   const current = currentInheritedChild(snapshot, child);
   if (current === null) {
     return repairBridge;

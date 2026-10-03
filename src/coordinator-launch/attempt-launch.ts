@@ -40,7 +40,7 @@ export async function launchSuccessionAttempt(input: {
   if (launch?.phase === 'admitted' && launch.child !== undefined) {
     const healthy = await replacementServing(input.runDir, manifest.flavor, launch.child.pid);
     if (!input.record.hasAuthority(authority)) throw new Error('Launch ownership was lost');
-    if (healthy) input.record.serving(launch, launch.child);
+    if (healthy === true) input.record.serving(launch, launch.child);
   }
   const active = input.record.read().attempt;
   if (active !== null && active.phase !== 'exited') throw new Error('Succession attempt is already active');

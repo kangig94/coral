@@ -1,3 +1,4 @@
+import { providerHostObservationSchema } from '../infra/provider-host-observation.js';
 import { backendLog } from '../infra/backend-log.js';
 import {
   CUSTODY_PROCESS_TICKET_ENV,
@@ -16,12 +17,14 @@ import { AbortError } from '../runtime/abort.js';
 import {
   cleanupSpawnedProcessGroup,
   gracefulKill,
+  gracefulKillByPid,
   observeRetainedSpawnedProcessGroup,
   observeUnattributableSpawnedProcessGroup,
   requirePipedHandles,
   retainSpawnedProcessGroupCleanup,
   type GracefulKillDisposition,
   type GracefulKillOutcome,
+  type GracefulKillByPidOutcome,
   type GracefulKillPendingDisposition,
   type SpawnedProcessGroupAbsenceEvidence,
   type SpawnedProcessGroupCleanup,
@@ -152,6 +155,7 @@ export type ProviderServerHandle = {
   rpc: ProviderServerRpc;
   onNotification: (handler: (message: ProviderServerNotification) => void) => () => void;
   closePromise: Promise<Error | void>;
+  processCessation: Promise<void>;
   isClosed(): boolean;
   inspectDiagnostics: () => ProviderHostDiagnosticsSnapshot;
   markExpectedClose: () => void;
@@ -391,6 +395,11 @@ type ProviderProcessSettlement = {
   child: ChildProcessLike;
   pid: number | null;
   detached: boolean;
+  custodyToken: string | null;
+  providerAbsent: boolean;
+  providerIdentity: { pid: number; incarnation: ProcessIncarnation | null } | null;
+  custodyTermination: Promise<GracefulKillByPidOutcome> | null;
+  wrapperExited: boolean;
   processGroupCleanup: SpawnedProcessGroupCleanup | null;
   acceptFailedSpawnCleanup: ProviderServerFailedSpawnCleanupAcceptor;
   closed: boolean;
@@ -409,6 +418,41 @@ function requestProviderServerKill(settlement: ProviderProcessSettlement, runtim
 }
 
 function acceptProviderServerKill(settlement: ProviderProcessSettlement, runtime: Runtime): void {
+  if (settlement.custodyToken !== null) {
+    if (!settlement.wrapperExited) {
+      // The wrapper owns actual-child escalation; killing it would sever that obligation.
+      try {
+        settlement.child.kill('SIGTERM');
+      } catch {
+        /* Retry retains the obligation. */
+      }
+    } else if (settlement.providerIdentity !== null && settlement.custodyTermination === null) {
+      const { pid, incarnation } = settlement.providerIdentity;
+      const observed = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+      if (
+        runtime.process.observeLiveness(pid) === 'absent' ||
+        (incarnation !== null && observed !== null && observed !== incarnation)
+      ) {
+        settlement.providerAbsent = true;
+        settlement.closed = true;
+        settlement.resolve();
+        return;
+      }
+      const disposition = gracefulKillByPid(runtime, pid, incarnation);
+      if ('settlement' in disposition) {
+        settlement.custodyTermination = disposition.settlement;
+        void disposition.settlement.then((outcome) => {
+          settlement.custodyTermination = null;
+          if (outcome.kind === 'observed-absent') {
+            settlement.providerAbsent = true;
+            settlement.closed = true;
+            settlement.resolve();
+          }
+        });
+      }
+    }
+    return;
+  }
   const disposition = requestProviderServerKill(settlement, runtime);
   if (!('settlement' in disposition)) {
     settlement.terminationOutcome = disposition;
@@ -428,12 +472,18 @@ function createProviderProcessSettlement(
   detached: boolean,
   processGroupCleanup: SpawnedProcessGroupCleanup | null,
   acceptFailedSpawnCleanup: ProviderServerFailedSpawnCleanupAcceptor,
+  custodyToken: string | null,
 ): ProviderProcessSettlement {
   let resolve!: () => void;
   const settlement: ProviderProcessSettlement = {
     child,
     pid: child.pid ?? null,
     detached,
+    custodyToken,
+    providerAbsent: custodyToken === null,
+    providerIdentity: null,
+    custodyTermination: null,
+    wrapperExited: false,
     processGroupCleanup,
     acceptFailedSpawnCleanup,
     closed: false,
@@ -444,11 +494,29 @@ function createProviderProcessSettlement(
     terminationOutcome: null,
     resolve: () => resolve(),
   };
-  child.on('close', () => {
-    if (settlement.closed) return;
+  let wrapperClosed = false;
+  const observeCessation = (): void => {
+    if (!wrapperClosed || !settlement.providerAbsent || settlement.closed) return;
     settlement.closed = true;
     settlement.resolve();
+  };
+  child.on('close', () => {
+    wrapperClosed = true;
+    observeCessation();
   });
+  child.on('exit', () => {
+    settlement.wrapperExited = true;
+  });
+  if (custodyToken !== null)
+    child.on('message', (message) => {
+      const parsed = providerHostObservationSchema.safeParse(message);
+      if (!parsed.success || parsed.data.processToken !== custodyToken) return;
+      if (parsed.data.kind === 'provider-host-started') settlement.providerIdentity = parsed.data;
+      else {
+        settlement.providerAbsent = true;
+        observeCessation();
+      }
+    });
   child.on('error', () => undefined);
   return settlement;
 }
@@ -606,6 +674,7 @@ async function spawnProviderServerProcess(
         }
       : {
           command: process.execPath,
+          ipc: true,
           args: [
             durableWrapperEntrypoint(),
             '--provider-host',
@@ -627,6 +696,7 @@ async function spawnProviderServerProcess(
     params.detached === true,
     processGroupCleanup,
     params.acceptFailedSpawnCleanup,
+    custody?.processToken ?? null,
   );
   let pipes: ProviderServerPipes;
   try {
@@ -729,7 +799,8 @@ async function terminateProviderServerProcess(
   });
   const retry = async (signal?: AbortSignal): Promise<ProviderProcessSettlementEvidence> => {
     if (settlement.closed) return observedAbsent();
-    if (settlement.terminationOutcome?.kind === 'observed-absent') return observedAbsent();
+    if (settlement.custodyToken === null && settlement.terminationOutcome?.kind === 'observed-absent')
+      return observedAbsent();
     if (abandoned) return abandonment;
     if (signal?.aborted) {
       return {
@@ -748,7 +819,7 @@ async function terminateProviderServerProcess(
       try {
         const liveness = runtime.process.observeLiveness(settlement.pid);
         if (settlement.closed) return observedAbsent();
-        if (liveness === 'absent') return observedAbsent();
+        if (liveness === 'absent' && settlement.custodyToken === null) return observedAbsent();
         if (liveness === 'alive') {
           return {
             kind: 'held-alive',
@@ -968,6 +1039,7 @@ function exposeProviderServerHandle(
       };
     },
     closePromise: entry.closePromise,
+    processCessation: entry.processSettlement.processClosePromise,
     isClosed: () => entry.closed,
     inspectDiagnostics: entry.diagnosticRef.inspect,
     markExpectedClose: () => {

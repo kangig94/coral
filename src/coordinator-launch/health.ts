@@ -10,28 +10,28 @@ export async function replacementServing(
   runDir: string,
   flavor: StrictBundleManifest['flavor'],
   pid: number,
-): Promise<boolean> {
+): Promise<boolean | 'unknown'> {
   try {
     const discovery = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8')) as {
       pid?: unknown;
       bootToken?: unknown;
     };
+    if (typeof discovery?.pid !== 'number' || typeof discovery.bootToken !== 'string') return 'unknown';
     if (discovery.pid !== pid) return false;
-    if (typeof discovery.bootToken !== 'string') return false;
     const socketPath = socketPathForRunDir(runDir, flavor, { platform: process.platform });
-    return await new Promise<boolean>((resolve) => {
+    return await new Promise<boolean | 'unknown'>((resolve) => {
       const socket = createConnection(socketPath);
       let received = '';
       let settled = false;
-      const finish = (serving: boolean): void => {
+      const finish = (serving: boolean | 'unknown'): void => {
         if (settled) return;
         settled = true;
         socket.destroy();
         resolve(serving);
       };
-      socket.setTimeout(500, () => finish(false));
-      socket.once('error', () => finish(false));
-      socket.once('close', () => finish(false));
+      socket.setTimeout(500, () => finish(received.length === 0 ? false : 'unknown'));
+      socket.once('error', () => finish(received.length === 0 ? false : 'unknown'));
+      socket.once('close', () => finish(received.length === 0 ? false : 'unknown'));
       socket.once('connect', () => {
         socket.write(
           `${JSON.stringify({ kind: 'request', id: 1, method: 'transport.health', auth: { kind: 'boot', token: discovery.bootToken } })}\n`,
@@ -39,7 +39,7 @@ export async function replacementServing(
       });
       socket.on('data', (chunk: Buffer) => {
         received += chunk.toString('utf8');
-        if (received.length > 64 * 1024) return finish(false);
+        if (Buffer.byteLength(received) > 64 * 1024) return finish('unknown');
         const newline = received.indexOf('\n');
         if (newline === -1) return;
         try {
@@ -48,19 +48,19 @@ export async function replacementServing(
             id?: number;
             result?: { pid?: number; status?: string };
           };
-          finish(
-            response.kind === 'response' &&
-              response.id === 1 &&
-              response.result?.pid === pid &&
-              (response.result.status === 'ok' || response.result.status === 'running'),
-          );
+          if (response?.kind !== 'response' || response.id !== 1 || response.result?.pid !== pid)
+            return finish('unknown');
+          const status = response.result.status;
+          if (status === 'ok' || status === 'running') finish(true);
+          else if (status === 'starting' || status === 'draining' || status === 'stopping') finish(false);
+          else finish('unknown');
         } catch {
-          finish(false);
+          finish('unknown');
         }
       });
     });
-  } catch {
-    return false;
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? false : 'unknown';
   }
 }
 

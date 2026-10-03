@@ -115,7 +115,7 @@ async function requestContendedUpgrade(
 ): Promise<'finished' | 'waiting' | 'retry'> {
   const incumbent = observedLaunchIncumbent(runDir, manifest.flavor);
   if (incumbent !== null && incumbent.version === manifest.version && incumbent.bundleHash === manifest.bundleHash) {
-    if (await replacementServing(runDir, manifest.flavor, incumbent.pid)) return 'finished';
+    if ((await replacementServing(runDir, manifest.flavor, incumbent.pid)) === true) return 'finished';
   } else if (incumbent !== null) {
     const recorded = await recordLegacyUpgradeIntent({
       runDir,

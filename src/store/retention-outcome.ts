@@ -39,6 +39,7 @@ export const retentionRunStatusSchema = z.object({
 });
 import { z } from 'zod';
 import type { Database } from './db.js';
+import { readRetentionMeta } from './retention-meta.js';
 
 const pendingSchema = z.object({
   subjects: z.array(z.string()).max(100),
@@ -46,9 +47,21 @@ const pendingSchema = z.object({
   rotation: z.number().int().nonnegative().default(0),
 });
 
-export function createRetentionPendingSet(db: Database, key: string, mutate: <T>(operation: () => T) => T) {
-  const saved = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(key);
-  const state = saved ? pendingSchema.parse(JSON.parse(saved.value)) : { subjects: [], overflow: false, rotation: 0 };
+export function createRetentionPendingSet(
+  db: Database,
+  key: string,
+  mutate: <T>(operation: () => T) => T,
+  record: RetentionRunBudget['record'],
+) {
+  const { value: state, reset } = readRetentionMeta({
+    db,
+    key,
+    mutate,
+    record,
+    decode: (value) => pendingSchema.parse(JSON.parse(value)),
+    fresh: () => ({ subjects: [] as string[], overflow: false, rotation: 0 }),
+  });
+  if (reset) state.overflow = true;
   const subjects = new Set(state.subjects);
   let rotation = subjects.size === 0 ? 0 : state.rotation % subjects.size;
   const save = (): void => {
@@ -62,6 +75,7 @@ export function createRetentionPendingSet(db: Database, key: string, mutate: <T>
     });
   };
   return {
+    restarted: reset,
     subjects,
     retryOrder: () => {
       const ids = [...subjects];

@@ -55,6 +55,7 @@ export type RuntimeSpawnOptions = {
   inheritEnv?: boolean;
   shell?: boolean;
   detached?: boolean;
+  ipc?: boolean;
 };
 
 export type DurableLaunchOptions = {
