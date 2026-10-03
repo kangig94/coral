@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { utimesSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -293,3 +293,60 @@ it.each([
   if (recreated) expect(storage.readFileSync(join(original, 'writer.md'), 'utf-8')).toBe('new writer');
   expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', subject: kept }));
 });
+
+for (const refresh of ['none', 'recent', 'before-cutoff'] as const) {
+  for (const recreated of [false, true]) {
+    it(`checks overwritten nested files immediately before deletion (${refresh}, recreated: ${recreated})`, async () => {
+      const f = createRetentionFixture();
+      fixtures.push(f);
+      const storage = f.runtime.storage;
+      const root = f.runtime.paths.coral.exports.jobsRoot;
+      const original = join(root, 'overwrite-race');
+      const artifact = join(original, 'provider-artifacts', 'session.jsonl');
+      storage.mkdirSync(dirname(artifact), { recursive: true });
+      storage.writeFileSync(artifact, 'old artifact');
+      for (const path of [original, dirname(artifact), artifact]) utimesSync(path, 1, 1);
+      const stat = storage.lstatSync;
+      let pending = false;
+      let writerRan = false;
+      let retired = '';
+      storage.lstatSync = ((path, options) => {
+        const result = stat(path, options);
+        if (String(path).endsWith('/provider-artifacts/session.jsonl')) pending = true;
+        return result;
+      }) as typeof stat;
+      await pruneJobExports({
+        db: f.db,
+        runtime: f.runtime,
+        cutoff: RETENTION_CUTOFF,
+        afterId: '',
+        budget: f.budget,
+        jobState: () => ({ kind: 'terminal', terminalAt: 1 }),
+        resultHold: () => 'released',
+        mutate: (operation) => {
+          if (pending && !writerRan && refresh !== 'none') {
+            retired = storage.readdirSync(root).find((name) => name.startsWith('.retiring-')) ?? '';
+            if (retired) {
+              const path = join(root, retired, 'provider-artifacts', 'session.jsonl');
+              storage.writeFileSync(path, 'fresh artifact');
+              const seconds = refresh === 'recent' ? RETENTION_NOW / 1000 : 2;
+              utimesSync(path, seconds, seconds);
+              if (recreated) storage.mkdirSync(original);
+              writerRan = true;
+            }
+          }
+          return operation();
+        },
+      });
+      if (refresh === 'none') {
+        expect(writerRan).toBe(false);
+        expect(storage.existsSync(original)).toBe(false);
+      } else {
+        expect(writerRan).toBe(true);
+        const kept = recreated ? join(root, retired.replace('.retiring-', 'kept-retiring-')) : original;
+        expect(storage.readFileSync(join(kept, 'provider-artifacts', 'session.jsonl'), 'utf-8')).toBe('fresh artifact');
+        expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', subject: kept }));
+      }
+    });
+  }
+}

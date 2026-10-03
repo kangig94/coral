@@ -338,54 +338,45 @@ export async function pruneStoreEpochHolders(
 ): Promise<string> {
   const root = runtime.paths.coral.store.dbDir;
   if (!budget.canContinue()) return afterName;
-  let resume = afterName !== '';
-  const iterator = runtime.storage.iterateDirectory(root)[Symbol.asyncIterator]();
-  try {
-    let current = await iterator.next();
-    while (!current.done) {
-      const entry = current.value;
-      if (!budget.canContinue()) return entry;
-      if (resume && entry !== afterName) {
-        current = await iterator.next();
-        await setImmediate();
-        continue;
-      }
-      resume = false;
-      if (entry.startsWith(EPOCH_HOLDER_PREFIX)) {
-        const subject = join(root, entry);
-        try {
-          const holder = entry.endsWith('.json') ? await inspectStoreEpochHolderAsync(runtime, root, entry) : null;
-          if (holder?.state !== 'stale' || !holder.removable) {
-            budget.record({
-              kind: 'kept',
-              subject,
-              reason: 'holder-alive-or-unknown',
-              pending: holder?.state !== 'live',
+  const entries = (await runtime.storage.readdir(root)).sort();
+  let cursor = afterName;
+  for (const entry of entries) {
+    if (entry <= afterName) continue;
+    if (!budget.canContinue()) return cursor;
+    if (entry.startsWith(EPOCH_HOLDER_PREFIX)) {
+      const subject = join(root, entry);
+      try {
+        const holder =
+          entry.endsWith('.json') || entry.endsWith('.json.tmp')
+            ? await inspectStoreEpochHolderAsync(runtime, root, entry)
+            : null;
+        if (holder?.state !== 'stale' || !holder.removable) {
+          budget.record({
+            kind: 'kept',
+            subject,
+            reason: 'holder-alive-or-unknown',
+            pending: holder?.state !== 'live',
+          });
+        } else {
+          try {
+            if (!budget.canContinue()) return cursor;
+            mutate(() => {
+              runtime.storage.unlinkSync(subject);
+              if (!runtime.storage.syncDirectoryDurableSync(root)) throw new Error('holder-directory-sync-failed');
             });
-          } else {
-            try {
-              if (!budget.canContinue()) return entry;
-              mutate(() => {
-                runtime.storage.unlinkSync(subject);
-                if (!runtime.storage.syncDirectoryDurableSync(root)) throw new Error('holder-directory-sync-failed');
-              });
-              budget.record({ kind: 'deleted', subject, count: 1 });
-            } finally {
-              holder.proof?.();
-            }
+            budget.record({ kind: 'deleted', subject, count: 1 });
+          } finally {
+            holder.proof?.();
           }
-        } catch (error: unknown) {
-          budget.record({ kind: 'failed', subject, reason: error instanceof Error ? error.message : String(error) });
         }
+      } catch (error: unknown) {
+        budget.record({ kind: 'failed', subject, reason: error instanceof Error ? error.message : String(error) });
       }
-      current = await iterator.next();
-      checkpoint(current.done ? '' : current.value);
-      await setImmediate();
     }
-    if (resume) budget.record({ kind: 'kept', subject: 'epoch-holders', reason: 'scan-pending' });
-    checkpoint('');
-    return '';
-  } finally {
-    await iterator.return?.();
+    cursor = entry;
+    checkpoint(cursor);
+    await setImmediate();
   }
+  checkpoint('');
+  return '';
 }
