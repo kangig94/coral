@@ -1,3 +1,9 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 import { EventEmitter } from 'node:events';
 import type { Socket } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -253,4 +259,97 @@ describe('succession attempt child channel', () => {
     );
     expect(channel.sent.at(-1)).toEqual({ kind: 'connections-released', attemptId: ATTEMPT_ID });
   });
+});
+
+it('contains failed sends and disconnects under default Node rejection behavior, preserving early acknowledgments', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'coral-listener-transfer-'));
+  try {
+    symlinkSync(join(process.cwd(), 'node_modules'), join(root, 'node_modules'));
+    const bundle = join(root, 'attempt.mjs');
+    await build({
+      entryPoints: ['src/coordinator/succession/attempt-child.ts'],
+      outfile: bundle,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      packages: 'external',
+      loader: { '.sql': 'text' },
+    });
+    for (const mode of [
+      'control',
+      'listener',
+      'listeners-complete',
+      'disconnect-listener',
+      'disconnect-listeners-complete',
+      'abort',
+    ]) {
+      const result = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+        import assert from 'node:assert/strict';
+        import { EventEmitter } from 'node:events';
+        import { createSuccessionAttemptChannel } from ${JSON.stringify(pathToFileURL(bundle).href)};
+        const mode = ${JSON.stringify(mode)};
+        const child = Object.assign(new EventEmitter(), { pid: 12345, connected: true });
+        const attemptId = 'probe';
+        child.send = (message, handle, callback) => {
+          if (mode === message.kind) { callback(new Error('send failed')); return; }
+          if (mode === 'disconnect-' + message.kind) {
+            child.emit('disconnect');
+            setImmediate(() => callback(new Error('send failed')));
+            return;
+          }
+          if (message.kind === 'listener') child.emit('message', { kind: 'listener-accepted', attemptId, socketPath: message.socketPath });
+          if (message.kind === 'listeners-complete') child.emit('message', { kind: 'listeners-accepted', attemptId });
+          callback(null);
+        };
+        const listener = { socketPath: '/tmp/mock.sock', server: { listening: true } };
+        const creating = createSuccessionAttemptChannel({ processIncarnation: () => 'probe', time: { setTimeout, clearTimeout } }, child, attemptId, listener, 'boot', { epochKey: 'probe', receipts: [] });
+        child.emit('message', { kind: 'child-online', attemptId });
+        const attempt = await creating;
+        child.emit('message', { kind: 'listener-ready', attemptId });
+        if (mode === 'control') await attempt.transferListeners(listener);
+        else if (mode === 'abort') await assert.rejects(attempt.abort(), /send failed/);
+        else await assert.rejects(attempt.transferListeners(listener), /send failed|disconnected/);
+        child.emit('disconnect');
+        await new Promise(resolve => setImmediate(resolve));
+        console.log('survived');
+      `,
+        ],
+        {
+          encoding: 'utf8',
+          timeout: 10_000,
+          env: { PATH: process.env.PATH, HOME: root, LANG: 'C.UTF-8', TMPDIR: tmpdir() },
+        },
+      );
+      expect({ mode, status: result.status, stderr: result.stderr, error: result.error }).toEqual({
+        mode,
+        status: 0,
+        stderr: '',
+        error: undefined,
+      });
+      expect(result.stdout).toContain('survived');
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([false, true])('bounds child parking with an additive elapsed budget (legacy: %s)', async (legacy) => {
+  const { ports, channel, time } = fakePorts();
+  await adoptedChild(channel, ports);
+  const deadline = time.now() + 100;
+  const wall = time.now.bind(time);
+  if (!legacy) Object.assign(time, { now: () => wall() - 3_600_000 });
+  channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: deadline, ...(legacy ? {} : { timeoutMs: 100 }) });
+  time.tick(99);
+  expect(channel.sent).not.toContainEqual(expect.objectContaining({ kind: 'release-request' }));
+  time.tick(1);
+  expect(channel.sent).toContainEqual({ kind: 'release-request', attemptId: ATTEMPT_ID });
+  channel.deliver({ kind: 'release-ready', attemptId: ATTEMPT_ID });
+  await flushMicrotasks();
+  expect(channel.failures).toEqual([false]);
 });

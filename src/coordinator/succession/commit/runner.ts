@@ -58,7 +58,7 @@ export function createCommitRunner(ports: SuccessionCommitPorts, dependencies: C
         reason: formatError(error),
         retry: retryAfterFailure(error),
         ...recovery,
-        pauseDeadlineAtMs: runtime.time.now(),
+        pauseDeadlineMonotonicMs: Number(runtime.time.monotonicNow()),
         childHold: await abortAndReap(attempt),
         unservedMintDiscard: null,
       };

@@ -36,7 +36,7 @@ type AttemptMessage =
   | { kind: 'listeners-complete'; attemptId: string }
   | { kind: 'listeners-accepted'; attemptId: string }
   | { kind: 'connection'; attemptId: string; socketPath: string; pendingFrameBase64: string }
-  | { kind: 'deadline'; attemptId: string; at: number }
+  | { kind: 'deadline'; attemptId: string; at: number; timeoutMs?: number }
   | { kind: 'writers-parked'; attemptId: string }
   | { kind: 'abort'; attemptId: string }
   | { kind: 'release-request'; attemptId: string }
@@ -75,7 +75,7 @@ export type SuccessionAttempt = Readonly<{
   transferListeners(listener: IpcListener): Promise<void>;
   forwardConnections(listener: IpcListener): () => void;
   drainIncumbentConnections(listener: IpcListener, timeoutMs?: number): Promise<void>;
-  setDeadline(at: number): Promise<void>;
+  setDeadline(at: number, timeoutMs?: number): Promise<void>;
   allowCommittedOpen(): Promise<void>;
   abort(): Promise<void>;
   onAcknowledgment(listener: (acknowledgment: AttemptAcknowledgment) => void): () => void;
@@ -151,6 +151,7 @@ type AttemptChannelControlsState = {
   };
   waitFor: (key: string) => Promise<void>;
   send: (message: AttemptMessage, handle?: NetServer | Socket) => Promise<void>;
+  sendAndWait: (message: AttemptMessage, key: string, handle?: NetServer | Socket, timeoutMs?: number) => Promise<void>;
 };
 
 function createSuccessionAttemptControls(state: AttemptChannelControlsState): SuccessionAttempt {
@@ -169,6 +170,7 @@ function createSuccessionAttemptControls(state: AttemptChannelControlsState): Su
     channelState,
     waitFor,
     send,
+    sendAndWait,
   } = state;
   return {
     attemptId,
@@ -184,13 +186,13 @@ function createSuccessionAttemptControls(state: AttemptChannelControlsState): Su
       }
       await waitFor('listener-ready');
       for (const entry of currentClaim) {
-        const accepted = waitFor(`listener-accepted:${entry.socketPath}`);
-        await send({ kind: 'listener', attemptId, socketPath: entry.socketPath }, entry.server);
-        await accepted;
+        await sendAndWait(
+          { kind: 'listener', attemptId, socketPath: entry.socketPath },
+          `listener-accepted:${entry.socketPath}`,
+          entry.server,
+        );
       }
-      const accepted = waitFor('listeners-accepted');
-      await send({ kind: 'listeners-complete', attemptId });
-      await accepted;
+      await sendAndWait({ kind: 'listeners-complete', attemptId }, 'listeners-accepted');
       if (received.size !== currentClaim.length) throw new Error('Incomplete IPC listener transfer');
       channelState.transferred = true;
     },
@@ -241,23 +243,11 @@ function createSuccessionAttemptControls(state: AttemptChannelControlsState): Su
       const completed = await Promise.race([drain().then(() => true), ports.time.sleep(timeoutMs).then(() => false)]);
       if (!completed) for (const socket of forwardedSockets) socket.destroy();
     },
-    setDeadline: (at) => send({ kind: 'deadline', attemptId, at }),
+    setDeadline: (at, timeoutMs) =>
+      send({ kind: 'deadline', attemptId, at, ...(timeoutMs === undefined ? {} : { timeoutMs }) }),
     allowCommittedOpen: () => send({ kind: 'writers-parked', attemptId }),
-    abort: async () => {
-      const released = waitFor('connections-released').catch(() => {});
-      await send({ kind: 'abort', attemptId });
-      let bound: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
-      try {
-        await Promise.race([
-          released,
-          new Promise<void>((resolve) => {
-            bound = ports.time.setTimeout(resolve, CONNECTION_RELEASE_TIMEOUT_MS);
-          }),
-        ]);
-      } finally {
-        ports.time.clearTimeout(bound);
-      }
-    },
+    abort: () =>
+      sendAndWait({ kind: 'abort', attemptId }, 'connections-released', undefined, CONNECTION_RELEASE_TIMEOUT_MS),
     onAcknowledgment: (callback) => {
       acknowledgments.add(callback);
       for (const acknowledgment of observedAcknowledgments.values()) callback(acknowledgment);
@@ -356,6 +346,34 @@ export async function createSuccessionAttemptChannel(
       child.send(message, handle, (error) => (error ? reject(error) : resolve()));
     });
 
+  const sendAndWait = async (
+    message: AttemptMessage,
+    key: string,
+    handle?: NetServer | Socket,
+    timeoutMs?: number,
+  ): Promise<void> => {
+    const acknowledgment = waitFor(key);
+    const waiter = waiters.get(key);
+    let bound: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
+    try {
+      const joined = Promise.all([acknowledgment, send(message, handle)]);
+      if (timeoutMs === undefined) await joined;
+      else
+        await Promise.race([
+          joined,
+          new Promise<void>((resolve) => {
+            bound = ports.time.setTimeout(resolve, timeoutMs);
+          }),
+        ]);
+    } finally {
+      ports.time.clearTimeout(bound);
+      if (waiter !== undefined && waiters.get(key) === waiter) {
+        waiters.delete(key);
+        waiter.resolve();
+      }
+    }
+  };
+
   let onlineDeadline: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
   try {
     await Promise.race([
@@ -395,6 +413,7 @@ export async function createSuccessionAttemptChannel(
     channelState,
     waitFor,
     send,
+    sendAndWait,
   });
 }
 
@@ -596,7 +615,12 @@ function handleAttemptChildMessage(
     ports.time.clearTimeout(state.deadlineTimer);
     state.deadlineTimer = ports.time.setTimeout(
       () => fail('Succession attempt exceeded its commit deadline'),
-      Math.max(0, message.at - ports.time.now()),
+      Math.max(
+        0,
+        typeof message.timeoutMs === 'number' && Number.isFinite(message.timeoutMs)
+          ? message.timeoutMs
+          : message.at - ports.time.now(),
+      ),
     );
     return;
   }
@@ -718,8 +742,7 @@ export async function receiveSuccessionAttemptChild(
         state.adoptResolve = resolve;
         state.adoptReject = reject;
       });
-      send({ kind: 'listener-ready', attemptId });
-      await completion;
+      await Promise.all([completion, Promise.resolve().then(() => send({ kind: 'listener-ready', attemptId }))]);
     },
     acknowledge: (acknowledgment) =>
       new Promise<void>((resolve, reject) => {

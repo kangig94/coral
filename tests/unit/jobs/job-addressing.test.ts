@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { JobAddressing } from '../../../src/jobs/addressing.js';
@@ -128,4 +129,29 @@ describe('job addressing', () => {
 
     expect(other.read('racing')).toMatchObject({ disposition: 'terminal', terminalSeq: 12 });
   });
+});
+
+it.each([0, -3_600_000, 3_600_000])('bounds historical waiting across a %s ms wall step', async (step) => {
+  const root = mkdtempSync(join(tmpdir(), 'coral-addressing-clock-'));
+  directories.push(root);
+  const time = new VirtualTime();
+  const wall = time.now.bind(time);
+  let offset = 0;
+  Object.assign(time, { now: () => wall() + offset });
+  const index = new JobLocationIndex({ ...runtime, time }, root);
+  index.register('old', 'lineage-old:7', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const iterator = historicalAddressing(index).waitStream({ jobIds: ['old'], timeoutSeconds: 1, supportsWaitV2: true });
+  const result = iterator.next();
+  await flushMicrotasks();
+  offset = step;
+  for (let tick = 0; tick < 5; tick++) {
+    time.tick(250);
+    await flushMicrotasks(10);
+  }
+  await expect(result).resolves.toMatchObject({ done: false, value: { type: 'waiting' } });
+  await iterator.return(undefined);
 });

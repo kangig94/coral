@@ -4,7 +4,7 @@ import type { CommitState, SuccessionCommitPorts } from './index.js';
 import { TransientCommitFailure } from './failure.js';
 
 export function createCommitPause(ports: SuccessionCommitPorts, state: CommitState) {
-  function openPause(attemptId: string, admissionRevision: number): number {
+  function openPause(attemptId: string, admissionRevision: number) {
     if (state.pausedAttemptId !== null) ports.launchCoordinator.endSuccessionCommitWindow(state.pausedAttemptId);
     state.pausedAttemptId = null;
     const pause = ports.launchCoordinator.beginSuccessionCommitWindow(attemptId, admissionRevision);
@@ -16,7 +16,7 @@ export function createCommitPause(ports: SuccessionCommitPorts, state: CommitSta
       );
     }
     state.pausedAttemptId = attemptId;
-    return pause.deadlineAtMs;
+    return { deadlineAtMs: pause.deadlineAtMs, deadlineMonotonicMs: pause.deadlineMonotonicMs };
   }
 
   function closePause(): void {

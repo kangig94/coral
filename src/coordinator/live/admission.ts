@@ -136,7 +136,7 @@ export type PendingLaunchSettlementDisposition =
     }>;
 
 export type SuccessionPauseDecision =
-  | Readonly<{ kind: 'paused'; attemptId: string; deadlineAtMs: number }>
+  | Readonly<{ kind: 'paused'; attemptId: string; deadlineAtMs: number; deadlineMonotonicMs: number }>
   | Readonly<{ kind: 'refused'; reason: 'stale-preparation' | 'pause-active' | 'aggregate-budget-exhausted' }>;
 
 type PauseInterval = Readonly<{ startedAtMs: number; endedAtMs: number }>;
@@ -289,7 +289,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       this.finishSuccessionPause(attemptId);
     }, SUCCESSION_PAUSE_ATTEMPT_MS);
     this.successionPause = { attemptId, startedAtMs: now, timer };
-    return { kind: 'paused', attemptId, deadlineAtMs };
+    return { kind: 'paused', attemptId, deadlineAtMs, deadlineMonotonicMs: now + SUCCESSION_PAUSE_ATTEMPT_MS };
   }
 
   endSuccessionCommitWindow(attemptId: string): boolean {

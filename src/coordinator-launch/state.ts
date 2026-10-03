@@ -387,7 +387,7 @@ export class SupervisorLaunchMemory {
   childWatch(reservation: LaunchReservation, startupBudgetMs: number): ChildWatchState {
     const existing = this.#childWatches.get(reservation.id);
     if (existing !== undefined) return existing;
-    const lastAnswer = Date.now();
+    const lastAnswer = Number(process.hrtime.bigint() / 1_000_000n);
     const state: ChildWatchState = {
       armed: false,
       pendingHello: false,
@@ -403,7 +403,7 @@ export class SupervisorLaunchMemory {
       served: false,
       discovered: false,
       admitted: false,
-      startupDeadline: Date.now() + startupBudgetMs,
+      startupDeadline: lastAnswer + startupBudgetMs,
       disconnectedAt: null,
     };
     this.#childWatches.set(reservation.id, state);

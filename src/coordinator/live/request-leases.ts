@@ -97,8 +97,9 @@ function beginRequestLease(
   const controller = new AbortController();
   const currentIdentity = (): RequestLeaseIdentity | undefined => durableRequestIdentity(controller.signal) ?? identity;
   let deadline =
-    time.now() + (method === 'kb.source.create' || method === 'kb.reindex' ? timing.kbMutationMs : timing.defaultMs);
-  let lastWake = time.now();
+    Number(time.monotonicNow()) +
+    (method === 'kb.source.create' || method === 'kb.reindex' ? timing.kbMutationMs : timing.defaultMs);
+  let lastWake = Number(time.monotonicNow());
   let expired = false;
   let settled = false;
   let released = false;
@@ -118,7 +119,7 @@ function beginRequestLease(
       outcome,
     });
   const check = (): void => {
-    const current = time.now();
+    const current = Number(time.monotonicNow());
     const gap = current - lastWake;
     lastWake = current;
     if (gap > timing.schedulingGapMs) deadline += gap;

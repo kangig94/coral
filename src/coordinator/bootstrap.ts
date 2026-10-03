@@ -352,7 +352,7 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
     let parentSilent = false;
     let parentTermDeliveredAt: number | null = null;
     let parentKillSent = false;
-    let lastParentProgress = Date.now();
+    let lastParentProgress = Number(process.hrtime.bigint() / 1_000_000n);
     let lastWake = lastParentProgress;
     const recordParentHold = (held: boolean): void => {
       const runDir = process.env.CORAL_SENTINEL_RUN_DIR;
@@ -393,7 +393,7 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
     };
     const parentAnswered = (): void => {
       if (parentTermDeliveredAt !== null || parentKillSent) return;
-      lastParentProgress = Date.now();
+      lastParentProgress = Number(process.hrtime.bigint() / 1_000_000n);
       if (!parentSilent) return;
       parentSilent = false;
       parentTermDeliveredAt = null;
@@ -401,7 +401,7 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
       recordParentHold(false);
     };
     const supervisorMonitor = setInterval(() => {
-      const now = Date.now();
+      const now = Number(process.hrtime.bigint() / 1_000_000n);
       const gap = now - lastWake;
       lastWake = now;
       if (gap > SENTINEL_TIMING.schedulingGapMs) {

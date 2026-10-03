@@ -46,7 +46,7 @@ export function createCommitReadiness(ports: SuccessionCommitPorts) {
     }
   }
 
-  async function recertifyObligations(attemptId: string, deadlineAt: number): Promise<void> {
+  async function recertifyObligations(attemptId: string, deadlineMonotonicMs: number): Promise<void> {
     let timeout: TimerHandle | null = null;
     try {
       const recertified = await Promise.race([
@@ -55,7 +55,7 @@ export function createCommitReadiness(ports: SuccessionCommitPorts) {
           timeout = runtime.time.setTimeout(
             () =>
               reject(new TransientCommitFailure('Succession obligations were not re-certified before the deadline.')),
-            Math.max(0, deadlineAt - runtime.time.now()),
+            Math.max(0, deadlineMonotonicMs - Number(runtime.time.monotonicNow())),
           );
         }),
       ]);

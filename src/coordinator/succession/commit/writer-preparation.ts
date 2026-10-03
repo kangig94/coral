@@ -14,19 +14,21 @@ const RETIRING_OPENER_DRAIN_MS = 500;
 
 export function createCommitWriterPreparation(ports: SuccessionCommitPorts, state: CommitState) {
   const { runtime } = ports;
-  async function parkIncumbentWriters(writers: IncumbentWriterPorts, deadlineAt: number): Promise<void> {
+  async function parkIncumbentWriters(writers: IncumbentWriterPorts, deadlineMonotonicMs: number): Promise<void> {
     const parkAbort = new AbortController();
     const parkDeadline = runtime.time.setTimeout(
       () => parkAbort.abort(new Error('Writer park exceeded the commit deadline.')),
-      Math.max(0, deadlineAt - runtime.time.now()),
+      Math.max(0, deadlineMonotonicMs - Number(runtime.time.monotonicNow())),
     );
+    const signal = AbortSignal.any([parkAbort.signal, state.attemptAbort.signal]);
     try {
-      await writers.parkProviderOperationMutations(parkAbort.signal);
+      signal.throwIfAborted();
+      await writers.parkProviderOperationMutations(signal);
       if (ports.kbDaemon.parkWriterTurn === undefined) {
         throw new Error('Incumbent writer park capabilities are unavailable.');
       }
       try {
-        await ports.kbDaemon.parkWriterTurn(parkAbort.signal);
+        await ports.kbDaemon.parkWriterTurn(signal);
       } catch (error: unknown) {
         // A writer that cannot park yet decides nothing about the target.
         throw new TransientCommitFailure(
@@ -35,7 +37,7 @@ export function createCommitWriterPreparation(ports: SuccessionCommitPorts, stat
           true,
         );
       }
-      parkAbort.signal.throwIfAborted();
+      signal.throwIfAborted();
     } finally {
       runtime.time.clearTimeout(parkDeadline);
     }
@@ -46,7 +48,7 @@ export function createCommitWriterPreparation(ports: SuccessionCommitPorts, stat
     preparation: SuccessionPreparation,
     custody: RetiringCustodyCertificate,
     successorFingerprint: string,
-    deadlineAt: number,
+    deadlineMonotonicMs: number,
     protect: (openerDrainMs: number) => RetiringStoreProtection,
   ): Promise<void> {
     const certificate = ports.retiringEpoch.certificate(preparation.epochKey);
@@ -55,12 +57,18 @@ export function createCommitWriterPreparation(ports: SuccessionCommitPorts, stat
     }
     const custodyHolds = await ports.retiringEpoch.confirmCustody(
       custody,
-      AbortSignal.timeout(Math.max(1, deadlineAt - runtime.time.now())),
+      AbortSignal.any([
+        state.attemptAbort.signal,
+        AbortSignal.timeout(Math.max(1, deadlineMonotonicMs - Number(runtime.time.monotonicNow()))),
+      ]),
     );
     if (!custodyHolds) throw new TransientCommitFailure('Retiring epoch custody changed after its certification.');
-    if (runtime.time.now() >= deadlineAt) throw new Error('Retirement certification exceeded the commit deadline.');
+    if (Number(runtime.time.monotonicNow()) >= deadlineMonotonicMs)
+      throw new Error('Retirement certification exceeded the commit deadline.');
     await ports.interposition.at('retirement-protection', { recovery: false });
-    const protection = protect(Math.max(0, Math.min(RETIRING_OPENER_DRAIN_MS, deadlineAt - runtime.time.now())));
+    const protection = protect(
+      Math.max(0, Math.min(RETIRING_OPENER_DRAIN_MS, deadlineMonotonicMs - Number(runtime.time.monotonicNow()))),
+    );
     if (protection.kind === 'opener-held') throw new TransientCommitFailure(protection.reason);
     await ports.interposition.at('retirement-authorization', { recovery: false });
     recordRetirementDisposition(runtime, {

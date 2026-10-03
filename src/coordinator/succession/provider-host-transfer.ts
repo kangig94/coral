@@ -342,7 +342,11 @@ async function installProviderHostRecoveryCredential(
 function awaitBeforeAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const asError = (reason: unknown): Error => (reason instanceof Error ? reason : new Error(formatError(reason)));
-    if (signal.aborted) return reject(asError(signal.reason));
+    if (signal.aborted) {
+      void pending.catch(() => {});
+      reject(asError(signal.reason));
+      return;
+    }
     const abort = () => reject(asError(signal.reason));
     signal.addEventListener('abort', abort, { once: true });
     pending.then(
