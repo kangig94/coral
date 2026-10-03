@@ -42,7 +42,7 @@ export const retentionRunStatusSchema = z.object({
 });
 import { z } from 'zod';
 import type { Database } from './db.js';
-import { readRetentionMeta } from './retention-meta.js';
+import { isRetentionChildName, readRetentionMeta } from './retention-meta.js';
 
 const pendingSchema = z.object({
   subjects: z.array(z.string()).max(100),
@@ -77,6 +77,13 @@ export function createRetentionPendingSet(
         );
     });
   };
+  for (const subject of subjects) {
+    if (isRetentionChildName(subject)) continue;
+    subjects.delete(subject);
+    record({ kind: 'kept', subject, reason: 'retention-subject-invalid', pending: false });
+    rotation = subjects.size === 0 ? 0 : rotation % subjects.size;
+    save();
+  }
   return {
     restarted: reset,
     subjects,

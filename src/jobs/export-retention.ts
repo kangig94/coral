@@ -1,4 +1,5 @@
-import { readRetentionMeta } from '../store/retention-meta.js';
+import type { StorageBigIntStat } from '../infra/port-types.js';
+import { isRetentionChildName, readRetentionMeta } from '../store/retention-meta.js';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -49,23 +50,53 @@ async function exportTreeExpired(
   cutoff: number,
   mtimes: Record<string, string> = {},
   directoryCutoff = cutoff,
-  directories = new Map<string, bigint>(),
+  directories = new Map<string, StorageBigIntStat>(),
 ): Promise<boolean> {
   const cutoffNs = BigInt(Math.floor(cutoff)) * 1_000_000n;
   const directory = runtime.storage.lstatSync(path, { bigint: true });
+  if (!directory.isDirectory()) return false;
   if (
     directory.mtimeNs >= BigInt(Math.floor(directoryCutoff)) * 1_000_000n &&
     directory.mtimeNs.toString() !== mtimes['']
   )
     return false;
-  directories.set(path, directory.mtimeNs);
+  directories.set(path, directory);
   for (const child of await runtime.storage.readdir(path)) {
     const childPath = join(path, child);
     const entry = runtime.storage.lstatSync(childPath, { bigint: true });
     if (entry.mtimeNs >= cutoffNs && entry.mtimeNs.toString() !== mtimes[child]) return false;
-    if (entry.isDirectory()) directories.set(childPath, entry.mtimeNs);
+    if (entry.isDirectory()) directories.set(childPath, entry);
   }
-  return runtime.storage.lstatSync(path, { bigint: true }).mtimeNs === directory.mtimeNs;
+  return sameExportEntry(directory, runtime.storage.lstatSync(path, { bigint: true }));
+}
+
+function sameExportEntry(expected: StorageBigIntStat, current: StorageBigIntStat): boolean {
+  return (
+    expected.dev === current.dev &&
+    expected.ino === current.ino &&
+    expected.mode === current.mode &&
+    expected.mtimeNs === current.mtimeNs
+  );
+}
+
+function exportDirectoriesUnchanged(
+  runtime: Runtime,
+  path: string,
+  directories: Map<string, StorageBigIntStat>,
+): boolean {
+  const ancestors: Array<[string, StorageBigIntStat]> = [];
+  let directory = path;
+  let expected = directories.get(directory);
+  while (expected !== undefined) {
+    ancestors.push([directory, expected]);
+    directory = dirname(directory);
+    expected = directories.get(directory);
+  }
+  for (const [directory, expected] of ancestors.reverse()) {
+    const current = runtime.storage.lstatSync(directory, { bigint: true });
+    if (!current.isDirectory() || !sameExportEntry(expected, current)) return false;
+  }
+  return true;
 }
 
 async function deleteExportTree(
@@ -74,16 +105,20 @@ async function deleteExportTree(
   budget: RetentionRunBudget,
   mutate: <T>(operation: () => T) => T,
   changed: (top: string) => void,
-  directories: Map<string, bigint>,
+  directories: Map<string, StorageBigIntStat>,
   cutoff: number,
   top = '',
 ): Promise<boolean> {
   if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
-  const entry = runtime.storage.lstatSync(path);
-  const mtime = runtime.storage.lstatSync(path, { bigint: true }).mtimeNs;
-  if (entry.isDirectory() && !entry.isSymbolicLink()) {
-    if (!directories.has(path)) directories.set(path, runtime.storage.lstatSync(path, { bigint: true }).mtimeNs);
+  if (!exportDirectoriesUnchanged(runtime, dirname(path), directories)) return false;
+  const entry = runtime.storage.lstatSync(path, { bigint: true });
+  const expected = directories.get(path);
+  if (expected !== undefined && !sameExportEntry(expected, entry)) return false;
+  const mtime = entry.mtimeNs;
+  if (entry.isDirectory()) {
+    if (!directories.has(path)) directories.set(path, entry);
     for await (const child of runtime.storage.iterateDirectory(path)) {
+      if (!exportDirectoriesUnchanged(runtime, path, directories)) return false;
       if (
         !(await deleteExportTree(
           runtime,
@@ -102,22 +137,18 @@ async function deleteExportTree(
   }
   if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
   return mutate(() => {
-    for (
-      let directory = entry.isDirectory() ? path : dirname(path);
-      directories.has(directory);
-      directory = dirname(directory)
-    ) {
-      if (runtime.storage.lstatSync(directory, { bigint: true }).mtimeNs !== directories.get(directory)) return false;
-    }
-    if (entry.isDirectory() && !entry.isSymbolicLink()) runtime.storage.rmdirSync(path);
+    if (!exportDirectoriesUnchanged(runtime, entry.isDirectory() ? path : dirname(path), directories)) return false;
+    const current = runtime.storage.lstatSync(path, { bigint: true });
+    if (entry.dev !== current.dev || entry.ino !== current.ino || entry.mode !== current.mode) return false;
+    if (!entry.isDirectory() && !sameExportEntry(entry, current)) return false;
+    if (entry.isDirectory()) runtime.storage.rmdirSync(path);
     else {
-      const current = runtime.storage.lstatSync(path, { bigint: true });
       if (current.mtimeNs >= BigInt(Math.floor(cutoff)) * 1_000_000n || current.mtimeNs > mtime) return false;
       runtime.storage.unlinkSync(path);
     }
     directories.delete(path);
     const parent = dirname(path);
-    if (directories.has(parent)) directories.set(parent, runtime.storage.lstatSync(parent, { bigint: true }).mtimeNs);
+    if (directories.has(parent)) directories.set(parent, runtime.storage.lstatSync(parent, { bigint: true }));
     changed(top);
     return true;
   });
@@ -128,7 +159,7 @@ function retiringJobId(name: string): string | null {
   if (!match) return null;
   try {
     const id = decodeURIComponent(match[1]);
-    return id !== '.' && id !== '..' && !id.includes('/') && !id.includes('\\') ? id : null;
+    return isRetentionChildName(id) ? id : null;
   } catch {
     return null;
   }
@@ -153,8 +184,10 @@ export async function pruneJobExports(input: {
   };
   const root = runtime.paths.coral.exports.jobsRoot;
   if (!budget.canContinue()) return input.afterId;
+  let rootIdentity: StorageBigIntStat;
   try {
     const rootEntry = await runtime.storage.lstat(root);
+    rootIdentity = runtime.storage.lstatSync(root, { bigint: true });
     if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
       budget.record({ kind: 'kept', subject: root, reason: 'export-root-unproven' });
       return '';
@@ -172,6 +205,16 @@ export async function pruneJobExports(input: {
   const attempted = new Set<string>();
   const process = async (id: string, deletionBudget: RetentionRunBudget): Promise<boolean> => {
     attempted.add(id);
+    if (!isRetentionChildName(id)) {
+      pending.remove(id);
+      budget.record({ kind: 'kept', subject: id, reason: 'retention-subject-invalid', pending: false });
+      return true;
+    }
+    const currentRoot = runtime.storage.lstatSync(root, { bigint: true });
+    if (!currentRoot.isDirectory() || currentRoot.dev !== rootIdentity.dev || currentRoot.ino !== rootIdentity.ino) {
+      budget.record({ kind: 'kept', subject: root, reason: 'export-root-identity-changed' });
+      return false;
+    }
     let workId = id;
     let path = join(root, workId);
     const recovering = id.startsWith('.retiring-');
@@ -201,6 +244,9 @@ export async function pruneJobExports(input: {
       });
     const keepRetirement = (): string =>
       mutate(() => {
+        const rootEntry = runtime.storage.lstatSync(root, { bigint: true });
+        if (!rootEntry.isDirectory() || rootEntry.dev !== rootIdentity.dev || rootEntry.ino !== rootIdentity.ino)
+          throw new Error('export-root-identity-changed');
         const original = join(root, jobId);
         let occupied = true;
         try {
@@ -218,11 +264,10 @@ export async function pruneJobExports(input: {
         return kept;
       });
     try {
-      const entry = await runtime.storage.lstat(path);
+      const entry = runtime.storage.lstatSync(path, { bigint: true });
       if (budget.canMutate?.() === false) return false;
       const state = input.jobState(jobId);
-      if (!entry.isDirectory() || entry.isSymbolicLink())
-        outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
+      if (!entry.isDirectory()) outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
       else if (state.kind === 'regression')
         outcome = { kind: 'kept', subject: recovering ? keepRetirement() : path, reason: 'terminal-clock-regression' };
       else if (state.kind === 'unknown' || state.kind === 'nonterminal')
@@ -261,7 +306,7 @@ export async function pruneJobExports(input: {
         if (recovering && evidence !== null && evidence.cutoff <= cutoff) admittedCutoff = evidence.cutoff;
         const ageCutoff = admittedCutoff ?? cutoff;
         const mtimes = evidence !== null && evidence.cutoff === ageCutoff ? evidence.mtimes : {};
-        const directories = new Map<string, bigint>();
+        const directories = new Map<string, StorageBigIntStat>();
         const expired = recovering
           ? await exportTreeExpired(runtime, path, ageCutoff, mtimes, ageCutoff, directories)
           : state.kind !== 'absent' || admittedCutoff !== null || (await exportTreeExpired(runtime, path, cutoff));
@@ -287,14 +332,23 @@ export async function pruneJobExports(input: {
           deleting = true;
           if (!recovering) {
             const renameTime = runtime.time.now();
-            const directoryMtime = runtime.storage.lstatSync(path, { bigint: true }).mtimeNs;
+            const directoryEntry = runtime.storage.lstatSync(path, { bigint: true });
+            const directoryMtime = directoryEntry.mtimeNs;
             const retiredId = `.retiring-${encodeURIComponent(jobId)}-${randomUUID()}`;
             const retired = join(root, retiredId);
-            mutate(() => runtime.storage.renameSync(path, retired));
+            mutate(() => {
+              const rootEntry = runtime.storage.lstatSync(root, { bigint: true });
+              if (!rootEntry.isDirectory() || rootEntry.dev !== rootIdentity.dev || rootEntry.ino !== rootIdentity.ino)
+                throw new Error('export-root-identity-changed');
+              const current = runtime.storage.lstatSync(path, { bigint: true });
+              if (!current.isDirectory() || current.dev !== entry.dev || current.ino !== entry.ino)
+                throw new Error('export-directory-identity-changed');
+              runtime.storage.renameSync(path, retired);
+            });
             workId = retiredId;
             path = retired;
             pending.remove(id);
-            const unchanged = runtime.storage.lstatSync(path, { bigint: true }).mtimeNs === directoryMtime;
+            const unchanged = sameExportEntry(directoryEntry, runtime.storage.lstatSync(path, { bigint: true }));
             const expiredAfterRename = await exportTreeExpired(
               runtime,
               path,
@@ -322,16 +376,24 @@ export async function pruneJobExports(input: {
               .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
               .run(`storage-retention.exports.admission.v1.${workId}`, String(ageCutoff));
           });
+          const deletionRoot = runtime.storage.lstatSync(root, { bigint: true });
+          if (
+            !deletionRoot.isDirectory() ||
+            deletionRoot.dev !== currentRoot.dev ||
+            deletionRoot.ino !== currentRoot.ino
+          )
+            throw new Error('export-root-identity-changed');
+          directories.set(root, deletionRoot);
           const deleted = await deleteExportTree(
             runtime,
             path,
             deletionBudget,
             mutate,
             (top) => {
-              const rootMtime = directories.get(path);
+              const rootMtime = directories.get(path)?.mtimeNs;
               if (rootMtime !== undefined) {
                 mtimes[''] = rootMtime.toString();
-                const childMtime = directories.get(join(path, top));
+                const childMtime = directories.get(join(path, top))?.mtimeNs;
                 if (top && childMtime !== undefined) mtimes[top] = childMtime.toString();
                 else delete mtimes[top];
                 saveEvidence();

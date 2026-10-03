@@ -346,6 +346,7 @@ export async function pruneStoreEpochHolders(
     if (entry.startsWith(EPOCH_HOLDER_PREFIX)) {
       const subject = join(root, entry);
       try {
+        const identity = runtime.storage.lstatSync(subject, { bigint: true });
         const holder =
           entry.endsWith('.json') || entry.endsWith('.json.tmp')
             ? await inspectStoreEpochHolderAsync(runtime, root, entry)
@@ -362,6 +363,14 @@ export async function pruneStoreEpochHolders(
             if (!budget.canContinue()) return cursor;
             mutate(() => {
               try {
+                const current = runtime.storage.lstatSync(subject, { bigint: true });
+                if (
+                  !current.isFile() ||
+                  current.dev !== identity.dev ||
+                  current.ino !== identity.ino ||
+                  current.mtimeNs !== identity.mtimeNs
+                )
+                  throw new Error('holder-entry-identity-changed');
                 runtime.storage.unlinkSync(subject);
               } catch (error: unknown) {
                 if (errorCode(error) !== 'ENOENT') throw error;

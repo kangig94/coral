@@ -35,6 +35,10 @@ export function readRetentionMeta<Value>(input: {
   return { value, reset: false };
 }
 
+export function isRetentionChildName(value: string): boolean {
+  return value.length > 0 && value !== '.' && value !== '..' && !/[\\/\0]/u.test(value);
+}
+
 /** Raw scan cursors carry identifiers rather than JSON; an invalid cursor restarts enumeration. */
 export function readRetentionCursor(input: {
   db: Database;
@@ -47,7 +51,7 @@ export function readRetentionCursor(input: {
     decode: (value) =>
       z
         .string()
-        .refine((cursor) => !cursor.includes('\0'))
+        .refine((cursor) => cursor === '' || isRetentionChildName(cursor))
         .parse(value),
     fresh: () => '',
   }).value;

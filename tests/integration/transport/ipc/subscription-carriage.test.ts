@@ -292,6 +292,7 @@ describe('subscription carriage', () => {
     const idleTimer = new IdleTimer({
       time: {
         now: () => 0,
+        monotonicNow: () => 0n,
         setInterval: () => ({ unref: () => {} }) as never,
         clearInterval: () => {},
       } as never,

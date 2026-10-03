@@ -145,7 +145,10 @@ export function createStorageRetentionScheduler(input: {
             };
             try {
               if (budget.canContinue()) {
-                const work = Promise.resolve().then(() => operation(budget, ownerAbort.signal, mutate));
+                const work = Promise.resolve().then(() => {
+                  if (ownerAbort.signal.aborted || abort.signal.aborted) return;
+                  return operation(budget, ownerAbort.signal, mutate);
+                });
                 outstandingOwners.set(subject, work);
                 void work.finally(() => outstandingOwners.delete(subject)).catch(() => undefined);
                 await Promise.race([work, cancelled]);
@@ -238,6 +241,7 @@ export function createStorageRetentionScheduler(input: {
   const schedule = (delay: number): void => {
     timer = runtime.time.setTimeout(() => {
       timer = null;
+      if (abort.signal.aborted) return;
       const nextRun = runtime.time.monotonicNow() + BigInt(DAILY_MS);
       running = run().finally(() => {
         if (!abort.signal.aborted) schedule(Math.max(0, Number(nextRun - runtime.time.monotonicNow())));

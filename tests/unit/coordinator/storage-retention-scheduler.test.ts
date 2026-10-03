@@ -313,3 +313,20 @@ it('keeps at most one unsettled run per owner and retries after that run finishe
   expect(owners.exports).toHaveBeenLastCalledWith(expect.objectContaining({ afterId: '' }));
   expect(statuses.at(-1)?.phase).toBe('completed');
 });
+
+it('drops an already queued retention timer callback after stop', async () => {
+  const f = createRetentionFixture();
+  let queued!: () => void;
+  const schedule = f.runtime.time.setTimeout;
+  f.runtime.time.setTimeout = (callback, ms) => {
+    queued = callback;
+    return schedule(callback, ms);
+  };
+  const { scheduler, statuses } = fixture(f);
+  scheduler.start();
+  await scheduler.stop();
+  queued();
+  await Promise.resolve();
+  expect(owners.exports).not.toHaveBeenCalled();
+  expect(statuses).toEqual([]);
+});

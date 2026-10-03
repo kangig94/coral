@@ -1,5 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  symlinkSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -148,16 +158,16 @@ describe('handoff-routing/status', () => {
     const quarantineWalPath = `${quarantinePath}-wal`;
     let movedWalValidated = false;
     let replacementInjected = false;
-    const statSyncWithReplacement = ((candidate: string, options?: { bigint: true }) => {
+    const lstatSyncWithReplacement = ((candidate: string, options?: { bigint: true }) => {
       if (candidate === quarantineWalPath && movedWalValidated && !replacementInjected) {
         baseRuntime.storage.unlinkSync(candidate);
         baseRuntime.storage.writeFileSync(candidate, 'replacement wal evidence', { mode: 0o600 });
         replacementInjected = true;
       }
       return options === undefined
-        ? baseRuntime.storage.statSync(candidate)
-        : baseRuntime.storage.statSync(candidate, options);
-    }) as StoragePort['statSync'];
+        ? baseRuntime.storage.lstatSync(candidate)
+        : baseRuntime.storage.lstatSync(candidate, options);
+    }) as StoragePort['lstatSync'];
     const discardRuntime: Runtime = {
       ...baseRuntime,
       ids: { ...baseRuntime.ids, uuid: () => quarantineId },
@@ -168,7 +178,7 @@ describe('handoff-routing/status', () => {
           if (candidate === quarantineWalPath) movedWalValidated = true;
           return fd;
         },
-        statSync: statSyncWithReplacement,
+        lstatSync: lstatSyncWithReplacement,
       },
     };
 
@@ -335,4 +345,60 @@ describe('handoff-routing/status', () => {
     });
     expect(handoffRoutingStatusExitContribution(status)).toBe(0);
   });
+});
+
+describe('handoff-routing quarantine coordinates', () => {
+  it('does not discard a source when its quarantine coordinate is a symlink', () => {
+    const path = databasePath();
+    const directory = dirname(path);
+    const quarantineId = '00000000-0000-4000-8000-000000000099';
+    const quarantinePath = join(directory, 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    writeFileSync(path, 'routing status evidence', { mode: 0o600 });
+    mkdirSync(join(directory, 'handoff-routing-quarantine'));
+    symlinkSync(path, quarantinePath);
+
+    const result = quarantineHandoffRoutingStoreArtifact(
+      createRealRuntime('prod', { baseDir: directory }).storage,
+      path,
+      quarantineId,
+      {
+        firstMainState: 'non-empty',
+        firstWalReceipt: { kind: 'absent' },
+        guardedMainState: 'non-empty',
+        guardedWalReceipt: { kind: 'absent' },
+      },
+      () => undefined,
+    );
+
+    expect(existsSync(path)).toBe(true);
+    expect(lstatSync(quarantinePath).isSymbolicLink()).toBe(true);
+    expect(result).toEqual({
+      kind: 'quarantine-coordinate-occupied',
+      quarantineId,
+      quarantinePath,
+      artifact: 'database',
+    });
+  });
+});
+
+it('claims a regular quarantine coordinate and retains its payload', () => {
+  const path = databasePath();
+  const quarantineId = '00000000-0000-4000-8000-000000000098';
+  const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+  writeFileSync(path, 'routing status evidence', { mode: 0o600 });
+  const result = quarantineHandoffRoutingStoreArtifact(
+    createRealRuntime('prod', { baseDir: dirname(path) }).storage,
+    path,
+    quarantineId,
+    {
+      firstMainState: 'non-empty',
+      firstWalReceipt: { kind: 'absent' },
+      guardedMainState: 'non-empty',
+      guardedWalReceipt: { kind: 'absent' },
+    },
+    () => undefined,
+  );
+  expect(result.kind).toBe('quarantined');
+  expect(existsSync(path)).toBe(false);
+  expect(readFileSync(quarantinePath, 'utf-8')).toBe('routing status evidence');
 });

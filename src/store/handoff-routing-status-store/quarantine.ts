@@ -300,6 +300,7 @@ function createHandoffRoutingStatusArtifactEffects<Artifact>(): HandoffRoutingSt
 }
 
 type HandoffRoutingIdentityObservation =
+  | Readonly<{ kind: 'occupied' }>
   | Readonly<{ kind: 'present'; identity: Readonly<{ dev: bigint; ino: bigint }> }>
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'undeterminable'; error: HandoffRoutingStorePathObservationError }>;
@@ -323,6 +324,7 @@ function attemptHandoffRoutingStatusMutation<T>(
 
 function observeHandoffRoutingIdentity(storage: StoragePort, path: string): HandoffRoutingIdentityObservation {
   const observation = observeHandoffRoutingPath(storage, path);
+  if (observation.kind === 'present' && !observation.stat.isFile()) return { kind: 'occupied' };
   return observation.kind === 'present'
     ? { kind: 'present', identity: { dev: observation.stat.dev, ino: observation.stat.ino } }
     : observation;
@@ -338,6 +340,7 @@ function unlinkHandoffRoutingPathIfIdentityMatches(
   context.assertOwned();
   const expectedObservation = expectedIdentity();
   const candidateObservation = observeHandoffRoutingIdentity(context.storage, path);
+  if (expectedObservation.kind === 'occupied' || candidateObservation.kind === 'occupied') return { kind: 'occupied' };
   if (expectedObservation.kind === 'undeterminable') return expectedObservation;
   if (candidateObservation.kind === 'undeterminable') return candidateObservation;
   if (candidateObservation.kind === 'absent') return { kind: 'candidate-absent' };
@@ -372,6 +375,7 @@ function claimQuarantineArtifactCoordinate(
     return { ...sourceObservation, retention: 'not-retained' };
   }
   if (sourceObservation.kind === 'absent') return sourceObservation;
+  if (!sourceObservation.stat.isFile()) return { kind: 'occupied' };
   try {
     // POSIX link(2) fails with EEXIST instead of replacing the destination, so it can claim a quarantine
     // coordinate atomically where rename(2) cannot.
@@ -394,6 +398,11 @@ function claimQuarantineArtifactCoordinate(
   if (repeatedSourceObservation.kind === 'undeterminable') {
     return { ...repeatedSourceObservation, retention: 'unknown' };
   }
+  if (
+    !repeatedDestinationObservation.stat.isFile() ||
+    (repeatedSourceObservation.kind === 'present' && !repeatedSourceObservation.stat.isFile())
+  )
+    return { kind: 'occupied' };
   const sourceAlreadyRemoved = repeatedSourceObservation.kind === 'absent';
   if (
     repeatedSourceObservation.kind === 'present' &&

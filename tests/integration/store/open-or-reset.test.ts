@@ -395,12 +395,12 @@ describe('write-once store epochs', () => {
     createCompatibleStore(flatStorePath(runtime.paths.coral.store.dbDir), 'garbage');
     const storage = new Proxy(runtime.storage, {
       get(target, property, receiver) {
-        if (property !== 'rm') return Reflect.get(target, property, receiver) as unknown;
-        return async (path: string, rmOptions?: { recursive?: boolean; force?: boolean }): Promise<void> => {
+        if (property !== 'rmdirSync') return Reflect.get(target, property, receiver) as unknown;
+        return (path: string): void => {
           if (basename(path).startsWith('.reaping-')) {
             throw Object.assign(new Error('injected sweep failure'), { code: 'EIO' });
           }
-          await target.rm(path, rmOptions);
+          target.rmdirSync(path);
         };
       },
     });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pruneStoreEpochHolders, registerStoreEpochHolder } from '#src/store/epoch/holder.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
@@ -192,3 +192,23 @@ it.each(['normal', 'competing-removal', 'permission-error', 'sync-error'])(
     if (proof.kind === 'acquired') proof.lease();
   },
 );
+
+it('keeps a holder marker replaced by a symlink after its owner is observed absent', async () => {
+  const f = fixture();
+  const root = f.runtime.paths.coral.store.dbDir;
+  mkdirSync(join(root, 'epoch-1'));
+  writeFileSync(join(root, 'epoch-1', '.lock'), '');
+  const marker = join(root, '.epoch-holder-stale.json');
+  const outside = join(f.baseDir, 'outside');
+  writeFileSync(marker, JSON.stringify({ epoch: '1', pid: 101 }));
+  writeFileSync(outside, 'outside evidence');
+  f.runtime.process.observeLiveness = () => {
+    renameSync(marker, join(f.baseDir, 'saved-marker'));
+    symlinkSync(outside, marker);
+    return 'absent';
+  };
+  await pruneStoreEpochHolders(f.runtime, f.budget, (operation) => operation());
+  expect(lstatSync(marker).isSymbolicLink()).toBe(true);
+  expect(existsSync(outside)).toBe(true);
+  expect(f.outcomes).toContainEqual({ kind: 'failed', subject: marker, reason: 'holder-entry-identity-changed' });
+});
