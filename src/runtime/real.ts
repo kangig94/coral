@@ -891,7 +891,7 @@ function createRealProcessPort({
           ? resolveExecEnv({ env: options.envAdditions, inheritEnv: true })
           : buildSpawnEnv(options.envAdditions);
       const child = spawnChild(options.command, options.args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: options.ipc ? ['pipe', 'pipe', 'pipe', 'ipc'] : ['pipe', 'pipe', 'pipe'],
         cwd: options.cwd,
         shell: options.shell,
         detached: options.detached,

@@ -1,3 +1,4 @@
+import { readRetentionMeta } from '../store/retention-meta.js';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -163,7 +164,12 @@ export async function pruneJobExports(input: {
   input.mutate(() =>
     input.db.prepare('DELETE FROM meta WHERE key = ?').run('storage-retention.exports.eligibility.v1'),
   );
-  const pending = createRetentionPendingSet(input.db, 'storage-retention.exports.pending.v1', input.mutate);
+  const pending = createRetentionPendingSet(
+    input.db,
+    'storage-retention.exports.pending.v1',
+    input.mutate,
+    budget.record,
+  );
   const attempted = new Set<string>();
   const process = async (id: string, deletionBudget: RetentionRunBudget): Promise<boolean> => {
     attempted.add(id);
@@ -178,10 +184,14 @@ export async function pruneJobExports(input: {
     let outcome: RetentionOutcome;
     let deleting = false;
     const admissionKey = `storage-retention.exports.admission.v1.${id}`;
-    const saved = input.db
-      .prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?')
-      .get(admissionKey);
-    const admission = saved === undefined ? null : Number(saved.value);
+    const { value: admission, reset: admissionReset } = readRetentionMeta<number | null>({
+      db: input.db,
+      key: admissionKey,
+      mutate: input.mutate,
+      record: budget.record,
+      decode: (value) => z.number().finite().parse(JSON.parse(value)),
+      fresh: () => null,
+    });
     let admittedCutoff = admission !== null && Number.isFinite(admission) && admission <= cutoff ? admission : null;
     const evidenceKey = (name: string) => `storage-retention.exports.retirement.v1.${name}`;
     const clearAdmission = () =>
@@ -229,11 +239,25 @@ export async function pruneJobExports(input: {
           reason: 'terminal-not-expired-or-unknown',
         };
       else {
-        const evidenceRow = input.db
-          .prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?')
-          .get(evidenceKey(id));
-        const evidence =
-          evidenceRow === undefined ? null : retirementEvidenceSchema.parse(JSON.parse(evidenceRow.value));
+        const { value: evidence, reset: evidenceReset } = readRetentionMeta<z.infer<
+          typeof retirementEvidenceSchema
+        > | null>({
+          db: input.db,
+          key: evidenceKey(id),
+          mutate: input.mutate,
+          record: budget.record,
+          decode: (value) => retirementEvidenceSchema.parse(JSON.parse(value)),
+          fresh: () => null,
+        });
+        if (admissionReset || evidenceReset) {
+          budget.record({
+            kind: 'kept',
+            subject: recovering ? keepRetirement() : path,
+            reason: 'retirement-evidence-reset',
+            pending: true,
+          });
+          return true;
+        }
         if (recovering && evidence !== null && evidence.cutoff <= cutoff) admittedCutoff = evidence.cutoff;
         const ageCutoff = admittedCutoff ?? cutoff;
         const mtimes = evidence !== null && evidence.cutoff === ageCutoff ? evidence.mtimes : {};
@@ -340,7 +364,8 @@ export async function pruneJobExports(input: {
     budget.record(outcome);
     return true;
   };
-  let cursor = input.afterId;
+  const afterId = pending.restarted ? '' : input.afterId;
+  let cursor = afterId;
   try {
     const retryBudget: RetentionRunBudget = {
       ...budget,
@@ -353,7 +378,7 @@ export async function pruneJobExports(input: {
       await setImmediate();
     }
     for (const id of ids) {
-      if (id <= input.afterId && !id.startsWith('.retiring-')) continue;
+      if (id <= afterId && !id.startsWith('.retiring-')) continue;
       if (!budget.canContinue()) return cursor;
       if (!attempted.has(id) && !pending.subjects.has(id) && !(await process(id, budget))) return cursor;
       if (id > cursor) cursor = id;

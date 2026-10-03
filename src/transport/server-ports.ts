@@ -320,6 +320,7 @@ export const launchPermitDiagnosticsSchema = z
 export type LaunchPermitDiagnostics = z.infer<typeof launchPermitDiagnosticsSchema>;
 
 export const providerOperationStartupStatusSchema = z.object({
+  setCount: z.number().int().nonnegative().optional(),
   phase: z.enum(['recovering', 'retry-owned', 'detached']),
   elapsedMs: z.number().nonnegative().finite(),
   boundMs: z.number().positive().finite(),

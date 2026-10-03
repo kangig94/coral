@@ -175,7 +175,12 @@ function readHealthDiagnostics(input: HealthDiagnosticInput) {
     launchReclamations?: LaunchPermitReclamationDiagnostic[];
   } = { carriers: carrierDiagnostics };
   const startupStatus = providerOperationStartupStatus();
-  if (startupStatus !== null) diagnostics.providerOperationStartupReconciliation = startupStatus;
+  if (startupStatus !== null)
+    diagnostics.providerOperationStartupReconciliation = {
+      ...startupStatus,
+      setCount: startupStatus.setCount ?? startupStatus.sets.length,
+      sets: startupStatus.sets.slice(0, 20),
+    };
   if (mutationBlocked !== undefined) {
     diagnostics.mutationBlocked = mutationBlocked;
   }

@@ -195,6 +195,7 @@ export interface ChildProcessLike {
   on(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
+  on(event: 'message', listener: (message: unknown) => void): this;
   kill(signal?: NodeJS.Signals): boolean;
   unref?(): void;
 }

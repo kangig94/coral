@@ -1,3 +1,4 @@
+import { readRetentionCursor } from '../../store/retention-meta.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import { pruneJobExports, readExportJobState } from '../../jobs/export-retention.js';
@@ -136,9 +137,12 @@ export function createStorageRetentionScheduler(input: {
           };
           const mutate = <T>(operation: () => T): T => writer.withWriteTurn(operation);
           const readCursor = (owner: string): string =>
-            db
-              .prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?')
-              .get(`storage-retention.${owner}.v1`)?.value ?? '';
+            readRetentionCursor({
+              db,
+              key: `storage-retention.${owner}.v1`,
+              mutate,
+              record,
+            });
           const saveCursor = (owner: string, value: string): void => {
             db.prepare<[string, string]>('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
               `storage-retention.${owner}.v1`,

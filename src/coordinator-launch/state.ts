@@ -161,7 +161,7 @@ function fromAdmission(admission: LaunchAdmission): LaunchReservation {
     id: admission.launchId,
     buildSetId: admission.build.buildSetId,
     purpose: admission.purpose,
-    phase: admission.discoveredAt === undefined ? 'admitted' : 'serving',
+    phase: 'admitted',
     admittedAt: admission.admittedAt,
     admittedMonotonicMs: admission.admittedMonotonicMs,
     admissionProven: true,
@@ -189,7 +189,7 @@ function discoveryLaunchReservation(record: CoordinatorDiscoveryRecord): LaunchR
     id: supervision.launchId,
     buildSetId: supervision.buildSetId,
     purpose: supervision.purpose,
-    phase: 'serving',
+    phase: 'admitted',
     admittedAt: supervision.admittedAt,
     parent: supervision.parent,
     ...identity,
@@ -320,9 +320,7 @@ export class SupervisorLaunchMemory {
           attemptDeadline: deadline,
           ...(attemptSlot.buildSetId !== intent.intent.target.build.buildSetId
             ? { recoveryHold: 'envelope-conflict' as const }
-            : deadline === undefined
-              ? { recoveryHold: 'timing-unavailable' as const }
-              : {}),
+            : {}),
         };
         admissions[index] = attemptSlot;
       }

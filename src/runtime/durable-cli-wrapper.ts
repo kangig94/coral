@@ -16,6 +16,7 @@ import {
   type GracefulKillDisposition,
   type GracefulKillPendingDisposition,
 } from '../infra/process-supervision.js';
+import { providerHostObservationSchema } from '../infra/provider-host-observation.js';
 import { createRealTimePort } from '../infra/time.js';
 import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
 
@@ -728,23 +729,50 @@ function runProviderHost(command: string | undefined, args: string[]): void {
   bindCustodyProcessTicket(ticket, { pid: process.pid, incarnation }, Date.now());
   delete process.env[CUSTODY_PROCESS_TICKET_ENV];
   delete process.env.CORAL_CUSTODY_EPOCH;
-  let child: ReturnType<typeof spawn> | null = null;
-  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
-    process.on(signal, () => {
-      child?.kill(signal);
-    });
-  }
-  child = spawn(command, args.slice(0, -1), {
+  const time = createRealTimePort();
+  let retry: ReturnType<typeof setInterval> | null = null;
+  const child = spawn(command, args.slice(0, -1), {
     stdio: 'inherit',
     env: process.env,
     shell: shouldUseWindowsCommandShell(command, process.platform),
   });
-  child.once('error', () => {
-    process.exitCode = 1;
+  const retainedChild = child as unknown as ChildProcessLike;
+  const terminate = (): void => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    requestObservedChildKill(retainedChild, time);
+    retry ??= setInterval(() => requestObservedChildKill(retainedChild, time), RETAINED_GROUP_TERMINATION_INTERVAL_MS);
+  };
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, terminate);
+  process.once('disconnect', terminate);
+  const publishAbsent = (code: number): void => {
+    if (retry !== null) clearInterval(retry);
+    process.exitCode = code;
+    if (process.connected)
+      process.send?.(
+        providerHostObservationSchema.parse({ kind: 'provider-host-absent', processToken: ticket.processToken }),
+        () => {
+          if (process.connected) process.disconnect();
+        },
+      );
+  };
+  let childStarted = false;
+  child.once('spawn', () => {
+    childStarted = true;
+    if (process.connected)
+      process.send?.(
+        providerHostObservationSchema.parse({
+          kind: 'provider-host-started',
+          processToken: ticket.processToken,
+          pid: child.pid,
+          incarnation: child.pid === undefined ? null : probeProcessIncarnation(child.pid, process.platform),
+        }),
+      );
   });
-  child.once('exit', (code, signal) => {
-    process.exitCode = code ?? (signal === null ? 1 : 128);
+  child.on('error', () => {
+    if (!childStarted) publishAbsent(1);
+    else terminate();
   });
+  child.once('exit', (code, signal) => publishAbsent(code ?? (signal === null ? 1 : 128)));
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

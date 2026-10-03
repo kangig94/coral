@@ -17,7 +17,7 @@ const INTERRUPT_CONFIRMATION_MS = 1_000;
 
 export function observeCodexTurnSettlement(
   lease: AppServerSession,
-  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>,
+  time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>,
   threadId: string,
   turnId: string,
 ): ProviderTurnSettlement {
@@ -76,14 +76,25 @@ export function observeCodexTurnSettlement(
     providerTurnId: turnId,
     settle: async () => {
       if (evidence !== null) return evidence;
-      const deadline = time.now() + OBSERVATION_BOUND_MS;
+      let expired = false;
+      let observationTimer!: ReturnType<TimePort['setTimeout']>;
+      const observationExpired = new Promise<null>((resolve) => {
+        observationTimer = time.setTimeout(() => {
+          expired = true;
+          resolve(null);
+        }, OBSERVATION_BOUND_MS);
+      });
       let status: string | null = null;
       // Give late notifications priority, then re-read under the retained host lease.
-      await bounded(terminal, OBSERVATION_INTERVAL_MS);
-      while (evidence === null && !closed && time.now() < deadline) {
-        status = await readStatus(Math.min(OBSERVATION_INTERVAL_MS, deadline - time.now()));
-        if (evidence !== null) return evidence;
-        await bounded(terminal, Math.min(OBSERVATION_INTERVAL_MS, Math.max(0, deadline - time.now())));
+      try {
+        await Promise.race([bounded(terminal, OBSERVATION_INTERVAL_MS), observationExpired]);
+        while (evidence === null && !closed && !expired) {
+          status = await Promise.race([readStatus(OBSERVATION_INTERVAL_MS), observationExpired]);
+          if (evidence !== null) return evidence;
+          if (!expired) await Promise.race([bounded(terminal, OBSERVATION_INTERVAL_MS), observationExpired]);
+        }
+      } finally {
+        time.clearTimeout(observationTimer);
       }
       if (evidence !== null) return evidence;
       if (closed || status !== 'inProgress') return null;

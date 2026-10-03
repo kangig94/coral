@@ -268,7 +268,7 @@ function pollWatchedChildServing(input: {
   )
     return;
   void replacementServing(runDir, manifest.flavor, child.pid).then((ready) => {
-    if (ready && record.hasAuthority(authority) && record.serving(reservation, identity)) state.served = true;
+    if (ready === true && record.hasAuthority(authority) && record.serving(reservation, identity)) state.served = true;
   });
 }
 
@@ -314,7 +314,13 @@ function watchDetachedChild({
     }
     const authority = owner.current;
     void replacementServing(runDir, manifest.flavor, identity.pid).then((healthy) => {
-      if (!record.hasAuthority(authority) || !healthy || child.connected || owner.lost || handoffReleasedAt !== null)
+      if (
+        !record.hasAuthority(authority) ||
+        healthy !== true ||
+        child.connected ||
+        owner.lost ||
+        handoffReleasedAt !== null
+      )
         return;
       if (!state.served && record.serving(reservation, identity)) state.served = true;
       owner.release();

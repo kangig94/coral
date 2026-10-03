@@ -1,3 +1,4 @@
+import { readRetentionCursor } from '../store/retention-meta.js';
 import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
@@ -744,7 +745,12 @@ export async function cleanupStaleJobs(
   staleJobCleanupRetryContexts.set(progressStore.getDb(), context);
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs });
   const db = progressStore.getDb();
-  const pending = createRetentionPendingSet(db, 'storage-retention.scratch.pending.v1', (operation) => operation());
+  const pending = createRetentionPendingSet(
+    db,
+    'storage-retention.scratch.pending.v1',
+    (operation) => operation(),
+    (outcome) => budget?.record(outcome),
+  );
   const attempted = new Set<string>();
   let retrying = false;
   const clearSettlementQuarantine = (id: string): void => {
@@ -801,8 +807,13 @@ export async function cleanupStaleJobs(
     },
   };
   const cursorKey = 'storage-retention.scratch.v1';
-  let afterId =
-    db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(cursorKey)?.value ?? '';
+  const savedCursor = readRetentionCursor({
+    db,
+    key: cursorKey,
+    mutate: (operation) => operation(),
+    record: (outcome) => budget?.record(outcome),
+  });
+  let afterId = pending.restarted ? '' : savedCursor;
   retrying = true;
   for (const id of pending.retryOrder()) {
     if (!canContinue()) break;
