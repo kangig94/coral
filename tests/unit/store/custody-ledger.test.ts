@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { bindCustodyProcessTicket } from '../../../src/infra/custody-process-ticket.js';
+import { bindCustodyProcessTicket, parseCustodyProcessTicket } from '../../../src/infra/custody-process-ticket.js';
 import { processIncarnationSchema } from '../../../src/infra/node-process.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
 
@@ -296,3 +296,69 @@ describe('custody ledger', () => {
     expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'bound', binding: { process: null } }]);
   });
 });
+
+it.each([
+  { createdAtMs: Number.MAX_SAFE_INTEGER + 1 },
+  { bindDeadlineMs: Number.MAX_SAFE_INTEGER + 1 },
+  { bindDeadlineMs: 99 },
+])('retains semantically invalid custody intent as unreadable: %j', (damage) => {
+  const run = runDir();
+  const runtime = runtimeFor(run);
+  const intent = recordCustodyIntent(runtime, run, {
+    effect: 'process-spawn',
+    epoch: 'epoch-1',
+    owner: 'provider-host',
+    operationId: 'operation',
+    capsule: null,
+    bindWithinMs: 1_000,
+    nowMs: 100,
+  });
+  const path = join(custodyLedgerDir(run), intent.id, 'intent.v1.json');
+  writeFileSync(path, JSON.stringify({ ...intent, ...damage, futureField: 'preserved' }));
+  expect(readCustodyLedger(runtime, run)).toMatchObject([{ kind: 'unreadable' }]);
+  expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ futureField: 'preserved' });
+});
+
+it('holds an unsafe process identity rather than proving absence', () => {
+  const run = runDir();
+  const runtime = runtimeFor(run);
+  const intent = recordCustodyIntent(runtime, run, {
+    effect: 'process-spawn',
+    epoch: 'epoch-1',
+    owner: 'provider-host',
+    operationId: 'operation',
+    capsule: null,
+    bindWithinMs: 1_000,
+    nowMs: 100,
+  });
+  bindCustodyIdentity(runtime, run, intent, {
+    process: { pid: 100, incarnation: processIncarnationSchema.parse('linux:boot:2'), processGroupId: 100 },
+    capsule: null,
+    observedAtMs: 200,
+  });
+  const path = join(custodyLedgerDir(run), intent.id, 'binding.v1.json');
+  const binding = JSON.parse(readFileSync(path, 'utf8'));
+  binding.process.pid = Number.MAX_SAFE_INTEGER + 1;
+  writeFileSync(path, JSON.stringify(binding));
+  expect(readCustodyLedger(runtime, run)).toMatchObject([
+    { kind: 'holding', reason: 'identity binding is incomplete or mismatched' },
+  ]);
+});
+
+it.each([' ', 'lineage:1', '00000000-0000-4000-8000-000000000001:01'])(
+  'refuses a malformed child custody lineage: %s',
+  (epochKey) => {
+    expect(() =>
+      parseCustodyProcessTicket(
+        JSON.stringify({
+          runDir: '/run',
+          epoch: '/epoch-1',
+          intentId: '00000000-0000-4000-8000-000000000001',
+          processToken: '00000000-0000-4000-8000-000000000002',
+          processGroupId: null,
+          epochKey,
+        }),
+      ),
+    ).toThrow();
+  },
+);

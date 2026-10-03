@@ -116,7 +116,7 @@ export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   /** Overrides the capsule/endpoint path base directory; defaults to the real `~/.coral` tree. Tests pass a
    *  scoped temp directory so they never touch real user state. */
   baseDir?: string;
-  custody?: Readonly<{ runDir: string; epoch: string }>;
+  custody?: Readonly<{ runDir: string; epoch: string; epochKey?: string }>;
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. This file only spawns the
    *  guardian — it never consumes a capsule itself, so it has no strict-identity check to inject. */
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
@@ -375,6 +375,7 @@ async function spawnProviderProxyGuardian(
     state.guardianCustodyIntent = recordCustodyIntent(runtime, options.custody.runDir, {
       effect: 'process-spawn',
       epoch: options.custody.epoch,
+      ...(options.custody.epochKey === undefined ? {} : { epochKey: options.custody.epochKey }),
       owner: 'provider-proxy-set',
       operationId: `${setMinted.proxyInstanceId}:guardian`,
       capsule: setMinted.guardianCapsulePath,
@@ -401,6 +402,9 @@ async function spawnProviderProxyGuardian(
             custodyTicket: JSON.stringify({
               runDir: options.custody?.runDir,
               epoch: options.custody?.epoch,
+              ...(state.guardianCustodyIntent.epochKey === undefined
+                ? {}
+                : { epochKey: state.guardianCustodyIntent.epochKey }),
               intentId: state.guardianCustodyIntent.id,
               processToken: state.guardianCustodyIntent.processToken,
               processGroupId: null,

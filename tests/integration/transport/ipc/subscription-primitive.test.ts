@@ -9,6 +9,8 @@ import { isTransientStreamError } from '#src/infra/http-errors.js';
 import { decode, encode, type JsonRpcRequestEnvelope } from '#src/transport/ipc/json-rpc.js';
 import { IpcRequestTimeout, IpcRpcError, subscribeIpcMethod } from '#src/transport/ipc/client.js';
 
+import { mintChildCredentialKeyPair, childProofSubject, signChildProof } from '#src/security/child-credential.js';
+
 const tempDirs: string[] = [];
 const servers: NetServer[] = [];
 
@@ -247,4 +249,69 @@ describe('subscription primitive', () => {
       },
     });
   });
+});
+
+it.each([false, true])('times out subscription opening when proof exhausts the deadline: %s', async (exhausted) => {
+  const socketPath = makeSocketPath('proof-deadline');
+  const socketClosed = createDeferred<void>();
+  await startSubscriptionServer(socketPath, (socket, request) => {
+    if (request.method === 'transport.challenge') {
+      socket.once('close', () => socketClosed.resolve());
+      writeFrame(socket, {
+        kind: 'response',
+        id: request.id,
+        result: { challenge: 'fresh', incarnation: 'inc', namespace: 'ns' },
+      });
+    }
+  });
+  const keys = mintChildCredentialKeyPair();
+  const claim = { credentialId: 'credential', jobId: 'job', sessionId: 'session' };
+  let now = 0;
+  const controller = new AbortController();
+  const handshake = subscribeIpcMethod(
+    socketPath,
+    'jobs.wait',
+    { jobIds: ['job'] },
+    {
+      timeoutMs: 25,
+      time: { ...createRealTimePort(), now: () => now },
+      signal: controller.signal,
+      auth: {
+        kind: 'challenged',
+        prove: (challenge, request) => {
+          const proof = signChildProof(keys.privateKey, childProofSubject(challenge, claim, request));
+          if (exhausted) now = 25;
+          return { kind: 'child-proof', ...claim, proof };
+        },
+      },
+    },
+  ).catch((error: unknown) => error);
+  try {
+    const outcome = await Promise.race([
+      handshake,
+      new Promise((resolve) => setTimeout(() => resolve('pending'), 100)),
+    ]);
+    expect(outcome).toBeInstanceOf(IpcRequestTimeout);
+  } finally {
+    controller.abort();
+    await handshake;
+    await socketClosed.promise;
+  }
+});
+
+it('keeps an acknowledged subscription alive beyond its opening deadline', async () => {
+  const socketPath = makeSocketPath('long-lived');
+  let publish = () => {};
+  await startSubscriptionServer(socketPath, (socket, request) => {
+    writeFrame(socket, { kind: 'response', id: request.id, result: { status: 'subscribed', method: request.method } });
+    publish = () => writeFrame(socket, { kind: 'notification', method: request.method, params: 'late-event' });
+  });
+  const subscription = await subscribeIpcMethod<string>(socketPath, 'jobs.wait', undefined, { timeoutMs: 50 });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    publish();
+    await expect(subscription[Symbol.asyncIterator]().next()).resolves.toEqual({ done: false, value: 'late-event' });
+  } finally {
+    await subscription.close();
+  }
 });

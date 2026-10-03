@@ -54,7 +54,7 @@ import { readJobLaunchOriginNamespace } from '../../jobs/succession-coverage.js'
 import { createDefaultStoreReadContext } from '../../read-model/read-context.js';
 import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
 import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
-import { resolveCurrentStoreEpoch } from '../../store/epoch/index.js';
+import { resolveCurrentStoreEpoch, readEpochKey, resolvedStoreEpoch } from '../../store/epoch/index.js';
 import { bindCustodyProcessTicket, recordChildRoleCustodyIntent } from '../../infra/custody-process-ticket.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
@@ -460,6 +460,20 @@ function createWorldProviderHosts(input: WorldProviderHostInput) {
   if (options.providerHostManager !== undefined) {
     providerHostManager = options.providerHostManager;
   } else {
+    const providerCustody = () => {
+      const runDir = runtime.paths.coral.coordinator.runDir;
+      const activeEpoch = launchCoordinator.activeStoreEpochDirectory();
+      if (activeEpoch !== null) {
+        const epochKey = launchCoordinator.activeStoreEpochLineageKey();
+        return { runDir, epoch: activeEpoch, ...(epochKey === null ? {} : { epochKey }) };
+      }
+      const dbDir = runtime.paths.coral.store.dbDir;
+      const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+      if (epoch === null) throw new Error('Provider custody requires a selected store epoch.');
+      const epochKey = readEpochKey(runtime, resolvedStoreEpoch(dbDir, epoch));
+      if (epochKey === null) throw new Error('Provider custody requires a readable epoch lineage.');
+      return { runDir, epoch: join(dbDir, `epoch-${epoch}`), epochKey };
+    };
     const created = createProviderHostManager({
       runtime,
       spawnProviderServer: (
@@ -469,15 +483,8 @@ function createWorldProviderHosts(input: WorldProviderHostInput) {
         recordContainment,
         acceptFailedSpawnCleanup,
       ) => {
-        const activeEpoch = launchCoordinator.activeStoreEpochDirectory();
-        const dbDir = runtime.paths.coral.store.dbDir;
-        const epoch = activeEpoch === null ? resolveCurrentStoreEpoch(runtime.storage, dbDir) : null;
-        if (activeEpoch === null && epoch === null) {
-          throw new Error('Provider host custody requires a selected store epoch.');
-        }
         const ticket = recordChildRoleCustodyIntent({
-          runDir: runtime.paths.coral.coordinator.runDir,
-          epoch: activeEpoch ?? join(dbDir, `epoch-${epoch}`),
+          ...providerCustody(),
           owner: 'provider-host',
           operationId: `${spawnOptions.provider}:${generation}`,
           capsule: null,
@@ -506,16 +513,7 @@ function createWorldProviderHosts(input: WorldProviderHostInput) {
         retainedHostRoot: () => validatedRetainedBuildRoot(runtime, buildSetId),
         identity: { instanceId, buildSetId, flavor },
         operationRegistry,
-        custody: () => {
-          const activeEpoch = launchCoordinator.activeStoreEpochDirectory();
-          if (activeEpoch !== null) {
-            return { runDir: runtime.paths.coral.coordinator.runDir, epoch: activeEpoch };
-          }
-          const dbDir = runtime.paths.coral.store.dbDir;
-          const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
-          if (epoch === null) throw new Error('Provider proxy custody requires a selected store epoch.');
-          return { runDir: runtime.paths.coral.coordinator.runDir, epoch: join(dbDir, `epoch-${epoch}`) };
-        },
+        custody: providerCustody,
         ...(options.buildProviderEventHandler === undefined
           ? {}
           : { onProviderEvent: options.buildProviderEventHandler }),

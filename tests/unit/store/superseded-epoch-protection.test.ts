@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { withSupersededEpochClosures, type BackendStatusFull } from '#src/cli/backend-status.js';
+import { readPendingProtections, recordPendingProtection } from '#src/store/epoch/pending-protection.js';
 import * as epochProtection from '#src/store/epoch/protection.js';
 import {
   discardCurrentStoreEpoch,
@@ -469,4 +470,17 @@ describe('superseded epoch protection', () => {
       );
     });
   });
+});
+
+it.each(['', 'relative', '/tmp/../store'])('retains an invalid pending-protection root: %s', (storeRoot) => {
+  const root = mkdtempSync(join(tmpdir(), 'coral-invalid-protection-'));
+  roots.push(root);
+  const runtime = createRealRuntime('prod', { baseDir: root });
+  const canonicalRoot = runtime.paths.coral.store.dbDir;
+  expect(recordPendingProtection(runtime, canonicalRoot, '1', 'busy').kind).toBe('recorded');
+  const directory = join(runtime.paths.coral.generation.dataRoot, 'store-epoch-protection-pending.v1');
+  const name = readdirSync(directory)[0];
+  const path = join(directory, name);
+  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), storeRoot }));
+  expect(readPendingProtections(runtime)).toMatchObject({ records: [], unreadableNames: [name] });
 });

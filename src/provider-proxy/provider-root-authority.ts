@@ -510,6 +510,7 @@ class ProxyProviderRootPool {
     const { reservedRef } = transaction;
     const admission = this.admission;
     const epoch = this.runtime.env.get('CORAL_CUSTODY_EPOCH');
+    const epochKey = this.runtime.env.get('CORAL_CUSTODY_EPOCH_KEY');
     try {
       if (process.argv.includes('--provider-proxy') && epoch === undefined) {
         throw new Error('Provider proxy host custody requires a bound epoch.');
@@ -520,6 +521,7 @@ class ProxyProviderRootPool {
           : recordChildRoleCustodyIntent({
               runDir: this.runtime.paths.coral.coordinator.runDir,
               epoch,
+              ...(epochKey === undefined ? {} : { epochKey }),
               owner: 'provider-host',
               operationId: `${spec.provider}:${transaction.generation}`,
               capsule: null,

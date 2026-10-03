@@ -46,7 +46,7 @@ export type ProviderProxySetAcquisitionConfig = Readonly<{
   identity: ProviderProxySetAcquisitionIdentity;
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
-  custody?: () => Readonly<{ runDir: string; epoch: string }>;
+  custody?: () => Readonly<{ runDir: string; epoch: string; epochKey?: string }>;
   /** Invocation is permitted only after provider-proxy control is established. */
   onProviderEvent?: () => ProviderEventHandler;
 }>;

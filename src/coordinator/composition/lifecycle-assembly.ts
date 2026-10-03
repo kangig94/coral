@@ -46,7 +46,8 @@ function recordRecoveredStoreEpoch(
   state.selectedJobEpochKey = openStore.path === ':memory:' ? null : encodeResolvedStoreEpoch(runtime, openStore);
   state.selectedStoreEpochPath = openStore.path === ':memory:' ? null : dirname(openStore.path);
   state.openedStoreEpoch = openStore.path === ':memory:' ? null : openStore;
-  if (state.selectedStoreEpochPath !== null) world.launchCoordinator.bindActiveEpochPath(state.selectedStoreEpochPath);
+  if (state.selectedStoreEpochPath !== null)
+    world.launchCoordinator.bindActiveEpochPath(state.selectedStoreEpochPath, state.selectedStoreEpochKey);
 }
 
 async function disposeCoordinatorLifecycleReactor(input: LifecycleAssemblyInput): Promise<void> {

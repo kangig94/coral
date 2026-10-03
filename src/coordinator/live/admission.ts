@@ -200,18 +200,24 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private settledUnboundStatus: SettledUnboundStatusPort | null = null;
   private readonly runtime: Runtime;
   private activeEpochPath: string | null = null;
+  private activeEpochKey: string | null = null;
 
   constructor(options: { runtime: Runtime }) {
     this.runtime = options.runtime;
     this.internalAbortRegistry = new AbortRegistry(options.runtime.ids);
   }
 
-  bindActiveEpochPath(path: string): void {
+  bindActiveEpochPath(path: string, epochKey: string | null = null): void {
     this.activeEpochPath = path;
+    this.activeEpochKey = epochKey;
   }
 
   activeStoreEpochDirectory(): string | null {
     return this.activeEpochPath;
+  }
+
+  activeStoreEpochLineageKey(): string | null {
+    return this.activeEpochKey;
   }
 
   getInternalAbortRegistry(): AbortRegistry {

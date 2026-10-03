@@ -1,5 +1,5 @@
 import { type Runtime } from '../../runtime/ports.js';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { observeStorePath } from '../path-observation.js';
 import { protectStoreEpoch, StoreEpochOpenerHeldError } from './protection.js';
@@ -53,13 +53,19 @@ export function readPendingProtections(runtime: Pick<Runtime, 'paths' | 'storage
         value.version === 'v1' &&
         'storeRoot' in value &&
         typeof value.storeRoot === 'string' &&
+        value.storeRoot.length > 0 &&
+        !value.storeRoot.includes('\0') &&
+        resolve(value.storeRoot) === value.storeRoot &&
         'epoch' in value &&
         typeof value.epoch === 'string' &&
         EPOCH_DIRECTORY_PATTERN.test(`epoch-${value.epoch}`) &&
         'reason' in value &&
         typeof value.reason === 'string' &&
+        value.reason.trim().length > 0 &&
         'recordedAt' in value &&
-        typeof value.recordedAt === 'string'
+        typeof value.recordedAt === 'string' &&
+        !Number.isNaN(Date.parse(value.recordedAt)) &&
+        new Date(value.recordedAt).toISOString() === value.recordedAt
       ) {
         records.push({
           storeRoot: value.storeRoot,

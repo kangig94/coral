@@ -65,6 +65,10 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function nonEmptyMetadataText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
 export function parseStoreEpochMetadata(value: unknown): StoreEpochMetadata | null {
   if (!isRecord(value)) return null;
   const supersedes =
@@ -76,15 +80,20 @@ export function parseStoreEpochMetadata(value: unknown): StoreEpochMetadata | nu
           ? String(value.supersedes)
           : undefined;
   if (supersedes === undefined) return null;
-  if (!isRecord(value.classification) || typeof value.classification.kind !== 'string') return null;
-  if (!isRecord(value.build) || typeof value.build.version !== 'string') return null;
-  if (typeof value.publishedAt !== 'string') return null;
+  if (!isRecord(value.classification) || !nonEmptyMetadataText(value.classification.kind)) return null;
+  if (!isRecord(value.build) || !nonEmptyMetadataText(value.build.version)) return null;
+  if (
+    typeof value.publishedAt !== 'string' ||
+    Number.isNaN(Date.parse(value.publishedAt)) ||
+    new Date(value.publishedAt).toISOString() !== value.publishedAt
+  )
+    return null;
   const build = value.build;
   if (
-    typeof build.buildSetId !== 'string' ||
-    typeof build.bundleHash !== 'string' ||
+    !nonEmptyMetadataText(build.buildSetId) ||
+    !nonEmptyMetadataText(build.bundleHash) ||
     (build.flavor !== 'prod' && build.flavor !== 'dev') ||
-    typeof build.storeFormatFingerprint !== 'string'
+    !nonEmptyMetadataText(build.storeFormatFingerprint)
   ) {
     return null;
   }

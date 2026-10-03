@@ -205,11 +205,11 @@ const durableCliControllerReceiptSchema = z
     attemptId: z.string().uuid(),
     controllerInstanceId: z.string().min(1),
     controllerBuildSetId: z.string().min(1),
-    controlGeneration: z.number().int().positive(),
+    controlGeneration: z.number().int().safe().positive(),
     runtimeRecordGeneration: z.literal(2),
     runtimeMeta: durableCliProcessRuntimeMetaSchema,
     custodyIntentId: z.string().uuid(),
-    acknowledgedAtMs: z.number().int().nonnegative(),
+    acknowledgedAtMs: z.number().int().safe().nonnegative(),
   })
   .passthrough();
 

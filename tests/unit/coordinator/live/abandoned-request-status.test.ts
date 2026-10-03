@@ -129,3 +129,23 @@ describe('abandoned request status', () => {
     expect(readAbandonedRequestStatus(storage, runDir, 'invalid-owner')).toEqual({ kind: 'unreadable' });
   });
 });
+
+it.each([{ method: '' }, { requestId: '' }, { startedAt: '' }, { identity: { jobId: '' } }])(
+  'retains semantically invalid abandoned status as unreadable: %j',
+  (damage) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-abandoned-semantics-'));
+    roots.push(runDir);
+    const storage = createRealRuntime('prod').storage;
+    const request = {
+      recordId: 'request',
+      method: 'jobs.detail',
+      requestId: 'request',
+      startedAt: '2026-09-27T00:00:00.000Z',
+      outcome: 'continuing' as const,
+    };
+    writeAbandonedRequestStatus(storage, runDir, request);
+    const path = join(runDir, 'abandoned-requests.v1', 'request.json');
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), ...damage }));
+    expect(readAbandonedRequestStatus(storage, runDir, request.recordId).kind).toBe('unreadable');
+  },
+);

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { recordEpochClosure } from '#src/store/epoch/index.js';
+import { recordEpochClosure, observeEpochClosure } from '#src/store/epoch/index.js';
 import { readOrCreateEpochKey } from '#src/store/epoch/index.js';
 import {
   encodeResolvedStoreEpoch,
@@ -104,4 +104,23 @@ describe('epoch closure reclamation', () => {
     expect(existsSync(epochDirectory(root, '3'))).toBe(true);
     expect(existsSync(join(stateRoot, 'epoch-closure.v1'))).toBe(true);
   });
+});
+
+it('retains an unsafe closure timestamp as unreadable', () => {
+  const runtime = harness();
+  const stateRoot = runtime.paths.coral.generation.dataRoot;
+  const evidence = {
+    version: 'v1' as const,
+    epochKey: 'lineage:1',
+    disposition: 'closed' as const,
+    dataOutcome: 'retained' as const,
+    executionDischarge: 'certified' as const,
+    obligations: [],
+    reason: 'settled',
+    observedAtMs: 1,
+  };
+  recordEpochClosure(runtime, stateRoot, evidence);
+  const path = join(stateRoot, 'epoch-closure.v1', `${runtime.ids.sha256(evidence.epochKey)}.json`);
+  writeFileSync(path, JSON.stringify({ ...evidence, observedAtMs: Number.MAX_SAFE_INTEGER + 1 }));
+  expect(observeEpochClosure(runtime, stateRoot, evidence.epochKey).kind).toBe('unreadable');
 });

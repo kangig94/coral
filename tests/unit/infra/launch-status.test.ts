@@ -3,8 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+import { readLaunchAdmission, launchAdmissionPath } from '#src/infra/launch-admission-record.js';
+
 import {
   currentLaunchStatus,
+  parseLaunchStatus,
   readLaunchStatus,
   receiveLaunchStatus,
   updateLaunchStatus,
@@ -75,4 +78,41 @@ describe('launch status diagnostics', () => {
       rmSync(runDir, { recursive: true, force: true });
     }
   });
+});
+
+it('rejects unsafe launch process identities while accepting additive diagnostics', () => {
+  expect(
+    parseLaunchStatus({ version: 1, inheritedHolds: [{ launchId: 'launch', pid: Number.MAX_SAFE_INTEGER + 1 }] }),
+  ).toBeUndefined();
+  expect(
+    parseLaunchStatus({ version: 1, inheritedHolds: [{ launchId: 'launch', pid: 100 }], futureDiagnostic: true }),
+  ).toMatchObject({ futureDiagnostic: true });
+});
+
+it('retains a launch admission with an unsafe process identity as unreadable', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-admission-semantics-'));
+  const launchId = '00000000-0000-4000-8000-000000000001';
+  const path = launchAdmissionPath(runDir, launchId);
+  const admission = {
+    version: 1,
+    launchId,
+    child: { pid: 100, incarnation: 'linux:boot:2' },
+    parent: { pid: 200, incarnation: 'linux:boot:3' },
+    admittedAt: 1,
+    build: { version: '0.10.16', buildSetId: 'build', bundleHash: 'hash', flavor: 'prod' },
+    purpose: 'startup',
+    futureField: true,
+  };
+  try {
+    mkdirSync(join(runDir, 'launch-admissions.v2'));
+    writeFileSync(path, JSON.stringify(admission));
+    expect(readLaunchAdmission(runDir, launchId)).toMatchObject({ kind: 'readable', admission: { futureField: true } });
+    writeFileSync(
+      path,
+      JSON.stringify({ ...admission, child: { ...admission.child, pid: Number.MAX_SAFE_INTEGER + 1 } }),
+    );
+    expect(readLaunchAdmission(runDir, launchId).kind).toBe('unreadable');
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
 });

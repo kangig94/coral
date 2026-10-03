@@ -125,7 +125,7 @@ export type ProviderRoleMainPorts = Readonly<{
   /** Overrides the capsule/endpoint path base directory; defaults to the real `~/.coral` tree. Tests pass a
    *  scoped temp directory so they never touch real user state. */
   baseDir?: string;
-  custody?: Pick<CustodyProcessTicket, 'runDir' | 'epoch'>;
+  custody?: Pick<CustodyProcessTicket, 'runDir' | 'epoch' | 'epochKey'>;
   /** Injected for tests; defaults to the real embedded-vs-adjacent-manifest strict identity check. */
   resolveStrictIdentity?(): StrictBundleIdentityResult;
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
@@ -1527,6 +1527,8 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
   }
   if (custodyTicket === null) delete process.env.CORAL_CUSTODY_EPOCH;
   else process.env.CORAL_CUSTODY_EPOCH = custodyTicket.epoch;
+  if (custodyTicket?.epochKey === undefined) delete process.env.CORAL_CUSTODY_EPOCH_KEY;
+  else process.env.CORAL_CUSTODY_EPOCH_KEY = custodyTicket.epochKey;
   const runtime = options.runtime ?? createRealRuntime(resolveBuildFlavor(process.env));
   if (custodyTicket !== null) {
     const pid = runtime.env.pid();

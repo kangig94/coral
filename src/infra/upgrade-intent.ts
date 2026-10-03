@@ -37,7 +37,7 @@ const buildIdentitySchema = z
 const processIdentitySchema = z
   .object({
     instanceId: z.string().min(1),
-    pid: z.number().int().positive(),
+    pid: z.number().int().safe().positive(),
     incarnation: processIncarnationSchema.nullable(),
     build: buildIdentitySchema,
   })
@@ -46,7 +46,7 @@ const processIdentitySchema = z
 const incumbentIdentitySchema = z
   .object({
     instanceId: z.string().min(1),
-    pid: z.number().int().positive(),
+    pid: z.number().int().safe().positive(),
     incarnation: processIncarnationSchema.nullable(),
     version: z.string().min(1),
     bundleHash: z.string().min(1),
@@ -60,7 +60,7 @@ const attemptOwnerSchema = z
   .object({
     kind: z.enum(ATTEMPT_OWNER_KINDS),
     instanceId: z.string().min(1),
-    pid: z.number().int().positive(),
+    pid: z.number().int().safe().positive(),
     incarnation: processIncarnationSchema.nullable(),
   })
   .passthrough();
@@ -116,7 +116,7 @@ const acceptedObligationSchema = z
   .object({
     owner: z.string().min(1),
     receiptId: z.string().min(1),
-    controlGeneration: z.number().int().nonnegative(),
+    controlGeneration: z.number().int().safe().nonnegative(),
   })
   .passthrough();
 
@@ -126,7 +126,7 @@ const servingReceiptSchema = z
     attemptId: z.string().min(1),
     successor: processIdentitySchema,
     epochKey: z.string().min(1),
-    controlGeneration: z.number().int().nonnegative(),
+    controlGeneration: z.number().int().safe().nonnegative(),
     acceptedObligations: z.array(acceptedObligationSchema),
     recordedAt: z.string().datetime(),
   })
@@ -136,7 +136,7 @@ const attemptRetrySchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('transient'),
-      retryAfterMs: z.number().int().nonnegative(),
+      retryAfterMs: z.number().int().safe().nonnegative(),
       obligationChange: z.boolean().optional(),
     })
     .passthrough(),
@@ -148,7 +148,7 @@ export type AttemptRetry = z.infer<typeof attemptRetrySchema>;
 const transientRetrySchema = z
   .object({
     targetKey: z.string().min(1),
-    failures: z.number().int().positive(),
+    failures: z.number().int().safe().positive(),
     retryAfter: z.string().datetime(),
   })
   .passthrough();
@@ -156,7 +156,7 @@ const transientRetrySchema = z
 const obligationRetrySchema = z
   .object({
     targetKey: z.string().min(1),
-    changes: z.number().int().positive(),
+    changes: z.number().int().safe().positive(),
     retryAfter: z.string().datetime(),
   })
   .passthrough();
@@ -191,14 +191,14 @@ const upgradeIntentFields = z
     reason: z.enum(['upgrade', 'supervision-repair']).optional(),
     legacyRetirement: z.boolean().optional(),
     requestedAt: z.string().datetime().optional(),
-    revision: z.number().int().nonnegative(),
+    revision: z.number().int().safe().nonnegative(),
     incumbent: incumbentIdentitySchema,
     target: targetSchema,
     attemptId: z.string().min(1).nullable(),
     attemptChild: z
       .object({
         attemptId: z.string().min(1),
-        pid: z.number().int().positive(),
+        pid: z.number().int().safe().positive(),
         incarnation: processIncarnationSchema.nullable(),
       })
       .passthrough()

@@ -206,3 +206,26 @@ describe('job location additive records', () => {
     expect(index.resultsReleased(epochKey)).toBe(false);
   });
 });
+
+it.each(['revision', 'terminalHighWaterSeq'])('rejects an unsafe job-location certificate %s', (field) => {
+  const { root, index } = fixture();
+  const epochKey = 'lineage-1:1';
+  expect(index.certify(epochKey, 0)).toMatchObject({ revision: 0, terminalHighWaterSeq: 0 });
+  const path = join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256(epochKey), 'certificate.v1.json');
+  writeFileSync(
+    path,
+    JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), [field]: Number.MAX_SAFE_INTEGER + 1 }),
+  );
+  expect(() => index.certificate(epochKey)).toThrow();
+});
+
+it('refuses job-location revision exhaustion before persistence', () => {
+  const { root, index } = fixture();
+  const epochKey = 'lineage-1:1';
+  index.invalidateTerminalCertificate(epochKey);
+  const path = join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256(epochKey), 'revision.v1.json');
+  const raw = JSON.stringify({ version: 'v1', revision: Number.MAX_SAFE_INTEGER, futureField: true });
+  writeFileSync(path, raw);
+  expect(() => index.invalidateTerminalCertificate(epochKey)).toThrow(/exhausted/u);
+  expect(readFileSync(path, 'utf8')).toBe(raw);
+});

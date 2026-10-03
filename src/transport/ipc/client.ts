@@ -746,6 +746,11 @@ async function subscribeIpcMethodOnce<TResult>(
   }
 
   const handshakeBudget = remainingMs(deadlineMs, timePort);
+  if (handshakeBudget === 0) {
+    fail(new IpcRequestTimeout('IPC subscription timed out before its acknowledgement'));
+    socket.destroy();
+    await handshakePromise;
+  }
   if (typeof handshakeBudget === 'number' && handshakeBudget > 0) {
     handshakeTimer = timePort.setTimeout(() => {
       const error = new IpcRequestTimeout(`IPC subscription timed out after ${handshakeBudget}ms`);

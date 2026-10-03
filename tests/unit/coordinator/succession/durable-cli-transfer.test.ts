@@ -170,6 +170,14 @@ describe('durable-cli succession transfer', () => {
       receipts: [{ jobId: JOB_ID, laterField: 'added' }],
       unreadable: [corrupt],
     });
+    writeFileSync(
+      join(receiptDir, written),
+      JSON.stringify({ ...receipt, controlGeneration: Number.MAX_SAFE_INTEGER + 1 }),
+    );
+    expect(readDurableCliControllerReceipts(runtime, runDir)).toMatchObject({
+      receipts: [],
+      unreadable: expect.arrayContaining([corrupt, join(receiptDir, written)]),
+    });
     db.close();
   });
 

@@ -8,9 +8,9 @@ import { observeStorePath } from './path-observation.js';
 
 const processIdentitySchema = z
   .object({
-    pid: z.number().int().positive(),
+    pid: z.number().int().safe().positive(),
     incarnation: processIncarnationSchema,
-    processGroupId: z.number().int().positive(),
+    processGroupId: z.number().int().safe().positive(),
   })
   .passthrough();
 
@@ -26,10 +26,13 @@ const custodyIntentSchema = z
     jobId: z.string().min(1).optional(),
     processToken: z.string().uuid(),
     capsule: z.string().nullable(),
-    createdAtMs: z.number().int().nonnegative(),
-    bindDeadlineMs: z.number().int().nonnegative(),
+    createdAtMs: z.number().int().safe().nonnegative(),
+    bindDeadlineMs: z.number().int().safe().nonnegative(),
   })
-  .passthrough();
+  .passthrough()
+  .refine((intent) => intent.bindDeadlineMs > intent.createdAtMs, {
+    message: 'Custody binding deadline must follow intent creation.',
+  });
 
 const custodyBindingSchema = z
   .object({
@@ -39,7 +42,7 @@ const custodyBindingSchema = z
     operationId: z.string().min(1),
     process: processIdentitySchema.nullable(),
     capsule: z.string().nullable(),
-    observedAtMs: z.number().int().nonnegative(),
+    observedAtMs: z.number().int().safe().nonnegative(),
   })
   .passthrough();
 
@@ -48,7 +51,7 @@ const custodyAbsenceSchema = z
     version: z.literal('v1'),
     intentId: z.string().uuid(),
     processToken: z.string().uuid(),
-    provenAtMs: z.number().int().nonnegative(),
+    provenAtMs: z.number().int().safe().nonnegative(),
     evidence: z.string().min(1),
   })
   .passthrough();
@@ -74,7 +77,11 @@ export function custodyLedgerDir(runDir: string): string {
 }
 
 const custodyRootSchema = z
-  .object({ version: z.literal('v1'), id: z.string().uuid(), createdAtMs: z.number().int().nonnegative().optional() })
+  .object({
+    version: z.literal('v1'),
+    id: z.string().uuid(),
+    createdAtMs: z.number().int().safe().nonnegative().optional(),
+  })
   .passthrough();
 
 export function initializeCustodyLedger(runtime: Runtime, runDir: string): string {

@@ -717,33 +717,10 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
 }
 
 function runProviderHost(command: string | undefined, args: string[]): void {
-  if (command === undefined) throw new Error('Provider host wrapper requires a command.');
   const value = process.env[CUSTODY_PROCESS_TICKET_ENV];
   if (value === undefined) throw new Error('Provider host wrapper requires a custody ticket.');
   const ticket = parseCustodyProcessTicket(value);
-  if (args.at(-1) !== custodyProcessArgument(ticket.processToken)) {
-    throw new Error('Provider host wrapper process token does not match its ticket.');
-  }
-  const incarnation = probeProcessIncarnation(process.pid, process.platform);
-  if (incarnation === null) throw new Error('Provider host wrapper could not bind its custody incarnation.');
-  bindCustodyProcessTicket(ticket, { pid: process.pid, incarnation }, Date.now());
-  delete process.env[CUSTODY_PROCESS_TICKET_ENV];
-  delete process.env.CORAL_CUSTODY_EPOCH;
-  const time = createRealTimePort();
   let retry: ReturnType<typeof setInterval> | null = null;
-  const child = spawn(command, args.slice(0, -1), {
-    stdio: 'inherit',
-    env: process.env,
-    shell: shouldUseWindowsCommandShell(command, process.platform),
-  });
-  const retainedChild = child as unknown as ChildProcessLike;
-  const terminate = (): void => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    requestObservedChildKill(retainedChild, time);
-    retry ??= setInterval(() => requestObservedChildKill(retainedChild, time), RETAINED_GROUP_TERMINATION_INTERVAL_MS);
-  };
-  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, terminate);
-  process.once('disconnect', terminate);
   const publishAbsent = (code: number): void => {
     if (retry !== null) clearInterval(retry);
     process.exitCode = code;
@@ -755,6 +732,37 @@ function runProviderHost(command: string | undefined, args: string[]): void {
         },
       );
   };
+  let child: ReturnType<typeof spawn>;
+  try {
+    if (args.at(-1) !== custodyProcessArgument(ticket.processToken)) {
+      throw new Error('Provider host wrapper process token does not match its ticket.');
+    }
+    if (command === undefined) throw new Error('Provider host wrapper requires a command.');
+    const incarnation = probeProcessIncarnation(process.pid, process.platform);
+    if (incarnation === null) throw new Error('Provider host wrapper could not bind its custody incarnation.');
+    bindCustodyProcessTicket(ticket, { pid: process.pid, incarnation }, Date.now());
+    delete process.env[CUSTODY_PROCESS_TICKET_ENV];
+    delete process.env.CORAL_CUSTODY_EPOCH;
+    delete process.env.CORAL_CUSTODY_EPOCH_KEY;
+    child = spawn(command, args.slice(0, -1), {
+      stdio: 'inherit',
+      env: process.env,
+      shell: shouldUseWindowsCommandShell(command, process.platform),
+    });
+  } catch (error: unknown) {
+    publishAbsent(1);
+    process.stderr.write(`${String(error)}\n`);
+    return;
+  }
+  const time = createRealTimePort();
+  const retainedChild = child as unknown as ChildProcessLike;
+  const terminate = (): void => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    requestObservedChildKill(retainedChild, time);
+    retry ??= setInterval(() => requestObservedChildKill(retainedChild, time), RETAINED_GROUP_TERMINATION_INTERVAL_MS);
+  };
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, terminate);
+  process.once('disconnect', terminate);
   let childStarted = false;
   child.once('spawn', () => {
     childStarted = true;

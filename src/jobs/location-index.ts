@@ -28,7 +28,7 @@ const controllerSchema = z
   .object({
     buildSetId: z.string().min(1),
     instanceId: z.string().min(1),
-    controlGeneration: z.number().int().nonnegative(),
+    controlGeneration: z.number().int().safe().nonnegative(),
   })
   .passthrough();
 const locationIdentitySchema = z.object({
@@ -38,14 +38,14 @@ const locationIdentitySchema = z.object({
   subject: subjectSchema,
   controller: controllerSchema.optional(),
   disposition: z.enum(['active-owner', 'unresolved', 'terminal']),
-  terminalSeq: z.number().int().nonnegative().optional(),
+  terminalSeq: z.number().int().safe().nonnegative().optional(),
   resultPath: z.string().optional(),
 });
 const locationSchema = locationIdentitySchema.extend({ detail: z.unknown().optional() }).passthrough();
 const jobEventBaseSchema = z.object({
   jobId: z.string(),
   sessionId: z.string().nullable(),
-  seq: z.number().int().nonnegative(),
+  seq: z.number().int().safe().nonnegative(),
   ts: z.string(),
 });
 
@@ -86,11 +86,11 @@ const storedJobDetailSchema: z.ZodType<JobDetailResponse, z.ZodTypeDef, unknown>
           jobKind: jobKindSchema,
           parentWorkflowJobId: z.string().optional(),
           workflowSlotId: z.string().optional(),
-          workflowSlotGeneration: z.number().int().nonnegative().optional(),
+          workflowSlotGeneration: z.number().int().safe().nonnegative().optional(),
           replacesWorkflowJobId: z.string().optional(),
           phase: jobPhaseSchema,
           updatedAt: z.string(),
-          lastSeq: z.number().int().nonnegative().optional(),
+          lastSeq: z.number().int().safe().nonnegative().optional(),
           result: jobTerminalSchema.optional(),
         })
         .passthrough(),
@@ -112,14 +112,16 @@ const storedJobDetailSchema: z.ZodType<JobDetailResponse, z.ZodTypeDef, unknown>
     })
     .passthrough(),
 );
-const revisionSchema = z.object({ version: z.literal('v1'), revision: z.number().int().nonnegative() }).passthrough();
+const revisionSchema = z
+  .object({ version: z.literal('v1'), revision: z.number().int().safe().nonnegative() })
+  .passthrough();
 const certificateSchema = z
   .object({
     version: z.literal('v1'),
     epochKey: z.string().min(1),
-    revision: z.number().int().nonnegative(),
+    revision: z.number().int().safe().nonnegative(),
     jobIds: z.array(z.string().min(1)),
-    terminalHighWaterSeq: z.number().int().nonnegative(),
+    terminalHighWaterSeq: z.number().int().safe().nonnegative(),
   })
   .passthrough();
 const unknownHoldSchema = z.object({ version: z.literal('v1'), reason: z.string().min(1) }).passthrough();
@@ -262,6 +264,7 @@ export class JobLocationIndex {
     const revisionPath = this.epochPath(epochKey, 'revision.v1.json');
     const previous = optionalJson(this.runtime, revisionPath, revisionSchema);
     const revision = (previous?.revision ?? 0) + 1;
+    if (!Number.isSafeInteger(revision)) throw new RangeError('Job location revision exhausted its counter.');
     atomicJson(this.runtime, revisionPath, { ...previous, version: 'v1', revision });
     return revision;
   }
