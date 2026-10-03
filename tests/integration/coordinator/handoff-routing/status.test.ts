@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   handoffRoutingStatusExitContribution,
@@ -21,10 +21,13 @@ import {
   publishGenerationCoordinatedHandoffRoutingTransitions,
   readHandoffRoutingStatus as readHandoffRoutingStatusWithRuntime,
   resolveHandoffRoutingStatus,
+  reconcileHandoffRoutingStatus,
   type DurableHandoffRoutingBasis,
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing/status.js';
+import { createHandoffRoutingReconciler } from '#src/coordinator/handoff-routing/reconciler.js';
+import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import {
   discardHandoffRoutingStatus,
   type HandoffRoutingStatusOperatorOptions,
@@ -149,6 +152,335 @@ afterAll(() => {
 });
 
 describe('handoff-routing/status', () => {
+  it('reports automatic absence reconciliation and unknown retry causes without soliciting resolution', async () => {
+    const path = databasePath();
+    await committed(path, [selection('pending', 1)]);
+    const absent = readHandoffRoutingStatus(path, () => ({ kind: 'absent' }));
+    const output = formatHandoffRoutingStatus(absent, 'available', 'active');
+    expect(output).toContain('recorded owner is absent');
+    expect(output).toContain('Coordinator reconciliation will retire this selection within 1s');
+    expect(handoffRoutingStatusExitContribution(absent)).toBe(75);
+    expect(formatHandoffRoutingStatus(absent)).toContain('resume when a coordinator starts');
+    expect(formatHandoffRoutingStatus(absent, 'available', 'awaiting-kernel')).toContain('reaches kernel readiness');
+    for (const cause of ['probe-failed', 'probe-not-available', 'deadline-expired'] as const) {
+      const unknown = readHandoffRoutingStatus(path, () => ({ kind: 'unobservable', cause }));
+      const unknownOutput = formatHandoffRoutingStatus(unknown, 'available', 'active');
+      expect(unknownOutput).toContain(cause);
+      expect(unknownOutput).toContain('retry within 1s');
+      expect(unknownOutput).not.toContain('command=');
+      expect(unknownOutput).not.toContain('force-unobservable');
+      expect(unknownOutput).not.toContain('abandon');
+    }
+    expect(output).not.toContain('routing-status resolve');
+    expect(output).not.toContain('command=');
+  });
+
+  it('automatically retires absent owners immediately and newly absent selections on the next interval', async () => {
+    const path = databasePath();
+    await committed(path, [selection('absent-at-boot', 1)]);
+    const observe = vi.fn<Runtime['process']['observeProcessIdentities']>(async (owners) =>
+      owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' } })),
+    );
+    const reconciliationRuntime = { ...runtime, process: { ...runtime.process, observeProcessIdentities: observe } };
+    const onError = vi.fn();
+    const reconciler = createHandoffRoutingReconciler(reconciliationRuntime, path, onError);
+    const retired = (id: string) => {
+      const status = readHandoffRoutingStatus(path);
+      expect(status.kind).toBe('current');
+      if (status.kind !== 'current') throw new Error('Expected current status');
+      expect(status.statuses).toContainEqual(
+        expect.objectContaining({
+          kind: 'retired',
+          tombstone: expect.objectContaining({
+            invocationId: id,
+            retirementCause: 'operator-resolved',
+            resolutionReason: 'owner-absent',
+            terminalExisted: false,
+          }),
+        }),
+      );
+    };
+    try {
+      reconciler.start();
+      await vi.waitFor(() => retired('absent-at-boot'));
+      await committed(path, [selection('absent-after-boot', 2)]);
+      await vi.waitFor(() => retired('absent-after-boot'), { timeout: 1_500, interval: 20 });
+      expect(observe.mock.calls.every(([, budget]) => budget <= 500)).toBe(true);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      reconciler.stop();
+    }
+  });
+
+  it('retains capacity eviction as non-gating history after absent owners retire with no further traffic', async () => {
+    const path = databasePath();
+    await committed(
+      path,
+      Array.from({ length: 65 }, (_, index) => selection(`capacity-${index}`, index)),
+    );
+    const initial = readHandoffRoutingStatus(path, () => ({ kind: 'absent' }));
+    if (initial.kind !== 'current') throw new Error('Expected current status');
+    const eviction = initial.statuses.find(
+      (status) => status.kind === 'retired' && status.tombstone.retirementCause === 'selection-evicted-at-capacity',
+    );
+    expect(eviction).toBeDefined();
+    if (eviction === undefined) throw new Error('Expected capacity eviction');
+    const history = { ...initial, statuses: [eviction] };
+    expect(handoffRoutingStatusExitContribution(history)).toBe(0);
+    const output = formatHandoffRoutingStatus(history);
+    expect(output).toContain('selection-evicted-at-capacity');
+    expect(output).toContain('terminal recorded: no');
+    expect(output).toContain('retained history. No action is needed.');
+    expect(output).not.toContain('command=');
+    expect(output).not.toContain('routing-status resolve');
+    expect(handoffRoutingStatusExitContribution(initial)).toBe(75);
+
+    const absentRuntime: Runtime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' } })),
+      },
+    };
+    for (let sweep = 0; sweep < 4; sweep++) {
+      await reconcileHandoffRoutingStatus(absentRuntime, path, new AbortController().signal);
+    }
+    const final = readHandoffRoutingStatus(path);
+    if (final.kind !== 'current') throw new Error('Expected current status');
+    expect(final.statuses.some((status) => status.kind === 'unresolved')).toBe(false);
+    expect(final.statuses).toContainEqual(eviction);
+    expect(handoffRoutingStatusExitContribution(final)).toBe(0);
+    expect(formatHandoffRoutingStatus(final)).toContain('retained history. No action is needed.');
+  });
+
+  it.each([
+    { kind: 'incarnation', incarnation: OWNER.incarnation },
+    { kind: 'unobservable', cause: 'probe-failed' },
+    { kind: 'unobservable', cause: 'probe-not-available' },
+    { kind: 'unobservable', cause: 'deadline-expired' },
+  ] as const)('retains owners observed as $kind $cause for automatic retry', async (evidence) => {
+    const path = databasePath();
+    await committed(path, [selection('retained', 1)]);
+    const observationRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence })),
+      },
+    };
+    const signal = new AbortController().signal;
+    expect(await reconcileHandoffRoutingStatus(observationRuntime, path, signal)).toEqual([]);
+    expect(readHandoffRoutingStatus(path)).toMatchObject({ kind: 'current', statuses: [{ kind: 'unresolved' }] });
+    const absentRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+    expect(await reconcileHandoffRoutingStatus(absentRuntime, path, signal)).toMatchObject([
+      { kind: 'resolved', reason: 'owner-absent' },
+    ]);
+  });
+
+  it('retires a different incarnation but refuses an absent observation returned after its budget', async () => {
+    const path = databasePath();
+    await committed(path, [selection('reused-pid', 1)]);
+    let expired = true;
+    let now = runtime.time.monotonicNow();
+    const observationRuntime = {
+      ...runtime,
+      time: { ...runtime.time, monotonicNow: () => now },
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) => {
+          if (expired) now += 500n;
+          return owners.map((owner) => ({
+            owner,
+            evidence: { kind: 'incarnation' as const, incarnation: testIncarnation(999) },
+          }));
+        },
+      },
+    };
+    const signal = new AbortController().signal;
+    expect(await reconcileHandoffRoutingStatus(observationRuntime, path, signal)).toEqual([]);
+    expect(readHandoffRoutingStatus(path)).toMatchObject({ kind: 'current', statuses: [{ kind: 'unresolved' }] });
+    expired = false;
+    expect(await reconcileHandoffRoutingStatus(observationRuntime, path, signal)).toMatchObject([
+      { kind: 'resolved', reason: 'owner-absent' },
+    ]);
+  });
+
+  it('preserves a terminal racing owner observation and accepts a terminal after automatic retirement', async () => {
+    const path = databasePath();
+    const selected = await committed(path, [selection('racing', 1)]);
+    const observationRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) => {
+          await committed(path, [terminal('racing', 2, selected.sequence)]);
+          return owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } }));
+        },
+      },
+    };
+    expect(await reconcileHandoffRoutingStatus(observationRuntime, path, new AbortController().signal)).toMatchObject([
+      { kind: 'not-published', cause: 'rejected-transition' },
+    ]);
+    expect(readHandoffRoutingStatus(path)).toMatchObject({ kind: 'current', statuses: [{ kind: 'terminal' }] });
+    const late = await committed(path, [selection('late', 3)]);
+    const absentRuntime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners: readonly (typeof OWNER)[]) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+    await reconcileHandoffRoutingStatus(absentRuntime, path, new AbortController().signal);
+    await committed(path, [terminal('late', 4, late.sequence)]);
+    const read = readHandoffRoutingStatus(path);
+    expect(read.kind).toBe('current');
+    if (read.kind !== 'current') throw new Error('Expected current status');
+    expect(read.statuses).toContainEqual(
+      expect.objectContaining({
+        kind: 'terminal',
+        terminal: expect.objectContaining({
+          disposition: expect.objectContaining({
+            kind: 'terminal-after-operator-resolution',
+            resolutionReason: 'owner-absent',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('keeps an uncertain resolution commit observable and retries it without claiming success', async () => {
+    const path = databasePath();
+    await committed(path, [selection('uncertain', 1)]);
+    let failCommit = true;
+    const uncertainRuntime: Runtime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' } })),
+      },
+      storage: {
+        ...runtime.storage,
+        openSqliteDatabaseSync: (candidate, options) => {
+          const db = runtime.storage.openSqliteDatabaseSync(candidate, options);
+          return {
+            prepare: (sql) => db.prepare(sql),
+            close: () => db.close(),
+            exec: (sql) => {
+              if (sql === 'COMMIT' && failCommit && !options?.readOnly)
+                throw Object.assign(new Error('injected commit failure'), { errcode: 10 });
+              db.exec(sql);
+            },
+          };
+        },
+      },
+    };
+    const signal = new AbortController().signal;
+    expect(await reconcileHandoffRoutingStatus(uncertainRuntime, path, signal)).toMatchObject([
+      { kind: 'commit-outcome-unknown' },
+    ]);
+    expect(readHandoffRoutingStatus(path)).toMatchObject({ kind: 'current', statuses: [{ kind: 'unresolved' }] });
+    failCommit = false;
+    expect(await reconcileHandoffRoutingStatus(uncertainRuntime, path, signal)).toMatchObject([{ kind: 'resolved' }]);
+  });
+
+  it('does not publish after reconciliation stops during owner observation', async () => {
+    const path = databasePath();
+    await committed(path, [selection('stopped', 1)]);
+    const before = records(path);
+    let releaseObservation = () => {};
+    const observation = new Promise<void>((resolve) => {
+      releaseObservation = resolve;
+    });
+    let observationStarted = () => {};
+    const started = new Promise<void>((resolve) => {
+      observationStarted = resolve;
+    });
+    const observe = vi.fn<Runtime['process']['observeProcessIdentities']>(async (owners) => {
+      observationStarted();
+      await observation;
+      return owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' } }));
+    });
+    const stoppedRuntime: Runtime = {
+      ...runtime,
+      time: { ...runtime.time },
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: observe,
+      },
+    };
+    const interval = vi.spyOn(stoppedRuntime.time, 'setInterval');
+    const clearInterval = vi.spyOn(stoppedRuntime.time, 'clearInterval');
+    const clearTimeout = vi.spyOn(stoppedRuntime.time, 'clearTimeout');
+    const onError = vi.fn();
+    const reconciler = createHandoffRoutingReconciler(stoppedRuntime, path, onError);
+    try {
+      reconciler.start();
+      await started;
+      const [tick] = interval.mock.calls[0];
+      const timer = interval.mock.results[0].value;
+      expect(clearTimeout).not.toHaveBeenCalled();
+      reconciler.stop();
+      expect(clearInterval).toHaveBeenCalledWith(timer);
+      releaseObservation();
+      await vi.waitFor(() => expect(clearTimeout).toHaveBeenCalledTimes(1));
+      expect(readHandoffRoutingStatus(path)).toMatchObject({ kind: 'current', statuses: [{ kind: 'unresolved' }] });
+      expect(records(path)).toEqual(before);
+      tick();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(records(path)).toEqual(before);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      releaseObservation();
+      reconciler.stop();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('refuses owner evidence that expires inside the resolution transaction', async () => {
+    const path = databasePath();
+    await committed(path, [selection('expired-in-transaction', 1)]);
+    let now = runtime.time.monotonicNow();
+    const expiredRuntime: Runtime = {
+      ...runtime,
+      time: { ...runtime.time, monotonicNow: () => now },
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' } })),
+      },
+      storage: {
+        ...runtime.storage,
+        openSqliteDatabaseSync: (candidate, options) => {
+          const db = runtime.storage.openSqliteDatabaseSync(candidate, options);
+          return {
+            prepare: (sql) => db.prepare(sql),
+            close: () => db.close(),
+            exec: (sql) => {
+              db.exec(sql);
+              if (sql === 'BEGIN IMMEDIATE') now += 500n;
+            },
+          };
+        },
+      },
+    };
+    expect(await reconcileHandoffRoutingStatus(expiredRuntime, path, new AbortController().signal)).toMatchObject([
+      { kind: 'not-published', cause: 'rejected-transition' },
+    ]);
+    expect(readHandoffRoutingStatus(path)).toMatchObject({ kind: 'current', statuses: [{ kind: 'unresolved' }] });
+  });
+
   it('does not unlink evidence that replaces the validated classifier-created wal', async () => {
     const path = databasePath();
     const quarantineId = '00000000-0000-4000-8000-000000000060';
