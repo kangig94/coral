@@ -583,6 +583,7 @@ export class WaitCoordinator {
       );
 
       while (pending.size > 0) {
+        if (controller.signal.aborted) return;
         const now = Number(this.deps.time.monotonicNow());
         if (now > deadlineMs) {
           yield this.waitingSnapshot(pending, carrierUnknownJobIds);
@@ -632,8 +633,9 @@ export class WaitCoordinator {
           return;
         }
 
-        if (next.done || !next.value) {
-          continue;
+        if (next.done) {
+          pendingNext = null;
+          return;
         }
 
         const event = next.value;

@@ -16,6 +16,7 @@ export interface RetentionRunStatus {
 
 export interface RetentionRunBudget {
   canContinue(): boolean;
+  canMutate?(): boolean;
   canRetry?(): boolean;
   record(outcome: RetentionOutcome): void;
 }

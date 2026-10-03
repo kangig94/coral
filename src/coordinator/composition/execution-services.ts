@@ -591,11 +591,6 @@ function createProviderProxyClaimsInitializer(input: {
     const db = getProgressStore().getDb();
     const scan = readProviderOperations(db);
     world.providerProxyClaims.initialize(scan.records);
-    state.providerProxyClaimsInitialized = true;
-    state.unsubscribeProviderOperationMutations = subscribeProviderOperationMutations(db, (mutation) => {
-      world.providerProxyClaims.applyMutation(mutation);
-      providerProxyLifecycle.claimsChanged(providerProxySetIdentityFromRecord(mutation.record));
-    });
 
     if (scan.unreadableKeys.length > 0) {
       const quarantineReport = await quarantineUnreadableProviderOperations(
@@ -609,6 +604,11 @@ function createProviderProxyClaimsInitializer(input: {
           `${quarantineReport.failed.map(({ key }) => key).join(', ') || 'none'}`,
       );
     }
+    state.unsubscribeProviderOperationMutations = subscribeProviderOperationMutations(db, (mutation) => {
+      world.providerProxyClaims.applyMutation(mutation);
+      providerProxyLifecycle.claimsChanged(providerProxySetIdentityFromRecord(mutation.record));
+    });
+    state.providerProxyClaimsInitialized = true;
   };
 }
 
@@ -734,7 +734,7 @@ function createExecutionServiceContext(world: CoordinatorWorld) {
 function activateProviderProxyLifecycle(lifecycle: ProviderProxySetLifecycle): void {
   const activation = lifecycle.activateDurableOperatorDispositions();
   if (activation.kind === 'held') {
-    backendLog.warn(
+    throw new Error(
       `Durable provider proxy disposition activation remains held pending store repair: ${activation.reason}`,
     );
   }
@@ -747,7 +747,7 @@ async function reconcileProviderProxyLifecycle(
 ): Promise<void> {
   const durableReconciliation = await lifecycle.reconcileDurableOperatorDispositions(signal);
   if (durableReconciliation.kind !== 'completed') {
-    backendLog.warn(`Durable provider proxy set disposition reconciliation failed: ${durableReconciliation.reason}`);
+    throw new Error(`Durable provider proxy set disposition reconciliation failed: ${durableReconciliation.reason}`);
   }
 }
 
@@ -857,8 +857,9 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
         },
       );
     }
-    state.providerProxyLifecycleInitialized = true;
     await reconcileProviderProxyLifecycle(providerProxyLifecycle, signal);
+    signal.throwIfAborted();
+    state.providerProxyLifecycleInitialized = true;
   };
 
   const servicesPorts = createExecutionServiceRegistry({

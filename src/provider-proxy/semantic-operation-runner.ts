@@ -268,6 +268,7 @@ function buildExecutionRuntime(
   onProviderTurnTerminal: BoundProviderAppServerExecutionRuntime['onProviderTurnTerminal'],
   onProviderTurnSettlement: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnSettlement']>,
   onProviderTurnStart: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnStart']>,
+  onProviderTurnNotSubmitted: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnNotSubmitted']>,
 ): BoundProviderAppServerExecutionRuntime {
   return {
     transport: 'app-server',
@@ -297,6 +298,7 @@ function buildExecutionRuntime(
     onProviderTurnTerminal,
     onProviderTurnSettlement,
     onProviderTurnStart,
+    onProviderTurnNotSubmitted,
   };
 }
 
@@ -325,6 +327,7 @@ type StagedOperation = {
   stageHandle: SemanticOperationStageHandle | null;
   startHandle: SemanticOperationStartHandle | null;
   startCommitted: boolean;
+  providerTurnSubmission: 'unknown' | 'not-submitted' | 'submitted';
   releaseRequested: boolean;
   activeContinuitySettlement: ContinuityCommitSettlement | null;
   closed: boolean;
@@ -673,6 +676,11 @@ function createSemanticOperationCancellation(
       await withinSemanticCancellationDeadline(runtime, entry, completion).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
+      if (entry.providerTurnSubmission === 'not-submitted') {
+        entry.cancellationEvidence = { kind: 'not-started' };
+        closeAndForget(entry);
+        return;
+      }
       if (currentTurnTerminalEvidence(entry) === null && entry.turnSettlement !== null) {
         const terminal = await entry.turnSettlement.settle();
         if (terminal !== null && terminal.providerTurnId === entry.turnSettlement.providerTurnId)
@@ -800,9 +808,13 @@ function createSemanticOperationHost(
               entry.settlementRefusals = 0;
             },
             () => {
+              entry.providerTurnSubmission = 'submitted';
               if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.cancellationEvidence = null;
               entry.settlementRefusals = 0;
+            },
+            () => {
+              if (entry.providerTurnSubmission === 'unknown') entry.providerTurnSubmission = 'not-submitted';
             },
           );
           const iterable = preparedExecution.execute(executionRuntime);
@@ -870,6 +882,7 @@ function createStagedOperationEntry(
     stageHandle: null,
     startHandle: null,
     startCommitted: false,
+    providerTurnSubmission: 'unknown',
     releaseRequested: false,
     activeContinuitySettlement: null,
     closed: false,

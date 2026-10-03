@@ -919,7 +919,6 @@ async function startTurn(
   params: TurnStartParams,
   emit: (event: ProviderEventBody) => void,
 ): Promise<CodexKernelResult | null> {
-  attempt.turnStartRequested = true;
   if (runtime.signal.aborted) {
     return { kind: 'aborted', reason: 'signal_abort', attempt };
   }
@@ -927,6 +926,7 @@ async function startTurn(
     throw new Error('Codex thread id missing before turn/start.');
   }
 
+  attempt.turnStartRequested = true;
   runtime.onProviderTurnStart?.();
   const aborted = abortResultPromise(lease, runtime, state, attempt);
   const startOutcome = rpc(lease, 'turn/start', params).then(
@@ -1424,6 +1424,8 @@ export const codexTurnKernel: Provider<
       );
       if (terminal) emit(terminal);
     } finally {
+      if (state.activeAttempt.sequence === 0 && !state.activeAttempt.turnStartRequested)
+        runtime.onProviderTurnNotSubmitted?.();
       clearCompletionTimer(state, state.activeAttempt);
       clearNotificationBinding();
       if (!settlementTransferred) turnSettlement?.close();

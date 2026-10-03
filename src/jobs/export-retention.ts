@@ -147,6 +147,10 @@ export async function pruneJobExports(input: {
   checkpoint?(nextId: string): void;
 }): Promise<string> {
   const { runtime, cutoff, budget } = input;
+  const mutate = <T>(operation: () => T): T => {
+    if (budget.canMutate?.() === false) throw new Error('export-retention-owner-expired');
+    return input.mutate(operation);
+  };
   const root = runtime.paths.coral.exports.jobsRoot;
   if (!budget.canContinue()) return input.afterId;
   try {
@@ -160,16 +164,11 @@ export async function pruneJobExports(input: {
       budget.record({ kind: 'kept', subject: root, reason: errorMessage(error) });
     return '';
   }
+  if (budget.canMutate?.() === false) return input.afterId;
   const ids = (await runtime.storage.readdir(root)).sort();
-  input.mutate(() =>
-    input.db.prepare('DELETE FROM meta WHERE key = ?').run('storage-retention.exports.eligibility.v1'),
-  );
-  const pending = createRetentionPendingSet(
-    input.db,
-    'storage-retention.exports.pending.v1',
-    input.mutate,
-    budget.record,
-  );
+  if (budget.canMutate?.() === false) return input.afterId;
+  mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run('storage-retention.exports.eligibility.v1'));
+  const pending = createRetentionPendingSet(input.db, 'storage-retention.exports.pending.v1', mutate, budget.record);
   const attempted = new Set<string>();
   const process = async (id: string, deletionBudget: RetentionRunBudget): Promise<boolean> => {
     attempted.add(id);
@@ -187,7 +186,7 @@ export async function pruneJobExports(input: {
     const { value: admission, reset: admissionReset } = readRetentionMeta<number | null>({
       db: input.db,
       key: admissionKey,
-      mutate: input.mutate,
+      mutate,
       record: budget.record,
       decode: (value) => z.number().finite().parse(JSON.parse(value)),
       fresh: () => null,
@@ -195,13 +194,13 @@ export async function pruneJobExports(input: {
     let admittedCutoff = admission !== null && Number.isFinite(admission) && admission <= cutoff ? admission : null;
     const evidenceKey = (name: string) => `storage-retention.exports.retirement.v1.${name}`;
     const clearAdmission = () =>
-      input.mutate(() => {
+      mutate(() => {
         input.db
           .prepare('DELETE FROM meta WHERE key IN (?, ?, ?)')
           .run(admissionKey, `storage-retention.exports.admission.v1.${workId}`, evidenceKey(workId));
       });
     const keepRetirement = (): string =>
-      input.mutate(() => {
+      mutate(() => {
         const original = join(root, jobId);
         let occupied = true;
         try {
@@ -220,6 +219,7 @@ export async function pruneJobExports(input: {
       });
     try {
       const entry = await runtime.storage.lstat(path);
+      if (budget.canMutate?.() === false) return false;
       const state = input.jobState(jobId);
       if (!entry.isDirectory() || entry.isSymbolicLink())
         outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
@@ -244,7 +244,7 @@ export async function pruneJobExports(input: {
         > | null>({
           db: input.db,
           key: evidenceKey(id),
-          mutate: input.mutate,
+          mutate,
           record: budget.record,
           decode: (value) => retirementEvidenceSchema.parse(JSON.parse(value)),
           fresh: () => null,
@@ -265,6 +265,7 @@ export async function pruneJobExports(input: {
         const expired = recovering
           ? await exportTreeExpired(runtime, path, ageCutoff, mtimes, ageCutoff, directories)
           : state.kind !== 'absent' || admittedCutoff !== null || (await exportTreeExpired(runtime, path, cutoff));
+        if (budget.canMutate?.() === false) return false;
         if (!expired) {
           const kept = recovering ? keepRetirement() : path;
           clearAdmission();
@@ -277,7 +278,7 @@ export async function pruneJobExports(input: {
           };
         else {
           if (state.kind === 'absent' && admittedCutoff === null && !recovering)
-            input.mutate(() =>
+            mutate(() =>
               input.db
                 .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
                 .run(admissionKey, String(cutoff)),
@@ -289,7 +290,7 @@ export async function pruneJobExports(input: {
             const directoryMtime = runtime.storage.lstatSync(path, { bigint: true }).mtimeNs;
             const retiredId = `.retiring-${encodeURIComponent(jobId)}-${randomUUID()}`;
             const retired = join(root, retiredId);
-            input.mutate(() => runtime.storage.renameSync(path, retired));
+            mutate(() => runtime.storage.renameSync(path, retired));
             workId = retiredId;
             path = retired;
             pending.remove(id);
@@ -302,6 +303,7 @@ export async function pruneJobExports(input: {
               renameTime,
               directories,
             );
+            if (budget.canMutate?.() === false) return false;
             if (!unchanged || !expiredAfterRename) {
               outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };
               budget.record(outcome);
@@ -313,7 +315,7 @@ export async function pruneJobExports(input: {
             input.db
               .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
               .run(evidenceKey(workId), JSON.stringify({ cutoff: ageCutoff, mtimes }));
-          input.mutate(() => {
+          mutate(() => {
             saveEvidence();
             input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey);
             input.db
@@ -324,7 +326,7 @@ export async function pruneJobExports(input: {
             runtime,
             path,
             deletionBudget,
-            input.mutate,
+            mutate,
             (top) => {
               const rootMtime = directories.get(path);
               if (rootMtime !== undefined) {
@@ -348,6 +350,7 @@ export async function pruneJobExports(input: {
         }
       }
     } catch (error: unknown) {
+      if (budget.canMutate?.() === false) return false;
       if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !deleting) {
         pending.remove(id);
         clearAdmission();
@@ -385,6 +388,7 @@ export async function pruneJobExports(input: {
       input.checkpoint?.(cursor);
       await setImmediate();
     }
+    if (budget.canMutate?.() === false) return cursor;
     pending.clearOverflow();
     input.checkpoint?.('');
     return '';

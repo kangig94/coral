@@ -418,6 +418,7 @@ export type HealthSnapshot = {
    * Carrier coverage is observational even when complete. Incident-only fields remain omitted when healthy
    * so operators can still grep for blocked writers and stuck consumers.
    */
+  listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
     providerOperationStartupReconciliation?: ProviderOperationStartupStatus;
     carriers?: {

@@ -997,3 +997,62 @@ it('detached disposition initialization fences its own set while an unrelated se
     harness.db.close();
   }
 });
+
+it.each(['rejection', 'held'] as const)(
+  'retries a detached lifecycle initializer after %s instead of marking it initialized',
+  async (failure) => {
+    const time = new VirtualTime();
+    const runtime = sandboxedRuntime(time);
+    const harness = composeProductionStartup(
+      null,
+      undefined,
+      runtime,
+      (db) =>
+        new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+          db,
+          providers: permissiveProviderLookupPort,
+        }),
+    );
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lifecycle = harness.lifecycleRef.get()!;
+    const reconcile = vi.spyOn(lifecycle, 'reconcileDurableOperatorDispositions').mockImplementationOnce(async () => {
+      await blocked;
+      if (failure === 'rejection') throw new Error('temporary lifecycle failure');
+      return {
+        kind: 'held',
+        reason: 'temporary storage failure',
+        waitingFor: 'store-repair',
+        exit: 'provider-proxy-set-operator-disposition-store-retry',
+      };
+    });
+    try {
+      const startup = productionStartupOutcome(harness);
+      await drainMicrotasks();
+      time.tick(PROVIDER_OPERATION_STARTUP_BOUND_MS);
+      await drainMicrotasks();
+      await expect(startup).resolves.toMatchObject({
+        kind: 'fulfilled',
+        report: { incidents: [{ kind: 'startup-initialization-detached' }] },
+      });
+      release();
+      await drainMicrotasks(100);
+      expect(harness.services.providerOperationStartupStatus()?.initialization?.successor).toBe(
+        'provider-proxy-lifecycle-initialization',
+      );
+      time.tick(25);
+      await drainMicrotasks(100);
+      expect(reconcile).toHaveBeenCalledTimes(2);
+      expect(harness.services.providerOperationStartupStatus()).toBeNull();
+      expect(harness.fatals).not.toHaveBeenCalled();
+    } finally {
+      release();
+      harness.services.stopProviderOperationReconciler();
+      harness.ownershipService.releaseAll();
+      harness.db.close();
+      vi.restoreAllMocks();
+    }
+  },
+);
