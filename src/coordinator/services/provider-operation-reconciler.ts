@@ -2,6 +2,7 @@ import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
+import type { ProviderOperationStartupStatus } from '../../transport/server-ports.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
@@ -70,6 +71,7 @@ import {
   providerProxySetIdentitiesEqual,
   ProviderProxySetIdentityIndex,
   providerProxySetIdentityFromRecord,
+  providerProxySetKey,
   providerProxySetReference,
   type ProviderProxySetKey,
   type ProviderProxySetIdentity,
@@ -150,6 +152,14 @@ export type StartupOperationReconciliationResult =
     }>;
 
 export type StartupReconciliationIncident =
+  | Readonly<{ kind: 'startup-initialization-detached' }>
+  | Readonly<{
+      kind: 'startup-deadline-expired';
+      setIdentity: ProviderProxySetIdentity;
+      setKey: ProviderProxySetKey;
+      operations: readonly ProviderOperationIdentity[];
+      successor: 'detached-startup-recovery';
+    }>
   | Readonly<{
       kind: 'set-retry-scheduled';
       setIdentity: ProviderProxySetIdentity;
@@ -184,8 +194,12 @@ export type StartupReconciliationReport = Readonly<{
 }>;
 
 export function describeStartupReconciliationIncident(incident: StartupReconciliationIncident): string {
+  if (incident.kind === 'startup-initialization-detached')
+    return 'startup initialization detached; owner=provider-proxy-lifecycle-initialization';
   const set = `set=${providerProxySetReference(incident.setIdentity)}`;
   switch (incident.kind) {
+    case 'startup-deadline-expired':
+      return `${set} kind=${incident.kind} successor=${incident.successor}`;
     case 'set-retry-scheduled':
       return `${set} kind=${incident.kind} operations=${incident.operations.map(operationKey).join(',')} nextAttemptAtMs=${incident.nextAttemptAtMs} reason=${incident.reason}`;
     case 'operation-retry-scheduled':
@@ -266,13 +280,9 @@ export class StartupSetRecoveryProducer implements StartupSetRecoveryPort {
   recoverSetAtStartup(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult> {
     const existing = this.#recoveries.get(work.key);
     if (existing !== undefined) return existing;
-    const started = this.#recover(work, signal);
+    const started = this.#recoverSet(work, signal);
     this.#recoveries.set(work.key, started);
     return started;
-  }
-
-  #recover(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult> {
-    return awaitStartup(this.#recoverSet(work, signal), signal);
   }
 }
 
@@ -343,6 +353,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
     signal: AbortSignal,
   ) => Promise<ProviderOperationAuthorityAcquisitionResult>;
   startupSetRecovery: StartupSetRecoveryPort;
+  initializeAtStartup?: (signal: AbortSignal) => Promise<void>;
   registry: Pick<LocalOperationRegistry, 'activate' | 'attach' | 'settled' | 'stop'>;
   binding: ProviderOperationBindingPort;
   releaseStartupOwnership(operation: ProviderOperationIdentity): ProviderOperationStartupRelease;
@@ -357,7 +368,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
   terminalization: ProviderOperationTerminalizationPort;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
   backendNamespace: string;
-  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout'>;
   batchSize?: number;
   onFatal(error: ProviderOperationReconcilerFatalError): void;
   onError?: (message: string) => void;
@@ -551,6 +562,15 @@ function preservesHostRefusalEvidence(record: ProviderOperationRecord): boolean 
   );
 }
 
+export const PROVIDER_OPERATION_STARTUP_BOUND_MS = 500;
+
+type StartupSetAttempt = {
+  work: StartupProviderSetWork;
+  signal: AbortSignal;
+  state: 'queued' | 'recovering' | 'detached';
+  incident: StartupReconciliationIncident | null;
+};
+
 export class ProviderOperationReconciler
   implements ProviderContainmentDisappearanceConsumer, ProviderRepresentationAbandonmentConsumer
 {
@@ -569,6 +589,39 @@ export class ProviderOperationReconciler
   #polling = false;
   #pollRequested = false;
   #fatal = false;
+  #startupInitializationSignal: AbortSignal | null = null;
+  #startupStartedAt: bigint | null = null;
+  #startupExpiredAt: bigint | null = null;
+  readonly #startupSets = new Map<ProviderProxySetKey, StartupSetAttempt>();
+
+  startupStatus(): ProviderOperationStartupStatus | null {
+    if (this.#startupStartedAt === null || (this.#startupSets.size === 0 && this.#startupInitializationSignal === null))
+      return null;
+    return {
+      phase: this.#startupExpiredAt === null ? 'recovering' : 'detached',
+      elapsedMs: Number(this.#deps.time.monotonicNow() - this.#startupStartedAt),
+      boundMs: PROVIDER_OPERATION_STARTUP_BOUND_MS,
+      initialization:
+        this.#startupInitializationSignal === null
+          ? null
+          : {
+              state: this.#startupExpiredAt === null ? 'recovering' : 'detached',
+              ...this.#admission().pendingRecovery(this.#startupInitializationSignal),
+              incident: this.#startupExpiredAt === null ? null : 'startup-initialization-detached',
+              successor: 'provider-proxy-lifecycle-initialization',
+            },
+      sets: [...this.#startupSets.values()].map((attempt) => {
+        const pending = this.#admission().pendingSet(attempt.work.identity);
+        return {
+          setKey: attempt.work.key,
+          state: attempt.state,
+          ...pending,
+          incident: attempt.incident === null ? null : describeStartupReconciliationIncident(attempt.incident),
+          successor: 'detached-startup-recovery' as const,
+        };
+      }),
+    };
+  }
 
   constructor(deps: ProviderOperationReconcilerDeps) {
     const batchSize = deps.batchSize ?? 32;
@@ -625,15 +678,14 @@ export class ProviderOperationReconciler
     signal: AbortSignal,
   ): Promise<StartupReconciliationReport> {
     if (!this.#canMutate()) return Promise.reject(new Error('Provider operation mutation admission is closed.'));
-    return this.#admission().run('provider-operation-startup-reconciliation', () =>
-      this.#reconcileAtStartup(ownership, signal),
-    );
+    return this.#reconcileAtStartup(ownership, signal);
   }
 
   async #reconcileAtStartup(
     ownership: ProviderOperationStartupOwnership,
     signal: AbortSignal,
   ): Promise<StartupReconciliationReport> {
+    this.#startupStartedAt = this.#deps.time.monotonicNow();
     const hydratedOperations = new Set(
       ownership.records.filter(startupOperationCanReconcile).map(({ operation }) => operationKey(operation)),
     );
@@ -643,14 +695,98 @@ export class ProviderOperationReconciler
     const incidents: StartupReconciliationIncident[] = [];
     let setsVisited = 0;
     let operationsVisited = 0;
+    const deadline = this.#startupStartedAt + BigInt(PROVIDER_OPERATION_STARTUP_BOUND_MS);
+    const expiry = new Error('Provider operation startup reconciliation deadline expired.');
+    const deadlineAbort = new AbortController();
+    let timer: TimerHandle;
+    const expire = (): void => {
+      const remaining = Number(deadline - this.#deps.time.monotonicNow());
+      if (remaining > 0) {
+        timer = this.#deps.time.setTimeout(expire, remaining);
+        return;
+      }
+      this.#startupExpiredAt = this.#deps.time.monotonicNow();
+      deadlineAbort.abort(expiry);
+      for (const attempt of this.#startupSets.values()) {
+        if (attempt.state === 'recovering') attempt.state = 'detached';
+        attempt.incident = {
+          kind: 'startup-deadline-expired',
+          setIdentity: attempt.work.identity,
+          setKey: attempt.work.key,
+          operations: attempt.work.operations,
+          successor: 'detached-startup-recovery',
+        };
+        incidents.push(attempt.incident);
+      }
+      if (this.#startupInitializationSignal !== null) incidents.push({ kind: 'startup-initialization-detached' });
+    };
+    timer = this.#deps.time.setTimeout(expire, PROVIDER_OPERATION_STARTUP_BOUND_MS);
+    const startupSignal = AbortSignal.any([signal, deadlineAbort.signal]);
     for (const work of groupStartupProviderSetWork(records)) {
+      this.#startupSets.set(work.key, { work, signal: AbortSignal.any([signal]), state: 'queued', incident: null });
+    }
+    const recover = async (): Promise<void> => {
+      const initializeAtStartup = this.#deps.initializeAtStartup;
+      if (initializeAtStartup !== undefined) {
+        this.#startupInitializationSignal = signal;
+        try {
+          await this.#admission().runRecovery(
+            'provider-operation-startup-initialization',
+            () => initializeAtStartup(signal),
+            undefined,
+            signal,
+          );
+        } finally {
+          this.#startupInitializationSignal = null;
+        }
+      }
+      await Promise.all(
+        [...this.#startupSets.values()].map(async (attempt) => {
+          signal.throwIfAborted();
+          const currentRecords = this.#readCurrentStartupSet(attempt.work);
+          if (currentRecords.length === 0) {
+            this.#startupSets.delete(attempt.work.key);
+            return;
+          }
+          setsVisited += 1;
+          operationsVisited += currentRecords.length;
+          attempt.state = this.#startupExpiredAt === null ? 'recovering' : 'detached';
+          try {
+            const outcome = await this.#admission().runRecovery(
+              'provider-operation-startup-reconciliation',
+              () => this.#reconcileStartupSet(attempt.work, currentRecords, attempt.signal),
+              attempt.work.identity,
+              attempt.signal,
+            );
+            if (this.#startupExpiredAt === null) incidents.push(...outcome);
+            else for (const incident of outcome) this.#deps.onError?.(describeStartupReconciliationIncident(incident));
+          } catch (error: unknown) {
+            signal.throwIfAborted();
+            if (this.#startupExpiredAt === null || this.#observeFatal(error)) throw error;
+            const reason = providerOperationErrorReason(error);
+            for (const record of this.#readCurrentStartupSet(attempt.work)) {
+              this.#scheduleStartupSetRetry(record, reason, this.#deps.time.now() + TIMER_MIN_MS);
+            }
+            this.#deps.onError?.(`Detached provider operation startup reconciliation failed: ${reason}`);
+          } finally {
+            this.#startupSets.delete(attempt.work.key);
+          }
+        }),
+      );
+    };
+    const recovery = recover();
+    void recovery.catch((error: unknown) => {
+      if (this.#startupExpiredAt !== null && !this.#observeFatal(error)) {
+        this.#deps.onError?.(`Detached startup initialization failed: ${providerOperationErrorReason(error)}`);
+      }
+    });
+    try {
+      await awaitStartup(recovery, startupSignal);
+    } catch (error: unknown) {
       signal.throwIfAborted();
-      const currentRecords = this.#readCurrentStartupSet(work);
-      if (currentRecords.length === 0) continue;
-
-      setsVisited += 1;
-      operationsVisited += currentRecords.length;
-      incidents.push(...(await this.#reconcileStartupSet(work, currentRecords, signal)));
+      if (error !== expiry) throw error;
+    } finally {
+      this.#deps.time.clearTimeout(timer);
     }
     return { setsVisited, operationsVisited, incidents };
   }
@@ -679,9 +815,11 @@ export class ProviderOperationReconciler
       ...work,
       operations: currentRecords.map((record) => record.operation),
     };
-    const recovery = await awaitStartup(this.#deps.startupSetRecovery.recoverSetAtStartup(currentWork, signal), signal);
+    const recovery = await this.#deps.startupSetRecovery.recoverSetAtStartup(currentWork, signal);
+    signal.throwIfAborted();
     if (recovery.kind === 'absence-accepted') {
-      const disposition = await awaitStartup(recovery.acceptance.initialDisposition, signal);
+      const disposition = await recovery.acceptance.initialDisposition;
+      signal.throwIfAborted();
       switch (disposition.kind) {
         case 'completed':
           return [];
@@ -724,7 +862,8 @@ export class ProviderOperationReconciler
 
     const incidents: StartupReconciliationIncident[] = [];
     for (const record of currentRecords) {
-      const result = await awaitStartup(this.#reconcileStartupOperation(record, recovery.authority, signal), signal);
+      const result = await this.#reconcileStartupOperation(record, recovery.authority, signal);
+      signal.throwIfAborted();
       if (result.kind === 'retry-scheduled') {
         incidents.push({
           kind: 'operation-retry-scheduled',
@@ -802,6 +941,9 @@ export class ProviderOperationReconciler
     if (!this.#canMutate()) {
       return Promise.reject(new Error('Provider operation mutation admission is closed.'));
     }
+    if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(input.record)))) {
+      return Promise.reject(new ProviderOperationMutationSetClosedError());
+    }
     const key = operationKey(input.record.operation);
     if (this.#publications.has(key)) {
       return Promise.reject(new Error('Provider operation publication is already active.'));
@@ -813,7 +955,7 @@ export class ProviderOperationReconciler
       const onAbort = (): void => {
         abortRequestedAt ??= new Date(this.#deps.time.now()).toISOString();
         if (!inserted) return;
-        void this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
+        this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
       };
       input.signal.addEventListener('abort', onAbort, { once: true });
       this.#publications.set(key, {
@@ -840,10 +982,14 @@ export class ProviderOperationReconciler
       }
       inserted = true;
       if (abortRequestedAt !== null) {
-        void this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
+        this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
         return;
       }
-      void this.reconcile(input.record, input.authority);
+      runReportedEffect(
+        () => this.reconcile(input.record, input.authority),
+        (error) =>
+          this.#failPublication(input.record.operation, error instanceof Error ? error : new Error(String(error))),
+      );
     });
   }
 
@@ -889,7 +1035,7 @@ export class ProviderOperationReconciler
   }
 
   requestStop(jobId: string, cause: ProviderStopCause): void {
-    void this.requestStops([jobId], cause);
+    this.requestStops([jobId], cause);
   }
 
   onControlEstablished(authority: DurableProviderProxyOperationAuthority): void {
@@ -909,11 +1055,15 @@ export class ProviderOperationReconciler
 
   wake(): void {
     if (this.#fatal || this.#admissionClosed) return;
+    if (this.#startupSets.size > 0 && !this.#started) return;
     if (this.#polling) {
       this.#pollRequested = true;
       return;
     }
-    void this.#poll();
+    runReportedEffect(
+      () => this.#poll(),
+      (error) => this.#deps.onError?.(`Provider operation due poll failed: ${providerOperationErrorReason(error)}`),
+    );
   }
 
   containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<DisappearanceDeliveryAttemptOutcome> {
@@ -1058,6 +1208,10 @@ export class ProviderOperationReconciler
     preferredAuthority?: DurableProviderProxyOperationAuthority,
     signal?: AbortSignal,
   ): Promise<void> {
+    const startup = this.#startupSets.get(providerProxySetKey(providerProxySetIdentityFromRecord(record)));
+    if (startup !== undefined && signal !== startup.signal) {
+      return Promise.reject(new ProviderOperationMutationSetClosedError());
+    }
     if (!this.#canMutate()) return Promise.reject(new Error('Provider operation mutation admission is closed.'));
     return this.#admission().run(
       `provider-operation:${operationKey(record.operation)}`,
@@ -2457,8 +2611,8 @@ export class ProviderOperationReconciler
         });
       } else if (current.phase === 'executing') {
         if (current.controlIntent.kind === 'rekey-refusal-containment') {
-          void this.reconcile(current, preferredAuthority);
-          return { kind: 'not-applicable' };
+          this.#runControlIntentFollowUp(current, preferredAuthority);
+          return { kind: 'already-carried' };
         }
         if (current.controlIntent.kind === 'stop') {
           if (!isAbortStopCause(current.controlIntent.cause)) return { kind: 'not-applicable' };
@@ -2492,6 +2646,7 @@ export class ProviderOperationReconciler
     record: ProviderOperationRecord,
     preferredAuthority?: DurableProviderProxyOperationAuthority,
   ): void {
+    if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record)))) return;
     const report = (error: unknown): void => {
       this.#deps.onError?.(
         `Provider operation stop follow-up failed for job '${record.operation.jobId}': ${providerOperationErrorReason(error)}`,
@@ -2507,6 +2662,7 @@ export class ProviderOperationReconciler
       if (precedingDrive === null) return;
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current !== null && current.retryNotBeforeMs <= this.#deps.time.now()) {
+        if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(current)))) return;
         await this.reconcile(current, preferredAuthority);
       }
     }, report);
@@ -2652,7 +2808,7 @@ export class ProviderOperationReconciler
       if (!this.#admissionClosed) this.#schedule(TIMER_MAX_MS);
       return Promise.resolve();
     }
-    return this.#admission().run('provider-operation-due-poll', async () => {
+    return this.#admission().runDetached('provider-operation-due-poll', async () => {
       if (this.#fatal) return;
       if (this.#polling) {
         this.#pollRequested = true;
@@ -2664,7 +2820,12 @@ export class ProviderOperationReconciler
         const scanCutoffMs = this.#deps.time.now();
         let selections: readonly ProviderOperationDueSelection[];
         try {
-          selections = readProviderOperationDueSelections(progressStore.getDb(), scanCutoffMs, this.#batchSize);
+          selections = readProviderOperationDueSelections(
+            progressStore.getDb(),
+            scanCutoffMs,
+            this.#batchSize,
+            (record) => !this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record))),
+          );
         } catch (error: unknown) {
           if (error instanceof ProviderOperationJournalError) {
             this.#latchFatal(
@@ -2679,6 +2840,10 @@ export class ProviderOperationReconciler
           throw error;
         }
         for (const selection of selections) {
+          const startup = this.#startupSets.get(
+            providerProxySetKey(providerProxySetIdentityFromRecord(selection.record)),
+          );
+          if (startup !== undefined) continue;
           const result = await this.#reconcileDueSelection(selection, scanCutoffMs, preferredAuthority);
           if (result === 'fatal') return;
         }
@@ -2689,6 +2854,7 @@ export class ProviderOperationReconciler
             this.#settlements.delete(key);
             continue;
           }
+          if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record)))) continue;
           if (record.phase !== 'settlement-pending' || record.retryNotBeforeMs > this.#deps.time.now()) continue;
           if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
           await this.reconcile(record, preferredAuthority);
@@ -2699,6 +2865,7 @@ export class ProviderOperationReconciler
             this.#attachments.delete(key);
             continue;
           }
+          if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record)))) continue;
           if (record.retryNotBeforeMs > this.#deps.time.now()) continue;
           if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
           await this.reconcile(record, preferredAuthority);
@@ -2713,7 +2880,7 @@ export class ProviderOperationReconciler
         this.#pollRequested = false;
         if (!this.#fatal) {
           if (pollRequested) {
-            void this.#poll();
+            this.wake();
           } else if (this.#started) {
             this.#schedule(TIMER_MAX_MS);
           }
@@ -2813,6 +2980,7 @@ export class ProviderOperationReconciler
   async #reconcileActiveForAuthority(authority: DurableProviderProxyOperationAuthority): Promise<void> {
     const db = this.#deps.getProgressStore().getDb();
     for (const record of readProviderOperations(db).records) {
+      if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record)))) continue;
       if (sameAuthority(record, authority)) await this.reconcile(record, authority);
     }
   }
@@ -2823,7 +2991,7 @@ export class ProviderOperationReconciler
     this.#timer = this.#deps.time.setTimeout(
       () => {
         this.#timer = null;
-        void this.#poll();
+        this.wake();
       },
       Math.max(TIMER_MIN_MS, Math.min(delayMs, TIMER_MAX_MS)),
     );

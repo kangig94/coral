@@ -361,6 +361,7 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
     ...(overrides.onRecordRemoved === undefined ? {} : { onRecordRemoved: overrides.onRecordRemoved }),
     time: {
       now: () => now,
+      monotonicNow: () => BigInt(now),
       setTimeout: overrides.time?.setTimeout ?? (() => ({ unref: () => undefined })),
       clearTimeout: overrides.time?.clearTimeout ?? (() => undefined),
     },

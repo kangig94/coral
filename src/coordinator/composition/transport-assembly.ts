@@ -130,6 +130,7 @@ export function createCoordinatorTransportAssembly(input: {
         readIpcOpenSockets: () => state.readIpcOpenSockets(),
         eventStreamResponseCount: () => streamResponses.size,
         launchPermitReportAgeMs: launchPermitReportAgeMs,
+        providerOperationStartupStatus: execution.services.providerOperationStartupStatus,
       }),
     },
     events: createCoordinatorEventStreamPorts({

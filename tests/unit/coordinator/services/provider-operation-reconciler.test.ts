@@ -1,5 +1,8 @@
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
-import { compareAndSwapProviderOperation } from '#src/store/provider-operation-journal.js';
+import {
+  compareAndSwapProviderOperation,
+  ProviderOperationMutationSetClosedError,
+} from '#src/store/provider-operation-journal.js';
 import { ProviderOperationAtomicTerminalizationError } from '#src/jobs/provider-operation-terminalization.js';
 import { ControlClientError } from '#src/provider-proxy/control-client.js';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -40,6 +43,19 @@ const TEST_PUBLICATION_RECEIPT = { kind: 'provider-proxy-set-published' } as Pub
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+
+it('rejects the publication when its reconciliation is refused', async () => {
+  const harness = createHarness();
+  const refusal = new ProviderOperationMutationSetClosedError();
+  vi.spyOn(harness.reconciler, 'reconcile').mockRejectedValueOnce(refusal);
+  try {
+    await expect(harness.begin()).rejects.toBe(refusal);
+  } finally {
+    harness.reconciler.stop();
+    harness.db.close();
+  }
+});
+
 const containmentProofRuntime = createRealRuntime('prod');
 const containmentProofDb = newRawDatabase(':memory:');
 applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());

@@ -131,6 +131,7 @@ type HealthDiagnosticInput = Pick<
   | 'settlementRefusalRecordingFailures'
   | 'providerOperationAdoptionRefusals'
   | 'launchPermitReportAgeMs'
+  | 'providerOperationStartupStatus'
 > & {
   storeServices: ReturnType<ReturnType<typeof createCoordinatorWorld>['storeServicesRef']['tryGet']>;
   kbDaemon: ReturnType<KbDaemonSupervisor['read']>;
@@ -146,12 +147,16 @@ function readHealthDiagnostics(input: HealthDiagnosticInput) {
     settlementRefusalRecordingFailures,
     providerOperationAdoptionRefusals,
     launchPermitReportAgeMs,
+    providerOperationStartupStatus,
   } = input;
   const { carrierDiagnostics, carrierLivenessByJobId } = input.carrier;
   const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
     storeServices === null ? [] : (options.getConsumerStuck() ?? []);
   const mutationBlocked = kbDaemon.kbWrite?.mutationBlocked;
   const diagnostics: {
+    providerOperationStartupReconciliation?: NonNullable<
+      HealthSnapshot['diagnostics']
+    >['providerOperationStartupReconciliation'];
     carriers?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
     mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
     consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
@@ -169,6 +174,8 @@ function readHealthDiagnostics(input: HealthDiagnosticInput) {
     launchReleaseDispositions?: LaunchReleaseDiagnostic[];
     launchReclamations?: LaunchPermitReclamationDiagnostic[];
   } = { carriers: carrierDiagnostics };
+  const startupStatus = providerOperationStartupStatus();
+  if (startupStatus !== null) diagnostics.providerOperationStartupReconciliation = startupStatus;
   if (mutationBlocked !== undefined) {
     diagnostics.mutationBlocked = mutationBlocked;
   }
@@ -209,6 +216,7 @@ function readHealthDiagnostics(input: HealthDiagnosticInput) {
     diagnostics.launchReclamations = launchReclamations;
   }
   const hasDiagnostics =
+    diagnostics.providerOperationStartupReconciliation !== undefined ||
     diagnostics.carriers !== undefined ||
     diagnostics.mutationBlocked !== undefined ||
     diagnostics.consumerStuck !== undefined ||
@@ -239,6 +247,7 @@ export function createCoordinatorHealthReader({
   eventStreamResponseCount,
   launchPermitReportAgeMs,
   retentionStatus,
+  providerOperationStartupStatus,
 }: {
   runtime: Runtime;
   world: ReturnType<typeof createCoordinatorWorld>;
@@ -261,6 +270,9 @@ export function createCoordinatorHealthReader({
   eventStreamResponseCount: () => number;
   launchPermitReportAgeMs: number;
   retentionStatus?: () => RetentionRunStatus | null;
+  providerOperationStartupStatus: () => NonNullable<
+    NonNullable<HealthSnapshot['diagnostics']>['providerOperationStartupReconciliation']
+  > | null;
 }): () => HealthSnapshot {
   const identity = world.identity;
   const storeServicesRef = world.storeServicesRef;
@@ -299,6 +311,7 @@ export function createCoordinatorHealthReader({
       settlementRefusalRecordingFailures,
       providerOperationAdoptionRefusals,
       launchPermitReportAgeMs,
+      providerOperationStartupStatus,
     });
 
     const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');

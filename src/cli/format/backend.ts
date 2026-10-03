@@ -2396,8 +2396,28 @@ function formatProviderProxySetLines(health: RunningHealth, showOperatorCommands
 
 function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readonly string[]): string {
   const showOperatorCommands = health.status !== 'draining';
+  const startup = health.diagnostics?.providerOperationStartupReconciliation;
   return [
     ...formatRunningOverviewLines(health),
+    ...(startup === undefined
+      ? []
+      : [
+          `Provider operation startup reconciliation: ${startup.phase} elapsedMs=${startup.elapsedMs} boundMs=${startup.boundMs}`,
+          ...(startup.initialization === null || startup.initialization === undefined
+            ? []
+            : [
+                `  initialization state=${startup.initialization.state} successor=${startup.initialization.successor}`,
+                `    pending mutations=${startup.initialization.pendingMutations.join(',') || 'none'} fences=${startup.initialization.pendingFences.join(',') || 'none'}`,
+                ...(startup.initialization.incident === null
+                  ? []
+                  : [`    incident=${startup.initialization.incident}`]),
+              ]),
+          ...startup.sets.flatMap((set) => [
+            `  set=${set.setKey} state=${set.state} successor=${set.successor}`,
+            `    pending mutations=${set.pendingMutations.join(',') || 'none'} fences=${set.pendingFences.join(',') || 'none'}`,
+            ...(set.incident === null ? [] : [`    incident=${set.incident}`]),
+          ]),
+        ]),
     ...(health.retention === undefined
       ? []
       : [

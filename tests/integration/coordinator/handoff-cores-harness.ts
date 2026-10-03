@@ -46,6 +46,7 @@ export interface HandoffCoresHarness {
 
 export interface BootCoreOptions {
   instanceId: string;
+  onCoreCreated?: (core: CoordinatorCoreResult) => void;
   bundleHash?: string;
   backendNamespace?: string;
   createExecutionService?: CoordinatorCoreOptions['createExecutionService'];
@@ -199,6 +200,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
     setStoreServicesForTest(core.storeServicesRef, storeServices);
 
     liveServers.push(core.server);
+    opts.onCoreCreated?.(core);
 
     const serverInfo = await core.lifecycleController.start();
 
