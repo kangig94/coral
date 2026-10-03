@@ -13,7 +13,16 @@ import {
   handbackSuccessionWriterGeneration,
   joinSuccessionWriterGeneration,
   recoverSuccessionWriterGeneration,
+  readSuccessionWriterGeneration,
+  recordSuccessionServing,
+  generationForLegacySuccessor,
+  SuccessionServingCommittedError,
+  SuccessionWriterGenerationExhaustedError,
 } from '#src/store/succession-writer-generation.js';
+import { recoverDamagedStartupWriter } from '#src/coordinator/succession/writer-recovery.js';
+import { settleStoreEpoch } from '#src/store/epoch/index.js';
+import { authorizeFixtureStoreMint } from '#tests/helpers/store-db.js';
+import { reclaimIncumbentWriter } from '#src/coordinator/succession/commit/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const temporaryDirectories: string[] = [];
@@ -151,4 +160,151 @@ describe('succession writer generation', () => {
     expect(db.prepare<[], { value: string }>('SELECT value FROM succession_handback').get()?.value).toBe('reclaimed');
     db.close();
   });
+});
+
+it('reclaims Journal and Corpus writers after successive serving upgrades and fences a newer successor', async () => {
+  const { root, runtime, store, open } = fixture();
+  let writer = joinSuccessionWriterGeneration(runtime, store);
+  for (const attemptId of ['upgrade-A', 'upgrade-B']) {
+    const stale = writer;
+    const generation = advanceSuccessionWriterGeneration(runtime, writer.generation, store);
+    writer = joinSuccessionWriterGeneration(runtime, store);
+    recordSuccessionServing(runtime, generation, {
+      attemptId,
+      successorInstanceId: 'incumbent',
+      epochKey: JSON.stringify({ ...store, path: join(store.storeRoot, 'epoch-1', 'store.db') }),
+      controlGeneration: generation.generation,
+      recordedAt: new Date(runtime.time.now()).toISOString(),
+    });
+    expect(() => stale.withWriteTurn(() => undefined)).toThrow(/lost its entitlement/u);
+    const db = open();
+    const corpus = fenceCorpusStorage(runtime.storage, writer);
+    db.exec('CREATE TABLE IF NOT EXISTS reclaimed_writer (value TEXT)');
+    writer.park();
+    const reclaimed = await reclaimIncumbentWriter({
+      runtime,
+      writer,
+      storeDb: db,
+      incumbentInstanceId: 'incumbent',
+      deadlineMs: 2_000,
+      reclaimKbDaemonWriter: async () => writer.unpark(),
+      reportReclaimFailure: () => {},
+    });
+    try {
+      expect(reclaimed.kind).toBe('reclaimed');
+      db.prepare('INSERT INTO reclaimed_writer VALUES (?)').run(attemptId);
+      corpus.writeFileSync(join(root, 'reclaimed.txt'), attemptId);
+      expect(readFileSync(join(root, 'reclaimed.txt'), 'utf8')).toBe(attemptId);
+    } finally {
+      if (reclaimed.kind === 'reclaimed') reclaimed.providerOperationAdmission.close();
+      db.close();
+    }
+  }
+  writer.park();
+  const successor = advanceSuccessionWriterGeneration(runtime, writer.generation, store);
+  recordSuccessionServing(runtime, successor, {
+    attemptId: 'newer-successor',
+    successorInstanceId: 'successor',
+    epochKey: JSON.stringify({ ...store, path: join(store.storeRoot, 'epoch-1', 'store.db') }),
+    controlGeneration: successor.generation,
+    recordedAt: new Date(runtime.time.now()).toISOString(),
+  });
+  expect(() => writer.unpark()).toThrow(/cannot unpark after advance/u);
+  expect(() => writer.withWriteTurn(() => undefined)).toThrow(/parked/u);
+  expect(() => handbackSuccessionWriterGeneration(runtime, successor, store)).toThrow(SuccessionServingCommittedError);
+});
+
+it.each([
+  { storeRoot: '', epoch: '1' },
+  { storeRoot: 'relative', epoch: '1' },
+  { storeRoot: '/tmp/../epochs', epoch: '1' },
+  { storeRoot: '/epochs', epoch: '' },
+  { storeRoot: '/epochs', epoch: '0' },
+  { storeRoot: '/epochs', epoch: '01' },
+  { storeRoot: '/epochs', epoch: '../1' },
+  { storeRoot: '/epochs', epoch: ' 1' },
+  { refusedAttemptIds: [''] },
+  { refusedAttemptIds: ['  '] },
+])('recovers semantically corrupt writer identity: %j', (damage) => {
+  const { runtime, store } = fixture();
+  joinSuccessionWriterGeneration(runtime, store);
+  const path = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-generation.v1.json');
+  writeFileSync(path, JSON.stringify({ generation: 1, ...store, ...damage, additiveField: 'preserved' }));
+  expect(readSuccessionWriterGeneration(runtime).kind).toBe('corrupt');
+  recoverSuccessionWriterGeneration(runtime, () => ({ store, generations: [1], servings: [], release() {} }));
+  expect(readSuccessionWriterGeneration(runtime)).toMatchObject({
+    kind: 'recorded',
+    record: { ...store, additiveField: 'preserved' },
+  });
+  expect(joinSuccessionWriterGeneration(runtime, store).withWriteTurn(() => 'recovered')).toBe('recovered');
+});
+
+it.each(['advance', 'handback', 'legacy'] as const)(
+  'refuses %s exhaustion without changing the durable record',
+  (operation) => {
+    const { runtime, store } = fixture();
+    joinSuccessionWriterGeneration(runtime, store);
+    const path = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-generation.v1.json');
+    const expected = { generation: Number.MAX_SAFE_INTEGER, ...store };
+    writeFileSync(path, JSON.stringify(expected));
+    if (operation === 'legacy')
+      recordSuccessionServing(runtime, expected, {
+        attemptId: 'previous',
+        successorInstanceId: 'incumbent',
+        epochKey: JSON.stringify({ ...store, path: join(store.storeRoot, 'epoch-1', 'store.db') }),
+        controlGeneration: expected.generation,
+        recordedAt: new Date(runtime.time.now()).toISOString(),
+      });
+    const before = readFileSync(path, 'utf8');
+    const advance = () =>
+      operation === 'advance'
+        ? advanceSuccessionWriterGeneration(runtime, expected, store)
+        : operation === 'handback'
+          ? handbackSuccessionWriterGeneration(runtime, expected, store)
+          : generationForLegacySuccessor(runtime, expected, 'next', 'previous');
+    expect(advance).toThrow(SuccessionWriterGenerationExhaustedError);
+    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect(readSuccessionWriterGeneration(runtime).kind).toBe('recorded');
+  },
+);
+
+it('advances the final safe generation and preserves additive durable fields', () => {
+  const { runtime, store } = fixture();
+  joinSuccessionWriterGeneration(runtime, store);
+  const path = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-generation.v1.json');
+  const expected = { generation: Number.MAX_SAFE_INTEGER - 1, ...store };
+  writeFileSync(path, JSON.stringify({ ...expected, additiveField: 'preserved' }));
+  expect(advanceSuccessionWriterGeneration(runtime, expected, store).generation).toBe(Number.MAX_SAFE_INTEGER);
+  expect(readSuccessionWriterGeneration(runtime)).toMatchObject({
+    kind: 'recorded',
+    record: { additiveField: 'preserved' },
+  });
+});
+
+it('runs damaged-writer startup recovery for a semantically invalid durable identity', () => {
+  const { runtime } = fixture();
+  const format = currentCoralStoreFormat();
+  const settled = settleStoreEpoch(runtime, {
+    storeFormat: format,
+    authorizeMint: authorizeFixtureStoreMint,
+    build: {
+      version: format.productVersion,
+      buildSetId: '00000000-0000-4000-8000-000000000001',
+      flavor: 'prod',
+      storeFormatFingerprint: format.fingerprint,
+      bundleHash: '0123456789abcdef',
+      cliBundleHash: '0123456789abcdef',
+      claudeAppserverBundleHash: '0123456789abcdef',
+      durableWrapperBundleHash: '0123456789abcdef',
+    },
+  });
+  settled.db.close();
+  const path = join(resolveGenerationBoundaryPaths(runtime).coordinationRoot, 'succession-writer-generation.v1.json');
+  writeFileSync(path, JSON.stringify({ generation: 1, storeRoot: '', epoch: '' }));
+  recoverDamagedStartupWriter(runtime);
+  expect(readSuccessionWriterGeneration(runtime)).toMatchObject({
+    kind: 'recorded',
+    record: { storeRoot: settled.store.storeRoot, epoch: settled.store.epoch },
+  });
+  expect(joinSuccessionWriterGeneration(runtime, settled.store).withWriteTurn(() => 'started')).toBe('started');
 });

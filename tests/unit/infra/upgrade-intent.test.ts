@@ -59,6 +59,16 @@ describe('upgrade intent', () => {
     vi.restoreAllMocks();
   });
 
+  it('classifies an unsafe persisted revision as corrupt', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('request'));
+    const path = upgradeIntentPath(dir);
+    const intent = JSON.parse(readFileSync(path, 'utf8'));
+    intent.revision = Number.MAX_SAFE_INTEGER + 1;
+    writeFileSync(path, JSON.stringify(intent));
+    expect(readUpgradeIntent(dir).kind).toBe('corrupt');
+  });
+
   it('durably quarantines corrupt bytes and permits a fresh recorded request', async () => {
     const dir = runDir();
     writeFileSync(upgradeIntentPath(dir), '{broken');

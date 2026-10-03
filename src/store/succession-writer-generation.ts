@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   createSharedFileLockSync,
@@ -28,6 +28,19 @@ export class SuccessionServingCommittedError extends Error {
   constructor() {
     super('Succession serving was committed; the incumbent cannot reclaim its writer.');
   }
+}
+
+export class SuccessionWriterGenerationExhaustedError extends Error {
+  constructor() {
+    super('Succession writer generation exhausted its counter.');
+  }
+}
+
+function nextWriterGeneration(generation: number): number {
+  if (!Number.isSafeInteger(generation) || generation >= Number.MAX_SAFE_INTEGER) {
+    throw new SuccessionWriterGenerationExhaustedError();
+  }
+  return generation + 1;
 }
 
 declare const committedServing: unique symbol;
@@ -85,6 +98,18 @@ function paths(runtime: Pick<Runtime, 'paths'>): { root: string; guard: string; 
   return { root, guard: join(root, GUARD_FILE), record: join(root, RECORD_FILE) };
 }
 
+function canonicalText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value && !value.includes('\0');
+}
+
+function canonicalPath(value: unknown): value is string {
+  return canonicalText(value) && resolve(value) === value;
+}
+
+function canonicalEpoch(value: unknown): value is string {
+  return typeof value === 'string' && /^[1-9]\d*$/u.test(value);
+}
+
 function matchesFullEpochKey(key: string, generation: SuccessionWriterGeneration): boolean {
   try {
     const epoch: unknown = JSON.parse(key);
@@ -96,8 +121,7 @@ function matchesFullEpochKey(key: string, generation: SuccessionWriterGeneration
       'epoch' in epoch &&
       epoch.epoch === generation.epoch &&
       'path' in epoch &&
-      typeof epoch.path === 'string' &&
-      epoch.path.length > 0
+      canonicalPath(epoch.path)
     );
   } catch {
     return false;
@@ -108,14 +132,12 @@ function validServing(value: unknown, generation: SuccessionWriterGeneration): v
   if (typeof value !== 'object' || value === null) return false;
   if (
     !('attemptId' in value) ||
-    typeof value.attemptId !== 'string' ||
-    value.attemptId.length === 0 ||
+    !canonicalText(value.attemptId) ||
     !('epochKey' in value) ||
     typeof value.epochKey !== 'string' ||
     !matchesFullEpochKey(value.epochKey, generation) ||
     !('successorInstanceId' in value) ||
-    typeof value.successorInstanceId !== 'string' ||
-    value.successorInstanceId.length === 0 ||
+    !canonicalText(value.successorInstanceId) ||
     !('controlGeneration' in value) ||
     value.controlGeneration !== generation.generation ||
     !('recordedAt' in value) ||
@@ -150,9 +172,9 @@ function validPriorServing(value: unknown, current: SuccessionWriterGeneration):
       typeof epoch === 'object' &&
       epoch !== null &&
       'storeRoot' in epoch &&
-      typeof epoch.storeRoot === 'string' &&
+      canonicalPath(epoch.storeRoot) &&
       'epoch' in epoch &&
-      typeof epoch.epoch === 'string' &&
+      canonicalEpoch(epoch.epoch) &&
       validServing(value, {
         generation: value.controlGeneration,
         storeRoot: epoch.storeRoot,
@@ -201,9 +223,9 @@ function readGeneration(runtime: Runtime, record: string): SuccessionWriterGener
     !Number.isSafeInteger(value.generation) ||
     value.generation < 1 ||
     !('storeRoot' in value) ||
-    typeof value.storeRoot !== 'string' ||
+    !canonicalPath(value.storeRoot) ||
     !('epoch' in value) ||
-    typeof value.epoch !== 'string'
+    !canonicalEpoch(value.epoch)
   ) {
     return { kind: 'corrupt', raw };
   }
@@ -221,8 +243,7 @@ function readGeneration(runtime: Runtime, record: string): SuccessionWriterGener
   }
   if (
     'refusedAttemptIds' in value &&
-    (!Array.isArray(value.refusedAttemptIds) ||
-      !value.refusedAttemptIds.every((attemptId) => typeof attemptId === 'string'))
+    (!Array.isArray(value.refusedAttemptIds) || !value.refusedAttemptIds.every(canonicalText))
   ) {
     return { kind: 'corrupt', raw };
   }
@@ -257,9 +278,9 @@ function recoveredWriterGeneration(
     const value = Number(match[1]);
     if (Number.isSafeInteger(value)) generations.push(value);
   }
-  const generation = generations.reduce((highest, value) => Math.max(highest, value), runtime.time.now()) + 1;
-  if (!Number.isSafeInteger(generation))
-    throw new Error('Succession writer generation recovery exhausted its counter.');
+  const generation = nextWriterGeneration(
+    generations.reduce((highest, value) => Math.max(highest, value), runtime.time.now()),
+  );
   return { generation, ...evidence.store };
 }
 
@@ -294,7 +315,7 @@ function reconstructWriterRecord(
     );
   }
   delete retained.serving;
-  if (!Array.isArray(retained.refusedAttemptIds) || !retained.refusedAttemptIds.every((id) => typeof id === 'string'))
+  if (!Array.isArray(retained.refusedAttemptIds) || !retained.refusedAttemptIds.every(canonicalText))
     delete retained.refusedAttemptIds;
   return { ...retained, ...current, priorServings, reconstructedGeneration: current.generation };
 }
@@ -444,7 +465,6 @@ function unparkSuccessionWriterGeneration(
     ) {
       throw new Error(`Succession writer generation ${generation.generation} cannot unpark after advance.`);
     }
-    if (observed.serving !== undefined) throw new SuccessionServingCommittedError();
   } finally {
     release();
   }
@@ -563,7 +583,12 @@ export function advanceSuccessionWriterGeneration(
       throw new Error(`Succession writer generation ${expected.generation} cannot advance.`);
     }
     if (attemptId !== undefined) assertNotRefused(current, attemptId);
-    const next = { ...current, generation: current.generation + 1, storeRoot: store.storeRoot, epoch: store.epoch };
+    const next = {
+      ...current,
+      generation: nextWriterGeneration(current.generation),
+      storeRoot: store.storeRoot,
+      epoch: store.epoch,
+    };
     if (current.serving !== undefined) next.priorServings = [...(current.priorServings ?? []), current.serving];
     delete next.serving;
     writeGeneration(runtime, location.record, next);
@@ -708,7 +733,7 @@ export function generationForLegacySuccessor(
     }
     const next = {
       ...current,
-      generation: current.generation + 1,
+      generation: nextWriterGeneration(current.generation),
       priorServings: [...(current.priorServings ?? []), current.serving],
     };
     delete next.serving;
@@ -746,7 +771,7 @@ export function handbackSuccessionWriterGeneration(
     if (current.serving !== undefined) throw new SuccessionServingCommittedError();
     const next = {
       ...current,
-      generation: current.generation + 1,
+      generation: nextWriterGeneration(current.generation),
       storeRoot: incumbentStore.storeRoot,
       epoch: incumbentStore.epoch,
     };

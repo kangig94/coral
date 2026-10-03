@@ -18,13 +18,18 @@ import { z } from 'zod';
 
 export const CUSTODY_PROCESS_TICKET_ENV = 'CORAL_CUSTODY_PROCESS_TICKET';
 
+const epochLineageKeySchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[1-9]\d*$/u);
+
 const ticketSchema = z
   .object({
     runDir: z.string().min(1),
     intentId: z.string().uuid(),
     processToken: z.string().uuid(),
-    processGroupId: z.number().int().positive().nullable(),
+    processGroupId: z.number().int().safe().positive().nullable(),
     epoch: z.string().min(1),
+    epochKey: epochLineageKeySchema.optional(),
   })
   .passthrough();
 
@@ -36,12 +41,16 @@ const intentSchema = z
     owner: z.string().min(1),
     operationId: z.string().min(1),
     epoch: z.string().min(1),
+    epochKey: epochLineageKeySchema.optional(),
     processToken: z.string().uuid(),
     capsule: z.string().nullable(),
-    createdAtMs: z.number().int().nonnegative(),
-    bindDeadlineMs: z.number().int().nonnegative(),
+    createdAtMs: z.number().int().safe().nonnegative(),
+    bindDeadlineMs: z.number().int().safe().nonnegative(),
   })
-  .passthrough();
+  .passthrough()
+  .refine((intent) => intent.bindDeadlineMs > intent.createdAtMs, {
+    message: 'Custody binding deadline must follow intent creation.',
+  });
 
 const bindingSchema = z
   .object({
@@ -51,13 +60,13 @@ const bindingSchema = z
     operationId: z.string().min(1),
     process: z
       .object({
-        pid: z.number().int().positive(),
+        pid: z.number().int().safe().positive(),
         incarnation: z.string().min(1),
-        processGroupId: z.number().int().positive(),
+        processGroupId: z.number().int().safe().positive(),
       })
       .passthrough(),
     capsule: z.string().nullable(),
-    observedAtMs: z.number().int().nonnegative(),
+    observedAtMs: z.number().int().safe().nonnegative(),
   })
   .passthrough();
 
@@ -116,6 +125,7 @@ export function recordChildRoleCustodyIntent(
   input: Readonly<{
     runDir: string;
     epoch: string;
+    epochKey?: string;
     owner: string;
     operationId: string;
     capsule: string | null;
@@ -135,6 +145,14 @@ export function recordChildRoleCustodyIntent(
   }
   const id = randomUUID();
   const processToken = randomUUID();
+  const ticket = ticketSchema.parse({
+    runDir: input.runDir,
+    intentId: id,
+    processToken,
+    processGroupId: input.processGroupId,
+    epoch: input.epoch,
+    ...(input.epochKey === undefined ? {} : { epochKey: input.epochKey }),
+  });
   const ledgerDir = join(input.runDir, 'custody.v1');
   const dir = join(ledgerDir, id);
   const stageDir = join(ledgerDir, `.stage.${id}.${randomUUID()}`);
@@ -151,6 +169,7 @@ export function recordChildRoleCustodyIntent(
     id,
     effect: 'process-spawn',
     epoch: input.epoch,
+    ...(input.epochKey === undefined ? {} : { epochKey: input.epochKey }),
     owner: input.owner,
     operationId: input.operationId,
     processToken,
@@ -183,7 +202,7 @@ export function recordChildRoleCustodyIntent(
   } finally {
     rmSync(stageDir, { recursive: true, force: true });
   }
-  return { runDir: input.runDir, intentId: id, processToken, processGroupId: input.processGroupId, epoch: input.epoch };
+  return ticket;
 }
 
 export function parseCustodyProcessTicket(value: string): CustodyProcessTicket {
@@ -199,7 +218,12 @@ export function bindCustodyProcessTicket(
 ): void {
   const dir = join(ticket.runDir, 'custody.v1', ticket.intentId);
   const intent = intentSchema.parse(JSON.parse(readFileSync(join(dir, 'intent.v1.json'), 'utf8')) as unknown);
-  if (intent.id !== ticket.intentId || intent.processToken !== ticket.processToken || intent.epoch !== ticket.epoch) {
+  if (
+    intent.id !== ticket.intentId ||
+    intent.processToken !== ticket.processToken ||
+    intent.epoch !== ticket.epoch ||
+    intent.epochKey !== ticket.epochKey
+  ) {
     throw new Error('Custody process ticket is invalid.');
   }
   if (nowMs > intent.bindDeadlineMs && !allowExistingAfterDeadline) {

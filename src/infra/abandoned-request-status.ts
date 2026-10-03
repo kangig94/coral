@@ -33,6 +33,10 @@ export function validAbandonedRequestRecordId(recordId: string): boolean {
   return /^[a-zA-Z0-9-]{1,100}$/.test(recordId);
 }
 
+function canonicalStatusIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value && !value.includes('\0');
+}
+
 export function readAbandonedRequestStatus(
   storage: StoragePort,
   runDir: string,
@@ -55,24 +59,24 @@ export function readAbandonedRequestStatus(
       !('recordId' in parsed) ||
       parsed.recordId !== recordId ||
       !('method' in parsed) ||
-      typeof parsed.method !== 'string' ||
+      !canonicalStatusIdentifier(parsed.method) ||
       !('requestId' in parsed) ||
-      typeof parsed.requestId !== 'string' ||
+      !canonicalStatusIdentifier(parsed.requestId) ||
       !('startedAt' in parsed) ||
       typeof parsed.startedAt !== 'string' ||
+      new Date(parsed.startedAt).toISOString() !== parsed.startedAt ||
       !('outcome' in parsed) ||
       !['continuing', 'completed', 'failed', 'cancelled', 'owner_exited'].includes(String(parsed.outcome)) ||
       ('identity' in parsed &&
         (typeof parsed.identity !== 'object' ||
           parsed.identity === null ||
-          ('jobId' in parsed.identity && typeof parsed.identity.jobId !== 'string') ||
-          ('operationId' in parsed.identity && typeof parsed.identity.operationId !== 'string'))) ||
+          ('jobId' in parsed.identity && !canonicalStatusIdentifier(parsed.identity.jobId)) ||
+          ('operationId' in parsed.identity && !canonicalStatusIdentifier(parsed.identity.operationId)))) ||
       ('owner' in parsed &&
         (typeof parsed.owner !== 'object' ||
           parsed.owner === null ||
           !('instanceId' in parsed.owner) ||
-          typeof parsed.owner.instanceId !== 'string' ||
-          parsed.owner.instanceId.length === 0 ||
+          !canonicalStatusIdentifier(parsed.owner.instanceId) ||
           !('pid' in parsed.owner) ||
           !Number.isSafeInteger(parsed.owner.pid) ||
           (parsed.owner.pid as number) <= 0 ||

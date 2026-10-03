@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { tryAcquireDiagnosticDirectoryLock } from './fs-lock.js';
 
-const childSchema = z.object({ launchId: z.string().min(1), pid: z.number().int().positive() });
+const childSchema = z.object({ launchId: z.string().min(1), pid: z.number().int().safe().positive() });
 const statusSchema = z
   .object({
     version: z.literal(1),
@@ -18,8 +18,8 @@ const statusSchema = z
       .array(
         z.object({
           launchId: z.string().min(1),
-          supervisor: z.object({ pid: z.number().int().positive(), incarnation: z.string().min(1) }),
-          child: z.object({ pid: z.number().int().positive(), incarnation: z.string().min(1) }),
+          supervisor: z.object({ pid: z.number().int().safe().positive(), incarnation: z.string().min(1) }),
+          child: z.object({ pid: z.number().int().safe().positive(), incarnation: z.string().min(1) }),
           observedHealthyAt: z.number(),
         }),
       )
@@ -49,7 +49,7 @@ const statusSchema = z
         z.object({
           kind: z.literal('inherited-child-unresponsive'),
           launchId: z.string(),
-          pid: z.number().int().positive(),
+          pid: z.number().int().safe().positive(),
         }),
         z.object({ kind: z.literal('admission-unreadable'), path: z.string() }),
       ])

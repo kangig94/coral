@@ -37,3 +37,23 @@ describe('store epoch metadata compatibility', () => {
     expect(parseStoreEpochMetadata(metadata)).toEqual(metadata);
   });
 });
+
+it.each(['version', 'buildSetId', 'bundleHash', 'storeFormatFingerprint'])(
+  'rejects an empty epoch build %s',
+  (field) => {
+    expect(
+      parseStoreEpochMetadata({
+        supersedes: null,
+        classification: { kind: 'absent' },
+        build: { ...build, [field]: '' },
+        publishedAt: '2026-09-22T00:00:00.000Z',
+      }),
+    ).toBeNull();
+  },
+);
+
+it.each(['', 'not-a-date'])('rejects an invalid epoch publication timestamp: %s', (publishedAt) => {
+  expect(
+    parseStoreEpochMetadata({ supersedes: null, classification: { kind: 'absent' }, build, publishedAt }),
+  ).toBeNull();
+});

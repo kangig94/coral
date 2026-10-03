@@ -27,17 +27,17 @@ import { observeProcessLiveness } from './node-process.js';
 import { isNoEntryError } from './fs-errors.js';
 import { probeProcessIncarnation, processIncarnationSchema } from './node-process.js';
 
-const processSchema = z.object({ pid: z.number().int().positive(), incarnation: processIncarnationSchema });
+const processSchema = z.object({ pid: z.number().int().safe().positive(), incarnation: processIncarnationSchema });
 const admissionSchema = z
   .object({
     version: z.literal(1),
     launchId: z.string().uuid(),
     child: processSchema,
     parent: processSchema,
-    admittedAt: z.number().int().positive(),
-    admittedMonotonicMs: z.number().int().nonnegative().optional(),
+    admittedAt: z.number().int().safe().positive(),
+    admittedMonotonicMs: z.number().int().safe().nonnegative().optional(),
     lifetime: z.object({ dev: z.number(), ino: z.number() }).optional(),
-    discoveredAt: z.number().int().positive().optional(),
+    discoveredAt: z.number().int().safe().positive().optional(),
     build: z.object({
       version: z.string().min(1),
       buildSetId: z.string().min(1),

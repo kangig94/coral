@@ -23,7 +23,7 @@ const closureSchema = z
     executionDischarge: z.enum(['certified', 'undecidable']),
     obligations: z.array(obligationSchema),
     reason: z.string().min(1),
-    observedAtMs: z.number().int().nonnegative(),
+    observedAtMs: z.number().int().safe().nonnegative(),
   })
   .passthrough()
   .refine((evidence) => (evidence.disposition === 'closed') === (evidence.executionDischarge === 'certified'), {

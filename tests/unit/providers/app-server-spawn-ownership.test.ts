@@ -285,3 +285,43 @@ describe('provider app-server spawn ownership', () => {
     await held.settled;
   });
 });
+
+it('retains custody when a wrapper exits after spawn without a verifiable provider identity', async () => {
+  const runtime = new SimulationRuntime();
+  vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('unknown');
+  const kill = vi.spyOn(runtime.process, 'kill');
+  let wrapper: EventEmitter;
+  const child = delayedClose((spawned) => {
+    wrapper = spawned as EventEmitter;
+  });
+  runtime.spawner.enqueueSpawn(child.script);
+  const token = '00000000-0000-4000-8000-000000000001';
+  const handle = await spawnProviderServerTransport({
+    runtime,
+    generation: 1,
+    options: {
+      provider: 'codex',
+      command: 'codex',
+      args: ['app-server'],
+      custodyTicket: JSON.stringify({
+        runDir: '/run',
+        epoch: '/epoch-1',
+        intentId: '00000000-0000-4000-8000-000000000002',
+        processToken: token,
+        processGroupId: null,
+      }),
+    },
+    observeProviderResponse: () => {},
+    acceptFailedSpawnCleanup: acceptCleanupHold,
+  });
+  if ('kind' in handle) throw new Error('Expected provider handle.');
+  wrapper!.emit('message', { kind: 'provider-host-started', processToken: token, pid: 303, incarnation: null });
+  wrapper!.emit('exit', 1, null);
+  child.close();
+  const outcome = await handle.close(acceptCloseHold);
+  expect(outcome.kind).toBe('held-unobservable');
+  expect(kill).not.toHaveBeenCalled();
+  if (outcome.kind !== 'held-unobservable') throw new Error('Expected custody hold.');
+  expect(observePromise(outcome.settled).settled).toBe(false);
+  await outcome.operatorExit.abandon();
+});
