@@ -1,3 +1,4 @@
+import { raceObserved } from '../../infra/promise-signal.js';
 import { observeProcessLiveness, probeProcessIncarnation } from '../../infra/node-process.js';
 import { processIncarnationSchema, type ProcessIncarnation } from '../../infra/node-process.js';
 declare const __PLUGIN_ROOT__: string;
@@ -1051,7 +1052,7 @@ async function observeBackendReady(
 
     const pollMs = Math.max(1, Math.min(STARTUP_POLL_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt)));
     if (waitContext.kind === 'current-attempt' && terminalOutcome === null) {
-      terminalOutcome = await Promise.race([waitContext.terminal, timePort.sleep(pollMs).then(() => null)]);
+      terminalOutcome = await raceObserved([waitContext.terminal, timePort.sleep(pollMs).then(() => null)]);
     } else {
       await timePort.sleep(pollMs);
     }

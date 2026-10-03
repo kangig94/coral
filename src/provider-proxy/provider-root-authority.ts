@@ -1,3 +1,4 @@
+import { raceObserved } from '../infra/promise-signal.js';
 import { backendLog } from '../infra/backend-log.js';
 import { bindCustodyProcessTicket, recordChildRoleCustodyIntent } from '../infra/custody-process-ticket.js';
 import type { JsonValue } from '../infra/json-value.js';
@@ -134,7 +135,7 @@ async function closeSpawnedHandle(
     if (resultDisposition?.kind === 'provider-server-shutdown-v1') {
       let result: ProviderServerShutdownResult | null = null;
       try {
-        const response = await Promise.race([
+        const response = await raceObserved([
           requestJoinableProviderServerShutdown(handle, capability.method).then((value) => ({
             kind: 'response' as const,
             value,
@@ -187,7 +188,7 @@ async function closeSpawnedHandle(
       }
       return handle.close(acceptCleanupHold);
     }
-    await Promise.race([
+    await raceObserved([
       requestJoinableProviderServerShutdown(handle, capability.method),
       runtime.time.sleep(capability.timeoutMs),
     ]).catch(() => undefined);
@@ -752,7 +753,7 @@ class ProxyProviderRootPool {
   ): Promise<ProviderServerFailedSpawnCleanupDisposition> {
     let hold = initialHold;
     while (true) {
-      await Promise.race([hold.settled, this.runtime.time.sleep(1_000)]);
+      await raceObserved([hold.settled, this.runtime.time.sleep(1_000)]);
       if (transaction.cleanupHold?.operatorExit !== hold.operatorExit) {
         return transaction.cleanupHold ?? hold;
       }
@@ -800,7 +801,7 @@ class ProxyProviderRootPool {
 
   private async retryCloseCleanup(entry: HostPoolEntry): Promise<void> {
     while (!entry.rootTokenReleased && entry.cleanupHold !== null) {
-      await Promise.race([entry.cleanupHold.settled, this.runtime.time.sleep(1_000)]);
+      await raceObserved([entry.cleanupHold.settled, this.runtime.time.sleep(1_000)]);
       try {
         await this.close(entry);
       } catch (error: unknown) {

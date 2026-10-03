@@ -172,7 +172,9 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
           process.stdout.write(
             formatJobDetail(
               result,
-              renderCauseRef === undefined ? undefined : (ref) => renderCauseRef(ref, result.exit?.outcome),
+              renderCauseRef === undefined
+                ? undefined
+                : (ref) => renderCauseRef(ref, result.exit?.outcome, result.epochKey),
               workflowChildren,
             ) + '\n',
           );

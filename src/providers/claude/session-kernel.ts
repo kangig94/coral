@@ -1,3 +1,4 @@
+import { raceWithPromise } from '../../infra/promise-signal.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord, readString } from '../../infra/json.js';
 import type {
@@ -512,17 +513,14 @@ async function waitForClaudeOutcome(
   });
 
   try {
-    return await Promise.race([
-      state.terminal,
-      lease.closed.then(
-        (closed): ClaudeTurnOutcome => ({
-          kind: 'failed',
-          message:
-            closed instanceof Error ? closed.message : 'Claude broker transport closed before the turn completed.',
-        }),
-      ),
-      aborted,
-    ]);
+    return await raceWithPromise(
+      Promise.race([state.terminal, aborted]),
+      lease.closed,
+      (closed): ClaudeTurnOutcome => ({
+        kind: 'failed',
+        message: closed instanceof Error ? closed.message : 'Claude broker transport closed before the turn completed.',
+      }),
+    );
   } finally {
     removeAbortListener();
   }
@@ -605,12 +603,13 @@ async function waitForAcceptedInterruptEvidence(
   lease: AppServerSession,
   brokerTurnId: string,
 ): Promise<void> {
-  await Promise.race([
+  await raceWithPromise(
     state.terminal.then(() => undefined),
-    lease.closed.then((closed) => {
+    lease.closed,
+    (closed) => {
       throw new UnconfirmedClaudeTurnCancellationError(brokerTurnId, closed);
-    }),
-  ]);
+    },
+  );
 }
 
 function readErrors(value: unknown): string[] {

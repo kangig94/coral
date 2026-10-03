@@ -64,6 +64,7 @@ export function createLocalAuthoritySuccessionOwners(input: SuccessionOwnersInpu
         const daemonIdle =
           daemon.phase === 'disabled' ||
           daemon.phase === 'stopped' ||
+          (daemon.phase === 'failed' && daemon.childPresence === 'absent' && daemon.pendingRequests === 0) ||
           (daemon.phase === 'online' && daemon.pendingRequests === 0);
         return jobIds.length === 0 && daemonIdle
           ? { kind: 'completed', reason: 'no KB daemon work' }

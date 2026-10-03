@@ -1,3 +1,4 @@
+import { raceObserved } from '../infra/promise-signal.js';
 import { readRetentionCursor } from '../store/retention-meta.js';
 import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
@@ -2889,7 +2890,7 @@ function trackShutdownAttempt(
               pending.recovery.automaticRetry.status === 'scheduled' &&
               pending.recovery.automaticRetry.attemptsStarted < pending.recovery.automaticRetry.attemptLimit
             ) {
-              await Promise.race([state.shutdownRetryAfter ?? Promise.resolve(), cancelled]);
+              await raceObserved([state.shutdownRetryAfter ?? Promise.resolve(), cancelled]);
               if (continuationAbort.signal.aborted) return;
               pending = await shutdown(currentShutdownReason());
               if (isLifecycleShutdownTerminal(pending)) return;

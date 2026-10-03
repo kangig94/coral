@@ -135,7 +135,8 @@ function readRecentStartupFailureNotice(runDir) {
       code === 'handoff_shutdown_capability_rejected' || code === 'handoff_shutdown_credential_unavailable';
     if (coordinatorAlive !== false && !deferredUpgrade) return null;
     if (deferredUpgrade) {
-      return 'Coral backend: an older contender deferred its upgrade while the incumbent continues serving. Coral will retry the upgrade automatically when its recorded conditions change.';
+      const serving = coordinatorAlive === true ? ' A coordinator process was observed alive.' : '';
+      return `Coral backend: an older contender deferred its upgrade.${serving} Coral will retry the upgrade automatically when its recorded conditions change.`;
     }
     if (!recordsCauseAndNextStep(error)) return null;
     return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. It may already be resolved.\nError code: ${code}\nThe failed attempt recorded the cause and the next step at ${diagnosticFile}.`;

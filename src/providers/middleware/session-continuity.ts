@@ -1,3 +1,4 @@
+import { raceObserved } from '../../infra/promise-signal.js';
 import { isDeepStrictEqual } from 'node:util';
 
 import type {
@@ -111,7 +112,7 @@ export function sessionContinuity<
         for (;;) {
           yield* drainContinuity(queue.pending);
 
-          const outcome = await Promise.race(
+          const outcome = await raceObserved(
             transportClosed || transportClosePending === null
               ? [downstream, wakePending]
               : [downstream, wakePending, transportClosePending],

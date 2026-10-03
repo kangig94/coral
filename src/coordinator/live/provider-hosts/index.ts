@@ -1,3 +1,4 @@
+import { raceObserved } from '../../../infra/promise-signal.js';
 import type {
   AppServerTransport,
   HostRef,
@@ -497,7 +498,7 @@ export class DefaultProviderHostManager
     const terminal = Promise.resolve().then(async (): Promise<ProviderServerFailedSpawnCleanupTerminalDisposition> => {
       try {
         while (true) {
-          await Promise.race([
+          await raceObserved([
             current.settled,
             this.runtime.time.sleep(AUTOMATIC_RECLAMATION_RETRY_DELAY_MS),
             retryRequested,

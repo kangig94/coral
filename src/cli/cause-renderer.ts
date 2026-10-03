@@ -7,17 +7,17 @@ import { openReadCoralStore, type ReadCoralStoreHandle } from './read-store.js';
 const causeRefRenderer = createCauseRefRenderer(defaultEventDescribers);
 
 export function openCliCauseRefRenderer(projectRoot: string): {
-  readonly render?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome) => string;
+  readonly render?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome, epochKey?: string) => string;
   close(): void;
 } {
   return {
-    render: (ref, terminalOutcomeDiagnostic) => {
+    render: (ref, terminalOutcomeDiagnostic, epochKey) => {
       const hint = terminalOutcomeDiagnostic
         ? `Original terminal outcome: ${describeTerminalOutcome(terminalOutcomeDiagnostic)}`
         : undefined;
       let handle: ReadCoralStoreHandle;
       try {
-        handle = openReadCoralStore(projectRoot);
+        handle = openReadCoralStore(projectRoot, epochKey);
       } catch {
         return renderCauseRefFallback(ref);
       }

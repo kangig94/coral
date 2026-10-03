@@ -191,7 +191,7 @@ function emitWaitEvent(
   jobLabels: ReadonlyMap<string, JobLabel> | null,
   resumeJobIds: readonly string[],
   renderOptions: FollowJobsOptions['render'],
-  renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome) => string,
+  renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome, epochKey?: string) => string,
 ): void {
   let line: string;
   switch (event.type) {
@@ -207,7 +207,9 @@ function emitWaitEvent(
         cursor,
         renderOptions.embed,
         {
-          describeCauseRef: renderCauseRef ? (ref) => renderCauseRef(ref, event.result.outcome) : undefined,
+          describeCauseRef: renderCauseRef
+            ? (ref) => renderCauseRef(ref, event.result.outcome, 'epochKey' in event ? event.epochKey : undefined)
+            : undefined,
           verbose: renderOptions.verbose,
         },
       );

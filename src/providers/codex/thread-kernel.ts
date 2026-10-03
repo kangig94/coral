@@ -1,3 +1,4 @@
+import { raceWithPromise } from '../../infra/promise-signal.js';
 import { z } from 'zod';
 
 import { errorMessage } from '../../infra/error-format.js';
@@ -933,10 +934,6 @@ async function startTurn(
     (response) => ({ kind: 'response' as const, response }),
     (error: unknown) => ({ kind: 'rpc_error' as const, error }),
   );
-  const closedOutcome = lease.closed.then((closed) => ({
-    kind: 'closed' as const,
-    closed,
-  }));
   const attemptOutcome = attempt.completion.then((result) => ({
     kind: 'attempt' as const,
     result,
@@ -944,16 +941,19 @@ async function startTurn(
 
   let startResult:
     | Awaited<typeof startOutcome>
-    | Awaited<typeof closedOutcome>
+    | { kind: 'closed'; closed: Awaited<AppServerSession['closed']> }
     | Awaited<typeof attemptOutcome>
     | { kind: 'aborted'; result: CodexKernelResult };
   try {
-    startResult = await Promise.race([
-      startOutcome,
-      closedOutcome,
-      attemptOutcome,
-      aborted.promise.then((result) => ({ kind: 'aborted' as const, result })),
-    ]);
+    startResult = await raceWithPromise(
+      Promise.race([
+        startOutcome,
+        attemptOutcome,
+        aborted.promise.then((result) => ({ kind: 'aborted' as const, result })),
+      ]),
+      lease.closed,
+      (closed) => ({ kind: 'closed' as const, closed }),
+    );
   } finally {
     aborted.cleanup();
   }
@@ -1103,12 +1103,15 @@ async function finishAbortedStart(
     deadlineTimer = state.time.setTimeout(() => resolve({ kind: 'deadline' }), ABORT_CONFIRMATION_DEADLINE_MS);
   });
   try {
-    const outcome = await Promise.race([
-      ensureInterrupt(lease, state, attempt).then((request) => ({ kind: 'interrupt' as const, request })),
-      lease.closed.then(() => ({ kind: 'closed' as const })),
-      attempt.completion.then((result) => ({ kind: 'completion' as const, result })),
-      deadline,
-    ]);
+    const outcome = await raceWithPromise(
+      Promise.race([
+        ensureInterrupt(lease, state, attempt).then((request) => ({ kind: 'interrupt' as const, request })),
+        attempt.completion.then((result) => ({ kind: 'completion' as const, result })),
+        deadline,
+      ]),
+      lease.closed,
+      () => ({ kind: 'closed' as const }),
+    );
     if (outcome.kind === 'deadline') {
       return { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
     }
@@ -1121,11 +1124,11 @@ async function finishAbortedStart(
     if (outcome.request === 'failed') {
       return { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
     }
-    const terminal = await Promise.race([
-      attempt.completion.then((result) => ({ kind: 'completion' as const, result })),
-      lease.closed.then(() => ({ kind: 'closed' as const })),
-      deadline,
-    ]);
+    const terminal = await raceWithPromise(
+      Promise.race([attempt.completion.then((result) => ({ kind: 'completion' as const, result })), deadline]),
+      lease.closed,
+      () => ({ kind: 'closed' as const }),
+    );
     if (terminal.kind === 'completion') {
       return terminal.result;
     }
@@ -1148,11 +1151,9 @@ async function waitForTurnResult(
   const attempt = state.activeAttempt;
   const aborted = abortResultPromise(lease, runtime, state, attempt);
   try {
-    return await Promise.race([
-      attempt.completion,
-      lease.closed.then((closed) => transportClosedResult(runtime, attempt, closed)),
-      aborted.promise,
-    ]);
+    return await raceWithPromise(Promise.race([attempt.completion, aborted.promise]), lease.closed, (closed) =>
+      transportClosedResult(runtime, attempt, closed),
+    );
   } finally {
     aborted.cleanup();
   }

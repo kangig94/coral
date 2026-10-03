@@ -115,6 +115,7 @@ export type KbDaemonHealthSnapshot = {
   readyAt: number | null;
   entrypoint?: string;
   pendingRequests?: number;
+  childPresence?: 'present' | 'absent';
   lastHeartbeatAt?: number;
   lastHeartbeatLatencyMs?: number;
   daemonUptimeMs?: number;

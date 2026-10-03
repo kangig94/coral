@@ -793,6 +793,7 @@ describe('codexThreadProvider', () => {
     await lease.waitForRpc('turn/start');
 
     controller.abort();
+    await lease.waitForRpc('turn/interrupt');
     await flushMicrotasks();
     time.tick(10_000);
     const events = await eventsPromise;

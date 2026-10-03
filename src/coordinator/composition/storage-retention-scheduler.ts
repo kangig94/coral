@@ -9,7 +9,12 @@ import type { Runtime } from '../../runtime/ports.js';
 import { pruneStoreEpochHolders } from '../../store/epoch/holder.js';
 import type { ResolvedStoreEpoch } from '../../store/epoch/types.js';
 import { joinSuccessionWriterGeneration } from '../../store/succession-writer-generation.js';
-import type { RetentionOutcome, RetentionRunBudget, RetentionRunStatus } from '../../store/retention-outcome.js';
+import {
+  RETENTION_OUTCOME_LIMIT_PER_KIND,
+  type RetentionOutcome,
+  type RetentionRunBudget,
+  type RetentionRunStatus,
+} from '../../store/retention-outcome.js';
 import { vacuumRetainedJournal } from '../../store/retention-vacuum.js';
 import { resolveJobRetentionMs } from '../lifecycle.js';
 
@@ -51,11 +56,10 @@ export function createStorageRetentionScheduler(input: {
       status[outcome.kind === 'deleted' ? 'deleted' : outcome.kind === 'kept' ? 'kept' : 'failed'] +=
         outcome.kind === 'deleted' ? outcome.count : 1;
       if (outcome.kind === 'kept' && outcome.pending !== false) partial = true;
-      if (status.outcomes.length < 100) status.outcomes.push(outcome);
-      else if (outcome.kind === 'failed' || (outcome.kind === 'kept' && outcome.pending !== false)) {
-        let replace = status.outcomes.findIndex(
-          (entry) => entry.kind === 'deleted' || (entry.kind === 'kept' && entry.pending === false),
-        );
+      const kindCount = status.outcomes.filter((entry) => entry.kind === outcome.kind).length;
+      if (kindCount < RETENTION_OUTCOME_LIMIT_PER_KIND) status.outcomes.push(outcome);
+      else if (outcome.kind === 'kept' && outcome.pending !== false) {
+        let replace = status.outcomes.findIndex((entry) => entry.kind === 'kept' && entry.pending === false);
         if (replace < 0)
           replace = status.outcomes.findIndex(
             (entry, index) =>
@@ -64,8 +68,6 @@ export function createStorageRetentionScheduler(input: {
                 (other, otherIndex) => otherIndex !== index && other.kind === 'kept' && other.reason === entry.reason,
               ),
           );
-        if (replace < 0 && outcome.kind === 'kept')
-          replace = status.outcomes.findIndex((entry) => entry.kind === 'failed');
         if (replace >= 0) status.outcomes[replace] = outcome;
       }
     };

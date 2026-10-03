@@ -1,3 +1,4 @@
+import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
@@ -698,12 +699,6 @@ async function streamSubscription(
   handover: AbortSignal | null,
 ): Promise<void> {
   const iterator = invocation.notifications[Symbol.asyncIterator]();
-  let onHandover = (): void => {};
-  const handedOver = new Promise<'handover'>((resolve) => {
-    onHandover = () => resolve('handover');
-  });
-  if (handover?.aborted === true) onHandover();
-  else handover?.addEventListener('abort', onHandover, { once: true });
   let released = false;
   const releaseSubscription = () => {
     if (released) {
@@ -733,7 +728,7 @@ async function streamSubscription(
 
   try {
     while (true) {
-      const next = await Promise.race([iterator.next(), handedOver]);
+      const next = await raceWithSignal(iterator.next(), handover, () => 'handover' as const);
       if (next === 'handover') {
         await writeEnvelope(
           socket,
@@ -760,7 +755,6 @@ async function streamSubscription(
       }
     }
   } finally {
-    handover?.removeEventListener('abort', onHandover);
     releaseSubscription();
   }
 

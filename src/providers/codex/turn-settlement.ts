@@ -1,3 +1,4 @@
+import { observePromise, raceObserved, raceWithSignal } from '../../infra/promise-signal.js';
 import { z } from 'zod';
 import type { TimePort } from '../../infra/port-types.js';
 import type { AppServerSession, ProviderTurnSettlement, ProviderTurnTerminalEvidence } from '../contract.js';
@@ -22,10 +23,7 @@ export function observeCodexTurnSettlement(
   turnId: string,
 ): ProviderTurnSettlement {
   let evidence: ProviderTurnTerminalEvidence | null = null;
-  let closed = false;
-  void lease.closed.then(() => {
-    closed = true;
-  });
+  const transportClosed = observePromise(lease.closed);
   let resolveTerminal!: (value: ProviderTurnTerminalEvidence) => void;
   const terminal = new Promise<ProviderTurnTerminalEvidence>((resolve) => {
     resolveTerminal = resolve;
@@ -52,7 +50,7 @@ export function observeCodexTurnSettlement(
       timer = time.setTimeout(() => resolve(null), ms);
     });
     try {
-      return await Promise.race([operation, timeout, lease.closed.then(() => null)]);
+      return await raceWithSignal(raceObserved([operation, timeout]), transportClosed.signal, () => null);
     } finally {
       time.clearTimeout(timer);
     }
@@ -87,20 +85,20 @@ export function observeCodexTurnSettlement(
       let status: string | null = null;
       // Give late notifications priority, then re-read under the retained host lease.
       try {
-        await Promise.race([bounded(terminal, OBSERVATION_INTERVAL_MS), observationExpired]);
-        while (evidence === null && !closed && !expired) {
-          status = await Promise.race([readStatus(OBSERVATION_INTERVAL_MS), observationExpired]);
+        await raceObserved([bounded(terminal, OBSERVATION_INTERVAL_MS), observationExpired]);
+        while (evidence === null && !transportClosed.signal.aborted && !expired) {
+          status = await raceObserved([readStatus(OBSERVATION_INTERVAL_MS), observationExpired]);
           if (evidence !== null) return evidence;
-          if (!expired) await Promise.race([bounded(terminal, OBSERVATION_INTERVAL_MS), observationExpired]);
+          if (!expired) await raceObserved([bounded(terminal, OBSERVATION_INTERVAL_MS), observationExpired]);
         }
       } finally {
         time.clearTimeout(observationTimer);
       }
       if (evidence !== null) return evidence;
-      if (closed || status !== 'inProgress') return null;
+      if (transportClosed.signal.aborted || status !== 'inProgress') return null;
       status = await readStatus(OBSERVATION_INTERVAL_MS);
       if (evidence !== null) return evidence;
-      if (closed || status !== 'inProgress') return null;
+      if (transportClosed.signal.aborted || status !== 'inProgress') return null;
       await bounded(
         lease.interrupt({ threadId, turnId }).catch(() => null),
         OBSERVATION_INTERVAL_MS,

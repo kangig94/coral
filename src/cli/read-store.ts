@@ -2,7 +2,7 @@ import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';
 import { openMemoryStoreDatabase, type Database } from '../store/db.js';
-import { resolveCurrentStore } from '../store/epoch/index.js';
+import { resolveCurrentStore, observeResolvedStoreEpoch, readEpochKey } from '../store/epoch/index.js';
 import { openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 import { resolvePluginRoot } from './plugin-root.js';
@@ -105,11 +105,18 @@ export function closeSharedReadCoralStore(): void {
   defaultRegistry.close();
 }
 
-export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
+export function openReadCoralStore(projectRoot: string, epochKey?: string): ReadCoralStoreHandle {
   const pluginRoot = resolvePluginRoot();
   const flavor = readBuildFlavor(pluginRoot ?? projectRoot);
   const runtime = createRealRuntime(flavor);
-  const resolved = resolveCurrentStore(runtime);
+  const addressed = observeResolvedStoreEpoch(runtime, epochKey);
+  if (epochKey !== undefined && addressed === undefined) throw new Error('Invalid cause epoch address');
+  if (addressed?.lineageKey !== undefined && readEpochKey(runtime, addressed) !== addressed.lineageKey)
+    throw new Error('Cause epoch lineage does not match');
+  const resolved =
+    addressed === undefined
+      ? resolveCurrentStore(runtime)
+      : { path: addressed.path, epoch: addressed, epochCandidate: true };
   const hasStore = resolved.epoch !== null;
 
   const db = hasStore

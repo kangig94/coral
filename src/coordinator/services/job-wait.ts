@@ -1,3 +1,4 @@
+import { raceObserved } from '../../infra/promise-signal.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobEvent, LaunchReadiness } from '../../jobs/records.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
@@ -54,7 +55,7 @@ export class JobWaitService {
           return 'pending';
         }
 
-        await Promise.race([iterator.next(), this.deps.runtime.time.sleep(remainingMs)]);
+        await raceObserved([iterator.next(), this.deps.runtime.time.sleep(remainingMs)]);
       }
     } finally {
       controller.abort();
