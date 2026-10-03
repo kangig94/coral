@@ -229,3 +229,130 @@ it('refuses job-location revision exhaustion before persistence', () => {
   expect(() => index.invalidateTerminalCertificate(epochKey)).toThrow(/exhausted/u);
   expect(readFileSync(path, 'utf8')).toBe(raw);
 });
+
+it('bounds terminal events and leaves an unchanged terminal and certificate unwritten', () => {
+  const { root, index } = fixture();
+  const jobId = 'bounded';
+  index.register(jobId, 'epoch', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const detail = terminalDetail(jobId);
+  detail.events.unshift({
+    type: 'progress',
+    jobId,
+    sessionId: 'session-1',
+    seq: 1,
+    ts: detail.status.updatedAt,
+    message: 'progress',
+    timing: {
+      origin: 'launch' as const,
+      originAt: '2026-09-25T00:00:00.000Z',
+      emittedAt: '2026-09-25T00:00:00.000Z',
+      elapsedMs: 1,
+    },
+  });
+  index.recordTerminal(jobId, detail, join(root, 'result.md'), 2);
+  expect(index.read(jobId)?.detail).toMatchObject({ kind: 'recorded', value: { events: [detail.events[1]] } });
+  index.certify('epoch', 2);
+  const write = vi.spyOn(runtime.storage, 'writeAtomicDurableSync');
+  index.recordTerminal(jobId, detail, join(root, 'result.md'), 2);
+  index.certify('epoch', 2);
+  expect(write).not.toHaveBeenCalled();
+});
+
+it('compacts historical records in bounded resumable turns and preserves unresolved progress', async () => {
+  const { root, index } = fixture();
+  const progress = {
+    type: 'progress' as const,
+    jobId: 'a',
+    sessionId: 'session-1',
+    seq: 1,
+    ts: '2026-09-25T00:00:00.000Z',
+    message: 'progress',
+    timing: {
+      origin: 'launch' as const,
+      originAt: '2026-09-25T00:00:00.000Z',
+      emittedAt: '2026-09-25T00:00:00.000Z',
+      elapsedMs: 1,
+    },
+  };
+  const paths: string[] = [];
+  for (const id of ['a', 'b', 'c']) {
+    index.register(id, 'epoch', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    if (id !== 'c') index.recordTerminal(id, terminalDetail(id), join(root, id), 2);
+    const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(id).toString('base64url')}.json`);
+    const record = JSON.parse(readFileSync(path, 'utf8'));
+    const detail = terminalDetail(id);
+    record.detail = { ...detail, futureField: 'retained', events: [{ ...progress, jobId: id }, ...detail.events] };
+    if (id === 'c') {
+      record.detail.status.phase = 'running';
+      record.detail.exit = null;
+      record.detail.events.pop();
+    }
+    writeFileSync(path, JSON.stringify(record));
+    paths.push(path);
+  }
+  let operations = 0;
+  const checkpoints: string[] = [];
+  const next = await index.compactTerminalRecords(
+    '',
+    { canContinue: () => ++operations <= 1, record: () => {} },
+    (operation) => operation(),
+    (id) => checkpoints.push(id),
+  );
+  expect(next).not.toBe('');
+  expect(checkpoints).toEqual([next]);
+  expect(JSON.parse(readFileSync(paths[0], 'utf8')).detail).toMatchObject({
+    futureField: 'retained',
+    events: [{ type: 'terminal' }],
+  });
+  expect(JSON.parse(readFileSync(paths[1], 'utf8')).detail.events).toHaveLength(2);
+  expect(
+    await index.compactTerminalRecords(next, { canContinue: () => true, record: () => {} }, (operation) => operation()),
+  ).toBe('');
+  expect(JSON.parse(readFileSync(paths[1], 'utf8')).detail.events).toHaveLength(1);
+  expect(JSON.parse(readFileSync(paths[2], 'utf8')).detail.events).toEqual([{ ...progress, jobId: 'c' }]);
+  const write = vi.spyOn(runtime.storage, 'writeAtomicDurableSync');
+  await index.compactTerminalRecords('', { canContinue: () => true, record: () => {} }, (operation) => operation());
+  expect(write).not.toHaveBeenCalled();
+});
+
+it('durably refuses a damaged identity, advances past it, and retries it after readable evidence returns', async () => {
+  const { root, index } = fixture();
+  const paths: string[] = [];
+  for (const jobId of ['a', 'b', 'c']) {
+    index.register(jobId, 'epoch', { projectRoot: '/workspace', workDir: null, jobKind: 'provider' });
+    index.recordTerminal(jobId, terminalDetail(jobId), join(root, jobId), 2);
+    const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+    const record = JSON.parse(readFileSync(path, 'utf8'));
+    record.detail.events.unshift({ ...record.detail.events[0], seq: 1 });
+    writeFileSync(path, JSON.stringify(record));
+    paths.push(path);
+  }
+  const original = readFileSync(paths[1], 'utf8');
+  writeFileSync(paths[1], '{damaged');
+  const outcomes: unknown[] = [];
+  const budget = { canContinue: () => true, record: (outcome: unknown) => outcomes.push(outcome) };
+  expect(await index.compactTerminalRecords('', budget, (operation) => operation())).toBe('');
+  for (const path of [paths[0], paths[2]]) expect(JSON.parse(readFileSync(path, 'utf8')).detail.events).toHaveLength(1);
+  expect(readFileSync(paths[1], 'utf8')).toBe('{damaged');
+  const refusal = join(root, 'job-locations.v1', 'compaction-refusals.v1', 'Yg.json');
+  expect(JSON.parse(readFileSync(refusal, 'utf8'))).toMatchObject({
+    version: 'v1',
+    reason: expect.stringContaining('daily retry'),
+  });
+  expect(outcomes).toContainEqual(expect.objectContaining({ subject: 'Yg.json', kind: 'kept' }));
+  const write = vi.spyOn(runtime.storage, 'writeAtomicDurableSync');
+  await index.compactTerminalRecords('', budget, (operation) => operation());
+  expect(write).not.toHaveBeenCalled();
+  writeFileSync(paths[1], original);
+  await index.compactTerminalRecords('', budget, (operation) => operation());
+  expect(JSON.parse(readFileSync(paths[1], 'utf8')).detail.events).toHaveLength(1);
+  expect(runtime.storage.existsSync(refusal)).toBe(false);
+});

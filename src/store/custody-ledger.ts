@@ -1,10 +1,14 @@
 import { basename, dirname, join } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { processIncarnationSchema } from '../infra/node-process.js';
 import { tryAcquireDirectoryLock } from '../infra/fs-lock.js';
 import type { Runtime } from '../runtime/ports.js';
 import { readEpochKey } from './epoch/key.js';
 import { observeStorePath } from './path-observation.js';
+import type { RetentionRunBudget } from './retention-outcome.js';
+import type { StorageBigIntStat } from '../infra/port-types.js';
 
 const processIdentitySchema = z
   .object({
@@ -53,6 +57,7 @@ const custodyAbsenceSchema = z
     processToken: z.string().uuid(),
     provenAtMs: z.number().int().safe().nonnegative(),
     evidence: z.string().min(1),
+    dischargedBinding: custodyBindingSchema.optional(),
   })
   .passthrough();
 
@@ -388,7 +393,16 @@ function readCustodyEntry(runtime: Pick<Runtime, 'storage'>, runDir: string, id:
     let bindingInvalid = false;
     try {
       const binding = readCustodyBinding(runtime, runDir, intent);
-      if (binding !== null) return { kind: 'bound', intent, binding };
+      if (binding !== null) {
+        try {
+          const absence = readCustodyAbsence(runtime, runDir, intent);
+          if (absence?.dischargedBinding !== undefined && isDeepStrictEqual(absence.dischargedBinding, binding))
+            return { kind: 'absent', intent, evidence: absence.evidence };
+        } catch {
+          // A damaged discharge receipt never overrides a validated binding.
+        }
+        return { kind: 'bound', intent, binding };
+      }
     } catch {
       bindingInvalid = true;
     }
@@ -457,4 +471,257 @@ export function reconcileCustodyLedger(
       release();
     }
   });
+}
+
+/** The owner supplies exact discharge evidence; a stale binding cannot discharge its replacement. */
+export function dischargeCustodyEntry(
+  runtime: Runtime,
+  runDir: string,
+  entry: Extract<CustodyEntry, { kind: 'bound' }>,
+  provenAtMs: number,
+  evidence: string,
+  mutate: <T>(operation: () => T) => T,
+): boolean {
+  return mutate(() => {
+    const release = tryAcquireDirectoryLock(join(intentDir(runDir, entry.intent.id), '.reconcile.lock'), {
+      storage: runtime.storage,
+      time: runtime.time,
+    });
+    if (release === null) return false;
+    try {
+      release.assertOwned();
+      const current = readCustodyEntry(runtime, runDir, entry.intent.id);
+      if (
+        current.kind !== 'bound' ||
+        !isDeepStrictEqual(current.intent, entry.intent) ||
+        !isDeepStrictEqual(current.binding, entry.binding) ||
+        provenAtMs < current.binding.observedAtMs
+      )
+        return false;
+      quarantineDamagedCustodyAbsence(runtime, runDir, current.intent);
+      const existing = readCustodyAbsence(runtime, runDir, current.intent);
+      const absence = custodyAbsenceSchema.parse({
+        ...existing,
+        version: 'v1',
+        intentId: current.intent.id,
+        processToken: current.intent.processToken,
+        provenAtMs,
+        evidence,
+        dischargedBinding: current.binding,
+      });
+      const path = join(intentDir(runDir, entry.intent.id), 'absence.v1.json');
+      if (!runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(absence)}\n`, { mode: 0o600 }))
+        throw new Error('Custody discharge receipt was not persisted.');
+      return true;
+    } finally {
+      release();
+    }
+  });
+}
+
+const retirementReceiptSchema = z.object({
+  version: z.literal('v1'),
+  ledgerId: z.string().uuid(),
+  ledgerDev: z.string().regex(/^\d+$/u),
+  ledgerIno: z.string().regex(/^\d+$/u),
+  entryDev: z.string().regex(/^\d+$/u),
+  entryIno: z.string().regex(/^\d+$/u),
+  absence: custodyAbsenceSchema,
+});
+const retirementStagePattern = /^\.stage\.retention\.([0-9a-f-]{36})\.([0-9a-f-]{36})$/u;
+
+/** Only whole, discharged entries cross the visible/private boundary. Receipts survive partial stage cleanup. */
+export async function pruneCustodyLedger(input: {
+  runtime: Runtime;
+  runDir: string;
+  cutoff: number;
+  afterId: string;
+  budget: RetentionRunBudget;
+  mutate<T>(operation: () => T): T;
+  checkpoint?(id: string): void;
+}): Promise<string> {
+  const { runtime, runDir, cutoff, budget, mutate } = input;
+  const root = custodyLedgerDir(runDir);
+  const ledgerId = readCustodyLedgerId(runtime, runDir);
+  if (ledgerId === null) {
+    if (observeStorePath(runtime.storage, root) !== 'absent')
+      budget.record({
+        kind: 'kept',
+        subject: 'custody',
+        reason: 'ledger-identity-unreadable; retry-after-reconciliation',
+      });
+    return '';
+  }
+  const identity = runtime.storage.lstatSync(root, { bigint: true });
+  const assertRoot = (): void => {
+    const current = runtime.storage.lstatSync(root, { bigint: true });
+    if (
+      !current.isDirectory() ||
+      current.dev !== identity.dev ||
+      current.ino !== identity.ino ||
+      readCustodyLedgerId(runtime, runDir) !== ledgerId
+    )
+      throw new Error('custody-ledger-identity-changed');
+  };
+  const cleanup = async (name: string): Promise<boolean> => {
+    const match = retirementStagePattern.exec(name);
+    if (match === null) return false;
+    const path = join(root, name);
+    const receiptPath = `${path}.receipt.json`;
+    const release = mutate(() =>
+      tryAcquireDirectoryLock(join(root, `.stage.retention-lock.${match[1]}`), {
+        storage: runtime.storage,
+        time: runtime.time,
+      }),
+    );
+    if (release === null) return false;
+    try {
+      const receipt = readRecord(runtime, receiptPath, retirementReceiptSchema);
+      if (
+        receipt === null ||
+        receipt.ledgerId !== ledgerId ||
+        receipt.absence.intentId !== match[1] ||
+        receipt.absence.provenAtMs >= cutoff ||
+        receipt.ledgerDev !== String(identity.dev) ||
+        receipt.ledgerIno !== String(identity.ino)
+      )
+        throw new Error('custody-retirement-proof-unreadable');
+      const assertStage = (): void => {
+        assertRoot();
+        release.assertOwned();
+        const entry = runtime.storage.lstatSync(path, { bigint: true });
+        if (!entry.isDirectory() || String(entry.dev) !== receipt.entryDev || String(entry.ino) !== receipt.entryIno)
+          throw new Error('custody-retirement-identity-changed');
+      };
+      const directories = new Map<string, StorageBigIntStat>();
+      const assertParents = (child: string): void => {
+        assertStage();
+        let parent = dirname(child);
+        while (parent !== root) {
+          const expected = directories.get(parent);
+          if (expected !== undefined) {
+            const current = runtime.storage.lstatSync(parent, { bigint: true });
+            if (!current.isDirectory() || current.dev !== expected.dev || current.ino !== expected.ino)
+              throw new Error('custody-retirement-descendant-identity-changed');
+          }
+          parent = dirname(parent);
+        }
+      };
+      const remove = async (child: string): Promise<boolean> => {
+        if (!budget.canContinue()) return false;
+        assertParents(child);
+        const entry = runtime.storage.lstatSync(child, { bigint: true });
+        if (entry.isDirectory()) {
+          directories.set(child, entry);
+          for (const name of runtime.storage.readdirSync(child)) {
+            if (!(await remove(join(child, name)))) return false;
+          }
+        }
+        mutate(() => {
+          assertParents(child);
+          const current = runtime.storage.lstatSync(child, { bigint: true });
+          if (
+            current.dev !== entry.dev ||
+            current.ino !== entry.ino ||
+            current.mode !== entry.mode ||
+            (!entry.isDirectory() && current.mtimeNs !== entry.mtimeNs)
+          )
+            throw new Error('custody-retirement-descendant-identity-changed');
+          if (entry.isDirectory()) runtime.storage.rmdirSync(child);
+          else runtime.storage.unlinkSync(child);
+          directories.delete(child);
+        });
+        await setImmediate();
+        return true;
+      };
+      if (observeStorePath(runtime.storage, path) !== 'absent') {
+        assertStage();
+        // Make the retirement rename durable before removing any of its contents, including after a crash.
+        mutate(() => {
+          assertStage();
+          syncDirectory(runtime, root);
+        });
+        for (const child of runtime.storage.readdirSync(path)) {
+          if (!(await remove(join(path, child)))) return false;
+        }
+        if (!budget.canContinue()) return false;
+        mutate(() => {
+          assertStage();
+          runtime.storage.rmdirSync(path);
+          syncDirectory(runtime, root);
+        });
+        budget.record({ kind: 'deleted', subject: match[1], count: 1 });
+      }
+      mutate(() => {
+        assertRoot();
+        release.assertOwned();
+        runtime.storage.unlinkSync(receiptPath);
+        syncDirectory(runtime, root);
+      });
+      return true;
+    } finally {
+      release();
+    }
+  };
+  let cursor = input.afterId;
+  let scanned = 0;
+  for (const name of runtime.storage.readdirSync(root).sort()) {
+    if (name === 'root.v1.json') continue;
+    const staged = retirementStagePattern.test(name);
+    const orphanReceipt = name.endsWith('.receipt.json') && retirementStagePattern.test(name.slice(0, -13));
+    if (!staged && !orphanReceipt && (name.includes('.stage.') || name <= input.afterId)) continue;
+    if (!budget.canContinue()) return cursor;
+    try {
+      if (staged || orphanReceipt) {
+        if (!runtime.storage.existsSync(`${join(root, staged ? name : name.slice(0, -13))}.receipt.json`)) continue;
+        if (!(await cleanup(staged ? name : name.slice(0, -13)))) return cursor;
+        continue;
+      }
+      const entry = readCustodyEntry(runtime, runDir, name);
+      if (entry.kind === 'absent') {
+        let stage: string | null = null;
+        mutate(() => {
+          assertRoot();
+          const release = tryAcquireDirectoryLock(join(root, name, '.reconcile.lock'), {
+            storage: runtime.storage,
+            time: runtime.time,
+          });
+          if (release === null) return;
+          try {
+            release.assertOwned();
+            const current = readCustodyEntry(runtime, runDir, name);
+            if (current.kind !== 'absent') return;
+            const absence = readCustodyAbsence(runtime, runDir, current.intent);
+            if (absence === null || absence.provenAtMs >= cutoff) return;
+            const path = join(root, name);
+            const entryIdentity = runtime.storage.lstatSync(path, { bigint: true });
+            if (!entryIdentity.isDirectory()) return;
+            stage = `.stage.retention.${current.intent.id}.${runtime.ids.uuid()}`;
+            writeOnce(runtime, `${join(root, stage)}.receipt.json`, {
+              version: 'v1',
+              ledgerId,
+              ledgerDev: String(identity.dev),
+              ledgerIno: String(identity.ino),
+              entryDev: String(entryIdentity.dev),
+              entryIno: String(entryIdentity.ino),
+              absence,
+            });
+            release.assertOwned();
+            runtime.storage.renameSync(path, join(root, stage));
+            syncDirectory(runtime, root);
+          } finally {
+            release();
+          }
+        });
+        if (stage !== null && !(await cleanup(stage))) return cursor;
+      } else if (entry.kind === 'unreadable' || entry.kind === 'holding')
+        budget.record({ kind: 'kept', subject: name, reason: 'custody-awaits-reconciliation' });
+      cursor = name;
+      if (++scanned % 32 === 0) input.checkpoint?.(cursor);
+    } catch (error: unknown) {
+      budget.record({ kind: 'kept', subject: name, reason: `custody-retention-retry: ${String(error)}` });
+    }
+    await setImmediate();
+  }
+  return '';
 }

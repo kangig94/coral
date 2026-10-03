@@ -538,8 +538,8 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId);
   }
 
-  readJobEvents(jobId: string) {
-    return readJobEvents(this.db, jobId, this);
+  readJobEvents(jobId: string, terminalOnly = false) {
+    return readJobEvents(this.db, jobId, this, terminalOnly);
   }
 
   ensureResultArtifact(jobId: string): string {

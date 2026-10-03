@@ -25,11 +25,12 @@ export default defineConfig({
   resolve: { alias },
   test: {
     env: testEnv('e2e'),
+    setupFiles: ['vitest/setup.ts'],
     include: ['tests/e2e/lifecycle/**/*.test.ts', 'tests/e2e/**/lifecycle/**/*.test.ts'],
     testTimeout: 120_000,
     hookTimeout: 30_000,
     pool: 'forks',
     maxWorkers: 1,
-    globalSetup: ['vitest/no-real-coral-leak.ts'],
+    globalSetup: ['vitest/no-real-coral-leak.ts', 'vitest/isolated-unit-home.ts'],
   },
 });

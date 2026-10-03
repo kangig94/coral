@@ -32,6 +32,9 @@ describe('storage retention documentation', () => {
       for (const owner of [
         'jobs/export-retention.ts',
         'jobs/progress-retention.ts',
+        'jobs/location-index.ts',
+        'store/custody-ledger.ts',
+        'coordinator/services/recovery/custody-reconciliation.ts',
         'store/retention-vacuum.ts',
         'coordinator/composition/storage-retention-scheduler.ts',
       ])
@@ -46,4 +49,12 @@ describe('storage retention documentation', () => {
     expect(architecture).not.toContain('absent legacy holders under an exclusive SQLite lock');
     expect(architecture).not.toContain('R1 depends on the filesystem updating mtime on writes');
   });
+});
+
+it('documents the expanded single knob and bounded backlog drain', () => {
+  const configuration = readFileSync(new URL('../../docs/configuration.md', import.meta.url), 'utf8');
+  const row = configuration.split('\n').find((line) => line.startsWith('| `CORAL_JOBS_RETENTION_DAYS`'))!;
+  for (const text of ['terminal scratch', 'discharged custody', 'absence proof', '5 minutes', 'compact automatically'])
+    expect(row).toContain(text);
+  for (const text of ['deletedByOwner', 'root identity', 'writer fencing']) expect(configuration).toContain(text);
 });

@@ -873,3 +873,79 @@ it('refuses a retirement rename after the exports root is replaced by a symlink'
   expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
   expect(f.outcomes).toContainEqual(expect.objectContaining({ reason: 'export-root-identity-changed' }));
 });
+
+it('batches deletion evidence into bounded transactions without holding a transaction across async reads', async () => {
+  const f = fixture();
+  const path = join(f.runtime.paths.coral.exports.jobsRoot, 'many-files');
+  mkdirSync(path, { recursive: true });
+  for (let n = 0; n < 100; n++) {
+    writeFileSync(join(path, String(n)), 'old');
+    utimesSync(join(path, String(n)), 1, 1);
+  }
+  utimesSync(path, 1, 1);
+  let writesInTurn = 0;
+  let maxWritesInTurn = 0;
+  const unlink = f.runtime.storage.unlinkSync;
+  f.runtime.storage.unlinkSync = (path) => {
+    expect(f.db.isTransaction).toBe(true);
+    writesInTurn++;
+    unlink(path);
+  };
+  const iterate = f.runtime.storage.iterateDirectory;
+  f.runtime.storage.iterateDirectory = async function* (path) {
+    expect(f.db.isTransaction).toBe(false);
+    for await (const child of iterate(path)) {
+      expect(f.db.isTransaction).toBe(false);
+      yield child;
+    }
+  };
+  const exec = vi.spyOn(f.db, 'exec');
+  await pruneJobExports({
+    db: f.db,
+    runtime: f.runtime,
+    cutoff: RETENTION_CUTOFF,
+    afterId: '',
+    budget: f.budget,
+    jobState: () => ({ kind: 'absent' }),
+    resultHold: () => 'released',
+    mutate: (operation) => {
+      writesInTurn = 0;
+      const result = operation();
+      maxWritesInTurn = Math.max(maxWritesInTurn, writesInTurn);
+      return result;
+    },
+  });
+  expect(existsSync(path)).toBe(false);
+  expect(maxWritesInTurn).toBe(8);
+  expect(exec.mock.calls.filter(([sql]) => sql === 'COMMIT').length).toBeLessThan(25);
+});
+
+it('retires small expired residues in bounded fenced turns while preserving identity, age and owner gates', async () => {
+  const f = fixture();
+  for (const id of ['expired', 'recent', 'held']) {
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, id);
+    mkdirSync(join(path, 'provider-artifacts'), { recursive: true });
+    writeFileSync(join(path, 'result.md'), 'old');
+    utimesSync(join(path, 'result.md'), 1, 1);
+    utimesSync(join(path, 'provider-artifacts'), 1, 1);
+    const modifiedAt = id === 'recent' ? RETENTION_NOW / 1000 : 1;
+    utimesSync(path, modifiedAt, modifiedAt);
+  }
+  const exec = vi.spyOn(f.db, 'exec');
+  await pruneJobExports({
+    db: f.db,
+    runtime: f.runtime,
+    cutoff: RETENTION_CUTOFF,
+    afterId: '',
+    budget: f.budget,
+    jobState: () => ({ kind: 'absent' }),
+    resultHold: (id) => (id === 'held' ? 'required' : 'released'),
+    mutate: (operation) => operation(),
+  });
+  expect(existsSync(join(f.runtime.paths.coral.exports.jobsRoot, 'expired'))).toBe(false);
+  for (const id of ['recent', 'held']) expect(existsSync(join(f.runtime.paths.coral.exports.jobsRoot, id))).toBe(true);
+  expect(f.db.prepare("SELECT key FROM meta WHERE key LIKE 'storage-retention.exports.admission.v1.%'").all()).toEqual(
+    [],
+  );
+  expect(exec.mock.calls.filter(([sql]) => sql === 'COMMIT').length).toBeLessThanOrEqual(6);
+});

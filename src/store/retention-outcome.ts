@@ -14,6 +14,7 @@ export interface RetentionRunStatus {
   kept: number;
   failed: number;
   outcomes: RetentionOutcome[];
+  deletedByOwner?: Record<'exports' | 'progressRows' | 'holderMarkers' | 'scratch' | 'custody' | 'vacuumPages', number>;
 }
 
 export interface RetentionRunBudget {
@@ -30,6 +31,16 @@ export const retentionRunStatusSchema = z.object({
   deleted: z.number().int().nonnegative(),
   kept: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
+  deletedByOwner: z
+    .object({
+      exports: z.number().int().nonnegative(),
+      progressRows: z.number().int().nonnegative(),
+      holderMarkers: z.number().int().nonnegative(),
+      scratch: z.number().int().nonnegative(),
+      custody: z.number().int().nonnegative(),
+      vacuumPages: z.number().int().nonnegative(),
+    })
+    .optional(),
   outcomes: z
     .array(
       z.discriminatedUnion('kind', [

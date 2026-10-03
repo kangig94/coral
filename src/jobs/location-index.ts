@@ -1,4 +1,6 @@
 import { dirname, join } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 
 import { acquireDirectoryLockSync } from '../infra/fs-lock.js';
@@ -16,6 +18,7 @@ import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
 import { observeResolvedStoreEpoch } from '../store/epoch/observation.js';
 import { observeStorePath } from '../store/path-observation.js';
 import { protectedStoreEpochRoot } from '../store/epoch/protection.js';
+import type { RetentionRunBudget } from '../store/retention-outcome.js';
 
 const subjectSchema = z
   .object({
@@ -334,7 +337,12 @@ export class JobLocationIndex {
   }
 
   recordTerminal(jobId: string, detail: JobDetailResponse, resultPath: string, terminalSeq: number): JobLocation {
-    const existing = this.read(jobId);
+    const terminal = detail.events.find(
+      (event) => event.type === 'terminal' && event.jobId === jobId && event.seq === terminalSeq,
+    );
+    if (terminal === undefined || detail.exit === null || !isTerminalPhase(detail.status.phase))
+      throw new Error(`Terminal detail is incomplete: ${jobId}`);
+    const existing = this.readStored(jobId);
     if (existing === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
     return this.withRevisionLock(existing.epochKey, () => {
       const current = this.readStored(jobId);
@@ -350,9 +358,9 @@ export class JobLocationIndex {
         disposition: 'terminal',
         terminalSeq,
         resultPath,
-        detail: preserveStoredDetail(current.detail, detail),
+        detail: preserveStoredDetail(current.detail, { ...detail, events: [terminal] }),
       };
-      atomicJson(this.runtime, this.jobPath(jobId), location);
+      if (!isDeepStrictEqual(current, location)) atomicJson(this.runtime, this.jobPath(jobId), location);
       return viewLocation(location);
     });
   }
@@ -363,10 +371,11 @@ export class JobLocationIndex {
     this.withRevisionLock(existing.epochKey, () => {
       const current = this.readStored(jobId);
       if (current === null || current.disposition === 'terminal') return;
-      atomicJson(this.runtime, this.jobPath(jobId), {
+      const location = {
         ...current,
         detail: preserveStoredDetail(current.detail, detail),
-      });
+      };
+      if (!isDeepStrictEqual(current, location)) atomicJson(this.runtime, this.jobPath(jobId), location);
     });
   }
 
@@ -377,7 +386,7 @@ export class JobLocationIndex {
     this.withRevisionLock(existing.epochKey, () => {
       const current = this.readStored(jobId);
       if (current === null) throw new Error(`Unresolved job has no durable location: ${jobId}`);
-      if (current.disposition === 'terminal') return;
+      if (current.disposition === 'terminal' || current.disposition === 'unresolved') return;
       this.advanceRevision(current.epochKey);
       atomicJson(this.runtime, this.jobPath(jobId), { ...current, disposition: 'unresolved' });
     });
@@ -501,7 +510,8 @@ export class JobLocationIndex {
         jobIds: locations.map((location) => location.jobId).sort(),
         terminalHighWaterSeq,
       });
-      atomicJson(this.runtime, this.epochPath(epochKey, 'certificate.v1.json'), certificate);
+      if (!isDeepStrictEqual(previous, certificate))
+        atomicJson(this.runtime, this.epochPath(epochKey, 'certificate.v1.json'), certificate);
       return certificate;
     });
   }
@@ -516,29 +526,32 @@ export class JobLocationIndex {
   resultsReleased(epochKey: string): boolean {
     const certificate = this.certificate(epochKey);
     if (certificate === null) return false;
-    return certificate.jobIds.every((jobId) => {
-      const location = this.read(jobId);
-      if (location === null || !hasReadableTerminalDetail(location) || location.resultPath === undefined) {
-        return false;
-      }
+    return certificate.jobIds.every((jobId) => this.resultDurable(jobId));
+  }
+
+  /** Proves the retained artifact for one job independently of other jobs in its epoch. */
+  resultDurable(jobId: string): boolean {
+    const location = this.read(jobId);
+    if (location === null || !hasReadableTerminalDetail(location) || location.resultPath === undefined) {
+      return false;
+    }
+    try {
+      const fd = this.runtime.storage.openSync(location.resultPath, 'r');
       try {
-        const fd = this.runtime.storage.openSync(location.resultPath, 'r');
-        try {
-          const artifact = this.runtime.storage.fstatSync(fd, { bigint: true });
-          if (!artifact.isFile() || artifact.size === 0n) return false;
-          this.runtime.storage.fdatasyncSync(fd);
-          const directory = dirname(location.resultPath);
-          return (
-            this.runtime.storage.syncDirectoryDurableSync(directory) &&
-            this.runtime.storage.syncDirectoryDurableSync(dirname(directory))
-          );
-        } finally {
-          this.runtime.storage.closeSync(fd);
-        }
-      } catch {
-        return false;
+        const artifact = this.runtime.storage.fstatSync(fd, { bigint: true });
+        if (!artifact.isFile() || artifact.size === 0n) return false;
+        this.runtime.storage.fdatasyncSync(fd);
+        const directory = dirname(location.resultPath);
+        return (
+          this.runtime.storage.syncDirectoryDurableSync(directory) &&
+          this.runtime.storage.syncDirectoryDurableSync(dirname(directory))
+        );
+      } finally {
+        this.runtime.storage.closeSync(fd);
       }
-    });
+    } catch {
+      return false;
+    }
   }
 
   exportResultRetention(jobId: string, activeEpochKey: string | null): 'released' | 'required' | 'unknown' {
@@ -564,5 +577,73 @@ export class JobLocationIndex {
     } catch {
       return 'unknown';
     }
+  }
+
+  async compactTerminalRecords(
+    afterId: string,
+    budget: RetentionRunBudget,
+    mutate: <T>(operation: () => T) => T,
+    checkpoint: (id: string) => void = () => {},
+  ): Promise<string> {
+    const dir = join(this.root, 'jobs');
+    if (!this.runtime.storage.existsSync(dir)) return '';
+    let cursor = afterId;
+    for (const name of this.runtime.storage.readdirSync(dir).sort()) {
+      if (!name.endsWith('.json') || name <= afterId) continue;
+      if (!budget.canContinue()) return cursor;
+      const refusalPath = join(this.root, 'compaction-refusals.v1', name);
+      try {
+        const stored = optionalJson(this.runtime, join(dir, name), locationSchema);
+        const location = stored === null ? null : viewLocation(stored);
+        if (location?.detail.kind === 'unreadable') throw new Error('location-detail-unreadable');
+        if (
+          location !== null &&
+          hasReadableTerminalDetail(location) &&
+          location.detail.kind === 'recorded' &&
+          location.detail.value.events.length > 1
+        ) {
+          mutate(() =>
+            this.withRevisionLock(location.epochKey, () => {
+              const current = optionalJson(this.runtime, join(dir, name), locationSchema);
+              if (current === null) return;
+              const location = viewLocation(current);
+              if (!hasReadableTerminalDetail(location) || location.detail.kind !== 'recorded') return;
+              const events = location.detail.value.events
+                .filter(
+                  (event) =>
+                    event.type === 'terminal' && event.jobId === location.jobId && event.seq === location.terminalSeq,
+                )
+                .slice(0, 1);
+              const detail = preserveStoredDetail(current.detail, { ...location.detail.value, events });
+              if (!isDeepStrictEqual(current.detail, detail))
+                atomicJson(this.runtime, join(dir, name), { ...current, detail });
+            }),
+          );
+        }
+        if (this.runtime.storage.existsSync(refusalPath))
+          mutate(() => {
+            this.runtime.storage.unlinkSync(refusalPath);
+            if (!this.runtime.storage.syncDirectoryDurableSync(dirname(refusalPath)))
+              throw new Error('location-refusal-clear-sync-failed');
+          });
+      } catch (error: unknown) {
+        const reason = `location-compaction-held: ${String(error)}; daily retry clears refusal after readable evidence returns`;
+        mutate(() => {
+          const refusal = { version: 'v1' as const, reason };
+          let previous: unknown = null;
+          try {
+            previous = optionalJson(this.runtime, refusalPath, unknownHoldSchema);
+          } catch {
+            // A damaged refusal is replaced by the current refusal for this identity.
+          }
+          if (!isDeepStrictEqual(previous, refusal)) atomicJson(this.runtime, refusalPath, refusal);
+        });
+        budget.record({ kind: 'kept', subject: name, reason });
+      }
+      cursor = name;
+      checkpoint(cursor);
+      await setImmediate();
+    }
+    return '';
   }
 }
