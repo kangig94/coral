@@ -941,6 +941,9 @@ export class ProviderOperationReconciler
     if (!this.#canMutate()) {
       return Promise.reject(new Error('Provider operation mutation admission is closed.'));
     }
+    if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(input.record)))) {
+      return Promise.reject(new ProviderOperationMutationSetClosedError());
+    }
     const key = operationKey(input.record.operation);
     if (this.#publications.has(key)) {
       return Promise.reject(new Error('Provider operation publication is already active.'));
@@ -952,7 +955,7 @@ export class ProviderOperationReconciler
       const onAbort = (): void => {
         abortRequestedAt ??= new Date(this.#deps.time.now()).toISOString();
         if (!inserted) return;
-        void this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
+        this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
       };
       input.signal.addEventListener('abort', onAbort, { once: true });
       this.#publications.set(key, {
@@ -979,10 +982,14 @@ export class ProviderOperationReconciler
       }
       inserted = true;
       if (abortRequestedAt !== null) {
-        void this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
+        this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
         return;
       }
-      void this.reconcile(input.record, input.authority);
+      runReportedEffect(
+        () => this.reconcile(input.record, input.authority),
+        (error) =>
+          this.#failPublication(input.record.operation, error instanceof Error ? error : new Error(String(error))),
+      );
     });
   }
 
@@ -1028,7 +1035,7 @@ export class ProviderOperationReconciler
   }
 
   requestStop(jobId: string, cause: ProviderStopCause): void {
-    void this.requestStops([jobId], cause);
+    this.requestStops([jobId], cause);
   }
 
   onControlEstablished(authority: DurableProviderProxyOperationAuthority): void {
@@ -1053,7 +1060,10 @@ export class ProviderOperationReconciler
       this.#pollRequested = true;
       return;
     }
-    void this.#poll();
+    runReportedEffect(
+      () => this.#poll(),
+      (error) => this.#deps.onError?.(`Provider operation due poll failed: ${providerOperationErrorReason(error)}`),
+    );
   }
 
   containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<DisappearanceDeliveryAttemptOutcome> {
@@ -2601,8 +2611,8 @@ export class ProviderOperationReconciler
         });
       } else if (current.phase === 'executing') {
         if (current.controlIntent.kind === 'rekey-refusal-containment') {
-          void this.reconcile(current, preferredAuthority);
-          return { kind: 'not-applicable' };
+          this.#runControlIntentFollowUp(current, preferredAuthority);
+          return { kind: 'already-carried' };
         }
         if (current.controlIntent.kind === 'stop') {
           if (!isAbortStopCause(current.controlIntent.cause)) return { kind: 'not-applicable' };
@@ -2636,6 +2646,7 @@ export class ProviderOperationReconciler
     record: ProviderOperationRecord,
     preferredAuthority?: DurableProviderProxyOperationAuthority,
   ): void {
+    if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record)))) return;
     const report = (error: unknown): void => {
       this.#deps.onError?.(
         `Provider operation stop follow-up failed for job '${record.operation.jobId}': ${providerOperationErrorReason(error)}`,
@@ -2651,6 +2662,7 @@ export class ProviderOperationReconciler
       if (precedingDrive === null) return;
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current !== null && current.retryNotBeforeMs <= this.#deps.time.now()) {
+        if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(current)))) return;
         await this.reconcile(current, preferredAuthority);
       }
     }, report);
@@ -2868,7 +2880,7 @@ export class ProviderOperationReconciler
         this.#pollRequested = false;
         if (!this.#fatal) {
           if (pollRequested) {
-            void this.#poll();
+            this.wake();
           } else if (this.#started) {
             this.#schedule(TIMER_MAX_MS);
           }
@@ -2968,6 +2980,7 @@ export class ProviderOperationReconciler
   async #reconcileActiveForAuthority(authority: DurableProviderProxyOperationAuthority): Promise<void> {
     const db = this.#deps.getProgressStore().getDb();
     for (const record of readProviderOperations(db).records) {
+      if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record)))) continue;
       if (sameAuthority(record, authority)) await this.reconcile(record, authority);
     }
   }
@@ -2978,7 +2991,7 @@ export class ProviderOperationReconciler
     this.#timer = this.#deps.time.setTimeout(
       () => {
         this.#timer = null;
-        void this.#poll();
+        this.wake();
       },
       Math.max(TIMER_MIN_MS, Math.min(delayMs, TIMER_MAX_MS)),
     );
