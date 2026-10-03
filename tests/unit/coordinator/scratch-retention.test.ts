@@ -129,13 +129,13 @@ it('retries failed scratch subjects before the saved cursor on every daily cycle
       s.advance(1000);
       throw Object.assign(new Error('persistent scratch EACCES'), { code: 'EACCES' });
     }
-    if (id === ids[1]) s.advance(4000);
+    if (id === ids[1] && existsSync(path)) s.advance(4000);
     return rm(path, options);
   };
   try {
     expect(await s.run()).toMatchObject({ phase: 'partial', failed: 1 });
     expect(f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.scratch.v1')).toEqual({
-      value: ids[1],
+      value: ids[0],
     });
     const second = await s.run();
     expect(second.phase).toBe('partial');
@@ -146,7 +146,7 @@ it('retries failed scratch subjects before the saved cursor on every daily cycle
         reason: expect.stringContaining('scratch-cleanup-pending'),
       }),
     );
-    expect(calls).toEqual([ids[0], ids[1], ids[0], ids[2]]);
+    expect(calls).toEqual([ids[0], ids[1], ids[0], ids[1], ids[2]]);
     failing = false;
     const third = await s.run();
     expect(third.phase).toBe('completed');

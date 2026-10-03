@@ -25,6 +25,7 @@ export async function pruneJobProgress(input: {
   const { db, readCtx, cutoff, budget } = input;
   if (!budget.canContinue()) return input.afterSeq;
   const write = <T>(operation: () => T): T => {
+    if (budget.canMutate?.() === false) throw new Error('progress-retention-owner-expired');
     const timeout = db.prepare<[], { timeout: number }>('PRAGMA busy_timeout').get()?.timeout;
     if (timeout === undefined) throw new Error('progress-write-settings-unknown');
     try {
@@ -49,6 +50,7 @@ export async function pruneJobProgress(input: {
     record: budget.record,
   });
   const save = (): void => {
+    if (budget.canMutate?.() === false) return;
     const persist = (): void => {
       db.prepare<[string, string]>('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
         CURSOR_KEY,

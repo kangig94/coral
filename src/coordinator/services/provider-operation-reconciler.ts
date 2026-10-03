@@ -590,6 +590,7 @@ export class ProviderOperationReconciler
   #pollRequested = false;
   #fatal = false;
   #startupInitializationSignal: AbortSignal | null = null;
+  readonly #startupAbort = new AbortController();
   #startupStartedAt: bigint | null = null;
   #startupExpiredAt: bigint | null = null;
   readonly #startupSets = new Map<ProviderProxySetKey, StartupSetAttempt>();
@@ -643,6 +644,7 @@ export class ProviderOperationReconciler
 
   stop(): ProviderOperationReconcilerStopDisposition {
     this.#admissionClosed = true;
+    this.#startupAbort.abort();
     this.#started = false;
     if (this.#timer !== null) {
       this.#deps.time.clearTimeout(this.#timer);
@@ -685,6 +687,7 @@ export class ProviderOperationReconciler
     ownership: ProviderOperationStartupOwnership,
     signal: AbortSignal,
   ): Promise<StartupReconciliationReport> {
+    signal = AbortSignal.any([signal, this.#startupAbort.signal]);
     this.#startupStartedAt = this.#deps.time.monotonicNow();
     const hydratedOperations = new Set(
       ownership.records.filter(startupOperationCanReconcile).map(({ operation }) => operationKey(operation)),
@@ -730,7 +733,32 @@ export class ProviderOperationReconciler
       if (initializeAtStartup !== undefined) {
         this.#startupInitializationSignal = signal;
         try {
-          await initializeAtStartup(signal);
+          let retryCount = 0;
+          for (;;) {
+            signal.throwIfAborted();
+            try {
+              await initializeAtStartup(signal);
+              signal.throwIfAborted();
+              break;
+            } catch (error: unknown) {
+              signal.throwIfAborted();
+              if (this.#observeFatal(error)) throw error;
+              const phase = this.#startupExpiredAt === null ? 'Startup' : 'Detached startup';
+              this.#deps.onError?.(`${phase} initialization failed: ${providerOperationErrorReason(error)}`);
+              let retryTimer!: TimerHandle;
+              try {
+                await awaitStartup(
+                  new Promise<void>((resolve) => {
+                    retryTimer = this.#deps.time.setTimeout(resolve, retryDelayMs(retryCount++));
+                    retryTimer.unref?.();
+                  }),
+                  signal,
+                );
+              } finally {
+                this.#deps.time.clearTimeout(retryTimer);
+              }
+            }
+          }
         } finally {
           this.#startupInitializationSignal = null;
         }

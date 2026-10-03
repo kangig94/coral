@@ -95,6 +95,7 @@ type BoundProviderExecutionRuntimeCommon = Omit<
   | 'appServerSession'
   | 'runCli'
   | 'onProviderTurnStart'
+  | 'onProviderTurnNotSubmitted'
   | 'onProviderTurnTerminal'
   | 'onProviderTurnSettlement'
 > &
@@ -108,6 +109,7 @@ export type BoundProviderAppServerExecutionRuntime = BoundProviderExecutionRunti
     onAppServerWaiting(observation: { provider: string }): void;
     onHostRef(hostRef: HostRef): void;
     onProviderTurnStart?(): void;
+    onProviderTurnNotSubmitted?(): void;
     onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
     onProviderTurnSettlement?(settlement: ProviderTurnSettlement): void;
   }>;

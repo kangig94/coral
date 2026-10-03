@@ -685,3 +685,63 @@ it('bounds export pending failures and reports overflow until failures clear', a
     f.runtime.storage.unlinkSync = unlink;
   }
 });
+
+it.each(['eligibility', 'post-rename', 'deletion'] as const)(
+  'does not mutate after a delayed %s read loses its owner',
+  async (pause) => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.exports.jobsRoot;
+    const path = join(root, 'expired');
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'old'), 'old');
+    utimesSync(join(path, 'old'), 1, 1);
+    utimesSync(path, 1, 1);
+    let release!: () => void;
+    let started!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const read = f.runtime.storage.readdir.bind(f.runtime.storage);
+    f.runtime.storage.readdir = async (directory) => {
+      if (
+        (pause === 'eligibility' && directory === path) ||
+        (pause === 'post-rename' && directory.includes('.retiring-'))
+      ) {
+        started();
+        await blocked;
+      }
+      return read(directory);
+    };
+    const iterate = f.runtime.storage.iterateDirectory.bind(f.runtime.storage);
+    f.runtime.storage.iterateDirectory = async function* (directory) {
+      if (pause === 'deletion' && directory.includes('.retiring-')) {
+        started();
+        await blocked;
+      }
+      yield* iterate(directory);
+    };
+    let active = true;
+    const run = pruneJobExports({
+      db: f.db,
+      runtime: f.runtime,
+      cutoff: RETENTION_CUTOFF,
+      afterId: '',
+      budget: { canContinue: () => active, canMutate: () => active, record: f.budget.record },
+      jobState: () => ({ kind: 'absent' }),
+      resultHold: () => 'released',
+      mutate: (operation) => operation(),
+    });
+    await ready;
+    const meta = f.db.prepare('SELECT key, value FROM meta ORDER BY key').all();
+    const names = readdirSync(root);
+    active = false;
+    release();
+    await run;
+    expect(f.db.prepare('SELECT key, value FROM meta ORDER BY key').all()).toEqual(meta);
+    expect(readdirSync(root)).toEqual(names);
+    expect(existsSync(join(root, names[0], 'old'))).toBe(true);
+  },
+);

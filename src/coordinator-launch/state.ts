@@ -61,6 +61,7 @@ export type ChildWatchState = {
   discovered: boolean;
   admitted: boolean;
   startupDeadline: number;
+  servingObservation: boolean | 'unknown';
   disconnectedAt: number | null;
 };
 export type ChildRetirement = { at: number | null };
@@ -404,6 +405,7 @@ export class SupervisorLaunchMemory {
       discovered: false,
       admitted: false,
       startupDeadline: lastAnswer + startupBudgetMs,
+      servingObservation: false,
       disconnectedAt: null,
     };
     this.#childWatches.set(reservation.id, state);

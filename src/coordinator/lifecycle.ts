@@ -740,7 +740,11 @@ export async function cleanupStaleJobs(
   signal: AbortSignal,
   budget?: RetentionRunBudget,
 ): Promise<void> {
-  signal.throwIfAborted();
+  const assertOwnerActive = (): void => {
+    signal.throwIfAborted();
+    if (budget?.canMutate?.() === false) throw new Error('scratch-retention-owner-expired');
+  };
+  assertOwnerActive();
   const context = { progressStore, currentBundleHash, log, storage, nowMs, retentionMs };
   staleJobCleanupRetryContexts.set(progressStore.getDb(), context);
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs });
@@ -748,7 +752,10 @@ export async function cleanupStaleJobs(
   const pending = createRetentionPendingSet(
     db,
     'storage-retention.scratch.pending.v1',
-    (operation) => operation(),
+    (operation) => {
+      assertOwnerActive();
+      return operation();
+    },
     (outcome) => budget?.record(outcome),
   );
   const attempted = new Set<string>();
@@ -789,14 +796,21 @@ export async function cleanupStaleJobs(
         };
       attempted.add(item.jobId);
       const result = await cleanupPolicy.settle(item);
+      assertOwnerActive();
       if (result.kind === 'advanced') {
         pending.remove(item.jobId);
       }
       return result;
     },
     onFault: (fault) => {
+      assertOwnerActive();
       const disposition = cleanupPolicy.onFault(fault);
       failures.push(`${fault.subject.key}: ${errorMessage(fault.error)}`);
+      budget?.record({
+        kind: 'failed',
+        subject: 'scratch-jobs',
+        reason: `${fault.subject.key}: ${errorMessage(fault.error)}`,
+      });
       if (fault.stage !== 'settle') return disposition;
       if (!pending.add(fault.subject.key)) interrupted = true;
       return {
@@ -810,7 +824,10 @@ export async function cleanupStaleJobs(
   const savedCursor = readRetentionCursor({
     db,
     key: cursorKey,
-    mutate: (operation) => operation(),
+    mutate: (operation) => {
+      assertOwnerActive();
+      return operation();
+    },
     record: (outcome) => budget?.record(outcome),
   });
   let afterId = pending.restarted ? '' : savedCursor;
@@ -849,6 +866,7 @@ export async function cleanupStaleJobs(
       }),
       policy,
     });
+    assertOwnerActive();
     if (interrupted) break;
     if (nextId === null) {
       db.prepare('DELETE FROM meta WHERE key = ?').run(cursorKey);
@@ -869,7 +887,7 @@ export async function cleanupStaleJobs(
     .all();
   for (const held of hydrationHolds)
     budget?.record({ kind: 'kept', subject: held.subject_key, reason: `hydration-quarantine: ${held.error_message}` });
-  if (failures.length > 0) throw new Error(`Scratch cleanup failed: ${failures.join('; ')}`);
+  if (failures.length > 0 && budget === undefined) throw new Error(`Scratch cleanup failed: ${failures.join('; ')}`);
 }
 
 export async function markJobsAsError(

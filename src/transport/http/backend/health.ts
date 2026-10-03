@@ -156,6 +156,7 @@ export interface BackendHealth {
   succession?: UpgradeIntentVisibility;
   successionProblem?: UpgradeIntentProblem;
   launchStatus?: LaunchStatus;
+  listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
     providerOperationStartupReconciliation?: ProviderOperationStartupStatus;
     carriers?: {
@@ -914,6 +915,9 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
       launchStatus: parseLaunchStatus(rawLaunchStatus),
       ...(retention.success ? { retention: retention.data } : {}),
       ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
+      ...(isRecord(value.listCounts) && Object.values(value.listCounts).every(isNonNegativeInteger)
+        ? { listCounts: value.listCounts as Record<string, number> }
+        : {}),
       ...(shutdown === null ? {} : { shutdown }),
       ...(succession === null ? {} : { succession }),
       ...(successionProblem === null ? {} : { successionProblem }),

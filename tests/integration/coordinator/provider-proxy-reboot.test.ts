@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
@@ -24,6 +25,7 @@ import { statusFromParsedHealth } from '#src/cli/backend-status.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
 import type { CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '#tools/simulation/scenario-http.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { createHandoffCoresHarness } from './handoff-cores-harness.js';
 
 function rebootFixture(observation: 'absent' | 'unknown' = 'absent') {
@@ -128,9 +130,6 @@ function rebootFixture(observation: 'absent' | 'unknown' = 'absent') {
     record,
     capsulePath,
     progressStore,
-    advanceTime: (ms: number) => {
-      elapsedMs += BigInt(ms);
-    },
   };
 }
 
@@ -184,8 +183,30 @@ describe('coordinator startup after host reboot', () => {
   it.each(['release', 'held', 'automatic'] as const)(
     'detaches a never-settling startup mutation and fence, then applies %s ownership',
     async (outcome) => {
-      const { harness, record, capsulePath, advanceTime } = rebootFixture();
+      const { harness, record, capsulePath } = rebootFixture();
+      vi.spyOn(harness.runtime.process, 'observeRecordedProcessAsync').mockResolvedValue('absent');
+      const time = new VirtualTime(harness.runtime.time.now());
+      const startedAtMs = time.now();
+      const monotonicStartedAt = harness.runtime.time.monotonicNow();
+      vi.spyOn(harness.runtime.time, 'now').mockImplementation(() => time.now());
+      vi.spyOn(harness.runtime.time, 'monotonicNow').mockImplementation(
+        () => monotonicStartedAt + BigInt(time.now() - startedAtMs),
+      );
+      vi.spyOn(harness.runtime.time, 'sleep').mockImplementation(async (ms, options) => {
+        options?.signal?.throwIfAborted();
+        time.tick(ms);
+      });
+      vi.spyOn(harness.runtime.time, 'clearTimeout').mockImplementation((handle) => time.clearTimeout(handle));
+      vi.spyOn(harness.runtime.time, 'setInterval').mockImplementation((callback, ms) =>
+        time.setInterval(callback, ms),
+      );
+      vi.spyOn(harness.runtime.time, 'clearInterval').mockImplementation((handle) => time.clearInterval(handle));
       const admission = () => providerOperationMutationAdmission(harness.db);
+      const duePoll = vi.spyOn(ProviderOperationMutationAdmission.prototype, 'runDetached');
+      let enterStartup!: () => void;
+      const startupEntered = new Promise<void>((resolve) => {
+        enterStartup = resolve;
+      });
       let release!: () => void;
       const wait = new Promise<void>((resolve) => {
         release = resolve;
@@ -194,10 +215,9 @@ describe('coordinator startup after host reboot', () => {
       let staleWriteError: unknown;
       let core!: CoordinatorCoreResult;
       let deadline!: () => void;
-      const setTimeout = harness.runtime.time.setTimeout;
       vi.spyOn(harness.runtime.time, 'setTimeout').mockImplementation((callback, delay) => {
         if (delay === PROVIDER_OPERATION_STARTUP_BOUND_MS) deadline = callback;
-        return setTimeout(callback, delay);
+        return time.setTimeout(callback, delay);
       });
       const stalled = vi
         .spyOn(StartupSetRecoveryProducer.prototype, 'recoverSetAtStartup')
@@ -206,6 +226,7 @@ describe('coordinator startup after host reboot', () => {
             'injected-startup-mutation',
             async () => {
               const fence = admission().closeSet(work.identity);
+              enterStartup();
               try {
                 await wait;
                 try {
@@ -228,7 +249,6 @@ describe('coordinator startup after host reboot', () => {
           ),
         );
       let bootSettled = false;
-      const wallStartedAt = performance.now();
       const boot = harness.bootCore({
         instanceId: randomUUID(),
         onCoreCreated: (created) => {
@@ -242,7 +262,8 @@ describe('coordinator startup after host reboot', () => {
         () => undefined,
       );
       try {
-        await vi.waitFor(() => expect(stalled).toHaveBeenCalledOnce());
+        await startupEntered;
+        expect(stalled).toHaveBeenCalledOnce();
         const starting = await readHealth(core);
         expect(starting.health.status).toBe('starting');
         const status = starting.health.diagnostics?.providerOperationStartupReconciliation;
@@ -271,10 +292,12 @@ describe('coordinator startup after host reboot', () => {
         expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
         expect(harness.runtime.storage.existsSync(capsulePath)).toBe(true);
 
-        advanceTime(PROVIDER_OPERATION_STARTUP_BOUND_MS);
-        if (outcome !== 'automatic') deadline();
+        time.tick(PROVIDER_OPERATION_STARTUP_BOUND_MS - 1);
+        await setImmediate();
+        expect(bootSettled).toBe(false);
+        expect(core.runtimeState.getLifecycle()).toBe('kernel-ready');
+        time.tick(1);
         const booted = await boot;
-        expect(performance.now() - wallStartedAt).toBeLessThan(PROVIDER_OPERATION_STARTUP_BOUND_MS + 200);
         expect(booted.core.runtimeState.getLifecycle()).toBe('running');
         const expired = await readHealth(core);
         expect(expired.health.diagnostics?.providerOperationStartupReconciliation).toMatchObject({
@@ -289,7 +312,10 @@ describe('coordinator startup after host reboot', () => {
           ],
         });
         // Negative control: the due owner cannot compete with the detached mutator.
-        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        time.tick(25);
+        await setImmediate();
+        expect(duePoll).toHaveBeenCalledWith('provider-operation-due-poll', expect.any(Function));
+        await Promise.all(duePoll.mock.results.map(({ value }) => value));
         expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
         expect(harness.runtime.storage.existsSync(capsulePath)).toBe(true);
         expect(lateMutation).not.toHaveBeenCalled();
@@ -297,11 +323,13 @@ describe('coordinator startup after host reboot', () => {
           expect(
             formatBackendStatus(statusFromParsedHealth(await readHealth(core)), { kind: 'absent' }, null),
           ).toContain('state=detached');
-          advanceTime(60_000);
+          time.tick(60_000);
+          await setImmediate();
+          await Promise.all(duePoll.mock.results.map(({ value }) => value));
           expect(core.runtimeState.getLifecycle()).toBe('running');
           expect((await readHealth(core)).health.diagnostics?.providerOperationStartupReconciliation).toMatchObject({
             phase: 'detached',
-            elapsedMs: PROVIDER_OPERATION_STARTUP_BOUND_MS + 60_000,
+            elapsedMs: PROVIDER_OPERATION_STARTUP_BOUND_MS + 25 + 60_000,
             sets: [
               expect.objectContaining({
                 state: 'detached',
@@ -313,17 +341,19 @@ describe('coordinator startup after host reboot', () => {
           return;
         }
         release();
-        await vi.waitFor(() => expect(lateMutation).toHaveBeenCalledOnce());
+        await stalled.mock.results[0]?.value;
+        await setImmediate();
+        expect(lateMutation).toHaveBeenCalledOnce();
         expect(staleWriteError).toBeUndefined();
-        await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull(), {
-          timeout: 5_000,
-        });
-        await vi.waitFor(() => expect(harness.runtime.storage.existsSync(capsulePath)).toBe(false), { timeout: 5_000 });
-        await vi.waitFor(
-          async () =>
-            expect((await readHealth(core)).health.diagnostics?.providerOperationStartupReconciliation).toBeUndefined(),
-          { timeout: 5_000 },
-        );
+        for (let attempt = 0; attempt < 10 && readProviderOperation(harness.db, record.operation) !== null; attempt++) {
+          time.tick(2_000);
+          await setImmediate();
+          await Promise.all(duePoll.mock.results.map(({ value }) => value));
+        }
+        expect(readProviderOperation(harness.db, record.operation)).toBeNull();
+        await Promise.all(duePoll.mock.results.map(({ value }) => value));
+        expect(harness.runtime.storage.existsSync(capsulePath)).toBe(false);
+        expect((await readHealth(core)).health.diagnostics?.providerOperationStartupReconciliation).toBeUndefined();
         expect(admission().pendingMutations()).not.toContain('provider-operation-mutation-set-fence');
       } finally {
         release();

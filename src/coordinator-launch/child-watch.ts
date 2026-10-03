@@ -83,7 +83,7 @@ function monitorChildHeartbeat(input: {
     state.outstanding = null;
   }
   if (
-    (!state.served && now >= state.startupDeadline) ||
+    (!state.served && state.servingObservation !== 'unknown' && now >= state.startupDeadline) ||
     (state.disconnectedAt !== null && now - state.disconnectedAt >= timing.lapseMs) ||
     (child.connected &&
       state.pendingHello &&
@@ -267,6 +267,8 @@ function pollWatchedChildServing(input: {
   )
     return;
   void replacementServing(runDir, manifest.flavor, child.pid).then((ready) => {
+    if (!record.hasAuthority(authority)) return;
+    state.servingObservation = ready;
     if (ready === true && record.hasAuthority(authority) && record.serving(reservation, identity)) state.served = true;
   });
 }

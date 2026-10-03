@@ -179,7 +179,7 @@ function readHealthDiagnostics(input: HealthDiagnosticInput) {
     diagnostics.providerOperationStartupReconciliation = {
       ...startupStatus,
       setCount: startupStatus.setCount ?? startupStatus.sets.length,
-      sets: startupStatus.sets.slice(0, 20),
+      sets: startupStatus.sets,
     };
   if (mutationBlocked !== undefined) {
     diagnostics.mutationBlocked = mutationBlocked;
@@ -234,6 +234,23 @@ function readHealthDiagnostics(input: HealthDiagnosticInput) {
     diagnostics.launchReclamations !== undefined;
 
   return { diagnostics, hasDiagnostics };
+}
+
+function boundHealthLists(snapshot: HealthSnapshot): HealthSnapshot {
+  const listCounts: Record<string, number> = {};
+  const project = (value: unknown, path: string): unknown => {
+    if (Array.isArray(value)) {
+      listCounts[path] = value.length;
+      return value.slice(0, 20).map((entry, index) => project(entry, `${path}.${index}`));
+    }
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, project(entry, path === '' ? key : `${path}.${key}`)]),
+      );
+    }
+    return value;
+  };
+  return { ...(project(snapshot, '') as HealthSnapshot), listCounts };
 }
 
 export function createCoordinatorHealthReader({
@@ -321,7 +338,7 @@ export function createCoordinatorHealthReader({
 
     const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
     const retention = retentionStatus?.() ?? null;
-    return {
+    return boundHealthLists({
       status: coarseStatus,
       ...(retention === null ? {} : { retention }),
       launchStatus: currentLaunchStatus(runtime.paths.coral.coordinator.runDir),
@@ -363,6 +380,6 @@ export function createCoordinatorHealthReader({
               providers: systemProviderScope.profiles.map((profile) => profile.provider).sort(),
             },
           }),
-    };
+    });
   };
 }

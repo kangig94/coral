@@ -129,10 +129,12 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
         return;
       }
 
-      state.turnRequested = true;
       const startParams = mapTurnStartParams(state.prepared.prompt, state.brokerSessionKey, runtime.ids);
       state.brokerTurnId = startParams.brokerTurnId;
       await checkpointBrokerContinuity(runtime, state);
+      runtime.signal.throwIfAborted();
+      state.turnRequested = true;
+      runtime.onProviderTurnStart?.();
       const startOutcome = await startBrokerTurn(lease, startParams, runtime.signal);
       if (startOutcome.kind === 'aborted') {
         await waitForAcceptedInterruptEvidence(state, lease, startParams.brokerTurnId);
@@ -180,6 +182,7 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
         ),
       );
     } finally {
+      if (!state.turnRequested) runtime.onProviderTurnNotSubmitted?.();
       clearNotificationBinding();
     }
   });

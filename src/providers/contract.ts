@@ -570,6 +570,7 @@ export type ProviderAppServerRuntime<Plan extends ProviderExecutionPlan = Provid
     readonly transport: 'app-server';
     readonly appServerSession: AppServerSession;
     onProviderTurnStart?(): void;
+    onProviderTurnNotSubmitted?(): void;
     onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
     onProviderTurnSettlement?(settlement: ProviderTurnSettlement): void;
   };

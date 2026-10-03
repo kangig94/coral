@@ -36,7 +36,7 @@ it.each([
     sets: Array.from({ length: setCount }, (_, i) => ({
       setKey: `provider-set-${i}-${'a'.repeat(64)}`,
       state: 'queued',
-      pendingMutations: [],
+      pendingMutations: Array.from({ length: 400 }, (_, i) => `mutation-${i}`),
       pendingFences: [],
       incident: null,
       successor: 'detached-startup-recovery',
@@ -72,7 +72,18 @@ it.each([
         launchReleaseDiagnostics: () => [],
         launchReclamationDiagnostics: () => [],
       },
-      providerProxyLifecycleRef: { get: () => null },
+      providerProxyLifecycleRef: {
+        get: () => ({
+          snapshot: () => ({
+            operatorSets: [],
+            skippedDurableOperatorDispositions: Array.from({ length: 400 }, (_, i) => ({
+              key: `provider-proxy-set-operator-disposition.v1:${i}:${'a'.repeat(100)}`,
+              setToken: null,
+              unavailableAction: 'reconciliation-and-retirement',
+            })),
+          }),
+        }),
+      },
     } as never,
     options: { getConsumerStuck: () => [] } as never,
     runtimeState: {
@@ -97,6 +108,10 @@ it.each([
   expect(snapshot.diagnostics?.providerOperationStartupReconciliation?.sets).toHaveLength(Math.min(setCount, 20));
   expect(snapshot.diagnostics?.providerOperationStartupReconciliation?.setCount).toBe(setCount);
   expect(Buffer.byteLength(frame)).toBeLessThan(64 * 1024);
+  expect(snapshot.diagnostics?.providerProxyDispositionSkips).toHaveLength(20);
+  expect(snapshot.listCounts?.['diagnostics.providerProxyDispositionSkips']).toBe(400);
+  expect(snapshot.diagnostics?.providerOperationStartupReconciliation?.sets[0]?.pendingMutations).toHaveLength(20);
+  expect(snapshot.listCounts?.['diagnostics.providerOperationStartupReconciliation.sets.0.pendingMutations']).toBe(400);
   writeFileSync(join(runDir, 'coordinator.json'), JSON.stringify({ pid: process.pid, bootToken: 'test-token' }));
   const server = createServer((socket) =>
     socket.once('data', (chunk) => {

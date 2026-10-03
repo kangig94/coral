@@ -275,3 +275,41 @@ describe('storage retention schedule', () => {
     expect(statuses.at(-1)?.phase).toBe('completed');
   });
 });
+
+it('keeps at most one unsettled run per owner and retries after that run finishes', async () => {
+  let finish!: (value: string) => void;
+  owners.exports.mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const { f, scheduler, statuses } = fixture();
+  const initialWall = f.runtime.time.now();
+  let monotonic = 0n;
+  f.runtime.time.monotonicNow = () => monotonic;
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  monotonic = 5000n;
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(statuses.at(-1)?.phase).toBe('partial');
+  for (let day = 1; day <= 3; day++) {
+    monotonic = BigInt(day * 86_400_000);
+    f.setNow(initialWall + day * 86_400_000);
+    await vi.advanceTimersByTimeAsync(day === 1 ? 86_395_000 : 86_400_000);
+    expect(owners.exports).toHaveBeenCalledOnce();
+    expect(statuses.at(-1)?.outcomes).toContainEqual({
+      kind: 'kept',
+      subject: 'exports',
+      reason: 'previous-owner-still-running',
+    });
+  }
+  finish('late-cursor');
+  await vi.advanceTimersByTimeAsync(0);
+  monotonic = BigInt(4 * 86_400_000);
+  f.setNow(initialWall + 4 * 86_400_000);
+  await vi.advanceTimersByTimeAsync(86_400_000);
+  expect(owners.exports).toHaveBeenCalledTimes(2);
+  expect(owners.exports).toHaveBeenLastCalledWith(expect.objectContaining({ afterId: '' }));
+  expect(statuses.at(-1)?.phase).toBe('completed');
+});

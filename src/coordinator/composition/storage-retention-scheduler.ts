@@ -31,6 +31,7 @@ export function createStorageRetentionScheduler(input: {
   const abort = new AbortController();
   let timer: TimerHandle | null = null;
   let running = Promise.resolve();
+  const outstandingOwners = new Map<string, Promise<void>>();
   let started = false;
   let previous: { wall: number; monotonic: bigint } | null = null;
   const retentionMs = resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
@@ -91,8 +92,16 @@ export function createStorageRetentionScheduler(input: {
           const cutoff = now.wall - retentionMs;
           const step = async (
             subject: string,
-            operation: (budget: RetentionRunBudget, signal: AbortSignal) => void | Promise<void>,
+            operation: (
+              budget: RetentionRunBudget,
+              signal: AbortSignal,
+              mutate: <T>(operation: () => T) => T,
+            ) => void | Promise<void>,
           ): Promise<void> => {
+            if (outstandingOwners.has(subject)) {
+              record({ kind: 'kept', subject, reason: 'previous-owner-still-running' });
+              return;
+            }
             const deadline = runtime.time.monotonicNow() + BigInt(OWNER_BUDGET_MS);
             const ownerAbort = new AbortController();
             const cancel = (): void => ownerAbort.abort();
@@ -102,41 +111,57 @@ export function createStorageRetentionScheduler(input: {
               ownerAbort.signal.addEventListener('abort', () => resolve(), { once: true }),
             );
             let operations = 0;
-            const budget: RetentionRunBudget = {
-              record,
+            let finished = false;
+            const budget = {
+              record: (outcome) => {
+                if (!finished && !ownerAbort.signal.aborted) record(outcome);
+              },
               canRetry: () =>
                 runtime.time.monotonicNow() < deadline - BigInt(OWNER_BUDGET_MS / 2) && operations < 10_000,
-              canContinue: () => {
-                let allowed =
-                  !abort.signal.aborted &&
-                  !ownerAbort.signal.aborted &&
-                  runtime.time.monotonicNow() < deadline &&
-                  ++operations <= 20_000;
-                if (allowed) {
-                  try {
-                    writer.assertCurrent();
-                  } catch {
-                    allowed = false;
-                  }
+              canMutate: () => {
+                if (abort.signal.aborted || ownerAbort.signal.aborted || runtime.time.monotonicNow() >= deadline)
+                  return false;
+                try {
+                  writer.assertCurrent();
+                  return true;
+                } catch {
+                  return false;
                 }
-                partial ||= !allowed;
+              },
+              canContinue: (): boolean => {
+                const allowed = budget.canMutate() && ++operations <= 20_000;
+                partial ||= !allowed && !finished;
                 return allowed;
               },
+            } satisfies RetentionRunBudget;
+            const mutate = <T>(operation: () => T): T => {
+              if (!budget.canMutate()) {
+                partial = true;
+                throw new Error('retention-owner-expired');
+              }
+              return writer.withWriteTurn(operation);
             };
             try {
-              if (budget.canContinue())
-                await Promise.race([Promise.resolve().then(() => operation(budget, ownerAbort.signal)), cancelled]);
+              if (budget.canContinue()) {
+                const work = Promise.resolve().then(() => operation(budget, ownerAbort.signal, mutate));
+                outstandingOwners.set(subject, work);
+                void work.finally(() => outstandingOwners.delete(subject)).catch(() => undefined);
+                await Promise.race([work, cancelled]);
+              }
             } catch (error: unknown) {
-              record({ kind: 'failed', subject, reason: errorMessage(error) });
+              if (budget.canMutate()) record({ kind: 'failed', subject, reason: errorMessage(error) });
+              else record({ kind: 'kept', subject, reason: 'scan-pending' });
             } finally {
+              finished = true;
+              if (ownerAbort.signal.aborted && outstandingOwners.has(subject))
+                record({ kind: 'kept', subject, reason: 'owner-still-running' });
               partial ||= ownerAbort.signal.aborted;
               ownerAbort.abort();
               runtime.time.clearTimeout(ownerTimer);
               abort.signal.removeEventListener('abort', cancel);
             }
           };
-          const mutate = <T>(operation: () => T): T => writer.withWriteTurn(operation);
-          const readCursor = (owner: string): string =>
+          const readCursor = (owner: string, mutate: <T>(operation: () => T) => T): string =>
             readRetentionCursor({
               db,
               key: `storage-retention.${owner}.v1`,
@@ -149,37 +174,43 @@ export function createStorageRetentionScheduler(input: {
               value,
             );
           };
-          await step('exports', async (budget, signal) => {
+          await step('exports', async (budget, signal, mutate) => {
             mutate(() => db.prepare('DELETE FROM meta WHERE key = ?').run('storage-retention.legacy.v1'));
             const next = await pruneJobExports({
               db,
               runtime,
               cutoff,
-              afterId: readCursor('exports'),
+              afterId: readCursor('exports', mutate),
               budget,
               jobState: (id) => readExportJobState(db, progressStore, id),
               resultHold: (id) => input.jobLocations.exportResultRetention(id, input.activeEpochKey()),
               mutate,
               checkpoint: (value) => {
-                if (!signal.aborted) saveCursor('exports', value);
+                if (!signal.aborted) mutate(() => saveCursor('exports', value));
               },
             });
-            if (!signal.aborted) saveCursor('exports', next);
-            if (next !== '') record({ kind: 'kept', subject: 'exports', reason: 'scan-pending' });
+            if (!signal.aborted) mutate(() => saveCursor('exports', next));
+            if (next !== '') budget.record({ kind: 'kept', subject: 'exports', reason: 'scan-pending' });
           });
           await step('journal-progress', async (budget) => {
             if ((await pruneJobProgress({ db, readCtx: progressStore, cutoff, afterSeq: 0, budget })) !== 0)
-              record({ kind: 'kept', subject: 'journal-progress', reason: 'scan-pending' });
+              budget.record({ kind: 'kept', subject: 'journal-progress', reason: 'scan-pending' });
           });
           await step('journal-vacuum', async (budget) => {
-            record(await vacuumRetainedJournal(db, budget));
+            budget.record(await vacuumRetainedJournal(db, budget));
           });
-          await step('epoch-holders', async (budget, signal) => {
-            const next = await pruneStoreEpochHolders(runtime, budget, mutate, readCursor('holders'), (value) => {
-              if (!signal.aborted) saveCursor('holders', value);
-            });
-            if (!signal.aborted) saveCursor('holders', next ?? '');
-            if (next) record({ kind: 'kept', subject: 'epoch-holders', reason: 'scan-pending' });
+          await step('epoch-holders', async (budget, signal, mutate) => {
+            const next = await pruneStoreEpochHolders(
+              runtime,
+              budget,
+              mutate,
+              readCursor('holders', mutate),
+              (value) => {
+                if (!signal.aborted) mutate(() => saveCursor('holders', value));
+              },
+            );
+            if (!signal.aborted) mutate(() => saveCursor('holders', next ?? ''));
+            if (next) budget.record({ kind: 'kept', subject: 'epoch-holders', reason: 'scan-pending' });
           });
           await step('scratch-jobs', (budget, signal) => input.cleanupScratch(signal, budget));
         }
