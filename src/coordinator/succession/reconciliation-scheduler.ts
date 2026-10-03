@@ -18,10 +18,12 @@ export function createSuccessionReconciliationScheduler(input: {
   const notifyObligationChange = (): void => {
     if (disposed) return;
     queueMicrotask(() => {
+      if (disposed) return;
       void reconcile().catch((error: unknown) => input.onError?.(error));
     });
   };
   const reconcile = (): Promise<SuccessionDecision> => {
+    if (disposed) return Promise.resolve({ kind: 'deferred', reason: 'reconciliation-scheduler-disposed' });
     if (running !== null) {
       changedDuringPass = true;
       return running;
@@ -45,6 +47,7 @@ export function createSuccessionReconciliationScheduler(input: {
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      changedDuringPass = false;
       input.time.clearInterval(retryTimer);
       unsubscribe?.();
     },

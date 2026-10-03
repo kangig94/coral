@@ -1,5 +1,6 @@
+import { removeTreeNoFollowSync, type TreeRemovalStorage } from '../infra/remove-tree.js';
 import { raceObserved } from '../infra/promise-signal.js';
-import { readRetentionCursor } from '../store/retention-meta.js';
+import { isRetentionChildName, readRetentionCursor } from '../store/retention-meta.js';
 import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
@@ -502,6 +503,7 @@ function latestStatusEvents(events: readonly EventsRow[], jobId: string): Readon
 
 function hydrateStaleJobCleanup(raw: RawStaleJobCleanupRow): StaleJobCleanupItem {
   const projection = decodeProjectionJobStoredRow(raw.projection);
+  if (!isRetentionChildName(projection.job_id)) throw new TypeError('Scratch retention subject is not a child name.');
   const events = latestStatusEvents(raw.statusEvents, projection.job_id);
   const updatedAt =
     events.get('job.terminal.recorded')?.ts ??
@@ -565,7 +567,7 @@ type StaleJobCleanupPolicyContext = {
   readonly progressStore: JobStore;
   readonly currentBundleHash: string;
   readonly log: (message: string) => void;
-  readonly storage: Pick<Runtime['storage'], 'rmSync'>;
+  readonly storage: TreeRemovalStorage;
   readonly nowMs: number;
   readonly retentionMs: number;
 };
@@ -604,7 +606,7 @@ function createStaleJobCleanupPolicy(
       const artifactPath = progressStore.jobDir(item.jobId);
       let removed = false;
       try {
-        storage.rmSync(artifactPath, { recursive: true, force: false });
+        removeTreeNoFollowSync(storage, artifactPath);
         removed = true;
         budget?.record({ kind: 'deleted', subject: artifactPath, count: 1 });
       } catch (error: unknown) {
@@ -735,7 +737,7 @@ export async function cleanupStaleJobs(
   progressStore: JobStore,
   currentBundleHash: string,
   log: (message: string) => void,
-  storage: Pick<Runtime['storage'], 'rmSync'>,
+  storage: TreeRemovalStorage,
   nowMs: number,
   retentionMs: number,
   signal: AbortSignal,

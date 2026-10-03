@@ -14,7 +14,7 @@ export class IdleTimer {
   private readonly time: TimePort;
   private readonly idleTimeoutMs: number;
   private inflight = 0;
-  private lastActiveAt: number;
+  private lastActiveAt: bigint;
   private interval: ReturnType<TimePort['setInterval']> | null = null;
   private idleTriggered = false;
   private drainReason: ShutdownReason | null = null;
@@ -25,19 +25,19 @@ export class IdleTimer {
   constructor(options: { time: TimePort; timeoutMs?: number }) {
     this.time = options.time;
     this.idleTimeoutMs = options.timeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
-    this.lastActiveAt = this.time.now();
+    this.lastActiveAt = this.time.monotonicNow();
   }
 
   beginRequest(): void {
     this.inflight += 1;
-    this.lastActiveAt = this.time.now();
+    this.lastActiveAt = this.time.monotonicNow();
     this.idleTriggered = false;
   }
 
   endRequest(): void {
     if (this.inflight > 0) this.inflight -= 1;
     if (this.inflight !== 0) return;
-    this.lastActiveAt = this.time.now();
+    this.lastActiveAt = this.time.monotonicNow();
     this.tryDrain();
   }
 
@@ -64,7 +64,8 @@ export class IdleTimer {
     this.interval = this.time.setInterval(() => {
       if (this.idleTriggered) return;
       if (this.inflight !== 0) return;
-      if (this.drainReason === null && this.time.now() - this.lastActiveAt <= this.idleTimeoutMs) return;
+      if (this.drainReason === null && this.time.monotonicNow() - this.lastActiveAt <= BigInt(this.idleTimeoutMs))
+        return;
 
       let idle: boolean;
       try {

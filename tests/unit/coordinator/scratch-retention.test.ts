@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, renameSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { createRetentionFixture, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
@@ -119,10 +119,10 @@ it('retries failed scratch subjects before the saved cursor on every daily cycle
   const ids = ['skip-a', 'skip-b', 'skip-c'];
   expiredJobs(f, ids);
   const s = runner(f);
-  const rm = f.runtime.storage.rmSync;
+  const rm = f.runtime.storage.rmdirSync;
   const calls: string[] = [];
   let failing = true;
-  f.runtime.storage.rmSync = (path, options) => {
+  f.runtime.storage.rmdirSync = (path) => {
     const id = ids.find((id) => f.store.jobDir(id) === String(path))!;
     calls.push(id);
     if (id === ids[0] && failing) {
@@ -130,7 +130,7 @@ it('retries failed scratch subjects before the saved cursor on every daily cycle
       throw Object.assign(new Error('persistent scratch EACCES'), { code: 'EACCES' });
     }
     if (id === ids[1] && existsSync(path)) s.advance(4000);
-    return rm(path, options);
+    return rm(path);
   };
   try {
     expect(await s.run()).toMatchObject({ phase: 'partial', failed: 1 });
@@ -146,14 +146,14 @@ it('retries failed scratch subjects before the saved cursor on every daily cycle
         reason: expect.stringContaining('scratch-cleanup-pending'),
       }),
     );
-    expect(calls).toEqual([ids[0], ids[1], ids[0], ids[1], ids[2]]);
+    expect(calls).toEqual([ids[0], ids[1], ids[0], ids[2]]);
     failing = false;
     const third = await s.run();
     expect(third.phase).toBe('completed');
     expect(existsSync(f.store.jobDir(ids[0]))).toBe(false);
     expect(third.deleted).toBe(1);
   } finally {
-    f.runtime.storage.rmSync = rm;
+    f.runtime.storage.rmdirSync = rm;
     await s.stop();
     f.close();
   }
@@ -191,8 +191,8 @@ it('bounds pending scratch failures and retains the cursor at overflow until fai
   const ids = Array.from({ length: 101 }, (_, i) => `overflow-${String(i).padStart(3, '0')}`);
   expiredJobs(f, ids);
   const s = runner(f);
-  const rm = f.runtime.storage.rmSync;
-  f.runtime.storage.rmSync = () => {
+  const rm = f.runtime.storage.rmdirSync;
+  f.runtime.storage.rmdirSync = () => {
     throw new Error('scratch EACCES');
   };
   try {
@@ -206,7 +206,7 @@ it('bounds pending scratch failures and retains the cursor at overflow until fai
     expect(f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.scratch.v1')).toEqual({
       value: ids[99],
     });
-    f.runtime.storage.rmSync = rm;
+    f.runtime.storage.rmdirSync = rm;
     const second = await s.run();
     expect(second).toMatchObject({ phase: 'completed', deleted: 101 });
     expect(ids.some((id) => existsSync(f.store.jobDir(id)))).toBe(false);
@@ -214,7 +214,7 @@ it('bounds pending scratch failures and retains the cursor at overflow until fai
       f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.scratch.pending.v1'),
     ).toBeUndefined();
   } finally {
-    f.runtime.storage.rmSync = rm;
+    f.runtime.storage.rmdirSync = rm;
     await s.stop();
     f.close();
   }
@@ -230,16 +230,16 @@ it.each([5, 10])('rotates %i slow scratch failures while discovering unrelated e
     .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
     .run('storage-retention.scratch.pending.v1', JSON.stringify({ subjects: bad, overflow: false }));
   const s = runner(f);
-  const rm = f.runtime.storage.rmSync;
+  const rm = f.runtime.storage.rmdirSync;
   const calls: string[] = [];
-  f.runtime.storage.rmSync = (path, options) => {
+  f.runtime.storage.rmdirSync = (path) => {
     const id = [...bad, good].find((id) => f.store.jobDir(id) === String(path))!;
     calls.push(id);
     if (bad.includes(id)) {
       s.advance(1000);
       throw new Error('persistent EACCES');
     }
-    return rm(path, options);
+    return rm(path);
   };
   try {
     for (let cycle = 0; cycle < Math.ceil(count / 3); cycle += 1) {
@@ -250,10 +250,10 @@ it.each([5, 10])('rotates %i slow scratch failures while discovering unrelated e
       expect(existsSync(f.store.jobDir(good))).toBe(false);
     }
     expect(bad.every((id) => calls.includes(id))).toBe(true);
-    f.runtime.storage.rmSync = rm;
+    f.runtime.storage.rmdirSync = rm;
     expect(await s.run()).toMatchObject({ phase: 'completed', deleted: count });
   } finally {
-    f.runtime.storage.rmSync = rm;
+    f.runtime.storage.rmdirSync = rm;
     await s.stop();
     f.close();
   }
@@ -374,6 +374,119 @@ it('reports export pending overflow even when failure details fill the status li
   } finally {
     f.runtime.storage.unlinkSync = unlink;
     await s.stop();
+    f.close();
+  }
+});
+
+it('refuses a durable scratch job ID that escapes its root', async () => {
+  const f = fixture();
+  try {
+    expiredJobs(f, ['safe-job']);
+    const outside = join(f.store.jobDir('safe-job'), '..', '..', 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'keep.txt'), 'outside evidence');
+    f.db.prepare('UPDATE projection_jobs SET job_id = ? WHERE job_id = ?').run('../outside', 'safe-job');
+    f.db.prepare('UPDATE events SET stream_id = ? WHERE stream_id = ?').run('../outside', 'safe-job');
+    f.db
+      .prepare('INSERT INTO meta(key, value) VALUES (?, ?)')
+      .run(
+        'storage-retention.scratch.pending.v1',
+        JSON.stringify({ subjects: ['../outside'], overflow: false, rotation: 0 }),
+      );
+    await cleanupStaleJobs(
+      f.store,
+      'test-bundle',
+      () => {},
+      f.runtime.storage,
+      RETENTION_NOW,
+      14 * 86_400_000,
+      new AbortController().signal,
+      f.budget,
+    );
+    expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
+    expect(f.outcomes).toContainEqual(
+      expect.objectContaining({ subject: '../outside', reason: 'retention-subject-invalid' }),
+    );
+    expect(f.outcomes).toContainEqual(
+      expect.objectContaining({ reason: expect.stringContaining('hydration-quarantine') }),
+    );
+  } finally {
+    f.close();
+  }
+});
+
+it('keeps scratch evidence when a directory becomes a symlink during enumeration', async () => {
+  const f = fixture();
+  try {
+    expiredJobs(f, ['safe-job']);
+    const path = f.store.jobDir('safe-job');
+    const nested = join(path, 'nested');
+    const outside = join(f.baseDir, 'outside');
+    mkdirSync(nested);
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'keep.txt'), 'outside evidence');
+    const read = f.runtime.storage.readdirSync;
+    let replaced = false;
+    f.runtime.storage.readdirSync = ((directory: string) => {
+      if (directory === nested && !replaced) {
+        replaced = true;
+        renameSync(nested, join(f.baseDir, 'saved-nested'));
+        symlinkSync(outside, nested);
+      }
+      return read(directory);
+    }) as typeof read;
+    await cleanupStaleJobs(
+      f.store,
+      'test-bundle',
+      () => {},
+      f.runtime.storage,
+      RETENTION_NOW,
+      14 * 86_400_000,
+      new AbortController().signal,
+      f.budget,
+    );
+    expect(replaced).toBe(true);
+    expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
+    expect(lstatSync(nested).isSymbolicLink()).toBe(true);
+    expect(f.outcomes).toContainEqual(
+      expect.objectContaining({ kind: 'failed', reason: expect.stringContaining('identity changed') }),
+    );
+  } finally {
+    f.close();
+  }
+});
+
+it('does not treat a disappearing descendant as proof that the scratch root is absent', async () => {
+  const f = fixture();
+  try {
+    expiredJobs(f, ['safe-job']);
+    const path = f.store.jobDir('safe-job');
+    const nested = join(path, 'nested');
+    mkdirSync(nested);
+    const read = f.runtime.storage.readdirSync;
+    let moved = false;
+    f.runtime.storage.readdirSync = ((directory: string) => {
+      if (directory === nested && !moved) {
+        moved = true;
+        renameSync(nested, join(f.baseDir, 'saved-nested'));
+      }
+      return read(directory);
+    }) as typeof read;
+    await cleanupStaleJobs(
+      f.store,
+      'test-bundle',
+      () => {},
+      f.runtime.storage,
+      RETENTION_NOW,
+      14 * 86_400_000,
+      new AbortController().signal,
+      f.budget,
+    );
+    expect(moved).toBe(true);
+    expect(existsSync(path)).toBe(true);
+    expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'failed' }));
+    expect(f.outcomes).not.toContainEqual(expect.objectContaining({ reason: 'scratch-already-absent' }));
+  } finally {
     f.close();
   }
 });

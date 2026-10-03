@@ -174,15 +174,15 @@ describe('storage retention scheduler owner composition', () => {
           errorMessage: 'previous scratch deletion denied',
           detail: 'stale job artifact cleanup failed',
         });
-      const rm = f.runtime.storage.rmSync;
+      const rm = f.runtime.storage.rmdirSync;
       let denied = true;
       let calls = 0;
-      f.runtime.storage.rmSync = (path, options) => {
+      f.runtime.storage.rmdirSync = (path) => {
         if (String(path) === scratch) {
           calls += 1;
           if (denied) throw Object.assign(new Error('scratch deletion denied'), { code: 'EACCES' });
         }
-        return rm(path, options);
+        return rm(path);
       };
       f.setNow(RETENTION_NOW);
       const s = scheduler(f, (signal, budget) =>
@@ -246,14 +246,14 @@ describe('storage retention scheduler owner composition', () => {
           budget,
         ),
       );
-      const rm = f.runtime.storage.rmSync;
+      const rm = f.runtime.storage.rmdirSync;
       let calls = 0;
-      f.runtime.storage.rmSync = (path, options) => {
+      f.runtime.storage.rmdirSync = (path) => {
         if (scratchPaths.includes(String(path))) {
           calls += 1;
           s.advance(cost);
         }
-        rm(path, options);
+        rm(path);
       };
       try {
         const status = await s.run();
@@ -337,12 +337,12 @@ describe('storage retention scheduler owner composition', () => {
       mkdirSync(f.store.jobDir(id), { recursive: true });
     }
     const abort = new AbortController();
-    const rm = f.runtime.storage.rmSync;
+    const rm = f.runtime.storage.rmdirSync;
     let calls = 0;
-    f.runtime.storage.rmSync = (path, options) => {
+    f.runtime.storage.rmdirSync = (path) => {
       calls += 1;
       setImmediate(() => abort.abort());
-      rm(path, options);
+      rm(path);
     };
     await expect(
       cleanupStaleJobs(

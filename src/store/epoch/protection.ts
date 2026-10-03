@@ -1,3 +1,4 @@
+import { removeTreeNoFollowSync } from '../../infra/remove-tree.js';
 import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -391,7 +392,7 @@ export function removeClosedProtectedEpoch(
       runtime.storage.renameSync(address.protectedPath, tombstone);
       if (!runtime.storage.syncDirectoryDurableSync(lineageRoot)) return 'failed';
     }
-    runtime.storage.rmSync(tombstone, { recursive: true, force: true });
+    removeTreeNoFollowSync(runtime.storage, tombstone);
     return runtime.storage.syncDirectoryDurableSync(lineageRoot) ? 'removed' : 'failed';
   } catch {
     return 'failed';

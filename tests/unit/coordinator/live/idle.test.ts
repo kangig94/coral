@@ -9,12 +9,17 @@ import type { TimePort } from '#src/infra/port-types.js';
  * `uncaughtException` listener — so these tests invoke the captured interval
  * callback directly and assert on whether it throws.
  */
-function createTimeHarness(): { time: TimePort; tick: () => void; advance: (ms: number) => void } {
+function createTimeHarness(): {
+  time: TimePort;
+  tick: () => void;
+  advance: (wallMs: number, monotonicMs?: number) => void;
+} {
   let nowMs = 1_000;
+  let monotonicMs = 1_000n;
   let intervalFn: (() => void) | null = null;
   const time: TimePort = {
     now: () => nowMs,
-    monotonicNow: () => BigInt(nowMs),
+    monotonicNow: () => monotonicMs,
     sleep: async () => undefined,
     setTimeout: () => ({}),
     clearTimeout: () => undefined,
@@ -33,8 +38,9 @@ function createTimeHarness(): { time: TimePort; tick: () => void; advance: (ms: 
       if (intervalFn === null) throw new Error('Expected startWatching to register an interval');
       intervalFn();
     },
-    advance: (ms: number) => {
+    advance: (ms: number, elapsed = ms) => {
       nowMs += ms;
+      monotonicMs += BigInt(elapsed);
     },
   };
 }
@@ -114,4 +120,18 @@ describe('IdleTimer', () => {
 
     expect(onIdle).toHaveBeenCalledWith('idle');
   });
+});
+
+it.each([86_400_000, -86_400_000])('uses the 30 second idle span despite a wall-clock jump of %i ms', (jump) => {
+  const harness = createTimeHarness();
+  const onIdle = vi.fn();
+  const timer = new IdleTimer({ time: harness.time, timeoutMs: 30_000 });
+  timer.startWatching(() => true, onIdle);
+  harness.advance(jump, 15_000);
+  harness.tick();
+  expect(onIdle).not.toHaveBeenCalled();
+  harness.advance(0, 15_001);
+  harness.tick();
+  expect(onIdle).toHaveBeenCalledExactlyOnceWith('idle');
+  timer.stopWatching();
 });

@@ -112,7 +112,7 @@ type HandoffRoutingPathObservation =
 
 export function observeHandoffRoutingPath(storage: StoragePort, path: string): HandoffRoutingPathObservation {
   try {
-    return { kind: 'present', stat: storage.statSync(path, { bigint: true }) };
+    return { kind: 'present', stat: storage.lstatSync(path, { bigint: true }) };
   } catch (error: unknown) {
     const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
     if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };

@@ -47,6 +47,7 @@ export function createSuccessionReconciliationPass(context: ReconciliationContex
 
 function wakeAt(context: ReconciliationContext, atMs: number): void {
   const { options, state, notifyObligationChange } = context;
+  if (state.disposed) return;
   options.runtime.time.clearTimeout(state.backoffWake);
   state.backoffWake = options.runtime.time.setTimeout(
     notifyObligationChange,

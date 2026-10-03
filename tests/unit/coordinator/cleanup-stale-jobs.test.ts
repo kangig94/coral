@@ -28,7 +28,7 @@ function status(over: Partial<JobStatus>): JobStatus {
 
 async function runCleanup(
   statuses: Record<string, JobStatus>,
-  rmSync: ReturnType<typeof vi.fn> = vi.fn(),
+  rmSync: ReturnType<typeof vi.fn<(path: string, options: { recursive: true; force: false }) => void>> = vi.fn(),
   signal: AbortSignal = new AbortController().signal,
 ): Promise<{ pruned: string[]; purged: string[]; survivingIdentities: string[] }> {
   const runtime = new SimulationRuntime();
@@ -105,7 +105,12 @@ async function runCleanup(
       store,
       CURRENT_BUNDLE,
       () => {},
-      { rmSync } as unknown as Parameters<typeof cleanupStaleJobs>[3],
+      {
+        lstatSync: () => ({ dev: 1n, ino: 1n, mode: 0o040700n, isDirectory: () => true }),
+        readdirSync: () => [],
+        rmdirSync: (path: string) => rmSync(path, { recursive: true, force: false }),
+        unlinkSync: vi.fn(),
+      } as unknown as Parameters<typeof cleanupStaleJobs>[3],
       NOW,
       RETENTION_MS,
       signal,

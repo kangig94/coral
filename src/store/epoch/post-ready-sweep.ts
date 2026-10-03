@@ -1,3 +1,4 @@
+import { removeTreeNoFollowSync } from '../../infra/remove-tree.js';
 import { type StoragePort } from '../../infra/port-types.js';
 import { type Runtime } from '../../runtime/ports.js';
 import { attemptExclusiveFileLockSync, type FileLockLease } from '../../infra/fs-lock.js';
@@ -48,7 +49,7 @@ async function removeDuringPostReadySweep(storage: StoragePort, dbDir: string, p
       return false;
     }
     if (observed.isDirectory() && !observed.isSymbolicLink()) {
-      await storage.rm(path, { recursive: true, force: true });
+      removeTreeNoFollowSync(storage, path);
     } else {
       await storage.unlink(path);
     }

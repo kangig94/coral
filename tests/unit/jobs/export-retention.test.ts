@@ -5,6 +5,8 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
+  lstatSync,
+  lutimesSync,
   mkdirSync,
   readdirSync,
   renameSync,
@@ -13,7 +15,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pruneJobExports, readExportJobState, type ExportJobRetentionState } from '#src/jobs/export-retention.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRetentionFixture, RETENTION_CUTOFF, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
@@ -77,7 +79,7 @@ describe('export retention', () => {
     const checked = new Set<string>();
     f.runtime.storage.lstatSync = ((...args: Parameters<typeof lstat>) => {
       elapsed += 20;
-      if (String(args[0]) !== path) checked.add(String(args[0]));
+      if (String(args[0]).startsWith(`${path}/`)) checked.add(String(args[0]));
       return lstat(...args);
     }) as typeof lstat;
     const run = () =>
@@ -100,7 +102,7 @@ describe('export retention', () => {
     expect(
       f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.admission.v1.wide-residue'),
     ).toEqual({ value: String(RETENTION_CUTOFF) });
-    for (let cycle = 0; cycle < 5 && existsSync(path); cycle += 1) {
+    for (let cycle = 0; cycle < 20 && existsSync(path); cycle += 1) {
       elapsed = 0;
       await run();
     }
@@ -402,7 +404,7 @@ describe('export retention', () => {
         unlink(child);
       };
       let afterId = '';
-      for (let cycle = 0; cycle < 10 && remainingExport(f, 'slow-residue') !== undefined; cycle += 1) {
+      for (let cycle = 0; cycle < 20 && remainingExport(f, 'slow-residue') !== undefined; cycle += 1) {
         elapsed = 0;
         afterId = await pruneJobExports({
           db: f.db,
@@ -745,3 +747,129 @@ it.each(['eligibility', 'post-rename', 'deletion'] as const)(
     expect(existsSync(join(root, names[0], 'old'))).toBe(true);
   },
 );
+
+it.each(['', '.', '..', '../outside', 'nested/outside', 'nested\\outside', 'nul\0name'])(
+  'refuses persisted export subject %j before resolving a path',
+  async (subject) => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.exports.jobsRoot;
+    mkdirSync(root, { recursive: true });
+    const outside = join(dirname(root), 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'keep.txt'), 'outside evidence');
+    utimesSync(join(outside, 'keep.txt'), 1, 1);
+    utimesSync(outside, 1, 1);
+    f.db
+      .prepare('INSERT INTO meta(key, value) VALUES (?, ?)')
+      .run(
+        'storage-retention.exports.pending.v1',
+        JSON.stringify({ subjects: [subject], overflow: false, rotation: 0 }),
+      );
+    const jobState = vi.fn(() => ({ kind: 'absent' as const }));
+    await pruneJobExports({
+      db: f.db,
+      runtime: f.runtime,
+      cutoff: RETENTION_CUTOFF,
+      afterId: '',
+      budget: f.budget,
+      jobState,
+      resultHold: () => 'released',
+      mutate: (operation) => operation(),
+    });
+    expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
+    expect(jobState).not.toHaveBeenCalled();
+    expect(f.outcomes).toContainEqual({ kind: 'kept', subject, reason: 'retention-subject-invalid', pending: false });
+    expect(
+      f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.pending.v1'),
+    ).toBeUndefined();
+  },
+);
+
+it.each(['symlink', 'directory'] as const)(
+  'keeps a directory replaced by a %s during export enumeration',
+  async (replacement) => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.exports.jobsRoot;
+    const path = join(root, 'safe-job');
+    const nested = join(path, 'nested');
+    const outside = join(dirname(root), 'outside-tree');
+    mkdirSync(nested, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'keep.txt'), 'outside evidence');
+    for (const entry of [join(outside, 'keep.txt'), outside, nested, path]) utimesSync(entry, 1, 1);
+    const iterate = f.runtime.storage.iterateDirectory;
+    let replaced = false;
+    f.runtime.storage.iterateDirectory = async function* (directory) {
+      if (directory.includes('.retiring-') && directory.endsWith('/nested') && !replaced) {
+        replaced = true;
+        const parent = lstatSync(dirname(directory));
+        const before = lstatSync(directory);
+        renameSync(directory, join(dirname(root), 'saved-nested'));
+        if (replacement === 'symlink') {
+          symlinkSync(outside, directory);
+          lutimesSync(directory, before.atime, before.mtime);
+        } else {
+          mkdirSync(directory);
+          writeFileSync(join(directory, 'keep.txt'), 'replacement evidence');
+          utimesSync(join(directory, 'keep.txt'), 1, 1);
+          utimesSync(directory, before.atime, before.mtime);
+        }
+        utimesSync(dirname(directory), parent.atime, parent.mtime);
+      }
+      yield* iterate(directory);
+    };
+    await prune(f, {});
+    expect(replaced).toBe(true);
+    expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
+    expect(existsSync(join(path, 'nested', 'keep.txt'))).toBe(true);
+    expect(f.outcomes).toContainEqual(
+      expect.objectContaining({ kind: 'kept', reason: 'residue-recent-or-unobservable' }),
+    );
+  },
+);
+
+it('retries a valid persisted export subject and unlinks an old nested symlink without following it', async () => {
+  const f = fixture();
+  const path = exported(f, 'safe-job');
+  const outside = join(dirname(f.runtime.paths.coral.exports.jobsRoot), 'outside');
+  mkdirSync(outside);
+  writeFileSync(join(outside, 'keep.txt'), 'outside evidence');
+  const link = join(path, 'outside-link');
+  symlinkSync(outside, link);
+  lutimesSync(link, 1, 1);
+  utimesSync(path, 1, 1);
+  f.db
+    .prepare('INSERT INTO meta(key, value) VALUES (?, ?)')
+    .run(
+      'storage-retention.exports.pending.v1',
+      JSON.stringify({ subjects: ['safe-job'], overflow: false, rotation: 0 }),
+    );
+  await prune(f, {});
+  expect(existsSync(path)).toBe(false);
+  expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
+  expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'deleted' }));
+});
+
+it('refuses a retirement rename after the exports root is replaced by a symlink', async () => {
+  const f = fixture();
+  const root = f.runtime.paths.coral.exports.jobsRoot;
+  exported(f, 'safe-job');
+  const outside = join(dirname(root), 'outside-root');
+  mkdirSync(outside);
+  writeFileSync(join(outside, 'keep.txt'), 'outside evidence');
+  const rename = vi.spyOn(f.runtime.storage, 'renameSync');
+  let replaced = false;
+  f.runtime.storage.iterateDirectory = async function* () {
+    if (!replaced) {
+      replaced = true;
+      renameSync(root, join(dirname(root), 'saved-jobs'));
+      symlinkSync(outside, root);
+    }
+    yield 'keep.txt';
+  };
+  await prune(f, {});
+  expect(replaced).toBe(true);
+  expect(rename).toHaveBeenCalledOnce();
+  expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
+  expect(f.outcomes).toContainEqual(expect.objectContaining({ reason: 'export-root-identity-changed' }));
+});
