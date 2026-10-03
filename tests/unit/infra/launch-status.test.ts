@@ -4,9 +4,11 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { readLaunchAdmission, launchAdmissionPath } from '#src/infra/launch-admission-record.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
 
 import {
   currentLaunchStatus,
+  recordControllerEvidenceRefusals,
   parseLaunchStatus,
   readLaunchStatus,
   receiveLaunchStatus,
@@ -118,4 +120,53 @@ it('retains a launch admission with an unsafe process identity as unreadable', (
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }
+});
+
+it('dates a retained capsule refusal even after the same path becomes readable', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-status-history-'));
+  const path = join(runDir, 'capsule');
+  const observedAt = '2026-10-04T00:00:00.000Z';
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(observedAt));
+  try {
+    recordControllerEvidenceRefusals(runDir, [{ path, observation: 'capsule-unreadable', observedAt }]);
+    writeFileSync(path, 'readable');
+    vi.advanceTimersByTime(60_000);
+    const status = currentLaunchStatus(runDir)!;
+    expect(status.controllerEvidenceRefusals).toEqual([{ path, observation: 'capsule-unreadable', observedAt }]);
+    const rendered = formatBackendStatus(
+      {
+        status: 'no_record_no_socket',
+        launchStatusSource: 'authenticated-owner',
+        controllerEvidenceRefusals: status.controllerEvidenceRefusals,
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain(`Controller evidence refusal observed ${observedAt} at ${path}`);
+    expect(rendered).toContain('This retained observation is history; current readability may have changed.');
+    recordControllerEvidenceRefusals(runDir, status.controllerEvidenceRefusals!);
+    expect(readLaunchStatus(runDir)).toMatchObject({
+      kind: 'readable',
+      status: { controllerEvidenceRefusals: [{ observedAt }] },
+    });
+  } finally {
+    vi.useRealTimers();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+it('renders an older refusal as history with an unknown time and retains other subjects', () => {
+  const status = parseLaunchStatus({
+    version: 1,
+    controllerEvidenceRefusals: [{ path: '/other-owner', observation: 'capsule-unreadable', futureKey: true }],
+  })!;
+  expect(status.controllerEvidenceRefusals?.[0]).toMatchObject({ path: '/other-owner', futureKey: true });
+  expect(
+    formatBackendStatus(
+      { status: 'no_record_no_socket', controllerEvidenceRefusals: status.controllerEvidenceRefusals },
+      { kind: 'absent' },
+      null,
+    ),
+  ).toContain('observed at an unknown time at /other-owner');
 });

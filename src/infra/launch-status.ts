@@ -13,7 +13,9 @@ const statusSchema = z
     admissionHolds: z
       .array(z.object({ path: z.string(), disposition: z.enum(['unknown', 'acquisition-window', 'cleanup-pending']) }))
       .optional(),
-    controllerEvidenceRefusals: z.array(z.object({ path: z.string(), observation: z.string() })).optional(),
+    controllerEvidenceRefusals: z
+      .array(z.object({ path: z.string(), observation: z.string(), observedAt: z.string().optional() }).passthrough())
+      .optional(),
     previousStatus: z.literal('unavailable').optional(),
     inheritedHealth: z
       .array(
@@ -33,6 +35,7 @@ const statusSchema = z
           requestId: z.string().optional(),
           observation: z.string().optional(),
           boundedExit: z.literal('launch-original-after-2000ms').optional(),
+          evidenceGraceMs: z.number().optional(),
           retry: z.enum(['controller-evidence-change', 'eligible-build-appears']).optional(),
         }),
         z.object({
@@ -40,6 +43,7 @@ const statusSchema = z
           path: z.string(),
           observation: z.string().optional(),
           boundedExit: z.literal('launch-original-after-2000ms').optional(),
+          evidenceGraceMs: z.number().optional(),
           retry: z.literal('restore-readable-custody-record').optional(),
         }),
         z.object({

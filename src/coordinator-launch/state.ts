@@ -1094,7 +1094,7 @@ export class SupervisorLaunchMemory {
           : controller === 'unknown'
             ? 'controller-evidence-change'
             : 'eligible-build-appears',
-        boundedExit: boundedEvidence ? 'launch-original-after-2000ms' : undefined,
+        evidenceGraceMs: boundedEvidence ? 2000 : undefined,
       },
     }));
     return true;
@@ -1107,7 +1107,7 @@ export class SupervisorLaunchMemory {
         kind: 'custody-unreadable',
         path,
         observation: 'custody-record-unreadable',
-        boundedExit: 'launch-original-after-2000ms',
+        evidenceGraceMs: 2000,
       },
     }));
     return true;

@@ -21,22 +21,26 @@ import { POLL_MS } from './timing.js';
 
 export type Candidate = Readonly<{ executable: string; buildSetId: string }>;
 
+function completedServingIntent(runDir: string) {
+  const observed = readUpgradeIntent(runDir);
+  return observed.kind === 'readable' &&
+    observed.intent.disposition === 'completed' &&
+    observed.intent.completionReceipt?.kind === 'serving' &&
+    observed.intent.completionReceipt.successor.build.buildSetId === observed.intent.target.build.buildSetId
+    ? observed.intent
+    : null;
+}
+
 function candidates(
   runDir: string,
   original: Candidate,
   originalManifest: StrictBundleManifest,
   originalOutstanding: boolean,
   controller: ReturnType<typeof controllerBuild>,
+  refusalGraceExpired: boolean,
 ): Candidate[] {
   if (controller.kind === 'unknown') return [];
-  const observedIntent = readUpgradeIntent(runDir);
-  const committedIntent =
-    observedIntent.kind === 'readable' &&
-    observedIntent.intent.disposition === 'completed' &&
-    observedIntent.intent.completionReceipt?.kind === 'serving' &&
-    observedIntent.intent.completionReceipt.successor.build.buildSetId === observedIntent.intent.target.build.buildSetId
-      ? observedIntent.intent
-      : null;
+  const committedIntent = completedServingIntent(runDir);
   const committedRoot =
     committedIntent === null
       ? null
@@ -61,6 +65,8 @@ function candidates(
       : [{ executable: join(root, 'bridge', 'coral-backend.cjs'), buildSetId: build.buildSetId }];
   });
   const requiredBuild = controller.kind === 'required' ? controller.buildSetId : (committed?.buildSetId ?? null);
+  if (refusalGraceExpired && requiredBuild === null)
+    return validatedExecutable(original.executable)?.buildSetId === original.buildSetId ? [original] : [];
   const retainedController =
     requiredBuild === null ? null : validatedBuild(join(dirname(runDir), 'builds', requiredBuild));
   const controllerCandidate =
@@ -158,17 +164,39 @@ export async function selectNextCandidate(input: {
     await sleep(POLL_MS);
     return { kind: 'retry' };
   }
-  const controller = controllerBuild(runDir);
-  recordControllerEvidenceRefusals(runDir, [...(controller.refusals ?? [])]);
-  if (controller.kind === 'unknown' && controller.refusals?.length) {
+  let controller = controllerBuild(runDir);
+  let refusalGraceExpired = false;
+  recordControllerEvidenceRefusals(
+    runDir,
+    (controller.refusals ?? []).map((entry) => ({ ...entry, observedAt: new Date().toISOString() })),
+  );
+  if (controller.kind === 'unknown' && controller.refusalOnly) {
     const now = Number(process.hrtime.bigint() / 1_000_000n);
     const startedAt = evidenceHoldStartedAt.get(record) ?? now;
     evidenceHoldStartedAt.set(record, startedAt);
-    if (now - startedAt >= CONTROLLER_EVIDENCE_GRACE_MS) return { kind: 'candidate', candidate: original };
+    if (now - startedAt >= CONTROLLER_EVIDENCE_GRACE_MS) {
+      refusalGraceExpired = true;
+      controller =
+        controller.readableBuildSetId === undefined
+          ? { kind: 'none', refusals: controller.refusals }
+          : { kind: 'required', buildSetId: controller.readableBuildSetId, refusals: controller.refusals };
+    }
   } else {
     evidenceHoldStartedAt.delete(record);
   }
-  const eligible = candidates(runDir, original, originalManifest, !record.hasServed(original.buildSetId), controller);
+  if (refusalGraceExpired && controller.kind === 'none') {
+    const committed = completedServingIntent(runDir);
+    if (committed !== null)
+      controller = { kind: 'required', buildSetId: committed.target.build.buildSetId, refusals: controller.refusals };
+  }
+  const eligible = candidates(
+    runDir,
+    original,
+    originalManifest,
+    !record.hasServed(original.buildSetId),
+    controller,
+    refusalGraceExpired,
+  );
   const available = eligible.filter((candidate) => !tried.has(candidate.executable));
   if (available.length === 0) {
     const state = record.read();
@@ -186,14 +214,14 @@ export async function selectNextCandidate(input: {
       }),
       runDir,
     ).find((entry) => entry.kind === 'unreadable');
-    if (controller.kind === 'unknown' && controller.refusals?.length && unreadable?.kind === 'unreadable') {
+    if (controller.kind === 'unknown' && controller.refusalOnly && unreadable?.kind === 'unreadable') {
       if (!record.holdUnreadableCustody(owner.current, unreadable.path)) return { kind: 'retry' };
     } else {
       if (
         !record.hold(
           owner.current,
           controller.kind === 'required' ? controller.buildSetId : controller.kind,
-          controller.kind === 'unknown' && !!controller.refusals?.length,
+          controller.kind === 'unknown' && !!controller.refusalOnly,
         )
       )
         return { kind: 'retry' };

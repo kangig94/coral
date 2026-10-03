@@ -43,9 +43,15 @@ export async function pruneJobProgress(input: {
         .object({
           afterSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
           progressSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+          ceiling: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
         })
+        .passthrough()
         .parse(JSON.parse(value)),
-    fresh: (reset) => ({ afterSeq: reset ? 0 : input.afterSeq, progressSeq: 0 }),
+    fresh: (reset) => ({
+      afterSeq: reset ? 0 : input.afterSeq,
+      progressSeq: 0,
+      ceiling: undefined as number | undefined,
+    }),
     mutate: write,
     record: budget.record,
   });
@@ -65,20 +71,38 @@ export async function pruneJobProgress(input: {
     cursor.progressSeq = 0;
     save();
   };
+  if (cursor.ceiling === undefined) {
+    cursor.afterSeq = 0;
+    cursor.progressSeq = 0;
+    cursor.ceiling =
+      db
+        .prepare<
+          [],
+          { seq: number }
+        >("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE type = 'job.terminal.recorded'")
+        .get()?.seq ?? 0;
+  }
+  const finish = (): number => {
+    cursor.ceiling = undefined;
+    advance(0);
+    return 0;
+  };
   let scanned = 0;
   while (budget.canContinue() && scanned < 1000) {
     const terminals = db
       .prepare<
-        [number, number],
+        [number, number, number],
         EventsRow
-      >("SELECT * FROM events WHERE type = 'job.terminal.recorded' AND seq > ? ORDER BY seq LIMIT ?")
-      .all(cursor.afterSeq, Math.min(PAGE_SIZE, 1000 - scanned));
+      >("SELECT * FROM events WHERE type = 'job.terminal.recorded' AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?")
+      .all(cursor.afterSeq, cursor.ceiling, Math.min(PAGE_SIZE, 1000 - scanned));
     if (terminals.length === 0) {
-      advance(0);
-      return 0;
+      return finish();
     }
     for (const terminal of terminals) {
-      if (!budget.canContinue()) return cursor.afterSeq || terminal.seq;
+      if (!budget.canContinue()) {
+        save();
+        return cursor.afterSeq || terminal.seq;
+      }
       const subject = `progress:${terminal.stream_id}`;
       let deleted = 0;
       let kept = 0;
@@ -175,10 +199,12 @@ export async function pruneJobProgress(input: {
         });
         advance(terminal.seq);
       }
+      if (cursor.afterSeq >= cursor.ceiling) return finish();
       scanned += 1;
       await setImmediate();
     }
   }
+  save();
   budget.record({ kind: 'kept', subject: 'journal-progress', reason: 'scan-pending' });
   return cursor.afterSeq;
 }

@@ -761,7 +761,7 @@ export function formatBackendStatus(
     );
   for (const refusal of daemonStatus.controllerEvidenceRefusals ?? [])
     sections.push(
-      `Controller evidence refused at ${refusal.path}: ${refusal.observation}. The artifact is preserved; this observation authorizes no signal or job finalization.`,
+      `Controller evidence refusal observed ${refusal.observedAt ?? 'at an unknown time'} at ${refusal.path}: ${refusal.observation}. This retained observation is history; current readability may have changed. It authorizes no signal or job finalization.`,
     );
   const currentLaunchOwner = daemonStatus.launchStatusSource === 'authenticated-owner';
   if (!currentLaunchOwner) {
@@ -832,17 +832,21 @@ export function formatBackendStatus(
     switch (launchHold.kind) {
       case 'custody-unreadable':
         sections.push(
-          launchHold.boundedExit === undefined
-            ? `The current owner reports unreadable custody at ${launchHold.path}, with recorded retry condition ${launchHold.retry ?? 'unavailable'}. This report supplies no absence evidence.`
-            : `Coordinator launch observed unreadable custody at ${launchHold.path}. Selection retries for at most 2000ms, then launches the original candidate. The artifact is preserved and supplies no absence evidence; coordinator recovery decides affected work independently.`,
+          launchHold.evidenceGraceMs !== undefined
+            ? `Coordinator launch observed unreadable custody at ${launchHold.path}. After ${launchHold.evidenceGraceMs}ms, selection uses readable requirements and falls back to the original candidate only when none remain. The artifact is preserved and supplies no absence evidence; coordinator recovery decides affected work independently.`
+            : launchHold.boundedExit === undefined
+              ? `The current owner reports unreadable custody at ${launchHold.path}, with recorded retry condition ${launchHold.retry ?? 'unavailable'}. This report supplies no absence evidence.`
+              : `Coordinator launch observed unreadable custody at ${launchHold.path}. Selection retries for at most 2000ms, then launches the original candidate. The artifact is preserved and supplies no absence evidence; coordinator recovery decides affected work independently.`,
         );
         break;
       case 'no-eligible-build':
         sections.push(
           launchHold.controller === 'unknown'
-            ? launchHold.boundedExit === undefined
-              ? 'Coordinator launch is held by conflicting controller evidence. The supervisor revalidates controller evidence.'
-              : 'Coordinator launch observed unreadable controller evidence. Selection retries for at most 2000ms, then launches the original candidate while preserving the refused artifacts.'
+            ? launchHold.evidenceGraceMs !== undefined
+              ? `Coordinator launch observed refused controller evidence. After ${launchHold.evidenceGraceMs}ms, selection uses readable requirements and falls back to the original candidate only when none remain, while preserving the refused artifacts.`
+              : launchHold.boundedExit === undefined
+                ? 'Coordinator launch is held by conflicting controller evidence. The supervisor revalidates controller evidence.'
+                : 'Coordinator launch observed unreadable controller evidence. Selection retries for at most 2000ms, then launches the original candidate while preserving the refused artifacts.'
             : `Coordinator launch requires build ${launchHold.controller}${launchHold.requestId === undefined ? '' : ` for request ${launchHold.requestId}`}. Last observation: ${launchHold.observation ?? 'no eligible build'}. The supervisor revalidates installed and retained builds or a change in required controller evidence.`,
         );
         break;
