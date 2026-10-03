@@ -11,7 +11,7 @@ import {
   type RetentionRunBudget,
 } from '../store/retention-outcome.js';
 import { errorMessage } from '../infra/error-format.js';
-import type { Database } from '../store/db.js';
+import { withImmediate, type Database } from '../store/db.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
 import { jobTerminalRecordedBodySchema } from './terminal/result.js';
@@ -114,27 +114,130 @@ async function deleteExportTree(
   const entry = runtime.storage.lstatSync(path, { bigint: true });
   const expected = directories.get(path);
   if (expected !== undefined && !sameExportEntry(expected, entry)) return false;
-  const mtime = entry.mtimeNs;
   if (entry.isDirectory()) {
     if (!directories.has(path)) directories.set(path, entry);
+    let deletedLeaf = false;
+    let leaves: Array<{ name: string; entry: StorageBigIntStat }> = [];
+    const flush = (): boolean => {
+      if (leaves.length === 0) return true;
+      const batch = leaves;
+      leaves = [];
+      const result = mutate(() => {
+        try {
+          for (const child of batch) {
+            if (
+              !deleteExportEntry(
+                runtime,
+                join(path, child.name),
+                budget,
+                (operation) => operation(),
+                changed,
+                directories,
+                cutoff,
+                top || child.name,
+                child.entry,
+              )
+            )
+              return { deleted: false };
+          }
+          return { deleted: true };
+        } catch (error: unknown) {
+          return { deleted: false, error };
+        }
+      });
+      if ('error' in result) throw result.error;
+      return result.deleted;
+    };
     for await (const child of runtime.storage.iterateDirectory(path)) {
       if (!exportDirectoriesUnchanged(runtime, path, directories)) return false;
-      if (
-        !(await deleteExportTree(
-          runtime,
-          join(path, child),
-          budget,
-          mutate,
-          changed,
-          directories,
-          cutoff,
-          top || child,
-        ))
-      )
-        return false;
+      const childPath = join(path, child);
+      const childEntry = runtime.storage.lstatSync(childPath, { bigint: true });
+      if (childEntry.isDirectory()) {
+        if (!flush()) return false;
+        if (!(await deleteExportTree(runtime, childPath, budget, mutate, changed, directories, cutoff, top || child)))
+          return false;
+      } else if (!deletedLeaf) {
+        if (
+          !deleteExportEntry(runtime, childPath, budget, mutate, changed, directories, cutoff, top || child, childEntry)
+        )
+          return false;
+        deletedLeaf = true;
+      } else leaves.push({ name: child, entry: childEntry });
+      if (leaves.length === 8 && !flush()) return false;
       await setImmediate();
     }
+    if (leaves.length > 0 && !flush()) return false;
   }
+  return deleteExportEntry(runtime, path, budget, mutate, changed, directories, cutoff, top);
+}
+
+async function startExportDeletionBatch(
+  runtime: Runtime,
+  path: string,
+  budget: RetentionRunBudget,
+  directories: Map<string, StorageBigIntStat>,
+  mutate: <T>(operation: () => T) => T,
+  changed: (top: string) => void,
+  cutoff: number,
+): Promise<
+  | { kind: 'ready'; entries: Array<{ path: string; entry: StorageBigIntStat; top: string }> }
+  | { kind: 'large' }
+  | { kind: 'changed' }
+> {
+  const entries: Array<{ path: string; entry: StorageBigIntStat; top: string }> = [];
+  let observed = 0;
+  let deletedLeaf = false;
+  let tooLarge = false;
+  const visit = async (path: string, top: string): Promise<boolean> => {
+    if (++observed > 8) {
+      tooLarge = true;
+      return false;
+    }
+    if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
+    if (!exportDirectoriesUnchanged(runtime, dirname(path), directories)) return false;
+    const entry = runtime.storage.lstatSync(path, { bigint: true });
+    const expected = directories.get(path);
+    if (expected !== undefined && !sameExportEntry(expected, entry)) return false;
+    if (entry.isDirectory()) {
+      directories.set(path, entry);
+      if ((await runtime.storage.readdir(path)).length > 8) {
+        tooLarge = true;
+        return false;
+      }
+      for await (const child of runtime.storage.iterateDirectory(path)) {
+        if (!exportDirectoriesUnchanged(runtime, path, directories)) return false;
+        if (!(await visit(join(path, child), top || child))) return false;
+        await setImmediate();
+      }
+    } else if (!deletedLeaf) {
+      if (!deleteExportEntry(runtime, path, budget, mutate, changed, directories, cutoff, top, entry)) return false;
+      deletedLeaf = true;
+      return true;
+    }
+    entries.push({ path, entry, top });
+    return true;
+  };
+  if (await visit(path, '')) return { kind: 'ready', entries };
+  return { kind: tooLarge ? 'large' : 'changed' };
+}
+
+function deleteExportEntry(
+  runtime: Runtime,
+  path: string,
+  budget: RetentionRunBudget,
+  mutate: <T>(operation: () => T) => T,
+  changed: (top: string) => void,
+  directories: Map<string, StorageBigIntStat>,
+  cutoff: number,
+  top: string,
+  observed?: StorageBigIntStat,
+): boolean {
+  if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
+  if (!exportDirectoriesUnchanged(runtime, dirname(path), directories)) return false;
+  const entry = observed ?? runtime.storage.lstatSync(path, { bigint: true });
+  const expected = directories.get(path);
+  if (expected !== undefined && !sameExportEntry(expected, entry)) return false;
+  const mtime = entry.mtimeNs;
   if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
   return mutate(() => {
     if (!exportDirectoriesUnchanged(runtime, entry.isDirectory() ? path : dirname(path), directories)) return false;
@@ -179,9 +282,18 @@ export async function pruneJobExports(input: {
   checkpoint?(nextId: string): void;
 }): Promise<string> {
   const { runtime, cutoff, budget } = input;
+  let mutating = false;
   const mutate = <T>(operation: () => T): T => {
     if (budget.canMutate?.() === false) throw new Error('export-retention-owner-expired');
-    return input.mutate(operation);
+    if (mutating) return operation();
+    return input.mutate(() => {
+      mutating = true;
+      try {
+        return withImmediate(input.db, operation);
+      } finally {
+        mutating = false;
+      }
+    });
   };
   const root = runtime.paths.coral.exports.jobsRoot;
   if (!budget.canContinue()) return input.afterId;
@@ -325,13 +437,19 @@ export async function pruneJobExports(input: {
             reason: 'epoch-result-proof-required-or-unknown',
           };
         else {
-          if (state.kind === 'absent' && admittedCutoff === null && !recovering)
-            mutate(() =>
-              input.db
-                .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
-                .run(admissionKey, String(cutoff)),
-            );
-          if (!deletionBudget.canContinue()) return false;
+          if (!deletionBudget.canContinue()) {
+            if (state.kind === 'absent' && admittedCutoff === null && !recovering)
+              mutate(() =>
+                input.db
+                  .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+                  .run(admissionKey, String(cutoff)),
+              );
+            return false;
+          }
+          const saveEvidence = () =>
+            input.db
+              .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+              .run(evidenceKey(workId), JSON.stringify({ cutoff: ageCutoff, mtimes }));
           deleting = true;
           if (!recovering) {
             const renameTime = runtime.time.now();
@@ -347,10 +465,16 @@ export async function pruneJobExports(input: {
               if (!current.isDirectory() || current.dev !== entry.dev || current.ino !== entry.ino)
                 throw new Error('export-directory-identity-changed');
               runtime.storage.renameSync(path, retired);
+              workId = retiredId;
+              path = retired;
+              mtimes[''] = directoryMtime.toString();
+              saveEvidence();
+              input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey);
+              input.db
+                .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+                .run(`storage-retention.exports.admission.v1.${workId}`, String(ageCutoff));
+              pending.remove(id);
             });
-            workId = retiredId;
-            path = retired;
-            pending.remove(id);
             const unchanged = sameExportEntry(directoryEntry, runtime.storage.lstatSync(path, { bigint: true }));
             const expiredAfterRename = await exportTreeExpired(
               runtime,
@@ -368,17 +492,13 @@ export async function pruneJobExports(input: {
             }
             mtimes[''] = directoryMtime.toString();
           }
-          const saveEvidence = () =>
-            input.db
-              .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
-              .run(evidenceKey(workId), JSON.stringify({ cutoff: ageCutoff, mtimes }));
-          mutate(() => {
-            saveEvidence();
-            input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey);
-            input.db
-              .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
-              .run(`storage-retention.exports.admission.v1.${workId}`, String(ageCutoff));
-          });
+          if (recovering)
+            mutate(() => {
+              saveEvidence();
+              input.db
+                .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+                .run(`storage-retention.exports.admission.v1.${workId}`, String(ageCutoff));
+            });
           const deletionRoot = runtime.storage.lstatSync(root, { bigint: true });
           if (
             !deletionRoot.isDirectory() ||
@@ -387,30 +507,63 @@ export async function pruneJobExports(input: {
           )
             throw new Error('export-root-identity-changed');
           directories.set(root, deletionRoot);
-          const deleted = await deleteExportTree(
+          const changed = (top: string): void => {
+            const rootMtime = directories.get(path)?.mtimeNs;
+            if (rootMtime === undefined) {
+              clearAdmission();
+              pending.remove(workId);
+              return;
+            }
+            mtimes[''] = rootMtime.toString();
+            const childMtime = directories.get(join(path, top))?.mtimeNs;
+            if (top && childMtime !== undefined) mtimes[top] = childMtime.toString();
+            else delete mtimes[top];
+            saveEvidence();
+          };
+          const batch = await startExportDeletionBatch(
             runtime,
             path,
             deletionBudget,
-            mutate,
-            (top) => {
-              const rootMtime = directories.get(path)?.mtimeNs;
-              if (rootMtime !== undefined) {
-                mtimes[''] = rootMtime.toString();
-                const childMtime = directories.get(join(path, top))?.mtimeNs;
-                if (top && childMtime !== undefined) mtimes[top] = childMtime.toString();
-                else delete mtimes[top];
-                saveEvidence();
-              }
-            },
             directories,
+            mutate,
+            changed,
             ageCutoff,
           );
+          let deleted: boolean;
+          if (batch.kind === 'changed') deleted = false;
+          else if (batch.kind === 'large')
+            deleted = await deleteExportTree(runtime, path, deletionBudget, mutate, changed, directories, ageCutoff);
+          else {
+            const result = mutate(() => {
+              try {
+                for (const item of batch.entries)
+                  if (
+                    !deleteExportEntry(
+                      runtime,
+                      item.path,
+                      deletionBudget,
+                      (operation) => operation(),
+                      changed,
+                      directories,
+                      ageCutoff,
+                      item.top,
+                      item.entry.isDirectory() ? undefined : item.entry,
+                    )
+                  )
+                    return { deleted: false };
+                return { deleted: true };
+              } catch (error: unknown) {
+                return { deleted: false, error };
+              }
+            });
+            if ('error' in result) throw result.error;
+            deleted = result.deleted;
+          }
           if (!deleted) {
             outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };
             budget.record(outcome);
             return true;
           }
-          clearAdmission();
           outcome = { kind: 'deleted', subject: path, count: 1 };
         }
       }
@@ -434,6 +587,7 @@ export async function pruneJobExports(input: {
   };
   const afterId = pending.restarted ? '' : input.afterId;
   let cursor = afterId;
+  let scanned = 0;
   try {
     const retryBudget: RetentionRunBudget = {
       ...budget,
@@ -450,14 +604,15 @@ export async function pruneJobExports(input: {
       if (!budget.canContinue()) return cursor;
       if (!attempted.has(id) && !pending.subjects.has(id) && !(await process(id, budget))) return cursor;
       if (id > cursor) cursor = id;
-      input.checkpoint?.(cursor);
+      if (++scanned % 32 === 0) input.checkpoint?.(cursor);
       await setImmediate();
     }
     if (budget.canMutate?.() === false) return cursor;
     pending.clearOverflow();
-    input.checkpoint?.('');
+    cursor = '';
     return '';
   } finally {
+    if (budget.canMutate?.() !== false) input.checkpoint?.(cursor);
     for (const id of pending.subjects) budget.record({ kind: 'kept', subject: id, reason: 'export-cleanup-pending' });
     if (pending.overflow()) budget.record({ kind: 'kept', subject: 'exports', reason: 'export-pending-overflow' });
   }

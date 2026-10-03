@@ -72,7 +72,7 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
         index.markUnresolved(row.stream_id);
         continue;
       }
-      const events = store.readJobEvents(row.stream_id);
+      const events = store.readJobEvents(row.stream_id, true);
       const terminal = [...events].reverse().find((event) => event.type === 'terminal');
       if (terminal === undefined || detail.exit === null) {
         index.markUnresolved(row.stream_id);

@@ -17,8 +17,11 @@ import {
 } from '../../store/retention-outcome.js';
 import { vacuumRetainedJournal } from '../../store/retention-vacuum.js';
 import { resolveJobRetentionMs } from '../lifecycle.js';
+import { pruneCustodyLedger } from '../../store/custody-ledger.js';
+import { reconcileFinishedCustody } from '../services/recovery/custody-reconciliation.js';
 
 const DAILY_MS = 24 * 60 * 60 * 1000;
+const BACKLOG_DELAY_MS = 5 * 60 * 1000;
 const OWNER_BUDGET_MS = 5000;
 const CLOCK_JUMP_TOLERANCE_MS = 1000;
 
@@ -39,8 +42,31 @@ export function createStorageRetentionScheduler(input: {
   const outstandingOwners = new Map<string, Promise<void>>();
   let started = false;
   let previous: { wall: number; monotonic: bigint } | null = null;
+  const owners = new Map<string, { dailyDue: bigint; fastDue: bigint | null; outcomes: RetentionOutcome[] }>(
+    [
+      'exports',
+      'journal-progress',
+      'journal-vacuum',
+      'epoch-holders',
+      'scratch-jobs',
+      'job-locations',
+      'custody-reconciliation',
+      'custody',
+    ].map((owner) => [owner, { dailyDue: 0n, fastDue: null, outcomes: [] }]),
+  );
+  const nextDelay = (): number => {
+    const now = runtime.time.monotonicNow();
+    let due = now + BigInt(DAILY_MS);
+    for (const owner of owners.values()) {
+      if (owner.dailyDue < due) due = owner.dailyDue;
+      if (owner.fastDue !== null && owner.fastDue < due) due = owner.fastDue;
+    }
+    return Math.max(0, Number(due - now));
+  };
   const retentionMs = resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
-  const statusAtStart = (): RetentionRunStatus => ({
+  const statusAtStart = (): RetentionRunStatus & {
+    deletedByOwner: NonNullable<RetentionRunStatus['deletedByOwner']>;
+  } => ({
     startedAt: runtime.time.now(),
     finishedAt: null,
     phase: 'running',
@@ -48,29 +74,60 @@ export function createStorageRetentionScheduler(input: {
     kept: 0,
     failed: 0,
     outcomes: [],
+    deletedByOwner: { exports: 0, progressRows: 0, holderMarkers: 0, scratch: 0, custody: 0, vacuumPages: 0 },
   });
+  const ownerCounts: Record<string, keyof NonNullable<RetentionRunStatus['deletedByOwner']>> = {
+    exports: 'exports',
+    'journal-progress': 'progressRows',
+    'epoch-holders': 'holderMarkers',
+    'scratch-jobs': 'scratch',
+    custody: 'custody',
+    'journal-vacuum': 'vacuumPages',
+  };
+  const appendOutcome = (outcomes: RetentionOutcome[], outcome: RetentionOutcome): void => {
+    const kindCount = outcomes.filter((entry) => entry.kind === outcome.kind).length;
+    if (kindCount < RETENTION_OUTCOME_LIMIT_PER_KIND) outcomes.push(outcome);
+    else if (outcome.kind === 'kept' && outcome.pending !== false) {
+      let replace = outcomes.findIndex((entry) => entry.kind === 'kept' && entry.pending === false);
+      if (replace < 0)
+        replace = outcomes.findIndex(
+          (entry, index) =>
+            entry.kind === 'kept' &&
+            outcomes.some(
+              (other, otherIndex) => otherIndex !== index && other.kind === 'kept' && other.reason === entry.reason,
+            ),
+        );
+      if (replace >= 0) outcomes[replace] = outcome;
+    }
+  };
   const run = async (): Promise<void> => {
     const status = statusAtStart();
-    let partial = false;
-    const record = (outcome: RetentionOutcome): void => {
-      status[outcome.kind === 'deleted' ? 'deleted' : outcome.kind === 'kept' ? 'kept' : 'failed'] +=
-        outcome.kind === 'deleted' ? outcome.count : 1;
-      if (outcome.kind === 'kept' && outcome.pending !== false) partial = true;
-      const kindCount = status.outcomes.filter((entry) => entry.kind === outcome.kind).length;
-      if (kindCount < RETENTION_OUTCOME_LIMIT_PER_KIND) status.outcomes.push(outcome);
-      else if (outcome.kind === 'kept' && outcome.pending !== false) {
-        let replace = status.outcomes.findIndex((entry) => entry.kind === 'kept' && entry.pending === false);
-        if (replace < 0)
-          replace = status.outcomes.findIndex(
-            (entry, index) =>
-              entry.kind === 'kept' &&
-              status.outcomes.some(
-                (other, otherIndex) => otherIndex !== index && other.kind === 'kept' && other.reason === entry.reason,
-              ),
-          );
-        if (replace >= 0) status.outcomes[replace] = outcome;
+    const startedAt = runtime.time.monotonicNow();
+    const dueOwners = new Set<string>();
+    for (const [subject, owner] of owners) {
+      if (owner.dailyDue <= startedAt || (owner.fastDue !== null && owner.fastDue <= startedAt)) {
+        dueOwners.add(subject);
+        owner.dailyDue = startedAt + BigInt(DAILY_MS);
+        owner.fastDue = null;
       }
+    }
+    let partial = false;
+    const record = (outcome: RetentionOutcome, owner?: string, retained = false): void => {
+      if (!retained || outcome.kind !== 'deleted')
+        status[outcome.kind === 'deleted' ? 'deleted' : outcome.kind === 'kept' ? 'kept' : 'failed'] +=
+          outcome.kind === 'deleted' ? outcome.count : 1;
+      if (outcome.kind === 'kept' && outcome.pending !== false) partial = true;
+      if (outcome.kind === 'deleted' && !retained) {
+        const key = owner === undefined ? undefined : ownerCounts[owner];
+        if (key !== undefined) status.deletedByOwner[key] += outcome.count;
+      }
+      appendOutcome(status.outcomes, outcome);
+      const ownerState = owner === undefined ? undefined : owners.get(owner);
+      if (ownerState !== undefined) appendOutcome(ownerState.outcomes, outcome);
     };
+    for (const [subject, owner] of owners) {
+      if (!dueOwners.has(subject)) for (const outcome of owner.outcomes) record(outcome, undefined, true);
+    }
     input.publish(status);
     try {
       const progressStore = input.getProgressStore();
@@ -100,8 +157,11 @@ export function createStorageRetentionScheduler(input: {
               mutate: <T>(operation: () => T) => T,
             ) => void | Promise<void>,
           ): Promise<void> => {
+            const owner = owners.get(subject);
+            if (owner === undefined || !dueOwners.has(subject)) return;
+            owner.outcomes = [];
             if (outstandingOwners.has(subject)) {
-              record({ kind: 'kept', subject, reason: 'previous-owner-still-running' });
+              record({ kind: 'kept', subject, reason: 'previous-owner-still-running' }, subject);
               return;
             }
             const deadline = runtime.time.monotonicNow() + BigInt(OWNER_BUDGET_MS);
@@ -114,9 +174,18 @@ export function createStorageRetentionScheduler(input: {
             );
             let operations = 0;
             let finished = false;
+            let exhausted = false;
+            let scanPending = false;
+            let progressed = false;
+            let failed = false;
             const budget = {
               record: (outcome) => {
-                if (!finished && !ownerAbort.signal.aborted) record(outcome);
+                if (!finished && !ownerAbort.signal.aborted) {
+                  scanPending ||= outcome.kind === 'kept' && outcome.reason === 'scan-pending';
+                  progressed ||= outcome.kind === 'deleted' && outcome.count > 0;
+                  failed ||= outcome.kind === 'failed';
+                  record(outcome, subject);
+                }
               },
               canRetry: () =>
                 runtime.time.monotonicNow() < deadline - BigInt(OWNER_BUDGET_MS / 2) && operations < 10_000,
@@ -132,6 +201,7 @@ export function createStorageRetentionScheduler(input: {
               },
               canContinue: (): boolean => {
                 const allowed = budget.canMutate() && ++operations <= 20_000;
+                exhausted ||= !allowed && (runtime.time.monotonicNow() >= deadline || operations > 20_000);
                 partial ||= !allowed && !finished;
                 return allowed;
               },
@@ -154,24 +224,34 @@ export function createStorageRetentionScheduler(input: {
                 await Promise.race([work, cancelled]);
               }
             } catch (error: unknown) {
-              if (budget.canMutate()) record({ kind: 'failed', subject, reason: errorMessage(error) });
-              else record({ kind: 'kept', subject, reason: 'scan-pending' });
+              failed = true;
+              if (budget.canMutate()) record({ kind: 'failed', subject, reason: errorMessage(error) }, subject);
+              else record({ kind: 'kept', subject, reason: 'writer-parked; daily retry' }, subject);
             } finally {
+              exhausted ||=
+                runtime.time.monotonicNow() >= deadline || (ownerAbort.signal.aborted && !abort.signal.aborted);
+              const fastRetry =
+                !failed &&
+                !abort.signal.aborted &&
+                !outstandingOwners.has(subject) &&
+                (exhausted || (scanPending && progressed));
+              if (fastRetry) owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
               finished = true;
+              if (exhausted) record({ kind: 'kept', subject, reason: 'scan-pending' }, subject);
               if (ownerAbort.signal.aborted && outstandingOwners.has(subject))
-                record({ kind: 'kept', subject, reason: 'owner-still-running' });
+                record({ kind: 'kept', subject, reason: 'owner-still-running' }, subject);
               partial ||= ownerAbort.signal.aborted;
               ownerAbort.abort();
               runtime.time.clearTimeout(ownerTimer);
               abort.signal.removeEventListener('abort', cancel);
             }
           };
-          const readCursor = (owner: string, mutate: <T>(operation: () => T) => T): string =>
+          const readCursor = (owner: string, mutate: <T>(operation: () => T) => T, subject = owner): string =>
             readRetentionCursor({
               db,
               key: `storage-retention.${owner}.v1`,
               mutate,
-              record,
+              record: (outcome) => record(outcome, subject),
             });
           const saveCursor = (owner: string, value: string): void => {
             db.prepare<[string, string]>('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
@@ -209,7 +289,7 @@ export function createStorageRetentionScheduler(input: {
               runtime,
               budget,
               mutate,
-              readCursor('holders', mutate),
+              readCursor('holders', mutate, 'epoch-holders'),
               (value) => {
                 if (!signal.aborted) mutate(() => saveCursor('holders', value));
               },
@@ -218,6 +298,50 @@ export function createStorageRetentionScheduler(input: {
             if (next) budget.record({ kind: 'kept', subject: 'epoch-holders', reason: 'scan-pending' });
           });
           await step('scratch-jobs', (budget, signal) => input.cleanupScratch(signal, budget));
+          await step('job-locations', async (budget, signal, mutate) => {
+            let scanned = 0;
+            const next = await input.jobLocations.compactTerminalRecords(
+              readCursor('locations', mutate, 'job-locations'),
+              budget,
+              mutate,
+              (value) => {
+                if (++scanned % 32 === 0 && !signal.aborted) mutate(() => saveCursor('locations', value));
+              },
+            );
+            if (!signal.aborted) mutate(() => saveCursor('locations', next));
+            if (next !== '') budget.record({ kind: 'kept', subject: 'job-locations', reason: 'scan-pending' });
+          });
+          await step('custody-reconciliation', async (budget, signal, mutate) => {
+            const next = await reconcileFinishedCustody({
+              runtime,
+              runDir: runtime.paths.coral.coordinator.runDir,
+              index: input.jobLocations,
+              afterId: readCursor('custody-reconciliation', mutate),
+              checkpoint: (value) => {
+                if (!signal.aborted) mutate(() => saveCursor('custody-reconciliation', value));
+              },
+              budget,
+              signal,
+              mutate,
+            });
+            if (!signal.aborted) mutate(() => saveCursor('custody-reconciliation', next));
+            if (next !== '') budget.record({ kind: 'kept', subject: 'custody-reconciliation', reason: 'scan-pending' });
+          });
+          await step('custody', async (budget, signal, mutate) => {
+            const next = await pruneCustodyLedger({
+              runtime,
+              runDir: runtime.paths.coral.coordinator.runDir,
+              cutoff,
+              afterId: readCursor('custody', mutate),
+              checkpoint: (value) => {
+                if (!signal.aborted) mutate(() => saveCursor('custody', value));
+              },
+              budget,
+              mutate,
+            });
+            if (!signal.aborted) mutate(() => saveCursor('custody', next));
+            if (next !== '') budget.record({ kind: 'kept', subject: 'custody', reason: 'scan-pending' });
+          });
         }
       }
     } catch (error: unknown) {
@@ -233,8 +357,9 @@ export function createStorageRetentionScheduler(input: {
       status.phase =
         partial || (status.failed > 0 && status.deleted > 0) ? 'partial' : status.failed > 0 ? 'failed' : 'completed';
       input.publish(status);
+      const delay = nextDelay();
       input.log(
-        `Storage retention ${status.phase}: deleted=${status.deleted}, kept=${status.kept}, failed=${status.failed}; next cycle in 24h.\n`,
+        `Storage retention ${status.phase}: deleted=${status.deleted}, kept=${status.kept}, failed=${status.failed}; next cycle in ${delay === DAILY_MS ? '24h' : `${Math.ceil(delay / 60_000)}m`}.\n`,
       );
     }
   };
@@ -242,9 +367,8 @@ export function createStorageRetentionScheduler(input: {
     timer = runtime.time.setTimeout(() => {
       timer = null;
       if (abort.signal.aborted) return;
-      const nextRun = runtime.time.monotonicNow() + BigInt(DAILY_MS);
       running = run().finally(() => {
-        if (!abort.signal.aborted) schedule(Math.max(0, Number(nextRun - runtime.time.monotonicNow())));
+        if (!abort.signal.aborted) schedule(nextDelay());
       });
     }, delay);
     timer.unref?.();

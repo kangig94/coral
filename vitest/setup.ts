@@ -2,10 +2,10 @@ import { join } from 'node:path';
 
 import { beforeEach } from 'vitest';
 
-if (process.env.CORAL_TEST_TIER === 'unit') {
+{
   const home = process.env.CORAL_TEST_HOME;
   if (home === undefined || process.env.HOME !== home || process.env.USERPROFILE !== home) {
-    throw new Error('Unit tests require an isolated HOME from vitest/isolated-unit-home.ts.');
+    throw new Error('Every test tier requires an isolated HOME from vitest/isolated-unit-home.ts.');
   }
 }
 
@@ -34,6 +34,19 @@ process.setMaxListeners(100);
 // explicitly (vi.stubEnv, withKoEnv, or a subprocess env), so removing the
 // ambient values cannot mask intended setups.
 for (const key of ['CORAL_KB_ENABLE', 'CORAL_KB_PATH', 'CORAL_KB_EXTRA_LANGS']) {
+  delete process.env[key];
+}
+
+// The runner may itself be a Coral child. Its principal must never authenticate fixture commands.
+// Cases that exercise child authentication install their own credentials after this baseline.
+for (const key of [
+  'CORAL_CHILD',
+  'CORAL_CHILD_PRINCIPAL_HANDLE',
+  'CORAL_CHILD_CREDENTIAL_ID',
+  'CORAL_CHILD_CREDENTIAL_KEY',
+  'CORAL_JOB_ID',
+  'CORAL_SESSION_ID',
+]) {
   delete process.env[key];
 }
 

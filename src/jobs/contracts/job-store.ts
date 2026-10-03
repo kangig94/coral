@@ -29,7 +29,7 @@ export interface JobProgressStore {
   getChangeSeq(): number;
   waitForChange(sinceSeq: number): Promise<void>;
   loadJobProjectionDetail(jobId: string): JobProjectionDetail;
-  readJobEvents(jobId: string): JobEvent[];
+  readJobEvents(jobId: string, terminalOnly?: boolean): JobEvent[];
   ensureResultArtifact(jobId: string): string;
   commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[];
   initJob(opts: InitJobOptions): void;

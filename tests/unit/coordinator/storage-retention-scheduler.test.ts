@@ -1,14 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStorageRetentionScheduler } from '#src/coordinator/composition/storage-retention-scheduler.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
-import type { RetentionRunBudget, RetentionRunStatus } from '#src/store/retention-outcome.js';
+import type { RetentionOutcome, RetentionRunBudget, RetentionRunStatus } from '#src/store/retention-outcome.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
 
 const owners = vi.hoisted(() => ({
-  exports: vi.fn(async () => ''),
+  exports: vi.fn(async (_input?: { budget: RetentionRunBudget }) => ''),
   progress: vi.fn(async (_input: { budget: RetentionRunBudget }) => 0),
-  vacuum: vi.fn(async () => ({ kind: 'kept', subject: 'vacuum', reason: 'no-free-pages', pending: false })),
-  holders: vi.fn(async () => {}),
+  vacuum: vi.fn(
+    async (): Promise<RetentionOutcome> => ({
+      kind: 'kept',
+      subject: 'vacuum',
+      reason: 'no-free-pages',
+      pending: false,
+    }),
+  ),
+  holders: vi.fn(async (_runtime: unknown, _budget: RetentionRunBudget) => ''),
+  reconciliation: vi.fn(async (_input: { budget: RetentionRunBudget }) => ''),
+  custody: vi.fn(async (_input: { budget: RetentionRunBudget }) => ''),
+  scratch: vi.fn(async (_signal: AbortSignal, _budget: RetentionRunBudget) => {}),
   parked: false,
 }));
 vi.mock('#src/jobs/export-retention.js', async (original) => ({
@@ -20,6 +30,14 @@ vi.mock('#src/store/retention-vacuum.js', () => ({ vacuumRetainedJournal: owners
 vi.mock('#src/store/epoch/holder.js', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   pruneStoreEpochHolders: owners.holders,
+}));
+vi.mock('#src/coordinator/services/recovery/custody-reconciliation.js', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  reconcileFinishedCustody: owners.reconciliation,
+}));
+vi.mock('#src/store/custody-ledger.js', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  pruneCustodyLedger: owners.custody,
 }));
 vi.mock('#src/store/succession-writer-generation.js', async (original) => ({
   ...(await original<Record<string, unknown>>()),
@@ -45,6 +63,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const stop of stops.splice(0)) await stop();
   for (const f of fixtures.splice(0)) f.close();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 function fixture(f = createRetentionFixture()) {
@@ -62,7 +81,7 @@ function fixture(f = createRetentionFixture()) {
     jobLocations: new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot),
     log: vi.fn(),
     publish: (status) => statuses.push({ ...status, outcomes: [...status.outcomes] }),
-    cleanupScratch: vi.fn(),
+    cleanupScratch: owners.scratch,
   });
   stops.push(scheduler.stop);
   return { f, scheduler, statuses };
@@ -329,4 +348,243 @@ it('drops an already queued retention timer callback after stop', async () => {
   await Promise.resolve();
   expect(owners.exports).not.toHaveBeenCalled();
   expect(statuses).toEqual([]);
+});
+
+it('drains a budget backlog after five minutes then returns to the daily interval', async () => {
+  owners.exports
+    .mockImplementationOnce(async (input) => {
+      input!.budget.record({ kind: 'deleted', subject: 'export', count: 1 });
+      return 'pending';
+    })
+    .mockResolvedValue('');
+  const { scheduler } = fixture();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(owners.exports).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(299_999);
+  expect(owners.exports).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(owners.exports).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(86_399_999);
+  expect(owners.exports).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(owners.exports).toHaveBeenCalledTimes(3);
+});
+
+it('reports counts per deletion owner while preserving the aggregate count', async () => {
+  owners.exports.mockImplementationOnce(async (input) => {
+    (input as { budget: RetentionRunBudget }).budget.record({ kind: 'deleted', subject: 'export', count: 3 });
+    return '';
+  });
+  owners.progress.mockImplementationOnce(async ({ budget }) => {
+    budget.record({ kind: 'deleted', subject: 'progress', count: 17 });
+    return 0;
+  });
+  owners.vacuum.mockResolvedValueOnce({ kind: 'deleted', subject: 'journal-vacuum', count: 5 });
+  const { scheduler, statuses } = fixture();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(statuses.at(-1)).toMatchObject({
+    deleted: 25,
+    deletedByOwner: { exports: 3, progressRows: 17, holderMarkers: 0, scratch: 0, custody: 0, vacuumPages: 5 },
+  });
+});
+
+it.each(['exports', 'progress', 'vacuum', 'holders', 'locations', 'reconciliation', 'custody', 'scratch'] as const)(
+  'returns a %s hold with no progress to daily cadence',
+  async (owner) => {
+    const { f, scheduler } = fixture();
+    const held = (budget: RetentionRunBudget) =>
+      budget.record({ kind: 'kept', subject: owner, reason: 'scan-pending' });
+    if (owner === 'exports')
+      owners.exports.mockImplementationOnce(async (input) => {
+        held(input!.budget);
+        return 'unchanged';
+      });
+    if (owner === 'progress')
+      owners.progress.mockImplementationOnce(async (input) => {
+        held(input.budget);
+        return 1;
+      });
+    if (owner === 'vacuum')
+      owners.vacuum.mockResolvedValueOnce({ kind: 'kept', subject: owner, reason: 'scan-pending' });
+    if (owner === 'holders')
+      owners.holders.mockImplementationOnce(async (_runtime, budget) => {
+        held(budget);
+        return 'unchanged';
+      });
+    if (owner === 'locations')
+      vi.spyOn(JobLocationIndex.prototype, 'compactTerminalRecords').mockImplementationOnce(async (_after, budget) => {
+        held(budget);
+        return 'unchanged';
+      });
+    if (owner === 'reconciliation' || owner === 'custody')
+      owners[owner].mockImplementationOnce(async (input) => {
+        held(input.budget);
+        return 'unchanged';
+      });
+    if (owner === 'scratch')
+      owners.scratch.mockImplementationOnce(async (_signal, budget) => {
+        held(budget);
+      });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(owners.exports).toHaveBeenCalledTimes(1);
+    f.setNow(f.runtime.time.now());
+    await vi.advanceTimersByTimeAsync(86_100_000);
+    expect(owners.exports).toHaveBeenCalledTimes(2);
+  },
+);
+
+it.each(['exports', 'progress', 'vacuum', 'holders', 'locations', 'reconciliation', 'custody', 'scratch'] as const)(
+  'holds %s to daily cadence while another owner progresses',
+  async (owner) => {
+    const hold = (budget: RetentionRunBudget) =>
+      budget.record({ kind: 'kept', subject: owner, reason: 'scan-pending' });
+    const { scheduler, statuses } = fixture();
+    if (owner === 'exports')
+      owners.exports.mockImplementationOnce(async (input) => {
+        hold(input!.budget);
+        return 'unchanged';
+      });
+    if (owner === 'progress')
+      owners.progress.mockImplementationOnce(async ({ budget }) => {
+        hold(budget);
+        return 1;
+      });
+    if (owner === 'vacuum')
+      owners.vacuum.mockImplementationOnce(async () => {
+        return { kind: 'kept', subject: owner, reason: 'scan-pending' };
+      });
+    if (owner === 'holders')
+      owners.holders.mockImplementationOnce(async (_runtime, budget) => {
+        hold(budget);
+        return 'unchanged';
+      });
+    const locations = vi.spyOn(JobLocationIndex.prototype, 'compactTerminalRecords');
+    if (owner === 'locations')
+      locations.mockImplementationOnce(async (_after, budget) => {
+        hold(budget);
+        return 'unchanged';
+      });
+    if (owner === 'reconciliation' || owner === 'custody')
+      owners[owner].mockImplementationOnce(async ({ budget }) => {
+        hold(budget);
+        return 'unchanged';
+      });
+    if (owner === 'scratch')
+      owners.scratch.mockImplementationOnce(async (_signal, budget) => {
+        hold(budget);
+      });
+    const progressing = owner === 'exports' ? 'progress' : 'exports';
+    if (progressing === 'progress')
+      owners.progress.mockImplementationOnce(async ({ budget }) => {
+        budget.record({ kind: 'deleted', subject: 'progress', count: 1 });
+        return 10;
+      });
+    else
+      owners.exports.mockImplementationOnce(async (input) => {
+        input!.budget.record({ kind: 'deleted', subject: 'export', count: 1 });
+        return 'more';
+      });
+    const heldMock = owner === 'locations' ? locations : owners[owner];
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(heldMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(owners[progressing]).toHaveBeenCalledTimes(2);
+    expect(heldMock).toHaveBeenCalledTimes(1);
+    expect(statuses.at(-1)?.phase).toBe('partial');
+    expect(statuses.at(-1)?.outcomes).toContainEqual({ kind: 'kept', subject: owner, reason: 'scan-pending' });
+    expect(statuses.at(-1)?.deleted).toBe(0);
+    await vi.advanceTimersByTimeAsync(86_099_999);
+    expect(heldMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(heldMock).toHaveBeenCalledTimes(2);
+    expect(owners[progressing]).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(owners[progressing]).toHaveBeenCalledTimes(3);
+    expect(heldMock).toHaveBeenCalledTimes(2);
+  },
+);
+it('holds a failed export to daily cadence while journal pruning progresses', async () => {
+  owners.exports.mockRejectedValueOnce(new Error('export failure'));
+  owners.progress.mockImplementationOnce(async ({ budget }) => {
+    budget.record({ kind: 'deleted', subject: 'progress', count: 1 });
+    return 10;
+  });
+  const { scheduler, statuses } = fixture();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(owners.progress).toHaveBeenCalledTimes(2);
+  expect(owners.exports).toHaveBeenCalledTimes(1);
+  expect(statuses.at(-1)).toMatchObject({ phase: 'failed', failed: 1, deleted: 0 });
+  expect(statuses.at(-1)?.outcomes).toContainEqual({ kind: 'failed', subject: 'exports', reason: 'export failure' });
+  await vi.advanceTimersByTimeAsync(86_100_000);
+  expect(owners.exports).toHaveBeenCalledTimes(2);
+  expect(owners.progress).toHaveBeenCalledTimes(2);
+  expect(statuses.at(-1)?.failed).toBe(0);
+});
+
+it('keeps a skipped owner deletion outcome visible without recounting its deletions', async () => {
+  owners.progress.mockImplementationOnce(async ({ budget }) => {
+    budget.record({ kind: 'deleted', subject: 'old-progress', count: 17 });
+    return 0;
+  });
+  owners.exports.mockImplementationOnce(async (input) => {
+    input!.budget.record({ kind: 'deleted', subject: 'export', count: 1 });
+    return 'pending';
+  });
+  const { scheduler, statuses } = fixture();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(owners.progress).toHaveBeenCalledOnce();
+  expect(statuses.at(-1)?.outcomes).toContainEqual({ kind: 'deleted', subject: 'old-progress', count: 17 });
+  expect(statuses.at(-1)).toMatchObject({ deleted: 0, deletedByOwner: { exports: 0, progressRows: 0 } });
+});
+
+it('retries only the owner that stopped for budget without progress', async () => {
+  owners.exports.mockImplementationOnce(async (input) => {
+    for (let operation = 0; operation < 20_000; operation++) if (!input!.budget.canContinue()) break;
+    return 'pending';
+  });
+  const { scheduler } = fixture();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(owners.exports).toHaveBeenCalledTimes(2);
+  expect(owners.progress).toHaveBeenCalledOnce();
+  expect(owners.scratch).toHaveBeenCalledOnce();
+});
+
+it('runs a held owner at its daily deadline while another owner keeps draining', async () => {
+  owners.exports.mockImplementation(async (input) => {
+    input!.budget.record({ kind: 'deleted', subject: 'export', count: 1 });
+    return 'pending';
+  });
+  owners.progress.mockImplementationOnce(async ({ budget }) => {
+    budget.record({ kind: 'kept', subject: 'held-progress', reason: 'scan-pending' });
+    return 1;
+  });
+  const { scheduler, statuses } = fixture();
+  try {
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(86_399_999);
+    expect(owners.progress).toHaveBeenCalledOnce();
+    expect(owners.exports).toHaveBeenCalledTimes(288);
+    expect(statuses.at(-1)?.outcomes).toContainEqual({
+      kind: 'kept',
+      subject: 'held-progress',
+      reason: 'scan-pending',
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(owners.progress).toHaveBeenCalledTimes(2);
+    expect(owners.exports).toHaveBeenCalledTimes(289);
+  } finally {
+    owners.exports.mockResolvedValue('');
+  }
 });

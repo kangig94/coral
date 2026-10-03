@@ -18,7 +18,7 @@ export default defineConfig({
     include: UNIT_TIER_INCLUDES,
     exclude: ['ref/**', 'node_modules/**'],
     setupFiles: ['vitest/setup.ts'],
-    globalSetup: ['vitest/isolated-unit-home.ts'],
+    globalSetup: ['vitest/no-real-coral-leak.ts', 'vitest/isolated-unit-home.ts'],
     // Deliberate budget, not vitest's 5s default: a case that resets the module registry to swap module
     // doubles re-executes a large module graph inside its own budget, so the budget must clear that cost by
     // a wide margin while staying short enough to fail a genuinely hung case promptly. A case that comes

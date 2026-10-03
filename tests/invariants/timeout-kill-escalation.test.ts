@@ -56,6 +56,7 @@ const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/provider-proxy/role-main.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
   'src/coordinator/services/recovery/actions.ts',
+  'src/coordinator/services/recovery/custody-reconciliation.ts',
   'src/coordinator/services/recovery/epoch-closure.ts',
   'src/coordinator/services/recovery/interrupted-performer.ts',
   'src/coordinator/services/provider-proxy-set/index.ts',

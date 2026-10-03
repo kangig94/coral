@@ -667,12 +667,12 @@ export function loadJobDetail(db: Database, jobId: string, ctx: StoreReadContext
   };
 }
 
-export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext): JobEvent[] {
+export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext, terminalOnly = false): JobEvent[] {
   const rows = prepareCached<[string], EventsRow>(
     db,
     `SELECT * FROM events
      WHERE stream_id = ?
-       AND type IN ('job.progress.emitted', 'job.terminal.recorded')
+       AND ${terminalOnly ? "type = 'job.terminal.recorded'" : "type IN ('job.progress.emitted', 'job.terminal.recorded')"}
      ORDER BY seq ASC`,
   ).all(jobId);
 
