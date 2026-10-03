@@ -45,7 +45,7 @@ function createServingObservation(
   }
 
   async function awaitServing(window: CommitWindow, writer: SuccessionWriterEntitlement): Promise<void> {
-    const { attempt, deadlineAt } = window;
+    const { attempt, deadlineMonotonicMs } = window;
     for (;;) {
       const serving = observeSuccessionServing(runtime, attempt.attemptId);
       if (serving !== null) {
@@ -57,7 +57,8 @@ function createServingObservation(
       if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) {
         throw new TransientCommitFailure('Successor exited before durable serving.');
       }
-      if (runtime.time.now() >= deadlineAt) throw new Error('Successor missed its serving deadline.');
+      if (Number(runtime.time.monotonicNow()) >= deadlineMonotonicMs)
+        throw new Error('Successor missed its serving deadline.');
       await runtime.time.sleep(SERVING_POLL_MS);
     }
   }
@@ -77,7 +78,7 @@ export function createCommitServing(
   const retryAfterWindowFailure = (window: CommitWindow, error: unknown): AttemptRetry =>
     error instanceof TransientCommitFailure && error.obligationChange
       ? retryAfterFailure(error)
-      : !state.attemptAbort.signal.aborted && runtime.time.now() >= window.deadlineAt
+      : !state.attemptAbort.signal.aborted && Number(runtime.time.monotonicNow()) >= window.deadlineMonotonicMs
         ? { kind: 'transient', retryAfterMs: TRANSIENT_RETRY_BASE_MS }
         : retryAfterFailure(error);
 
@@ -85,10 +86,10 @@ export function createCommitServing(
     if (window.writer === null) return 'refused';
     for (;;) {
       try {
-        return refuseSuccessionAttempt(runtime, window.attempt.attemptId, window.deadlineAt).kind;
+        return refuseSuccessionAttempt(runtime, window.attempt.attemptId, window.deadlineMonotonicMs).kind;
       } catch (error: unknown) {
         ports.log(`Failed succession window could not refuse its attempt: ${formatError(error)}\n`);
-        if (runtime.time.now() >= window.deadlineAt) return 'unresolved';
+        if (Number(runtime.time.monotonicNow()) >= window.deadlineMonotonicMs) return 'unresolved';
         await runtime.time.sleep(SERVING_POLL_MS);
       }
     }

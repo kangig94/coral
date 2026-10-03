@@ -51,10 +51,10 @@ function monitorChildHeartbeat(input: {
   timing: SentinelTiming;
   retirement: ChildRetirement;
   state: ChildWatchState;
-  escalateChild: (now: number) => 'sent' | 'absent' | 'held' | 'refused';
+  escalateChild: () => 'sent' | 'absent' | 'held' | 'refused';
 }): void {
   const { child, record, owner, reservation, identity, timing, retirement, state, escalateChild } = input;
-  const now = Date.now();
+  const now = Number(process.hrtime.bigint() / 1_000_000n);
   const gap = now - state.lastWake;
   state.lastWake = now;
   if (gap > timing.schedulingGapMs) {
@@ -72,7 +72,7 @@ function monitorChildHeartbeat(input: {
   if (state.escalationAt !== null) {
     if (!state.killed && now - state.lastKillAttemptAt >= 1_000) {
       state.lastKillAttemptAt = now;
-      if (escalateChild(now) === 'sent') state.killed = true;
+      if (escalateChild() === 'sent') state.killed = true;
     }
     return;
   }
@@ -97,7 +97,7 @@ function monitorChildHeartbeat(input: {
     } else {
       state.wedged = true;
       if (now - state.lastKillAttemptAt < 1_000) return;
-      if (!record.commitTermination(owner.current, reservation, identity, now, timing.graceMs)) {
+      if (!record.commitTermination(owner.current, reservation, identity, Date.now(), timing.graceMs)) {
         state.lastKillAttemptAt = now;
         if (!record.hasAuthority(owner.current)) owner.lost = true;
         else record.holdSignalRefusal(owner.current, reservation, identity);
@@ -185,12 +185,12 @@ function relayWatchedChildMessage(input: {
       state.discovered = true;
     if (message.kind === 'coral-sentinel-hello' && 'id' in message && message.id === sentinelId) {
       state.pendingHello = true;
-      state.lastAnswer = Date.now();
+      state.lastAnswer = Number(process.hrtime.bigint() / 1_000_000n);
       if (state.armed) child.send({ kind: 'coral-sentinel-armed', id: sentinelId });
     }
     if (message.kind === 'coral-sentinel-answer' && 'id' in message && message.id === state.outstanding) {
       state.outstanding = null;
-      state.lastAnswer = Date.now();
+      state.lastAnswer = Number(process.hrtime.bigint() / 1_000_000n);
     }
     if (route(message, handle)) return;
     if (String(message.kind).startsWith('coral-')) {
@@ -212,10 +212,9 @@ function escalateWatchedChild(input: {
   reservation: LaunchReservation;
   identity: LaunchProcess;
   timing: SentinelTiming;
-  now: number;
 }): 'sent' | 'absent' | 'held' | 'refused' {
-  const { child, record, owner, reservation, identity, timing, now } = input;
-  if (owner.lost || !record.commitTermination(owner.current, reservation, identity, now, timing.graceMs))
+  const { child, record, owner, reservation, identity, timing } = input;
+  if (owner.lost || !record.commitTermination(owner.current, reservation, identity, Date.now(), timing.graceMs))
     return 'refused';
   const current = record.currentChild(reservation, identity);
   const signal = current?.termDelivered === true ? 'SIGKILL' : 'SIGTERM';
@@ -302,7 +301,7 @@ function watchDetachedChild({
         record.suspendAuthority();
         owner.lost = true;
       } else if (attempt.kind === 'acquired') {
-        if (Date.now() - handoffReleasedAt < timing.lapseMs / 2) attempt.lease();
+        if (Number(process.hrtime.bigint() / 1_000_000n) - handoffReleasedAt < timing.lapseMs / 2) attempt.lease();
         else {
           record.resumeAuthority();
           owner.current = record.read().owner;
@@ -324,7 +323,7 @@ function watchDetachedChild({
         return;
       if (!state.served && record.serving(reservation, identity)) state.served = true;
       owner.release();
-      handoffReleasedAt = Date.now();
+      handoffReleasedAt = Number(process.hrtime.bigint() / 1_000_000n);
     });
   }, POLL_MS);
 }
@@ -429,8 +428,8 @@ function startChildWatch(input: WatchedChildContext) {
   } = input;
   const childExit = observeWatchedChildEvents(input);
   const parentMessage = forwardWatchedParentMessages(input);
-  const escalateChild = (now: number): 'sent' | 'absent' | 'held' | 'refused' =>
-    escalateWatchedChild({ child, record, owner, reservation, identity, timing, now });
+  const escalateChild = (): 'sent' | 'absent' | 'held' | 'refused' =>
+    escalateWatchedChild({ child, record, owner, reservation, identity, timing });
   const interval = setInterval(
     () =>
       monitorChildHeartbeat({ child, record, owner, reservation, identity, timing, retirement, state, escalateChild }),

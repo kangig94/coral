@@ -12,6 +12,7 @@ function makeRuntime(): Runtime {
     flavor: 'prod',
     time: {
       now: () => Date.now(),
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       sleep: async () => {},
       setTimeout,
       clearTimeout,

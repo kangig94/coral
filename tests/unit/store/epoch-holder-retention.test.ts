@@ -1,12 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pruneStoreEpochHolders, registerStoreEpochHolder } from '#src/store/epoch/holder.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { sweepStoreEpochsPostReady } from '#src/store/epoch/post-ready-sweep.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
-import { acquireSharedFileLockSync } from '#src/infra/fs-lock.js';
+import { acquireSharedFileLockSync, attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 
 const fixtures: ReturnType<typeof createRetentionFixture>[] = [];
 afterEach(() => {
@@ -155,5 +155,40 @@ it.each([false, true])(
     }
     expect(storage.existsSync(target)).toBe(false);
     expect(storage.existsSync(join(root, '.epoch-holder-19.json'))).toBe(true);
+  },
+);
+
+it.each(['normal', 'competing-removal', 'permission-error', 'sync-error'])(
+  'settles holder cleanup after %s',
+  async (scenario) => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.store.dbDir;
+    mkdirSync(join(root, 'epoch-1'));
+    writeFileSync(join(root, 'epoch-1', '.lock'), '');
+    const subject = join(root, '.epoch-holder-race.json');
+    writeFileSync(subject, JSON.stringify({ epoch: '1', pid: 101 }));
+    const sync = vi.fn(() => scenario !== 'sync-error');
+    const runtime = {
+      ...f.runtime,
+      process: { ...f.runtime.process, observeLiveness: () => 'absent' as const },
+      storage: {
+        ...f.runtime.storage,
+        unlinkSync: (path: string) => {
+          if (path === subject && scenario === 'permission-error')
+            throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+          if (path === subject && scenario === 'competing-removal') unlinkSync(path);
+          f.runtime.storage.unlinkSync(path);
+        },
+        syncDirectoryDurableSync: sync,
+      },
+    };
+    await pruneStoreEpochHolders(runtime, f.budget, (operation) => operation());
+    const failed = scenario === 'permission-error' || scenario === 'sync-error';
+    expect(f.outcomes).toContainEqual(expect.objectContaining({ subject, kind: failed ? 'failed' : 'deleted' }));
+    expect(existsSync(subject)).toBe(scenario === 'permission-error');
+    expect(sync).toHaveBeenCalledTimes(scenario === 'permission-error' ? 0 : 1);
+    const proof = attemptExclusiveFileLockSync(join(root, 'epoch-1', '.lock'));
+    expect(proof.kind).toBe('acquired');
+    if (proof.kind === 'acquired') proof.lease();
   },
 );

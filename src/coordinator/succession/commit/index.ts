@@ -206,7 +206,7 @@ export type FailedCommit = Readonly<{
   retry: AttemptRetry;
   writer: SuccessionWriterEntitlement | null;
   retirementStoreParked: boolean;
-  pauseDeadlineAtMs: number;
+  pauseDeadlineMonotonicMs: number;
   childHold: string | null;
   /** Recorded only by the write that clears the attempt, so the attempt never clears without it. */
   unservedMintDiscard: NonNullable<UpgradeIntent['unservedMintDiscard']> | null;
@@ -226,8 +226,9 @@ export type CommitWindow = {
   readonly attempt: SuccessionAttempt;
   readonly preparation: SuccessionPreparation;
   readonly recovering: boolean;
-  readonly pauseDeadlineAtMs: number;
+  readonly pauseDeadlineMonotonicMs: number;
   readonly deadlineAt: number;
+  readonly deadlineMonotonicMs: number;
   readonly stopForwarding: () => void;
   writer: SuccessionWriterEntitlement | null;
   retirementStoreParked: boolean;

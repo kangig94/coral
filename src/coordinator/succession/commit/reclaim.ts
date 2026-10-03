@@ -81,7 +81,7 @@ export function createCommitReclaim(ports: SuccessionCommitPorts, dependencies: 
     }
     const writers = writersOrThrow();
     const writer = failure.writer;
-    const pauseRemainingMs = failure.pauseDeadlineAtMs - runtime.time.now();
+    const pauseRemainingMs = failure.pauseDeadlineMonotonicMs - Number(runtime.time.monotonicNow());
     const observed = observeSuccessionWriterGeneration(runtime);
     const failedGeneration =
       observed !== null && observed.generation > writer.generation.generation ? observed : undefined;

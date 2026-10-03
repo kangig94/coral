@@ -74,7 +74,7 @@ export function createSameBuildRecovery(
       reason,
       retry: failure.retry,
       ...recovery,
-      pauseDeadlineAtMs: runtime.time.now(),
+      pauseDeadlineMonotonicMs: Number(runtime.time.monotonicNow()),
       childHold: attempt === null ? null : await abortAndReap(attempt),
       unservedMintDiscard: failure.unservedMintDiscard,
     });

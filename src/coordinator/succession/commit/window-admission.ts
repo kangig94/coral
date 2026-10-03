@@ -50,10 +50,11 @@ export function createCommitWindowAdmission(
     preparation: SuccessionPreparation,
     recovery: RecoveryContext | null,
   ): Promise<CommitWindow> {
-    const pauseDeadlineAtMs = openPause(attempt.attemptId, preparation.admissionRevision);
-    const deadlineAt = pauseDeadlineAtMs - RECLAIM_RESERVE_MS;
+    const pause = openPause(attempt.attemptId, preparation.admissionRevision);
+    const deadlineAt = pause.deadlineAtMs - RECLAIM_RESERVE_MS;
+    const deadlineMonotonicMs = pause.deadlineMonotonicMs - RECLAIM_RESERVE_MS;
     try {
-      await attempt.setDeadline(deadlineAt);
+      await attempt.setDeadline(deadlineAt, Math.max(0, deadlineMonotonicMs - Number(runtime.time.monotonicNow())));
     } catch (error: unknown) {
       closePause();
       throw error;
@@ -73,7 +74,8 @@ export function createCommitWindowAdmission(
       attempt,
       preparation,
       recovering: recovery !== null,
-      pauseDeadlineAtMs,
+      pauseDeadlineMonotonicMs: pause.deadlineMonotonicMs,
+      deadlineMonotonicMs,
       deadlineAt,
       stopForwarding,
       writer: recovery?.writer ?? null,
@@ -87,7 +89,7 @@ export function createCommitWindowAdmission(
     plan: CommitPlan,
     custody: RetiringCustodyCertificate | null,
   ): Promise<SuccessionWriterEntitlement> {
-    const { attempt, preparation, deadlineAt, recovering } = window;
+    const { attempt, preparation, deadlineAt, deadlineMonotonicMs, recovering } = window;
     await updateAttempt(attempt.attemptId, (intent) => ({
       ...intent,
       disposition: 'attempting',
@@ -108,15 +110,21 @@ export function createCommitWindowAdmission(
     }
     if (!recovering) {
       ports.launchCoordinator.beginSuccessionWriterPark(attempt.attemptId);
-      await parkIncumbentWriters(writers, deadlineAt);
-      await recertifyObligations(attempt.attemptId, deadlineAt);
+      await parkIncumbentWriters(writers, deadlineMonotonicMs);
+      await recertifyObligations(attempt.attemptId, deadlineMonotonicMs);
+      state.attemptAbort.signal.throwIfAborted();
+      if (Number(runtime.time.monotonicNow()) >= deadlineMonotonicMs)
+        throw new Error('Writer park exceeded the commit deadline.');
       writer.park();
     }
     if (!recovering && ports.providerHosts.transfersHosts(preparation)) {
       try {
         await ports.providerHosts.releaseForTransfer(
           attempt.attemptId,
-          AbortSignal.timeout(Math.max(1, deadlineAt - runtime.time.now())),
+          AbortSignal.any([
+            state.attemptAbort.signal,
+            AbortSignal.timeout(Math.max(1, deadlineMonotonicMs - Number(runtime.time.monotonicNow()))),
+          ]),
         );
       } catch (error: unknown) {
         // A host that cannot be handed over now decides nothing about the target.
@@ -129,13 +137,16 @@ export function createCommitWindowAdmission(
         preparation,
         custody,
         plan.successorFingerprint,
-        deadlineAt,
+        deadlineMonotonicMs,
         (openerDrainMs) => {
           window.retirementStoreParked = true;
           return writers.protectRetiringStore(preparation.epochKey, openerDrainMs);
         },
       );
     }
+    state.attemptAbort.signal.throwIfAborted();
+    if (Number(runtime.time.monotonicNow()) >= deadlineMonotonicMs)
+      throw new Error('Successor missed its commit deadline.');
     await attempt.allowCommittedOpen();
     return writer;
   }

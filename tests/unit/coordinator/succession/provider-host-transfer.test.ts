@@ -416,3 +416,19 @@ describe('provider host transfer at the commit and after serving', () => {
     expect(lifecycle.releaseControlForTransfer).not.toHaveBeenCalled();
   });
 });
+
+it('observes a host rejection when its authorization synchronously aborts transfer', async () => {
+  const runtime = runtimeFor();
+  const record = executing();
+  const controller = new AbortController();
+  let authorizations = 0;
+  const host = hostFor(record, () => {
+    if (++authorizations === 1) return authorized();
+    controller.abort(new Error('shutdown'));
+    return Promise.reject(new Error('host refused during shutdown'));
+  });
+  const transfer = transferFor(runtime, { db: databaseWith([record]), hosts: [host] });
+  await classify(transfer);
+  await expect(transfer.releaseForTransfer('attempt-1', controller.signal)).rejects.toThrow('shutdown');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});

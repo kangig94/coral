@@ -30,7 +30,7 @@ function pendingRequestCandidate(runDir: string, current: RunningChild, lastDisp
   if (
     intent === null ||
     intent.target.build.buildSetId === current.manifest.buildSetId ||
-    Date.now() - (lastDispatch.get(intent.requestId) ?? 0) < 10_000
+    Number(process.hrtime.bigint() / 1_000_000n) - (lastDispatch.get(intent.requestId) ?? 0) < 10_000
   )
     return null;
   const executable = pendingExecutable(intent);
@@ -57,7 +57,7 @@ function createPendingAttempt(
 ): PendingAttempt | null {
   const contenderReservation = record.reserve(owner.current, candidate.manifest.buildSetId, 'contender');
   if (contenderReservation === null) return null;
-  lastDispatch.set(candidate.requestId, Date.now());
+  lastDispatch.set(candidate.requestId, Number(process.hrtime.bigint() / 1_000_000n));
   const running = spawnAdmittedChild(record, owner.current, contenderReservation, candidate.executable, [], runDir);
   if (running === null) return null;
   const retirement = record.childRetirement(contenderReservation);
@@ -249,10 +249,10 @@ export async function superviseAdoptedChild(input: {
       if (
         target === null ||
         compareProductVersions(target.version, current.running.manifest.version) <= 0 ||
-        Date.now() - (lastInheritedRequest.get(intent.requestId) ?? 0) < 10_000
+        Number(process.hrtime.bigint() / 1_000_000n) - (lastInheritedRequest.get(intent.requestId) ?? 0) < 10_000
       )
         return;
-      lastInheritedRequest.set(intent.requestId, Date.now());
+      lastInheritedRequest.set(intent.requestId, Number(process.hrtime.bigint() / 1_000_000n));
       void requestInheritedSuccession(
         runDir,
         current.running.manifest.flavor,

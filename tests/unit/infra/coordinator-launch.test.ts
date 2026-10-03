@@ -128,3 +128,24 @@ describe('namespace supervisor ownership', () => {
     }
   });
 });
+
+it('keeps local startup and heartbeat budgets stable across wall steps', () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-launch-clock-'));
+  vi.useFakeTimers();
+  try {
+    const incarnation = 'probe' as ProcessIncarnation;
+    const state = new SupervisorLaunchMemory(runDir, { pid: 999_997, incarnation }, 'build');
+    const watch = state.childWatch({ id: 'probe' } as Parameters<typeof state.childWatch>[0], 5_000);
+    const admittedAt = Number(process.hrtime.bigint() / 1_000_000n);
+    expect(watch.lastAnswer).toBe(admittedAt);
+    expect(watch.startupDeadline).toBe(admittedAt + 5_000);
+    vi.advanceTimersByTime(2_000);
+    vi.setSystemTime(Date.now() - 3_600_000);
+    expect(Number(process.hrtime.bigint() / 1_000_000n) - watch.lastAnswer).toBe(2_000);
+    vi.advanceTimersByTime(3_000);
+    expect(Number(process.hrtime.bigint() / 1_000_000n)).toBe(watch.startupDeadline);
+  } finally {
+    vi.useRealTimers();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});

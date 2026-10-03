@@ -65,7 +65,7 @@ export function createFailedCommitWindow(
       retry,
       writer: window.writer,
       retirementStoreParked: window.retirementStoreParked,
-      pauseDeadlineAtMs: window.pauseDeadlineAtMs,
+      pauseDeadlineMonotonicMs: window.pauseDeadlineMonotonicMs,
       childHold,
       unservedMintDiscard,
     };

@@ -55,10 +55,10 @@ async function reconcileInheritedChild(
     inheritedWatch.delete(slot.id);
     return repairBridge;
   }
-  let now = Date.now();
+  let now = Number(process.hrtime.bigint() / 1_000_000n);
   const watch = inheritedWatch.get(slot.id) ?? {
     firstSeen: now,
-    lastHealthy: slot.observedHealthyAt ?? slot.admittedAt ?? now,
+    lastHealthy: now - Math.max(0, Date.now() - (slot.observedHealthyAt ?? slot.admittedAt ?? Date.now())),
     uninterruptibleSince: null,
     terminationAt: slot.terminationAt ?? null,
   };
@@ -75,9 +75,9 @@ async function reconcileInheritedChild(
   }
   slot = current;
   watch.terminationAt = slot.terminationAt ?? watch.terminationAt;
-  now = Date.now();
+  now = Number(process.hrtime.bigint() / 1_000_000n);
   if (healthy) {
-    record.observeInheritedHealth(slot, now);
+    record.observeInheritedHealth(slot, Date.now());
     slot = currentInheritedChild(snapshot, child) ?? slot;
     watch.terminationAt = slot.terminationAt ?? null;
   }
@@ -124,12 +124,12 @@ async function reconcileInheritedChild(
   }
   slot = live;
   watch.terminationAt = slot.terminationAt ?? watch.terminationAt;
-  now = Date.now();
+  now = Number(process.hrtime.bigint() / 1_000_000n);
   const overdue =
     (slot.phase === 'admitted' &&
       slot.admittedAt !== undefined &&
       (slot.admittedMonotonicMs === undefined
-        ? now >= Math.min(slot.admittedAt + startupBudgetMs, slot.attemptDeadline ?? Infinity)
+        ? Date.now() >= Math.min(slot.admittedAt + startupBudgetMs, slot.attemptDeadline ?? Infinity)
         : Number(process.hrtime.bigint() / 1_000_000n) - slot.admittedMonotonicMs >=
           Math.min(startupBudgetMs, (slot.attemptDeadline ?? Infinity) - slot.admittedAt))) ||
     (slot.phase === 'serving' && now - watch.lastHealthy >= timing.lapseMs);
@@ -141,7 +141,7 @@ async function reconcileInheritedChild(
     }
     if (
       record.terminationGraceElapsed(slot) &&
-      record.commitTermination(owner.current, slot, child, now, timing.graceMs) &&
+      record.commitTermination(owner.current, slot, child, Date.now(), timing.graceMs) &&
       !signalInheritedChild(record, owner.current, slot, 'SIGKILL')
     ) {
       if (!record.holdInheritedChild(owner.current, slot)) inheritedWatch.delete(slot.id);
@@ -154,7 +154,7 @@ async function reconcileInheritedChild(
   } else {
     watch.uninterruptibleSince = null;
   }
-  if (record.commitTermination(owner.current, slot, child, now, timing.graceMs)) {
+  if (record.commitTermination(owner.current, slot, child, Date.now(), timing.graceMs)) {
     watch.terminationAt = now;
     if (!signalInheritedChild(record, owner.current, slot, 'SIGTERM')) {
       if (!record.holdInheritedChild(owner.current, slot)) inheritedWatch.delete(slot.id);

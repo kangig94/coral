@@ -3,6 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRequestLeaseOwner, type RequestLeaseTiming } from '#src/coordinator/live/request-leases.js';
 
+import { IdleTimer } from '#src/coordinator/live/idle.js';
+import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+
 import { createRealTimePort } from '#src/infra/time.js';
 
 const timing: RequestLeaseTiming = {
@@ -191,4 +194,96 @@ describe('coordinator request leases', () => {
     expect(writes).toBe(2);
     expect(inflight).toBe(0);
   });
+});
+
+it.each([0, -3_600_000, 3_600_000])('drains an abandoned request despite a wall step of %s ms', async (step) => {
+  const time = new VirtualTime();
+  let offset = 0;
+  const clock = Object.assign(time, { now: () => Number(time.monotonicNow()) + offset });
+  const idle = new IdleTimer({ time: clock });
+  const drained = vi.fn();
+  idle.startWatching(() => false, drained);
+  const owner = createRequestLeaseOwner({
+    time: clock,
+    begin: () => idle.beginRequest(),
+    end: () => idle.endRequest(),
+    newRecordId: () => 'clock-request',
+    abandon: vi.fn(),
+  });
+  let signal: AbortSignal | undefined;
+  const request = owner.begin('jobs.list', 'clock-request').run((owned) => {
+    signal = owned;
+    return new Promise<never>(() => {});
+  });
+  const rejected = expect(request).rejects.toMatchObject({ code: 'request_deadline_exceeded' });
+  await flushMicrotasks();
+  time.tick(10_000);
+  idle.requestDrain('replaced');
+  offset = step;
+  time.tick(60_000);
+  await flushMicrotasks();
+  expect(signal?.aborted).toBe(true);
+  expect(idle.inflightRequests).toBe(0);
+  expect(drained).toHaveBeenCalledOnce();
+  await rejected;
+  idle.stopWatching();
+});
+
+it.each(['kb.source.create', 'kb.reindex'])('preserves the longer lease for %s', async (method) => {
+  const time = new VirtualTime();
+  const ended = vi.fn();
+  const owner = createRequestLeaseOwner({
+    time,
+    timing,
+    begin: vi.fn(),
+    end: ended,
+    abandon: vi.fn(),
+    newRecordId: () => method,
+  });
+  let signal: AbortSignal | undefined;
+  const request = owner.begin(method, method).run((owned) => {
+    signal = owned;
+    return new Promise<never>(() => {});
+  });
+  const rejected = expect(request).rejects.toMatchObject({ code: 'request_deadline_exceeded' });
+  await flushMicrotasks();
+  time.tick(50);
+  expect(signal?.aborted).toBe(false);
+  expect(ended).not.toHaveBeenCalled();
+  time.tick(360);
+  await rejected;
+  expect(signal?.aborted).toBe(true);
+  expect(ended).toHaveBeenCalledOnce();
+});
+
+it('allows a shared scheduling freeze without treating wall steps as a freeze', async () => {
+  const time = new VirtualTime();
+  const monotonic = time.monotonicNow.bind(time);
+  let freeze = 0n;
+  Object.assign(time, { monotonicNow: () => monotonic() + freeze });
+  const ended = vi.fn();
+  const owner = createRequestLeaseOwner({
+    time,
+    timing,
+    begin: vi.fn(),
+    end: ended,
+    abandon: vi.fn(),
+    newRecordId: () => 'freeze',
+  });
+  let signal: AbortSignal | undefined;
+  const request = owner.begin('jobs.list', 'freeze').run((owned) => {
+    signal = owned;
+    return new Promise<never>(() => {});
+  });
+  const rejected = expect(request).rejects.toMatchObject({ code: 'request_deadline_exceeded' });
+  await flushMicrotasks();
+  time.tick(10);
+  freeze = 1_000n;
+  time.tick(30);
+  expect(signal?.aborted).toBe(false);
+  time.tick(2);
+  expect(signal?.aborted).toBe(true);
+  time.tick(10);
+  await rejected;
+  expect(ended).toHaveBeenCalledOnce();
 });

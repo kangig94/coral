@@ -389,7 +389,7 @@ export class JobAddressing {
       .filter((location) => location.epochKey === activeEpochKey)
       .map((location) => location.jobId);
     const time = this.locations.time;
-    const deadline = time.now() + (request.timeoutSeconds ?? 600) * 1000;
+    const deadline = Number(time.monotonicNow()) + (request.timeoutSeconds ?? 600) * 1000;
     const activeController = new AbortController();
     const onAbort = () => activeController.abort();
     request.abortSignal?.addEventListener('abort', onAbort, { once: true });
@@ -414,7 +414,7 @@ export class JobAddressing {
       historicalGroups.set(location.epochKey, ids);
     }
     try {
-      while (!request.abortSignal?.aborted && time.now() < deadline) {
+      while (!request.abortSignal?.aborted && Number(time.monotonicNow()) < deadline) {
         for (const [epochKey, jobIds] of historicalGroups) {
           void refreshHistoricalEpoch(this.locations, epochKey, jobIds);
         }
@@ -427,7 +427,7 @@ export class JobAddressing {
 
         if (pendingActive === null) {
           await time
-            .sleep(Math.min(HISTORICAL_POLL_MS, Math.max(0, deadline - time.now())), {
+            .sleep(Math.min(HISTORICAL_POLL_MS, Math.max(0, deadline - Number(time.monotonicNow()))), {
               signal: request.abortSignal,
             })
             .catch(() => undefined);
@@ -436,7 +436,7 @@ export class JobAddressing {
         const next = await Promise.race([
           pendingActive,
           time
-            .sleep(Math.min(HISTORICAL_POLL_MS, Math.max(0, deadline - time.now())), {
+            .sleep(Math.min(HISTORICAL_POLL_MS, Math.max(0, deadline - Number(time.monotonicNow()))), {
               signal: request.abortSignal,
             })
             .then(() => null),

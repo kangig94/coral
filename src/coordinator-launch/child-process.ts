@@ -35,7 +35,7 @@ export function retireOwnedChild(
 ): void {
   const now = Date.now();
   if (!record.commitTermination(owner.current, reservation, running.identity, now, graceMs)) return;
-  retirement.at ??= now;
+  retirement.at ??= Number(process.hrtime.bigint() / 1_000_000n);
   try {
     if (
       terminationCommitted(record, owner.current, reservation, running.identity) &&

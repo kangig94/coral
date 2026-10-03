@@ -496,7 +496,7 @@ export class WaitCoordinator {
   private async *waitForJobsFromJournal(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     const { launchQueue, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
     const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
-    const startMs = this.deps.time.now();
+    const startMs = Number(this.deps.time.monotonicNow());
     const timeoutMs = timeoutSeconds * 1000;
     const deadlineMs = startMs + timeoutMs;
     const afterSeq = cursor && 'afterSeq' in cursor ? cursor.afterSeq : 0;
@@ -577,10 +577,13 @@ export class WaitCoordinator {
         for (const event of observed.interrupted) yield event;
       }
 
-      timeoutWaiter = createTimeoutWaiter(this.deps.time, Math.max(0, deadlineMs - this.deps.time.now()));
+      timeoutWaiter = createTimeoutWaiter(
+        this.deps.time,
+        Math.max(0, deadlineMs - Number(this.deps.time.monotonicNow())),
+      );
 
       while (pending.size > 0) {
-        const now = this.deps.time.now();
+        const now = Number(this.deps.time.monotonicNow());
         if (now > deadlineMs) {
           yield this.waitingSnapshot(pending, carrierUnknownJobIds);
           return;

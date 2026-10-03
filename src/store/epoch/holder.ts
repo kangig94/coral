@@ -361,7 +361,11 @@ export async function pruneStoreEpochHolders(
           try {
             if (!budget.canContinue()) return cursor;
             mutate(() => {
-              runtime.storage.unlinkSync(subject);
+              try {
+                runtime.storage.unlinkSync(subject);
+              } catch (error: unknown) {
+                if (errorCode(error) !== 'ENOENT') throw error;
+              }
               if (!runtime.storage.syncDirectoryDurableSync(root)) throw new Error('holder-directory-sync-failed');
             });
             budget.record({ kind: 'deleted', subject, count: 1 });
