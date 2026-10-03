@@ -3,6 +3,7 @@ import { parseLaunchStatus, type LaunchStatus } from '../../../infra/launch-stat
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { assertNever, serializedThrownIdentifierSchema } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
+import { providerOperationStartupStatusSchema, type ProviderOperationStartupStatus } from '../../server-ports.js';
 import {
   parseVisibleUpgradeIntent,
   type UpgradeIntentProblem,
@@ -156,6 +157,7 @@ export interface BackendHealth {
   successionProblem?: UpgradeIntentProblem;
   launchStatus?: LaunchStatus;
   diagnostics?: LaunchPermitDiagnostics & {
+    providerOperationStartupReconciliation?: ProviderOperationStartupStatus;
     carriers?: {
       coverage: 'complete' | 'unknown';
       liveJobs: number;
@@ -740,6 +742,7 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   if (!isRecord(value)) {
     return null;
   }
+  const startupStatus = providerOperationStartupStatusSchema.safeParse(value.providerOperationStartupReconciliation);
   if (value.mutationBlocked !== undefined && !isMutationBlocked(value.mutationBlocked)) {
     return null;
   }
@@ -801,6 +804,7 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
     ...(value.launchReclamations === undefined ? {} : { launchReclamations: value.launchReclamations }),
   };
   const diagnostics = { ...value };
+  delete diagnostics.providerOperationStartupReconciliation;
   delete diagnostics.providerProxySetRowSkips;
   delete diagnostics.launchPermits;
   delete diagnostics.settlementRefusalRecordingFailures;
@@ -811,6 +815,7 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
     diagnostics: {
       ...diagnostics,
       ...launchPermitDiagnostics,
+      ...(startupStatus.success ? { providerOperationStartupReconciliation: startupStatus.data } : {}),
       ...(providerProxySets === null
         ? {}
         : {

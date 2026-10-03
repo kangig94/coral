@@ -554,6 +554,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
       },
       time: {
         now: () => 100,
+        monotonicNow: () => 100n,
         setTimeout: () => ({ unref: () => undefined }),
         clearTimeout: () => undefined,
       },

@@ -103,6 +103,7 @@ export type ProviderOperationMutationSetFence = Readonly<{
 
 type ActiveProviderOperationMutation = {
   label: string;
+  recoverySignal: AbortSignal | undefined;
   setKey: string | null;
   settlement: Promise<void>;
   /** The admitted mutation this one runs within; it cannot settle before this one does. */
@@ -111,7 +112,11 @@ type ActiveProviderOperationMutation = {
 
 type ClosedProviderOperationMutationSet = {
   readonly admittedTokens: Set<symbol>;
-  readonly leases: Map<symbol, Readonly<{ settlement: Promise<void>; settle(): void }>>;
+  readonly closer: symbol | undefined;
+  readonly leases: Map<
+    symbol,
+    Readonly<{ settlement: Promise<void>; settle(): void; recoverySignal: AbortSignal | undefined }>
+  >;
 };
 
 function providerOperationMutationSetKey(set: ProviderOperationMutationSet): string {
@@ -129,6 +134,7 @@ export class ProviderOperationMutationSetClosedError extends Error {
 
 export class ProviderOperationMutationAdmission {
   readonly #context = new AsyncLocalStorage<symbol>();
+  readonly #recoveryContext = new AsyncLocalStorage<AbortSignal>();
   readonly #active = new Map<symbol, ActiveProviderOperationMutation>();
   readonly #closedSets = new Map<string, ClosedProviderOperationMutationSet>();
   readonly #setGenerations = new Map<string, number>();
@@ -158,11 +164,65 @@ export class ProviderOperationMutationAdmission {
     return token !== undefined && this.#active.has(token);
   }
 
+  runRecovery<Result>(
+    label: string,
+    mutation: () => Result | Promise<Result>,
+    set: ProviderOperationMutationSet | undefined,
+    signal: AbortSignal,
+  ): Promise<Result> {
+    return this.#recoveryContext.run(signal, () => this.run(label, mutation, set));
+  }
+
+  runDetached<Result>(label: string, mutation: () => Result | Promise<Result>): Promise<Result> {
+    return this.#recoveryContext.exit(() => this.#context.exit(() => this.run(label, mutation)));
+  }
+
+  pendingRecovery(signal: AbortSignal): { pendingMutations: string[]; pendingFences: string[] } {
+    return {
+      pendingMutations: [...this.#active.values()]
+        .filter((mutation) => mutation.recoverySignal === signal)
+        .map(({ label }) => label),
+      pendingFences: [...this.#closedSets.values()].flatMap((fence) =>
+        [...fence.leases.values()]
+          .filter((lease) => lease.recoverySignal === signal)
+          .map(() => 'provider-operation-mutation-set-fence'),
+      ),
+    };
+  }
+
+  retireRecovery(signal: AbortSignal): boolean {
+    if (!signal.aborted || [...this.#active.values()].some((mutation) => mutation.recoverySignal === signal))
+      return false;
+    for (const [setKey, fence] of this.#closedSets) {
+      for (const [key, lease] of fence.leases) {
+        if (lease.recoverySignal !== signal) continue;
+        fence.leases.delete(key);
+        lease.settle();
+      }
+      if (fence.leases.size === 0) this.#closedSets.delete(setKey);
+    }
+    this.#settleRelease();
+    return true;
+  }
+
+  pendingSet(set: ProviderOperationMutationSet): { pendingMutations: string[]; pendingFences: string[] } {
+    const setKey = providerOperationMutationSetKey(set);
+    return {
+      pendingMutations: [...this.#active.values()]
+        .filter((mutation) => mutation.setKey === null || mutation.setKey === setKey)
+        .map(({ label }) => label),
+      pendingFences: [...(this.#closedSets.get(setKey)?.leases.values() ?? [])].map(
+        () => 'provider-operation-mutation-set-fence',
+      ),
+    };
+  }
+
   async run<Result>(
     label: string,
     mutation: () => Result | Promise<Result>,
     set?: ProviderOperationMutationSet,
   ): Promise<Result> {
+    if (this.#recoveryContext.getStore()?.aborted) throw new ProviderOperationMutationSetClosedError();
     const inherited = this.#context.getStore();
     const inheritedMutation = inherited === undefined ? undefined : this.#active.get(inherited);
     const inheritedAdmission = inheritedMutation !== undefined;
@@ -185,6 +245,7 @@ export class ProviderOperationMutationAdmission {
     });
     this.#active.set(token, {
       label,
+      recoverySignal: this.#recoveryContext.getStore(),
       setKey,
       settlement,
       parent: inheritedAdmission && inherited !== undefined ? inherited : null,
@@ -203,6 +264,7 @@ export class ProviderOperationMutationAdmission {
   }
 
   runSync<Result>(label: string, mutation: () => Result, set?: ProviderOperationMutationSet): Result {
+    if (this.#recoveryContext.getStore()?.aborted) throw new ProviderOperationMutationSetClosedError();
     const inherited = this.#context.getStore();
     const inheritedMutation = inherited === undefined ? undefined : this.#active.get(inherited);
     const inheritedAdmission = inheritedMutation !== undefined;
@@ -228,7 +290,13 @@ export class ProviderOperationMutationAdmission {
     const settlement = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.#active.set(token, { label, setKey, settlement, parent: null });
+    this.#active.set(token, {
+      label,
+      setKey,
+      settlement,
+      parent: null,
+      recoverySignal: this.#recoveryContext.getStore(),
+    });
     try {
       return this.#context.run(token, mutation);
     } finally {
@@ -260,13 +328,24 @@ export class ProviderOperationMutationAdmission {
   }
 
   closeSet(set: ProviderOperationMutationSet): ProviderOperationMutationSetFence {
+    if (this.#recoveryContext.getStore()?.aborted) throw new ProviderOperationMutationSetClosedError();
     if (!this.#accepting && !this.admitted) {
       throw new Error('Provider operation mutation admission is closed.');
     }
     const setKey = providerOperationMutationSetKey(set);
+    const ownChain = this.#admissionChain(this.#context.getStore());
     let fence = this.#closedSets.get(setKey);
+    const existingFence = fence;
+    if (
+      existingFence !== undefined &&
+      [...ownChain].some((token) => existingFence.admittedTokens.has(token)) &&
+      (existingFence.closer === undefined || !ownChain.has(existingFence.closer))
+    ) {
+      throw new ProviderOperationMutationSetClosedError();
+    }
     if (fence === undefined) {
       fence = {
+        closer: this.#context.getStore(),
         admittedTokens: new Set(
           [...this.#active.entries()]
             .filter(([, mutation]) => mutation.setKey === null || mutation.setKey === setKey)
@@ -281,7 +360,7 @@ export class ProviderOperationMutationAdmission {
     const settlement = new Promise<void>((resolve) => {
       settleLease = resolve;
     });
-    fence.leases.set(lease, { settlement, settle: settleLease });
+    fence.leases.set(lease, { settlement, settle: settleLease, recoverySignal: this.#recoveryContext.getStore() });
     const currentGeneration = (): number => this.#setGenerations.get(setKey) ?? 0;
     const isHeld = (): boolean => this.#closedSets.get(setKey) === fence && fence.leases.has(lease);
     const release = (): void => {
@@ -296,7 +375,6 @@ export class ProviderOperationMutationAdmission {
       this.#runWithinSetFence(setKey, fence, lease, label, mutation);
     // A fence may never wait on any mutation in the admission chain it is created within: each of them settles
     // only after this call's caller returns, so awaiting one is a hold whose exit is its own caller.
-    const ownChain = this.#admissionChain(this.#context.getStore());
     const pending = [...fence.admittedTokens]
       .filter((token) => !ownChain.has(token))
       .map((token) => this.#active.get(token))
@@ -304,11 +382,21 @@ export class ProviderOperationMutationAdmission {
     if (pending.length === 0) {
       return { kind: 'drained', currentGeneration, isHeld, release, run };
     }
+    const drain = this.#drainSet(fence, ownChain);
+    const assertAwaitingChain = (): void => {
+      const awaitingChain = this.#admissionChain(this.#context.getStore());
+      if ([...awaitingChain].some((token) => fence.admittedTokens.has(token) && !ownChain.has(token))) {
+        throw new ProviderOperationMutationSetClosedError();
+      }
+    };
     return {
       kind: 'holding',
       pendingMutations: pending.map(({ label }) => label),
       exit: 'admitted-provider-operation-mutation-settlement',
-      retryAfter: this.#drainSet(fence, ownChain),
+      get retryAfter() {
+        assertAwaitingChain();
+        return drain;
+      },
       currentGeneration,
       isHeld,
       release,
@@ -353,6 +441,8 @@ export class ProviderOperationMutationAdmission {
     label: string,
     mutation: () => Result | Promise<Result>,
   ): Promise<Result> {
+    if (this.#recoveryContext.getStore()?.aborted) throw new ProviderOperationMutationSetClosedError();
+    if (fence.leases.get(lease)?.recoverySignal?.aborted) throw new ProviderOperationMutationSetClosedError();
     if (this.#closedSets.get(setKey) !== fence || !fence.leases.has(lease)) {
       throw new Error('Provider operation mutation set fence is no longer held.');
     }
@@ -364,6 +454,7 @@ export class ProviderOperationMutationAdmission {
     });
     this.#active.set(token, {
       label,
+      recoverySignal: this.#recoveryContext.getStore(),
       setKey,
       settlement,
       parent: inherited !== undefined && this.#active.has(inherited) ? inherited : null,

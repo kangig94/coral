@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createExecutionServices } from '#src/coordinator/composition/execution-services.js';
+import {
+  PROVIDER_OPERATION_STARTUP_BOUND_MS,
+  StartupSetRecoveryProducer,
+} from '#src/coordinator/services/provider-operation-reconciler.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
 import { attemptProviderProxySetInheritance } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
@@ -14,6 +19,9 @@ import {
   insertProviderOperation,
   readProviderOperation,
   readProviderOperationsDue,
+  providerOperationMutationAdmission,
+  ProviderOperationMutationSetClosedError,
+  ProviderOperationMutationAdmission,
 } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import type { StoragePort, TimePort } from '#src/infra/port-types.js';
@@ -33,6 +41,7 @@ import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { createProviderOperationStartupOwnership } from '#src/coordinator/services/recovery/provider-operation-startup-ownership.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 const FIXTURE_PROCESS_LONG_GONE_INCARNATION = testIncarnation(9_000);
@@ -74,8 +83,9 @@ function composeProductionStartup(
   inheritance: unknown,
   runtime: Runtime,
   createProgressStore: (db: Database) => JobStore,
+  additionalRecords: readonly ProviderOperationRecord[] = [],
 ) {
-  const db = createDb([record]);
+  const db = createDb([record, ...additionalRecords]);
   const { time } = runtime;
   const fatals = vi.fn();
   const lifecycleRef = new ProviderProxySetLifecycleRef();
@@ -329,4 +339,341 @@ describe('orphaned provider operation retries after double startup hydration', (
     },
     5_000,
   );
+});
+
+describe('startup reconciliation deadline succession', () => {
+  it('production inheritance retries behind an overlapping disposition fence', async () => {
+    const record = providerOperationRecord('settlement-pending');
+    const time = new VirtualTime();
+    const runtime = sandboxedRuntime(time);
+    const prover = createProviderProxySetContainmentProver(runtime);
+    let resume!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const collect = vi.spyOn(prover, 'collectContainmentProof');
+    const inherit = vi.fn(async (locator: ProviderOperationRecord, db: Database, signal: AbortSignal) => {
+      await wait;
+      return attemptProviderProxySetInheritance(
+        locator,
+        db,
+        {
+          runtime,
+          baseDir: dirname(runtime.paths.coral.generation.root),
+          coordinatorIdentity: {
+            instanceId: randomUUID(),
+            pid: process.pid,
+            incarnation: testIncarnation(1),
+            generation: 'gen2',
+            flavor: 'prod',
+            buildSetId: record.operation.buildSetId,
+          },
+          operationRegistry: new LocalOperationRegistry(),
+          collectContainmentProof: prover.collectContainmentProof,
+          reapRecordedContainment: () => {
+            throw new Error('competing inheritance must not reap');
+          },
+        },
+        signal,
+      );
+    });
+    const harness = composeProductionStartup(
+      record,
+      {
+        inheritProviderProxySet: inherit,
+        redeemDiscoveredCapsule: async () => {
+          throw new Error('no discovered capsule');
+        },
+      },
+      runtime,
+      (db) =>
+        new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+          db,
+          providers: permissiveProviderLookupPort,
+        }),
+    );
+    let fence: ReturnType<ReturnType<typeof providerOperationMutationAdmission>['closeSet']> | undefined;
+    try {
+      const startup = productionStartupOutcome(harness);
+      await vi.waitFor(() => expect(inherit).toHaveBeenCalledOnce());
+      const admission = providerOperationMutationAdmission(harness.db);
+      fence = admission.closeSet(providerProxySetIdentityFromRecord(record));
+      expect(fence.kind).toBe('holding');
+      expect(collect).not.toHaveBeenCalled();
+      // A second admitted closer receives a retry; the existing closer still waits for its writes.
+      resume();
+      const result = await startup;
+      expect(result).toMatchObject({
+        kind: 'fulfilled',
+        report: {
+          incidents: [
+            expect.objectContaining({
+              kind: 'set-retry-scheduled',
+              reason: 'mutation-set-fenced',
+            }),
+          ],
+        },
+      });
+      expect(collect).not.toHaveBeenCalled();
+      expect(readProviderOperation(harness.db, record.operation)?.retryCount).toBe(1);
+      expect(() => admission.runSync('proof-overlapping-write', () => undefined, record.operation)).toThrow(
+        ProviderOperationMutationSetClosedError,
+      );
+      if (fence.kind === 'holding') await fence.retryAfter;
+      fence.release();
+      expect(admission.pendingMutations()).toEqual([]);
+      expect(harness.fatals).not.toHaveBeenCalled();
+    } finally {
+      resume();
+      fence?.release();
+      harness.services.stopProviderOperationReconciler();
+      harness.ownershipService.releaseAll();
+      harness.db.close();
+    }
+  });
+
+  it('the due poll discharges an expired admitted disappearance and its abandoned fence', async () => {
+    const record = providerOperationRecord('settlement-pending');
+    const time = new VirtualTime();
+    const runtime = sandboxedRuntime(time);
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let fence: ReturnType<ProviderOperationMutationAdmission['closeSet']> | undefined;
+    let blocked = false;
+    const originalRun = ProviderOperationMutationAdmission.prototype.run;
+    vi.spyOn(ProviderOperationMutationAdmission.prototype, 'run').mockImplementation(function (
+      this: ProviderOperationMutationAdmission,
+      label,
+      mutation,
+      set,
+    ) {
+      if (label !== 'provider-containment-disappearance' || blocked)
+        return originalRun.call(this, label, mutation, set);
+      blocked = true;
+      return originalRun.call(
+        this,
+        label,
+        async () => {
+          fence = this.closeSet(record.operation);
+          await wait;
+          return mutation();
+        },
+        set,
+      );
+    });
+    const inherit = vi.fn(async () => ({
+      kind: 'containment-disappeared' as const,
+      disappearanceReceipt: 'absent-fixture',
+    }));
+    const harness = composeProductionStartup(
+      record,
+      { inheritProviderProxySet: inherit },
+      runtime,
+      (db) =>
+        new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+          db,
+          providers: permissiveProviderLookupPort,
+        }),
+    );
+    try {
+      const startup = productionStartupOutcome(harness);
+      await vi.waitFor(() => expect(fence).toBeDefined());
+      time.tick(PROVIDER_OPERATION_STARTUP_BOUND_MS);
+      expect(await startup).toMatchObject({
+        kind: 'fulfilled',
+        report: { incidents: [expect.objectContaining({ kind: 'startup-deadline-expired' })] },
+      });
+      harness.services.startProviderOperationReconciler();
+      time.tick(25);
+      await drainMicrotasks();
+      expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
+      expect(fence?.isHeld()).toBe(true);
+      expect(inherit).toHaveBeenCalledOnce();
+      release();
+      await drainMicrotasks(100);
+      expect(harness.fatals).not.toHaveBeenCalled();
+      for (let attempt = 0; attempt < 10 && readProviderOperation(harness.db, record.operation) !== null; attempt++) {
+        time.tick(2_000);
+        await drainMicrotasks(100);
+      }
+      expect(readProviderOperation(harness.db, record.operation)).toBeNull();
+      expect(inherit).toHaveBeenCalledTimes(2);
+      expect(fence?.isHeld()).toBe(false);
+      expect(harness.services.providerOperationStartupStatus()).toBeNull();
+      expect(providerOperationMutationAdmission(harness.db).pendingMutations()).toEqual([]);
+      const lateMutation = vi.fn();
+      await expect(fence?.run('late-proof-publication', lateMutation)).rejects.toThrow();
+      expect(lateMutation).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await drainMicrotasks(100);
+      fence?.release();
+      harness.services.stopProviderOperationReconciler();
+      harness.ownershipService.releaseAll();
+      harness.db.close();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('bounds disposition initialization before visiting any provider set', async () => {
+    const record = providerOperationRecord('settlement-pending');
+    const time = new VirtualTime();
+    const runtime = sandboxedRuntime(time);
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const initialize = vi
+      .spyOn(ProviderProxySetLifecycle.prototype, 'reconcileDurableOperatorDispositions')
+      .mockImplementationOnce(async () => {
+        await wait;
+        return { kind: 'completed' };
+      });
+    const harness = composeProductionStartup(
+      record,
+      undefined,
+      runtime,
+      (db) =>
+        new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+          db,
+          providers: permissiveProviderLookupPort,
+        }),
+    );
+    try {
+      const startup = productionStartupOutcome(harness);
+      await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
+      expect(harness.services.providerOperationStartupStatus()).toMatchObject({
+        phase: 'recovering',
+        sets: [
+          expect.objectContaining({ state: 'queued', pendingMutations: ['provider-operation-startup-initialization'] }),
+        ],
+      });
+      time.tick(PROVIDER_OPERATION_STARTUP_BOUND_MS);
+      expect(await startup).toMatchObject({
+        kind: 'fulfilled',
+        report: { setsVisited: 0, incidents: [expect.objectContaining({ kind: 'startup-deadline-expired' })] },
+      });
+      expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
+    } finally {
+      release();
+      await drainMicrotasks();
+      harness.services.stopProviderOperationReconciler();
+      harness.ownershipService.releaseAll();
+      harness.db.close();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('hands every unfinished set to the due poll, including sets not yet visited', async () => {
+    const record = providerOperationRecord('settlement-pending');
+    const second = providerOperationRecord('settlement-pending', {
+      operation: {
+        ...record.operation,
+        operationId: randomUUID(),
+        jobId: randomUUID(),
+        proxyInstanceId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      },
+      locator: {
+        ...record.locator,
+        proxy: { ...record.locator.proxy, instanceId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' },
+      },
+    });
+    const completed = providerOperationRecord('settlement-pending', {
+      operation: {
+        ...record.operation,
+        jobId: randomUUID(),
+        operationId: randomUUID(),
+        proxyInstanceId: '00000000-0000-4000-8000-000000000000',
+      },
+      locator: {
+        ...record.locator,
+        proxy: { ...record.locator.proxy, instanceId: '00000000-0000-4000-8000-000000000000' },
+      },
+    });
+    let completedSignal: AbortSignal | undefined;
+    const time = new VirtualTime();
+    const runtime = sandboxedRuntime(time);
+    const recover = vi
+      .spyOn(StartupSetRecoveryProducer.prototype, 'recoverSetAtStartup')
+      .mockImplementation((work, signal) => {
+        if (work.identity.proxyInstanceId !== completed.operation.proxyInstanceId) return new Promise(() => undefined);
+        completedSignal = signal;
+        return Promise.resolve({
+          kind: 'retry-scheduled',
+          reason: 'completed-set-control',
+          nextAttemptAtMs: time.now() + 10_000,
+        });
+      });
+    const harness = composeProductionStartup(
+      record,
+      undefined,
+      runtime,
+      (db) =>
+        new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+          db,
+          providers: permissiveProviderLookupPort,
+        }),
+      [second, completed],
+    );
+    try {
+      let result: Awaited<ReturnType<typeof productionStartupOutcome>> | undefined;
+      const pending = productionStartupOutcome(harness).then((outcome) => {
+        result = outcome;
+      });
+      await vi.waitFor(() => expect(recover).toHaveBeenCalledTimes(2));
+      time.tick(PROVIDER_OPERATION_STARTUP_BOUND_MS - 1);
+      await drainMicrotasks();
+      expect(result).toBeUndefined();
+      time.tick(1);
+      await pending;
+      expect(result).toMatchObject({
+        kind: 'fulfilled',
+        report: {
+          setsVisited: 2,
+          operationsVisited: 2,
+          incidents: [
+            expect.objectContaining({ kind: 'set-retry-scheduled', reason: 'completed-set-control' }),
+            expect.objectContaining({
+              kind: 'startup-deadline-expired',
+              successor: 'provider-operation-reconciler-due-poll',
+            }),
+            expect.objectContaining({
+              kind: 'startup-deadline-expired',
+              successor: 'provider-operation-reconciler-due-poll',
+            }),
+          ],
+        },
+      });
+      expect(harness.services.providerOperationStartupStatus()?.sets.map(({ setKey }) => setKey)).toHaveLength(2);
+      expect(completedSignal?.aborted).toBe(false);
+      if (completedSignal === undefined) throw new Error('completed set recovery signal was not captured');
+      await expect(
+        providerOperationMutationAdmission(harness.db).runRecovery(
+          'completed-set-callback',
+          () => 'still-admitted',
+          completed.operation,
+          completedSignal,
+        ),
+      ).resolves.toBe('still-admitted');
+      harness.services.startProviderOperationReconciler();
+      time.tick(25);
+      await drainMicrotasks();
+      expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
+      expect(readProviderOperation(harness.db, second.operation)).toMatchObject({
+        operation: second.operation,
+        phase: second.phase,
+      });
+      expect(readProviderOperation(harness.db, second.operation)?.retryCount).toBeGreaterThan(0);
+      expect(providerOperationMutationAdmission(harness.db).pendingMutations()).toContain(
+        'provider-operation-startup-reconciliation',
+      );
+    } finally {
+      harness.services.stopProviderOperationReconciler();
+      harness.ownershipService.releaseAll();
+      harness.db.close();
+      vi.restoreAllMocks();
+    }
+  });
 });

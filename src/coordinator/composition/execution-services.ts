@@ -385,6 +385,8 @@ function createExecutionOperationReconciler(input: {
   providerProxyRecovery: ReturnType<typeof createProviderProxyRecoveryDispatcher>;
   getRecoveryCoordinator: () => RecoveryCoordinator | null;
   acquireAuthority: ConstructorParameters<typeof ProviderOperationReconciler>[0]['acquireAuthority'];
+  initializeAtStartup: (signal: AbortSignal) => Promise<void>;
+  retryStartupAbsence: ProviderProxySetLifecycle['retryStartupAbsence'];
 }): ProviderOperationReconciler {
   const {
     world,
@@ -401,6 +403,8 @@ function createExecutionOperationReconciler(input: {
     providerProxyRecovery,
     getRecoveryCoordinator,
     acquireAuthority,
+    initializeAtStartup,
+    retryStartupAbsence,
   } = input;
   return new ProviderOperationReconciler({
     getProgressStore,
@@ -425,6 +429,8 @@ function createExecutionOperationReconciler(input: {
     authorityFor,
     acquireAuthority,
     startupSetRecovery,
+    initializeAtStartup,
+    retryStartupAbsence,
     registry: world.operationRegistry,
     binding: world.launchCoordinator,
     releaseStartupOwnership: (operation) =>
@@ -657,6 +663,7 @@ type ExecutionServices = {
     signal: AbortSignal,
   ) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
+  providerOperationStartupStatus: ProviderOperationReconciler['startupStatus'];
   wakeProviderOperationReconciler: () => void;
   stopProviderOperationReconciler: () => ProviderOperationReconcilerStopDisposition;
   requestStops: (jobIds: readonly string[], cause: ProviderStopCause) => ProviderStopDecision;
@@ -666,8 +673,6 @@ function createExecutionServicePorts(input: {
   state: ExecutionServicesState;
   services: Pick<ExecutionServices, 'getExecutionService' | 'getRecoveryService' | 'listExecutionServices'>;
   adoptRepairedProviderOperation: ExecutionServices['adoptRepairedProviderOperation'];
-  initializeProviderProxyClaims: () => Promise<void>;
-  initializeProviderProxyLifecycle: () => Promise<void>;
   providerOperationReconciler: ProviderOperationReconciler;
   unsubscribeProviderProxyControlEstablished: () => void;
 }): ExecutionServices {
@@ -675,8 +680,6 @@ function createExecutionServicePorts(input: {
     state,
     services,
     adoptRepairedProviderOperation,
-    initializeProviderProxyClaims,
-    initializeProviderProxyLifecycle,
     providerOperationReconciler,
     unsubscribeProviderProxyControlEstablished,
   } = input;
@@ -693,12 +696,10 @@ function createExecutionServicePorts(input: {
     connectProviderOperationRecovery: (recoveryCoordinator) => {
       state.providerOperationRecovery = recoveryCoordinator;
     },
-    reconcileProviderOperationsAtStartup: async (ownership, signal) => {
-      await initializeProviderProxyClaims();
-      await initializeProviderProxyLifecycle();
-      return providerOperationReconciler.reconcileAtStartup(ownership, signal);
-    },
+    reconcileProviderOperationsAtStartup: (ownership, signal) =>
+      providerOperationReconciler.reconcileAtStartup(ownership, signal),
     startProviderOperationReconciler: () => providerOperationReconciler.start(),
+    providerOperationStartupStatus: () => providerOperationReconciler.startupStatus(),
     wakeProviderOperationReconciler: () => providerOperationReconciler.wake(),
     requestStops: (jobIds, cause) => providerOperationReconciler.requestStops(jobIds, cause),
     stopProviderOperationReconciler: () => {
@@ -743,8 +744,11 @@ function activateProviderProxyLifecycle(lifecycle: ProviderProxySetLifecycle): v
   lifecycle.initializeClaimSlots();
 }
 
-async function reconcileProviderProxyLifecycle(lifecycle: ProviderProxySetLifecycle): Promise<void> {
-  const durableReconciliation = await lifecycle.reconcileDurableOperatorDispositions();
+async function reconcileProviderProxyLifecycle(
+  lifecycle: ProviderProxySetLifecycle,
+  signal: AbortSignal,
+): Promise<void> {
+  const durableReconciliation = await lifecycle.reconcileDurableOperatorDispositions(signal);
   if (durableReconciliation.kind !== 'completed') {
     backendLog.warn(`Durable provider proxy set disposition reconciliation failed: ${durableReconciliation.reason}`);
   }
@@ -788,7 +792,13 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     authorityFor,
     startupSetRecovery,
     providerProxyRecovery,
+    initializeAtStartup: async (signal) => {
+      await initializeProviderProxyClaims();
+      signal.throwIfAborted();
+      await initializeProviderProxyLifecycle(signal);
+    },
     getRecoveryCoordinator: () => state.providerOperationRecovery,
+    retryStartupAbsence: (identity) => providerProxyLifecycle.retryStartupAbsence(identity),
     acquireAuthority: createOrdinaryProviderAuthorityAcquirer({
       authorityFor,
       providerProxyInheritance,
@@ -829,7 +839,7 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     providerProxyLifecycle,
     state,
   });
-  const initializeProviderProxyLifecycle = async (): Promise<void> => {
+  const initializeProviderProxyLifecycle = async (signal: AbortSignal): Promise<void> => {
     if (state.providerProxyLifecycleInitialized) return;
     activateProviderProxyLifecycle(providerProxyLifecycle);
     if (world.providerProxyInheritance === undefined) {
@@ -852,7 +862,7 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
       );
     }
     state.providerProxyLifecycleInitialized = true;
-    await reconcileProviderProxyLifecycle(providerProxyLifecycle);
+    await reconcileProviderProxyLifecycle(providerProxyLifecycle, signal);
   };
 
   const servicesPorts = createExecutionServiceRegistry({
@@ -867,8 +877,6 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     state,
     services: servicesPorts,
     adoptRepairedProviderOperation,
-    initializeProviderProxyClaims,
-    initializeProviderProxyLifecycle,
     providerOperationReconciler,
     unsubscribeProviderProxyControlEstablished,
   });

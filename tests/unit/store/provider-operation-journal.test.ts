@@ -7,6 +7,7 @@ import {
   insertProviderOperation,
   readProviderOperation,
   ProviderOperationMutationAdmission,
+  ProviderOperationMutationSetClosedError,
 } from '#src/store/provider-operation-journal.js';
 import {
   encodeProviderOperationRecord,
@@ -87,6 +88,98 @@ describe('provider operation journal', () => {
     );
     successorFence.release();
     expect(admission.runSync('released-target', () => 'admitted', target.operation)).toBe('admitted');
+  });
+
+  it('makes a competing admitted closer retry without excluding its unfinished writes', async () => {
+    const admission = new ProviderOperationMutationAdmission();
+    const set = providerOperationRecord('executing').operation;
+    let closeFirst!: () => void;
+    let closeSecond!: () => void;
+    let finishSecond!: () => void;
+    const firstMayClose = new Promise<void>((resolve) => {
+      closeFirst = resolve;
+    });
+    const secondMayClose = new Promise<void>((resolve) => {
+      closeSecond = resolve;
+    });
+    const secondMayFinish = new Promise<void>((resolve) => {
+      finishSecond = resolve;
+    });
+    let proofRan = false;
+    let wrote = false;
+    let refusal: unknown;
+    const first = admission.run(
+      'first-closer',
+      async () => {
+        await firstMayClose;
+        const fence = admission.closeSet(set);
+        try {
+          expect(fence).toMatchObject({ kind: 'holding', pendingMutations: ['second-closer'] });
+          if (fence.kind === 'holding') await fence.retryAfter;
+          expect(wrote).toBe(true);
+          proofRan = true;
+        } finally {
+          fence.release();
+        }
+      },
+      set,
+    );
+    const second = admission.run(
+      'second-closer',
+      async () => {
+        await secondMayClose;
+        try {
+          admission.closeSet(set);
+        } catch (error: unknown) {
+          refusal = error;
+        }
+        await secondMayFinish;
+        admission.runSync(
+          'last-admitted-write',
+          () => {
+            wrote = true;
+          },
+          set,
+        );
+      },
+      set,
+    );
+    closeFirst();
+    await Promise.resolve();
+    closeSecond();
+    await Promise.resolve();
+    expect(refusal).toBeInstanceOf(ProviderOperationMutationSetClosedError);
+    expect(proofRan).toBe(false);
+    expect(wrote).toBe(false);
+    finishSecond();
+    await Promise.all([first, second]);
+    expect(proofRan).toBe(true);
+    expect(admission.pendingMutations()).toEqual([]);
+  });
+
+  it('refuses a transferred fence wait from a mutation the fence must drain', async () => {
+    const admission = new ProviderOperationMutationAdmission();
+    const set = providerOperationRecord('executing').operation;
+    let resume!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const mutation = admission.run(
+      'admitted-before-external-closer',
+      async () => {
+        await wait;
+        if (fence.kind !== 'holding') throw new Error('expected held fence');
+        const heldFence = fence;
+        expect(() => heldFence.retryAfter).toThrow(ProviderOperationMutationSetClosedError);
+      },
+      set,
+    );
+    const fence = admission.closeSet(set);
+    resume();
+    await mutation;
+    if (fence.kind === 'holding') await fence.retryAfter;
+    fence.release();
+    expect(admission.pendingMutations()).toEqual([]);
   });
 
   it('uses exact-value compare-and-swap and makes stale revisions lose without changing the winner', () => {

@@ -319,6 +319,24 @@ export const launchPermitDiagnosticsSchema = z
 
 export type LaunchPermitDiagnostics = z.infer<typeof launchPermitDiagnosticsSchema>;
 
+export const providerOperationStartupStatusSchema = z.object({
+  phase: z.enum(['recovering', 'retry-owned']),
+  elapsedMs: z.number().nonnegative().finite(),
+  boundMs: z.number().positive().finite(),
+  sets: z.array(
+    z.object({
+      setKey: z.string(),
+      state: z.enum(['queued', 'recovering', 'draining', 'due-poll']),
+      pendingMutations: z.array(z.string()),
+      pendingFences: z.array(z.string()),
+      incident: z.string().nullable(),
+      successor: z.literal('provider-operation-reconciler-due-poll'),
+    }),
+  ),
+});
+
+export type ProviderOperationStartupStatus = z.infer<typeof providerOperationStartupStatusSchema>;
+
 export type HealthSnapshot = {
   retention?: RetentionRunStatus;
   /**
@@ -390,6 +408,7 @@ export type HealthSnapshot = {
    * so operators can still grep for blocked writers and stuck consumers.
    */
   diagnostics?: LaunchPermitDiagnostics & {
+    providerOperationStartupReconciliation?: ProviderOperationStartupStatus;
     carriers?: {
       coverage: 'complete' | 'unknown';
       liveJobs: number;

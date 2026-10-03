@@ -2,6 +2,7 @@ import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
+import type { ProviderOperationStartupStatus } from '../../transport/server-ports.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
@@ -70,6 +71,7 @@ import {
   providerProxySetIdentitiesEqual,
   ProviderProxySetIdentityIndex,
   providerProxySetIdentityFromRecord,
+  providerProxySetKey,
   providerProxySetReference,
   type ProviderProxySetKey,
   type ProviderProxySetIdentity,
@@ -151,6 +153,13 @@ export type StartupOperationReconciliationResult =
 
 export type StartupReconciliationIncident =
   | Readonly<{
+      kind: 'startup-deadline-expired';
+      setIdentity: ProviderProxySetIdentity;
+      setKey: ProviderProxySetKey;
+      operations: readonly ProviderOperationIdentity[];
+      successor: 'provider-operation-reconciler-due-poll';
+    }>
+  | Readonly<{
       kind: 'set-retry-scheduled';
       setIdentity: ProviderProxySetIdentity;
       operations: readonly ProviderOperationIdentity[];
@@ -186,6 +195,8 @@ export type StartupReconciliationReport = Readonly<{
 export function describeStartupReconciliationIncident(incident: StartupReconciliationIncident): string {
   const set = `set=${providerProxySetReference(incident.setIdentity)}`;
   switch (incident.kind) {
+    case 'startup-deadline-expired':
+      return `${set} kind=${incident.kind} successor=${incident.successor}`;
     case 'set-retry-scheduled':
       return `${set} kind=${incident.kind} operations=${incident.operations.map(operationKey).join(',')} nextAttemptAtMs=${incident.nextAttemptAtMs} reason=${incident.reason}`;
     case 'operation-retry-scheduled':
@@ -266,13 +277,9 @@ export class StartupSetRecoveryProducer implements StartupSetRecoveryPort {
   recoverSetAtStartup(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult> {
     const existing = this.#recoveries.get(work.key);
     if (existing !== undefined) return existing;
-    const started = this.#recover(work, signal);
+    const started = this.#recoverSet(work, signal);
     this.#recoveries.set(work.key, started);
     return started;
-  }
-
-  #recover(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult> {
-    return awaitStartup(this.#recoverSet(work, signal), signal);
   }
 }
 
@@ -343,6 +350,8 @@ type ProviderOperationReconcilerDeps = Readonly<{
     signal: AbortSignal,
   ) => Promise<ProviderOperationAuthorityAcquisitionResult>;
   startupSetRecovery: StartupSetRecoveryPort;
+  initializeAtStartup?: (signal: AbortSignal) => Promise<void>;
+  retryStartupAbsence?: (identity: ProviderProxySetIdentity) => void;
   registry: Pick<LocalOperationRegistry, 'activate' | 'attach' | 'settled' | 'stop'>;
   binding: ProviderOperationBindingPort;
   releaseStartupOwnership(operation: ProviderOperationIdentity): ProviderOperationStartupRelease;
@@ -357,7 +366,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
   terminalization: ProviderOperationTerminalizationPort;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
   backendNamespace: string;
-  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout'>;
   batchSize?: number;
   onFatal(error: ProviderOperationReconcilerFatalError): void;
   onError?: (message: string) => void;
@@ -551,6 +560,16 @@ function preservesHostRefusalEvidence(record: ProviderOperationRecord): boolean 
   );
 }
 
+export const PROVIDER_OPERATION_STARTUP_BOUND_MS = 500;
+
+type StartupSetAttempt = {
+  work: StartupProviderSetWork;
+  signal: AbortSignal;
+  cancellation: AbortController;
+  state: 'queued' | 'recovering' | 'draining' | 'due-poll';
+  incident: StartupReconciliationIncident | null;
+};
+
 export class ProviderOperationReconciler
   implements ProviderContainmentDisappearanceConsumer, ProviderRepresentationAbandonmentConsumer
 {
@@ -569,6 +588,29 @@ export class ProviderOperationReconciler
   #polling = false;
   #pollRequested = false;
   #fatal = false;
+  #startupInitializationSignal: AbortSignal | null = null;
+  #startupStartedAt: bigint | null = null;
+  #startupExpiredAt: bigint | null = null;
+  readonly #startupSets = new Map<ProviderProxySetKey, StartupSetAttempt>();
+
+  startupStatus(): ProviderOperationStartupStatus | null {
+    if (this.#startupStartedAt === null || this.#startupSets.size === 0) return null;
+    return {
+      phase: this.#startupExpiredAt === null ? 'recovering' : 'retry-owned',
+      elapsedMs: Number((this.#startupExpiredAt ?? this.#deps.time.monotonicNow()) - this.#startupStartedAt),
+      boundMs: PROVIDER_OPERATION_STARTUP_BOUND_MS,
+      sets: [...this.#startupSets.values()].map((attempt) => {
+        const pending = this.#admission().pendingSet(attempt.work.identity);
+        return {
+          setKey: attempt.work.key,
+          state: attempt.state,
+          ...pending,
+          incident: attempt.incident === null ? null : describeStartupReconciliationIncident(attempt.incident),
+          successor: 'provider-operation-reconciler-due-poll' as const,
+        };
+      }),
+    };
+  }
 
   constructor(deps: ProviderOperationReconcilerDeps) {
     const batchSize = deps.batchSize ?? 32;
@@ -625,15 +667,14 @@ export class ProviderOperationReconciler
     signal: AbortSignal,
   ): Promise<StartupReconciliationReport> {
     if (!this.#canMutate()) return Promise.reject(new Error('Provider operation mutation admission is closed.'));
-    return this.#admission().run('provider-operation-startup-reconciliation', () =>
-      this.#reconcileAtStartup(ownership, signal),
-    );
+    return this.#reconcileAtStartup(ownership, signal);
   }
 
   async #reconcileAtStartup(
     ownership: ProviderOperationStartupOwnership,
     signal: AbortSignal,
   ): Promise<StartupReconciliationReport> {
+    this.#startupStartedAt = this.#deps.time.monotonicNow();
     const hydratedOperations = new Set(
       ownership.records.filter(startupOperationCanReconcile).map(({ operation }) => operationKey(operation)),
     );
@@ -643,14 +684,91 @@ export class ProviderOperationReconciler
     const incidents: StartupReconciliationIncident[] = [];
     let setsVisited = 0;
     let operationsVisited = 0;
+    const deadline = this.#startupStartedAt + BigInt(PROVIDER_OPERATION_STARTUP_BOUND_MS);
+    const expiry = new Error('Provider operation startup reconciliation deadline expired.');
+    const deadlineAbort = new AbortController();
+    const initializationAbort = new AbortController();
+    const initializationSignal = AbortSignal.any([signal, initializationAbort.signal]);
+    this.#startupInitializationSignal = initializationSignal;
+    let initializing = false;
+    let timer: TimerHandle;
+    const expire = (): void => {
+      const remaining = Number(deadline - this.#deps.time.monotonicNow());
+      if (remaining > 0) {
+        timer = this.#deps.time.setTimeout(expire, remaining);
+        return;
+      }
+      this.#startupExpiredAt = this.#deps.time.monotonicNow();
+      deadlineAbort.abort(expiry);
+      if (initializing) initializationAbort.abort(expiry);
+      for (const attempt of this.#startupSets.values()) attempt.cancellation.abort(expiry);
+    };
+    timer = this.#deps.time.setTimeout(expire, PROVIDER_OPERATION_STARTUP_BOUND_MS);
+    const startupSignal = AbortSignal.any([signal, deadlineAbort.signal]);
     for (const work of groupStartupProviderSetWork(records)) {
+      const cancellation = new AbortController();
+      this.#startupSets.set(work.key, {
+        work,
+        signal: AbortSignal.any([signal, cancellation.signal]),
+        cancellation,
+        state: 'queued',
+        incident: null,
+      });
+    }
+    try {
+      const initializeAtStartup = this.#deps.initializeAtStartup;
+      if (initializeAtStartup !== undefined) {
+        initializing = true;
+        await awaitStartup(
+          this.#admission().runRecovery(
+            'provider-operation-startup-initialization',
+            () => initializeAtStartup(initializationSignal),
+            undefined,
+            initializationSignal,
+          ),
+          startupSignal,
+        );
+        initializing = false;
+      }
+      for (const attempt of this.#startupSets.values()) {
+        signal.throwIfAborted();
+        if (this.#deps.time.monotonicNow() >= deadline) expire();
+        if (deadlineAbort.signal.aborted) break;
+        const currentRecords = this.#readCurrentStartupSet(attempt.work);
+        if (currentRecords.length === 0) {
+          this.#startupSets.delete(attempt.work.key);
+          continue;
+        }
+        setsVisited += 1;
+        operationsVisited += currentRecords.length;
+        attempt.state = 'recovering';
+        const recovery = this.#admission().runRecovery(
+          'provider-operation-startup-reconciliation',
+          () => this.#reconcileStartupSet(attempt.work, currentRecords, attempt.signal),
+          attempt.work.identity,
+          attempt.signal,
+        );
+        incidents.push(...(await awaitStartup(recovery, attempt.signal)));
+        this.#startupSets.delete(attempt.work.key);
+      }
+    } catch (error: unknown) {
       signal.throwIfAborted();
-      const currentRecords = this.#readCurrentStartupSet(work);
-      if (currentRecords.length === 0) continue;
-
-      setsVisited += 1;
-      operationsVisited += currentRecords.length;
-      incidents.push(...(await this.#reconcileStartupSet(work, currentRecords, signal)));
+      if (error !== expiry) throw error;
+    } finally {
+      this.#deps.time.clearTimeout(timer);
+    }
+    if (deadlineAbort.signal.aborted) {
+      for (const attempt of this.#startupSets.values()) {
+        attempt.state = 'draining';
+        attempt.incident = {
+          kind: 'startup-deadline-expired',
+          setIdentity: attempt.work.identity,
+          setKey: attempt.work.key,
+          operations: attempt.work.operations,
+          successor: 'provider-operation-reconciler-due-poll',
+        };
+        incidents.push(attempt.incident);
+      }
     }
     return { setsVisited, operationsVisited, incidents };
   }
@@ -679,9 +797,11 @@ export class ProviderOperationReconciler
       ...work,
       operations: currentRecords.map((record) => record.operation),
     };
-    const recovery = await awaitStartup(this.#deps.startupSetRecovery.recoverSetAtStartup(currentWork, signal), signal);
+    const recovery = await this.#deps.startupSetRecovery.recoverSetAtStartup(currentWork, signal);
+    signal.throwIfAborted();
     if (recovery.kind === 'absence-accepted') {
-      const disposition = await awaitStartup(recovery.acceptance.initialDisposition, signal);
+      const disposition = await recovery.acceptance.initialDisposition;
+      signal.throwIfAborted();
       switch (disposition.kind) {
         case 'completed':
           return [];
@@ -724,7 +844,8 @@ export class ProviderOperationReconciler
 
     const incidents: StartupReconciliationIncident[] = [];
     for (const record of currentRecords) {
-      const result = await awaitStartup(this.#reconcileStartupOperation(record, recovery.authority, signal), signal);
+      const result = await this.#reconcileStartupOperation(record, recovery.authority, signal);
+      signal.throwIfAborted();
       if (result.kind === 'retry-scheduled') {
         incidents.push({
           kind: 'operation-retry-scheduled',
@@ -909,6 +1030,7 @@ export class ProviderOperationReconciler
 
   wake(): void {
     if (this.#fatal || this.#admissionClosed) return;
+    if (this.#startupSets.size > 0 && !this.#started) return;
     if (this.#polling) {
       this.#pollRequested = true;
       return;
@@ -1058,6 +1180,10 @@ export class ProviderOperationReconciler
     preferredAuthority?: DurableProviderProxyOperationAuthority,
     signal?: AbortSignal,
   ): Promise<void> {
+    const startup = this.#startupSets.get(providerProxySetKey(providerProxySetIdentityFromRecord(record)));
+    if (signal !== startup?.signal && startup?.state === 'draining') {
+      return Promise.reject(new ProviderOperationMutationSetClosedError());
+    }
     if (!this.#canMutate()) return Promise.reject(new Error('Provider operation mutation admission is closed.'));
     return this.#admission().run(
       `provider-operation:${operationKey(record.operation)}`,
@@ -2652,7 +2778,7 @@ export class ProviderOperationReconciler
       if (!this.#admissionClosed) this.#schedule(TIMER_MAX_MS);
       return Promise.resolve();
     }
-    return this.#admission().run('provider-operation-due-poll', async () => {
+    return this.#admission().runDetached('provider-operation-due-poll', async () => {
       if (this.#fatal) return;
       if (this.#polling) {
         this.#pollRequested = true;
@@ -2661,6 +2787,7 @@ export class ProviderOperationReconciler
       this.#polling = true;
       try {
         const progressStore = this.#deps.getProgressStore();
+        this.#resumeStartupSetRetries();
         const scanCutoffMs = this.#deps.time.now();
         let selections: readonly ProviderOperationDueSelection[];
         try {
@@ -2679,6 +2806,10 @@ export class ProviderOperationReconciler
           throw error;
         }
         for (const selection of selections) {
+          const startup = this.#startupSets.get(
+            providerProxySetKey(providerProxySetIdentityFromRecord(selection.record)),
+          );
+          if (startup?.state === 'draining') continue;
           const result = await this.#reconcileDueSelection(selection, scanCutoffMs, preferredAuthority);
           if (result === 'fatal') return;
         }
@@ -2689,6 +2820,10 @@ export class ProviderOperationReconciler
             this.#settlements.delete(key);
             continue;
           }
+          if (
+            this.#startupSets.get(providerProxySetKey(providerProxySetIdentityFromRecord(record)))?.state === 'draining'
+          )
+            continue;
           if (record.phase !== 'settlement-pending' || record.retryNotBeforeMs > this.#deps.time.now()) continue;
           if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
           await this.reconcile(record, preferredAuthority);
@@ -2699,6 +2834,10 @@ export class ProviderOperationReconciler
             this.#attachments.delete(key);
             continue;
           }
+          if (
+            this.#startupSets.get(providerProxySetKey(providerProxySetIdentityFromRecord(record)))?.state === 'draining'
+          )
+            continue;
           if (record.retryNotBeforeMs > this.#deps.time.now()) continue;
           if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
           await this.reconcile(record, preferredAuthority);
@@ -2720,6 +2859,40 @@ export class ProviderOperationReconciler
         }
       }
     });
+  }
+
+  #resumeStartupSetRetries(): void {
+    if (this.#startupExpiredAt === null) return;
+    const initialization = this.#startupInitializationSignal;
+    if (initialization?.aborted && !this.#admission().retireRecovery(initialization)) return;
+    for (const attempt of this.#startupSets.values()) {
+      if (!this.#admission().retireRecovery(attempt.signal)) continue;
+      const records = this.#readCurrentStartupSet(attempt.work);
+      if (records.length === 0) {
+        this.#startupSets.delete(attempt.work.key);
+        continue;
+      }
+      if (attempt.state !== 'draining') continue;
+      this.#deps.retryStartupAbsence?.(attempt.work.identity);
+      for (const operation of attempt.work.operations) {
+        const serializer = this.#serializers.get(operationKey(operation));
+        if (serializer?.disappearance?.delivery.kind !== 'ready') continue;
+        serializer.disappearance = null;
+        serializer.epoch += 1;
+      }
+      try {
+        for (const record of records) {
+          this.#scheduleStartupSetRetry(
+            record,
+            'Provider operation startup reconciliation deadline expired.',
+            this.#deps.time.now(),
+          );
+        }
+        attempt.state = 'due-poll';
+      } catch (error: unknown) {
+        if (!(error instanceof ProviderOperationMutationSetClosedError)) throw error;
+      }
+    }
   }
 
   async #reconcileDueSelection(

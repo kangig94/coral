@@ -89,8 +89,7 @@ release and code-warmth ordering above remains the record of why the previous ta
 | --- | --- | --- |
 | 1 | `unauthorized-status-remedy-cannot-act` | `formatDaemonStatus` in `src/cli/format/backend.ts` prints `backend shutdown` for a token mismatch, although that command is rejected. First stop offering a known failing remedy; then decide a proven, unattended way to act. |
 | 2 | `local-app-server-stream-has-no-inactivity-bound` | A stalled Codex/local stream can hold a launch permit indefinitely. Instrument the idle case and choose a provider-safe inactivity disposition. |
-| 3 | `provider-operation-startup-reconciliation-unbounded` | `awaitStartup` in `src/coordinator/services/provider-operation-reconciler.ts` has no elapsed-time bound, so one unsettled recovery can keep the whole coordinator in `starting`. Give expiry a retry owner. |
-| 4 | `coordinator-process-disposition` | `RecoveryRegistry.abort` in `src/jobs/reconcile/registry.ts` can release custody before process absence. Audit runtime-bearing terminal paths and retain custody until absence or transfer is proved. |
+| 3 | `coordinator-process-disposition` | `RecoveryRegistry.abort` in `src/jobs/reconcile/registry.ts` can release custody before process absence. Audit runtime-bearing terminal paths and retain custody until absence or transfer is proved. |
 
 `proxy-set-acquisition`'s clock-drift symptom
 closed with #324, the same fix that closed the coordinator's own paths; what is left is a narrower
@@ -167,17 +166,12 @@ will not be defended, so that exit-code plan cannot ship as written.
 | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`proxy-set-acquisition.md`](./proxy-set-acquisition.md) | The cached-clock start-time mismatch shipped fixed in #324. A failed lease can reacquire on a later `acquireHostLease` call. Open work is the identity-check design and publishing acquisition/refusal state through backend status. |
 | [`provider-operation-shutdown-quiescence.md`](./provider-operation-shutdown-quiescence.md) | The shared mutation gate and shutdown drain shipped. Prove that an open disappearance delivery stays owned through stop and an exhausted budget, including when provider recovery defers admission closure. |
-| [`provider-operation-startup-reconciliation-unbounded.md`](./provider-operation-startup-reconciliation-unbounded.md) | **The #380 deadlock is fixed; the unbounded wait it exposed is not.** Startup reconciliation is bounded only by the shutdown abort signal, so any wait inside it that never settles leaves the coordinator in `starting` with no component and no exit. Needs a bound whose expiry becomes a startup incident with a named successor, and a startup test that a store holding an orphaned provider-operation record still reaches `running`. |
-| [`set-fence-closers-can-wait-on-each-other.md`](./set-fence-closers-can-wait-on-each-other.md) | **Found verifying #380; reachability undetermined.** Each `closeSet` excludes only its own admission chain, so two chains closing one set and awaiting their fences wait on each other. The whole-admission `close()` can likewise wait on its caller. Breaking the cycle by excluding the other closer would let containment proof race a live mutator, so it needs a protocol, not a wider exclusion. |
 | [`provider-operation-admission-hold.md`](./provider-operation-admission-hold.md) | Known unreadable rows already have quarantine and revision-checked discard. Indeterminate job attribution still fences no job and needs a held startup phase. Principle 12 withdraws operator clear as its required exit; decide an unattended successor before shipping the phase, client answers, held shutdown and in-process recheck together. |
 | [`local-app-server-stream-has-no-inactivity-bound.md`](./local-app-server-stream-has-no-inactivity-bound.md) | **Open, likely cause of the usage-limit incident.** Codex/local app-server initialization is bounded, but stream consumption has no inactivity deadline and can hold a launch permit indefinitely. Claude's app-server recovery and the durable-CLI timeout do not bound this path. Reproduce or instrument inactivity before choosing a provider-safe disposition. |
 | [`provider-proxy-persistent-challenge-mismatch.md`](./provider-proxy-persistent-challenge-mismatch.md) | Repeated current-tenancy challenge mismatches are answers, not silence, but a faulty peer could answer forever without accepting an echo. Give that distinct subject a bounded disposition if it becomes reachable against a correct endpoint. |
 
-[`provider-operation-startup-reconciliation-unbounded`](./provider-operation-startup-reconciliation-unbounded.md),
-[`set-fence-closers-can-wait-on-each-other`](./set-fence-closers-can-wait-on-each-other.md), and
 [`starting-coordinator-has-no-exit-contribution`](./starting-coordinator-has-no-exit-contribution.md)
-are one stuck-starting family: the first needs a bounded
-successor, the second can supply a stuck fence, and the third is the CLI answer while startup is held.
+tracks the remaining CLI exit-contribution owner decision while startup is held.
 
 ---
 

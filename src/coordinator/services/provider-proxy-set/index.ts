@@ -1607,6 +1607,28 @@ export class ProviderProxySetLifecycle {
     this.#classifyCapacity();
   }
 
+  retryStartupAbsence(identity: ProviderProxySetIdentity): void {
+    const slot = this.#slots.get(providerProxySetKey(identity));
+    if (slot?.kind !== 'absence-delivery-pending' || slot.terminalSettlement !== null) return;
+    this.#clearRepresentationReleaseTimers(slot);
+    if (slot.mutationProof !== null) releaseProviderProxySetContainmentProofFence(slot.mutationProof);
+    this.#slots.set(slot.key, {
+      kind: 'recovering',
+      recoveryKind: 'claim',
+      key: slot.key,
+      identity: slot.identity,
+      address: slot.address,
+      capacityClass: 'retained',
+      capsulePath: slot.capsulePath,
+    });
+    const disposition: ProviderProxyRepresentationReleasedUndischarged = {
+      kind: 'released-undischarged',
+      witness: slot.pendingOperations.size > 0 ? 'provider-operation-record' : 'provider-handoff-capsule',
+    };
+    slot.settleRepresentationRelease(disposition);
+    slot.initialDisposition.resolve(disposition);
+  }
+
   completeStartupDiscovery(): void {
     this.#classifyCapacity();
     this.#startupDiscoveryCompleted = true;

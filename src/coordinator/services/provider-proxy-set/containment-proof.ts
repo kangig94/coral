@@ -371,11 +371,18 @@ export function createProviderProxySetContainmentProver(runtime: Runtime): Provi
         await authorizationRecord.closeAdmission?.();
         signal.throwIfAborted();
         const generation = authorizationRecord.fence?.currentGeneration() ?? null;
+        const evidence = await collectProviderProxySetContainmentEvidence(
+          authorizationRecord.identity,
+          db,
+          runtime,
+          signal,
+        );
+        signal.throwIfAborted();
         const proof = Object.freeze({}) as ProviderProxySetContainmentProof;
         containmentProofRecords.set(proof, {
           authorization,
           identity: authorizationRecord.identity,
-          evidence: await collectProviderProxySetContainmentEvidence(authorizationRecord.identity, db, runtime, signal),
+          evidence,
           currentness:
             authorizationRecord.fence === null || generation === null
               ? null

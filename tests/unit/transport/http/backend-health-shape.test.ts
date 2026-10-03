@@ -112,3 +112,21 @@ describe('storage retention visibility', () => {
     expect(parsed?.health).not.toHaveProperty('retention');
   });
 });
+
+describe('additive provider-operation startup health', () => {
+  it('accepts older health and drops unsupported startup projections without rejecting health', () => {
+    expect(
+      parseBackendHealth(HEALTHY_BASE)?.health.diagnostics?.providerOperationStartupReconciliation,
+    ).toBeUndefined();
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      diagnostics: {
+        providerOperationStartupReconciliation: { phase: 'future-state' },
+        carriers: { coverage: 'complete', liveJobs: 0, unknownJobs: 0, recoveryDefectJobs: 0 },
+      },
+    });
+    expect(parsed?.health.status).toBe('ok');
+    expect(parsed?.health.diagnostics?.carriers?.coverage).toBe('complete');
+    expect(parsed?.health.diagnostics?.providerOperationStartupReconciliation).toBeUndefined();
+  });
+});

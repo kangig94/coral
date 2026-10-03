@@ -11,7 +11,10 @@ import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-obs
 import type { Runtime } from '../../../runtime/ports.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import type { Database } from '../../../store/db.js';
-import { providerOperationMutationAdmission } from '../../../store/provider-operation-journal.js';
+import {
+  providerOperationMutationAdmission,
+  ProviderOperationMutationSetClosedError,
+} from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
   ProviderProxyRoleControlUnavailableError,
@@ -171,6 +174,7 @@ async function collectFencedContainmentProof(
 type ProviderProxySetRedemptionAttempt = Exclude<ProviderProxySetRedemptionOutcome, { kind: 'protocol-incompatible' }>;
 
 export type ProviderProxySetAvailabilityIncident =
+  | Readonly<{ kind: 'mutation-set-fenced' }>
   | ProviderProxyRoleControlAvailabilityIncident
   | ProviderProxySetPublicationUnknown
   | Readonly<{ kind: 'transfer-status-unconfirmed' }>
@@ -291,6 +295,7 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
       ].join(':');
     case 'recovery-deadline':
       return `${incident.kind}:${incident.timeoutMs}`;
+    case 'mutation-set-fenced':
     case 'transfer-status-unconfirmed':
       return incident.kind;
     case 'publication-unknown':
@@ -698,6 +703,7 @@ export async function attemptProviderProxySetInheritance(
       releaseProviderProxySetContainmentProofFence(proof);
     } catch (proofError: unknown) {
       if (signal.aborted && proofError === signal.reason) throw proofError;
+      if (proofError instanceof ProviderOperationMutationSetClosedError) throw proofError;
       throw new AggregateError(
         [error, proofError],
         'Provider proxy role control was unavailable and containment proof failed.',

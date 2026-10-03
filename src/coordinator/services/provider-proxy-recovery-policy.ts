@@ -7,7 +7,10 @@ import {
 import type { RedeemableHandoffCapsule } from '../../provider-proxy/handoff-capsule.js';
 import type { OperationIdentity } from '../../provider-proxy/protocol.js';
 import type { Database } from '../../store/db.js';
-import { ProviderOperationJournalError } from '../../store/provider-operation-journal.js';
+import {
+  ProviderOperationJournalError,
+  ProviderOperationMutationSetClosedError,
+} from '../../store/provider-operation-journal.js';
 import type {
   ProviderOperationRecord,
   ProviderOperationTerminalDirective,
@@ -472,6 +475,19 @@ function classifyRejection(
   if (isProviderProxyRecoveryFatalError(error)) return { kind: 'forwarded-fatal', error };
   const cancelled = callerCancellation(input as { signal?: AbortSignal }, error);
   if (cancelled !== null) return cancelled;
+  if (error instanceof ProviderOperationMutationSetClosedError) {
+    if (producerId === 'disappearance-consumer' || producerId === 'representation-abandonment-consumer') {
+      return unavailable(producerId, {
+        kind: 'operational-failure',
+        code:
+          producerId === 'disappearance-consumer'
+            ? 'disappearance_consumer_unavailable'
+            : 'representation_abandonment_consumer_unavailable',
+        reason: error.message,
+      });
+    }
+    return unavailable(producerId, { kind: 'mutation-set-fenced' });
+  }
   // Retiring a capsule this build may not dial is one boot's housekeeping, not a claim on any authority. No
   // way it can fail is evidence about this coordinator, so no way it can fail may end this coordinator.
   if (seam === 'foreign-capsule-retirement') {
