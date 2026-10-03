@@ -386,7 +386,6 @@ function createExecutionOperationReconciler(input: {
   getRecoveryCoordinator: () => RecoveryCoordinator | null;
   acquireAuthority: ConstructorParameters<typeof ProviderOperationReconciler>[0]['acquireAuthority'];
   initializeAtStartup: (signal: AbortSignal) => Promise<void>;
-  retryStartupAbsence: ProviderProxySetLifecycle['retryStartupAbsence'];
 }): ProviderOperationReconciler {
   const {
     world,
@@ -404,7 +403,6 @@ function createExecutionOperationReconciler(input: {
     getRecoveryCoordinator,
     acquireAuthority,
     initializeAtStartup,
-    retryStartupAbsence,
   } = input;
   return new ProviderOperationReconciler({
     getProgressStore,
@@ -430,7 +428,6 @@ function createExecutionOperationReconciler(input: {
     acquireAuthority,
     startupSetRecovery,
     initializeAtStartup,
-    retryStartupAbsence,
     registry: world.operationRegistry,
     binding: world.launchCoordinator,
     releaseStartupOwnership: (operation) =>
@@ -798,7 +795,6 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
       await initializeProviderProxyLifecycle(signal);
     },
     getRecoveryCoordinator: () => state.providerOperationRecovery,
-    retryStartupAbsence: (identity) => providerProxyLifecycle.retryStartupAbsence(identity),
     acquireAuthority: createOrdinaryProviderAuthorityAcquirer({
       authorityFor,
       providerProxyInheritance,

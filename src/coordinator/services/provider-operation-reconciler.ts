@@ -152,12 +152,13 @@ export type StartupOperationReconciliationResult =
     }>;
 
 export type StartupReconciliationIncident =
+  | Readonly<{ kind: 'startup-initialization-detached' }>
   | Readonly<{
       kind: 'startup-deadline-expired';
       setIdentity: ProviderProxySetIdentity;
       setKey: ProviderProxySetKey;
       operations: readonly ProviderOperationIdentity[];
-      successor: 'provider-operation-reconciler-due-poll';
+      successor: 'detached-startup-recovery';
     }>
   | Readonly<{
       kind: 'set-retry-scheduled';
@@ -193,6 +194,8 @@ export type StartupReconciliationReport = Readonly<{
 }>;
 
 export function describeStartupReconciliationIncident(incident: StartupReconciliationIncident): string {
+  if (incident.kind === 'startup-initialization-detached')
+    return 'startup initialization detached; owner=provider-proxy-lifecycle-initialization';
   const set = `set=${providerProxySetReference(incident.setIdentity)}`;
   switch (incident.kind) {
     case 'startup-deadline-expired':
@@ -351,7 +354,6 @@ type ProviderOperationReconcilerDeps = Readonly<{
   ) => Promise<ProviderOperationAuthorityAcquisitionResult>;
   startupSetRecovery: StartupSetRecoveryPort;
   initializeAtStartup?: (signal: AbortSignal) => Promise<void>;
-  retryStartupAbsence?: (identity: ProviderProxySetIdentity) => void;
   registry: Pick<LocalOperationRegistry, 'activate' | 'attach' | 'settled' | 'stop'>;
   binding: ProviderOperationBindingPort;
   releaseStartupOwnership(operation: ProviderOperationIdentity): ProviderOperationStartupRelease;
@@ -565,8 +567,7 @@ export const PROVIDER_OPERATION_STARTUP_BOUND_MS = 500;
 type StartupSetAttempt = {
   work: StartupProviderSetWork;
   signal: AbortSignal;
-  cancellation: AbortController;
-  state: 'queued' | 'recovering' | 'draining' | 'due-poll';
+  state: 'queued' | 'recovering' | 'detached';
   incident: StartupReconciliationIncident | null;
 };
 
@@ -594,11 +595,21 @@ export class ProviderOperationReconciler
   readonly #startupSets = new Map<ProviderProxySetKey, StartupSetAttempt>();
 
   startupStatus(): ProviderOperationStartupStatus | null {
-    if (this.#startupStartedAt === null || this.#startupSets.size === 0) return null;
+    if (this.#startupStartedAt === null || (this.#startupSets.size === 0 && this.#startupInitializationSignal === null))
+      return null;
     return {
-      phase: this.#startupExpiredAt === null ? 'recovering' : 'retry-owned',
-      elapsedMs: Number((this.#startupExpiredAt ?? this.#deps.time.monotonicNow()) - this.#startupStartedAt),
+      phase: this.#startupExpiredAt === null ? 'recovering' : 'detached',
+      elapsedMs: Number(this.#deps.time.monotonicNow() - this.#startupStartedAt),
       boundMs: PROVIDER_OPERATION_STARTUP_BOUND_MS,
+      initialization:
+        this.#startupInitializationSignal === null
+          ? null
+          : {
+              state: this.#startupExpiredAt === null ? 'recovering' : 'detached',
+              ...this.#admission().pendingRecovery(this.#startupInitializationSignal),
+              incident: this.#startupExpiredAt === null ? null : 'startup-initialization-detached',
+              successor: 'provider-proxy-lifecycle-initialization',
+            },
       sets: [...this.#startupSets.values()].map((attempt) => {
         const pending = this.#admission().pendingSet(attempt.work.identity);
         return {
@@ -606,7 +617,7 @@ export class ProviderOperationReconciler
           state: attempt.state,
           ...pending,
           incident: attempt.incident === null ? null : describeStartupReconciliationIncident(attempt.incident),
-          successor: 'provider-operation-reconciler-due-poll' as const,
+          successor: 'detached-startup-recovery' as const,
         };
       }),
     };
@@ -687,10 +698,6 @@ export class ProviderOperationReconciler
     const deadline = this.#startupStartedAt + BigInt(PROVIDER_OPERATION_STARTUP_BOUND_MS);
     const expiry = new Error('Provider operation startup reconciliation deadline expired.');
     const deadlineAbort = new AbortController();
-    const initializationAbort = new AbortController();
-    const initializationSignal = AbortSignal.any([signal, initializationAbort.signal]);
-    this.#startupInitializationSignal = initializationSignal;
-    let initializing = false;
     let timer: TimerHandle;
     const expire = (): void => {
       const remaining = Number(deadline - this.#deps.time.monotonicNow());
@@ -700,75 +707,86 @@ export class ProviderOperationReconciler
       }
       this.#startupExpiredAt = this.#deps.time.monotonicNow();
       deadlineAbort.abort(expiry);
-      if (initializing) initializationAbort.abort(expiry);
-      for (const attempt of this.#startupSets.values()) attempt.cancellation.abort(expiry);
-    };
-    timer = this.#deps.time.setTimeout(expire, PROVIDER_OPERATION_STARTUP_BOUND_MS);
-    const startupSignal = AbortSignal.any([signal, deadlineAbort.signal]);
-    for (const work of groupStartupProviderSetWork(records)) {
-      const cancellation = new AbortController();
-      this.#startupSets.set(work.key, {
-        work,
-        signal: AbortSignal.any([signal, cancellation.signal]),
-        cancellation,
-        state: 'queued',
-        incident: null,
-      });
-    }
-    try {
-      const initializeAtStartup = this.#deps.initializeAtStartup;
-      if (initializeAtStartup !== undefined) {
-        initializing = true;
-        await awaitStartup(
-          this.#admission().runRecovery(
-            'provider-operation-startup-initialization',
-            () => initializeAtStartup(initializationSignal),
-            undefined,
-            initializationSignal,
-          ),
-          startupSignal,
-        );
-        initializing = false;
-      }
       for (const attempt of this.#startupSets.values()) {
-        signal.throwIfAborted();
-        if (this.#deps.time.monotonicNow() >= deadline) expire();
-        if (deadlineAbort.signal.aborted) break;
-        const currentRecords = this.#readCurrentStartupSet(attempt.work);
-        if (currentRecords.length === 0) {
-          this.#startupSets.delete(attempt.work.key);
-          continue;
-        }
-        setsVisited += 1;
-        operationsVisited += currentRecords.length;
-        attempt.state = 'recovering';
-        const recovery = this.#admission().runRecovery(
-          'provider-operation-startup-reconciliation',
-          () => this.#reconcileStartupSet(attempt.work, currentRecords, attempt.signal),
-          attempt.work.identity,
-          attempt.signal,
-        );
-        incidents.push(...(await awaitStartup(recovery, attempt.signal)));
-        this.#startupSets.delete(attempt.work.key);
-      }
-    } catch (error: unknown) {
-      signal.throwIfAborted();
-      if (error !== expiry) throw error;
-    } finally {
-      this.#deps.time.clearTimeout(timer);
-    }
-    if (deadlineAbort.signal.aborted) {
-      for (const attempt of this.#startupSets.values()) {
-        attempt.state = 'draining';
+        if (attempt.state === 'recovering') attempt.state = 'detached';
         attempt.incident = {
           kind: 'startup-deadline-expired',
           setIdentity: attempt.work.identity,
           setKey: attempt.work.key,
           operations: attempt.work.operations,
-          successor: 'provider-operation-reconciler-due-poll',
+          successor: 'detached-startup-recovery',
         };
         incidents.push(attempt.incident);
       }
+      if (this.#startupInitializationSignal !== null) incidents.push({ kind: 'startup-initialization-detached' });
+    };
+    timer = this.#deps.time.setTimeout(expire, PROVIDER_OPERATION_STARTUP_BOUND_MS);
+    const startupSignal = AbortSignal.any([signal, deadlineAbort.signal]);
+    for (const work of groupStartupProviderSetWork(records)) {
+      this.#startupSets.set(work.key, { work, signal: AbortSignal.any([signal]), state: 'queued', incident: null });
+    }
+    const recover = async (): Promise<void> => {
+      const initializeAtStartup = this.#deps.initializeAtStartup;
+      if (initializeAtStartup !== undefined) {
+        this.#startupInitializationSignal = signal;
+        try {
+          await this.#admission().runRecovery(
+            'provider-operation-startup-initialization',
+            () => initializeAtStartup(signal),
+            undefined,
+            signal,
+          );
+        } finally {
+          this.#startupInitializationSignal = null;
+        }
+      }
+      await Promise.all(
+        [...this.#startupSets.values()].map(async (attempt) => {
+          signal.throwIfAborted();
+          const currentRecords = this.#readCurrentStartupSet(attempt.work);
+          if (currentRecords.length === 0) {
+            this.#startupSets.delete(attempt.work.key);
+            return;
+          }
+          setsVisited += 1;
+          operationsVisited += currentRecords.length;
+          attempt.state = this.#startupExpiredAt === null ? 'recovering' : 'detached';
+          try {
+            const outcome = await this.#admission().runRecovery(
+              'provider-operation-startup-reconciliation',
+              () => this.#reconcileStartupSet(attempt.work, currentRecords, attempt.signal),
+              attempt.work.identity,
+              attempt.signal,
+            );
+            if (this.#startupExpiredAt === null) incidents.push(...outcome);
+            else for (const incident of outcome) this.#deps.onError?.(describeStartupReconciliationIncident(incident));
+          } catch (error: unknown) {
+            signal.throwIfAborted();
+            if (this.#startupExpiredAt === null || this.#observeFatal(error)) throw error;
+            const reason = providerOperationErrorReason(error);
+            for (const record of this.#readCurrentStartupSet(attempt.work)) {
+              this.#scheduleStartupSetRetry(record, reason, this.#deps.time.now() + TIMER_MIN_MS);
+            }
+            this.#deps.onError?.(`Detached provider operation startup reconciliation failed: ${reason}`);
+          } finally {
+            this.#startupSets.delete(attempt.work.key);
+          }
+        }),
+      );
+    };
+    const recovery = recover();
+    void recovery.catch((error: unknown) => {
+      if (this.#startupExpiredAt !== null && !this.#observeFatal(error)) {
+        this.#deps.onError?.(`Detached startup initialization failed: ${providerOperationErrorReason(error)}`);
+      }
+    });
+    try {
+      await awaitStartup(recovery, startupSignal);
+    } catch (error: unknown) {
+      signal.throwIfAborted();
+      if (error !== expiry) throw error;
+    } finally {
+      this.#deps.time.clearTimeout(timer);
     }
     return { setsVisited, operationsVisited, incidents };
   }
@@ -1181,7 +1199,7 @@ export class ProviderOperationReconciler
     signal?: AbortSignal,
   ): Promise<void> {
     const startup = this.#startupSets.get(providerProxySetKey(providerProxySetIdentityFromRecord(record)));
-    if (signal !== startup?.signal && startup?.state === 'draining') {
+    if (startup !== undefined && signal !== startup.signal) {
       return Promise.reject(new ProviderOperationMutationSetClosedError());
     }
     if (!this.#canMutate()) return Promise.reject(new Error('Provider operation mutation admission is closed.'));
@@ -2787,11 +2805,15 @@ export class ProviderOperationReconciler
       this.#polling = true;
       try {
         const progressStore = this.#deps.getProgressStore();
-        this.#resumeStartupSetRetries();
         const scanCutoffMs = this.#deps.time.now();
         let selections: readonly ProviderOperationDueSelection[];
         try {
-          selections = readProviderOperationDueSelections(progressStore.getDb(), scanCutoffMs, this.#batchSize);
+          selections = readProviderOperationDueSelections(
+            progressStore.getDb(),
+            scanCutoffMs,
+            this.#batchSize,
+            (record) => !this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record))),
+          );
         } catch (error: unknown) {
           if (error instanceof ProviderOperationJournalError) {
             this.#latchFatal(
@@ -2809,7 +2831,7 @@ export class ProviderOperationReconciler
           const startup = this.#startupSets.get(
             providerProxySetKey(providerProxySetIdentityFromRecord(selection.record)),
           );
-          if (startup?.state === 'draining') continue;
+          if (startup !== undefined) continue;
           const result = await this.#reconcileDueSelection(selection, scanCutoffMs, preferredAuthority);
           if (result === 'fatal') return;
         }
@@ -2820,10 +2842,7 @@ export class ProviderOperationReconciler
             this.#settlements.delete(key);
             continue;
           }
-          if (
-            this.#startupSets.get(providerProxySetKey(providerProxySetIdentityFromRecord(record)))?.state === 'draining'
-          )
-            continue;
+          if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record)))) continue;
           if (record.phase !== 'settlement-pending' || record.retryNotBeforeMs > this.#deps.time.now()) continue;
           if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
           await this.reconcile(record, preferredAuthority);
@@ -2834,10 +2853,7 @@ export class ProviderOperationReconciler
             this.#attachments.delete(key);
             continue;
           }
-          if (
-            this.#startupSets.get(providerProxySetKey(providerProxySetIdentityFromRecord(record)))?.state === 'draining'
-          )
-            continue;
+          if (this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record)))) continue;
           if (record.retryNotBeforeMs > this.#deps.time.now()) continue;
           if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
           await this.reconcile(record, preferredAuthority);
@@ -2859,40 +2875,6 @@ export class ProviderOperationReconciler
         }
       }
     });
-  }
-
-  #resumeStartupSetRetries(): void {
-    if (this.#startupExpiredAt === null) return;
-    const initialization = this.#startupInitializationSignal;
-    if (initialization?.aborted && !this.#admission().retireRecovery(initialization)) return;
-    for (const attempt of this.#startupSets.values()) {
-      if (!this.#admission().retireRecovery(attempt.signal)) continue;
-      const records = this.#readCurrentStartupSet(attempt.work);
-      if (records.length === 0) {
-        this.#startupSets.delete(attempt.work.key);
-        continue;
-      }
-      if (attempt.state !== 'draining') continue;
-      this.#deps.retryStartupAbsence?.(attempt.work.identity);
-      for (const operation of attempt.work.operations) {
-        const serializer = this.#serializers.get(operationKey(operation));
-        if (serializer?.disappearance?.delivery.kind !== 'ready') continue;
-        serializer.disappearance = null;
-        serializer.epoch += 1;
-      }
-      try {
-        for (const record of records) {
-          this.#scheduleStartupSetRetry(
-            record,
-            'Provider operation startup reconciliation deadline expired.',
-            this.#deps.time.now(),
-          );
-        }
-        attempt.state = 'due-poll';
-      } catch (error: unknown) {
-        if (!(error instanceof ProviderOperationMutationSetClosedError)) throw error;
-      }
-    }
   }
 
   async #reconcileDueSelection(

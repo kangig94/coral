@@ -190,21 +190,6 @@ export class ProviderOperationMutationAdmission {
     };
   }
 
-  retireRecovery(signal: AbortSignal): boolean {
-    if (!signal.aborted || [...this.#active.values()].some((mutation) => mutation.recoverySignal === signal))
-      return false;
-    for (const [setKey, fence] of this.#closedSets) {
-      for (const [key, lease] of fence.leases) {
-        if (lease.recoverySignal !== signal) continue;
-        fence.leases.delete(key);
-        lease.settle();
-      }
-      if (fence.leases.size === 0) this.#closedSets.delete(setKey);
-    }
-    this.#settleRelease();
-    return true;
-  }
-
   pendingSet(set: ProviderOperationMutationSet): { pendingMutations: string[]; pendingFences: string[] } {
     const setKey = providerOperationMutationSetKey(set);
     return {
@@ -222,7 +207,6 @@ export class ProviderOperationMutationAdmission {
     mutation: () => Result | Promise<Result>,
     set?: ProviderOperationMutationSet,
   ): Promise<Result> {
-    if (this.#recoveryContext.getStore()?.aborted) throw new ProviderOperationMutationSetClosedError();
     const inherited = this.#context.getStore();
     const inheritedMutation = inherited === undefined ? undefined : this.#active.get(inherited);
     const inheritedAdmission = inheritedMutation !== undefined;
@@ -264,7 +248,6 @@ export class ProviderOperationMutationAdmission {
   }
 
   runSync<Result>(label: string, mutation: () => Result, set?: ProviderOperationMutationSet): Result {
-    if (this.#recoveryContext.getStore()?.aborted) throw new ProviderOperationMutationSetClosedError();
     const inherited = this.#context.getStore();
     const inheritedMutation = inherited === undefined ? undefined : this.#active.get(inherited);
     const inheritedAdmission = inheritedMutation !== undefined;
@@ -328,7 +311,6 @@ export class ProviderOperationMutationAdmission {
   }
 
   closeSet(set: ProviderOperationMutationSet): ProviderOperationMutationSetFence {
-    if (this.#recoveryContext.getStore()?.aborted) throw new ProviderOperationMutationSetClosedError();
     if (!this.#accepting && !this.admitted) {
       throw new Error('Provider operation mutation admission is closed.');
     }
@@ -441,8 +423,6 @@ export class ProviderOperationMutationAdmission {
     label: string,
     mutation: () => Result | Promise<Result>,
   ): Promise<Result> {
-    if (this.#recoveryContext.getStore()?.aborted) throw new ProviderOperationMutationSetClosedError();
-    if (fence.leases.get(lease)?.recoverySignal?.aborted) throw new ProviderOperationMutationSetClosedError();
     if (this.#closedSets.get(setKey) !== fence || !fence.leases.has(lease)) {
       throw new Error('Provider operation mutation set fence is no longer held.');
     }
@@ -1398,6 +1378,7 @@ export function readProviderOperationDueSelections(
   db: Database,
   nowMs: number,
   limit: number,
+  canSelect: (record: ProviderOperationRecord) => boolean = () => true,
 ): readonly ProviderOperationDueSelection[] {
   const encodedNow = encodeFixedWidthInteger(nowMs, 'nowMs');
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new RangeError('limit must be a positive safe integer.');
@@ -1441,7 +1422,7 @@ export function readProviderOperationDueSelections(
           `Provider operation due row '${due.key}' is stale or disagrees with its canonical record.`,
         );
       }
-      selections.push({ rawKey: row.key, rawValue: row.value, record });
+      if (canSelect(record)) selections.push({ rawKey: row.key, rawValue: row.value, record });
     }
   }
   return selections;

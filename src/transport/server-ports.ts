@@ -320,17 +320,27 @@ export const launchPermitDiagnosticsSchema = z
 export type LaunchPermitDiagnostics = z.infer<typeof launchPermitDiagnosticsSchema>;
 
 export const providerOperationStartupStatusSchema = z.object({
-  phase: z.enum(['recovering', 'retry-owned']),
+  phase: z.enum(['recovering', 'retry-owned', 'detached']),
   elapsedMs: z.number().nonnegative().finite(),
   boundMs: z.number().positive().finite(),
-  sets: z.array(
-    z.object({
-      setKey: z.string(),
-      state: z.enum(['queued', 'recovering', 'draining', 'due-poll']),
+  initialization: z
+    .object({
+      state: z.enum(['recovering', 'detached']),
       pendingMutations: z.array(z.string()),
       pendingFences: z.array(z.string()),
       incident: z.string().nullable(),
-      successor: z.literal('provider-operation-reconciler-due-poll'),
+      successor: z.literal('provider-proxy-lifecycle-initialization'),
+    })
+    .nullable()
+    .optional(),
+  sets: z.array(
+    z.object({
+      setKey: z.string(),
+      state: z.enum(['queued', 'recovering', 'draining', 'due-poll', 'detached']),
+      pendingMutations: z.array(z.string()),
+      pendingFences: z.array(z.string()),
+      incident: z.string().nullable(),
+      successor: z.enum(['provider-operation-reconciler-due-poll', 'detached-startup-recovery']),
     }),
   ),
 });

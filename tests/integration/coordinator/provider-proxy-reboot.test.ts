@@ -13,7 +13,6 @@ import {
 import {
   insertProviderOperation,
   readProviderOperation,
-  compareAndSwapProviderOperation,
   providerOperationMutationAdmission,
   ProviderOperationMutationAdmission,
 } from '#src/store/provider-operation-journal.js';
@@ -183,7 +182,7 @@ describe('coordinator startup after host reboot', () => {
   }, 5_000);
 
   it.each(['release', 'held', 'automatic'] as const)(
-    'bounds a never-settling startup mutation and fence, then reports %s ownership',
+    'detaches a never-settling startup mutation and fence, then applies %s ownership',
     async (outcome) => {
       const { harness, record, capsulePath, advanceTime } = rebootFixture();
       const admission = () => providerOperationMutationAdmission(harness.db);
@@ -214,7 +213,6 @@ describe('coordinator startup after host reboot', () => {
                     'late-startup-write',
                     () => {
                       lateMutation();
-                      compareAndSwapProviderOperation(harness.db, record, { ...record, revision: record.revision + 1 });
                     },
                     work.identity,
                   );
@@ -280,17 +278,17 @@ describe('coordinator startup after host reboot', () => {
         expect(booted.core.runtimeState.getLifecycle()).toBe('running');
         const expired = await readHealth(core);
         expect(expired.health.diagnostics?.providerOperationStartupReconciliation).toMatchObject({
-          phase: 'retry-owned',
+          phase: 'detached',
           elapsedMs: PROVIDER_OPERATION_STARTUP_BOUND_MS,
           sets: [
             expect.objectContaining({
-              state: 'draining',
+              state: 'detached',
               incident: expect.stringContaining('startup-deadline-expired'),
-              successor: 'provider-operation-reconciler-due-poll',
+              successor: 'detached-startup-recovery',
             }),
           ],
         });
-        // Negative control: the due owner cannot write or retire while the abandoned mutator is held.
+        // Negative control: the due owner cannot compete with the detached mutator.
         await new Promise<void>((resolve) => setTimeout(resolve, 50));
         expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
         expect(harness.runtime.storage.existsSync(capsulePath)).toBe(true);
@@ -298,11 +296,25 @@ describe('coordinator startup after host reboot', () => {
         if (outcome === 'held') {
           expect(
             formatBackendStatus(statusFromParsedHealth(await readHealth(core)), { kind: 'absent' }, null),
-          ).toContain('state=draining');
+          ).toContain('state=detached');
+          advanceTime(60_000);
+          expect(core.runtimeState.getLifecycle()).toBe('running');
+          expect((await readHealth(core)).health.diagnostics?.providerOperationStartupReconciliation).toMatchObject({
+            phase: 'detached',
+            elapsedMs: PROVIDER_OPERATION_STARTUP_BOUND_MS + 60_000,
+            sets: [
+              expect.objectContaining({
+                state: 'detached',
+                pendingMutations: expect.arrayContaining(['injected-startup-mutation']),
+              }),
+            ],
+          });
+          expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
+          return;
         }
         release();
-        await vi.waitFor(() => expect(staleWriteError).toBeInstanceOf(Error));
-        expect(lateMutation).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(lateMutation).toHaveBeenCalledOnce());
+        expect(staleWriteError).toBeUndefined();
         await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull(), {
           timeout: 5_000,
         });

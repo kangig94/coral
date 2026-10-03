@@ -2403,6 +2403,15 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
       ? []
       : [
           `Provider operation startup reconciliation: ${startup.phase} elapsedMs=${startup.elapsedMs} boundMs=${startup.boundMs}`,
+          ...(startup.initialization === null || startup.initialization === undefined
+            ? []
+            : [
+                `  initialization state=${startup.initialization.state} successor=${startup.initialization.successor}`,
+                `    pending mutations=${startup.initialization.pendingMutations.join(',') || 'none'} fences=${startup.initialization.pendingFences.join(',') || 'none'}`,
+                ...(startup.initialization.incident === null
+                  ? []
+                  : [`    incident=${startup.initialization.incident}`]),
+              ]),
           ...startup.sets.flatMap((set) => [
             `  set=${set.setKey} state=${set.state} successor=${set.successor}`,
             `    pending mutations=${set.pendingMutations.join(',') || 'none'} fences=${set.pendingFences.join(',') || 'none'}`,
