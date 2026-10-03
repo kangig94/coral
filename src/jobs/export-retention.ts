@@ -155,7 +155,8 @@ async function deleteExportTree(
 }
 
 function retiringJobId(name: string): string | null {
-  const match = /^\.retiring-(.+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.exec(name);
+  const match =
+    /^(?:\.retiring-|kept-retiring-)(.+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.exec(name);
   if (!match) return null;
   try {
     const id = decodeURIComponent(match[1]);
@@ -218,8 +219,9 @@ export async function pruneJobExports(input: {
     let workId = id;
     let path = join(root, workId);
     const recovering = id.startsWith('.retiring-');
-    const jobId = recovering ? retiringJobId(id) : id;
-    if (jobId === null || id.startsWith('kept-retiring-')) {
+    const keptRetirement = id.startsWith('kept-retiring-');
+    const jobId = recovering || keptRetirement ? retiringJobId(id) : id;
+    if (jobId === null) {
       budget.record({ kind: 'kept', subject: path, reason: 'export-retirement-kept' });
       return true;
     }
@@ -304,12 +306,13 @@ export async function pruneJobExports(input: {
           return true;
         }
         if (recovering && evidence !== null && evidence.cutoff <= cutoff) admittedCutoff = evidence.cutoff;
-        const ageCutoff = admittedCutoff ?? cutoff;
-        const mtimes = evidence !== null && evidence.cutoff === ageCutoff ? evidence.mtimes : {};
+        const ageCutoff = keptRetirement ? cutoff : (admittedCutoff ?? cutoff);
+        const mtimes = !keptRetirement && evidence !== null && evidence.cutoff === ageCutoff ? evidence.mtimes : {};
         const directories = new Map<string, StorageBigIntStat>();
-        const expired = recovering
-          ? await exportTreeExpired(runtime, path, ageCutoff, mtimes, ageCutoff, directories)
-          : state.kind !== 'absent' || admittedCutoff !== null || (await exportTreeExpired(runtime, path, cutoff));
+        const expired =
+          recovering || keptRetirement
+            ? await exportTreeExpired(runtime, path, ageCutoff, mtimes, ageCutoff, directories)
+            : state.kind !== 'absent' || admittedCutoff !== null || (await exportTreeExpired(runtime, path, cutoff));
         if (budget.canMutate?.() === false) return false;
         if (!expired) {
           const kept = recovering ? keepRetirement() : path;
@@ -443,7 +446,7 @@ export async function pruneJobExports(input: {
       await setImmediate();
     }
     for (const id of ids) {
-      if (id <= afterId && !id.startsWith('.retiring-')) continue;
+      if (id <= afterId && !id.startsWith('.retiring-') && !id.startsWith('kept-retiring-')) continue;
       if (!budget.canContinue()) return cursor;
       if (!attempted.has(id) && !pending.subjects.has(id) && !(await process(id, budget))) return cursor;
       if (id > cursor) cursor = id;

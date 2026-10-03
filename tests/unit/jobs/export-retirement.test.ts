@@ -7,11 +7,134 @@ import { once } from 'node:events';
 import { pruneJobExports } from '#src/jobs/export-retention.js';
 import { createRetentionFixture, RETENTION_CUTOFF, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
+import { initTestJob } from '#tests/helpers/session.js';
+import { commitJobTerminal } from '#tests/helpers/job-commits.js';
+import { readExportJobState } from '#src/jobs/export-retention.js';
 
 const fixtures: ReturnType<typeof createRetentionFixture>[] = [];
 afterEach(() => {
   for (const f of fixtures.splice(0)) f.close();
 });
+
+it.each([false, true])('reclaims exports after an overlapping result read: %s', async (overlap) => {
+  const f = createRetentionFixture();
+  fixtures.push(f);
+  f.setNow(1);
+  const id = 'result-reader';
+  initTestJob(f.store, {
+    jobId: id,
+    sessionId: 'session',
+    provider: 'codex',
+    projectRoot: '/workspace',
+    backendNamespace: 'test-ns',
+  });
+  commitJobTerminal(f.store, id, 'session', {
+    content: 'retained result',
+    outcome: { kind: 'completed' },
+    durationMs: 1,
+  });
+  f.setNow(RETENTION_NOW);
+  const storage = f.runtime.storage;
+  const root = f.runtime.paths.coral.exports.jobsRoot;
+  const original = join(root, id);
+  storage.mkdirSync(join(original, 'provider-artifacts'), { recursive: true });
+  f.store.ensureResultArtifact(id);
+  storage.writeFileSync(join(original, 'provider-artifacts', 'original.jsonl'), 'old transcript');
+  for (const child of ['', 'result.md', 'provider-artifacts', 'provider-artifacts/original.jsonl'])
+    utimesSync(join(original, child), 1, 1);
+  const iterate = storage.iterateDirectory;
+  let read = false;
+  storage.iterateDirectory = async function* (path) {
+    if (overlap && !read && basename(path).startsWith('.retiring-')) {
+      read = true;
+      expect(storage.readFileSync(f.store.ensureResultArtifact(id), 'utf-8')).toContain('retained result');
+      for (const child of ['', 'result.md'])
+        utimesSync(join(original, child), RETENTION_NOW / 1000, RETENTION_NOW / 1000);
+    }
+    yield* iterate(path);
+  };
+  const run = (cutoff: number) =>
+    pruneJobExports({
+      db: f.db,
+      runtime: f.runtime,
+      cutoff,
+      afterId: '',
+      budget: f.budget,
+      jobState: (jobId) => readExportJobState(f.db, f.store, jobId),
+      resultHold: () => 'released',
+      mutate: (operation) => operation(),
+    });
+  await run(RETENTION_CUTOFF);
+  storage.iterateDirectory = iterate;
+  if (!overlap) {
+    expect(storage.readdirSync(root)).toEqual([]);
+    return;
+  }
+  const kept = storage.readdirSync(root).find((name) => name.startsWith('kept-retiring-'));
+  expect(kept).toBeDefined();
+  if (kept === undefined) throw new Error('missing kept retirement');
+  utimesSync(join(root, kept), RETENTION_NOW / 1000, RETENTION_NOW / 1000);
+  await run(RETENTION_CUTOFF);
+  expect(storage.readFileSync(join(original, 'result.md'), 'utf-8')).toContain('retained result');
+  expect(storage.readFileSync(join(root, kept, 'provider-artifacts', 'original.jsonl'), 'utf-8')).toBe(
+    'old transcript',
+  );
+  f.setNow(RETENTION_NOW + 30 * 86_400_000);
+  await run(RETENTION_NOW + 16 * 86_400_000);
+  await run(RETENTION_NOW + 16 * 86_400_000);
+  expect(storage.readdirSync(root)).toEqual([]);
+});
+
+it.each(['absent', 'terminal', 'nonterminal', 'unknown', 'regression', 'required', 'hold-unknown'] as const)(
+  'rechecks a kept retirement with %s proof and ignores stale age evidence',
+  async (proof) => {
+    const f = createRetentionFixture();
+    fixtures.push(f);
+    const storage = f.runtime.storage;
+    const root = f.runtime.paths.coral.exports.jobsRoot;
+    const id = 'kept-job';
+    const name = `kept-retiring-${id}-${randomUUID()}`;
+    const kept = join(root, name);
+    storage.mkdirSync(kept, { recursive: true });
+    storage.writeFileSync(join(kept, 'result.md'), 'recent result');
+    for (const child of ['', 'result.md']) utimesSync(join(kept, child), RETENTION_NOW / 1000, RETENTION_NOW / 1000);
+    const mtimes = Object.fromEntries(
+      ['', 'result.md'].map((child) => [
+        child,
+        storage.lstatSync(join(kept, child), { bigint: true }).mtimeNs.toString(),
+      ]),
+    );
+    f.db
+      .prepare('INSERT INTO meta(key, value) VALUES (?, ?)')
+      .run(`storage-retention.exports.retirement.v1.${name}`, JSON.stringify({ cutoff: RETENTION_CUTOFF, mtimes }));
+    const run = (cutoff: number, released = false) =>
+      pruneJobExports({
+        db: f.db,
+        runtime: f.runtime,
+        cutoff,
+        afterId: 'z-interrupted-cursor',
+        budget: f.budget,
+        jobState: () =>
+          released || proof === 'required' || proof === 'hold-unknown'
+            ? { kind: 'absent' }
+            : proof === 'terminal'
+              ? { kind: 'terminal', terminalAt: 1 }
+              : { kind: proof },
+        resultHold: () =>
+          released ? 'released' : proof === 'required' ? 'required' : proof === 'hold-unknown' ? 'unknown' : 'released',
+        mutate: (operation) => operation(),
+      });
+    await run(RETENTION_CUTOFF);
+    expect(storage.readFileSync(join(kept, 'result.md'), 'utf-8')).toBe('recent result');
+    await run(RETENTION_NOW + 1);
+    if (proof === 'terminal' || proof === 'absent') expect(storage.existsSync(kept)).toBe(false);
+    else {
+      expect(storage.readFileSync(join(kept, 'result.md'), 'utf-8')).toBe('recent result');
+      await run(RETENTION_NOW + 1, true);
+      expect(storage.existsSync(kept)).toBe(false);
+    }
+  },
+);
 
 for (const access of ['cwd', 'directory-handle'] as const) {
   for (const state of ['absent', 'terminal'] as const) {

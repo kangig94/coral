@@ -9,6 +9,7 @@ import { initTestJob, seedTestSessionProjection } from '#tests/helpers/session.j
 import { commitJobInput, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { ensureRetentionIndexes } from '#src/store/retention-indexes.js';
 
 const fixtures: ReturnType<typeof createRetentionFixture>[] = [];
 afterEach(() => {
@@ -49,6 +50,63 @@ async function prune(f: ReturnType<typeof fixture>) {
 }
 
 describe('progress retention', () => {
+  it.each(['terminal', 'message'] as const)(
+    'prunes both jobs when %s text mentions causeRef, including quoted JSON',
+    async (location) => {
+      const f = fixture();
+      f.setNow(1);
+      launch(f, 'mentioned');
+      f.store.appendProgress('mentioned', 'session-mentioned', location === 'message' ? 'causeRef' : 'ordinary');
+      commitJobTerminal(f.store, 'mentioned', 'session-mentioned', {
+        content: location === 'terminal' ? 'causeRef' : 'ordinary',
+        outcome: { kind: 'completed' },
+        durationMs: 1,
+      });
+      launch(f, 'unrelated');
+      commitJobTerminal(f.store, 'unrelated', 'session-unrelated', {
+        content: 'Example: {"causeRef":{"seq":1}}',
+        outcome: { kind: 'completed' },
+        durationMs: 1,
+      });
+      const oldPredicate = `CASE WHEN json_valid(body) THEN
+        (length(CAST(body AS TEXT)) - length(replace(CAST(body AS TEXT), '"causeRef"', ''))) / 10 >
+        ((json_type(body, '$.causeRef') IS NOT NULL) +
+         (json_type(body, '$.reason.causeRef') IS NOT NULL) +
+         (json_type(body, '$.terminal.outcome.causeRef') IS NOT NULL)) ELSE 1 END`;
+      f.db.exec(`CREATE INDEX IF NOT EXISTS events_retention_unknown_cause ON events(seq) WHERE ${oldPredicate}`);
+      const oldIndex = f.db
+        .prepare("SELECT sql FROM sqlite_master WHERE name = 'events_retention_unknown_cause'")
+        .get();
+      expect(
+        f.db
+          .prepare(`SELECT seq FROM events INDEXED BY events_retention_unknown_cause WHERE ${oldPredicate} LIMIT 1`)
+          .get(),
+      ).toBeDefined();
+      ensureRetentionIndexes(f.db);
+      await prune(f);
+      expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
+        n: 0,
+      });
+      expect(f.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'events_retention_unknown_cause'").get()).toEqual(
+        oldIndex,
+      );
+    },
+  );
+
+  it('holds progress globally for an invalid body', async () => {
+    const f = fixture();
+    f.setNow(1);
+    const seq = launch(f, 'old');
+    terminal(f, 'old');
+    f.db
+      .prepare(
+        "INSERT INTO events(ts, type, stream_kind, stream_id, body) VALUES (?, 'future.event', 'workflow', 'invalid', ?)",
+      )
+      .run(new Date(1).toISOString(), Buffer.from('{invalid'));
+    await prune(f);
+    expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeDefined();
+  });
+
   it('rebuilds every projection identically and renders terminal/results with cursor gaps', async () => {
     const f = fixture();
     f.setNow(1);
