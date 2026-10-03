@@ -404,35 +404,58 @@ export function removeClosedProtectedEpoch(
 export function protectedDeletionResidues(
   runtime: Pick<Runtime, 'storage'>,
   storeRoot: string,
-): readonly ProtectedEpochAddress[] {
+): Readonly<{ addresses: readonly ProtectedEpochAddress[]; refusedPaths: readonly string[] }> {
   const root = protectedStoreEpochRoot(storeRoot);
-  if (observeStorePath(runtime.storage, root) === 'absent') return [];
   const addresses: ProtectedEpochAddress[] = [];
+  const refusedPaths: string[] = [];
+  if (observeStorePath(runtime.storage, root) === 'absent') return { addresses, refusedPaths };
+  const ownedDirectory = (path: string): boolean => {
+    try {
+      const observed = runtime.storage.lstatSync(path);
+      if (observed.isDirectory() && !observed.isSymbolicLink()) return true;
+    } catch {
+      // Unobservable ancestry cannot authorize residue removal.
+    }
+    refusedPaths.push(path);
+    return false;
+  };
+  if (!ownedDirectory(dirname(root)) || !ownedDirectory(root)) return { addresses, refusedPaths };
   let lineages: string[];
   try {
     lineages = runtime.storage.readdirSync(root);
   } catch {
-    return [];
+    return { addresses, refusedPaths: [root] };
   }
   for (const lineage of lineages) {
     if (lineage === 'addresses') continue;
+    const lineageRoot = join(root, lineage);
+    if (!ownedDirectory(lineageRoot)) continue;
     let names: string[];
     try {
-      names = runtime.storage.readdirSync(join(root, lineage));
+      names = runtime.storage.readdirSync(lineageRoot);
     } catch {
+      refusedPaths.push(lineageRoot);
       continue;
     }
     for (const name of names) {
       const match = /^\.reaping-epoch-([1-9]\d*)$/.exec(name);
       if (match === null) continue;
+      const path = join(lineageRoot, name);
+      if (!ownedDirectory(path) || !ownedDirectory(join(root, 'addresses'))) continue;
       const epochKey = `${lineage}:${match[1]}`;
-      const address = observedAddress(runtime, storeRoot, epochKey);
-      if (address !== null && address.protectedPath === join(root, lineage, `epoch-${match[1]}`)) {
-        addresses.push(address);
+      try {
+        const address = observedAddress(runtime, storeRoot, epochKey);
+        if (address !== null && address.protectedPath === join(lineageRoot, `epoch-${match[1]}`)) {
+          addresses.push(address);
+        } else {
+          refusedPaths.push(path);
+        }
+      } catch {
+        refusedPaths.push(path);
       }
     }
   }
-  return addresses;
+  return { addresses, refusedPaths };
 }
 
 export class StoreEpochOpenerHeldError extends Error {

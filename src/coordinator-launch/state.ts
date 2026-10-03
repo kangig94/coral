@@ -1079,7 +1079,7 @@ export class SupervisorLaunchMemory {
     }));
   }
 
-  hold(_owner: LaunchOwner, controller: string): boolean {
+  hold(_owner: LaunchOwner, controller: string, boundedEvidence = false): boolean {
     const intent = readUpgradeIntent(this.#runDir);
     this.#status((status) => ({
       ...status,
@@ -1089,7 +1089,12 @@ export class SupervisorLaunchMemory {
         requestId: intent.kind === 'readable' ? intent.intent.requestId : undefined,
         observation:
           controller === 'unknown' ? 'controller-evidence-indeterminate' : 'no-eligible-installed-or-retained-build',
-        retry: controller === 'unknown' ? 'controller-evidence-change' : 'eligible-build-appears',
+        retry: boundedEvidence
+          ? undefined
+          : controller === 'unknown'
+            ? 'controller-evidence-change'
+            : 'eligible-build-appears',
+        boundedExit: boundedEvidence ? 'launch-original-after-2000ms' : undefined,
       },
     }));
     return true;
@@ -1102,7 +1107,7 @@ export class SupervisorLaunchMemory {
         kind: 'custody-unreadable',
         path,
         observation: 'custody-record-unreadable',
-        retry: 'restore-readable-custody-record',
+        boundedExit: 'launch-original-after-2000ms',
       },
     }));
     return true;

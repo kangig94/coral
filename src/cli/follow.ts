@@ -20,6 +20,7 @@ import { jobsWaitRequest } from '../transport/rpc/jobs.js';
 import { BackendUnreachableError, isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
+import { IpcRequestTimeout } from '../transport/ipc/client.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import {
@@ -373,13 +374,13 @@ async function connectFollowStream(
       return { kind: 'exit', code: fallbackExitCode() };
     }
     if (state.retriesLeft === 0) {
-      if (state.hasOpenedSubscription || handledError instanceof TransientHttpError) {
+      if (
+        state.hasOpenedSubscription ||
+        handledError instanceof TransientHttpError ||
+        handledError instanceof IpcRequestTimeout
+      ) {
         options.emitError(
-          new WaitResumeError(
-            handledError.message,
-            state.remainingJobIds,
-            state.hasOpenedSubscription ? serializeWaitCursor(state.currentCursor) : undefined,
-          ),
+          new WaitResumeError(handledError.message, state.remainingJobIds, serializedCursor(state.currentCursor)),
         );
         return { kind: 'exit', code: errorCodeToExit('transient') };
       }

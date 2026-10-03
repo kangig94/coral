@@ -23,6 +23,27 @@ function retirementStorage(
 }
 
 describe('provider proxy capsule discovery', () => {
+  it('refuses an unreadable candidate while preserving its bytes for recovery', () => {
+    const baseDir = '/coral-capsule-refused';
+    const time = new VirtualTime();
+    const runtime = { ...createRealRuntime('prod', { baseDir }), time, storage: new InMemoryStorage(time) };
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    runtime.storage.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    const path = join(runDir, 'provider-1aaaaaaaaaaaaaaaaaaaaaaa.handoff.v3.json');
+    runtime.storage.writeAtomicDurableSync(path, '{', { encoding: 'utf-8', mode: 0o600 });
+    const refused = vi.fn();
+    expect(
+      discoverProviderHandoffCapsules({
+        runDir,
+        generationRoot: runtime.paths.coral.generation.root,
+        storage: runtime.storage,
+        uid: Number(runtime.storage.statSync(baseDir, { bigint: true }).uid),
+        onRefused: refused,
+      }),
+    ).toEqual([]);
+    expect(runtime.storage.readFileSync(path, 'utf-8')).toBe('{');
+    expect(refused).toHaveBeenCalledWith(path, expect.any(String));
+  });
   it('keeps an executing operation recoverable after a crash between v4 write and v3 retirement', () => {
     const baseDir = '/coral-capsule-migration';
     const time = new VirtualTime();
