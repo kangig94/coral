@@ -1,3 +1,4 @@
+import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
@@ -301,17 +302,10 @@ async function* withSuccessionHandover(
     return;
   }
   const iterator = events[Symbol.asyncIterator]();
-  let onHandover = (): void => {};
-  const handedOver = new Promise<null>((resolve) => {
-    onHandover = () => resolve(null);
-  });
-  if (handover.aborted) onHandover();
-  else handover.addEventListener('abort', onHandover, { once: true });
   try {
     for (;;) {
-      const next = await Promise.race([iterator.next(), handedOver]);
+      const next = await raceWithSignal(iterator.next(), handover, () => null);
       if (next === null) {
-        void iterator.return?.(undefined).catch(() => undefined);
         yield { type: 'handover' };
         return;
       }
@@ -319,7 +313,7 @@ async function* withSuccessionHandover(
       yield next.value;
     }
   } finally {
-    handover.removeEventListener('abort', onHandover);
+    void iterator.return?.(undefined).catch(() => undefined);
   }
 }
 

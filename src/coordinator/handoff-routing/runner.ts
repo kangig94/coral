@@ -1,3 +1,4 @@
+import { raceObserved } from '../../infra/promise-signal.js';
 import { processIncarnationSchema } from '../../infra/node-process.js';
 import { CLI_BUNDLE_FILE } from '../../infra/bundle-manifest-address.js';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
@@ -794,7 +795,7 @@ async function waitForBackendStartupObservation(
     const answered = coordinatorStartedByThisAttempt(runtime, time, desiredIdentity, expectedAttemptId).then(
       (answer) => ({ kind: 'coordinator-answered', answer }) as const,
     );
-    const first = await Promise.race([ended, answered]);
+    const first = await raceObserved([ended, answered]);
     if (first.kind === 'child-ended') {
       return startupObservationAfterChildEnded(runtime, time, desiredIdentity, expectedAttemptId, first.childEnding);
     }
@@ -802,7 +803,7 @@ async function waitForBackendStartupObservation(
       return { kind: 'serving' };
     }
 
-    const endedDuringPoll = await Promise.race([
+    const endedDuringPoll = await raceObserved([
       ended,
       time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS).then(() => null),
     ]);

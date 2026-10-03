@@ -261,6 +261,7 @@ export type JobsListResponse = {
  *   while the job is still live.
  */
 export type JobDetailResponse = {
+  epochKey?: string;
   status: JobStatus;
   events: JobEvent[];
   readiness: LaunchReadiness;

@@ -26,6 +26,7 @@ export function createKbDaemonHealth(
   const read = (): KbDaemonHealthSnapshot => ({
     enabled: true,
     phase: state.phase,
+    childPresence: state.daemonProcess === null ? 'absent' : 'present',
     generation: state.generation,
     pid: state.pid,
     startedAt: state.startedAt,

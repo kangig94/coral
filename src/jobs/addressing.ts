@@ -1,3 +1,4 @@
+import { raceObserved } from '../infra/promise-signal.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
 import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
@@ -117,7 +118,7 @@ export class JobAddressing {
     const historical = location.epochKey !== this.active.epochKey();
     if (!historical) {
       const active = this.active.detail(jobId);
-      if (active !== null) return active;
+      if (active !== null) return { ...active, epochKey: location.epochKey };
     } else if (this.outcomeUnrecoverableLocation(location)) {
       return { kind: 'outcome-unrecoverable', jobId, epochKey: location.epochKey };
     }
@@ -125,7 +126,7 @@ export class JobAddressing {
     if (!historical && latest.disposition === 'unresolved') {
       return { kind: 'unresolved', jobId, epochKey: latest.epochKey };
     }
-    if (latest.detail.kind === 'recorded') return latest.detail.value;
+    if (latest.detail.kind === 'recorded') return { ...latest.detail.value, epochKey: latest.epochKey };
     return latest.detail.kind === 'unreadable'
       ? { kind: 'detail-unreadable', jobId, epochKey: latest.epochKey }
       : { kind: 'unresolved', jobId, epochKey: latest.epochKey };
@@ -433,7 +434,7 @@ export class JobAddressing {
             .catch(() => undefined);
           continue;
         }
-        const next = await Promise.race([
+        const next = await raceObserved([
           pendingActive,
           time
             .sleep(Math.min(HISTORICAL_POLL_MS, Math.max(0, deadline - Number(time.monotonicNow()))), {

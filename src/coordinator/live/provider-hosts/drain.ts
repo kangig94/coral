@@ -1,3 +1,4 @@
+import { raceWithPromise } from '../../../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { raceTimeout } from '../../../infra/async.js';
 import {
@@ -266,14 +267,15 @@ async function requestDispositionShutdown(
   let result: ProviderServerShutdownResult | null = null;
   try {
     const outcome = await waitWhileAuthorized(
-      Promise.race([
-        requestJoinableProviderServerShutdown(handle, capability.method).then((value) => ({
-          kind: 'response' as const,
-          value,
-        })),
-        handle.closePromise.then(() => ({ kind: 'closed' as const })),
-        waitForTimeout(capability.timeoutMs, { kind: 'timeout' as const }, time),
-      ]),
+      raceWithPromise(
+        raceWithPromise(
+          waitForTimeout(capability.timeoutMs, { kind: 'timeout' as const }, time),
+          requestJoinableProviderServerShutdown(handle, capability.method),
+          (value) => ({ kind: 'response' as const, value }),
+        ),
+        handle.closePromise,
+        () => ({ kind: 'closed' as const }),
+      ),
       signal,
       'provider_host_disposition_shutdown',
     );
@@ -320,11 +322,15 @@ async function tryGracefulShutdown(
 
   try {
     const outcome = await waitWhileAuthorized(
-      Promise.race([
-        requestJoinableProviderServerShutdown(handle, capability.method).then(() => 'rpc' as const),
-        handle.closePromise.then(() => 'closed' as const),
-        waitForTimeout(capability.timeoutMs, 'timeout' as const, time),
-      ]),
+      raceWithPromise(
+        raceWithPromise(
+          waitForTimeout(capability.timeoutMs, 'timeout' as const, time),
+          requestJoinableProviderServerShutdown(handle, capability.method),
+          () => 'rpc' as const,
+        ),
+        handle.closePromise,
+        () => 'closed' as const,
+      ),
       signal,
       'provider_host_graceful_shutdown',
     );

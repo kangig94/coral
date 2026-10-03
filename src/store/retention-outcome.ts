@@ -4,6 +4,8 @@ export type RetentionOutcome =
   | Readonly<{ kind: 'kept'; subject: string; reason: string; pending?: boolean }>
   | Readonly<{ kind: 'failed'; subject: string; reason: string }>;
 
+export const RETENTION_OUTCOME_LIMIT_PER_KIND = 100;
+
 export interface RetentionRunStatus {
   startedAt: number;
   finishedAt: number | null;
@@ -36,7 +38,7 @@ export const retentionRunStatusSchema = z.object({
         z.object({ kind: z.literal('failed'), subject: z.string(), reason: z.string() }),
       ]),
     )
-    .max(100),
+    .max(RETENTION_OUTCOME_LIMIT_PER_KIND * 3),
 });
 import { z } from 'zod';
 import type { Database } from './db.js';

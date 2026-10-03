@@ -1,3 +1,4 @@
+import { raceObserved } from '../../infra/promise-signal.js';
 import { SuccessionWriterParkedError } from '../../store/db.js';
 import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { join } from 'node:path';
@@ -550,7 +551,7 @@ async function settleDurableProviderResultContainment(
         readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
       });
       if (observation.kind === 'absent') {
-        await Promise.race([runtime.time.sleep(CONTAINMENT_DISAPPEARANCE_CONFIRM_MS), state.containmentAbsence]);
+        await raceObserved([runtime.time.sleep(CONTAINMENT_DISAPPEARANCE_CONFIRM_MS), state.containmentAbsence]);
         if (state.containmentAbsenceConfirmed) return { kind: 'absence-confirmed' };
         if (state.containmentAbandoned) return { kind: 'operator-abandoned' };
         const confirmation = await resolveDurableProcessContainment(runtime, state.retainedProcess, {
@@ -782,7 +783,7 @@ async function awaitDurableLaunchResult(
       const disposition = await settleProviderResultContainment();
       if (disposition.kind !== 'held') return;
       enterContainmentHold(disposition.reason);
-      await Promise.race([runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS), state.containmentAbsence]);
+      await raceObserved([runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS), state.containmentAbsence]);
       await drainStdout();
     }
   };

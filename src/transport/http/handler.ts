@@ -1,3 +1,4 @@
+import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -892,16 +893,10 @@ async function handleJobsWaitSubscription(
   runOnResponseDone(res, close);
 
   const handover = deps.jobs.waitHandoverSignal();
-  let onHandover = (): void => {};
-  const handedOver = new Promise<'handover'>((resolve) => {
-    onHandover = () => resolve('handover');
-  });
-  if (handover.aborted) onHandover();
-  else handover.addEventListener('abort', onHandover, { once: true });
 
   try {
     while (true) {
-      const next = await Promise.race([iterator.next(), handedOver]);
+      const next = await raceWithSignal(iterator.next(), handover, () => 'handover' as const);
       if (next === 'handover' || (!next.done && (next.value as { type?: unknown }).type === 'handover')) {
         writeSseEvent(
           res,
@@ -924,7 +919,6 @@ async function handleJobsWaitSubscription(
       throw error;
     }
   } finally {
-    handover.removeEventListener('abort', onHandover);
     close();
     if (!res.writableEnded && !res.destroyed) {
       res.end();

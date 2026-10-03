@@ -1,3 +1,4 @@
+import { raceObserved } from '../../infra/promise-signal.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { CarrierLiveness } from '../carrier-observation.js';
 import {
@@ -595,7 +596,7 @@ export class WaitCoordinator {
           this.deps.time,
           Math.min(JOURNAL_POLL_INTERVAL_MS, Math.max(0, deadlineMs - now)),
         );
-        const next = await Promise.race([
+        const next = await raceObserved([
           pendingNext,
           timeoutWaiter.promise,
           pollWaiter.promise,

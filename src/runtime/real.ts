@@ -1,3 +1,4 @@
+import { raceObserved } from '../infra/promise-signal.js';
 import { spawn as spawnChild, spawnSync } from 'node:child_process';
 import { createHash, randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
 import {
@@ -787,7 +788,7 @@ function createDurableWrapperObligation(wrapper: ReturnType<typeof spawnChild>, 
       owner: 'launch-caller',
       pid: wrapper.pid ?? null,
       reason,
-      retryAfter: Promise.race([wrapperSettlement, retryAfter]),
+      retryAfter: raceObserved([wrapperSettlement, retryAfter]),
       retry,
     };
   };

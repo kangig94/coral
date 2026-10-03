@@ -1,3 +1,4 @@
+import { raceObserved } from '../infra/promise-signal.js';
 import { formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
 import type { TimePort } from '../infra/port-types.js';
 import { isAbortError } from '../runtime/abort.js';
@@ -406,7 +407,7 @@ export class SettlementLedger<
     if (slotDeadline === undefined) throw new Error('boundary hold has no remaining retry slot');
     const remainingToSlot = Number(slotDeadline - this.options.time.monotonicNow());
     const slot = remainingToSlot <= 0 ? Promise.resolve() : this.options.time.sleep(remainingToSlot);
-    return Promise.race([boundaryRetryAfter ?? this.options.time.sleep(this.options.pollMs), slot]);
+    return raceObserved([boundaryRetryAfter ?? this.options.time.sleep(this.options.pollMs), slot]);
   }
 
   isDischarged(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>): boolean {

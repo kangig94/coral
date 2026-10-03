@@ -99,6 +99,7 @@ describe('job addressing', () => {
       locations: { old: 'lineage-old:7' },
       positions: { 'lineage-old:7': 0 },
     };
+    expect(addressing.detail('old')).toMatchObject({ epochKey: 'lineage-old:7' });
     expect(addressing.validateWait({ jobIds: ['old'], cursor })).toBeNull();
     const stream = addressing.waitStream({ jobIds: ['old'], cursor, supportsWaitV2: true });
     expect((await stream.next()).value).toMatchObject({

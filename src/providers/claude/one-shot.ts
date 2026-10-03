@@ -1,3 +1,4 @@
+import { raceWithPromise } from '../../infra/promise-signal.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { isRecord, readString } from '../../infra/json.js';
@@ -319,16 +320,14 @@ async function waitForOneShotOutcome(
   });
 
   try {
-    return await Promise.race([
-      state.terminal,
-      lease.closed.then(
-        (closed): ClaudeOneShotOutcome => ({
-          kind: 'failed',
-          message: closed instanceof Error ? closed.message : 'Claude broker transport closed before curate completed.',
-        }),
-      ),
-      aborted,
-    ]);
+    return await raceWithPromise(
+      Promise.race([state.terminal, aborted]),
+      lease.closed,
+      (closed): ClaudeOneShotOutcome => ({
+        kind: 'failed',
+        message: closed instanceof Error ? closed.message : 'Claude broker transport closed before curate completed.',
+      }),
+    );
   } finally {
     removeAbortListener();
   }
@@ -340,10 +339,11 @@ async function closeOneShotSession(lease: AppServerSession, state: ClaudeOneShot
     return;
   }
 
-  await Promise.race([
+  await raceWithPromise(
     brokerRpc<SessionCloseResult>(lease, 'session/close', { brokerSessionKey }).catch(() => undefined),
-    lease.closed.then(() => undefined),
-  ]);
+    lease.closed,
+    () => undefined,
+  );
 }
 
 async function confirmOneShotCancellation(
@@ -358,12 +358,13 @@ async function confirmOneShotCancellation(
   }
 
   try {
-    const outcome = await Promise.race([
+    const outcome = await raceWithPromise(
       brokerRpc<SessionCloseResult>(lease, 'session/close', {
         brokerSessionKey: exactTurn.brokerSessionKey,
       }).then((result) => ({ kind: 'closed_session' as const, result })),
-      lease.closed.then(() => ({ kind: 'closed_transport' as const })),
-    ]);
+      lease.closed,
+      () => ({ kind: 'closed_transport' as const }),
+    );
     if (outcome.kind === 'closed_transport') return;
     if (
       outcome.result.disposition === 'observed-absent' &&

@@ -367,7 +367,7 @@ it('reports export pending overflow even when failure details fill the status li
   try {
     const status = await s.run();
     expect(status.phase).toBe('partial');
-    expect(status.outcomes).toHaveLength(100);
+    expect(status.outcomes.filter((outcome) => outcome.kind === 'failed')).toHaveLength(100);
     expect(status.outcomes).toContainEqual(expect.objectContaining({ reason: 'export-pending-overflow' }));
     f.runtime.storage.unlinkSync = unlink;
     expect((await s.run()).phase).toBe('completed');

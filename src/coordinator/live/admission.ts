@@ -1,3 +1,4 @@
+import { raceObserved } from '../../infra/promise-signal.js';
 import type { Runtime } from '../../runtime/ports.js';
 import {
   type CliExecResult,
@@ -1060,7 +1061,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
           }
         }
         const pendingOutcomes = Promise.allSettled(attempts.map(({ task }) => task));
-        const outcomes = abort === null ? await pendingOutcomes : await Promise.race([pendingOutcomes, abort]);
+        const outcomes = abort === null ? await pendingOutcomes : await raceObserved([pendingOutcomes, abort]);
         if (outcomes === aborted) return dispositionAtDeadline();
         for (const [index, outcome] of outcomes.entries()) {
           const attempt = attempts[index];
@@ -1070,7 +1071,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
         if (this.cleanupHandles.size > 0) {
           const retryDelay = this.runtime.time.sleep(TERMINATION_RETRY_INTERVAL_MS).then(() => undefined);
-          const retry = abort === null ? await retryDelay : await Promise.race([retryDelay, abort]);
+          const retry = abort === null ? await retryDelay : await raceObserved([retryDelay, abort]);
           if (retry === aborted) return dispositionAtDeadline();
         }
       }

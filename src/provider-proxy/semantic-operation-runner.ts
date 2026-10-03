@@ -1,3 +1,4 @@
+import { observePromise, raceWithSignal } from '../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
@@ -488,6 +489,8 @@ function createSemanticOperationEventPump(
   ): Promise<void> => {
     const proxy = getProxy();
     const iterator = iterable[Symbol.asyncIterator]();
+    const transport = observePromise(entry.transportClosed);
+    const interrupted = AbortSignal.any([transport.signal, entry.cancellationDeadlineController.signal]);
     try {
       // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
       // single call ever resolves `entry.done` concurrently with it.
@@ -497,14 +500,10 @@ function createSemanticOperationEventPump(
         // driveCancellation's deadline rather than interrupting the pump between provider events.
         if (!entry.startCommitted || entry.cancellationMode !== 'shared-acknowledged-interrupt')
           entry.abortController.signal.throwIfAborted();
-        const step = await Promise.race([
-          iterator.next(),
-          entry.transportClosed.then((error) => {
-            throw error ?? new Error('Provider transport closed before a completion event.');
-          }),
-          entry.cancellationExpired,
-        ]);
-        if (step instanceof SemanticOperationCancellationTimeoutError) throw step;
+        const step = await raceWithSignal(iterator.next(), interrupted, () => {
+          entry.cancellationDeadlineController.signal.throwIfAborted();
+          throw transport.result() ?? new Error('Provider transport closed before a completion event.');
+        });
         entry.cancellationDeadlineController.signal.throwIfAborted();
         if (step.done) throw new Error('Provider event stream ended without terminal or suspension.');
         if (step.value.kind === 'suspended' && currentTurnTerminalEvidence(entry) === null) {
@@ -525,7 +524,9 @@ function createSemanticOperationEventPump(
           const settlement = emission.settlement;
           entry.activeContinuitySettlement = settlement;
           try {
-            await Promise.race([settlement.committed, entry.cancellationExpired]);
+            await raceWithSignal(settlement.committed, entry.cancellationDeadlineController.signal, () =>
+              entry.cancellationDeadlineController.signal.throwIfAborted(),
+            );
           } finally {
             if (entry.activeContinuitySettlement === settlement) entry.activeContinuitySettlement = null;
           }
