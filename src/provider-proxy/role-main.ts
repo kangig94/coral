@@ -1105,6 +1105,11 @@ export async function startProviderReaperRole(
     abandonUnattributable,
     onOutcome,
     onProgressViolation,
+    onUnrecordedExit: () => {
+      void close()
+        .catch((error: unknown) => backendLog.error('reaper: close before containment failed', error))
+        .finally(() => exitProcess(0));
+    },
   });
   await reaperRef.listen();
 

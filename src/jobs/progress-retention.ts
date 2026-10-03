@@ -119,7 +119,7 @@ export async function pruneJobProgress(input: {
             write(() => {
               const unknown = db
                 .prepare(
-                  `SELECT seq FROM events INDEXED BY events_retention_unknown_cause WHERE ${unknownRetentionCause} LIMIT 1`,
+                  `SELECT seq FROM events INDEXED BY events_retention_unknown_cause_v2 WHERE ${unknownRetentionCause} LIMIT 1`,
                 )
                 .get();
               unknownEvidence ||= unknown !== undefined;

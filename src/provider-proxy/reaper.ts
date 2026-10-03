@@ -122,6 +122,8 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   enforcementHoldStatus?(): z.infer<typeof enforcementHoldStatusSchema> | null;
   abandonUnattributable(): boolean;
   onOutcome(outcome: EnforcementOutcome): void;
+  /** Exit this role without claiming absence of a containment that was never recorded. */
+  onUnrecordedExit(): void;
   /** A late wake is diagnostic and does not itself authorize teardown. */
   onProgressViolation(observedWakeLatencyMs: number): void;
 }>;
@@ -144,6 +146,7 @@ type ReaperMethodContext<Scope extends symbol> = {
     containment: RecordedContainmentIdentity & { readonly containmentKind: string },
   ) => z.infer<typeof reaperIdentitySchema>;
   bootstrapNonce: ReturnType<typeof createBootstrapNonceCredential>;
+  cancelStartupExit(): void;
 };
 
 /**
@@ -162,6 +165,7 @@ type ReaperState = {
   recorded: (RecordedContainmentIdentity & { readonly containmentKind: string }) | null;
   enforcer: ArmedEnforcer | null;
   pairingLost: boolean;
+  startupExitDecided: boolean;
   recordedRedemption: Readonly<{
     grantId: string;
     successor: ControlTenancyHolder;
@@ -222,6 +226,9 @@ function reaperOpeningMethods<Scope extends symbol>(
         authority: 'pairing',
         handle: (params) => {
           const request = recordedContainmentSchema.parse(params);
+          if (state.startupExitDecided) {
+            throw new ProxyControlProtocolError('invalid_state', 'This unrecorded reaper is exiting.');
+          }
           if (state.recorded !== null) {
             // Idempotent for the identical containment, a mismatch otherwise: revising it would silently
             // move what this reaper is holding, and only one group was ever created for this set.
@@ -234,6 +241,7 @@ function reaperOpeningMethods<Scope extends symbol>(
             });
           }
           state.recorded = request;
+          context.cancelStartupExit();
           state.enforcer = createArmedEnforcer({
             clock,
             deadlines,
@@ -640,9 +648,21 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     recorded: null,
     enforcer: null,
     pairingLost: false,
+    startupExitDecided: false,
     recordedRedemption: null,
     registrationGateOpen: true,
     preparedToken: null,
+  };
+  let startupTimer: ReturnType<ControlEndpointTimer['setTimeout']> | null = null;
+  const cancelStartupExit = (): void => {
+    if (startupTimer !== null) timer.clearTimeout(startupTimer);
+    startupTimer = null;
+  };
+  const exitUnrecorded = (): void => {
+    if (state.recorded !== null || state.startupExitDecided) return;
+    state.startupExitDecided = true;
+    cancelStartupExit();
+    options.onUnrecordedExit();
   };
 
   /** Grant binding must derive from this role's capsule. */
@@ -689,6 +709,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     requireEnforcer,
     identityOf,
     bootstrapNonce,
+    cancelStartupExit,
   };
   const methods = new Map<string, ControlMethod>([
     ...reaperOpeningMethods(methodContext),
@@ -720,6 +741,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       onPairingLost: () => {
         state.pairingLost = true;
         deadlines.observePairingLoss();
+        exitUnrecorded();
       },
     },
     timer,
@@ -734,8 +756,11 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       // Arming waits for `reaper.record-containment.v1`: before it, there is no identity to enforce, and an
       // enforcer without one could only ever confirm the absence of nothing.
       await endpoint.listen();
+      if (state.recorded === null && !state.startupExitDecided)
+        startupTimer = timer.setTimeout(exitUnrecorded, deadlines.orphanTimeoutMs());
     },
     async close(): Promise<void> {
+      cancelStartupExit();
       state.enforcer?.disarm();
       await endpoint.close();
     },
