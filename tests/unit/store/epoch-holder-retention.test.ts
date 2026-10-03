@@ -3,6 +3,9 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pruneStoreEpochHolders, registerStoreEpochHolder } from '#src/store/epoch/holder.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { sweepStoreEpochsPostReady } from '#src/store/epoch/post-ready-sweep.js';
+import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
 import { acquireSharedFileLockSync } from '#src/infra/fs-lock.js';
 
 const fixtures: ReturnType<typeof createRetentionFixture>[] = [];
@@ -76,3 +79,81 @@ describe('epoch holder retention', () => {
     expect(existsSync(join(root, '.epoch-holder-unknown.json'))).toBe(true);
   });
 });
+
+it.each(['retention', 'post-ready'] as const)(
+  'cleans only absent-owner holder publication stages (%s)',
+  async (cleanup) => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.store.dbDir;
+    const runtime = {
+      ...f.runtime,
+      process: {
+        ...f.runtime.process,
+        observeLiveness: (pid: number) =>
+          pid === 101 ? ('absent' as const) : pid === 102 ? ('alive' as const) : ('unknown' as const),
+      },
+    };
+    const selected = { storeRoot: root, epoch: '1', path: join(root, 'epoch-1', 'store.db') };
+    const dead = join(root, '.epoch-holder-dead.json.tmp');
+    let released = 0;
+    const publisher = {
+      ...runtime,
+      env: { ...runtime.env, pid: () => 101 },
+      storage: {
+        ...runtime.storage,
+        writeAtomicDurableSync: (_path: string, data: string | Uint8Array) => {
+          writeFileSync(dead, data);
+          throw new Error('publisher exited before rename');
+        },
+      },
+    };
+    expect(() =>
+      registerStoreEpochHolder(publisher, selected, newRawDatabase(':memory:'), () => {
+        released++;
+      }),
+    ).toThrow('publisher exited');
+    expect(released).toBe(1);
+    if (cleanup === 'retention') await pruneStoreEpochHolders(runtime, f.budget, (operation) => operation());
+    else expect(await sweepStoreEpochsPostReady(runtime, selected)).toBe('complete');
+    expect(existsSync(dead)).toBe(false);
+    for (const [name, value] of [
+      ['live', JSON.stringify({ epoch: '1', pid: 102 })],
+      ['unknown', JSON.stringify({ epoch: '1', pid: 103 })],
+      ['malformed', '{'],
+    ])
+      writeFileSync(join(root, `.epoch-holder-${name}.json.tmp`), value);
+    if (cleanup === 'retention') await pruneStoreEpochHolders(runtime, f.budget, (operation) => operation());
+    else expect(await sweepStoreEpochsPostReady(runtime, selected)).toBe('unobservable-holder');
+    for (const name of ['live', 'unknown', 'malformed'])
+      expect(existsSync(join(root, `.epoch-holder-${name}.json.tmp`))).toBe(true);
+  },
+);
+
+it.each([false, true])(
+  'advances bounded holder cleanup beyond a retained prefix (missing cursor: %s)',
+  async (missing) => {
+    const f = fixture();
+    f.runtime.storage = new InMemoryStorage(f.runtime.time);
+    const storage = f.runtime.storage;
+    const root = f.runtime.paths.coral.store.dbDir;
+    storage.mkdirSync(root, { recursive: true });
+    for (let i = 19; i >= 0; i--)
+      storage.writeFileSync(join(root, `.epoch-holder-${String(i).padStart(2, '0')}.json`), '{');
+    const target = join(root, '.epoch-holder-z.json');
+    storage.writeFileSync(target, JSON.stringify({ epoch: '1', pid: 101 }));
+    const runtime = { ...f.runtime, process: { ...f.runtime.process, observeLiveness: () => 'absent' as const } };
+    let cursor = '';
+    for (let cycle = 0; cycle < 8 && storage.existsSync(target); cycle++) {
+      let checks = 0;
+      cursor = await pruneStoreEpochHolders(
+        runtime,
+        { ...f.budget, canContinue: () => ++checks <= 6 },
+        (operation) => operation(),
+        cursor,
+      );
+      if (missing && cycle === 0) storage.unlinkSync(join(root, cursor));
+    }
+    expect(storage.existsSync(target)).toBe(false);
+    expect(storage.existsSync(join(root, '.epoch-holder-19.json'))).toBe(true);
+  },
+);

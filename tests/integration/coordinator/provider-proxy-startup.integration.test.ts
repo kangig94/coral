@@ -537,7 +537,7 @@ describe('startup reconciliation deadline succession', () => {
       await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
       expect(harness.services.providerOperationStartupStatus()).toMatchObject({
         sets: [],
-        initialization: { state: 'recovering', pendingMutations: ['provider-operation-startup-initialization'] },
+        initialization: { state: 'recovering', pendingMutations: [] },
       });
       time.tick(PROVIDER_OPERATION_STARTUP_BOUND_MS);
       expect(await startup).toMatchObject({
@@ -780,9 +780,7 @@ describe('startup reconciliation deadline succession', () => {
       await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
       expect(harness.services.providerOperationStartupStatus()).toMatchObject({
         phase: 'recovering',
-        sets: [
-          expect.objectContaining({ state: 'queued', pendingMutations: ['provider-operation-startup-initialization'] }),
-        ],
+        sets: [expect.objectContaining({ state: 'queued', pendingMutations: [] })],
       });
       time.tick(PROVIDER_OPERATION_STARTUP_BOUND_MS);
       expect(await startup).toMatchObject({
@@ -930,4 +928,72 @@ describe('startup reconciliation deadline succession', () => {
       vi.restoreAllMocks();
     }
   });
+});
+
+it('detached disposition initialization fences its own set while an unrelated set drains', async () => {
+  const record = providerOperationRecord('settlement-pending');
+  const time = new VirtualTime();
+  const schedule = time.setTimeout.bind(time);
+  time.setTimeout = (callback, ms) => schedule(AsyncResource.bind(callback), ms);
+  const runtime = sandboxedRuntime(time);
+  const dispositions = new ProviderProxySetOperatorDispositionStore(
+    runtime.storage,
+    runtime.paths.coral.coordinator.runDir,
+  );
+  const identity = providerProxySetIdentityFromRecord(record);
+  expect(
+    dispositions.replace([
+      durableProviderProxySetOperatorDispositionRecord({
+        writerIncarnation: 'previous-coordinator',
+        setIdentity: identity,
+        subjectKey: 'proxy',
+        disposition: { disposition: 'held', incidentReason: 'control loss', waitingFor: 'control-reattachment' },
+        status: { kind: 'stale', markedByIncarnation: 'previous-coordinator', markedAtMs: 1 },
+      }),
+    ]).kind,
+  ).toBe('recorded');
+  const harness = composeProductionStartup(
+    record,
+    undefined,
+    runtime,
+    (db) =>
+      new JobStore('startup-initialization', runtime, createEventBodyCodec(), {
+        db,
+        providers: permissiveProviderLookupPort,
+      }),
+  );
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  harness.reapRecordedContainment.mockImplementation(async () => {
+    await wait;
+    return { kind: 'containment-absent', disappearanceReceipt: 'external-reaper-absent' };
+  });
+  let foreignFence: ReturnType<ProviderOperationMutationAdmission['closeSet']> | undefined;
+  try {
+    const startup = productionStartupOutcome(harness);
+    await drainMicrotasks(100);
+    expect(harness.reapRecordedContainment).toHaveBeenCalledOnce();
+    time.tick(PROVIDER_OPERATION_STARTUP_BOUND_MS);
+    expect((await startup).kind).toBe('fulfilled');
+    const admission = providerOperationMutationAdmission(harness.db);
+    expect(() => admission.runSync('late-own-set-write', () => undefined, identity)).toThrow(
+      ProviderOperationMutationSetClosedError,
+    );
+    foreignFence = admission.closeSet({ proxyInstanceId: randomUUID(), buildSetId: randomUUID() });
+    expect(foreignFence.kind).toBe('drained');
+    expect(harness.services.providerOperationStartupStatus()?.phase).toBe('detached');
+    release();
+    await drainMicrotasks(200);
+    expect(harness.services.providerOperationStartupStatus()).toBeNull();
+    expect(harness.fatals).not.toHaveBeenCalled();
+  } finally {
+    foreignFence?.release();
+    release();
+    await drainMicrotasks(200);
+    harness.services.stopProviderOperationReconciler();
+    harness.ownershipService.releaseAll();
+    harness.db.close();
+  }
 });

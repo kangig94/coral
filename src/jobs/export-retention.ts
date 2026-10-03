@@ -74,14 +74,27 @@ async function deleteExportTree(
   mutate: <T>(operation: () => T) => T,
   changed: (top: string) => void,
   directories: Map<string, bigint>,
+  cutoff: number,
   top = '',
 ): Promise<boolean> {
   if (!budget.canContinue()) throw new Error('export-deletion-interrupted; remaining files retry next cycle');
   const entry = runtime.storage.lstatSync(path);
+  const mtime = runtime.storage.lstatSync(path, { bigint: true }).mtimeNs;
   if (entry.isDirectory() && !entry.isSymbolicLink()) {
     if (!directories.has(path)) directories.set(path, runtime.storage.lstatSync(path, { bigint: true }).mtimeNs);
     for await (const child of runtime.storage.iterateDirectory(path)) {
-      if (!(await deleteExportTree(runtime, join(path, child), budget, mutate, changed, directories, top || child)))
+      if (
+        !(await deleteExportTree(
+          runtime,
+          join(path, child),
+          budget,
+          mutate,
+          changed,
+          directories,
+          cutoff,
+          top || child,
+        ))
+      )
         return false;
       await setImmediate();
     }
@@ -96,7 +109,11 @@ async function deleteExportTree(
       if (runtime.storage.lstatSync(directory, { bigint: true }).mtimeNs !== directories.get(directory)) return false;
     }
     if (entry.isDirectory() && !entry.isSymbolicLink()) runtime.storage.rmdirSync(path);
-    else runtime.storage.unlinkSync(path);
+    else {
+      const current = runtime.storage.lstatSync(path, { bigint: true });
+      if (current.mtimeNs >= BigInt(Math.floor(cutoff)) * 1_000_000n || current.mtimeNs > mtime) return false;
+      runtime.storage.unlinkSync(path);
+    }
     directories.delete(path);
     const parent = dirname(path);
     if (directories.has(parent)) directories.set(parent, runtime.storage.lstatSync(parent, { bigint: true }).mtimeNs);
@@ -295,6 +312,7 @@ export async function pruneJobExports(input: {
               }
             },
             directories,
+            ageCutoff,
           );
           if (!deleted) {
             outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };

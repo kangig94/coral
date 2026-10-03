@@ -730,12 +730,7 @@ export class ProviderOperationReconciler
       if (initializeAtStartup !== undefined) {
         this.#startupInitializationSignal = signal;
         try {
-          await this.#admission().runRecovery(
-            'provider-operation-startup-initialization',
-            () => initializeAtStartup(signal),
-            undefined,
-            signal,
-          );
+          await initializeAtStartup(signal);
         } finally {
           this.#startupInitializationSignal = null;
         }
@@ -2825,6 +2820,7 @@ export class ProviderOperationReconciler
             scanCutoffMs,
             this.#batchSize,
             (record) => !this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record))),
+            [...this.#startupSets.values()].map((attempt) => attempt.work.identity),
           );
         } catch (error: unknown) {
           if (error instanceof ProviderOperationJournalError) {

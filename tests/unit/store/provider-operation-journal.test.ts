@@ -6,6 +6,7 @@ import {
   deleteProviderOperation,
   insertProviderOperation,
   readProviderOperation,
+  readProviderOperationDueSelections,
   ProviderOperationMutationAdmission,
   ProviderOperationMutationSetClosedError,
 } from '#src/store/provider-operation-journal.js';
@@ -237,4 +238,42 @@ describe('provider operation durability', () => {
       expect(() => decodeProviderOperationRecord(JSON.stringify(candidate))).toThrow();
     }
   });
+});
+
+it('excludes startup-owned sets before decoding while reaching later selectable due rows', () => {
+  const db = createDb();
+  try {
+    const excluded = providerOperationRecord('settlement-pending');
+    for (let job = 1; job <= 256; job++)
+      insertProviderOperation(db, providerOperationRecord('settlement-pending', { job }));
+    const selected = providerOperationRecord('settlement-pending', {
+      job: 300,
+      operation: {
+        ...excluded.operation,
+        jobId: '00000000-0000-4000-8000-000000000300',
+        buildSetId: '00000000-0000-4000-8000-000000000099',
+      },
+    });
+    insertProviderOperation(db, selected);
+    const prepare = db.prepare.bind(db);
+    let canonicalReads = 0;
+    db.prepare = ((sql: string) => {
+      if (sql === 'SELECT value FROM meta WHERE key = ?') canonicalReads++;
+      return prepare(sql);
+    }) as typeof db.prepare;
+    const canSelect = (record: typeof excluded) => record.operation.buildSetId !== excluded.operation.buildSetId;
+    const due = readProviderOperationDueSelections(db, 0, 32, canSelect, [excluded.operation]);
+    expect(due.map((selection) => selection.record)).toEqual([selected]);
+    expect(canonicalReads).toBeLessThanOrEqual(64);
+    canonicalReads = 0;
+    expect(readProviderOperationDueSelections(db, 0, 32, canSelect).map((selection) => selection.record)).toEqual([
+      selected,
+    ]);
+    expect(canonicalReads).toBeGreaterThan(256);
+    canonicalReads = 0;
+    expect(readProviderOperationDueSelections(db, 0, 32)).toHaveLength(32);
+    expect(canonicalReads).toBeGreaterThan(0);
+  } finally {
+    db.close();
+  }
 });

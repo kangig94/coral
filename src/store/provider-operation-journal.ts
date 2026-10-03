@@ -1379,13 +1379,21 @@ export function readProviderOperationDueSelections(
   nowMs: number,
   limit: number,
   canSelect: (record: ProviderOperationRecord) => boolean = () => true,
+  excludedSets: readonly ProviderOperationMutationSet[] = [],
 ): readonly ProviderOperationDueSelection[] {
   const encodedNow = encodeFixedWidthInteger(nowMs, 'nowMs');
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new RangeError('limit must be a positive safe integer.');
   const upperBound = `${PROVIDER_OPERATION_DUE_PREFIX}${encodedNow};`;
-  const page = db.prepare<[string, string, number], MetaRow>(
+  const excludedSuffixes = [...new Set(excludedSets.map((set) => `${set.proxyInstanceId}:${set.buildSetId}`))];
+  // Canonical pointers end in the same proxy/build address used by mutation admission. Skip detached
+  // owners in SQLite so their backlog never reaches the synchronous canonical decoder on a serving poll.
+  const exclusion =
+    excludedSuffixes.length === 0
+      ? ''
+      : `AND substr(value, -73) NOT IN (${excludedSuffixes.map(() => '?').join(', ')})`;
+  const page = db.prepare<[string, string, ...Array<string | number>], MetaRow>(
     `SELECT key, value FROM meta
-       WHERE key > ? AND key < ?
+       WHERE key > ? AND key < ? ${exclusion}
        ORDER BY key
        LIMIT ?`,
   );
@@ -1397,7 +1405,7 @@ export function readProviderOperationDueSelections(
   const selections: ProviderOperationDueSelection[] = [];
   let cursor = PROVIDER_OPERATION_DUE_PREFIX;
   while (selections.length < limit) {
-    const rows = page.all(cursor, upperBound, limit - selections.length);
+    const rows = page.all(cursor, upperBound, ...excludedSuffixes, limit - selections.length);
     if (rows.length === 0) break;
     cursor = rows.at(-1)?.key ?? cursor;
     for (const row of rows) {

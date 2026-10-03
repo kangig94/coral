@@ -301,7 +301,7 @@ async function cleanPostReadyStoreEpochHolders(
       await yieldSweepTurn();
       continue;
     }
-    if (!entry.endsWith('.json')) {
+    if (!entry.endsWith('.json') && !entry.endsWith('.json.tmp')) {
       unobservableHolder = true;
       continue;
     }
