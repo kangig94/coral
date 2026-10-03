@@ -457,6 +457,8 @@ export type SupersededEpochClosures =
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
 export type BackendStatusFull = BackendStatusFullBase & {
+  launchStatusSource?: 'authenticated-owner' | 'persisted';
+  controllerEvidenceRefusals?: LaunchStatus['controllerEvidenceRefusals'];
   launchStatusProblem?: 'unreadable' | 'previous-status-unavailable' | 'publication-unavailable';
   launchStatusPublicationFailure?: LaunchStatus['publicationFailure'];
   launchAdmissionHolds?: LaunchStatus['admissionHolds'];
@@ -844,7 +846,13 @@ function statusWithRecentCoordinatorEvidence(
       ? { kind: 'unscoped' }
       : { kind: 'coordinator', instanceId: coordinator.instanceId, startedAt: coordinator.startedAt };
   if (diagnostic !== null) {
-    return statusWithShutdownRemainder(storage, runDir, now, diagnostic, remainderScope);
+    return statusWithShutdownRemainder(
+      storage,
+      runDir,
+      now,
+      diagnostic.status === 'deferred_upgrade' ? { ...fallback, legacyContenderDeferred: true } : diagnostic,
+      remainderScope,
+    );
   }
   return statusWithShutdownRemainder(storage, runDir, now, fallback, remainderScope);
 }
@@ -1174,11 +1182,14 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   const upgradeQuarantineStatus = quarantined ? { upgradeQuarantined: true } : {};
   const disposition = readLaunchStatus(runDir);
   const unreadableAdmission = listLaunchAdmissions(runDir).find((entry) => entry.kind === 'unreadable');
-  const state =
-    (status.status === 'ok' ? status.health.launchStatus : undefined) ??
-    (disposition.kind === 'readable' ? disposition.status : null);
+  const current = status.status === 'ok' ? status.health.launchStatus : undefined;
+  const state = current ?? (disposition.kind === 'readable' ? disposition.status : null);
   return {
     ...status,
+    ...(state === null
+      ? {}
+      : { launchStatusSource: current === undefined ? ('persisted' as const) : ('authenticated-owner' as const) }),
+    controllerEvidenceRefusals: state?.controllerEvidenceRefusals,
     ...(state?.hold !== undefined
       ? { launchHold: state.hold }
       : unreadableAdmission?.kind === 'unreadable'

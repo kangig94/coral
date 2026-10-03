@@ -13,6 +13,7 @@ const statusSchema = z
     admissionHolds: z
       .array(z.object({ path: z.string(), disposition: z.enum(['unknown', 'acquisition-window', 'cleanup-pending']) }))
       .optional(),
+    controllerEvidenceRefusals: z.array(z.object({ path: z.string(), observation: z.string() })).optional(),
     previousStatus: z.literal('unavailable').optional(),
     inheritedHealth: z
       .array(
@@ -31,13 +32,15 @@ const statusSchema = z
           controller: z.string(),
           requestId: z.string().optional(),
           observation: z.string().optional(),
+          boundedExit: z.literal('launch-original-after-2000ms').optional(),
           retry: z.enum(['controller-evidence-change', 'eligible-build-appears']).optional(),
         }),
         z.object({
           kind: z.literal('custody-unreadable'),
           path: z.string(),
           observation: z.string().optional(),
-          retry: z.literal('restore-readable-custody-record'),
+          boundedExit: z.literal('launch-original-after-2000ms').optional(),
+          retry: z.literal('restore-readable-custody-record').optional(),
         }),
         z.object({
           kind: z.literal('observation-unavailable'),
@@ -117,7 +120,9 @@ export function currentLaunchStatus(runDir: string): LaunchStatus | undefined {
   const remote = receivedStatuses.get(runDir);
   if (remote === undefined) return local;
   if (local === undefined) return remote;
-  const currentHolds = (key: 'inheritedHolds' | 'signalHolds' | 'admissionHolds' | 'inheritedHealth'): unknown[] => {
+  const currentHolds = (
+    key: 'inheritedHolds' | 'signalHolds' | 'admissionHolds' | 'inheritedHealth' | 'controllerEvidenceRefusals',
+  ): unknown[] => {
     const entries = indexedStatusList(remote[key]);
     for (const [id, value] of pending?.lists.get(key) ?? []) {
       if (value === undefined) entries.delete(id);
@@ -136,6 +141,7 @@ export function currentLaunchStatus(runDir: string): LaunchStatus | undefined {
     signalHolds: currentHolds('signalHolds'),
     admissionHolds: currentHolds('admissionHolds'),
     inheritedHealth: currentHolds('inheritedHealth'),
+    controllerEvidenceRefusals: currentHolds('controllerEvidenceRefusals'),
   });
 }
 
@@ -168,7 +174,9 @@ export function updateLaunchStatus(runDir: string, change: (current: LaunchStatu
   const next = statusSchema.parse(change(pending.status));
   for (const key of new Set([...Object.keys(pending.status), ...Object.keys(next)])) {
     if (key === 'publicationFailure' || JSON.stringify(pending.status[key]) === JSON.stringify(next[key])) continue;
-    if (['inheritedHolds', 'signalHolds', 'inheritedHealth', 'admissionHolds'].includes(key)) {
+    if (
+      ['inheritedHolds', 'signalHolds', 'inheritedHealth', 'admissionHolds', 'controllerEvidenceRefusals'].includes(key)
+    ) {
       const edits = pending.lists.get(key) ?? new Map<string, unknown>();
       const before = indexedStatusList(pending.status[key]);
       const after = indexedStatusList(next[key]);
@@ -203,7 +211,13 @@ function publishPendingStatus(runDir: string, pending: PendingStatus): void {
       ...base,
       ...Object.fromEntries([...pending.ownedFields].map((key) => [key, pending.status[key]])),
     };
-    for (const key of ['inheritedHolds', 'signalHolds', 'inheritedHealth', 'admissionHolds']) {
+    for (const key of [
+      'inheritedHolds',
+      'signalHolds',
+      'inheritedHealth',
+      'admissionHolds',
+      'controllerEvidenceRefusals',
+    ]) {
       const edits = pending.lists.get(key) ?? new Map<string, unknown>();
       const entries = indexedStatusList(base[key]);
       for (const [id, value] of edits) {
@@ -265,4 +279,20 @@ function publishPendingStatus(runDir: string, pending: PendingStatus): void {
   } finally {
     release?.();
   }
+}
+
+export function recordControllerEvidenceRefusals(
+  runDir: string,
+  refusals: NonNullable<LaunchStatus['controllerEvidenceRefusals']>,
+): void {
+  updateLaunchStatus(runDir, (status) => {
+    const previous = new Map((status.controllerEvidenceRefusals ?? []).map((entry) => [entry.path, entry.observation]));
+    for (const entry of refusals) {
+      if (previous.get(entry.path) !== entry.observation)
+        process.stderr.write(`Controller evidence refused path=${entry.path} observation=${entry.observation}\n`);
+      previous.delete(entry.path);
+    }
+    for (const path of previous.keys()) process.stderr.write(`Controller evidence readable or absent path=${path}\n`);
+    return { ...status, controllerEvidenceRefusals: refusals };
+  });
 }

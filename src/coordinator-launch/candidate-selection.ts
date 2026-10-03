@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { recordControllerEvidenceRefusals } from '../infra/launch-status.js';
 import { type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
@@ -25,8 +26,8 @@ function candidates(
   original: Candidate,
   originalManifest: StrictBundleManifest,
   originalOutstanding: boolean,
+  controller: ReturnType<typeof controllerBuild>,
 ): Candidate[] {
-  const controller = controllerBuild(runDir);
   if (controller.kind === 'unknown') return [];
   const observedIntent = readUpgradeIntent(runDir);
   const committedIntent =
@@ -99,6 +100,9 @@ function candidates(
   });
 }
 
+const CONTROLLER_EVIDENCE_GRACE_MS = 2_000;
+const evidenceHoldStartedAt = new WeakMap<SupervisorLaunchMemory, number>();
+
 export type UnidentifiedBinder = { observed: boolean };
 
 export async function selectNextCandidate(input: {
@@ -154,10 +158,19 @@ export async function selectNextCandidate(input: {
     await sleep(POLL_MS);
     return { kind: 'retry' };
   }
-  const eligible = candidates(runDir, original, originalManifest, !record.hasServed(original.buildSetId));
+  const controller = controllerBuild(runDir);
+  recordControllerEvidenceRefusals(runDir, [...(controller.refusals ?? [])]);
+  if (controller.kind === 'unknown' && controller.refusals?.length) {
+    const now = Number(process.hrtime.bigint() / 1_000_000n);
+    const startedAt = evidenceHoldStartedAt.get(record) ?? now;
+    evidenceHoldStartedAt.set(record, startedAt);
+    if (now - startedAt >= CONTROLLER_EVIDENCE_GRACE_MS) return { kind: 'candidate', candidate: original };
+  } else {
+    evidenceHoldStartedAt.delete(record);
+  }
+  const eligible = candidates(runDir, original, originalManifest, !record.hasServed(original.buildSetId), controller);
   const available = eligible.filter((candidate) => !tried.has(candidate.executable));
   if (available.length === 0) {
-    const controller = controllerBuild(runDir);
     const state = record.read();
     if (
       eligible.length === 0 &&
@@ -173,10 +186,16 @@ export async function selectNextCandidate(input: {
       }),
       runDir,
     ).find((entry) => entry.kind === 'unreadable');
-    if (unreadable?.kind === 'unreadable') {
+    if (controller.kind === 'unknown' && controller.refusals?.length && unreadable?.kind === 'unreadable') {
       if (!record.holdUnreadableCustody(owner.current, unreadable.path)) return { kind: 'retry' };
     } else {
-      if (!record.hold(owner.current, controller.kind === 'required' ? controller.buildSetId : controller.kind))
+      if (
+        !record.hold(
+          owner.current,
+          controller.kind === 'required' ? controller.buildSetId : controller.kind,
+          controller.kind === 'unknown' && !!controller.refusals?.length,
+        )
+      )
         return { kind: 'retry' };
     }
     tried.clear();

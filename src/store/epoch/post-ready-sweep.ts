@@ -516,7 +516,11 @@ export async function sweepStoreEpochsPostReady(
         await yieldSweepTurn();
       }
     }
-    for (const address of protectedDeletionResidues(runtime, dbDir)) {
+    const residues = protectedDeletionResidues(runtime, dbDir);
+    unobservableEpoch ||= residues.refusedPaths.length > 0;
+    for (const path of residues.refusedPaths)
+      auditSweepFailure(path, new Error('Protected residue ancestry was refused.'));
+    for (const address of residues.addresses) {
       if (signal?.aborted) return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
       if (
         closureCapability(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey) === null ||

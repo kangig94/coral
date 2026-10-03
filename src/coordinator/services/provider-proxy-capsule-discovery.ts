@@ -21,17 +21,26 @@ export function discoverProviderHandoffCapsules(
     generationRoot: string;
     storage: StoragePort;
     uid: number;
+    onRefused?: (path: string, observation: string) => void;
   }>,
 ): readonly DiscoveredProviderHandoffCapsule[] {
   const candidates = providerHandoffCapsuleCandidatePaths(options.runDir, options.storage);
-  const discovered = candidates.map((path) => {
-    const candidate = readProviderHandoffCapsuleCandidate(path, options.generationRoot, {
-      storage: options.storage,
-      uid: options.uid,
-    });
-    if (candidate.kind === 'invalid') throw new Error(`${candidate.reason}:${path}`);
-    return Object.freeze({ path, capsule: candidate.capsule });
-  });
+  const discovered: DiscoveredProviderHandoffCapsule[] = [];
+  for (const path of candidates) {
+    try {
+      const candidate = readProviderHandoffCapsuleCandidate(path, options.generationRoot, {
+        storage: options.storage,
+        uid: options.uid,
+      });
+      if (candidate.kind === 'invalid') {
+        options.onRefused?.(path, candidate.reason);
+        continue;
+      }
+      discovered.push(Object.freeze({ path, capsule: candidate.capsule }));
+    } catch {
+      options.onRefused?.(path, 'capsule-unreadable');
+    }
+  }
   const superseded = supersededHandoffCapsulePaths(discovered);
   for (const path of superseded) {
     const retirement = retireProviderHandoffCapsule(options.storage, path);

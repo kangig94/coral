@@ -759,7 +759,32 @@ export function formatBackendStatus(
     sections.push(
       'Previous coordinator launch status is unavailable. Live owners re-publish current holds; these diagnostics cannot authorize a signal or prevent startup.',
     );
-  for (const hold of daemonStatus.launchSignalHolds ?? []) {
+  for (const refusal of daemonStatus.controllerEvidenceRefusals ?? [])
+    sections.push(
+      `Controller evidence refused at ${refusal.path}: ${refusal.observation}. The artifact is preserved; this observation authorizes no signal or job finalization.`,
+    );
+  const currentLaunchOwner = daemonStatus.launchStatusSource === 'authenticated-owner';
+  if (!currentLaunchOwner) {
+    if (daemonStatus.launchStatusSource === 'persisted')
+      sections.push(
+        'Persisted launch observations follow. No current launch owner has authenticated these observations.',
+      );
+    for (const hold of [...(daemonStatus.launchSignalHolds ?? []), ...(daemonStatus.launchInheritedHolds ?? [])])
+      sections.push(
+        `Recorded launch hold ${hold.launchId} (PID ${hold.pid}), last observation ${hold.observation ?? 'unknown'}.`,
+      );
+    for (const hold of daemonStatus.launchAdmissionHolds ?? [])
+      sections.push(`Recorded admission hold ${hold.path}: ${hold.disposition}.`);
+    if (daemonStatus.launchLockHold !== undefined)
+      sections.push(
+        `Recorded supervisor lock hold ${daemonStatus.launchLockHold.path}: ${daemonStatus.launchLockHold.observation}.`,
+      );
+    if (daemonStatus.launchStatusPublicationFailure !== undefined)
+      sections.push(
+        `Recorded launch status publication failure: ${daemonStatus.launchStatusPublicationFailure.detail}.`,
+      );
+  }
+  for (const hold of currentLaunchOwner ? (daemonStatus.launchSignalHolds ?? []) : []) {
     if (hold.launchId.startsWith('replacement:'))
       sections.push(
         `Replacement supervisor ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because a retirement signal was refused. Last observation: ${hold.observation ?? 'signal-delivery-refused'}. The coordinator retries this exact process; once it exits, recovery launches the next replacement. Fresh cooperation can clear a refused-only commitment before any signal is delivered.`,
@@ -773,34 +798,51 @@ export function formatBackendStatus(
         `Coordinator launch ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation}) is held because TERM or SIGKILL delivery could not be confirmed. Last observation: ${hold.observation ?? 'signal-delivery-refused'}. The owning supervisor retries exact identity; refused-only retirement can clear on authenticated cooperation, or the subject settles on proven absence.`,
       );
   }
-  if (daemonStatus.launchStatusPublicationFailure !== undefined)
+  if (currentLaunchOwner && daemonStatus.launchStatusPublicationFailure !== undefined)
     sections.push(
       `Coordinator launch status publication is unavailable: ${daemonStatus.launchStatusPublicationFailure.detail}. Current holds remain in memory; publication retries automatically.`,
     );
-  if (daemonStatus.launchLockHold !== undefined)
+  if (currentLaunchOwner && daemonStatus.launchLockHold !== undefined)
     sections.push(
       `Supervisor lock ${daemonStatus.launchLockHold.path}: ${daemonStatus.launchLockHold.disposition}, last observation ${daemonStatus.launchLockHold.observation}. The acquisition loop retries automatically; launches in this namespace wait while existing service and independent namespaces continue.`,
     );
-  for (const hold of daemonStatus.launchAdmissionHolds ?? [])
+  for (const hold of currentLaunchOwner ? (daemonStatus.launchAdmissionHolds ?? []) : [])
     sections.push(
       `Coordinator admission ${hold.path}: ${hold.disposition}. The namespace supervisor retries authenticated identity and completed first-acquisition evidence, or independent exact absence. Cleanup-pending affects residue only; unknown occupancy holds conflicting launches in this namespace.`,
     );
   const launchHold = daemonStatus.launchHold;
-  for (const hold of daemonStatus.launchInheritedHolds ?? [])
+  for (const hold of currentLaunchOwner ? (daemonStatus.launchInheritedHolds ?? []) : [])
     sections.push(
       `Coordinator launch ${hold.launchId} (PID ${hold.pid}, incarnation ${hold.incarnation ?? 'unavailable'}, last observation ${hold.observation ?? 'unknown'}) is held by an unresponsive inherited child. The supervisor retries on exact-child cooperation before any delivered termination signal, or proven absence. macOS permanent wedging holds this child's repair.`,
     );
-  if (launchHold !== undefined) {
+  if (launchHold !== undefined && !currentLaunchOwner) {
+    const subject =
+      'path' in launchHold
+        ? launchHold.path
+        : 'requestId' in launchHold
+          ? launchHold.requestId
+          : 'launchId' in launchHold
+            ? launchHold.launchId
+            : launchHold.controller;
+    sections.push(
+      `Recorded coordinator launch hold ${launchHold.kind}, subject=${subject ?? 'unknown'}. No automatic retry is established by this persisted observation.`,
+    );
+  }
+  if (launchHold !== undefined && currentLaunchOwner) {
     switch (launchHold.kind) {
       case 'custody-unreadable':
         sections.push(
-          `Coordinator launch is held by unreadable custody at ${launchHold.path}. The supervisor retries selection; coordinator composition reconciles custody from existing authenticated owner evidence. Irreversible history loss remains unrecoverable-retained. Only affected custody-dependent selection waits.`,
+          launchHold.boundedExit === undefined
+            ? `The current owner reports unreadable custody at ${launchHold.path}, with recorded retry condition ${launchHold.retry ?? 'unavailable'}. This report supplies no absence evidence.`
+            : `Coordinator launch observed unreadable custody at ${launchHold.path}. Selection retries for at most 2000ms, then launches the original candidate. The artifact is preserved and supplies no absence evidence; coordinator recovery decides affected work independently.`,
         );
         break;
       case 'no-eligible-build':
         sections.push(
           launchHold.controller === 'unknown'
-            ? 'Coordinator launch is quarantined by indeterminate controller evidence. The supervisor retries when custody, transfer, or process evidence changes.'
+            ? launchHold.boundedExit === undefined
+              ? 'Coordinator launch is held by conflicting controller evidence. The supervisor revalidates controller evidence.'
+              : 'Coordinator launch observed unreadable controller evidence. Selection retries for at most 2000ms, then launches the original candidate while preserving the refused artifacts.'
             : `Coordinator launch requires build ${launchHold.controller}${launchHold.requestId === undefined ? '' : ` for request ${launchHold.requestId}`}. Last observation: ${launchHold.observation ?? 'no eligible build'}. The supervisor revalidates installed and retained builds or a change in required controller evidence.`,
         );
         break;
@@ -843,9 +885,9 @@ export function formatBackendStatus(
   if (daemonStatus.supersededEpochs !== undefined) {
     sections.push(formatSupersededEpochClosures(daemonStatus.supersededEpochs));
   }
-  if (upgrade === undefined && daemonStatus.legacyContenderDeferred) {
+  if (daemonStatus.legacyContenderDeferred) {
     sections.push(
-      'An older contender was refused while this incumbent continues serving. Its attempted upgrade is deferred.',
+      'Upgrade history: an older contender was refused. This recorded refusal does not establish current service or an automatic retry.',
     );
   }
   const draining = daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining';
@@ -953,9 +995,12 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
-        result.launchStatusProblem !== undefined
+        result.launchStatusSource === 'authenticated-owner' && result.launchStatusProblem !== undefined
           ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch status problem is reported below.'
-          : result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
+          : result.launchStatusSource === 'authenticated-owner' &&
+              (result.launchHold !== undefined ||
+                result.launchInheritedHolds?.length ||
+                result.launchSignalHolds?.length)
             ? 'No coordinator discovery record and no coordinator socket at the current expected address were found. The launch status reports the hold below.'
             : [
                 'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
@@ -965,9 +1010,12 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'recorded_process_absent':
       return withShutdownRemainderSection(
-        result.launchStatusProblem !== undefined
+        result.launchStatusSource === 'authenticated-owner' && result.launchStatusProblem !== undefined
           ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch status problem is reported below.`
-          : result.launchHold !== undefined || result.launchInheritedHolds?.length || result.launchSignalHolds?.length
+          : result.launchStatusSource === 'authenticated-owner' &&
+              (result.launchHold !== undefined ||
+                result.launchInheritedHolds?.length ||
+                result.launchSignalHolds?.length)
             ? `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The launch status reports the hold below.`
             : [
                 `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
@@ -985,7 +1033,7 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
     case 'deferred_upgrade':
       return withShutdownRemainderSection(
-        'An older contender was refused while the incumbent continues serving. Upgrade deferred; Coral will retry automatically when its recorded conditions change.',
+        'Upgrade history: an older contender was refused. This recorded refusal does not establish current service or an automatic retry.',
         result.shutdownRemainder,
       );
     case 'unauthorized':

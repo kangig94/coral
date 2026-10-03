@@ -1,3 +1,4 @@
+import { readLaunchStatus, recordControllerEvidenceRefusals } from '../../infra/launch-status.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { join } from 'node:path';
 import { resolveCurrentStoreEpoch } from '../../store/epoch/index.js';
@@ -841,21 +842,29 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     if (world.providerProxyInheritance === undefined) {
       providerProxyLifecycle.completeStartupDiscovery();
     } else {
-      providerProxyLifecycle.installDiscoveredCapsules(
-        discoverProviderHandoffCapsules({
-          runDir: runtime.paths.coral.coordinator.runDir,
-          generationRoot: runtime.paths.coral.generation.root,
-          storage: runtime.storage,
-          uid: process.getuid?.() ?? 0,
+      const refusals: { path: string; observation: string }[] = [];
+      const discovered = discoverProviderHandoffCapsules({
+        runDir: runtime.paths.coral.coordinator.runDir,
+        generationRoot: runtime.paths.coral.generation.root,
+        storage: runtime.storage,
+        uid: process.getuid?.() ?? 0,
+        onRefused: (path, observation) => refusals.push({ path, observation }),
+      });
+      const prior = readLaunchStatus(runtime.paths.coral.coordinator.runDir);
+      const observedPaths = new Set([...discovered.map(({ path }) => path), ...refusals.map(({ path }) => path)]);
+      recordControllerEvidenceRefusals(runtime.paths.coral.coordinator.runDir, [
+        ...(prior.kind === 'readable' ? (prior.status.controllerEvidenceRefusals ?? []) : []).filter(
+          ({ path }) => !observedPaths.has(path),
+        ),
+        ...refusals,
+      ]);
+      providerProxyLifecycle.installDiscoveredCapsules(discovered, {
+        observeRecordedProcess: createRecordedProcessObserver({
+          readIncarnation: (pid) =>
+            runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform),
+          observeLiveness: (pid) => runtime.process.observeLiveness(pid),
         }),
-        {
-          observeRecordedProcess: createRecordedProcessObserver({
-            readIncarnation: (pid) =>
-              runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform),
-            observeLiveness: (pid) => runtime.process.observeLiveness(pid),
-          }),
-        },
-      );
+      });
     }
     await reconcileProviderProxyLifecycle(providerProxyLifecycle, signal);
     signal.throwIfAborted();

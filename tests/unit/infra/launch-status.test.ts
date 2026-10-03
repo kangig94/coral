@@ -14,7 +14,7 @@ import {
 } from '#src/infra/launch-status.js';
 
 describe('launch status diagnostics', () => {
-  it.each(['admissionHolds'] as const)(
+  it.each(['admissionHolds', 'controllerEvidenceRefusals'] as const)(
     'merges local %s additions and deletions over remote snapshots during publication failure',
     async (key) => {
       vi.useFakeTimers();
@@ -22,7 +22,10 @@ describe('launch status diagnostics', () => {
       const lockDir = join(runDir, 'launch-status.v1.lock');
       mkdirSync(lockDir);
       for (const id of ['one', 'two']) writeFileSync(join(lockDir, `owner-${id}.lock`), '{}');
-      const entry = { path: '/source', disposition: 'unknown' as const };
+      const entry =
+        key === 'admissionHolds'
+          ? { path: '/source', disposition: 'unknown' as const }
+          : { path: '/source', observation: 'capsule-unreadable' };
       try {
         updateLaunchStatus(runDir, (status) => ({ ...status, [key]: [entry] }));
         receiveLaunchStatus(runDir, { version: 1, [key]: [] });

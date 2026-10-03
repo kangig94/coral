@@ -48,7 +48,9 @@ vi.mock('#src/runtime/real.js', () => ({
   }),
 }));
 
+import * as launchStatus from '#src/infra/launch-status.js';
 import { getBackendStatusFull } from '#src/cli/backend-status.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
 
 const healthyPing = {
   status: 'ok',
@@ -163,4 +165,78 @@ it('distinguishes a 401 responder from unreachable transport', async () => {
     status: 'unreachable',
     cause: 'no_response',
   });
+});
+
+it.each(['no-record', 'no-record-socket-present'] as const)(
+  'keeps observed %s with historical upgrade refusal',
+  async (kind) => {
+    mockState.observed = kind === 'no-record' ? { kind } : { kind, socketPath: '/batch-08-fake/coordinator.sock' };
+    mockState.diagnostic = JSON.stringify({
+      schemaVersion: 1,
+      state: 'stopped_with_diagnostic',
+      retryable: false,
+      phase: 'startup_failed',
+      recordedAt: new Date(NOW).toISOString(),
+      pid: PID,
+      error: { kind: 'coral_setup_error', code: 'handoff_shutdown_capability_rejected' },
+    });
+    const result = await getBackendStatusFull('/plugin-root');
+    expect(result.status).toBe(kind === 'no-record' ? 'no_record_no_socket' : 'no_record_socket_present');
+    const text = formatBackendStatus(result, { kind: 'absent' }, null);
+    expect(text).toContain('refused');
+    expect(text).not.toContain('incumbent continues serving');
+    expect(text).not.toContain('retry automatically');
+    if (kind === 'no-record') expect(text).toContain('command=coral-cli backend start');
+  },
+);
+
+it('shows persisted holds without inventing an owner or suppressing startup', async () => {
+  mockState.observed = { kind: 'no-record' };
+  const read = vi.spyOn(launchStatus, 'readLaunchStatus').mockReturnValue({
+    kind: 'readable',
+    status: {
+      version: 1,
+      hold: { kind: 'target-indeterminate', requestId: 'old-request' },
+      inheritedHolds: [],
+      signalHolds: [],
+    },
+  });
+  try {
+    const result = await getBackendStatusFull('/plugin-root');
+    expect(result.launchHold).toEqual({ kind: 'target-indeterminate', requestId: 'old-request' });
+    const text = formatBackendStatus(result, { kind: 'absent' }, null);
+    expect(text).toContain('old-request');
+    expect(text).not.toContain('supervisor retries');
+    expect(text).toContain('command=coral-cli backend start');
+  } finally {
+    read.mockRestore();
+  }
+});
+
+it('uses authenticated health as the current launch report', async () => {
+  const hold = { kind: 'target-indeterminate', requestId: 'current-request' };
+  const health = {
+    ...healthyPing,
+    kernel: { phase: 'running', readyAt: NOW - 1000 },
+    uptimeMs: 1000,
+    active: 0,
+    activeJobs: 0,
+    inflightRequests: 0,
+    queueDepth: 0,
+    textProjectionState: 'idle',
+    components: [],
+    launchStatus: { version: 1, hold, inheritedHolds: [], signalHolds: [] },
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(healthyPing)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(health))),
+  );
+  const result = await getBackendStatusFull('/plugin-root');
+  expect(result).toMatchObject({ status: 'ok', launchStatusSource: 'authenticated-owner', launchHold: hold });
+  const text = formatBackendStatus(result, { kind: 'absent' }, null);
+  expect(text).toContain('supervisor retries');
+  expect(text).not.toContain('command=coral-cli backend start');
 });

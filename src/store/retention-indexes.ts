@@ -2,6 +2,7 @@ import type { Database } from './db.js';
 
 export const retentionCausePaths = ['$.causeRef.seq', '$.reason.causeRef.seq', '$.terminal.outcome.causeRef.seq'];
 
+// The literal predicate depends on encodeEventBody (src/store/body-codec.ts) writing every body with JSON.stringify.
 // Unknown shapes hold progress globally rather than making a future reader's evidence disappear.
 export const unknownRetentionCause = `CASE WHEN json_valid(body) THEN
   (length(CAST(body AS TEXT)) - length(replace(CAST(body AS TEXT), '"causeRef":', ''))) / 11 >
