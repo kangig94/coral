@@ -45,21 +45,23 @@ function legacyProxyStartedAtSeconds(pid: number): number | null {
   }
 }
 
-type ControllerBuildObservation = ({ kind: 'none' | 'unknown' } | { kind: 'required'; buildSetId: string }) & {
+type ControllerBuildObservation = (
+  | { kind: 'none' }
+  | { kind: 'unknown'; refusalOnly?: boolean; readableBuildSetId?: string }
+  | { kind: 'required'; buildSetId: string }
+) & {
   refusals?: readonly { path: string; observation: string }[];
 };
 
 export function controllerBuild(runDir: string): ControllerBuildObservation {
   const runtime = createRealRuntime(runDir.endsWith('run-dev') ? 'dev' : 'prod', { baseDir: dirname(dirname(runDir)) });
-  let paths: readonly string[];
+  const refusals: { path: string; observation: string }[] = [];
+  let paths: readonly string[] = [];
   try {
     paths = providerHandoffCapsuleCandidatePaths(runDir, runtime.storage);
   } catch (error: unknown) {
-    return isNoEntryError(error)
-      ? { kind: 'none' }
-      : { kind: 'unknown', refusals: [{ path: runDir, observation: 'capsule-discovery-unreadable' }] };
+    if (!isNoEntryError(error)) refusals.push({ path: runDir, observation: 'capsule-discovery-unreadable' });
   }
-  const refusals: { path: string; observation: string }[] = [];
   const readable: { path: string; capsule: HandoffCapsule }[] = [];
   for (const path of paths) {
     let candidate: ReturnType<typeof readProviderHandoffCapsuleCandidate>;
@@ -79,6 +81,8 @@ export function controllerBuild(runDir: string): ControllerBuildObservation {
     readable.push(candidate);
   }
   const superseded = supersededHandoffCapsulePaths(readable);
+  let liveEvidenceUnknown = false;
+  let custodyUnknown = false;
   const legacyBuilds = new Set<string>();
   const buildsBySet = new Map<string, string>();
   for (const { path, capsule } of readable) {
@@ -99,11 +103,14 @@ export function controllerBuild(runDir: string): ControllerBuildObservation {
     }
     if (observed === capsule.proxyIncarnation && observeProcessLiveness(capsule.proxyPid) !== 'absent') {
       const transfer = servedControllerTransferForCapsule(runtime, capsule);
-      if (transfer.kind === 'unknown') return { kind: 'unknown' };
+      if (transfer.kind === 'unknown') {
+        liveEvidenceUnknown = true;
+        continue;
+      }
       const buildSetId = transfer.kind === 'served' ? transfer.buildSetId : handoffCapsuleControllerBuildSetId(capsule);
       const setKey = providerProxySetKey(providerProxySetIdentityFromCapsule(capsule));
       const existing = buildsBySet.get(setKey);
-      if (existing !== undefined && existing !== buildSetId) return { kind: 'unknown' };
+      if (existing !== undefined && existing !== buildSetId) liveEvidenceUnknown = true;
       buildsBySet.set(setKey, buildSetId);
     }
   }
@@ -128,14 +135,20 @@ export function controllerBuild(runDir: string): ControllerBuildObservation {
     );
     if (durableCliJob) {
       const handoff = prepareRetainedControllerHandoff(runtime, index);
-      if (handoff === null) return { kind: 'unknown', ...(refusals.length === 0 ? {} : { refusals }) };
-      builds.add(inspectValidatedHandoffTarget(handoff.target).build.buildSetId);
+      if (handoff === null) custodyUnknown = true;
+      else builds.add(inspectValidatedHandoffTarget(handoff.target).build.buildSetId);
     }
   } catch {
-    return { kind: 'unknown', ...(refusals.length === 0 ? {} : { refusals }) };
+    custodyUnknown = true;
   }
-  if (builds.size === 0) return refusals.length === 0 ? { kind: 'none' } : { kind: 'unknown', refusals };
-  return builds.size === 1
-    ? { kind: 'required', buildSetId: [...builds][0], ...(refusals.length === 0 ? {} : { refusals }) }
-    : { kind: 'unknown' };
+  const refused = refusals.length === 0 ? {} : { refusals };
+  if (liveEvidenceUnknown || builds.size > 1) return { kind: 'unknown', ...refused };
+  if (custodyUnknown || (builds.size === 0 && refusals.length > 0))
+    return {
+      kind: 'unknown',
+      refusalOnly: refusals.length > 0,
+      ...(builds.size === 1 ? { readableBuildSetId: [...builds][0] } : {}),
+      ...refused,
+    };
+  return builds.size === 0 ? { kind: 'none' } : { kind: 'required', buildSetId: [...builds][0], ...refused };
 }

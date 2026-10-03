@@ -276,6 +276,11 @@ describe('progress retention', () => {
       value: string;
     };
     expect(JSON.parse(checkpoint.value).progressSeq).toBeGreaterThan(0);
+    expect(JSON.parse(checkpoint.value).ceiling).toBe(
+      f.db
+        .prepare<[], { seq: number }>("SELECT MAX(seq) AS seq FROM events WHERE type = 'job.terminal.recorded'")
+        .get()!.seq,
+    );
     f.budget.canContinue = () => true;
     await prune(f);
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
@@ -308,6 +313,8 @@ describe('progress retention', () => {
       }
       await pruning;
       expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(target)).toBeDefined();
+      await prune(f);
+      expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(target)).toBeDefined();
       expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
         n: 1,
       });
@@ -321,6 +328,64 @@ describe('progress retention', () => {
     f.budget.canContinue = () => false;
     await prune(f);
     expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it('revisits an expired prefix while at least a thousand terminals arrive per cycle', async () => {
+    const f = fixture();
+    f.setNow(RETENTION_CUTOFF);
+    launch(f, 'prefix');
+    terminal(f, 'prefix');
+    const templates = f.db
+      .prepare(
+        "SELECT ts, type, body FROM events WHERE stream_id = 'prefix' AND type IN ('job.progress.emitted', 'job.terminal.recorded') ORDER BY seq",
+      )
+      .all() as { ts: string; type: string; body: Uint8Array }[];
+    const insert = f.db.prepare(
+      "INSERT INTO events(ts, type, stream_kind, stream_id, body) VALUES (?, ?, 'job', ?, ?)",
+    );
+    const append = (start: number, count: number, ts: string) => {
+      f.db.exec('BEGIN IMMEDIATE');
+      for (let i = start; i < start + count; i += 1)
+        for (const row of templates) insert.run(ts, row.type, `arrival-${i}`, row.body);
+      f.db.exec('COMMIT');
+    };
+    append(0, 1000, new Date(RETENTION_CUTOFF).toISOString());
+    await prune(f);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
+      n: 1001,
+    });
+    const expiredCutoff = RETENTION_CUTOFF + 30 * 86_400_000;
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      append(1000 + cycle * 1001, 1001, new Date(expiredCutoff).toISOString());
+      await pruneJobProgress({ db: f.db, readCtx: f.store, cutoff: expiredCutoff, afterSeq: 0, budget: f.budget });
+    }
+    expect(
+      f.db.prepare("SELECT seq FROM events WHERE stream_id = 'prefix' AND type = 'job.progress.emitted'").get(),
+    ).toBeUndefined();
+    expect(
+      f.db.prepare("SELECT seq FROM events WHERE stream_id = 'arrival-1000' AND type = 'job.progress.emitted'").get(),
+    ).toBeDefined();
+  });
+
+  it('accepts an old cursor without a ceiling and starts a fresh capture', async () => {
+    const f = fixture();
+    f.setNow(1);
+    const seq = launch(f, 'prefix');
+    const end = terminal(f, 'prefix');
+    f.db
+      .prepare('INSERT INTO meta(key, value) VALUES (?, ?)')
+      .run('storage-retention.progress.v1', JSON.stringify({ afterSeq: end, progressSeq: seq, futureField: true }));
+    await prune(f);
+    expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeUndefined();
+    expect(
+      f.db
+        .prepare("SELECT value FROM meta WHERE key = 'storage-retention.quarantine.v1.storage-retention.progress.v1'")
+        .get(),
+    ).toBeUndefined();
+    const meta = f.db.prepare("SELECT value FROM meta WHERE key = 'storage-retention.progress.v1'").get() as {
+      value: string;
+    };
+    expect(JSON.parse(meta.value)).toMatchObject({ afterSeq: 0, progressSeq: 0, futureField: true });
   });
 
   it('continues the terminal scan after a restart instead of repeating the first thousand', async () => {

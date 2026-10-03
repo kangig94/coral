@@ -842,13 +842,14 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     if (world.providerProxyInheritance === undefined) {
       providerProxyLifecycle.completeStartupDiscovery();
     } else {
-      const refusals: { path: string; observation: string }[] = [];
+      const refusals: { path: string; observation: string; observedAt: string }[] = [];
       const discovered = discoverProviderHandoffCapsules({
         runDir: runtime.paths.coral.coordinator.runDir,
         generationRoot: runtime.paths.coral.generation.root,
         storage: runtime.storage,
         uid: process.getuid?.() ?? 0,
-        onRefused: (path, observation) => refusals.push({ path, observation }),
+        onRefused: (path, observation) =>
+          refusals.push({ path, observation, observedAt: new Date(runtime.time.now()).toISOString() }),
       });
       const prior = readLaunchStatus(runtime.paths.coral.coordinator.runDir);
       const observedPaths = new Set([...discovered.map(({ path }) => path), ...refusals.map(({ path }) => path)]);
