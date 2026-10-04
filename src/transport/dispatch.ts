@@ -1,4 +1,4 @@
-import { waitCursorForJobs } from '../jobs/wait.js';
+import { serializeWaitCursor, waitCursorForJobs } from '../jobs/wait.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
@@ -1017,7 +1017,23 @@ async function executeExpansionCatalogRequest({
   }
 }
 
-function unknownJobsAnswer(rpcPorts: HttpHandlerPorts, jobIds: readonly string[]): CatalogRequestExecution {
+function unknownJobsAnswer(
+  rpcPorts: HttpHandlerPorts,
+  jobIds: readonly string[],
+  continuation?: string,
+): CatalogRequestExecution {
+  const caveat = rpcPorts.jobs.unknownJobCaveat?.() ?? '';
+  if (rpcPorts.jobs.unknownJobDisposition() === 'discovery-unknown') {
+    return unary(
+      {
+        code: 'transient',
+        message: `Job discovery is unknown while location recovery has a scheduled retry. ${caveat}`,
+        detail: { jobs: [...jobIds], disposition: 'discovery-unknown' },
+        ...(continuation === undefined ? {} : { remediation: continuation }),
+      },
+      503,
+    );
+  }
   if (rpcPorts.jobs.unknownJobDisposition() === 'pre-epoch-history') {
     return unary(
       {
@@ -1031,7 +1047,7 @@ function unknownJobsAnswer(rpcPorts: HttpHandlerPorts, jobIds: readonly string[]
   return unary(
     {
       code: 'jobs_not_found',
-      message: 'Requested jobs were not found',
+      message: `Requested jobs were not found${caveat ? `. ${caveat}` : ''}`,
       detail: { jobs: [...jobIds] },
     },
     404,
@@ -1097,6 +1113,8 @@ async function executeJobsDetailCatalogRequest({
 
   const detail = rpcPorts.jobs.detail(parsed.jobId);
   if (!detail) {
+    if (rpcPorts.jobs.unknownJobDisposition() === 'discovery-unknown' || rpcPorts.jobs.unknownJobCaveat?.())
+      return unknownJobsAnswer(rpcPorts, [parsed.jobId]);
     return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
   }
   if ('kind' in detail && detail.kind === 'pre-epoch-history') {
@@ -1157,11 +1175,16 @@ async function executeJobsWaitCatalogRequest({
   if (scopeCheck.mismatch.length > 0) {
     return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
-  if (scopeCheck.missing.length === parsed.jobIds.length) {
-    return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
-  }
-  if (scopeCheck.missing.length > 0 && rpcPorts.jobs.unknownJobDisposition() === 'pre-epoch-history') {
-    return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
+  if (
+    scopeCheck.missing.length === parsed.jobIds.length ||
+    (scopeCheck.missing.length > 0 && rpcPorts.jobs.unknownJobDisposition() !== 'not-found')
+  ) {
+    const continuation = `coral-cli wait jobs ${parsed.jobIds.join(' ')}${parsed.cursor === undefined ? '' : ` --cursor ${serializeWaitCursor(parsed.cursor)}`}`;
+    return unknownJobsAnswer(
+      rpcPorts,
+      rpcPorts.jobs.unknownJobDisposition() === 'discovery-unknown' ? parsed.jobIds : scopeCheck.missing,
+      continuation,
+    );
   }
   const unrecoverable = rpcPorts.jobs.outcomeUnrecoverable(parsed.jobIds);
   if (unrecoverable.length > 0) {

@@ -148,6 +148,8 @@ function createExecutionServiceRegistry(input: {
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq,
+      observeResultAvailability: (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
+      hintResultRepair: (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
       appServerProxyRoute: createAppServerProxyRoute({
         hostManager: world.providerHostManager,
         reconciler: providerOperationReconciler,

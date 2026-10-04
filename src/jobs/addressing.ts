@@ -3,10 +3,11 @@ import { raceObserved } from '../infra/promise-signal.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
 import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
-import { hasHistoricalSource, refreshHistoricalEpoch, retryUnknownHistoricalEpochs } from './historical-reader.js';
-import { type JobLocationIndex, type JobLocation } from './location-index.js';
+import { readHistoricalSource, type HistoricalSourceReader } from './historical-reader.js';
+import { hasReadableTerminalDetail, type JobLocationView, type JobLocation } from './location-index.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse, JobProgressEvent } from './records.js';
+import { type ResultAvailability } from './terminal/export.js';
 import { type WaitCursor, type WaitStreamEvent, type WaitStreamRequest } from './wait.js';
 
 export interface ActiveJobAccess {
@@ -31,36 +32,66 @@ export type PreEpochHistoryProbe = () => boolean;
 export type HistoricalClosureProbe = (epochKey: string) => 'pending' | 'decided';
 
 export class JobAddressing {
-  private readonly locations: JobLocationIndex;
+  private readonly locations: JobLocationView;
+  private readonly readHistorical: HistoricalSourceReader;
+  private readonly observeResultAvailability?: (jobId: string) => ResultAvailability;
+  private readonly hintRepair?: (jobId: string) => void;
   private readonly active: ActiveJobAccess;
   private readonly preEpochHistoryExists: PreEpochHistoryProbe;
   private readonly historicalClosure: HistoricalClosureProbe;
 
   constructor(
-    locations: JobLocationIndex,
+    locations: JobLocationView,
     active: ActiveJobAccess,
     preEpochHistoryExists: PreEpochHistoryProbe,
     historicalClosure: HistoricalClosureProbe,
+    readHistorical: HistoricalSourceReader = (epochKey, jobIds) => readHistoricalSource(locations, epochKey, jobIds),
+    observeResultAvailability?: (jobId: string) => ResultAvailability,
+    hintRepair?: (jobId: string) => void,
   ) {
     this.locations = locations;
     this.active = active;
     this.preEpochHistoryExists = preEpochHistoryExists;
     this.historicalClosure = historicalClosure;
+    this.readHistorical = readHistorical;
+    this.observeResultAvailability = observeResultAvailability;
+    this.hintRepair = hintRepair;
   }
 
-  unknownJobDisposition(): 'pre-epoch-history' | 'not-found' {
+  unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown' {
+    if (this.locations.unknownLocationHolds().some((hold) => hold.retryScheduled)) return 'discovery-unknown';
     return this.preEpochHistoryExists() ? 'pre-epoch-history' : 'not-found';
   }
 
+  unknownJobCaveat(): string {
+    return this.locations
+      .unknownLocationHolds()
+      .map((hold) => `Unreadable epoch ${hold.epochKey}: ${hold.reason}.`)
+      .join(' ');
+  }
+
+  private historicalLocation(location: JobLocation): { location: JobLocation; outcomeUnrecoverable: boolean } {
+    const retained = this.locations.read(location.jobId) ?? location;
+    if (hasReadableTerminalDetail(retained)) return { location: retained, outcomeUnrecoverable: false };
+    const closure = this.historicalClosure(retained.epochKey);
+    const read = this.readHistorical(retained.epochKey, [retained.jobId]);
+    if (read.kind === 'unreadable')
+      return {
+        location: { ...retained, disposition: 'unresolved', detail: { kind: 'absent' } },
+        outcomeUnrecoverable: false,
+      };
+    const observed = read.locations.get(retained.jobId);
+    if (observed && hasReadableTerminalDetail(observed)) return { location: observed, outcomeUnrecoverable: false };
+    return {
+      location: observed ?? { ...retained, disposition: 'unresolved', detail: { kind: 'absent' } },
+      outcomeUnrecoverable: closure === 'decided',
+    };
+  }
+
   private outcomeUnrecoverableLocation(location: JobLocation): boolean {
-    if (location.epochKey === this.active.epochKey()) return false;
-    const read = refreshHistoricalEpoch(this.locations, location.epochKey, [location.jobId]);
-    const latest = this.locations.read(location.jobId) ?? location;
     return (
-      latest.disposition !== 'terminal' &&
-      this.locations.unknownLocationHold(latest.epochKey) === null &&
-      (read === 'read' || !hasHistoricalSource(this.locations, latest.epochKey)) &&
-      this.historicalClosure(latest.epochKey) === 'decided'
+      location.epochKey !== (this.active.epochKey() ?? ':memory:') &&
+      this.historicalLocation(location).outcomeUnrecoverable
     );
   }
 
@@ -74,17 +105,21 @@ export class JobAddressing {
   private location(jobId: string): JobLocation | null {
     const existing = this.locations.read(jobId);
     if (existing !== null) return existing;
-    retryUnknownHistoricalEpochs(this.locations);
-    const recovered = this.locations.read(jobId);
-    if (recovered !== null) return recovered;
     const detail = this.active.detail(jobId);
-    const epochKey = this.active.epochKey();
-    if (detail === null || epochKey === null) return null;
-    return this.locations.register(jobId, epochKey, {
-      projectRoot: detail.status.projectRoot,
-      workDir: detail.status.workDir,
-      jobKind: detail.status.jobKind,
-    });
+    const epochKey = this.active.epochKey() ?? ':memory:';
+    if (detail === null) return null;
+    return {
+      version: 'v1',
+      jobId,
+      epochKey,
+      subject: {
+        projectRoot: detail.status.projectRoot,
+        workDir: detail.status.workDir,
+        jobKind: detail.status.jobKind,
+      },
+      disposition: 'active-owner',
+      detail: { kind: 'recorded', value: detail },
+    };
   }
 
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult {
@@ -116,14 +151,14 @@ export class JobAddressing {
   detail(jobId: string): JobDetailLookup {
     const location = this.location(jobId);
     if (location === null) return this.preEpochHistoryExists() ? { kind: 'pre-epoch-history', jobId } : null;
-    const historical = location.epochKey !== this.active.epochKey();
+    const historical = location.epochKey !== (this.active.epochKey() ?? ':memory:');
     if (!historical) {
       const active = this.active.detail(jobId);
       if (active !== null) return { ...active, epochKey: location.epochKey };
-    } else if (this.outcomeUnrecoverableLocation(location)) {
-      return { kind: 'outcome-unrecoverable', jobId, epochKey: location.epochKey };
     }
-    const latest = this.locations.read(jobId) ?? location;
+    const observed = historical ? this.historicalLocation(location) : { location, outcomeUnrecoverable: false };
+    if (observed.outcomeUnrecoverable) return { kind: 'outcome-unrecoverable', jobId, epochKey: location.epochKey };
+    const latest = observed.location;
     if (!historical && latest.disposition === 'unresolved') {
       return { kind: 'unresolved', jobId, epochKey: latest.epochKey };
     }
@@ -134,7 +169,7 @@ export class JobAddressing {
   }
 
   abort(jobIds: string[]): AbortDecision {
-    const activeEpochKey = this.active.epochKey();
+    const activeEpochKey = this.active.epochKey() ?? ':memory:';
     const activeIds = jobIds.filter((jobId) => this.location(jobId)?.epochKey === activeEpochKey);
     const historicalIds = jobIds.filter((jobId) => !activeIds.includes(jobId) && this.location(jobId) !== null);
     const unknownIds = jobIds.filter((jobId) => this.location(jobId) === null);
@@ -193,7 +228,7 @@ export class JobAddressing {
       if (decoded.kind === 'rejected') return decoded.error;
     }
     const locations = request.jobIds.map((jobId) => this.location(jobId));
-    const activeEpochKey = this.active.epochKey();
+    const activeEpochKey = this.active.epochKey() ?? ':memory:';
     const cursor = request.cursor;
     if (cursor !== undefined && cursor.version === undefined) {
       return locations.every((location) => location !== null && location.epochKey === activeEpochKey)
@@ -251,7 +286,7 @@ export class JobAddressing {
     );
     if (request.cursor && request.cursor.version === 'jobs.wait.v2') Object.assign(positions, request.cursor.positions);
     if (request.cursor && request.cursor.version === undefined) {
-      const activeEpoch = this.active.epochKey();
+      const activeEpoch = this.active.epochKey() ?? ':memory:';
       if (activeEpoch !== null) positions[activeEpoch] = request.cursor.afterSeq;
     }
     return {
@@ -279,7 +314,7 @@ export class JobAddressing {
     cursor: Extract<WaitCursor, { version: 'jobs.wait.v2' }>,
   ): Extract<WaitStreamEvent, { type: 'terminal' }> | null {
     if (
-      location.disposition !== 'terminal' ||
+      !hasReadableTerminalDetail(location) ||
       location.terminalSeq === undefined ||
       location.resultPath === undefined ||
       location.detail.kind !== 'recorded' ||
@@ -287,6 +322,8 @@ export class JobAddressing {
       cursor.deliveredJobIds?.includes(location.jobId)
     )
       return null;
+    const availability = this.observeResultAvailability?.(location.jobId);
+    if (availability?.kind === 'repair-pending') this.hintRepair?.(location.jobId);
     const exit = location.detail.value.exit;
     cursor.positions[location.epochKey] = Math.max(cursor.positions[location.epochKey] ?? 0, location.terminalSeq);
     cursor.deliveredJobIds = [...(cursor.deliveredJobIds ?? []), location.jobId];
@@ -326,8 +363,7 @@ export class JobAddressing {
     for (const jobId of request.jobIds) {
       const location = locations.find((candidate) => candidate.jobId === jobId);
       if (location === undefined || location.epochKey === activeEpochKey) continue;
-      const latest = this.locations.read(jobId);
-      if (latest === null) continue;
+      const latest = location;
       const terminal = this.terminalFromLocation(latest, request.jobIds, cursor);
       if (terminal !== null) {
         if (request.supportsWaitV2 === true) return terminal;
@@ -351,8 +387,7 @@ export class JobAddressing {
     for (const jobId of request.jobIds) {
       const location = locations.find((candidate) => candidate.jobId === jobId);
       if (location === undefined || location.epochKey === activeEpochKey) continue;
-      const latest = this.locations.read(jobId);
-      if (latest === null) continue;
+      const latest = location;
       const progress = this.progressFromLocation(latest, cursor);
       if (progress === null) continue;
       const previous = pendingProgress.get(location.epochKey);
@@ -379,11 +414,14 @@ export class JobAddressing {
     const locations = request.jobIds
       .map((jobId) => this.location(jobId))
       .filter((location): location is JobLocation => location !== null);
-    const admittedIds = locations.map((location) => location.jobId);
+    const knownIds = new Set(locations.map((location) => location.jobId));
+    const discoveryUnknown = this.unknownJobDisposition() === 'discovery-unknown';
+    const admittedIds = request.jobIds.filter((jobId) => knownIds.has(jobId) || discoveryUnknown);
     request = { ...request, jobIds: admittedIds };
-    const activeEpochKey = this.active.epochKey();
+    const activeEpochKey = this.active.epochKey() ?? ':memory:';
 
     if (
+      locations.length === admittedIds.length &&
       locations.every((location) => location.epochKey === activeEpochKey) &&
       request.supportsWaitV2 !== true &&
       (request.cursor === undefined || request.cursor.version === undefined)
@@ -414,24 +452,17 @@ export class JobAddressing {
             [Symbol.asyncIterator]();
     let pendingActive = activeIterator?.next() ?? null;
     let carrierUnknownJobIds: readonly string[] = [];
-    const historicalGroups = new Map<string, string[]>();
-    for (const location of locations) {
-      if (location.epochKey === activeEpochKey) continue;
-      const ids = historicalGroups.get(location.epochKey) ?? [];
-      ids.push(location.jobId);
-      historicalGroups.set(location.epochKey, ids);
-    }
     try {
       while (!request.abortSignal?.aborted && Number(time.monotonicNow()) < deadline) {
-        for (const [epochKey, jobIds] of historicalGroups) {
-          void refreshHistoricalEpoch(this.locations, epochKey, jobIds);
-        }
-        const historicalTerminal = this.firstHistoricalTerminal(request, locations, activeEpochKey, cursor);
+        const observedLocations = locations.map((location) =>
+          location.epochKey === activeEpochKey ? location : this.historicalLocation(location).location,
+        );
+        const historicalTerminal = this.firstHistoricalTerminal(request, observedLocations, activeEpochKey, cursor);
         if (historicalTerminal !== null) {
           yield historicalTerminal;
           return;
         }
-        yield* this.historicalProgressEvents(request, locations, activeEpochKey, cursor);
+        yield* this.historicalProgressEvents(request, observedLocations, activeEpochKey, cursor);
 
         if (pendingActive === null) {
           await time

@@ -152,6 +152,7 @@ export function createCoordinatorRpcPorts({
       list: createCoordinatorJobLister(getProgressStore),
       detail: (jobId) => jobAddressing.detail(jobId),
       unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
+      unknownJobCaveat: () => jobAddressing.unknownJobCaveat(),
       outcomeUnrecoverable: (jobIds) => jobAddressing.outcomeUnrecoverable(jobIds),
     },
     workflows: {

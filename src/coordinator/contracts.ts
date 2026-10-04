@@ -1,3 +1,4 @@
+import type { ResultAvailability } from '../jobs/terminal/export.js';
 import type {
   JobLaunchRequest,
   JobResumeRequest,
@@ -94,6 +95,8 @@ export type ExecutionServiceDeps = {
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
+  observeResultAvailability?: (jobId: string) => ResultAvailability;
+  hintResultRepair?: (jobId: string) => void;
   /** Tries to route an app-server operation through a live provider proxy set (W2.3). Optional because most
    *  compositions (every test, and any coordinator with no live set) never wire it — `LaunchOrchestrator`
    *  falls back to in-process execution when absent, identically to the port returning `null`. */

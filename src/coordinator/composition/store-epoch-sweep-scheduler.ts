@@ -1,6 +1,6 @@
 import { formatError } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
-import { retryUnknownHistoricalEpochs } from '../../jobs/historical-reader.js';
+import { refreshHistoricalEpochs, retryUnknownHistoricalEpochs } from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { sweepStoreEpochsPostReady, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
@@ -43,6 +43,7 @@ export function createStoreEpochSweepScheduler(input: {
               input.closeProxySetForEpochClosure,
             );
             if (!controller.signal.aborted) {
+              refreshHistoricalEpochs(jobLocationIndex);
               void (await sweepStoreEpochsPostReady(
                 runtime,
                 { ...openStore, storeRoot: openStore.canonicalStoreRoot ?? openStore.storeRoot },

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
@@ -83,6 +83,10 @@ async function liveOlderEpoch(): Promise<{
   const lock = new DatabaseSync(join(epochDir, '.lock'));
   lock.exec('CREATE TABLE IF NOT EXISTS lock_marker (id INTEGER PRIMARY KEY)');
   lock.close();
+  writeFileSync(
+    join(epochDir, '.coral-lineage.v1.json'),
+    JSON.stringify({ version: 'v1', lineageId: oldEpochKey.split(':')[0] }),
+  );
   const child = spawn(process.execPath, ['--input-type=module', '-e', writer, join(epochDir, 'store.db')], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -166,7 +170,7 @@ describe('job addressing across a process-owned epoch switch', () => {
     }
   });
 
-  it('refreshes a live WAL writer and resumes mixed waits with independent epoch positions', async () => {
+  it('reads a live WAL writer and resumes mixed waits with independent epoch positions', async () => {
     const { root, epochDir, child, lines } = await liveOlderEpoch();
     try {
       const index = new JobLocationIndex(runtime, root);

@@ -25,7 +25,7 @@ import type { SessionJobReadPort } from '../../sessions/contracts.js';
 import type { JobProjectionDetail } from '../read-queries.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { resultPathFor as defaultResultPathFor } from '../terminal/export.js';
+import { resultPathFor as defaultResultPathFor, type ResultAvailability } from '../terminal/export.js';
 import type { HostRef, UsageSummary } from '../../providers/contract.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import {
@@ -223,7 +223,8 @@ export interface WaitCoordinatorDeps {
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
   resultJobsRoot: string;
-  ensureResultArtifact?: (jobId: string) => string;
+  observeResultAvailability?: (jobId: string) => ResultAvailability;
+  hintResultRepair?: (jobId: string) => void;
   /**
    * Reports what is carrying each still-pending job. Optional because a wait works without it — the journal
    * is what ends a job either way — and a build that cannot answer must keep waiting silently rather than
@@ -348,16 +349,10 @@ export class WaitCoordinator {
   }
 
   private resultPathFor(jobId: string): string {
-    if (!this.deps.ensureResultArtifact) {
-      return defaultResultPathFor(this.deps.resultJobsRoot, jobId);
-    }
-
-    try {
-      return this.deps.ensureResultArtifact(jobId);
-    } catch (error: unknown) {
-      backendLog.warn(`Rebuilding result artifact failed for ${jobId}: ${errorMessage(error)}`);
-      return defaultResultPathFor(this.deps.resultJobsRoot, jobId);
-    }
+    const availability = this.deps.observeResultAvailability?.(jobId);
+    if (availability?.kind === 'available') return availability.resultPath;
+    if (availability?.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
+    return defaultResultPathFor(this.deps.resultJobsRoot, jobId);
   }
 
   private readPendingHistory(pending: ReadonlySet<string>, observedSeq: number, maxSeq: number): JobEvent[] {

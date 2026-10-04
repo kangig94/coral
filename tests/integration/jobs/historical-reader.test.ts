@@ -6,7 +6,11 @@ import { newRawDatabase } from '../../helpers/test-db.js';
 
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 import { JobAddressing } from '../../../src/jobs/addressing.js';
-import { refreshHistoricalEpoch, seedHistoricalEpoch } from '../../../src/jobs/historical-reader.js';
+import {
+  refreshHistoricalEpoch,
+  retryUnknownHistoricalEpochs,
+  seedHistoricalEpoch,
+} from '../../../src/jobs/historical-reader.js';
 import { readOrCreateEpochKey } from '../../../src/store/epoch/index.js';
 import { protectStoreEpoch, protectedStoreEpochRoot } from '../../../src/store/epoch/index.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
@@ -363,6 +367,9 @@ describe('historical job readers', () => {
     writeFileSync(addressPath, protectedAddress);
     expect(addressing.outcomeUnrecoverable(['known-live'])).toEqual(['known-live']);
     expect(addressing.detail('known-live')).toMatchObject({ kind: 'outcome-unrecoverable' });
+    expect(index.read('previously-unknown')).toBeNull();
+    expect(index.unknownLocationHold(epochKey)).not.toBeNull();
+    retryUnknownHistoricalEpochs(index);
     expect(index.read('previously-unknown')?.disposition).toBe('unresolved');
     expect(index.unknownLocationHold(epochKey)).toBeNull();
   });

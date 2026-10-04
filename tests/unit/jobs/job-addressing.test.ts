@@ -199,3 +199,22 @@ it('rejects an unsupported generation before reading structural cursor fields', 
     }),
   ).toMatchObject({ code: 'wait_cursor_unsupported' });
 });
+
+it('keeps retryable unknown IDs in a direct continuation and re-admits them after write-owned recovery', async () => {
+  const { index } = fixture();
+  index.holdUnknownLocations('recovering', 'recovery pending', true);
+  const addressing = historicalAddressing(index);
+  const waiting = addressing.waitStream({ jobIds: ['unknown'], supportsWaitV2: true, timeoutSeconds: 0 });
+  expect((await waiting.next()).value).toMatchObject({ type: 'waiting', waitingJobIds: ['unknown'] });
+  await waiting.return(undefined);
+  index.register('unknown', 'lineage-old:7', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  index.recordTerminal('unknown', detail('unknown', 'completed'), index.resultPathFor('unknown'), 12);
+  index.clearUnknownLocations('recovering');
+  const admitted = addressing.waitStream({ jobIds: ['unknown'], supportsWaitV2: true });
+  expect((await admitted.next()).value).toMatchObject({ type: 'terminal', jobId: 'unknown' });
+  await admitted.return(undefined);
+});

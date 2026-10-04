@@ -209,3 +209,45 @@ it('excludes proven missing siblings before opening a wait and filters the curso
   for await (const event of stream) expect(event).toMatchObject({ waitingJobIds: ['known'] });
   expect(waitStream.mock.calls[0][0]).toMatchObject({ jobIds: ['known'] });
 });
+
+it.each([false, true])('keeps retryable unknown discovery resumable in a legacy %s mixed wait', async (mixed) => {
+  const ids = mixed ? ['known', 'unknown'] : ['unknown'];
+  const cursor = { version: 'jobs.wait.v2', positions: { e: 12 }, locations: { known: 'e' } };
+  const result = await execute(
+    'jobs.wait',
+    { jobIds: ids, cursor, supportsWaitV2: true },
+    {
+      scopeCheck: () => ({ valid: ids, mismatch: [], missing: ['unknown'] }),
+      unknownJobDisposition: () => 'discovery-unknown',
+      unknownJobCaveat: () => 'Unreadable epoch e: recovery retry pending.',
+    },
+  );
+  expect(result).toMatchObject({
+    kind: 'unary',
+    statusCode: 503,
+    body: {
+      code: 'transient',
+      detail: { jobs: ids, disposition: 'discovery-unknown' },
+      remediation: `coral-cli wait jobs ${ids.join(' ')} --cursor ${Buffer.from(JSON.stringify(cursor)).toString('base64url')}`,
+    },
+  });
+  expect(errorCodeToExit('transient', 503)).toBe(75);
+});
+
+it('answers a typo as missing with the permanent unreadable-epoch caveat', async () => {
+  const result = await execute(
+    'jobs.wait',
+    { jobIds: ['typo'] },
+    {
+      scopeCheck: () => ({ valid: ['typo'], mismatch: [], missing: ['typo'] }),
+      unknownJobDisposition: () => 'not-found',
+      unknownJobCaveat: () => 'Unreadable epoch permanently-lost: retained-store-root-missing.',
+    },
+  );
+  expect(result).toMatchObject({
+    kind: 'unary',
+    statusCode: 404,
+    body: { code: 'jobs_not_found', message: expect.stringContaining('permanently-lost: retained-store-root-missing') },
+  });
+  expect(errorCodeToExit('jobs_not_found', 404)).toBe(1);
+});

@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
+import { historicalSourceReader } from '../../jobs/historical-reader.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
@@ -61,7 +62,7 @@ export function createCoordinatorRequestPorts(input: {
     };
   };
   const jobAddressing = new JobAddressing(
-    jobLocationIndex,
+    jobLocationIndex.readOnlyView(),
     {
       epochKey: currentJobEpochKey,
       detail: activeJobDetail,
@@ -85,6 +86,9 @@ export function createCoordinatorRequestPorts(input: {
         join(runtime.paths.coral.generation.legacyDataRoot, 'store', 'store.db'),
       ].some((path) => runtime.storage.existsSync(path)),
     (epochKey) => probeHistoricalClosure(epochKey),
+    historicalSourceReader(jobLocationIndex),
+    (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
+    (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
   );
 
   const rpcPorts = createCoordinatorRpcPorts({

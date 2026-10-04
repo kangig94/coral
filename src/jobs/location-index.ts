@@ -138,7 +138,14 @@ const certificateSchema = z
     terminalHighWaterSeq: z.number().int().safe().nonnegative(),
   })
   .passthrough();
-const unknownHoldSchema = z.object({ version: z.literal('v1'), reason: z.string().min(1) }).passthrough();
+const unknownHoldSchema = z
+  .object({
+    version: z.literal('v1'),
+    reason: z.string().min(1),
+    epochKey: z.string().optional(),
+    retryScheduled: z.boolean().optional(),
+  })
+  .passthrough();
 
 type StoredJobLocation = z.infer<typeof locationSchema>;
 
@@ -148,6 +155,15 @@ export type JobLocationDetail =
   | Readonly<{ kind: 'unreadable' }>;
 
 export type JobLocation = z.infer<typeof locationIdentitySchema> & { detail: JobLocationDetail; terminalAge?: unknown };
+
+export type UnknownLocationHold = Readonly<{ epochKey: string; reason: string; retryScheduled: boolean }>;
+
+export interface JobLocationView {
+  readonly time: TimePort;
+  read(jobId: string): JobLocation | null;
+  resultPathFor(jobId: string): string;
+  unknownLocationHolds(): UnknownLocationHold[];
+}
 
 function viewLocation(stored: StoredJobLocation): JobLocation {
   const { detail: raw, ...identity } = stored;
@@ -301,6 +317,15 @@ export class JobLocationIndex {
   read(jobId: string): JobLocation | null {
     const stored = this.readStored(jobId);
     return stored === null ? null : viewLocation(stored);
+  }
+
+  readOnlyView(): JobLocationView {
+    return {
+      time: this.time,
+      read: (jobId) => this.read(jobId),
+      resultPathFor: (jobId) => this.resultPathFor(jobId),
+      unknownLocationHolds: () => this.unknownLocationHolds(),
+    };
   }
 
   register(
@@ -480,12 +505,12 @@ export class JobLocationIndex {
     });
   }
 
-  holdUnknownLocations(epochKey: string, reason: string): void {
+  holdUnknownLocations(epochKey: string, reason: string, retryScheduled = false): void {
     this.withRevisionLock(epochKey, () => {
       this.advanceRevision(epochKey);
       const path = this.epochPath(epochKey, 'unknown-locations.v1.json');
       const previous = optionalJson(this.runtime, path, unknownHoldSchema);
-      atomicJson(this.runtime, path, { ...previous, version: 'v1', reason });
+      atomicJson(this.runtime, path, { ...previous, version: 'v1', epochKey, reason, retryScheduled });
     });
   }
 
@@ -506,6 +531,17 @@ export class JobLocationIndex {
       optionalJson(this.runtime, this.epochPath(epochKey, 'unknown-locations.v1.json'), unknownHoldSchema)?.reason ??
       null
     );
+  }
+
+  unknownLocationHolds(): UnknownLocationHold[] {
+    const root = join(this.root, 'epochs');
+    if (!this.runtime.storage.existsSync(root)) return [];
+    return this.runtime.storage.readdirSync(root).flatMap((key) => {
+      const hold = optionalJson(this.runtime, join(root, key, 'unknown-locations.v1.json'), unknownHoldSchema);
+      return hold === null
+        ? []
+        : [{ epochKey: hold.epochKey ?? key, reason: hold.reason, retryScheduled: hold.retryScheduled === true }];
+    });
   }
 
   /**

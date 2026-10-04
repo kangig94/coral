@@ -64,7 +64,8 @@ interface JobsRequestPort {
   waitHandoverSignal(): AbortSignal;
   list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
   detail(jobId: string): JobDetailLookup;
-  unknownJobDisposition(): 'pre-epoch-history' | 'not-found';
+  unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown';
+  unknownJobCaveat?(): string;
   outcomeUnrecoverable(jobIds: readonly string[]): string[];
 }
 

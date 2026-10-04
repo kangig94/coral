@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path';
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
 import type { EventsRow } from '../../store/schema.js';
-import { observeResolvedStoreEpoch, observeResolvedStoreEpochKey } from '../../store/epoch/observation.js';
+import { observeResolvedStoreEpoch, inspectResolvedStoreEpochKey } from '../../store/epoch/observation.js';
 import { acquireSharedFileLockNoRepairSync } from '../../infra/fs-lock.js';
 import { jobTerminalRecordedBodySchema } from './result.js';
 
@@ -30,7 +30,7 @@ export function withTerminalSource<T>(
   let db: Database | null = null;
   try {
     release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), '.lock'));
-    const identity = observeResolvedStoreEpochKey(runtime, epoch);
+    const identity = inspectResolvedStoreEpochKey(runtime, epoch);
     if (identity !== epochKey) return null;
     db = runtime.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true }) as Database;
     return read(db);

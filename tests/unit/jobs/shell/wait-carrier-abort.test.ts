@@ -41,7 +41,11 @@ it.each(['direct', 'v2', 'live'])(
     const controller = new AbortController();
     const request = { jobIds: ['job-1'], timeoutSeconds: 1, abortSignal: controller.signal };
     const addressing = new JobAddressing(
-      { time, read: () => ({ jobId: 'job-1', epochKey: 'epoch-1', disposition: 'active-owner' }) } as never,
+      {
+        time,
+        read: () => ({ jobId: 'job-1', epochKey: 'epoch-1', disposition: 'active-owner' }),
+        unknownLocationHolds: () => [],
+      } as never,
       {
         epochKey: () => 'epoch-1',
         waitStream: (r) => wait.waitForJobs(r),
