@@ -20,7 +20,11 @@ import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobEvents } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
-import { ensureResultMarkdownArtifact } from './terminal/export.js';
+import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } from './terminal/export.js';
+import type { JobLocationIndex, JobLocation } from './location-index.js';
+import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
+import { readIntactJobTerminalAge } from './terminal-age.js';
+import { deriveLaunchReadiness } from './launch-readiness.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, jobCreatedEvent, type JobEventBus } from './event-bus.js';
@@ -542,14 +546,90 @@ export class JobStore implements JobProgressStore {
     return readJobEvents(this.db, jobId, this, terminalOnly);
   }
 
+  private resultExports: TerminalResultExportOwner | null = null;
+  private exportLocations: JobLocationIndex | null = null;
+  private workflowReport?: WorkflowReportPort;
+  private readonly localTerminalAges = new Map<string, unknown>();
+
+  configureResultExports(locations: JobLocationIndex | null, workflowReport?: WorkflowReportPort): void {
+    if (this.exportLocations === locations && this.workflowReport === (workflowReport ?? locations?.workflowReport))
+      return;
+    this.exportLocations = locations;
+    this.workflowReport = workflowReport ?? locations?.workflowReport;
+    this.resultExports = null;
+  }
+
+  getResultExportOwner(): TerminalResultExportOwner {
+    if (this.resultExports !== null) return this.resultExports;
+    this.resultExports = new TerminalResultExportOwner({
+      runtime: this.runtime,
+      jobsRoot: this.runtime.paths.coral.exports.jobsRoot,
+      workflowReport: this.workflowReport,
+      failures: this.exportLocations?.resultRepairFailures,
+      prepareTerminal: (jobId) => {
+        const index = this.exportLocations;
+        const location = index?.read(jobId);
+        if (!index || !location || location.detail.kind !== 'recorded' || location.terminalSeq === undefined) return;
+        const detail = location.detail.value;
+        const seq = location.terminalSeq;
+        withTerminalSource(this.runtime, location.epochKey, (db) =>
+          index.recordTerminal(jobId, detail, location.resultPath ?? index.resultPathFor(jobId), seq, db),
+        );
+      },
+      location: (jobId): JobLocation | null => {
+        if (this.exportLocations) return this.exportLocations.read(jobId);
+        const detail = this.loadJobProjectionDetail(jobId);
+        if (!detail.status || !detail.exit) return null;
+        const accepted = readAcceptedTerminal(this.db, jobId);
+        if (!accepted) return null;
+        if (!this.localTerminalAges.has(jobId)) {
+          const age = readIntactJobTerminalAge(this.db, accepted);
+          this.localTerminalAges.set(jobId, {
+            epochKey: ':memory:',
+            terminalSeq: accepted.seq,
+            terminalTimestamp: accepted.ts,
+            ...(typeof age === 'number' ? { kind: 'known', terminalAt: age } : { kind: age }),
+          });
+        }
+        return {
+          version: 'v1',
+          jobId,
+          epochKey: ':memory:',
+          disposition: 'terminal',
+          terminalSeq: accepted.seq,
+          subject: {
+            projectRoot: detail.status.projectRoot,
+            workDir: detail.status.workDir,
+            jobKind: detail.status.jobKind,
+          },
+          resultPath: resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId),
+          terminalAge: this.localTerminalAges.get(jobId),
+          detail: {
+            kind: 'recorded',
+            value: {
+              status: detail.status,
+              events: this.readJobEvents(jobId),
+              exit: detail.exit,
+              readiness: deriveLaunchReadiness(detail),
+            },
+          },
+        };
+      },
+      withSource: (jobId, read) => {
+        if (!this.exportLocations) return read(this.db, this);
+        const location = this.exportLocations.read(jobId);
+        return location ? withTerminalSource(this.runtime, location.epochKey, (db) => read(db, this)) : null;
+      },
+    });
+    return this.resultExports;
+  }
+
+  publishTerminalResult(jobId: string): string {
+    return this.getResultExportOwner().publishTerminalResult(jobId);
+  }
+
   ensureResultArtifact(jobId: string): string {
-    return ensureResultMarkdownArtifact(
-      this.db,
-      jobId,
-      this.runtime.paths.coral.exports.jobsRoot,
-      this.runtime.storage,
-      this,
-    );
+    return this.getResultExportOwner().ensureResultMarkdownArtifact(jobId);
   }
 
   listJobProjections() {

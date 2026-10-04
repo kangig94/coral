@@ -1,3 +1,4 @@
+import { renderWorkflowReport } from '../../workflow/result-report.js';
 import { join } from 'node:path';
 
 import { probeCoordinator } from '../../infra/backend-discovery.js';
@@ -113,7 +114,7 @@ function recoverRetainedEpoch(runtime: Runtime, manifest: StrictBundleManifest, 
     encodeResolvedStoreEpoch(runtime, epoch) !== epochKey
   )
     return RETAINED_EPOCH_EXIT.controllerMismatch;
-  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
   const seeded = seedHistoricalEpoch(
     runtime,
     index,

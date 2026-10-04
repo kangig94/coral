@@ -55,6 +55,9 @@ process.stdin.on('data', (input) => {
   }
   if (input.includes('finish')) {
     db.exec('BEGIN IMMEDIATE');
+    db.prepare('INSERT INTO events SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM events WHERE seq = 2)').run(
+      2, '2026-09-25T00:00:05.000Z', 'fixture.preceding', 'workflow', 'unrelated', Buffer.from('{}'),
+    );
     db.prepare('UPDATE projection_jobs SET phase = ?, last_seq = ? WHERE job_id = ?').run('completed', 3, 'old-live');
     db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
       3, '2026-09-25T00:00:10.000Z', 'job.terminal.recorded', 'job', 'old-live',

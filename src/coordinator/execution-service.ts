@@ -1,7 +1,6 @@
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
-import type { LaunchPermit } from '../jobs/contracts/admission.js';
 import type {
   ProviderRecoveryAuthority,
   RecoveredAppServerInterruptResult,
@@ -13,9 +12,7 @@ import type {
   ProviderSessionLaunchDecision,
   WorkflowLaunchDecision,
 } from '../jobs/launch.js';
-import type { JobPhase } from '../jobs/phase.js';
-import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput, LaunchReadiness } from '../jobs/records.js';
-import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime, LaunchReadiness } from '../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
@@ -286,16 +283,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     runtimeRecord: JobRuntime,
   ): Promise<{ adopted: boolean; cleanup: () => void }> {
     return this.recoveryService.adoptRunningJob(authority, runtimeRecord);
-  }
-
-  completeRecoveredJob(
-    jobId: string,
-    sessionId: string,
-    result: JobTerminalInput,
-    phase: JobPhase,
-    options: TerminalWriteOptions & { permit: LaunchPermit },
-  ): ReturnType<RecoveryService['completeRecoveredJob']> {
-    return this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
   }
 
   async finalizeInterruptedDurableJob(

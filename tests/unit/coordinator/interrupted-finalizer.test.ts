@@ -130,12 +130,10 @@ function createHarness(
     order.push('admission-release');
     return releaseExact(permit);
   });
-  const mkdirSync = vi.fn(() => order.push('artifact-mkdir'));
-  const writeAtomicDurableSync = vi.fn(() => {
-    order.push('artifact-write');
-    return true;
+  const publishTerminalResult = vi.fn((jobId: string) => {
+    order.push('artifact-publish');
+    return `/jobs/${jobId}/result.md`;
   });
-  const syncDirectoryDurableSync = vi.fn(() => true);
 
   return {
     order,
@@ -146,16 +144,16 @@ function createHarness(
     releaseLaunch,
     launchCoordinator,
     launchPermit,
+    publishTerminalResult,
     deps: {
       runtime: {
         time: { now: () => Date.parse('2026-07-22T00:01:00.000Z') },
-        paths: { coral: { exports: { jobsRoot: '/jobs' } } },
-        storage: { mkdirSync, writeAtomicDurableSync, syncDirectoryDurableSync },
       },
       sessionManager: { recordArtifactHandleAtomic, finalizeJobContinuityAtomic },
       abortRegistry: { remove },
       launchAdmission: launchCoordinator,
       launchPermit,
+      publishTerminalResult,
     } as never,
   };
 }
@@ -218,8 +216,7 @@ describe('interrupted app-server recovery finalizer', () => {
       'session-cas',
       'terminal',
       'terminal',
-      'artifact-mkdir',
-      'artifact-write',
+      'artifact-publish',
       'abort-remove',
       'admission-release',
     ]);
@@ -303,8 +300,7 @@ describe('interrupted durable recovery finalizer', () => {
       'artifact-cas',
       'session-cas',
       'terminal',
-      'artifact-mkdir',
-      'artifact-write',
+      'artifact-publish',
       'abort-remove',
       'admission-release',
     ]);

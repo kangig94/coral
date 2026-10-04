@@ -2,10 +2,9 @@ import type { ProviderRequest } from '../../../providers/contract.js';
 import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
-import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../../../jobs/records.js';
-import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal } from '../../../jobs/records.js';
+import { isTerminalPhase } from '../../../jobs/phase.js';
 import { hasProviderOperationForJob, readProviderOperationForJob } from '../../../store/provider-operation-journal.js';
-import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../runtime/durable-runtime.js';
 import { providerSessionProvider, type ProviderSession } from '../../../sessions/entry.js';
@@ -17,7 +16,7 @@ import type {
   LaunchPermit,
   QueuedHandle,
 } from '../../../jobs/contracts/admission.js';
-import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/job-store.js';
+import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
 import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../providers/bound-provider-contract.js';
@@ -29,7 +28,6 @@ import type {
   ProviderRecoveryLaunch,
   ProviderRecoverySession,
   RecoveredAppServerInterruptResult,
-  RecoveredJobCompletionDisposition,
 } from '../../../jobs/reconcile/contracts.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
 import type { RecoveredAppServerFinalizationReason } from '../../../jobs/reconcile/interrupted-reason.js';
@@ -290,6 +288,7 @@ export class RecoveryService {
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       launchPermit: null,
+      publishTerminalResult: (jobId) => this.deps.progressStore.ensureResultArtifact(jobId),
     });
   }
 
@@ -354,6 +353,7 @@ export class RecoveryService {
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       launchPermit: null,
+      publishTerminalResult: (jobId) => this.deps.progressStore.ensureResultArtifact(jobId),
     });
   }
 
@@ -414,51 +414,6 @@ export class RecoveryService {
         permit.jobId,
         new Error(`Launch ownership transferred to ${JSON.stringify(release.holder)}.`),
       );
-    }
-  }
-
-  completeRecoveredJob(
-    jobId: string,
-    sessionId: string,
-    result: JobTerminalInput,
-    phase: JobPhase,
-    options: TerminalWriteOptions & { permit: LaunchPermit },
-  ): RecoveredJobCompletionDisposition {
-    const currentStatus = this.deps.progressStore.readStatus(jobId);
-    if (!currentStatus || !isTerminalPhase(currentStatus.phase)) {
-      this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, {
-        diagnostics: options.diagnostics,
-      });
-    }
-    try {
-      writeResultArtifact(
-        this.deps.runtime.storage,
-        this.deps.runtime.paths.coral.exports.jobsRoot,
-        jobId,
-        result.content,
-      );
-    } catch (error: unknown) {
-      backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${String(error)}`);
-    }
-    const releaseResult = this.deps.sessionManager.releaseJob(sessionId, jobId);
-
-    try {
-      this.deps.abortRegistry.remove(jobId);
-      const launchRelease = this.deps.launchAdmission.releaseLaunch(options.permit);
-      switch (launchRelease.kind) {
-        case 'released':
-        case 'already-released':
-          return { kind: 'completed', sessionClaimRelease: releaseResult, launchRelease };
-        case 'transferred':
-          return {
-            kind: 'transferred',
-            sessionClaimRelease: releaseResult,
-            pool: launchRelease.pool,
-            holder: launchRelease.holder,
-          };
-      }
-    } catch (error: unknown) {
-      throw new RecoveryOwnershipReleaseError(jobId, error);
     }
   }
 

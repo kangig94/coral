@@ -36,6 +36,8 @@ function retireUncommittedLaunches(index: JobLocationIndex, epochKey: string, db
 export function recoverJobLocations(index: JobLocationIndex, epochKey: string, store: JobProgressStore): void {
   try {
     const db = store.getDb();
+    if ('configureResultExports' in store && typeof store.configureResultExports === 'function')
+      store.configureResultExports(index);
     retireUncommittedLaunches(index, epochKey, db);
     const launches = db
       .prepare<[], LaunchIdentityRow>(
@@ -78,7 +80,7 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
         index.markUnresolved(row.stream_id);
         continue;
       }
-      const resultPath = store.ensureResultArtifact(row.stream_id);
+      const resultPath = index.resultPathFor(row.stream_id);
       index.recordTerminal(
         row.stream_id,
         {
@@ -89,7 +91,13 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
         },
         resultPath,
         terminal.seq,
+        db,
       );
+      try {
+        store.ensureResultArtifact(row.stream_id);
+      } catch {
+        /* Terminal recording is independent of export success. */
+      }
     }
     index.clearUnknownLocations(epochKey);
     void index.certify(epochKey, highWaterSeq);

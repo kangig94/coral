@@ -120,7 +120,7 @@ describe('job location additive records', () => {
       })}\n`,
     );
 
-    index.recordObserved(jobId, detail);
+    index.recordTerminal(jobId, detail, join(root, 'result.md'), 2);
 
     expect(JSON.parse(readFileSync(path, 'utf-8')).detail).toMatchObject({
       futureRoot: 'keep',
@@ -201,7 +201,7 @@ describe('job location additive records', () => {
     expect(index.resultsReleased(epochKey)).toBe(false);
 
     writeFileSync(path, `${JSON.stringify({ ...record, detail: { ...terminalDetail(jobId), exit: null } })}\n`);
-    expect(index.read(jobId)?.detail.kind).toBe('recorded');
+    expect(index.read(jobId)?.detail.kind).toBe('unreadable');
     expect(index.certify(epochKey, 2)).toBeNull();
     expect(index.resultsReleased(epochKey)).toBe(false);
   });
@@ -331,7 +331,20 @@ it('durably refuses a damaged identity, advances past it, and retries it after r
     index.recordTerminal(jobId, terminalDetail(jobId), join(root, jobId), 2);
     const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
     const record = JSON.parse(readFileSync(path, 'utf8'));
-    record.detail.events.unshift({ ...record.detail.events[0], seq: 1 });
+    record.detail.events.unshift({
+      type: 'progress',
+      jobId,
+      sessionId: 'session-1',
+      seq: 1,
+      ts: '2026-09-25T00:00:00.000Z',
+      message: 'earlier',
+      timing: {
+        elapsedMs: 0,
+        origin: 'launch',
+        originAt: '2026-09-25T00:00:00.000Z',
+        emittedAt: '2026-09-25T00:00:00.000Z',
+      },
+    });
     writeFileSync(path, JSON.stringify(record));
     paths.push(path);
   }

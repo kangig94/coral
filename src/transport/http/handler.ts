@@ -3,7 +3,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z, type ZodError } from 'zod';
 import { serializeWaitCursor, type WaitCursor, type WaitStreamEvent, type WaitStreamRequest } from '../../jobs/wait.js';
-import { decodeSerializedWaitCursor } from '../../jobs/wait-cursor.js';
+import { decodeSerializedWaitCursor } from '../../jobs/wait.js';
 import { advanceWaitRenderCursor } from '../../jobs/wait-stream-event.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';

@@ -1,3 +1,4 @@
+import { renderWorkflowReport } from '../../workflow/result-report.js';
 import type { RetentionRunStatus } from '../../store/retention-outcome.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
@@ -36,7 +37,7 @@ export function createCoordinatorCoreContext(options: CoordinatorCoreOptions) {
     return storeServices;
   };
   const getProgressStore = () => getStoreServices().progressStore;
-  const jobLocationIndex = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  const jobLocationIndex = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
   const state = {
     retentionStatus: null as RetentionRunStatus | null,
     selectedStoreEpochKey: null as string | null,

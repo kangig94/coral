@@ -4,6 +4,8 @@ import type { JobProgressTiming } from './event-bodies.js';
 import type { JobPhase } from './phase.js';
 import type { UsageSummary } from '../providers/contract.js';
 
+export { decodeWaitCursor, decodeSerializedWaitCursor } from './wait-cursor.js';
+
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
 export type WaitCursor =

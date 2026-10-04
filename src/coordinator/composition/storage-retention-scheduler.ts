@@ -16,14 +16,13 @@ import {
   type RetentionRunStatus,
 } from '../../store/retention-outcome.js';
 import { vacuumRetainedJournal } from '../../store/retention-vacuum.js';
-import { resolveJobRetentionMs } from '../lifecycle.js';
+import { trustedJobRetentionCutoff } from '../../jobs/retention-clock.js';
 import { pruneCustodyLedger } from '../../store/custody-ledger.js';
 import { reconcileFinishedCustody } from '../services/recovery/custody-reconciliation.js';
 
 const DAILY_MS = 24 * 60 * 60 * 1000;
 const BACKLOG_DELAY_MS = 5 * 60 * 1000;
 const OWNER_BUDGET_MS = 5000;
-const CLOCK_JUMP_TOLERANCE_MS = 1000;
 
 export function createStorageRetentionScheduler(input: {
   runtime: Runtime;
@@ -41,10 +40,10 @@ export function createStorageRetentionScheduler(input: {
   let running = Promise.resolve();
   const outstandingOwners = new Map<string, Promise<void>>();
   let started = false;
-  let previous: { wall: number; monotonic: bigint } | null = null;
   const owners = new Map<string, { dailyDue: bigint; fastDue: bigint | null; outcomes: RetentionOutcome[] }>(
     [
       'exports',
+      'result-repair',
       'journal-progress',
       'journal-vacuum',
       'epoch-holders',
@@ -63,7 +62,6 @@ export function createStorageRetentionScheduler(input: {
     }
     return Math.max(0, Number(due - now));
   };
-  const retentionMs = resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
   const statusAtStart = (): RetentionRunStatus & {
     deletedByOwner: NonNullable<RetentionRunStatus['deletedByOwner']>;
   } => ({
@@ -136,10 +134,8 @@ export function createStorageRetentionScheduler(input: {
         partial = true;
         record({ kind: 'kept', subject: 'storage-retention', reason: 'selected-store-unavailable' });
       } else {
-        const now = { wall: status.startedAt, monotonic: runtime.time.monotonicNow() };
-        const jump = previous === null ? 0 : now.wall - previous.wall - Number(now.monotonic - previous.monotonic);
-        previous = now;
-        if (jump > CLOCK_JUMP_TOLERANCE_MS) {
+        const cutoff = trustedJobRetentionCutoff(runtime);
+        if (cutoff === null) {
           partial = true;
           record({ kind: 'kept', subject: 'storage-retention', reason: 'wall-clock-age-unknown' });
         } else {
@@ -148,7 +144,6 @@ export function createStorageRetentionScheduler(input: {
             storeRoot: epoch.canonicalStoreRoot ?? epoch.storeRoot,
             epoch: epoch.epoch,
           });
-          const cutoff = now.wall - retentionMs;
           const step = async (
             subject: string,
             operation: (
@@ -265,6 +260,8 @@ export function createStorageRetentionScheduler(input: {
               db,
               runtime,
               cutoff,
+              eligibility: (id) =>
+                input.jobLocations.read(id) === null ? undefined : input.jobLocations.terminalEligibility(id),
               afterId: readCursor('exports', mutate),
               budget,
               jobState: (id) => readExportJobState(db, progressStore, id),
@@ -277,6 +274,12 @@ export function createStorageRetentionScheduler(input: {
             if (!signal.aborted) mutate(() => saveCursor('exports', next));
             if (next !== '') budget.record({ kind: 'kept', subject: 'exports', reason: 'scan-pending' });
           });
+          await step('result-repair', (budget) =>
+            progressStore.getResultExportOwner().repairPass(
+              input.jobLocations.locations().map((location) => location.jobId),
+              budget,
+            ),
+          );
           await step('journal-progress', async (budget) => {
             if ((await pruneJobProgress({ db, readCtx: progressStore, cutoff, afterSeq: 0, budget })) !== 0)
               budget.record({ kind: 'kept', subject: 'journal-progress', reason: 'scan-pending' });
@@ -377,11 +380,24 @@ export function createStorageRetentionScheduler(input: {
     start: () => {
       if (started || abort.signal.aborted) return;
       started = true;
-      previous = { wall: runtime.time.now(), monotonic: runtime.time.monotonicNow() };
+      trustedJobRetentionCutoff(runtime);
+      input
+        .getProgressStore()
+        ?.getResultExportOwner()
+        .onRepairHint(() => {
+          const owner = owners.get('result-repair');
+          if (owner) owner.fastDue = runtime.time.monotonicNow();
+          if (timer !== null) {
+            runtime.time.clearTimeout(timer);
+            timer = null;
+            schedule(0);
+          }
+        });
       schedule(0);
     },
     stop: async () => {
       abort.abort();
+      input.getProgressStore()?.getResultExportOwner().onRepairHint(null);
       if (timer !== null) runtime.time.clearTimeout(timer);
       timer = null;
       await running;

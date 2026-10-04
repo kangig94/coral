@@ -1004,7 +1004,7 @@ export class InMemoryStorage implements StoragePort {
   writeAtomicDurableSync(
     path: string,
     data: StorageData,
-    options?: { encoding?: BufferEncoding; mode?: number },
+    options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean },
   ): boolean {
     const normalized = normalizePathForStorage(path);
     const parent = parentPath(normalized);
@@ -1022,6 +1022,7 @@ export class InMemoryStorage implements StoragePort {
       this.fdatasyncSync(fd);
       this.closeSync(fd);
       fd = null;
+      if (options?.beforeRename?.() === false) return false;
       this.renameSync(tempPath, normalized);
       return this.syncDirectoryDurableSync(parent);
     } catch (error: unknown) {

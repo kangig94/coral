@@ -1,13 +1,9 @@
-import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../records.js';
-import type { JobPhase } from '../phase.js';
-import type { TerminalWriteOptions } from '../contracts/job-store.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal } from '../records.js';
 import type { ProviderArtifactIdentity } from '../../providers/artifact-identity.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import type { LaunchPermit, LaunchRelease } from '../contracts/admission.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ProviderBindingFailure } from '../../providers/contracts/binding.js';
-import type { SessionJobClaimReleaseResult } from '../../sessions/contracts.js';
 import type { RecoveredAppServerFinalizationReason } from './interrupted-reason.js';
 
 export type ProviderRecoveryLaunch = JobLaunch & {
@@ -49,19 +45,6 @@ export type RecoveredAppServerInterruptResult =
   | Readonly<{ kind: 'acknowledged' }>
   | Readonly<{ kind: 'refused'; reason: string; nextStep: string }>;
 
-export type RecoveredJobCompletionDisposition =
-  | Readonly<{
-      kind: 'completed';
-      sessionClaimRelease: SessionJobClaimReleaseResult;
-      launchRelease: Exclude<LaunchRelease, { kind: 'transferred' }>;
-    }>
-  | Readonly<{
-      kind: 'transferred';
-      sessionClaimRelease: SessionJobClaimReleaseResult;
-      pool: Extract<LaunchRelease, { kind: 'transferred' }>['pool'];
-      holder: Extract<LaunchRelease, { kind: 'transferred' }>['holder'];
-    }>;
-
 export interface RecoveryCapableService {
   captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture>;
   finalizeInterruptedAppServerJob(
@@ -88,11 +71,4 @@ export interface RecoveryCapableService {
     authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
   ): Promise<RecoveredAppServerInterruptResult>;
-  completeRecoveredJob(
-    jobId: string,
-    sessionId: string,
-    result: JobTerminalInput,
-    phase: JobPhase,
-    options: TerminalWriteOptions & { permit: LaunchPermit },
-  ): RecoveredJobCompletionDisposition;
 }

@@ -9,7 +9,6 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 
 import { JobStore } from '#src/jobs/store.js';
-import { writeResultArtifact } from '#src/jobs/terminal/export.js';
 
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -56,7 +55,7 @@ function initProviderJob(store: JobStore, jobId: string, sessionId: string): voi
 }
 
 describe('JobStore', () => {
-  it('rebuilds a pre-existing raw workflow child artifact with its durable slot identity', () => {
+  it('renders a workflow child artifact with its durable slot identity', () => {
     const { runtime, store } = createStore();
     const childJobId = '11111111-1111-4111-8111-111111111111';
     const workflowJobId = '22222222-2222-4222-8222-222222222222';
@@ -88,7 +87,29 @@ describe('JobStore', () => {
         replacedJobId,
         childJobId,
       );
-    writeResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, childJobId, 'Critic result');
+
+    const launch = store
+      .getDb()
+      .prepare<
+        [string],
+        { body: Uint8Array }
+      >("SELECT body FROM events WHERE stream_id = ? AND type = 'job.launch.requested'")
+      .get(childJobId);
+    if (!launch) throw new Error('missing launch');
+    store
+      .getDb()
+      .prepare("UPDATE events SET refs = ?, body = ? WHERE stream_id = ? AND type = 'job.launch.requested'")
+      .run(
+        JSON.stringify({ jobId: childJobId, parentJobId: workflowJobId, workflowSlotId }),
+        Buffer.from(
+          JSON.stringify({
+            ...JSON.parse(Buffer.from(launch.body).toString('utf8')),
+            workflowSlotGeneration: 1,
+            replacesWorkflowJobId: replacedJobId,
+          }),
+        ),
+        childJobId,
+      );
 
     const resultPath = store.ensureResultArtifact(childJobId);
 

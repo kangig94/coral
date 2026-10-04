@@ -100,6 +100,7 @@ describe('storage retention schedule', () => {
     );
     await first.scheduler.stop();
     first.f.setNow(first.f.runtime.time.now() + 86_400_000);
+    first.f.runtime.time = { ...first.f.runtime.time };
     const second = fixture(first.f);
     second.scheduler.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -151,6 +152,7 @@ describe('storage retention schedule', () => {
     first.scheduler.start();
     await vi.advanceTimersByTimeAsync(0);
     await first.scheduler.stop();
+    first.f.runtime.time = { ...first.f.runtime.time };
     const second = fixture(first.f);
     second.scheduler.start();
     await vi.advanceTimersByTimeAsync(0);

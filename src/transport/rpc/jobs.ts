@@ -1,4 +1,4 @@
-import { decodeWaitCursor } from '../../jobs/wait-cursor.js';
+import { decodeWaitCursor } from '../../jobs/wait.js';
 import { z } from 'zod';
 
 import { parseBooleanQuery } from '../../infra/json.js';

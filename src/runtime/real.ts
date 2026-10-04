@@ -1408,7 +1408,7 @@ let durableStageCounter = 0;
 function writeAtomicDurableSyncNode(
   path: string,
   data: StorageData,
-  options?: { encoding?: BufferEncoding; mode?: number },
+  options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean },
 ): boolean {
   const mode = options?.mode;
   const parent = dirname(path);
@@ -1427,6 +1427,7 @@ function writeAtomicDurableSyncNode(
     fdatasyncSync(fd);
     closeSync(fd);
     fd = null;
+    if (options?.beforeRename?.() === false) return false;
     renameSync(tempPath, path);
     return syncDirectoryDurable(parent);
   } catch (error: unknown) {

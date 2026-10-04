@@ -12,12 +12,21 @@ import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import { usageSummarySchema } from '../providers/contract.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
-import { isTerminalPhase, jobPhaseSchema } from './phase.js';
+import { jobPhaseSchema } from './phase.js';
 import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.js';
-import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
+import { jobDiagnosticsSchema, jobTerminalSchema, jobTerminalRecordedBodySchema } from './terminal/result.js';
 import { observeResolvedStoreEpoch } from '../store/epoch/observation.js';
 import { observeStorePath } from '../store/path-observation.js';
 import { protectedStoreEpochRoot } from '../store/epoch/protection.js';
+import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } from './terminal/export.js';
+import { sameTerminal, validatedTerminal } from './terminal/identity.js';
+import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
+import { readIntactJobTerminalAge, readJobTerminalAge } from './terminal-age.js';
+import { composeReducers } from '../store/reducers.js';
+import { createEventBodyCodec } from '../store/event-body-codec.js';
+import { jobsRegistry } from './events.js';
+import type { Database } from '../store/db.js';
+import { terminalEligibility, type TerminalEligibility } from './export-retention.js';
 import type { RetentionRunBudget } from '../store/retention-outcome.js';
 
 const subjectSchema = z
@@ -44,7 +53,9 @@ const locationIdentitySchema = z.object({
   terminalSeq: z.number().int().safe().nonnegative().optional(),
   resultPath: z.string().optional(),
 });
-const locationSchema = locationIdentitySchema.extend({ detail: z.unknown().optional() }).passthrough();
+const locationSchema = locationIdentitySchema
+  .extend({ detail: z.unknown().optional(), terminalAge: z.unknown().optional() })
+  .passthrough();
 const jobEventBaseSchema = z.object({
   jobId: z.string(),
   sessionId: z.string().nullable(),
@@ -136,13 +147,22 @@ export type JobLocationDetail =
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'unreadable' }>;
 
-export type JobLocation = z.infer<typeof locationIdentitySchema> & { detail: JobLocationDetail };
+export type JobLocation = z.infer<typeof locationIdentitySchema> & { detail: JobLocationDetail; terminalAge?: unknown };
 
 function viewLocation(stored: StoredJobLocation): JobLocation {
   const { detail: raw, ...identity } = stored;
   if (raw === undefined) return { ...identity, detail: { kind: 'absent' } };
   const parsed = storedJobDetailSchema.safeParse(raw);
-  return { ...identity, detail: parsed.success ? { kind: 'recorded', value: parsed.data } : { kind: 'unreadable' } };
+  if (!parsed.success) return { ...identity, detail: { kind: 'unreadable' } };
+  const location: JobLocation = { ...identity, detail: { kind: 'recorded', value: parsed.data } };
+  const terminalPresent =
+    stored.disposition === 'terminal' ||
+    parsed.data.exit !== null ||
+    parsed.data.status.result !== undefined ||
+    parsed.data.events.some((event) => event.type === 'terminal');
+  return terminalPresent && !hasReadableTerminalDetail(location)
+    ? { ...identity, detail: { kind: 'unreadable' } }
+    : location;
 }
 
 const omittedDetailKeys: Record<string, readonly string[]> = {
@@ -199,14 +219,12 @@ export function hasReadableTerminalDetail(location: JobLocation): boolean {
   ) {
     return false;
   }
-  const { status, events, exit } = location.detail.value;
+  const detail = location.detail.value;
   return (
-    status.jobId === location.jobId &&
-    isTerminalPhase(status.phase) &&
-    exit !== null &&
-    events.some(
-      (event) => event.type === 'terminal' && event.jobId === location.jobId && event.seq === location.terminalSeq,
-    )
+    detail.status.projectRoot === location.subject.projectRoot &&
+    detail.status.workDir === location.subject.workDir &&
+    detail.status.jobKind === location.subject.jobKind &&
+    validatedTerminal(detail, location.jobId, location.epochKey, location.terminalSeq) !== null
   );
 }
 export type JobLocationSubject = Readonly<{ projectRoot: string; workDir: string | null; jobKind: JobKind }>;
@@ -231,11 +249,15 @@ function optionalJson<T>(runtime: Runtime, path: string, schema: z.ZodType<T>): 
 }
 
 export class JobLocationIndex {
+  readonly resultRepairFailures = new Set<string>();
   readonly time: TimePort;
   private readonly root: string;
   private readonly runtime: Runtime;
 
-  constructor(runtime: Runtime, stateRoot: string) {
+  readonly workflowReport?: WorkflowReportPort;
+
+  constructor(runtime: Runtime, stateRoot: string, workflowReport?: WorkflowReportPort) {
+    this.workflowReport = workflowReport;
     this.runtime = runtime;
     this.time = runtime.time;
     this.root = join(stateRoot, 'job-locations.v1');
@@ -336,17 +358,54 @@ export class JobLocationIndex {
     });
   }
 
-  recordTerminal(jobId: string, detail: JobDetailResponse, resultPath: string, terminalSeq: number): JobLocation {
-    const terminal = detail.events.find(
-      (event) => event.type === 'terminal' && event.jobId === jobId && event.seq === terminalSeq,
-    );
-    if (terminal === undefined || detail.exit === null || !isTerminalPhase(detail.status.phase))
-      throw new Error(`Terminal detail is incomplete: ${jobId}`);
+  /** Only synchronous post-commit observers may assert newlyAppended; later hydration must prove prefix completeness. */
+  recordTerminal(
+    jobId: string,
+    detail: JobDetailResponse,
+    resultPath: string,
+    terminalSeq: number,
+    sourceDb?: Database,
+    newlyAppended = false,
+  ): JobLocation {
     const existing = this.readStored(jobId);
     if (existing === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
+    const terminal = validatedTerminal(detail, jobId, existing.epochKey, terminalSeq);
+    if (terminal === null) throw new Error(`Terminal detail disagrees: ${jobId}`);
+    const capture = (db: Database): unknown => {
+      const accepted = readAcceptedTerminal(db, jobId);
+      if (!accepted || accepted.seq !== terminalSeq || accepted.ts !== terminal.ts)
+        throw new Error(`Source terminal identity disagrees: ${jobId}`);
+      const sourceTerminal = jobTerminalRecordedBodySchema.parse(
+        JSON.parse(Buffer.from(accepted.body).toString('utf8')),
+      ).terminal;
+      if (!sameTerminal(sourceTerminal, terminal.result))
+        throw new Error(`Source terminal content disagrees: ${jobId}`);
+      const age = newlyAppended ? readJobTerminalAge(db, accepted) : readIntactJobTerminalAge(db, accepted);
+      return {
+        epochKey: existing.epochKey,
+        terminalSeq,
+        terminalTimestamp: accepted.ts,
+        ...(typeof age === 'number' ? { kind: 'known', terminalAt: age } : { kind: age }),
+      };
+    };
+    const previous = terminalEligibility(this.runtime, viewLocation(existing), () => null).age;
+    let terminalAge = existing.terminalAge;
+    const captured = sourceDb ? capture(sourceDb) : undefined;
+    if (previous === 'unknown') {
+      if (sourceDb) terminalAge = captured;
+      else {
+        try {
+          terminalAge = withTerminalSource(this.runtime, existing.epochKey, capture) ?? terminalAge;
+        } catch {
+          terminalAge = undefined;
+        }
+      }
+    }
     return this.withRevisionLock(existing.epochKey, () => {
       const current = this.readStored(jobId);
       if (current === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
+      const currentAge = terminalEligibility(this.runtime, viewLocation(current), () => null).age;
+      const retainedAge = currentAge === 'unknown' ? terminalAge : current.terminalAge;
       const location: StoredJobLocation = {
         ...current,
         subject: {
@@ -358,7 +417,8 @@ export class JobLocationIndex {
         disposition: 'terminal',
         terminalSeq,
         resultPath,
-        detail: preserveStoredDetail(current.detail, { ...detail, events: [terminal] }),
+        ...(retainedAge === undefined ? {} : { terminalAge: retainedAge }),
+        detail: preserveStoredDetail(current.detail, { ...detail, epochKey: current.epochKey, events: [terminal] }),
       };
       if (!isDeepStrictEqual(current, location)) atomicJson(this.runtime, this.jobPath(jobId), location);
       return viewLocation(location);
@@ -532,9 +592,11 @@ export class JobLocationIndex {
   /** Proves the retained artifact for one job independently of other jobs in its epoch. */
   resultDurable(jobId: string): boolean {
     const location = this.read(jobId);
-    if (location === null || !hasReadableTerminalDetail(location) || location.resultPath === undefined) {
+    if (location === null || !hasReadableTerminalDetail(location)) {
       return false;
     }
+    if (this.terminalEligibility(jobId).kind === 'expired') return true;
+    if (location.resultPath === undefined) return false;
     try {
       const fd = this.runtime.storage.openSync(location.resultPath, 'r');
       try {
@@ -552,6 +614,34 @@ export class JobLocationIndex {
     } catch {
       return false;
     }
+  }
+
+  resultPathFor(jobId: string): string {
+    return resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId);
+  }
+
+  resultExportOwnerForSource(db: Database, epochKey: string, jobsRoot: string): TerminalResultExportOwner {
+    const ctx = { ...composeReducers(jobsRegistry), bodyCodec: createEventBodyCodec() };
+    return new TerminalResultExportOwner({
+      runtime: this.runtime,
+      jobsRoot,
+      workflowReport: this.workflowReport,
+      failures: this.resultRepairFailures,
+      location: (jobId) => this.read(jobId),
+      withSource: (jobId, read) => (this.read(jobId)?.epochKey === epochKey ? read(db, ctx) : null),
+    });
+  }
+
+  terminalEligibility(jobId: string): TerminalEligibility {
+    const location = this.read(jobId);
+    return terminalEligibility(this.runtime, location, (read) => {
+      if (location === null) return null;
+      try {
+        return withTerminalSource(this.runtime, location.epochKey, read);
+      } catch {
+        return null;
+      }
+    });
   }
 
   exportResultRetention(jobId: string, activeEpochKey: string | null): 'released' | 'required' | 'unknown' {

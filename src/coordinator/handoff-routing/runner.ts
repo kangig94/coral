@@ -6,6 +6,7 @@ import {
 } from '../../infra/wait-invocation-context.js';
 import { isRecord } from '../../infra/json.js';
 import { raceObserved } from '../../infra/promise-signal.js';
+import { gracefulKill } from '../../infra/process-supervision.js';
 import { processIncarnationSchema } from '../../infra/node-process.js';
 import { CLI_BUNDLE_FILE } from '../../infra/bundle-manifest-address.js';
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
@@ -31,7 +32,7 @@ import {
 } from '../../infra/handoff-target.js';
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { assertNever } from '../../infra/error-format.js';
-import type { TimePort } from '../../infra/port-types.js';
+import type { ChildProcessLike, TimePort } from '../../infra/port-types.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -1234,9 +1235,13 @@ function supportsWaitInvocation(target: string, invocation: WaitInvocationHandof
 }
 
 /** Only the delegated monitor belongs to this cancellation set; jobs and providers do not. */
-function bindMonitorChild(child: ChildProcess, observation: ObservedChild, invocation: WaitInvocationHandoff): void {
+function bindMonitorChild(
+  child: ChildProcess,
+  observation: ObservedChild,
+  invocation: WaitInvocationHandoff,
+  runtime: Runtime,
+): void {
   let terminate: NodeJS.Timeout | undefined;
-  let kill: NodeJS.Timeout | undefined;
   const onMessage = (message: unknown) => {
     if (
       isRecord(message) &&
@@ -1249,10 +1254,25 @@ function bindMonitorChild(child: ChildProcess, observation: ObservedChild, invoc
   const cancel = () => {
     if (child.connected) child.send({ type: 'wait-cancel' }, () => {});
     const remaining = invocation.cleanupRemainingMs();
-    terminate = setTimeout(() => child.kill('SIGTERM'), Math.min(250, remaining / 3));
-    kill = setTimeout(() => child.kill('SIGKILL'), Math.max(0, Math.min(1_000, remaining - 50)));
+    terminate = setTimeout(
+      () =>
+        gracefulKill(
+          child as ChildProcessLike,
+          {
+            time: {
+              clearTimeout: runtime.time.clearTimeout,
+              setTimeout: (callback, delay) =>
+                runtime.time.setTimeout(
+                  callback,
+                  Math.max(0, Math.min(delay, 750, invocation.cleanupRemainingMs() - 50)),
+                ),
+            },
+          },
+          runtime.process.observeLiveness,
+        ),
+      Math.min(250, remaining / 3),
+    );
     terminate.unref();
-    kill.unref();
   };
   child.on('message', onMessage);
   invocation.signal.addEventListener('abort', cancel, { once: true });
@@ -1260,7 +1280,6 @@ function bindMonitorChild(child: ChildProcess, observation: ObservedChild, invoc
   void observation.ending
     .finally(() => {
       clearTimeout(terminate);
-      clearTimeout(kill);
       child.off('message', onMessage);
       invocation.signal.removeEventListener('abort', cancel);
     })
@@ -1352,7 +1371,7 @@ async function executeResolvedHandoff(
       // Runtime ports do not expose the executable for the current Node process.
       const child = spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
-      if (waitInvocation !== undefined) bindMonitorChild(child, childObservation, waitInvocation);
+      if (waitInvocation !== undefined) bindMonitorChild(child, childObservation, waitInvocation, runtime);
       await childObservation.spawned;
       executionPhase.current = 'child-outcome-wait';
       if (startup !== undefined) {

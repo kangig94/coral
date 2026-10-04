@@ -10,7 +10,9 @@ import { decodeResolvedStoreEpoch, STORE_LOCK_FILE_NAME, type ResolvedStoreEpoch
 import { observeProtectedEpoch } from '../store/epoch/index.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { hasReadableTerminalDetail, type JobLocationIndex, type JobLocationSubject } from './location-index.js';
-import { describeTerminalOutcome } from './outcome.js';
+import { phaseForOutcome } from './outcome.js';
+import { aggregateWorkflowUsage } from './workflow-usage.js';
+import type { Database } from '../store/db.js';
 import {
   jobKindSchema,
   type JobDetailResponse,
@@ -20,7 +22,7 @@ import {
 } from './records.js';
 import { jobPhaseSchema, isTerminalPhase } from './phase.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
-import { writeResultArtifact } from './terminal/export.js';
+import { resultPathFor } from './terminal/export.js';
 
 const FINGERPRINT_0100 = 'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52';
 const FINGERPRINT_0105 = 'sha256:9fd970cdcb803f517d77b133bba86ae83ef1ff662f77da8656604f32c8e67980';
@@ -167,7 +169,11 @@ function diagnosticsFrom(raw: string): JobDiagnostics {
   return jobDiagnosticsSchema.parse(JSON.parse(raw) as unknown);
 }
 
-function historicalDetail(row: Projection, events: readonly z.infer<typeof eventSchema>[]): JobDetailResponse {
+function historicalDetail(
+  db: SqliteDatabasePort,
+  row: Projection,
+  events: readonly z.infer<typeof eventSchema>[],
+): JobDetailResponse {
   const launch = events.find((event) => event.type === 'job.launch.requested');
   const launchBody =
     launch === undefined
@@ -183,9 +189,11 @@ function historicalDetail(row: Projection, events: readonly z.infer<typeof event
       : canonicalWorkDirWireSchema.parse(
           row.work_dir ?? (launchBody?.success ? launchBody.data.request.cwd : row.project_root),
         );
-  const phase = jobPhaseSchema.parse(row.phase);
+
   const terminalEvent = [...events].reverse().find((event) => event.type === 'job.terminal.recorded');
   const terminalBody = terminalEvent === undefined ? null : terminalBodySchema.parse(parseBody(terminalEvent.body));
+  const phase =
+    terminalBody === null ? jobPhaseSchema.parse(row.phase) : phaseForOutcome(terminalBody.terminal.outcome);
   const status: JobStatus = {
     jobId: row.job_id,
     owner: executionOwnerSchema.parse(JSON.parse(row.execution_owner) as unknown),
@@ -202,10 +210,20 @@ function historicalDetail(row: Projection, events: readonly z.infer<typeof event
     ...(row.replaces_workflow_job_id === null ? {} : { replacesWorkflowJobId: row.replaces_workflow_job_id }),
     phase,
     updatedAt: events.at(-1)?.ts ?? row.created_at,
-    lastSeq: row.last_seq,
+    lastSeq: terminalEvent?.seq ?? row.last_seq,
     ...(terminalBody === null ? {} : { result: terminalBody.terminal }),
   };
-  const diagnostics = diagnosticsFrom(row.diagnostics);
+  const diagnostics: JobDiagnostics =
+    terminalBody === null
+      ? diagnosticsFrom(row.diagnostics)
+      : {
+          progressFaults: [],
+          ...jobDiagnosticsSchema.omit({ progressFaults: true }).parse(terminalBody.diagnostics ?? {}),
+        };
+  if (jobKind === 'workflow') {
+    const usage = aggregateWorkflowUsage(db as Database, row.job_id);
+    if (usage !== undefined) diagnostics.usage = usage;
+  }
   const renderedEvents: JobEvent[] = [];
   for (const event of events) {
     if (event.type === 'job.progress.emitted') {
@@ -328,7 +346,7 @@ export function seedHistoricalEpoch(
     for (const row of rows) {
       observed.add(row.job_id);
       const events = readEvents(db, row.job_id);
-      const detail = historicalDetail(row, events);
+      const detail = historicalDetail(db, row, events);
       index.register(row.job_id, epochKey, {
         projectRoot: detail.status.projectRoot,
         workDir: detail.status.workDir,
@@ -344,10 +362,13 @@ export function seedHistoricalEpoch(
         index.markUnresolved(row.job_id);
         continue;
       }
-      const content = detail.exit.content.trimEnd();
-      const markdown = content.length > 0 ? `${content}\n` : `${describeTerminalOutcome(detail.exit.outcome)}\n`;
-      const resultPath = writeResultArtifact(storage, jobsRoot, row.job_id, markdown);
-      index.recordTerminal(row.job_id, detail, resultPath, terminal.seq);
+      const resultPath = resultPathFor(jobsRoot, row.job_id);
+      index.recordTerminal(row.job_id, detail, resultPath, terminal.seq, db as Database);
+      try {
+        index.resultExportOwnerForSource(db as Database, epochKey, jobsRoot).ensureResultMarkdownArtifact(row.job_id);
+      } catch {
+        /* Failed publication must not hide a retained terminal or stop hydration of other jobs. */
+      }
     }
     for (const launch of launches) {
       if (!observed.has(launch.stream_id)) {
@@ -437,16 +458,21 @@ export function refreshHistoricalEpoch(
         (location.disposition === 'terminal' && hasReadableTerminalDetail(location))
       )
         continue;
-      const detail = historicalDetail(row, readEvents(db, row.job_id));
+      const detail = historicalDetail(db, row, readEvents(db, row.job_id));
       const terminal = [...detail.events].reverse().find((event) => event.type === 'terminal');
       if (!isTerminalPhase(detail.status.phase) || detail.exit === null || terminal === undefined) {
         index.recordObserved(row.job_id, detail);
         continue;
       }
-      const content = detail.exit.content.trimEnd();
-      const markdown = content.length > 0 ? `${content}\n` : `${describeTerminalOutcome(detail.exit.outcome)}\n`;
-      const resultPath = writeResultArtifact(source.storage, source.jobsRoot, row.job_id, markdown);
-      index.recordTerminal(row.job_id, detail, resultPath, terminal.seq);
+      const resultPath = resultPathFor(source.jobsRoot, row.job_id);
+      index.recordTerminal(row.job_id, detail, resultPath, terminal.seq, db as Database);
+      try {
+        index
+          .resultExportOwnerForSource(db as Database, epochKey, source.jobsRoot)
+          .ensureResultMarkdownArtifact(row.job_id);
+      } catch {
+        /* Failed publication must not hide a retained terminal. */
+      }
     }
     for (const jobId of requested) {
       if (readEvents(db, jobId).some((event) => event.type === 'job.terminal.recorded')) return 'unreadable';

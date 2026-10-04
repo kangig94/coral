@@ -39,6 +39,16 @@ function fixture(fingerprint: string) {
   db.exec(`CREATE TABLE events (
     seq INTEGER, ts TEXT, type TEXT, stream_kind TEXT, stream_id TEXT, body BLOB
   );`);
+  const close = db.close.bind(db);
+  db.close = () => {
+    const max = db.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
+    const insert = db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)');
+    for (let seq = 1; seq <= max; seq++) {
+      if (db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq) !== undefined) continue;
+      insert.run(seq, '2026-09-25T00:00:00.000Z', 'fixture.preceding', 'workflow', 'fixture', Buffer.from('{}'));
+    }
+    close();
+  };
   return { root, epochDir, db };
 }
 
@@ -240,7 +250,7 @@ describe('historical job readers', () => {
     const location = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
     const detail = location.detail as Record<string, unknown>;
     writeFileSync(path, JSON.stringify({ ...location, detail: { ...detail, exit: null } }));
-    expect(index.read('finished')?.detail.kind).toBe('recorded');
+    expect(index.read('finished')?.detail.kind).toBe('unreadable');
     expect(index.resultsReleased(epochKey)).toBe(false);
     expect(refreshHistoricalEpoch(index, epochKey, ['finished'])).toBe('read');
     expect(index.resultsReleased(epochKey)).toBe(true);

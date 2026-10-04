@@ -83,7 +83,7 @@ describe('workflow wait epoch cursor', () => {
           version: 'jobs.wait.v2',
           locations: { old: 'lineage-old:7' },
           positions: { 'lineage-old:7': 3 },
-          deliveredJobIds: ['newer'],
+          deliveredJobIds: [],
         },
       }),
     );

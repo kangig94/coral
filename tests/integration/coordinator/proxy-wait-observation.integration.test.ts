@@ -1,3 +1,4 @@
+import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -74,7 +75,7 @@ it.each(['completion', 'handoff'] as const)(
           provider: 'codex',
           command: 'fixture',
           args: [],
-          cwd: directory,
+          cwd: canonicalWorkDirWireSchema.parse(directory),
           leaseMode: 'shared',
           idleRetirement: 'never',
         },
@@ -83,7 +84,7 @@ it.each(['completion', 'handoff'] as const)(
       },
       execute: async function* () {
         try {
-          yield { kind: 'progress', message: 'local turn progressing' };
+          yield { kind: 'progress' as const, message: 'local turn progressing' };
           await turnFinished;
           yield* streamProviderTerminal({ content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
         } finally {
@@ -179,7 +180,7 @@ it.each(['completion', 'handoff'] as const)(
       if (waiting?.type !== 'waiting') throw new Error('expected a waiting event');
       const output = events
         .filter((event) => event.type === 'progress')
-        .map(formatWaitProgress)
+        .map((event) => formatWaitProgress(event))
         .concat(formatWaitWaiting(waiting, null))
         .join('\n');
       expect(output).toContain('local turn progressing');
