@@ -143,6 +143,7 @@ export class TerminalResultExportOwner {
   private readonly failures: Set<string>;
   private readonly hints = new Set<string>();
   private repairScan: Iterator<string> | undefined;
+  private repairHintNext = true;
   private hintListener: (() => void) | null = null;
 
   private readonly input: Readonly<{
@@ -300,21 +301,28 @@ export class TerminalResultExportOwner {
 
   async repairPass(jobIds: Iterable<string>, budget: RetentionRunBudget): Promise<void> {
     this.repairScan ??= jobIds[Symbol.iterator]();
-    for (const jobId of [...this.hints]) {
-      if (!budget.canContinue()) {
-        budget.record({ kind: 'kept', subject: 'result-repair', reason: 'scan-pending' });
-        return;
-      }
-      this.hints.delete(jobId);
-      await this.repairCandidate(jobId, budget);
-    }
+    const hints = [...this.hints];
+    let hintIndex = 0;
     while (budget.canContinue()) {
-      const next = this.repairScan.next();
-      if (next.done) {
-        this.repairScan = undefined;
-        return;
+      const hint = hints[hintIndex];
+      let jobId: string;
+      if (hint !== undefined && (this.repairHintNext || this.repairScan === undefined)) {
+        jobId = hint;
+        hintIndex++;
+        this.hints.delete(jobId);
+        this.repairHintNext = false;
+      } else {
+        const next = this.repairScan?.next();
+        if (!next || next.done) {
+          this.repairScan = undefined;
+          this.repairHintNext = true;
+          if (hintIndex === hints.length) return;
+          continue;
+        }
+        jobId = next.value;
+        this.repairHintNext = true;
       }
-      await this.repairCandidate(next.value, budget);
+      await this.repairCandidate(jobId, budget);
     }
     budget.record({ kind: 'kept', subject: 'result-repair', reason: 'scan-pending' });
   }

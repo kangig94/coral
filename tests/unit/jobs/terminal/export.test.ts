@@ -1,6 +1,9 @@
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
+import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
+import { commitJobTerminal } from '#tests/helpers/job-commits.js';
+import { initTestJob } from '#tests/helpers/session.js';
 import { createTerminalExportFixture, TERMINAL_EXPORT_CUTOFF } from '#tests/helpers/terminal-export.js';
 
 const fixtures: ReturnType<typeof createTerminalExportFixture>[] = [];
@@ -15,6 +18,74 @@ afterEach(() => {
 });
 
 describe('terminal export owner', () => {
+  it.each([1, 2, 'deadline'] as const)(
+    'repairs an unhinted tail despite persistent failed retries with a %s pass budget',
+    async (limit) => {
+      const f = fixture();
+      f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1, precedingAt: TERMINAL_EXPORT_CUTOFF + 1 });
+      const heads = ['head-1', 'head-2'];
+      for (const jobId of heads) {
+        initTestJob(f.store, {
+          jobId,
+          sessionId: jobId,
+          provider: 'claude',
+          projectRoot: f.root,
+          backendNamespace: 'fixture',
+        });
+        const seq = commitJobTerminal(f.store, jobId, jobId, {
+          content: 'head result',
+          outcome: { kind: 'completed' },
+          durationMs: 1,
+        });
+        const detail = f.store.loadJobProjectionDetail(jobId);
+        if (!detail.status) throw new Error('Missing fixture status');
+        f.index.recordTerminal(
+          jobId,
+          {
+            status: detail.status,
+            events: f.store.readJobEvents(jobId),
+            exit: detail.exit,
+            readiness: deriveLaunchReadiness(detail),
+          },
+          f.index.resultPathFor(jobId),
+          seq,
+          f.db,
+          true,
+        );
+      }
+      const owner = f.store.getResultExportOwner();
+      const wakeup = vi.fn();
+      owner.onRepairHint(wakeup);
+      const write = f.runtime.storage.writeAtomicDurableSync;
+      const attempts: string[] = [];
+      vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, bytes, options) => {
+        const jobId = [...heads, f.jobId].find((id) => path === f.index.resultPathFor(id));
+        if (jobId) attempts.push(jobId);
+        if (jobId && heads.includes(jobId)) {
+          if (limit === 'deadline') f.advance(5_001);
+          return false;
+        }
+        return write(path, bytes, options);
+      });
+      for (let pass = 0; pass < 8; pass++) {
+        let left = limit === 'deadline' ? 0 : limit;
+        const deadline = f.runtime.time.monotonicNow() + 5_000n;
+        await owner.repairPass([...heads, f.jobId], {
+          canContinue: () => (limit === 'deadline' ? f.runtime.time.monotonicNow() < deadline : left-- > 0),
+          record: vi.fn(),
+        });
+      }
+      expect(attempts).toContain(f.jobId);
+      expect(readFileSync(f.resultPath, 'utf8')).toBe('canonical result\n');
+      expect(f.index.resultDurable(f.jobId)).toBe(true);
+      for (const jobId of heads) {
+        expect(attempts.filter((id) => id === jobId).length).toBeGreaterThan(1);
+        expect(owner.observeResultAvailability(jobId)).toMatchObject({ kind: 'failed', retryScheduled: true });
+      }
+      expect(wakeup).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['pending', 'failed'])(
     'resumes a bounded repair scan and retries a %s eligible tail across exhausted runs',
     async (state) => {
@@ -167,6 +238,23 @@ describe('terminal export owner', () => {
     owner.hintRepair(f.jobId);
     await owner.repairPass([], { canContinue: () => true, record: () => {} });
     expect(owner.observeResultAvailability(f.jobId).kind).toBe('available');
+  });
+
+  it('keeps retrying a failed hint with an empty scan and a one-candidate pass budget', async () => {
+    const f = fixture();
+    f.complete();
+    const owner = f.store.getResultExportOwner();
+    const wakeup = vi.fn();
+    owner.onRepairHint(wakeup);
+    const write = vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync').mockReturnValue(false);
+    expect(() => owner.publishTerminalResult(f.jobId)).toThrow('Failed to write result artifact');
+    for (let pass = 0; pass < 4; pass++) {
+      let left = 1;
+      await owner.repairPass([], { canContinue: () => left-- > 0, record: vi.fn() });
+    }
+    expect(write).toHaveBeenCalledTimes(3);
+    expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'failed', retryScheduled: true });
+    expect(wakeup).not.toHaveBeenCalled();
   });
 
   it('supplies file-based retirement proof for a fresh source-backed regression', () => {
