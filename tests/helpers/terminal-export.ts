@@ -73,6 +73,32 @@ export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = '
         runtime,
         jobsRoot: runtime.paths.coral.exports.jobsRoot,
         workflowReport: renderWorkflowReport,
+        failures: locations.resultRepairFailures,
+        hydrationRetry: (id) => {
+          const location = locations.read(id);
+          return location
+            ? locations.unknownLocationHolds().find((hold) => hold.epochKey === location.epochKey)?.retryScheduled
+            : undefined;
+        },
+        prepareTerminal: (id) => {
+          const location = locations.read(id);
+          if (!location || locations.unknownLocationHold(location.epochKey) || closed) return;
+          const detail = store.loadJobProjectionDetail(id);
+          const terminal = store.readJobEvents(id).find((event) => event.type === 'terminal');
+          if (!detail.status || !detail.exit || !terminal) return;
+          locations.recordTerminal(
+            id,
+            {
+              status: detail.status,
+              exit: detail.exit,
+              events: store.readJobEvents(id),
+              readiness: deriveLaunchReadiness(detail),
+            },
+            locations.resultPathFor(id),
+            terminal.seq,
+            db,
+          );
+        },
         location: (id) => locations.read(id),
         withSource: (_id, read) => (closed ? null : read(db, store)),
       });

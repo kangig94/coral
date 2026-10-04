@@ -35,6 +35,7 @@ export type TerminalEligibility = Readonly<{
   age: number | 'unknown' | 'regression';
   sourceReadable: boolean;
   sourceReadFailed?: boolean;
+  sourceContradictory?: boolean;
   ageUnproven?: boolean;
   publicationAuthorized: boolean;
   cutoffTrusted: boolean;
@@ -78,16 +79,22 @@ export function terminalEligibility(
         : 'unknown';
   let sourceReadable = false;
   let sourceReadFailed = false;
+  let sourceContradictory = false;
   if (observeSource || age === 'unknown') {
     try {
       withSource((db) => {
         const accepted = readAcceptedTerminal(db, location.jobId);
-        if (!accepted || accepted.seq !== terminal.seq || accepted.ts !== terminal.ts) return;
+        if (!accepted || accepted.seq !== terminal.seq || accepted.ts !== terminal.ts) {
+          sourceContradictory = true;
+          return;
+        }
         const body = jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
-        if (!sameTerminal(terminal.result, body.terminal)) return;
+        if (!sameTerminal(terminal.result, body.terminal)) {
+          sourceContradictory = true;
+          return;
+        }
         sourceReadable = true;
-        if (location.terminalAge === undefined || (matches && saved.data.kind === 'unknown'))
-          age = readIntactJobTerminalAge(db, accepted, cutoff);
+        if (location.terminalAge === undefined) age = readIntactJobTerminalAge(db, accepted, cutoff);
       });
     } catch {
       sourceReadFailed = true;
@@ -100,6 +107,7 @@ export function terminalEligibility(
     age,
     sourceReadable,
     sourceReadFailed,
+    sourceContradictory,
     ageUnproven: location.terminalAge === undefined || (matches && saved.data.kind === 'unknown'),
     cutoffTrusted: cutoff !== null,
     publicationAuthorized: cutoff !== null && sourceReadable && (kind === 'inside' || regressionAuthorized),

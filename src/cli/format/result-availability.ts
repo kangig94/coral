@@ -19,6 +19,6 @@ export function formatResultAvailability(availability: ResultAvailability, follo
     case 'repair-pending':
       return 'the outcome above is final; Coral is writing the result file';
     case 'failed':
-      return `Result file unavailable: ${failureCauses[availability.cause]}. ${availability.retryScheduled ? 'Coral will retry on its next maintenance pass.' : 'Coral cannot repair this file automatically.'}`;
+      return `${availability.unverifiedResultPath ? `Unverified result path: ${availability.unverifiedResultPath}\n` : ''}Result file unavailable: ${failureCauses[availability.cause]}. ${availability.retryScheduled ? 'Coral will retry on its next maintenance pass.' : 'Coral cannot repair this file automatically.'}`;
   }
 }

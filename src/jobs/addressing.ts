@@ -5,7 +5,7 @@ import { readWaitSession } from './wait/reader.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
 import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
-import { readHistoricalSource, type HistoricalSourceReader } from './historical-reader.js';
+import { type HistoricalSourceReader } from './historical-reader.js';
 import { hasReadableTerminalDetail, type JobLocationView, type JobLocation } from './location-index.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse } from './records.js';
@@ -24,7 +24,6 @@ export interface ActiveJobAccess {
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
   readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
   abort(jobIds: string[]): AbortDecision;
-  waitStream(request: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
 }
 
 /**
@@ -54,7 +53,8 @@ export class JobAddressing {
     active: ActiveJobAccess,
     preEpochHistoryExists: PreEpochHistoryProbe,
     historicalClosure: HistoricalClosureProbe,
-    readHistorical: HistoricalSourceReader = (epochKey, jobIds) => readHistoricalSource(locations, epochKey, jobIds),
+    readHistorical: HistoricalSourceReader = (epochKey, jobIds) =>
+      locations.readHistorical?.(epochKey, jobIds) ?? { kind: 'unreadable' },
     observeResultAvailability?: (jobId: string) => ResultAvailability,
     hintRepair?: (jobId: string) => void,
     progressRetentionExpired?: (jobId: string) => boolean,
@@ -302,6 +302,8 @@ export class JobAddressing {
       if (location.epochKey === activeEpochKey) {
         const admission = activeAdmissions.get(jobId) ?? this.active.readWaitAdmission?.(jobId, location.epochKey);
         const detail = admission?.detail ?? this.active.detail(jobId);
+        if (admission && admission.disposition !== 'admitted') return admission;
+        if (!detail && !admission?.queued) return { jobId, disposition: 'missing' };
         return {
           ...admission,
           jobId,
@@ -352,6 +354,9 @@ export class JobAddressing {
         epochKey: location.epochKey,
         ...(detail ? { detail: { ...detail, events } } : {}),
         availability,
+        progressUnknown:
+          (source.kind === 'unreadable' && source.retired !== true) ||
+          (source.kind === 'read' && source.unreadableJobs?.has(jobId) === true),
         progressLost:
           (source.kind === 'unreadable' && source.retired === true) ||
           (this.progressRetentionExpired?.(jobId) ?? availability.kind === 'retained-away'),
@@ -384,7 +389,7 @@ export class JobAddressing {
               : refusal.disposition === 'pre-epoch-history'
                 ? 'job_pre_epoch_history'
                 : 'job_outcome_unrecoverable',
-          message: `Job ${refusal.jobId}: ${refusal.disposition}. ${refusal.message ?? ''} Read coral-cli jobs detail ${refusal.jobId} --full.`,
+          message: `Job ${refusal.jobId}: ${refusal.disposition}. ${refusal.message ?? ''} Read coral-cli jobs detail ${refusal.jobId}.`,
           detail: { jobs: admissions.filter((job) => job.disposition === refusal.disposition).map((job) => job.jobId) },
         };
       const missing = admissions.filter((job) => job.disposition === 'missing').map((job) => job.jobId);
@@ -405,7 +410,10 @@ export class JobAddressing {
       cursor?.version === undefined &&
       cursor !== undefined &&
       cursor.afterSeq > 0 &&
-      admissions.some((job) => job.disposition === 'admitted' && !cursor.deliveredJobIds?.includes(job.jobId))
+      admissions.some(
+        (job) =>
+          job.disposition === 'admitted' && !(cursor.admittedJobIds ?? cursor.deliveredJobIds)?.includes(job.jobId),
+      )
     )
       return {
         code: 'wait_cursor_epoch_required',

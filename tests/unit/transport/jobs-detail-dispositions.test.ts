@@ -40,7 +40,7 @@ async function detailFor(lookup: JobDetailLookup): Promise<unknown> {
 async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: object): Promise<unknown> {
   const spec = rpcCatalog.find((candidate) => candidate.name === method);
   if (spec === undefined) throw new Error(`Missing RPC method ${method}.`);
-  const supplied = jobs as HttpHandlerPorts['jobs'];
+  const supplied = jobs as HttpHandlerPorts['jobs'] & { outcomeUnrecoverable?(ids: readonly string[]): string[] };
   const fields = body as { jobIds?: string[] };
   const scope = supplied.scopeCheck(fields.jobIds ?? [], PROJECT_ROOT, 'contains');
   const unknown = supplied.unknownJobDisposition?.() ?? 'not-found';

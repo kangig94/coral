@@ -75,7 +75,6 @@ function historicalAddressing(index: JobLocationIndex): JobAddressing {
       epochKey: () => 'lineage-new:8',
       detail: () => null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      waitStream: async function* () {},
     },
     () => false,
     () => 'pending',
@@ -173,10 +172,6 @@ it.each([false, true])('refuses a partially missing legacy batch at admission, v
       epochKey: () => 'lineage-new:8',
       detail: (id) => (id === 'known' ? detail(id, 'running') : null),
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      waitStream: async function* (request) {
-        seen.push(request.jobIds);
-        yield { type: 'waiting', waitingJobIds: request.jobIds };
-      },
     },
     () => false,
     () => 'pending',
@@ -222,4 +217,91 @@ it('keeps retryable unknown IDs in a direct continuation and re-admits them afte
   const admitted = addressing.waitStream({ jobIds: ['unknown'], supportsWaitV2: true });
   expect((await admitted.next()).value).toMatchObject({ type: 'terminal', jobId: 'unknown' });
   await admitted.return(undefined);
+});
+
+it('does not admit an active location when its launch append never became accepted', () => {
+  const { index } = fixture();
+  index.register('never-accepted', 'active', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      epochKey: () => 'active',
+      detail: () => null,
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+  );
+  const snapshot = addressing.snapshot({ jobIds: ['never-accepted'] });
+  expect(snapshot.jobs[0].disposition).toBe('missing');
+  expect(snapshot.remainingJobIds).toEqual([]);
+  expect(snapshot.exitCode).toBe(1);
+});
+
+it('keeps an unreadable historical progress backlog pending and recovers it on the continuation', () => {
+  const { index } = fixture();
+  const jobId = 'historical';
+  const epochKey = 'old';
+  index.register(jobId, epochKey, {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const retained = detail(jobId, 'completed');
+  index.recordTerminal(jobId, retained, '/result', 12);
+  let readable = false;
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      epochKey: () => 'active',
+      detail: () => null,
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'decided',
+    () => {
+      if (!readable) return { kind: 'unreadable' };
+      const location = index.read(jobId);
+      if (!location) throw new Error('missing fixture location');
+      const progress = {
+        type: 'progress' as const,
+        jobId,
+        sessionId: 'session-1',
+        seq: 3,
+        ts: retained.status.updatedAt,
+        message: 'unread backlog',
+        timing: {
+          origin: 'runtime' as const,
+          originAt: retained.status.updatedAt,
+          emittedAt: retained.status.updatedAt,
+          elapsedMs: 0,
+        },
+      };
+      return {
+        kind: 'read',
+        locations: new Map([
+          [
+            jobId,
+            {
+              ...location,
+              detail: { kind: 'recorded', value: { ...retained, epochKey, events: [progress, ...retained.events] } },
+            },
+          ],
+        ]),
+      };
+    },
+    () => ({ kind: 'available', resultPath: '/result' }),
+  );
+  const first = addressing.snapshot({ jobIds: [jobId] });
+  expect(first.remainingJobIds).toEqual([jobId]);
+  expect(first.notices.join('\n')).toContain('could not be read');
+  readable = true;
+  const second = addressing.snapshot({ jobIds: [jobId], cursor: first.cursor });
+  expect(second.jobs[0].progress).toEqual(['unread backlog']);
+  expect(second.jobs[0].terminal).toBeUndefined();
+  expect(second.remainingJobIds).toEqual([]);
 });

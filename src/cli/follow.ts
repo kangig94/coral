@@ -234,7 +234,10 @@ function emitWaitEvent(
       break;
   }
 
-  const trailingNewline = (event.type === 'terminal' || event.type === 'waiting') && renderOptions.isTTY ? '\n' : '';
+  const trailingNewline =
+    renderOptions.isTTY && ['terminal', 'waiting', 'notice', 'disposition', 'artifact'].includes(event.type)
+      ? '\n'
+      : '';
   return new Promise<void>((resolve, reject) => {
     process.stdout.write(renderWaitLine(line, renderOptions) + trailingNewline, (error) => {
       if (error) reject(error);
@@ -400,6 +403,10 @@ async function connectFollowStream(
         'wait_cursor_mismatch',
       ].includes(String(handledError.body.code))
     ) {
+      if (!state.sendCursor) {
+        options.emitError(withWaitRecovery(handledError, state.remainingJobIds));
+        return { kind: 'exit', code: fallbackExitCode() };
+      }
       writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
       state.currentCursor = { afterSeq: 0 };
       state.sendCursor = false;
@@ -549,7 +556,8 @@ function followEventDecision(event: WaitStreamEvent, context: FollowContext): Fo
   if (event.type === 'waiting') {
     state.remainingJobIds = [...event.waitingJobIds];
     state.currentCursor = waitCursorForJobs(state.currentCursor, state.remainingJobIds);
-    if (event.exitCode !== undefined) return { kind: 'exit', code: event.exitCode };
+    if (options.reconnectPolicy === 'bounded' && event.exitCode !== undefined)
+      return { kind: 'exit', code: event.exitCode };
     if (state.remainingJobIds.length === 0) return { kind: 'exit', code: 0 };
     return options.reconnectPolicy === 'bounded'
       ? { kind: 'exit', code: errorCodeToExit('transient') }
@@ -731,10 +739,14 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
     if (connected.kind === 'exit') return connected.code;
     if (abortState.promise !== null) return await finishAbortAttempt(abortState.promise, options.emitError);
     const { connection } = connected;
-    if (connection.kind === 'subscription') {
+    if (
+      connection.kind === 'subscription' &&
+      options.start.kind === 'jobs' &&
+      options.start.serializedCursor !== undefined
+    ) {
       options.invocation?.saveContinuation(
         formatWaitWaiting(
-          { type: 'waiting', waitingJobIds: state.remainingJobIds, carrierUnknownJobIds: state.carrierUnknownJobIds },
+          { type: 'waiting', waitingJobIds: state.remainingJobIds },
           serializeWaitCursor(state.currentCursor),
         ) + '\n',
       );

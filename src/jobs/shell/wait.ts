@@ -1,12 +1,10 @@
 import { readWaitSession } from '../wait/reader.js';
 import type { WaitAdmission } from '../wait/session.js';
-import { raceObserved } from '../../infra/promise-signal.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { CarrierLiveness } from '../carrier-observation.js';
 import {
   isWorkflowJobKind,
   type JobEvent,
-  type JobProgressEvent,
   type JobStatus,
   type JobTerminal,
   type JobTerminalEvent,
@@ -34,55 +32,6 @@ import {
   providerHostUnserviceableMessage,
   readProviderHostUnserviceableTerminalWarning,
 } from '../../providers/host-admission.js';
-
-const ABORTED = 'wait-aborted' as const;
-const TIMED_OUT = 'wait-timed-out' as const;
-const JOURNAL_POLL = 'wait-journal-poll' as const;
-const JOURNAL_POLL_INTERVAL_MS = 250;
-
-function compareProgressSeq(left: JobEvent, right: JobEvent): number {
-  if (left.seq !== right.seq) {
-    return left.seq - right.seq;
-  }
-  return left.jobId.localeCompare(right.jobId);
-}
-
-function toProgressWaitEvent(event: JobProgressEvent): WaitStreamEvent {
-  return {
-    type: 'progress',
-    jobId: event.jobId,
-    seq: event.seq,
-    message: event.message,
-    timing: event.timing,
-  };
-}
-
-function toTerminalWaitEvent(
-  event: JobTerminalEvent,
-  pending: ReadonlySet<string>,
-  resultPath: string | undefined,
-  continuity: ContinuitySnapshot | null,
-  usage: UsageSummary | undefined = event.usage,
-  result: JobTerminal = event.result,
-): WaitStreamEvent {
-  const remainingJobIds: string[] = [];
-  for (const id of pending) {
-    if (id !== event.jobId) {
-      remainingJobIds.push(id);
-    }
-  }
-
-  return {
-    type: 'terminal',
-    jobId: event.jobId,
-    seq: event.seq,
-    remainingJobIds,
-    ...(resultPath === undefined ? {} : { resultPath }),
-    result,
-    continuity,
-    ...(usage === undefined ? {} : { usage }),
-  };
-}
 
 function surfaceProviderHostRecovery(event: JobTerminalEvent, detail: JobProjectionDetail): JobTerminal {
   const outcome = event.result.outcome;
@@ -112,103 +61,6 @@ function surfaceProviderHostRecovery(event: JobTerminalEvent, detail: JobProject
   };
 }
 
-function createAbortWaiter(
-  signal: AbortSignal | undefined,
-): { promise: Promise<typeof ABORTED>; dispose(): void } | null {
-  if (!signal) {
-    return null;
-  }
-
-  if (signal.aborted) {
-    return {
-      promise: Promise.resolve(ABORTED),
-      dispose: () => {},
-    };
-  }
-
-  let disposed = false;
-  const dispose = () => {
-    if (disposed) {
-      return;
-    }
-    disposed = true;
-    signal.removeEventListener('abort', onAbort);
-  };
-  const onAbort = () => {
-    dispose();
-    resolveAbort(ABORTED);
-  };
-  let resolveAbort: (value: typeof ABORTED) => void = () => {};
-
-  return {
-    promise: new Promise<typeof ABORTED>((resolve) => {
-      resolveAbort = resolve;
-      signal.addEventListener('abort', onAbort, { once: true });
-    }),
-    dispose,
-  };
-}
-
-function createTimeoutWaiter(
-  time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>,
-  timeoutMs: number,
-): { promise: Promise<typeof TIMED_OUT>; dispose(): void } {
-  let settled = false;
-  let timeoutHandle: ReturnType<TimePort['setTimeout']> | null = null;
-  const promise = new Promise<typeof TIMED_OUT>((resolve) => {
-    timeoutHandle = time.setTimeout(
-      () => {
-        settled = true;
-        timeoutHandle = null;
-        resolve(TIMED_OUT);
-      },
-      Math.max(0, timeoutMs),
-    );
-  });
-
-  return {
-    promise,
-    dispose() {
-      if (settled || timeoutHandle === null) {
-        return;
-      }
-      time.clearTimeout(timeoutHandle);
-      timeoutHandle = null;
-      settled = true;
-    },
-  };
-}
-
-function createJournalPollWaiter(
-  time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>,
-  timeoutMs: number,
-): { promise: Promise<typeof JOURNAL_POLL>; dispose(): void } {
-  let settled = false;
-  let timeoutHandle: ReturnType<TimePort['setTimeout']> | null = null;
-  const promise = new Promise<typeof JOURNAL_POLL>((resolve) => {
-    timeoutHandle = time.setTimeout(
-      () => {
-        settled = true;
-        timeoutHandle = null;
-        resolve(JOURNAL_POLL);
-      },
-      Math.max(0, timeoutMs),
-    );
-  });
-
-  return {
-    promise,
-    dispose() {
-      if (settled || timeoutHandle === null) {
-        return;
-      }
-      time.clearTimeout(timeoutHandle);
-      timeoutHandle = null;
-      settled = true;
-    },
-  };
-}
-
 export interface WaitCoordinatorDeps {
   sessionManager: SessionJobReadPort;
   launchQueue: JobQueueReadPort;
@@ -223,6 +75,7 @@ export interface WaitCoordinatorDeps {
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
+  currentJobEpochKey?: () => string | null;
   resultJobsRoot: string;
   observeResultAvailability?: (jobId: string) => ResultAvailability;
   hintResultRepair?: (jobId: string) => void;
@@ -340,54 +193,6 @@ export class WaitCoordinator {
       backendLog.warn(`wait: carrier observation failed: ${errorMessage(error)}`);
       return { interrupted: [], unknownJobIds: [...pending].sort() };
     }
-  }
-
-  /**
-   * The waiting snapshot, with unconfirmed carriers named only when there are any. Omitted rather than
-   * empty so a reader can tell "nothing unknown" from a build that does not report unknowns at all.
-   */
-  private waitingSnapshot(pending: ReadonlySet<string>, carrierUnknownJobIds: readonly string[]): WaitStreamEvent {
-    return carrierUnknownJobIds.length === 0
-      ? { type: 'waiting', waitingJobIds: [...pending] }
-      : { type: 'waiting', waitingJobIds: [...pending], carrierUnknownJobIds: [...carrierUnknownJobIds] };
-  }
-
-  private resultPathFor(jobId: string): string | undefined {
-    const availability = this.deps.observeResultAvailability?.(jobId);
-    if (availability?.kind === 'available') return availability.resultPath;
-    if (availability?.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
-    return undefined;
-  }
-
-  private readPendingHistory(pending: ReadonlySet<string>, observedSeq: number, maxSeq: number): JobEvent[] {
-    const { readJobEvents } = this.deps;
-    const events: JobEvent[] = [];
-
-    for (const jobId of pending) {
-      for (const event of readJobEvents(jobId)) {
-        if (event.seq > observedSeq && event.seq <= maxSeq) {
-          events.push(event);
-        }
-      }
-    }
-
-    return events.sort(compareProgressSeq);
-  }
-
-  private toWaitEvent(event: JobEvent, pending: ReadonlySet<string>): WaitStreamEvent {
-    if (event.type === 'progress') {
-      return toProgressWaitEvent(event);
-    }
-
-    const detail = this.deps.loadJobProjectionDetail(event.jobId);
-    return toTerminalWaitEvent(
-      event,
-      pending,
-      this.resultPathFor(event.jobId),
-      this.readQueryContinuity(event.jobId),
-      this.readTerminalUsage(event),
-      surfaceProviderHostRecovery(event, detail),
-    );
   }
 
   async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
@@ -538,227 +343,43 @@ export class WaitCoordinator {
   }
 
   async *waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    if (req.supportsWaitV3 === true) {
-      const epochKey = ':active:';
-      yield* readWaitSession({
-        request: req,
-        time: this.deps.time,
-        activeEpochKey: epochKey,
-        read: () => this.readWaitAdmissions(req.jobIds, epochKey),
-        observe: async (session, signal) => {
-          const pending = session.admissions
-            .filter((job) => job.disposition === 'admitted' && !job.detail?.exit)
-            .map((job) => job.jobId);
-          const observed = await this.observeWaitCarriers(pending, signal);
-          if (signal.aborted) return;
-          session.observeCoverage(pending, observed.unknownJobIds, observed.frontier);
-          req.onCoverage?.(pending, observed.unknownJobIds, observed.frontier);
-          for (const event of observed.interrupted) session.observeAbsent(event.jobId, event.observedMaxJournalSeq);
-        },
-      });
-      return;
-    }
-    yield* this.waitForJobsFromJournal(req);
+    if (req.supportsWaitV3 !== true && req.supportsWaitV2 !== true) yield* this.waitForOutcomes(req);
+    else yield* this.readWait(req, false);
   }
 
-  private async *waitForJobsFromJournal(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    const { subscribeJobEvents, getCurrentJournalSeq } = this.deps;
-    const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
-    const startMs = Number(this.deps.time.monotonicNow());
-    const timeoutMs = timeoutSeconds * 1000;
-    const deadlineMs = startMs + timeoutMs;
-    const afterSeq = cursor?.version === undefined ? (cursor?.afterSeq ?? 0) : 0;
-    const pending = new Set(jobIds);
-    const emittedQueued = new Set<string>();
-    const currentMaxSeq = getCurrentJournalSeq();
-
-    const controller = new AbortController();
-    const onExternalAbort = () => {
-      controller.abort();
-    };
-    if (abortSignal?.aborted) {
-      controller.abort();
-    } else {
-      abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
-    }
-    const iterator = subscribeJobEvents({
-      afterSeq: currentMaxSeq,
-      jobIds,
-      abortSignal: controller.signal,
-    })[Symbol.asyncIterator]();
-    // Prime the live tail before reading the catch-up snapshot so terminal events
-    // cannot land in the gap between the snapshot and subscriber registration.
-    let pendingNext: Promise<IteratorResult<JobEvent>> | null = iterator.next();
-    let timeoutWaiter: ReturnType<typeof createTimeoutWaiter> | null = null;
-
-    try {
-      const catchUpMaxSeq = getCurrentJournalSeq();
-      let observedSeq = afterSeq;
-      for (const jobId of [...pending]) {
-        const status = this.readQueryStatus(jobId);
-        if (!status) {
-          continue;
-        }
-
-        if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
-          emittedQueued.add(jobId);
-          yield this.queuedWaitEvent(status);
-        }
-      }
-
-      const initialHistory = this.readPendingHistory(pending, observedSeq, catchUpMaxSeq);
-      for (const event of initialHistory) {
-        observedSeq = Math.max(observedSeq, event.seq);
-        const waitEvent = this.toWaitEvent(event, pending);
-        yield waitEvent;
-        if (waitEvent.type === 'progress') {
-          continue;
-        }
-        return;
-      }
-      observedSeq = Math.max(observedSeq, catchUpMaxSeq);
-
-      // Once after catch-up: the journal has had its say about every pending job, so anything still
-      // pending here is a job whose carrier is worth asking about.
-      const carrierReported = new Set<string>();
-      let carrierUnknownJobIds: readonly string[] = [...pending].sort();
-      timeoutWaiter = createTimeoutWaiter(
-        this.deps.time,
-        Math.max(0, deadlineMs - Number(this.deps.time.monotonicNow())),
-      );
-      const timeout = timeoutWaiter.promise;
-      const observeBeforeDeadline = async () => {
-        const abortWaiter = createAbortWaiter(controller.signal);
-        try {
-          return await raceObserved([
-            this.observePendingCarriers(pending, carrierReported),
-            timeout,
-            ...(abortWaiter ? [abortWaiter.promise] : []),
-          ]);
-        } finally {
-          abortWaiter?.dispose();
-        }
-      };
-      {
-        const observed = await observeBeforeDeadline();
-        if (observed === ABORTED) return;
-        if (observed === TIMED_OUT) {
-          yield this.waitingSnapshot(pending, carrierUnknownJobIds);
-          return;
-        }
-        carrierUnknownJobIds = observed.unknownJobIds;
-        req.onCoverage?.([...pending], carrierUnknownJobIds, getCurrentJournalSeq());
-        for (const event of observed.interrupted) yield event;
-      }
-
-      while (pending.size > 0) {
-        if (controller.signal.aborted) return;
-        const now = Number(this.deps.time.monotonicNow());
-        if (now > deadlineMs) {
-          yield this.waitingSnapshot(pending, carrierUnknownJobIds);
-          return;
-        }
-
-        const abortWaiter = createAbortWaiter(abortSignal);
-        const pollWaiter = createJournalPollWaiter(
-          this.deps.time,
-          Math.min(JOURNAL_POLL_INTERVAL_MS, Math.max(0, deadlineMs - now)),
-        );
-        const next = await raceObserved([
-          pendingNext,
-          timeoutWaiter.promise,
-          pollWaiter.promise,
-          ...(abortWaiter ? [abortWaiter.promise] : []),
-        ]);
-        abortWaiter?.dispose();
-        pollWaiter.dispose();
-
-        if (next === ABORTED) {
-          return;
-        }
-
-        if (next === JOURNAL_POLL) {
-          const maxSeq = getCurrentJournalSeq();
-          const replayed = this.readPendingHistory(pending, observedSeq, maxSeq);
-          for (const event of replayed) {
-            observedSeq = Math.max(observedSeq, event.seq);
-            const waitEvent = this.toWaitEvent(event, pending);
-            yield waitEvent;
-            if (waitEvent.type === 'terminal') {
-              return;
-            }
-          }
-          observedSeq = Math.max(observedSeq, maxSeq);
-          // After the replay, never before it: a terminal that arrived in this same tick has already
-          // returned above, so an observation can never contradict a journal result that exists.
-          const observed = await observeBeforeDeadline();
-          if (observed === ABORTED) return;
-          if (observed === TIMED_OUT) {
-            yield this.waitingSnapshot(pending, carrierUnknownJobIds);
-            return;
-          }
-          carrierUnknownJobIds = observed.unknownJobIds;
-          req.onCoverage?.([...pending], carrierUnknownJobIds, getCurrentJournalSeq());
-          for (const event of observed.interrupted) yield event;
-          continue;
-        }
-
-        if (next === TIMED_OUT) {
-          yield this.waitingSnapshot(pending, carrierUnknownJobIds);
-          return;
-        }
-
-        if (next.done) {
-          pendingNext = null;
-          return;
-        }
-
-        const event = next.value;
-        pendingNext = iterator.next();
-        if (event.seq <= observedSeq) {
-          continue;
-        }
-        observedSeq = event.seq;
-
-        if (event.type === 'progress') {
-          yield toProgressWaitEvent(event);
-          continue;
-        }
-
-        yield this.toWaitEvent(event, pending);
-        return;
-      }
-    } finally {
-      timeoutWaiter?.dispose();
-      abortSignal?.removeEventListener('abort', onExternalAbort);
-      controller.abort();
-      void pendingNext?.catch(() => undefined);
-      void iterator.return?.().catch(() => undefined);
-    }
+  async *waitForOutcomes(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
+    yield* this.readWait({ ...req, supportsWaitV3: true }, true);
   }
 
-  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult> {
-    const request: WaitStreamRequest = { jobIds: [jobId], supportsWaitV3: true };
-    if (timeoutMs !== undefined) {
-      request.timeoutSeconds = timeoutMs / 1000;
+  private async *readWait(req: WaitStreamRequest, internal: boolean): AsyncGenerator<WaitStreamEvent> {
+    const epochKey = this.deps.currentJobEpochKey?.() ?? ':memory:';
+    yield* readWaitSession({
+      request: req,
+      internal,
+      time: this.deps.time,
+      activeEpochKey: epochKey,
+      read: () => this.readWaitAdmissions(req.jobIds, epochKey),
+      observe: async (session, signal) => {
+        const pending = session.admissions
+          .filter((job) => job.disposition === 'admitted' && !job.detail?.exit)
+          .map((job) => job.jobId);
+        const observed = await this.observeWaitCarriers(pending, signal);
+        if (signal.aborted) return;
+        session.observeCoverage(pending, observed.unknownJobIds, observed.frontier);
+        req.onCoverage?.(pending, observed.unknownJobIds, observed.frontier);
+        for (const event of observed.interrupted) session.observeAbsent(event.jobId, event.observedMaxJournalSeq);
+      },
+    });
+  }
+
+  async waitStreamOnce(jobId: string, timeoutMs = 600_000): Promise<WaitStreamOnceResult> {
+    for await (const event of this.waitForOutcomes({ jobIds: [jobId], timeoutSeconds: timeoutMs / 1000 })) {
+      if (event.type === 'terminal')
+        return { content: event.result.content, continuity: this.readQueryContinuity(jobId) };
+      if (event.type === 'disposition' && event.disposition !== 'discovery-unknown')
+        throw new Error(`Job ${jobId}: ${event.disposition}`);
     }
-
-    const deadline = Number(this.deps.time.monotonicNow()) + (timeoutMs ?? 600_000);
-    do {
-      request.timeoutSeconds = Math.max(0, deadline - Number(this.deps.time.monotonicNow())) / 1000;
-      for await (const event of this.waitForJobs(request)) {
-        if (event.type === 'terminal' && event.jobId === jobId) {
-          return { content: event.result.content, continuity: this.readQueryContinuity(jobId) };
-        }
-        if (event.type === 'waiting') {
-          if (Number(this.deps.time.monotonicNow()) >= deadline)
-            throw new Error('Wait expired while job still running');
-          request.cursor = event.cursor;
-        }
-      }
-    } while (Number(this.deps.time.monotonicNow()) < deadline);
-
-    throw new Error(`Job ${jobId} ended without a terminal result`);
+    throw new Error('Wait expired while job still running');
   }
 
   private readStatusOrThrow(jobId: string): JobStatus {

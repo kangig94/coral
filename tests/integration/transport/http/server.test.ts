@@ -9,6 +9,7 @@ import {
   type Server as HttpServer,
 } from 'node:http';
 import { join } from 'node:path';
+import { decodeSerializedWaitCursor } from '#src/jobs/wait/cursor.js';
 import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
@@ -756,6 +757,10 @@ describe('execution backend server', () => {
         jobs: {
           scopeCheck: scopeCheckJobs,
           abort: abortJobs,
+          admitWait: (request: { jobIds: string[] }) =>
+            request.jobIds.map((jobId) => ({ jobId, disposition: 'admitted' as const })),
+          validateWait: () => null,
+          waitHandoverSignal: () => new AbortController().signal,
           waitStream: (request: unknown) => service.waitStream(request),
           list: () => [],
           detail: () => null,
@@ -914,6 +919,67 @@ describe('execution backend server', () => {
       }
     });
 
+    it('versionless SSE IDs preserve admission separately from delivered terminal IDs', async () => {
+      const { deps } = createHttpHandlerDeps();
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const response = await fetch(`${started.baseUrl}/jobs/wait`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': 'test-token' },
+          body: JSON.stringify({ jobIds: ['job-1'], timeoutSeconds: 1, projectRoot: DEFAULT_PROJECT_ROOT }),
+        });
+        const text = await response.text();
+        expect(response.status).toBe(200);
+        const ids = [...text.matchAll(/^id: (.+)$/gm)].map((match) => decodeSerializedWaitCursor(match[1]));
+        expect(ids[0]).toMatchObject({
+          kind: 'decoded',
+          cursor: { afterSeq: 7, admittedJobIds: ['job-1'], deliveredJobIds: [] },
+        });
+        expect(ids[1]).toMatchObject({
+          kind: 'decoded',
+          cursor: { afterSeq: 8, admittedJobIds: ['job-1'], deliveredJobIds: ['job-1'] },
+        });
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('ends a non-handover HTTP wait with the same lifecycle refusal as IPC', async () => {
+      const handover = new AbortController();
+      const service = createFakeExecutionService({
+        waitStream: vi.fn(async function* () {
+          yield { type: 'progress', jobId: 'job-1', seq: 1, message: 'started', timing: waitTiming };
+          await new Promise<void>((resolve) =>
+            handover.signal.addEventListener('abort', () => resolve(), { once: true }),
+          );
+        }),
+      });
+      const { deps } = createHttpHandlerDeps({ executionService: service });
+      deps.jobs.waitHandoverSignal = () => handover.signal;
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const response = await fetch(`${started.baseUrl}/jobs/wait`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': 'test-token' },
+          body: JSON.stringify({ jobIds: ['job-1'], timeoutSeconds: 1, projectRoot: DEFAULT_PROJECT_ROOT }),
+        });
+        const reader = response.body!.getReader();
+        let text = new TextDecoder().decode((await reader.read()).value);
+        handover.abort();
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          text += new TextDecoder().decode(next.value);
+        }
+        expect(text).toContain('event: error');
+        expect(text).toContain(JSON.stringify(lifecycleRefusalResult));
+        expect(deps.streamResponses.size).toBe(0);
+      } finally {
+        handover.abort();
+        await _closeHttpServer(started.server);
+      }
+    });
+
     it('cleans up passive SSE subscriptions when an event write hits backpressure', async () => {
       type TestServerResponseWrite = (this: ServerResponse, ...args: unknown[]) => boolean;
       const originalWrite = ServerResponse.prototype.write as TestServerResponseWrite;
@@ -947,6 +1013,7 @@ describe('execution backend server', () => {
 
         await stream.waitForText((text) => text.includes('event: ready'));
         expect(started.deps.streamResponses.size).toBe(1);
+        const response = [...started.deps.streamResponses][0] as ServerResponse;
 
         expect(
           started.deps.events.bus.emit('job:progress', {
@@ -957,6 +1024,7 @@ describe('execution backend server', () => {
         ).toBe(true);
 
         await cleanedUp.promise;
+        expect(response.destroyed).toBe(true);
         expect(started.deps.streamResponses.size).toBe(0);
         expect(
           started.deps.events.bus.emit('job:progress', {
@@ -1175,7 +1243,7 @@ describe('execution backend server', () => {
     expect(await response.json()).toEqual({
       code: 'scope_mismatch',
       message:
-        'Job job-foreign: scope-mismatch. Change cwd to the job work directory; coral-cli jobs --all includes terminal jobs. Read coral-cli jobs detail job-foreign --full.',
+        'Job job-foreign: scope-mismatch. Change cwd to the job work directory; coral-cli jobs --all includes terminal jobs. Read coral-cli jobs detail job-foreign.',
       detail: { jobs: ['job-foreign'] },
     });
     expect(fakeService.waitStream).not.toHaveBeenCalled();

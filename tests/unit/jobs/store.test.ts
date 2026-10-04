@@ -1,7 +1,8 @@
+import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -123,3 +124,19 @@ describe('JobStore', () => {
   });
 });
 import { initTestJob } from '#tests/helpers/session.js';
+
+it('retains the export owner, pending hints and listener when recovery reuses the same index', () => {
+  const { store, runtime } = createStore();
+  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  store.configureResultExports(index);
+  const owner = store.getResultExportOwner();
+  const listener = vi.fn();
+  owner.onRepairHint(listener);
+  owner.hintRepair('first');
+  store.configureResultExports(index);
+  expect(store.getResultExportOwner()).toBe(owner);
+  store.getResultExportOwner().hintRepair('first');
+  expect(listener).toHaveBeenCalledTimes(1);
+  store.getResultExportOwner().hintRepair('second');
+  expect(listener).toHaveBeenCalledTimes(2);
+});

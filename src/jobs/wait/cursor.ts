@@ -10,7 +10,14 @@ export function serializeWaitCursor(cursor: WaitCursor): string {
 export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor {
   if (cursor.version === 'jobs.wait.v3') return filterWaitCursorV3(cursor, jobIds);
   const deliveredJobIds = cursor.deliveredJobIds?.filter((id) => jobIds.includes(id));
-  if (cursor.version === undefined) return { ...cursor, ...(deliveredJobIds === undefined ? {} : { deliveredJobIds }) };
+  if (cursor.version === undefined)
+    return {
+      ...cursor,
+      ...(deliveredJobIds === undefined ? {} : { deliveredJobIds }),
+      ...(cursor.admittedJobIds === undefined
+        ? {}
+        : { admittedJobIds: cursor.admittedJobIds.filter((id) => jobIds.includes(id)) }),
+    };
   const locations = Object.fromEntries(
     jobIds.flatMap((jobId) => {
       const epochKey = cursor.locations[jobId];
@@ -56,6 +63,14 @@ export function decodeWaitCursor(value: unknown): WaitCursorDecoded {
   }
   if (value.version !== undefined && value.version !== 'jobs.wait.v2') return rejected('wait_cursor_unsupported');
   const delivered = value.deliveredJobIds;
+  const admitted = value.admittedJobIds;
+  if (
+    admitted !== undefined &&
+    (!Array.isArray(admitted) ||
+      admitted.some((id) => typeof id !== 'string' || id.length === 0) ||
+      new Set(admitted).size !== admitted.length)
+  )
+    return rejected('wait_cursor_malformed');
   if (
     delivered !== undefined &&
     (!Array.isArray(delivered) ||
@@ -67,7 +82,7 @@ export function decodeWaitCursor(value: unknown): WaitCursorDecoded {
     if (
       !Number.isSafeInteger(value.afterSeq) ||
       (value.afterSeq as number) < 0 ||
-      Object.keys(value).some((key) => key !== 'afterSeq' && key !== 'deliveredJobIds')
+      Object.keys(value).some((key) => key !== 'afterSeq' && key !== 'deliveredJobIds' && key !== 'admittedJobIds')
     )
       return rejected('wait_cursor_malformed');
   } else {

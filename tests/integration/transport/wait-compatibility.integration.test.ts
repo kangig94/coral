@@ -145,7 +145,6 @@ function addressing(artifact: 'available' | 'repair-pending' | 'retained-away' |
       detail: (id: string) =>
         id === 'b' ? admitted('b', [[2, 'active sibling']]).detail! : id === 'a' && !historical ? a.detail! : null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      waitStream: async function* () {},
     },
     () => false,
     () => 'decided',
@@ -332,7 +331,8 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
       const error = reader.mapWaitSubscriptionError(
         new Error(typed.message, { cause: { code: typed.code, message: typed.message } }),
       );
-      expect(error.message).toContain('jobs detail a --full');
+      expect(error.message).toContain('jobs detail a.');
+      expect(error.message).not.toContain('--full');
       expect(reader.errorCodeToExit(typed.code)).toBe(1);
     }
   },

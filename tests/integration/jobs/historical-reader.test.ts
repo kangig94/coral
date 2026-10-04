@@ -1,19 +1,36 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { newRawDatabase } from '../../helpers/test-db.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { newRawDatabase } from '../../helpers/test-db.js';
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 import { JobAddressing } from '../../../src/jobs/addressing.js';
 import {
+  refreshHistoricalEpochs,
   refreshHistoricalEpoch,
   retryUnknownHistoricalEpochs,
   seedHistoricalEpoch,
 } from '../../../src/jobs/historical-reader.js';
-import { readOrCreateEpochKey } from '../../../src/store/epoch/index.js';
-import { protectStoreEpoch, protectedStoreEpochRoot } from '../../../src/store/epoch/index.js';
+
+import { readOrCreateEpochKey, protectStoreEpoch, protectedStoreEpochRoot } from '../../../src/store/epoch/index.js';
+
 import { createRealRuntime } from '../../../src/runtime/real.js';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+
+import { createInterface } from 'node:readline';
+import { DatabaseSync } from 'node:sqlite';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { Interface } from 'node:readline';
+import {
+  hintHistoricalHydration,
+  onHistoricalHydrationHint,
+  readHistoricalSource,
+} from '#src/jobs/historical-reader.js';
+
+import { WaitSession } from '#src/jobs/wait/session.js';
 
 const fingerprints = [
   'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52',
@@ -271,13 +288,16 @@ describe('historical job readers', () => {
         epochKey: () => 'new:8',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
       },
       () => false,
       () => 'decided',
     );
     expect(addressing.detail('finished')).toMatchObject({ status: { phase: 'completed' } });
     const stream = addressing.waitStream({ jobIds: ['finished'], supportsWaitV3: true });
+    expect((await stream.next()).value).toMatchObject({
+      type: 'notice',
+      message: expect.stringContaining('could not be read'),
+    });
     expect((await stream.next()).value).toMatchObject({ type: 'terminal', jobId: 'finished' });
     await stream.return(undefined);
   });
@@ -354,7 +374,6 @@ describe('historical job readers', () => {
         epochKey: () => 'new:8',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
       },
       () => false,
       () => 'decided',
@@ -511,7 +530,6 @@ describe('historical job readers', () => {
         epochKey: () => 'lineage-new:8',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
       },
       () => false,
       () => 'decided',
@@ -587,7 +605,6 @@ describe('historical job readers', () => {
         epochKey: () => 'lineage-new:8',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
       },
       () => false,
       () => 'pending',
@@ -598,4 +615,553 @@ describe('historical job readers', () => {
     });
     expect(readFileSync(join(root, 'results', 'finished', 'result.md'), 'utf8')).toBe('finished result\n');
   });
+});
+{
+  const fingerprint = 'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52';
+  const oldEpochKey = '00000000-0000-4000-8000-000000000007:7';
+  const newEpochKey = '00000000-0000-4000-8000-000000000008:8';
+  const real = createRealRuntime('prod', { baseDir: tmpdir() });
+  const offset = 5 * 86400000;
+  const runtime = { ...real, time: { ...real.time, now: () => Date.now() + offset } };
+  const now = new Date(runtime.time.now() - 10000).toISOString();
+  const writer = `
+import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync(process.argv[1]);
+db.exec('PRAGMA journal_mode=WAL');
+db.exec(\`CREATE TABLE projection_jobs (job_id TEXT, execution_owner TEXT, phase TEXT, diagnostics TEXT, session_id TEXT,
+  provider TEXT, project_root TEXT, backend_namespace TEXT, bundle_hash TEXT, job_kind TEXT, parent_workflow_job_id TEXT,
+  workflow_slot TEXT, workflow_slot_generation INTEGER, replaces_workflow_job_id TEXT, created_at TEXT, last_seq INTEGER);
+  CREATE TABLE events (seq INTEGER, ts TEXT, type TEXT, stream_kind TEXT, stream_id TEXT, body BLOB);\`);
+db.prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+  'old-live', JSON.stringify({ kind: 'provider-session', id: 'session-1' }), 'completed', JSON.stringify({ progressFaults: [] }),
+  'session-1', 'claude', '/workspace/project', 'ns', null, 'provider', null, null, null, null, '${now}', 2);
+db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(1, '${now}', 'job.launch.requested', 'job', 'old-live',
+  Buffer.from(JSON.stringify({ projectRoot: '/workspace/project', jobKind: 'provider', request: { cwd: '/workspace/project' } })));
+db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(2, '${now}', 'job.terminal.recorded', 'job', 'old-live',
+  Buffer.from(JSON.stringify({ terminal: { content: 'old result', outcome: { kind: 'completed' }, durationMs: 10 } })));
+db.close();
+console.log('ready');`;
+  describe('a forward wall-clock step (measured every ~35 s on this WSL2 host)', () => {
+    it('keeps fresh historical fixtures inside retention when the host date advances (timebomb probe)', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'nreview-step-'));
+      const epochDir = join(root, 'db', 'epoch-7');
+      mkdirSync(epochDir, { recursive: true });
+      const lock = new DatabaseSync(join(epochDir, '.lock'));
+      lock.exec('CREATE TABLE IF NOT EXISTS m (id INTEGER)');
+      lock.close();
+      writeFileSync(
+        join(epochDir, '.coral-lineage.v1.json'),
+        JSON.stringify({ version: 'v1', lineageId: oldEpochKey.split(':')[0] }),
+      );
+      const child = spawn(process.execPath, ['--input-type=module', '-e', writer, join(epochDir, 'store.db')]);
+      expect((await once(createInterface({ input: child.stdout }), 'line'))[0]).toBe('ready');
+      const index = new JobLocationIndex(runtime as never, root);
+      index.read('warm');
+      (await import('#src/jobs/retention-clock.js')).trustedJobRetentionCutoff(runtime as never);
+      seedHistoricalEpoch(
+        runtime as never,
+        index,
+        { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+        oldEpochKey,
+        fingerprint,
+        join(root, 'results'),
+        real.storage,
+      );
+      const source = new DatabaseSync(join(epochDir, 'store.db'), { readOnly: true });
+      const exporter = index.resultExportOwnerForSource(source as never, oldEpochKey, join(root, 'results'));
+      const addressing = new JobAddressing(
+        index,
+        {
+          epochKey: () => newEpochKey,
+          detail: () => null,
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        },
+        () => false,
+        () => 'pending',
+        undefined,
+        (jobId) => exporter.observeResultAvailability(jobId),
+      );
+      expect(existsSync(join(root, 'results', 'old-live', 'result.md'))).toBe(true);
+      const v2 = addressing.waitStream({ jobIds: ['old-live'], supportsWaitV2: true } as never);
+      expect((await v2.next()).value).toMatchObject({
+        type: 'terminal',
+        resultPath: join(root, 'results', 'old-live', 'result.md'),
+      });
+      await v2.return(undefined);
+      const v3 = addressing.waitStream({ jobIds: ['old-live'], supportsWaitV3: true, timeoutSeconds: 1 } as never);
+      const ev = (await v3.next()).value as Record<string, unknown>;
+      expect(ev).toMatchObject({
+        type: 'terminal',
+        availability: { kind: 'available' },
+        remainingJobIds: [],
+        exitCode: 0,
+      });
+      await v3.return(undefined);
+      source.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+}
+{
+  const fingerprint = 'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52';
+  const oldEpochKey = '00000000-0000-4000-8000-000000000007:7';
+  const newEpochKey = '00000000-0000-4000-8000-000000000008:8';
+  const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
+  const now = new Date().toISOString();
+  const writer = `
+import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync(process.argv[1]);
+db.exec('PRAGMA journal_mode=WAL');
+db.exec(\`CREATE TABLE projection_jobs (job_id TEXT, execution_owner TEXT, phase TEXT, diagnostics TEXT, session_id TEXT,
+  provider TEXT, project_root TEXT, backend_namespace TEXT, bundle_hash TEXT, job_kind TEXT, parent_workflow_job_id TEXT,
+  workflow_slot TEXT, workflow_slot_generation INTEGER, replaces_workflow_job_id TEXT, created_at TEXT, last_seq INTEGER);
+  CREATE TABLE events (seq INTEGER, ts TEXT, type TEXT, stream_kind TEXT, stream_id TEXT, body BLOB);\`);
+db.prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+  'old-live', JSON.stringify({ kind: 'provider-session', id: 'session-1' }), 'running', JSON.stringify({ progressFaults: [] }),
+  'session-1', 'claude', '/workspace/project', 'ns', null, 'provider', null, null, null, null, '${now}', 1);
+db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(1, '${now}', 'job.launch.requested', 'job', 'old-live',
+  Buffer.from(JSON.stringify({ projectRoot: '/workspace/project', jobKind: 'provider', request: { cwd: '/workspace/project' } })));
+console.log('ready');
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (input) => {
+  if (input.includes('finish')) {
+    db.exec('BEGIN IMMEDIATE');
+    db.prepare('UPDATE projection_jobs SET phase = ?, last_seq = ? WHERE job_id = ?').run('completed', 2, 'old-live');
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(2, '${now}', 'job.terminal.recorded', 'job', 'old-live',
+      Buffer.from(JSON.stringify({ terminal: { content: 'old result', outcome: { kind: 'completed' }, durationMs: 10 } })));
+    db.exec('COMMIT');
+    console.log('finished');
+  }
+  if (input.includes('close')) { db.close(); process.exit(0); }
+});`;
+  async function setup() {
+    const root = mkdtempSync(join(tmpdir(), 'nreview-gap-'));
+    const epochDir = join(root, 'db', 'epoch-7');
+    mkdirSync(epochDir, { recursive: true });
+    const lock = new DatabaseSync(join(epochDir, '.lock'));
+    lock.exec('CREATE TABLE IF NOT EXISTS lock_marker (id INTEGER PRIMARY KEY)');
+    lock.close();
+    writeFileSync(
+      join(epochDir, '.coral-lineage.v1.json'),
+      JSON.stringify({ version: 'v1', lineageId: oldEpochKey.split(':')[0] }),
+    );
+    const child: ChildProcessWithoutNullStreams = spawn(
+      process.execPath,
+      ['--input-type=module', '-e', writer, join(epochDir, 'store.db')],
+      { stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    const lines: Interface = createInterface({ input: child.stdout });
+    expect((await once(lines, 'line'))[0]).toBe('ready');
+    const index = new JobLocationIndex(runtime, root);
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    expect(
+      seedHistoricalEpoch(runtime, index, epoch, oldEpochKey, fingerprint, join(root, 'results'), runtime.storage).kind,
+    ).toBe('uncertified');
+    mkdirSync(join(root, 'db', 'epoch-8'));
+    const source = new DatabaseSync(join(epochDir, 'store.db'), { readOnly: true });
+    const exporter = index.resultExportOwnerForSource(source as never, oldEpochKey, join(root, 'results'));
+    let hints = 0;
+    onHistoricalHydrationHint(index, () => {
+      hints++;
+    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => newEpochKey,
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => 'pending',
+      undefined,
+      (jobId) => exporter.observeResultAvailability(jobId),
+      (jobId) => hintHistoricalHydration(index, jobId),
+    );
+    const finish = async () => {
+      child.stdin.write('finish\n');
+      expect((await once(lines, 'line'))[0]).toBe('finished');
+    };
+    const hydrate = () =>
+      seedHistoricalEpoch(runtime, index, epoch, oldEpochKey, fingerprint, join(root, 'results'), runtime.storage);
+    const close = async () => {
+      source.close();
+      const e = once(child, 'exit');
+      child.stdin.write('close\n');
+      await e;
+      rmSync(root, { recursive: true, force: true });
+    };
+    return { root, addressing, finish, hydrate, close, exporter, hints: () => hints };
+  }
+  describe('historical terminal observed before write-owned hydration', () => {
+    it('preserves terminal delivery and the artifact continuation until hydration', async () => {
+      const f = await setup();
+      try {
+        await f.finish(); // terminal committed in source; maintenance (5 s sweep) has not hydrated yet
+        const snap = f.addressing.snapshot({ jobIds: ['old-live'] } as never);
+        expect(snap.jobs[0].availability).toMatchObject({ kind: 'repair-pending' });
+        expect(snap.remainingJobIds).toEqual(['old-live']);
+        expect(snap.exitCode).toBe(75);
+        expect(f.hints()).toBeGreaterThan(0);
+        expect(existsSync(join(f.root, 'results', 'old-live', 'result.md'))).toBe(false);
+        const stream = f.addressing.waitStream({
+          jobIds: ['old-live'],
+          supportsWaitV3: true,
+          timeoutSeconds: 2,
+        } as never);
+        const ev = (await stream.next()).value as Record<string, unknown>;
+        expect(ev).toMatchObject({
+          type: 'terminal',
+          availability: { kind: 'repair-pending' },
+          remainingJobIds: ['old-live'],
+          exitCode: 75,
+        });
+        await stream.return(undefined);
+        f.hydrate();
+        expect(f.exporter.observeResultAvailability('old-live').kind).toBe('available');
+      } finally {
+        await f.close();
+      }
+    });
+    it('lets a released reader wait for transient hydration', async () => {
+      const f = await setup();
+      try {
+        await f.finish();
+        const stream = f.addressing.waitStream({
+          jobIds: ['old-live'],
+          supportsWaitV2: true,
+          timeoutSeconds: 2,
+        } as never);
+        expect((await stream.next()).value).toMatchObject({ type: 'waiting', waitingJobIds: ['old-live'] });
+        await stream.return(undefined);
+      } finally {
+        await f.close();
+      }
+    });
+  });
+}
+{
+  const fingerprint = 'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52';
+  const oldEpochKey = '00000000-0000-4000-8000-000000000007:7';
+  const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
+  describe('a deterministic seed failure', () => {
+    it('settles deterministic decode failures and resolves unknown ids to missing with a caveat', () => {
+      const root = mkdtempSync(join(tmpdir(), 'nreview-hold-'));
+      try {
+        const epochDir = join(root, 'db', 'epoch-7');
+        mkdirSync(epochDir, { recursive: true });
+        const lock = new DatabaseSync(join(epochDir, '.lock'));
+        lock.exec('CREATE TABLE IF NOT EXISTS m (id INTEGER)');
+        lock.close();
+        writeFileSync(
+          join(epochDir, '.coral-lineage.v1.json'),
+          JSON.stringify({ version: 'v1', lineageId: oldEpochKey.split(':')[0] }),
+        );
+        const db = new DatabaseSync(join(epochDir, 'store.db'));
+        db.exec(`CREATE TABLE projection_jobs (job_id TEXT, execution_owner TEXT, phase TEXT, diagnostics TEXT, session_id TEXT,
+      provider TEXT, project_root TEXT, backend_namespace TEXT, bundle_hash TEXT, job_kind TEXT, parent_workflow_job_id TEXT,
+      workflow_slot TEXT, workflow_slot_generation INTEGER, replaces_workflow_job_id TEXT, created_at TEXT, last_seq INTEGER);
+      CREATE TABLE events (seq INTEGER, ts TEXT, type TEXT, stream_kind TEXT, stream_id TEXT, body BLOB);`);
+        db.prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+          'odd-job',
+          JSON.stringify({ kind: 'provider-session', id: 's' }),
+          'running',
+          JSON.stringify({ progressFaults: [] }),
+          's',
+          'claude',
+          '/workspace/project',
+          'ns',
+          null,
+          'some-future-kind',
+          null,
+          null,
+          null,
+          null,
+          new Date().toISOString(),
+          1,
+        );
+        db.close();
+        const index = new JobLocationIndex(runtime, root);
+        const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+        seedHistoricalEpoch(runtime, index, epoch, oldEpochKey, fingerprint, join(root, 'results'), runtime.storage);
+        for (let i = 0; i < 3; i++) retryUnknownHistoricalEpochs(index);
+        const addressing = new JobAddressing(
+          index,
+          {
+            epochKey: () => 'active',
+            detail: () => null,
+            abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+          },
+          () => false,
+          () => 'pending',
+        );
+        const snap = addressing.snapshot({ jobIds: ['typo-id'] } as never);
+        expect(index.unknownLocationHolds()[0]).toMatchObject({ retryScheduled: false });
+        expect(index.unknownLocationHolds()[0].reason).not.toContain('\"code\"');
+        expect(snap.jobs[0]).toMatchObject({
+          disposition: 'missing',
+          message: expect.stringContaining('no reachable clearing event'),
+        });
+        expect(snap.remainingJobIds).toEqual([]);
+        expect(snap.exitCode).toBe(1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+}
+{
+  const fingerprint = 'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52';
+  const epochKey = '00000000-0000-4000-8000-000000000007:7';
+  describe('a persistently unreadable historical epoch holds every unknown id as discovery-unknown', () => {
+    it('settles a corrupt database hold without endless discovery', () => {
+      const root = mkdtempSync(join(tmpdir(), 'coral-unbounded-discovery-'));
+      try {
+        const runtime = createRealRuntime('prod', { baseDir: root });
+        const epochDir = join(root, 'db', 'epoch-7');
+        mkdirSync(epochDir, { recursive: true });
+        const lock = new DatabaseSync(join(epochDir, '.lock'));
+        lock.exec('CREATE TABLE IF NOT EXISTS lock_marker (id INTEGER PRIMARY KEY)');
+        lock.close();
+        writeFileSync(
+          join(epochDir, '.coral-lineage.v1.json'),
+          JSON.stringify({ version: 'v1', lineageId: epochKey.split(':')[0] }),
+        );
+        writeFileSync(join(epochDir, 'store.db'), 'this is not a sqlite database at all, it is corrupt'.repeat(100));
+        const index = new JobLocationIndex(runtime, root);
+        seedHistoricalEpoch(
+          runtime,
+          index,
+          { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+          epochKey,
+          fingerprint,
+          join(root, 'results'),
+          runtime.storage,
+        );
+        for (let i = 0; i < 50; i++) retryUnknownHistoricalEpochs(index);
+        const addressing = new JobAddressing(
+          index,
+          {
+            epochKey: () => 'active',
+            detail: () => null,
+            abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+          },
+          () => false,
+          () => 'pending',
+        );
+        const admissions = addressing.admitWait({ jobIds: ['typo-not-a-job'], supportsWaitV3: true });
+        const session = new WaitSession(['typo-not-a-job']);
+        session.reconcile(admissions);
+        expect(admissions[0].disposition).toBe('missing');
+        expect(session.remaining()).toEqual([]);
+        expect(index.unknownLocationHolds()[0].retryScheduled).toBe(false);
+        expect(admissions[0].message).toContain('no reachable clearing event');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+  it('bounds transient seed failures to three attempts before resolving unknown ids to missing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-seed-retry-'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const epochDir = join(root, 'db', 'epoch-7');
+    mkdirSync(epochDir, { recursive: true });
+    const lock = new DatabaseSync(join(epochDir, '.lock'));
+    lock.close();
+    writeFileSync(
+      join(epochDir, '.coral-lineage.v1.json'),
+      JSON.stringify({ version: 'v1', lineageId: epochKey.split(':')[0] }),
+    );
+    writeFileSync(join(epochDir, 'store.db'), 'unused fixture bytes');
+    const open = vi.spyOn(runtime.storage, 'openSqliteDatabaseSync').mockImplementation(() => {
+      throw new Error('database is temporarily locked');
+    });
+    try {
+      const index = new JobLocationIndex(runtime, root);
+      seedHistoricalEpoch(
+        runtime,
+        index,
+        { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+        epochKey,
+        fingerprint,
+        join(root, 'results'),
+        runtime.storage,
+      );
+      expect(index.unknownLocationHolds()[0].retryScheduled).toBe(true);
+      for (let i = 0; i < 50; i++) retryUnknownHistoricalEpochs(index);
+      expect(open).toHaveBeenCalledTimes(3);
+      expect(index.unknownLocationHolds()[0]).toMatchObject({
+        retryScheduled: false,
+        reason: expect.stringContaining('after 3 seed attempts'),
+      });
+      const addressing = new JobAddressing(
+        index,
+        {
+          epochKey: () => 'active',
+          detail: () => null,
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        },
+        () => false,
+        () => 'pending',
+      );
+      expect(addressing.snapshot({ jobIds: ['typo'] }).jobs[0].disposition).toBe('missing');
+    } finally {
+      open.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('keeps an unobservable historical path pending instead of treating it as absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-seed-path-'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const epochDir = join(root, 'db', 'epoch-7');
+    mkdirSync(epochDir, { recursive: true });
+    new DatabaseSync(join(epochDir, '.lock')).close();
+    writeFileSync(
+      join(epochDir, '.coral-lineage.v1.json'),
+      JSON.stringify({ version: 'v1', lineageId: epochKey.split(':')[0] }),
+    );
+    const dbPath = join(epochDir, 'store.db');
+    writeFileSync(dbPath, 'unused fixture bytes');
+    const index = new JobLocationIndex(runtime, root);
+    const lstat = runtime.storage.lstatSync;
+    const storage = {
+      ...runtime.storage,
+      existsSync: (path: string) => (path === dbPath ? false : runtime.storage.existsSync(path)),
+      lstatSync: ((path: string, options: never) => {
+        if (path === dbPath) throw Object.assign(new Error('temporarily inaccessible'), { code: 'EACCES' });
+        return lstat(path, options);
+      }) as typeof lstat,
+    };
+    try {
+      seedHistoricalEpoch(
+        runtime,
+        index,
+        { storeRoot: join(root, 'db'), epoch: '7', path: dbPath },
+        epochKey,
+        fingerprint,
+        join(root, 'results'),
+        storage,
+      );
+      expect(index.unknownLocationHolds()[0]).toMatchObject({ retryScheduled: true });
+      expect(index.unknownLocationHolds()[0].reason).not.toContain('retained-store-root-missing');
+      expect(readHistoricalSource(index, epochKey, ['typo'])).toEqual({ kind: 'unreadable' });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+it('isolates invalid job reads, continues hydration after a recording failure and skips certified epoch sweeps', () => {
+  const { root, epochDir, db } = fixture(fingerprints[0]);
+  for (const [i, jobId] of ['bad', 'good'].entries()) {
+    db.prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      jobId,
+      JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
+      'running',
+      JSON.stringify({ progressFaults: [] }),
+      'session-1',
+      'claude',
+      '/workspace/project',
+      'old-namespace',
+      null,
+      'provider',
+      null,
+      null,
+      null,
+      null,
+      '2026-09-25T00:00:00.000Z',
+      i + 1,
+    );
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      i + 1,
+      '2026-09-25T00:00:00.000Z',
+      'job.launch.requested',
+      'job',
+      jobId,
+      Buffer.from(
+        JSON.stringify({
+          projectRoot: '/workspace/project',
+          jobKind: 'provider',
+          request: { cwd: '/workspace/project' },
+        }),
+      ),
+    );
+  }
+  db.close();
+  const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+  const epochKey = readOrCreateEpochKey(runtime, epoch);
+  const index = new JobLocationIndex(runtime, root);
+  expect(
+    seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprints[0], join(root, 'results'), storage).kind,
+  ).toBe('uncertified');
+  const writer = newRawDatabase(epoch.path);
+  for (const [i, jobId] of ['bad', 'good'].entries()) {
+    writer
+      .prepare('UPDATE projection_jobs SET phase = ?, last_seq = ? WHERE job_id = ?')
+      .run('completed', i + 3, jobId);
+    writer
+      .prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)')
+      .run(
+        i + 3,
+        '2026-09-25T00:00:01.000Z',
+        'job.terminal.recorded',
+        'job',
+        jobId,
+        Buffer.from(
+          JSON.stringify({ terminal: { content: `${jobId} result`, outcome: { kind: 'completed' }, durationMs: 1 } }),
+        ),
+      );
+  }
+  writer.prepare('UPDATE projection_jobs SET execution_owner = ? WHERE job_id = ?').run('invalid json', 'bad');
+  const read = readHistoricalSource(index, epochKey, ['bad', 'good']);
+  expect(read.kind).toBe('read');
+  if (read.kind !== 'read') throw new Error('source unreadable');
+  expect(read.unreadableJobs).toEqual(new Set(['bad']));
+  expect(read.locations.get('good')?.disposition).toBe('terminal');
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      epochKey: () => 'another-epoch',
+      detail: () => null,
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+  );
+  expect(addressing.admitWait({ jobIds: ['good'], supportsWaitV3: true })[0].detail?.exit).not.toBeNull();
+  expect(addressing.admitWait({ jobIds: ['good'], supportsWaitV3: true })[0].progressUnknown).toBe(false);
+  const hydration = vi.fn();
+  onHistoricalHydrationHint(index, hydration);
+  index.holdUnknownLocations(epochKey, 'held without retry');
+  for (let hint = 0; hint < 40; hint++) hintHistoricalHydration(index, 'good');
+  expect(hydration).not.toHaveBeenCalled();
+  index.clearUnknownLocations(epochKey);
+  onHistoricalHydrationHint(index, null);
+
+  writer
+    .prepare('UPDATE projection_jobs SET execution_owner = ? WHERE job_id = ?')
+    .run(JSON.stringify({ kind: 'provider-session', id: 'session-1' }), 'bad');
+  writer.close();
+  const record = index.recordTerminal.bind(index);
+  const failure = vi.spyOn(index, 'recordTerminal').mockImplementation((jobId, ...args) => {
+    if (jobId === 'bad') throw new Error('location write failed');
+    return record(jobId, ...args);
+  });
+  expect(refreshHistoricalEpoch(index, epochKey, ['bad', 'good'])).toBe('unreadable');
+  expect(index.read('good')?.disposition).toBe('terminal');
+  expect(index.certificate(epochKey)).toBeNull();
+  failure.mockRestore();
+  expect(refreshHistoricalEpoch(index, epochKey, ['bad', 'good'])).toBe('read');
+  index.locationsFor(epochKey);
+  const opens = vi.spyOn(storage, 'openSqliteDatabaseSync');
+  const reads = vi.spyOn(storage, 'readFileSync');
+  try {
+    for (let sweep = 0; sweep < 20; sweep++) refreshHistoricalEpochs(index);
+    expect(opens).not.toHaveBeenCalled();
+    expect(reads.mock.calls.filter(([path]) => String(path).includes('/job-locations.v1/jobs/'))).toHaveLength(0);
+    rmSync(epoch.path);
+    refreshHistoricalEpochs(index);
+    expect(readHistoricalSource(index, epochKey, ['good'])).toEqual({ kind: 'unreadable' });
+  } finally {
+    vi.restoreAllMocks();
+  }
 });

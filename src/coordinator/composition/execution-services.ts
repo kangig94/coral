@@ -89,6 +89,7 @@ type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
   runtime: Runtime;
   getActiveEpochPath?: () => string | null;
+  currentJobEpochKey?: () => string | null;
   bundleHash: string;
   backendNamespace: string;
   settlementRefusalRecorder: SettlementRefusalRecorder;
@@ -148,6 +149,7 @@ function createExecutionServiceRegistry(input: {
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq,
+      currentJobEpochKey: input.deps.currentJobEpochKey,
       observeResultAvailability: (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
       hintResultRepair: (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
       appServerProxyRoute: createAppServerProxyRoute({

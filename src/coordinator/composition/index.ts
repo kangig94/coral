@@ -583,6 +583,7 @@ export function createCoordinatorCore(
     world,
     runtime,
     getActiveEpochPath: () => core.state.selectedStoreEpochPath,
+    currentJobEpochKey: core.currentJobEpochKey,
     bundleHash: world.identity.bundleHash,
     backendNamespace: world.namespace,
     settlementRefusalRecorder,

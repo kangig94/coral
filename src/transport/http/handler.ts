@@ -781,12 +781,18 @@ async function writeWaitSseEvent(
   event: WaitStreamEvent | { type: 'handover'; code: string; message: string },
   deadline: number,
   signal: AbortSignal,
+  deliveredJobIds: readonly string[] = [],
+  admittedJobIds: readonly string[] = [],
 ): Promise<boolean> {
   const cursor =
     'cursor' in event && event.cursor
       ? serializeWaitCursor(event.cursor)
       : event.type === 'progress' || event.type === 'terminal'
-        ? serializeWaitCursor({ afterSeq: event.seq })
+        ? serializeWaitCursor({
+            afterSeq: event.seq,
+            deliveredJobIds: [...deliveredJobIds],
+            admittedJobIds: [...admittedJobIds],
+          })
         : undefined;
   if (writeSseEvent(res, event.type, event, cursor)) return true;
   if (res.destroyed || res.writableEnded || signal.aborted) return false;
@@ -845,6 +851,7 @@ async function handleJobsWaitSubscription(
 
   const deadline = performance.now() + (request.timeoutSeconds ?? 600) * 1000;
   const controller = new AbortController();
+  const deliveredJobIds = new Set(headerCursor?.version === undefined ? headerCursor?.deliveredJobIds : []);
   const waitRequest: WaitStreamRequest = {
     ...request,
     ...(headerCursor === undefined ? {} : { cursor: headerCursor }),
@@ -880,6 +887,12 @@ async function handleJobsWaitSubscription(
 
   let closed = false;
   const iterator = execution.notifications[Symbol.asyncIterator]();
+  const handoverSignal = request.supportsHandover === true ? undefined : deps.jobs.waitHandoverSignal();
+  const refuseHandover = () => {
+    writeSseEvent(res, 'error', lifecycleRefusalResult);
+    res.end();
+    close();
+  };
   const close = () => {
     if (closed) {
       return;
@@ -888,10 +901,16 @@ async function handleJobsWaitSubscription(
     controller.abort();
     deps.events.removeResponse(res);
     req.off('close', close);
+    handoverSignal?.removeEventListener('abort', refuseHandover);
     void iterator.return?.(undefined).catch(() => undefined);
   };
   req.once('close', close);
   runOnResponseDone(res, close);
+  if (handoverSignal?.aborted) {
+    refuseHandover();
+    return;
+  }
+  handoverSignal?.addEventListener('abort', refuseHandover, { once: true });
 
   try {
     while (true) {
@@ -904,7 +923,9 @@ async function handleJobsWaitSubscription(
         break;
       }
 
-      if (!(await writeWaitSseEvent(res, next.value as WaitStreamEvent, deadline, controller.signal))) {
+      const event = next.value as WaitStreamEvent;
+      if (event.type === 'terminal') deliveredJobIds.add(event.jobId);
+      if (!(await writeWaitSseEvent(res, event, deadline, controller.signal, [...deliveredJobIds], request.jobIds))) {
         if (!res.destroyed && !res.writableEnded)
           writeSseEvent(res, 'error', {
             code: 'transient',
@@ -1165,6 +1186,7 @@ async function handleEventStream(
   };
   const writeOrClose = (event: string, payload: unknown): void => {
     if (!writeSseEvent(res, event, payload)) {
+      res.destroy();
       onClose();
     }
   };

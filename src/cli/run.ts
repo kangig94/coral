@@ -1,4 +1,4 @@
-import { WAIT_INVOCATION_CONTRACT_ARGUMENT } from '../infra/wait-invocation-context.js';
+import { WAIT_INVOCATION_CONTRACT_ARGUMENT } from './wait-invocation-context.js';
 import { handleExpansionCommanderFailure, isCommanderDisplayOnlyError } from './commands/expansion.js';
 import { emitError } from './emit.js';
 import { buildProgram, parseProgramWithHandoff } from './program.js';

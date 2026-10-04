@@ -70,7 +70,6 @@ function fixture(historical = false) {
       epochKey: () => (historical ? 'selected-other-epoch' : f.epochKey),
       detail: historical ? () => null : detail,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      waitStream: (request) => wait.waitForJobs(request),
       readWaitAdmission: (id, epochKey) => wait.readWaitAdmission(id, epochKey),
     },
     () => false,
@@ -370,7 +369,6 @@ describe('Phase D wait read purity (Revision S3)', () => {
         epochKey: () => 'next-epoch',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
       },
       () => false,
       () => 'decided',
@@ -434,7 +432,6 @@ describe('Phase D wait read purity (Revision S3)', () => {
         epochKey: () => null,
         detail: () => kb,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
       },
       () => false,
       () => 'pending',
@@ -451,6 +448,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const f = fixture();
     expect(Object.keys(f.index.readOnlyView()).sort()).toEqual([
       'read',
+      'readHistorical',
       'resultPathFor',
       'time',
       'unknownLocationHolds',

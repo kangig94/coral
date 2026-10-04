@@ -130,3 +130,95 @@ describe('workflow wait epoch cursor', () => {
     );
   });
 });
+
+import { ExecutionService } from '#src/coordinator/execution-service.js';
+import type { ExecutionServiceDeps } from '#src/coordinator/contracts.js';
+import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
+
+it('resumes recovery through ExecutionService and the real WaitCoordinator using the durable epoch cursor', async () => {
+  const f = createTerminalExportFixture();
+  try {
+    const seq = f.complete();
+    const ctx = { projectRoot: f.root } as InvocationContext;
+    const service = new ExecutionService(ctx, {
+      runtime: f.runtime,
+      progressStore: f.store,
+      backendNamespace: 'fixture',
+      launchCoordinator: { reservationFor: () => null, getActiveJobIds: () => [] },
+      eventBus: new TypedEventBus(),
+      coordinatorCommit: f.store.commit.bind(f.store),
+      loadJobProjectionDetail: f.store.loadJobProjectionDetail.bind(f.store),
+      readJobEvents: f.store.readJobEvents.bind(f.store),
+      aggregateWorkflowUsage: () => undefined,
+      subscribeJobEvents: async function* () {},
+      getCurrentJournalSeq: () => seq,
+      currentJobEpochKey: () => f.epochKey,
+      observeResultAvailability: () => ({ kind: 'failed', cause: 'repair-failed', retryScheduled: true }),
+    } as unknown as ExecutionServiceDeps);
+    const progress: string[] = [];
+    const results = await waitForAtoms(
+      [atom(f.jobId, 0)],
+      { waitStream: (req) => service.waitStream(req), abort: (ids) => service.abort(ids) } as WorkflowExecutionPort,
+      ctx,
+      {
+        time: f.runtime.time,
+        staleTimeoutMs: 0,
+        staleCheckIntervalMs: 1000,
+        staleAbortTimeoutMs: 1000,
+        drainDeadlineMs: 1000,
+        onProgress: (text) => progress.push(text),
+        initialState: {
+          cursor: {
+            version: 'jobs.wait.v2',
+            locations: { [f.jobId]: f.epochKey },
+            positions: { [f.epochKey]: seq - 1 },
+          },
+        },
+      },
+    );
+    expect(results.get('0:0')).toBe('canonical result');
+    expect(progress.some((text) => text.includes('membership changed'))).toBe(false);
+  } finally {
+    f.close();
+  }
+});
+
+it('a workflow child missing from the real reader fails its atom after one projection read', async () => {
+  const runtime = new SimulationRuntime();
+  const load = vi.fn(() => {
+    if (load.mock.calls.length > 1000) throw new Error('reader did not yield a disposition');
+    return { status: null, launch: null, runtime: null, exit: null };
+  });
+  const wait = new WaitCoordinator({
+    time: runtime.time,
+    eventBus: new TypedEventBus(),
+    sessionManager: { get: () => null } as never,
+    launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
+    loadJobProjectionDetail: load,
+    readJobEvents: () => [],
+    aggregateWorkflowUsage: () => undefined,
+    getCurrentJournalSeq: () => 0,
+    currentJobEpochKey: () => 'real-epoch',
+    resultJobsRoot: '/tmp/no-workflow-artifacts',
+    subscribeJobEvents: async function* () {},
+  });
+  await expect(
+    waitForAtoms(
+      [atom('missing-child', 0)],
+      {
+        waitStream: (request: Parameters<WorkflowExecutionPort['waitStream']>[0]) => wait.waitForOutcomes(request),
+        abort: vi.fn(),
+      } as unknown as WorkflowExecutionPort,
+      {} as InvocationContext,
+      {
+        time: runtime.time,
+        staleTimeoutMs: 0,
+        staleCheckIntervalMs: 1000,
+        staleAbortTimeoutMs: 1000,
+        drainDeadlineMs: 1000,
+        onProgress: () => {},
+      },
+    ),
+  ).rejects.toThrow('could not be read');
+  expect(load).toHaveBeenCalledTimes(1);
+});

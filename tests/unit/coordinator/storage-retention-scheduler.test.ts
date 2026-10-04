@@ -89,6 +89,20 @@ function fixture(f = createRetentionFixture()) {
 }
 
 describe('storage retention schedule', () => {
+  it('coalesces poll hints and honors the failed repair owner backoff', async () => {
+    const { f, scheduler } = fixture();
+    const repair = vi.spyOn(f.store.getResultExportOwner(), 'repairPass').mockImplementation(async (_ids, budget) => {
+      budget.record({ kind: 'failed', subject: 'job-pending', reason: 'ENOSPC' });
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 40; i++) {
+      f.store.getResultExportOwner().hintRepair('job-pending');
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    expect(repair).toHaveBeenCalledTimes(1);
+    expect(owners.exports).toHaveBeenCalledTimes(1);
+  });
   it('uses the wall-clock cutoff across idle restarts without a boot anchor', async () => {
     const first = fixture();
     first.f.setNow(first.f.runtime.time.now() + 30 * 86_400_000);

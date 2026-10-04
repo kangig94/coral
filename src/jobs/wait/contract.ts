@@ -18,7 +18,7 @@ export type WaitCursorV3 = {
 
 export type WaitCursor =
   | WaitCursorV3
-  | { version?: never; afterSeq: number; deliveredJobIds?: string[] }
+  | { version?: never; afterSeq: number; deliveredJobIds?: string[]; admittedJobIds?: string[] }
   | {
       version: 'jobs.wait.v2';
       positions: Record<string, number>;
@@ -167,5 +167,6 @@ export interface JobWaitPort {
   readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
   waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
+  waitForOutcomes?(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
 }

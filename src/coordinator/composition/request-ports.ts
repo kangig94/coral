@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
 import { historicalSourceReader } from '../../jobs/historical-reader.js';
-import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import { type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
@@ -32,7 +32,6 @@ export function createCoordinatorRequestPorts(input: {
   const {
     core,
     execution,
-    readOnlyProjectRoot,
     readOnlyInvocationContext,
     recoveryQuarantine,
     providerHostAdministration,
@@ -41,15 +40,7 @@ export function createCoordinatorRequestPorts(input: {
     expansion,
     probeHistoricalClosure,
   } = input;
-  const {
-    runtime,
-    world,
-    state,
-    jobLocationIndex,
-    currentJobEpochKey,
-    getProgressStore,
-    createSystemInvocationContext,
-  } = core;
+  const { runtime, world, state, jobLocationIndex, currentJobEpochKey, getProgressStore } = core;
   const { services, control, discuss } = execution;
   const activeJobDetail = (jobId: string) => {
     const progressStore = getProgressStore();
@@ -75,18 +66,6 @@ export function createCoordinatorRequestPorts(input: {
       readWaitAdmission: (jobId, epochKey) =>
         services.getExecutionService(readOnlyInvocationContext).readWaitAdmission?.(jobId, epochKey) ?? null,
       abort: control.abortJobs,
-      waitStream: (request) =>
-        services
-          .getExecutionService(
-            createSystemInvocationContext(
-              request.projectRoot === undefined
-                ? readOnlyProjectRoot
-                : canonicalWorkDirWireSchema.parse(request.projectRoot),
-              'coordinator-readonly',
-              readOnlyInvocationContext.coralEnv,
-            ),
-          )
-          .waitStream(request),
     },
     () =>
       [

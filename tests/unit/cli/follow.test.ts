@@ -1,0 +1,396 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { followJobs } from '#src/cli/follow.js';
+import { WaitInvocation } from '#src/cli/wait-invocation.js';
+import { waitEpochToken, waitJobHash, serializeWaitCursor } from '#src/jobs/wait/cursor.js';
+
+import { JobAddressing } from '#src/jobs/addressing.js';
+import { JobLocationIndex } from '#src/jobs/location-index.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
+
+{
+  const invocations: WaitInvocation[] = [];
+  afterEach(() => {
+    for (const invocation of invocations.splice(0)) invocation.dispose(true);
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+  function capture(): () => string {
+    let stdout = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      cb?: (e?: Error | null) => void,
+    ) => {
+      stdout += chunk.toString();
+      cb?.();
+      return true;
+    }) as typeof process.stdout.write);
+    return () => stdout;
+  }
+  function run(events: unknown[]) {
+    const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'live-job']);
+    invocations.push(budget);
+    const out = capture();
+    const save = vi.spyOn(budget, 'saveContinuation');
+    let delivered!: () => void;
+    const allDelivered = new Promise<void>((resolve) => (delivered = resolve));
+    const result = followJobs({
+      start: { kind: 'jobs', jobIds: ['live-job'], serializedCursor: serializeWaitCursor(cursor) },
+      reconnectPolicy: 'bounded',
+      invocation: budget,
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: () => {},
+      connect: async ({ signal }) => {
+        return {
+          kind: 'subscription',
+          subscription: {
+            close: async () => {},
+            async *[Symbol.asyncIterator]() {
+              for (const event of events) yield event;
+              delivered();
+              await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+            },
+          },
+        };
+      },
+    });
+    return { budget, out, result, allDelivered, save };
+  }
+  const cursor = {
+    version: 'jobs.wait.v3' as const,
+    epochs: [{ token: waitEpochToken('epoch'), watermark: 7, lineOffset: 0 }],
+    jobs: [{ hash: waitJobHash('live-job'), epoch: 0, flags: 0 }],
+  };
+  describe('CLI watchdog flush (server waiting event arrives after the 590 s CLI deadline)', () => {
+    it('clears omitted coverage on a server waiting event', async () => {
+      const r = run([
+        {
+          type: 'progress',
+          version: 'jobs.wait.v3',
+          jobId: 'live-job',
+          seq: 7,
+          message: 'working',
+          timing: {
+            origin: 'runtime',
+            originAt: '2026-10-04T00:00:00.000Z',
+            emittedAt: '2026-10-04T00:00:01.000Z',
+            elapsedMs: 1000,
+          },
+          epochKey: 'epoch',
+          cursor,
+        },
+        { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['live-job'], cursor, exitCode: 75 },
+      ]);
+      await r.result;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      r.budget.stop();
+      expect(r.out()).not.toContain('Carrier unconfirmed');
+      expect(r.save.mock.calls.at(-1)?.[0]).not.toContain('Carrier unconfirmed');
+    });
+    it('preserves the input cursor for an admitted silent job', async () => {
+      const r = run([]);
+      await r.allDelivered;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      r.budget.stop();
+      await r.result;
+      expect(r.out()).not.toContain('admission did not complete');
+      expect(r.out()).toContain(
+        `Still waiting on 1 job. Run coral-cli wait jobs live-job --cursor ${serializeWaitCursor(cursor)}`,
+      );
+      expect(r.out()).toContain(`(cursor: ${serializeWaitCursor(cursor)})`);
+    });
+  });
+  it('prints one continuation when the watchdog fires after bytes were written but before their callback', async () => {
+    const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'live-job']);
+    invocations.push(budget);
+    let stdout = '';
+    let delivered: (() => void) | undefined;
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      cb?: (error?: Error | null) => void,
+    ) => {
+      const text = chunk.toString();
+      stdout += text;
+      if (text.startsWith('Still waiting')) {
+        delivered = () => cb?.();
+        budget.stop();
+      } else {
+        delivered?.();
+        delivered = undefined;
+        cb?.();
+      }
+      return true;
+    }) as typeof process.stdout.write);
+    const result = await followJobs({
+      start: { kind: 'jobs', jobIds: ['live-job'] },
+      reconnectPolicy: 'bounded',
+      invocation: budget,
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: () => {},
+      connect: async () => ({
+        kind: 'subscription',
+        subscription: {
+          close: async () => {},
+          async *[Symbol.asyncIterator]() {
+            yield { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['live-job'], cursor, exitCode: 75 };
+          },
+        },
+      }),
+    });
+    expect(result).toBe(75);
+    expect(stdout.match(/Still waiting/g)).toHaveLength(1);
+  });
+  it('places the server deadline strictly inside the CLI budget', async () => {
+    let timeout = 0;
+    await followJobs({
+      start: { kind: 'jobs', jobIds: ['live-job'] },
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: () => {},
+      connect: async ({ timeoutSeconds }) => {
+        timeout = timeoutSeconds!;
+        return { kind: 'fatal-error', error: new Error('refused') };
+      },
+    });
+    expect(timeout).toBeGreaterThan(0);
+    expect(timeout).toBeLessThan(590);
+  });
+  it('does not open a server wait when less than one second of CLI budget remains', async () => {
+    const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'live-job']);
+    invocations.push(budget);
+    capture();
+    vi.spyOn(budget, 'remainingMs').mockReturnValue(900);
+    const connect = vi.fn(async () => {
+      budget.stop();
+      return { kind: 'fatal-error' as const, error: new Error('refused') };
+    });
+    const code = await followJobs({
+      start: { kind: 'jobs', jobIds: ['live-job'] },
+      invocation: budget,
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: () => {},
+      connect,
+    });
+    expect(code).toBe(75);
+    expect(connect).not.toHaveBeenCalled();
+  });
+}
+{
+  const invocations: WaitInvocation[] = [];
+  afterEach(() => {
+    for (const invocation of invocations.splice(0)) invocation.dispose(true);
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+  describe('all-refused v3 bounded wait', () => {
+    it('prints a settled line without a cursor when its only job is missing', async () => {
+      const runtime = new SimulationRuntime();
+      const index = new JobLocationIndex(runtime, '/coral');
+      const addressing = new JobAddressing(
+        index.readOnlyView(),
+        {
+          epochKey: () => 'epoch',
+          detail: () => null,
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        },
+        () => false,
+        () => 'pending',
+      );
+      const events: unknown[] = [];
+      for await (const event of addressing.waitStream({ jobIds: ['ghost'], supportsWaitV3: true, timeoutSeconds: 5 }))
+        events.push(event);
+      let stdout = '';
+      vi.spyOn(process.stdout, 'write').mockImplementation(((
+        chunk: string | Uint8Array,
+        cb?: (e?: Error | null) => void,
+      ) => {
+        stdout += chunk.toString();
+        cb?.();
+        return true;
+      }) as typeof process.stdout.write);
+      const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'ghost']);
+      invocations.push(budget);
+      const code = await followJobs({
+        start: { kind: 'jobs', jobIds: ['ghost'] },
+        reconnectPolicy: 'bounded',
+        invocation: budget,
+        projectRoot: '/project',
+        render: { isTTY: false, columns: 80, embed: false, verbose: false },
+        emitError: (e) => {
+          stdout += `ERROR ${String(e)}\n`;
+        },
+        connect: async () => ({
+          kind: 'subscription',
+          subscription: {
+            close: async () => {},
+            async *[Symbol.asyncIterator]() {
+              for (const e of events) yield e;
+            },
+          },
+        }),
+      });
+      vi.restoreAllMocks();
+      expect(
+        events.some(
+          (event) =>
+            (
+              event as {
+                type: string;
+              }
+            ).type === 'waiting',
+        ),
+      ).toBe(false);
+      expect(code).toBe(1);
+      expect(stdout).toContain('Wait complete; no jobs remain.');
+      expect(stdout).not.toContain('cursor:');
+      expect(stdout).not.toContain('Still waiting');
+    });
+  });
+}
+
+{
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  const timing = {
+    origin: 'runtime',
+    originAt: '2026-10-04T00:00:00.000Z',
+    emittedAt: '2026-10-04T00:00:01.000Z',
+    elapsedMs: 1000,
+  };
+  const cursor = (ack: number) => ({
+    version: 'jobs.wait.v3' as const,
+    epochs: [{ token: waitEpochToken('epoch'), watermark: 7, lineOffset: 0 }],
+    jobs: ack < 0 ? [] : [{ hash: waitJobHash('job-1'), epoch: 0, flags: ack }],
+  });
+
+  it('launch-and-follow (until-terminal) keeps following across a V3 waiting event', async () => {
+    let out = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation(((c: string | Uint8Array, cb?: (e?: Error | null) => void) => {
+      out += c.toString();
+      cb?.();
+      return true;
+    }) as typeof process.stdout.write);
+    let connects = 0;
+    const code = await followJobs({
+      start: {
+        kind: 'launch',
+        launchResult: { kind: 'accepted', jobId: 'job-1', sessionId: 's', provider: 'codex' } as never,
+      },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: (e) => {
+        out += `ERR ${String(e)}\n`;
+      },
+      abortJobs: async () => ({ aborted: [], notFound: [] }),
+      connect: async () => {
+        connects += 1;
+        const events =
+          connects === 1
+            ? [
+                {
+                  type: 'progress',
+                  version: 'jobs.wait.v3',
+                  jobId: 'job-1',
+                  seq: 7,
+                  message: 'line',
+                  timing,
+                  epochKey: 'epoch',
+                  cursor: cursor(0),
+                },
+                // what readWaitSession sends at its deadline or once the 500-line/64 KiB progress budget is spent
+                { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['job-1'], cursor: cursor(0), exitCode: 75 },
+              ]
+            : [
+                {
+                  type: 'terminal',
+                  version: 'jobs.wait.v3',
+                  jobId: 'job-1',
+                  seq: 9,
+                  remainingJobIds: [],
+                  result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+                  availability: { kind: 'available', resultPath: '/r.md' },
+                  resultPath: '/r.md',
+                  epochKey: 'epoch',
+                  cursor: cursor(-1),
+                  exitCode: 0,
+                },
+              ];
+        return {
+          kind: 'subscription',
+          subscription: {
+            close: async () => {},
+            async *[Symbol.asyncIterator]() {
+              for (const e of events) yield e as never;
+            },
+          },
+        };
+      },
+    });
+    expect(out).toContain('Job job-1 completed');
+    expect(connects).toBe(2);
+    expect(code).toBe(0);
+  });
+}
+
+it('separates TTY notice, disposition and artifact lines with trailing newlines', async () => {
+  const writes: string[] = [];
+  vi.spyOn(process.stdout, 'write').mockImplementation(((
+    chunk: string | Uint8Array,
+    callback?: (error?: Error | null) => void,
+  ) => {
+    writes.push(chunk.toString());
+    callback?.();
+    return true;
+  }) as typeof process.stdout.write);
+  try {
+    expect(
+      await followJobs({
+        start: { kind: 'jobs', jobIds: ['a'] },
+        reconnectPolicy: 'bounded',
+        projectRoot: '/project',
+        render: { isTTY: true, columns: 80, embed: false, verbose: false },
+        emitError: vi.fn(),
+        connect: async () => ({
+          kind: 'subscription',
+          subscription: {
+            close: async () => {},
+            async *[Symbol.asyncIterator]() {
+              yield { type: 'notice', version: 'jobs.wait.v3', message: 'notice text' };
+              yield { type: 'disposition', version: 'jobs.wait.v3', jobId: 'a', disposition: 'missing' };
+              yield {
+                type: 'artifact',
+                version: 'jobs.wait.v3',
+                jobId: 'a',
+                availability: { kind: 'failed', cause: 'repair-failed', retryScheduled: true },
+                remainingJobIds: [],
+                cursor: { version: 'jobs.wait.v3', epochs: [], jobs: [] },
+                exitCode: 1,
+              };
+              yield {
+                type: 'waiting',
+                version: 'jobs.wait.v3',
+                waitingJobIds: [],
+                cursor: { version: 'jobs.wait.v3', epochs: [], jobs: [] },
+                exitCode: 1,
+              };
+            },
+          },
+        }),
+      }),
+    ).toBe(1);
+    for (const fragment of writes.filter((text) => /notice text|Job a: missing|Result file unavailable/.test(text)))
+      expect(fragment.endsWith('\n')).toBe(true);
+    expect(writes.filter((text) => /notice text|Job a: missing|Result file unavailable/.test(text))).toHaveLength(3);
+  } finally {
+    vi.restoreAllMocks();
+  }
+});

@@ -29,20 +29,25 @@ beforeAll(async () => {
             builder.onResolve({ filter: /^#tools\// }, ({ path }) => ({
               path: join(root, path.replace('#tools/', 'tools/').replace(/\.js$/, '.ts')),
             }));
-            builder.onLoad({ filter: /(?:handler|dispatch|cursor|session|wait)\.ts$/ }, ({ path }) => {
+            builder.onLoad({ filter: /(?:handler|dispatch|cursor|session|wait|reader)\.ts$/ }, ({ path }) => {
               let source = readFileSync(path, 'utf8');
-              if (variant === 'unbounded-observer' && path.endsWith('/jobs/shell/wait.ts'))
+              if (variant === 'unbounded-observer' && path.endsWith('/jobs/wait/reader.ts'))
                 source = source.replace(
-                  'const timeout = timeoutWaiter.promise;',
-                  'const timeout = new Promise<never>(() => {});',
+                  'void observeCarriers(input, session, signal).finally(',
+                  'await observeCarriers(input, session, signal).finally(',
                 );
               if (variant === 'ungated-handover' && path.endsWith('/http/handler.ts')) {
                 source =
                   "import { raceWithSignal } from '../../infra/promise-signal.js';\n" +
-                  source.replace(
-                    'const next = await iterator.next();',
-                    "const next = await raceWithSignal(iterator.next(), deps.jobs.waitHandoverSignal(), () => ({ done: false, value: { type: 'handover' } }));",
-                  );
+                  source
+                    .replace(
+                      'const handoverSignal = request.supportsHandover === true ? undefined : deps.jobs.waitHandoverSignal();',
+                      'const handoverSignal = undefined;',
+                    )
+                    .replace(
+                      'const next = await iterator.next();',
+                      "const next = await raceWithSignal(iterator.next(), deps.jobs.waitHandoverSignal(), () => ({ done: false, value: { type: 'handover' } }));",
+                    );
               }
               if (variant === 'include-missing' && path.endsWith('/jobs/wait/session.ts'))
                 source = source.replace(

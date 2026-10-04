@@ -53,6 +53,8 @@ function snapshotJob(session: WaitSession, admission: WaitAdmission, notices: st
   if (disposition !== 'admitted') return row;
   row.epochToken = session.cursor([jobId]).epochs[0]?.token;
   row.phase = detail?.status.phase ?? 'unresolved';
+  if (admission.progressUnknown)
+    notices.push(`Earlier progress for ${jobId} could not be read; retry the continuation.`);
   if (admission.progressLost) notices.push(`earlier progress for ${jobId} is no longer kept`);
   if (detail?.exit) {
     row.availability = availability;
@@ -119,14 +121,20 @@ function selectSnapshotProgress(
   const available = session.progress();
   let selected: typeof available;
   if (lines !== undefined) {
-    let perJob = lines;
-    selected = lastLinesPerJob(available, perJob);
-    while (
-      perJob > 0 &&
-      (selected.length > WAIT_PROGRESS_LINES ||
-        selected.reduce((sum, line) => sum + Buffer.byteLength(line.text), 0) > WAIT_PROGRESS_BYTES)
-    )
-      selected = lastLinesPerJob(available, --perJob);
+    let low = 0;
+    let high = Math.min(lines, WAIT_PROGRESS_LINES);
+    const tails = lastLinesPerJob(available, high);
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      const candidate = lastLinesPerJob(tails, middle);
+      if (
+        candidate.length <= WAIT_PROGRESS_LINES &&
+        candidate.reduce((sum, line) => sum + Buffer.byteLength(line.text), 0) <= WAIT_PROGRESS_BYTES
+      )
+        low = middle;
+      else high = middle - 1;
+    }
+    selected = lastLinesPerJob(tails, low);
     if (selected.length < available.length)
       notices.push(`${available.length - selected.length} earlier progress lines were not shown.`);
     session.skipEarlierProgress();
@@ -178,8 +186,11 @@ function fitSnapshotResponse(
 
 function assertSnapshotFits(snapshot: unknown, session: WaitSession): void {
   if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) <= WAIT_SNAPSHOT_BYTES) return;
-  const jobId = session.jobIds[0];
-  const retry = `coral-cli wait jobs '${jobId.replaceAll("'", "'\\''")}' --now${session.input ? ` --cursor ${serializeWaitCursor(session.input)}` : ''}`;
+  const retries = session.jobIds.map(
+    (jobId) =>
+      `coral-cli wait jobs '${jobId.replaceAll("'", "'\\''")}' --now${session.input ? ` --cursor ${serializeWaitCursor(session.input)}` : ''}`,
+  );
+  const retry = retries.join('; ');
   throw new WaitSessionError(
     'wait_snapshot_too_large',
     `Snapshot identity metadata exceeds the response size budget. Retry a smaller job set: ${retry}. The input cursor has not advanced.`,

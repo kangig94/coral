@@ -92,7 +92,6 @@ const ports = {
   expansion: stub,
   recoveryQuarantine: stub,
   jobs: {
-    outcomeUnrecoverable: () => [],
     unknownJobDisposition: () => 'not-found',
     admitWait: (req) => req.jobIds.map((jobId) => ({ jobId, epochKey: 'epoch', disposition: scenario === 'missing' && jobId === 'ghost' ? 'missing' : 'admitted' })),
     validateWait: () => null,

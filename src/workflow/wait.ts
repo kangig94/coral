@@ -216,9 +216,29 @@ function handleWaitEvent(
 ): 'handled' | 'check-stale' {
   switch (event.type) {
     case 'notice':
-    case 'disposition':
     case 'artifact':
       return 'handled';
+    case 'disposition': {
+      if (event.disposition === 'discovery-unknown') return 'handled';
+      const atom = state.pending.get(event.jobId);
+      if (!atom) return 'handled';
+      state.pending.delete(event.jobId);
+      state.observedIdleMs.delete(atom.atomKey);
+      enterFailureDrain(
+        state,
+        executionSvc,
+        {
+          aborted: false,
+          message: `Step ${atom.stepIndex}, atom '${atom.agent}' could not be read: ${event.disposition}`,
+          failedStep: atom.stepIndex,
+          failedAtom: atom.agent,
+          failedJobId: event.jobId,
+          failedSlotId: atom.slotId,
+        },
+        options,
+      );
+      return 'handled';
+    }
     case 'queued': {
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
@@ -310,6 +330,7 @@ async function awaitWaitCycle(
     supportsWaitV3: true,
     timeoutSeconds,
     cursor: waitCursorForJobs(state.cursor, [...state.pending.keys()]),
+    abortSignal: options.signal,
   })) {
     advanceObservedWaitTime(state, options.time.monotonicNow(), observedCadenceMs);
     const eventOutcome = handleWaitEvent(event, state, executionSvc, options);

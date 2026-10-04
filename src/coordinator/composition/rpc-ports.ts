@@ -155,7 +155,6 @@ export function createCoordinatorRpcPorts({
       detail: (jobId) => jobAddressing.detail(jobId),
       unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
       unknownJobCaveat: () => jobAddressing.unknownJobCaveat(),
-      outcomeUnrecoverable: (jobIds) => jobAddressing.outcomeUnrecoverable(jobIds),
     },
     workflows: {
       execute: async (request, ctx, signal) => {

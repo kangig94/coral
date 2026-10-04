@@ -104,6 +104,7 @@ export type ExecutionServiceDeps = {
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
+  currentJobEpochKey?: () => string | null;
   observeResultAvailability?: (jobId: string) => ResultAvailability;
   hintResultRepair?: (jobId: string) => void;
   /** Tries to route an app-server operation through a live provider proxy set (W2.3). Optional because most

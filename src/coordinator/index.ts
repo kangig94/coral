@@ -899,6 +899,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
   core = createCoordinatorCore(
     {
       ...coreOptions,
+      jobLocationIndex: jobLocations,
       providerRegistry,
       providerHostAdmission: createCoordinatorProviderHostAdmission(),
       eventBus,

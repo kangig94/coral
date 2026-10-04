@@ -81,8 +81,7 @@ it('returns transient remediation with the unchanged command on a failed stream 
       envelope: expect.objectContaining({ code: 'transient', remediation: `Run ${budget.originalCommand}` }),
     }),
   );
-  expect(save).toHaveBeenCalledTimes(1);
-  expect(save.mock.calls[0][1]).not.toBe(true);
+  expect(save).not.toHaveBeenCalled();
 });
 
 it.each([
@@ -164,9 +163,6 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
       expect(frozen).toContain(`--cursor ${serializeWaitCursor(frontier)}`);
       expect(frozen).not.toContain('ghost');
       expect(frozen).toContain('Carrier unconfirmed for: a');
-    } else if (stall === 'silent') {
-      expect(frozen).toContain('Still waiting on 2 jobs.');
-      expect(frozen).not.toContain('admission did not complete');
     } else {
       expect(frozen).toContain('admission did not complete');
       expect(frozen).toContain('Run coral-cli wait jobs a ghost --cursor opaque');
@@ -205,7 +201,11 @@ it('a stdout drain cannot outlive the invocation or advance an undelivered curso
   let stdout = '';
   let waitingWrites = 0;
   vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array, callback?: () => void) => {
-    if (chunk.toString().includes('Still waiting') && ++waitingWrites > 1) stdout += chunk.toString();
+    if (
+      (chunk.toString().includes('Still waiting') || chunk.toString().includes('admission did not complete')) &&
+      ++waitingWrites > 1
+    )
+      stdout += chunk.toString();
     if (callback) callbacks.push(callback);
     return false;
   }) as typeof process.stdout.write);
@@ -231,7 +231,7 @@ it('a stdout drain cannot outlive the invocation or advance an undelivered curso
   const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
   await vi.advanceTimersByTimeAsync(10_000);
   expect(exit).toHaveBeenCalledWith(75);
-  expect(stdout).toContain(`Run coral-cli wait jobs a --cursor ${serializeWaitCursor({ afterSeq: 0 })}`);
+  expect(stdout).toContain('Run coral-cli wait jobs a ghost --cursor opaque');
   for (const callback of callbacks) callback();
   expect(stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
 });
@@ -369,4 +369,68 @@ it.each([
     .option('--embed')
     .option('--now');
   expect(waitInvocationMode(program, ['node', 'coral-cli', ...args])).toBe(mode);
+});
+
+it('interrupt before the first event preserves the original command without claiming admission', async () => {
+  const stdout = capture();
+  const budget = invocation();
+  const save = vi.spyOn(budget, 'saveContinuation');
+  const connect = async () => ({
+    kind: 'subscription' as const,
+    subscription: {
+      close: async () => {},
+      async *[Symbol.asyncIterator]() {
+        process.emit('SIGINT');
+        await new Promise<void>(() => {});
+      },
+    },
+  });
+  expect(
+    await followJobs({
+      start: { kind: 'jobs', jobIds: ['a', 'ghost'] },
+      reconnectPolicy: 'bounded',
+      invocation: budget,
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: vi.fn(),
+      connect,
+    }),
+  ).toBe(75);
+  expect(save).not.toHaveBeenCalled();
+  expect(stdout()).toContain(`Run ${budget.originalCommand}`);
+  expect(stdout()).not.toContain('Still waiting');
+});
+
+it('flushes acknowledged completion at the deadline without changing its exit to 75', async () => {
+  capture();
+  const budget = invocation();
+  budget.saveContinuation('No remaining jobs.\n', true);
+  vi.spyOn(budget, 'remainingMs').mockReturnValue(0);
+  budget.stop();
+  await expect(budget.flushOutput()).resolves.toBeUndefined();
+  expect(process.exitCode).not.toBe(75);
+});
+
+it('terminates a repeated cursor-reset refusal after retrying without the cursor once', async () => {
+  capture();
+  const budget = invocation();
+  const error = new Error('bad cursor', { cause: { code: 'wait_cursor_mismatch', message: 'bad cursor' } });
+  const connect = vi.fn(async () => {
+    if (connect.mock.calls.length > 3) throw new Error('cursor reset did not converge');
+    throw error;
+  });
+  const emitError = vi.fn();
+  expect(
+    await followJobs({
+      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: serializeWaitCursor({ afterSeq: 7 }) },
+      reconnectPolicy: 'bounded',
+      invocation: budget,
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError,
+      connect,
+    }),
+  ).toBe(1);
+  expect(connect).toHaveBeenCalledTimes(2);
+  expect(emitError).toHaveBeenCalledOnce();
 });

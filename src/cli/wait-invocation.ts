@@ -7,7 +7,7 @@ import {
   WAIT_INVOCATION_CONTEXT_ENV,
   type WaitInvocationHandoff,
   type WaitInvocationMode,
-} from '../infra/wait-invocation-context.js';
+} from './wait-invocation-context.js';
 
 const WAIT_BUDGET_MS = 590_000;
 const WAIT_CLEANUP_MS = 10_000;
@@ -154,15 +154,15 @@ export class WaitInvocation implements WaitInvocationHandoff {
   }
 
   async flushOutput(): Promise<void> {
-    await this.run(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          process.stdout.write('', (error) => {
-            if (error) reject(new WaitOutputError(error, this.originalCommand));
-            else resolve();
-          });
-        }),
-    );
+    const flush = () =>
+      new Promise<void>((resolve, reject) => {
+        process.stdout.write('', (error) => {
+          if (error) reject(new WaitOutputError(error, this.originalCommand));
+          else resolve();
+        });
+      });
+    if (this.continuationFlushed) await flush();
+    else await this.run(flush);
   }
 
   flushContinuation(force = false): void {

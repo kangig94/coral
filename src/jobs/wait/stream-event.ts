@@ -152,6 +152,7 @@ export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
       ]),
       retryScheduled: z.boolean(),
       ageUncertain: z.boolean().optional(),
+      unverifiedResultPath: z.string().min(1).optional(),
     })
     .strip(),
 ]);

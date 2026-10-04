@@ -84,7 +84,8 @@ export class JobWaitService {
   }
 
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    yield* this.deps.waitCoordinator.waitForJobs(req);
+    const wait = this.deps.waitCoordinator;
+    yield* wait.waitForOutcomes?.(req) ?? wait.waitForJobs(req);
   }
 
   async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult> {

@@ -22,10 +22,6 @@ export function readIntactJobTerminalAge(
   terminal: EventsRow,
   cutoff: number | null = null,
 ): number | 'unknown' | 'regression' {
-  if (cutoff !== null && Date.parse(terminal.ts) >= cutoff) return readJobTerminalAge(db, terminal);
-  const prefix = db
-    .prepare<[number], { count: number }>('SELECT COUNT(*) AS count FROM events WHERE seq < ?')
-    .get(terminal.seq);
-  if (prefix?.count !== terminal.seq - 1) return 'unknown';
+  if (cutoff === null) return 'unknown';
   return readJobTerminalAge(db, terminal);
 }

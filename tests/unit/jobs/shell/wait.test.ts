@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import type { JobEvent, JobStatus, JobTerminalEvent } from '#src/jobs/records.js';
-import { WaitCoordinator, type WaitCoordinatorDeps } from '#src/jobs/shell/wait.js';
+
+import { WaitCoordinator } from '#src/jobs/shell/wait.js';
+import type { WaitCoordinatorDeps } from '#src/jobs/shell/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -117,7 +119,6 @@ describe('WaitCoordinator', () => {
         readWaitAdmissions: (ids, epoch) => f.wait.readWaitAdmissions(ids, epoch),
         observeWaitCarriers: (ids, signal) => f.wait.observeWaitCarriers(ids, signal),
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: (request) => f.wait.waitForJobs(request),
       },
       () => false,
       () => 'pending',
@@ -156,7 +157,7 @@ describe('WaitCoordinator', () => {
       settled = true;
     });
     const assertion = expect(result).resolves.toMatchObject({ content: 'done' });
-    await flushMicrotasks(100);
+    await f.pollStarted;
     expect(settled).toBe(false);
     f.runtime.time.tick(250);
     await flushMicrotasks(30);
@@ -325,7 +326,11 @@ describe('WaitCoordinator', () => {
     const next = stream.next();
     await f.pollStarted;
     f.runtime.time.tick(1001);
-    expect((await next).value).toEqual({ type: 'waiting', waitingJobIds: ['job-1'], carrierUnknownJobIds: ['job-1'] });
+    expect((await next).value).toMatchObject({
+      type: 'waiting',
+      waitingJobIds: ['job-1'],
+      carrierUnknownJobIds: ['job-1'],
+    });
     await stream.return(undefined);
   });
 
@@ -336,7 +341,11 @@ describe('WaitCoordinator', () => {
     const next = stream.next();
     await f.pollStarted;
     f.runtime.time.tick(1001);
-    expect((await next).value).toEqual({ type: 'waiting', waitingJobIds: ['job-1'], carrierUnknownJobIds: ['job-1'] });
+    expect((await next).value).toMatchObject({
+      type: 'waiting',
+      waitingJobIds: ['job-1'],
+      carrierUnknownJobIds: ['job-1'],
+    });
     await stream.return(undefined);
     f.journal.push(f.terminal());
     expect(cursor).toEqual({ afterSeq: 0 });
@@ -344,4 +353,83 @@ describe('WaitCoordinator', () => {
     expect((await resumed.next()).value).toMatchObject({ type: 'terminal', seq: 1 });
     await resumed.return(undefined);
   });
+});
+{
+  describe('workflow readLaunchFailure uses the internal outcome reader', () => {
+    it('returns the launch failure even while its artifact is unavailable', async () => {
+      const runtime = new SimulationRuntime();
+      const status: JobStatus = {
+        jobId: 'job-1',
+        owner: { kind: 'provider-session', id: 'session-1' },
+        sessionId: 'session-1',
+        provider: 'codex',
+        projectRoot: '/project',
+        workDir: fixtureCanonicalWorkDir('/project'),
+        backendNamespace: 'test',
+        jobKind: 'provider',
+        phase: 'error',
+        updatedAt: new Date(runtime.time.now()).toISOString(),
+      };
+      const terminal: JobTerminalEvent = {
+        type: 'terminal',
+        jobId: 'job-1',
+        sessionId: 'session-1',
+        seq: 1,
+        ts: new Date(runtime.time.now()).toISOString(),
+        result: {
+          content: '',
+          durationMs: 0,
+          outcome: { kind: 'provider_exit', code: 2, note: 'auth failed' },
+        } as never,
+      };
+      const journal: JobEvent[] = [terminal];
+      const deps: WaitCoordinatorDeps = {
+        time: runtime.time,
+        eventBus: new TypedEventBus(),
+        sessionManager: {
+          get: () => ({ activeJobId: undefined, state: 'pending', providerContinuity: null }),
+        } as never,
+        launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
+        loadJobProjectionDetail: () =>
+          ({
+            status,
+            launch: null,
+            runtime: null,
+            exit: { ...terminal.result, endTime: terminal.ts, diagnostics: { progressFaults: [] } },
+          }) as never,
+        readJobEvents: () => journal,
+        aggregateWorkflowUsage: () => undefined,
+        getCurrentJournalSeq: () => 1,
+        resultJobsRoot: '/results',
+        observeResultAvailability: () => ({ kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true }),
+        subscribeJobEvents: () => ({ async *[Symbol.asyncIterator]() {} }),
+      };
+      const wait = new WaitCoordinator(deps);
+      let thrown: unknown;
+      const events: unknown[] = [];
+      try {
+        for await (const event of wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 1 })) {
+          events.push(event);
+        }
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeUndefined();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'terminal',
+          result: expect.objectContaining({ outcome: { kind: 'provider_exit', code: 2, note: 'auth failed' } }),
+        }),
+      );
+    });
+  });
+}
+
+it('a missing internal job is a failed outcome after one read, without re-entering the reader', async () => {
+  const f = fixture();
+  const load = vi.fn(() => ({ status: null, launch: null, runtime: null, exit: null }));
+  f.deps.loadJobProjectionDetail = load;
+  const wait = new WaitCoordinator(f.deps);
+  await expect(wait.waitStreamOnce('missing', 1000)).rejects.toThrow('missing');
+  expect(load).toHaveBeenCalledTimes(1);
 });

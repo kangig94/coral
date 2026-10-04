@@ -21,7 +21,7 @@ import { listJobProjections, loadJobProjectionDetail, readJobEvents } from './re
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
 import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } from './terminal/export.js';
-import type { JobLocationIndex, JobLocation } from './location-index.js';
+import { hasReadableTerminalDetail, type JobLocationIndex, type JobLocation } from './location-index.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
 import { readIntactJobTerminalAge } from './terminal-age.js';
 import { trustedJobRetentionCutoff } from './retention-clock.js';
@@ -567,15 +567,36 @@ export class JobStore implements JobProgressStore {
       jobsRoot: this.runtime.paths.coral.exports.jobsRoot,
       workflowReport: this.workflowReport,
       failures: this.exportLocations?.resultRepairFailures,
+      hydrationRetry: (jobId) => {
+        const location = this.exportLocations?.read(jobId);
+        return location
+          ? this.exportLocations?.unknownLocationHolds().find((hold) => hold.epochKey === location.epochKey)
+              ?.retryScheduled
+          : undefined;
+      },
       prepareTerminal: (jobId) => {
         const index = this.exportLocations;
         const location = index?.read(jobId);
-        if (!index || !location || location.detail.kind !== 'recorded' || location.terminalSeq === undefined) return;
-        const detail = location.detail.value;
-        const seq = location.terminalSeq;
-        withTerminalSource(this.runtime, location.epochKey, (db) =>
-          index.recordTerminal(jobId, detail, location.resultPath ?? index.resultPathFor(jobId), seq, db),
-        );
+        if (!index || !location || hasReadableTerminalDetail(location) || index.unknownLocationHold(location.epochKey))
+          return;
+        withTerminalSource(this.runtime, location.epochKey, (db) => {
+          const accepted = readAcceptedTerminal(db, jobId);
+          if (!accepted) return;
+          const projected = loadJobProjectionDetail(db, jobId, this);
+          if (!projected.status || !projected.exit) return;
+          index.recordTerminal(
+            jobId,
+            {
+              status: projected.status,
+              exit: projected.exit,
+              events: readJobEvents(db, jobId, this),
+              readiness: deriveLaunchReadiness(projected),
+            },
+            location.resultPath ?? index.resultPathFor(jobId),
+            accepted.seq,
+            db,
+          );
+        });
       },
       location: (jobId): JobLocation | null => {
         if (this.exportLocations) return this.exportLocations.read(jobId);

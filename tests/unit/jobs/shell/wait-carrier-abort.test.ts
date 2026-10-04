@@ -52,9 +52,9 @@ it.each(['direct', 'v2', 'live'])(
       } as never,
       {
         epochKey: () => 'epoch-1',
-        waitStream: (r) => wait.waitForJobs(r),
         observeWaitCarriers: (ids, signal) => wait.observeWaitCarriers(ids, signal),
         detail: () => null,
+        readWaitAdmission: (jobId, epochKey) => wait.readWaitAdmissions([jobId], epochKey)[0],
         abort: () => {
           throw new Error('unused');
         },

@@ -1,3 +1,4 @@
+import { admitted } from '#tests/helpers/wait-session.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -156,7 +157,6 @@ describe('job addressing across a process-owned epoch switch', () => {
           epochKey: () => activeEpochKey,
           detail: () => null,
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-          waitStream: async function* () {},
         },
         () => false,
         () => 'pending',
@@ -171,7 +171,7 @@ describe('job addressing across a process-owned epoch switch', () => {
         type: 'terminal',
         jobId: 'old-live',
         epochKey: oldEpochKey,
-        cursor: { positions: {}, deliveredJobIds: [] },
+        cursor: { positions: {}, deliveredJobIds: ['old-live'] },
         remainingJobIds: [],
       });
       await stream.return(undefined);
@@ -211,9 +211,8 @@ describe('job addressing across a process-owned epoch switch', () => {
         index,
         {
           epochKey: () => newEpochKey,
-          detail: () => null,
+          detail: (jobId) => (jobId === 'new-live' ? (admitted(jobId, [], false, newEpochKey).detail ?? null) : null),
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-          waitStream: async function* () {},
         },
         () => false,
         () => 'pending',

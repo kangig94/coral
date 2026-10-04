@@ -81,10 +81,9 @@ function ports(addressing?: JobAddressing): HttpHandlerPorts {
           waitStream: addressing.waitStream.bind(addressing),
           detail: addressing.detail.bind(addressing),
           unknownJobDisposition: addressing.unknownJobDisposition.bind(addressing),
-          outcomeUnrecoverable: addressing.outcomeUnrecoverable.bind(addressing),
           waitHandoverSignal: () => new AbortController().signal,
         }
-      : {},
+      : { waitHandoverSignal: () => new AbortController().signal },
   } as never;
 }
 
@@ -203,7 +202,6 @@ describe('actual wait carriage', () => {
         epochKey: () => 'other',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
       },
       () => false,
       () => 'decided',
@@ -512,7 +510,6 @@ describe('actual wait carriage', () => {
             readiness: 'ready',
           }) as JobDetailResponse,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
       },
       () => false,
       () => 'pending',

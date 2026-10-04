@@ -97,7 +97,6 @@ function createPorts(): HttpHandlerPorts {
       list: vi.fn(() => []),
       detail: vi.fn(() => null),
       unknownJobDisposition: vi.fn(() => 'not-found' as const),
-      outcomeUnrecoverable: vi.fn(() => []),
     },
     workflows: {
       execute: vi.fn(),

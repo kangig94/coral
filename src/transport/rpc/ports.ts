@@ -70,7 +70,6 @@ interface JobsRequestPort {
   detail(jobId: string): JobDetailLookup;
   unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown';
   unknownJobCaveat?(): string;
-  outcomeUnrecoverable(jobIds: readonly string[]): string[];
 }
 
 interface WorkflowRequestPort {

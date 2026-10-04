@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { WaitSession } from '#src/jobs/wait/session.js';
 import { parseWaitSnapshot, selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
@@ -189,4 +189,38 @@ it('bounds a default snapshot over 150000 recorded progress events without stack
   expect(snapshot.jobs[0].progress).toHaveLength(20);
   expect(snapshot.jobs[0].progress.at(-1)).toBe('line 149999');
   expect(snapshot.cursor.epochs[0].watermark).toBe(150000);
+});
+
+it('bounds --lines selection passes independently of the requested history size', () => {
+  const jobs = Array.from({ length: 128 }, (_, i) =>
+    admitted(
+      `cost-${i}`,
+      Array.from({ length: 2000 }, (_, n) => [i * 2000 + n + 1, 'line'] as [number, string]),
+      false,
+    ),
+  );
+  const filter = vi.spyOn(Array.prototype, 'filter');
+  try {
+    const snapshot = collect(jobs, 500);
+    expect(snapshot.jobs.every((job) => job.progress.length === 3)).toBe(true);
+    expect(filter.mock.calls.length).toBeLessThan(30);
+  } finally {
+    filter.mockRestore();
+  }
+});
+
+it('oversized snapshot remediation preserves every requested job and the input cursor', () => {
+  const jobs = [admitted('first'), admitted('second'), admitted('third')];
+  jobs[0].availability = { kind: 'available', resultPath: '/'.repeat(2 * 1024 * 1024) };
+  const session = new WaitSession(
+    jobs.map((job) => job.jobId),
+    { afterSeq: 0 },
+  );
+  session.reconcile(jobs);
+  try {
+    selectWaitSnapshot(session);
+    throw new Error('expected refusal');
+  } catch (error) {
+    for (const job of jobs) expect(String(error)).toContain(`wait jobs '${job.jobId}' --now --cursor`);
+  }
 });

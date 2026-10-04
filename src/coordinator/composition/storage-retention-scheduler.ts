@@ -40,6 +40,8 @@ export function createStorageRetentionScheduler(input: {
   let running = Promise.resolve();
   const outstandingOwners = new Map<string, Promise<void>>();
   let started = false;
+  let repairHinted = false;
+  let lastRepairRun = -1000n;
   const owners = new Map<string, { dailyDue: bigint; fastDue: bigint | null; outcomes: RetentionOutcome[] }>(
     [
       'exports',
@@ -107,6 +109,8 @@ export function createStorageRetentionScheduler(input: {
         dueOwners.add(subject);
       }
     }
+    const hintedOnly = repairHinted && dueOwners.size === 1 && dueOwners.has('result-repair');
+    repairHinted = false;
     let partial = false;
     const record = (outcome: RetentionOutcome, owner?: string, retained = false): void => {
       if (!retained || outcome.kind !== 'deleted')
@@ -280,9 +284,10 @@ export function createStorageRetentionScheduler(input: {
             if (!signal.aborted) mutate(() => saveCursor('exports', next));
             if (next !== '') budget.record({ kind: 'kept', subject: 'exports', reason: 'scan-pending' });
           });
-          await step('result-repair', (budget) =>
-            progressStore.getResultExportOwner().repairPass(input.jobLocations.jobIds(), budget),
-          );
+          await step('result-repair', (budget) => {
+            lastRepairRun = runtime.time.monotonicNow();
+            return progressStore.getResultExportOwner().repairPass(input.jobLocations.jobIds(), budget, hintedOnly);
+          });
           await step('journal-progress', async (budget) => {
             if ((await pruneJobProgress({ db, readCtx: progressStore, cutoff, afterSeq: 0, budget })) !== 0)
               budget.record({ kind: 'kept', subject: 'journal-progress', reason: 'scan-pending' });
@@ -368,9 +373,10 @@ export function createStorageRetentionScheduler(input: {
         if (owner && owner.dailyDue <= startedAt) owner.fastDue = runtime.time.monotonicNow() + 1000n;
       }
       const delay = nextDelay();
-      input.log(
-        `Storage retention ${status.phase}: deleted=${status.deleted}, kept=${status.kept}, failed=${status.failed}; next cycle in ${delay === DAILY_MS ? '24h' : `${Math.ceil(delay / 60_000)}m`}.\n`,
-      );
+      if (!hintedOnly)
+        input.log(
+          `Storage retention ${status.phase}: deleted=${status.deleted}, kept=${status.kept}, failed=${status.failed}; next cycle in ${delay === DAILY_MS ? '24h' : delay < 60_000 ? `${Math.ceil(delay / 1000)}s` : `${Math.ceil(delay / 60_000)}m`}.\n`,
+        );
     }
   };
   const schedule = (delay: number): void => {
@@ -393,11 +399,14 @@ export function createStorageRetentionScheduler(input: {
         ?.getResultExportOwner()
         .onRepairHint(() => {
           const owner = owners.get('result-repair');
-          if (owner) owner.fastDue = runtime.time.monotonicNow();
+          if (!owner || owner.fastDue !== null || outstandingOwners.has('result-repair')) return;
+          const now = runtime.time.monotonicNow();
+          owner.fastDue = now > lastRepairRun + 1000n ? now : lastRepairRun + 1000n;
+          repairHinted = true;
           if (timer !== null) {
             runtime.time.clearTimeout(timer);
             timer = null;
-            schedule(0);
+            schedule(nextDelay());
           }
         });
       schedule(0);

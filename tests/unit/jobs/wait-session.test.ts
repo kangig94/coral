@@ -1,7 +1,7 @@
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { WaitSession } from '#src/jobs/wait/session.js';
 import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
@@ -190,4 +190,90 @@ it('unrecorded versionless membership replays progress while keeping recorded te
   expect(session.progress().map((line) => line.text)).toEqual(['u2', 'a100']);
   expect(session.acknowledged('a')).toBe(true);
   expect(session.notices).toEqual([expect.stringContaining('membership changed')]);
+});
+
+it.each([
+  ['a', 'b'],
+  ['b', 'a'],
+])('internal replacement membership %j preserves the sibling frontier', (...jobIds) => {
+  const input = {
+    version: 'jobs.wait.v3' as const,
+    epochs: [{ token: waitEpochToken('real-epoch'), watermark: 10, lineOffset: 0 }],
+    jobs: [{ hash: waitJobHash('a'), epoch: 0, flags: 0 }],
+  };
+  const session = new WaitSession(jobIds, input, 'real-epoch', true);
+  session.reconcile(
+    jobIds.map((id) =>
+      admitted(
+        id,
+        id === 'a'
+          ? [
+              [5, 'old sibling'],
+              [10, 'consumed sibling'],
+            ]
+          : [[11, 'new member']],
+        false,
+        'real-epoch',
+      ),
+    ),
+  );
+  expect(session.progress().map((line) => line.text)).toEqual(['new member']);
+  expect(session.notices).toEqual([]);
+});
+
+it('reuses unread progress through idle polls and never splits consumed history', () => {
+  const jobs = Array.from({ length: 32 }, (_, i) =>
+    admitted(
+      `cost-${i}`,
+      Array.from({ length: 5000 }, (_, n) => [n + 1, 'cost line'] as [number, string]),
+      false,
+    ),
+  );
+  const input = {
+    version: 'jobs.wait.v2' as const,
+    locations: Object.fromEntries(jobs.map((job) => [job.jobId, 'epoch-E'])),
+    positions: { 'epoch-E': 4999 },
+  };
+  const session = new WaitSession(
+    jobs.map((job) => job.jobId),
+    input,
+  );
+  const split = vi.spyOn(String.prototype, 'split');
+  try {
+    for (let poll = 0; poll < 20; poll++) {
+      session.reconcile(jobs);
+      session.progress();
+      session.remaining();
+      session.cursor();
+    }
+    expect(split.mock.calls.filter((call) => (call[0] as unknown) === '\n').length).toBe(32);
+  } finally {
+    split.mockRestore();
+  }
+});
+
+it('versionless membership evidence never acknowledges a terminal before delivery', () => {
+  const job = admitted('a', [[1, 'received progress']]);
+  const session = new WaitSession(['a'], { afterSeq: 1, deliveredJobIds: [], admittedJobIds: ['a'] }, 'epoch-E');
+  session.reconcile([job]);
+  expect(session.progress()).toEqual([]);
+  expect(session.acknowledged('a')).toBe(false);
+  expect(selectWaitSnapshot(session).jobs[0].terminal).toBeDefined();
+});
+
+it('holds the shared progress frontier while one member history is unreadable', () => {
+  const a = admitted('a');
+  a.progressUnknown = true;
+  const b = admitted('b', [[5, 'sibling backlog']]);
+  const session = new WaitSession(['a', 'b']);
+  session.reconcile([a, b]);
+  const first = selectWaitSnapshot(session, 20);
+  expect(first.jobs[1].progress).toEqual([]);
+  expect(first.remainingJobIds).toEqual(['a', 'b']);
+  expect(first.cursor.epochs[0].watermark).toBe(0);
+  const resumed = new WaitSession(['a', 'b'], first.cursor);
+  resumed.reconcile([admitted('a', [[3, 'recovered backlog']]), b]);
+  const next = selectWaitSnapshot(resumed);
+  expect(next.jobs.map((job) => job.progress)).toEqual([['recovered backlog'], ['sibling backlog']]);
+  expect(next.remainingJobIds).toEqual([]);
 });

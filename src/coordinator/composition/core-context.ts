@@ -37,7 +37,9 @@ export function createCoordinatorCoreContext(options: CoordinatorCoreOptions) {
     return storeServices;
   };
   const getProgressStore = () => getStoreServices().progressStore;
-  const jobLocationIndex = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
+  const jobLocationIndex =
+    options.jobLocationIndex ??
+    new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
   const state = {
     retentionStatus: null as RetentionRunStatus | null,
     selectedStoreEpochKey: null as string | null,
