@@ -1,7 +1,7 @@
-import { decodeWaitCursor } from './wait-cursor.js';
-import { WaitSession, WaitSessionError, type WaitAdmission, type WaitSnapshot } from './wait-session.js';
-import { selectWaitSnapshot } from './wait-snapshot.js';
-import { readWaitSession } from './wait-reader.js';
+import { serializeWaitCursor, decodeWaitCursor } from './wait/cursor.js';
+import { WaitSession, WaitSessionError, type WaitAdmission, type WaitSnapshot } from './wait/session.js';
+import { selectWaitSnapshot } from './wait/snapshot.js';
+import { readWaitSession } from './wait/reader.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
 import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
@@ -10,7 +10,7 @@ import { hasReadableTerminalDetail, type JobLocationView, type JobLocation } fro
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse } from './records.js';
 import { type ResultAvailability } from './terminal/export.js';
-import { serializeWaitCursor, type WaitStreamEvent, type WaitStreamRequest, type WaitSnapshotRequest } from './wait.js';
+import { type WaitStreamEvent, type WaitStreamRequest, type WaitSnapshotRequest } from './wait/contract.js';
 
 export interface ActiveJobAccess {
   epochKey(): string | null;

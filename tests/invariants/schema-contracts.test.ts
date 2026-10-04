@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { jobAbortSchema, jobWaitSchema } from '#src/transport/rpc/jobs.js';
-import { MAX_WAIT_JOB_IDS } from '#src/jobs/wait-stream-event.js';
+import { jobAbortSchema, jobWaitSchema, jobWaitSnapshotSchema } from '#src/transport/rpc/jobs.js';
+import { MAX_WAIT_JOB_IDS } from '#src/jobs/wait/stream-event.js';
 import { sessionCreateSchema } from '#src/sessions/command-schemas.js';
 import { workflowRequestSchema } from '#src/transport/rpc/workflow.js';
 
@@ -22,6 +22,12 @@ describe('sessionCreateSchema', () => {
 });
 
 describe('jobWaitSchema', () => {
+  it.each([jobWaitSchema, jobWaitSnapshotSchema])('rejects duplicate membership at wait ingress', (schema) => {
+    expect(() => schema.parse({ jobIds: ['a', 'a'], projectRoot: '/tmp' })).toThrow(
+      'Each job ID must appear only once; remove duplicate job IDs.',
+    );
+  });
+
   it('bounds jobIds at the wait cap so one request cannot ask for an unbounded fan-out', () => {
     const atCap = Array.from({ length: MAX_WAIT_JOB_IDS }, (_unused, index) => `job-${index}`);
 

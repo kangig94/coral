@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
-import { type WaitStreamEvent } from '#src/jobs/wait.js';
+import { type WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';

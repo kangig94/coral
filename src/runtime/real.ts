@@ -1442,7 +1442,7 @@ function writeAtomicDurableSyncNode(
     try {
       if (ownsStage) unlinkSync(tempPath);
     } catch {
-      /* best effort */
+      // Owned-stage cleanup must not mask the publication outcome.
     }
   }
 }

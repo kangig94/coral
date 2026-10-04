@@ -1,8 +1,8 @@
-import { decodeSerializedWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait-cursor.js';
-import type { WaitCursor } from '../../jobs/wait.js';
-import { parseWaitSnapshot } from '../../jobs/wait-snapshot.js';
+import { decodeSerializedWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
+import type { WaitCursor } from '../../jobs/wait/contract.js';
+import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
 import { formatWaitSnapshot, formatWaitContinuation } from '../format/wait.js';
-import { serializeWaitCursor } from '../../jobs/wait.js';
+import { serializeWaitCursor } from '../../jobs/wait/cursor.js';
 import { mapWaitSubscriptionError } from '../wait-stream-error.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
 import { isRecord } from '../../infra/json.js';
@@ -18,7 +18,7 @@ import { getProviderNames, makeClient, type AbortOptions } from '../dispatch.js'
 import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
-import { UsageError, normalizeUsageError } from '../errors.js';
+import { UsageError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
 import { formatAbortResult, formatJobDetail, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { ABORT_REFUSED_EXIT_CODE, followJobs } from '../follow.js';
@@ -246,7 +246,15 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         response = await read();
       }
       invocation?.check();
-      const snapshot = parseWaitSnapshot(response, jobIds);
+      let snapshot;
+      try {
+        snapshot = parseWaitSnapshot(response, jobIds);
+      } catch {
+        throw new WaitSnapshotResponseError(
+          invocation?.originalCommand ??
+            `coral-cli wait jobs ${jobIds.join(' ')} --now${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        );
+      }
       const output = formatWaitSnapshot(snapshot) + '\n';
       const write = () =>
         new Promise<void>((resolve, reject) =>
@@ -284,17 +292,27 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
   }
 
   const waitCommand = program.command('wait');
-  waitCommand.description('Stream job progress (text output)');
+  waitCommand.description(
+    'Monitor jobs until the first terminal or ~590 s, then return a continuation; --now returns immediately',
+  );
 
   const waitJobsCommand = waitCommand.command('jobs');
   waitJobsCommand
-    .description('Stream job progress for one or more jobs')
+    .description(
+      'Monitor jobs until the first terminal or ~590 s, then return a continuation; --now returns immediately',
+    )
     .argument('<jobIds...>', 'Job IDs')
     .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
-    .option('--now', 'Read an immediate snapshot; drop --now from its continuation for a blocking wait')
+    .option(
+      '--now',
+      'Read an immediate snapshot; continuations keep --now; drop it explicitly to switch to a blocking wait',
+    )
     .option('--lines <N>', 'Most recent progress lines per job with --now (1..500, default 20; no cursor)')
-    .option('--embed', 'Embed terminal result content when size permits; artifact availability is reported separately')
-    .option('--verbose', 'Show detailed usage breakdown on terminal events')
+    .option(
+      '--embed',
+      'Embed terminal result content when size permits; artifact availability is reported separately (cannot use with --now)',
+    )
+    .option('--verbose', 'Show detailed usage breakdown on terminal events (cannot use with --now)')
     .addHelpText(
       'after',
       '\nThe first failed terminal in request order keeps its mapped exit code, even with pending siblings.\n' +

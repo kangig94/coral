@@ -1202,34 +1202,52 @@ async function recordTerminal(
   );
 }
 
-function supportsWaitInvocation(target: string, invocation: WaitInvocationHandoff): Promise<boolean> {
+function supportsWaitInvocation(target: string, invocation: WaitInvocationHandoff, runtime: Runtime): Promise<boolean> {
   return new Promise((resolveContract) => {
+    let cancelling = false;
+    const finish = (supported: boolean) => {
+      runtime.time.clearTimeout(timeout);
+      invocation.signal.removeEventListener('abort', cancel);
+      resolveContract(supported);
+    };
     const child = execFile(
       process.execPath,
       [target, WAIT_INVOCATION_CONTRACT_ARGUMENT],
-      {
-        timeout: Math.max(1, Math.min(3_000, Math.ceil(invocation.remainingMs()))),
-        killSignal: 'SIGKILL',
-        maxBuffer: 1024,
-        signal: invocation.signal,
-        env: { ...process.env },
-      },
+      { maxBuffer: 1024, env: { ...process.env } },
       (error, stdout) => {
-        if (error) {
-          resolveContract(false);
-          return;
-        }
+        if (cancelling) return;
+        if (error) return finish(false);
         try {
           const contract: unknown = JSON.parse(stdout);
-          resolveContract(isRecord(contract) && contract.version === 1 && contract.monitorOnly === true);
+          finish(isRecord(contract) && contract.version === 1 && contract.monitorOnly === true);
         } catch {
-          resolveContract(false);
+          finish(false);
         }
       },
     );
-    const cancel = () => child.kill('SIGKILL');
+    const cancel = () => {
+      if (cancelling) return;
+      cancelling = true;
+      runtime.time.clearTimeout(timeout);
+      const termination = gracefulKill(
+        child as ChildProcessLike,
+        {
+          time: {
+            clearTimeout: runtime.time.clearTimeout,
+            setTimeout: (callback, delay) =>
+              runtime.time.setTimeout(
+                callback,
+                Math.max(0, Math.min(delay, 750, invocation.cleanupRemainingMs() - 50)),
+              ),
+          },
+        },
+        runtime.process.observeLiveness,
+      );
+      if ('settlement' in termination) void termination.settlement.then(() => finish(false));
+      else finish(false);
+    };
+    const timeout = runtime.time.setTimeout(cancel, Math.max(1, Math.min(3_000, Math.ceil(invocation.remainingMs()))));
     invocation.signal.addEventListener('abort', cancel, { once: true });
-    child.once('close', () => invocation.signal.removeEventListener('abort', cancel));
     if (invocation.signal.aborted) cancel();
   });
 }
@@ -1333,7 +1351,7 @@ async function executeResolvedHandoff(
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : CLI_BUNDLE_FILE;
       const target = join(execution.bundleDir, executable);
       execution.assertExecutable();
-      if (waitInvocation !== undefined && !(await supportsWaitInvocation(target, waitInvocation))) {
+      if (waitInvocation !== undefined && !(await supportsWaitInvocation(target, waitInvocation, runtime))) {
         throw new WaitInvocationReadinessError(waitInvocation.originalCommand);
       }
       if (signal?.aborted) throw signal.reason;

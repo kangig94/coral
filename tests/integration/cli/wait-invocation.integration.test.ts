@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import ts from 'typescript';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { serializeWaitCursor } from '#src/jobs/wait.js';
+import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'coral-wait-invocation-'));
 const root = resolve('.');

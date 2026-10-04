@@ -142,6 +142,7 @@ export type ResultAvailability =
 export class TerminalResultExportOwner {
   private readonly failures: Set<string>;
   private readonly hints = new Set<string>();
+  private repairScan: Iterator<string> | undefined;
   private hintListener: (() => void) | null = null;
 
   private readonly input: Readonly<{
@@ -157,6 +158,7 @@ export class TerminalResultExportOwner {
   constructor(input: TerminalResultExportOwner['input']) {
     this.input = input;
     this.failures = input.failures ?? new Set<string>();
+    for (const jobId of this.failures) this.hints.add(jobId);
   }
 
   private eligibility(jobId: string): TerminalEligibility {
@@ -280,6 +282,7 @@ export class TerminalResultExportOwner {
       this.failures.delete(jobId);
     } catch (error) {
       this.failures.add(jobId);
+      this.hints.add(jobId);
       throw error;
     }
     return targetPath;
@@ -295,20 +298,36 @@ export class TerminalResultExportOwner {
     this.hintListener = listener;
   }
 
-  async repairPass(jobIds: readonly string[], budget: RetentionRunBudget): Promise<void> {
-    const ids = new Set([...this.hints, ...jobIds]);
-    for (const jobId of ids) {
-      if (!budget.canContinue()) break;
-      this.hints.delete(jobId);
-      const state = this.observeResultAvailability(jobId);
-      if (state.kind !== 'repair-pending' && !(state.kind === 'failed' && state.retryScheduled)) continue;
-      try {
-        if (budget.canMutate?.() !== false) this.ensureResultMarkdownArtifact(jobId);
-      } catch (error) {
-        budget.record({ kind: 'failed', subject: jobId, reason: errorMessage(error) });
+  async repairPass(jobIds: Iterable<string>, budget: RetentionRunBudget): Promise<void> {
+    this.repairScan ??= jobIds[Symbol.iterator]();
+    for (const jobId of [...this.hints]) {
+      if (!budget.canContinue()) {
+        budget.record({ kind: 'kept', subject: 'result-repair', reason: 'scan-pending' });
+        return;
       }
-      await setImmediate();
+      this.hints.delete(jobId);
+      await this.repairCandidate(jobId, budget);
     }
+    while (budget.canContinue()) {
+      const next = this.repairScan.next();
+      if (next.done) {
+        this.repairScan = undefined;
+        return;
+      }
+      await this.repairCandidate(next.value, budget);
+    }
+    budget.record({ kind: 'kept', subject: 'result-repair', reason: 'scan-pending' });
+  }
+
+  private async repairCandidate(jobId: string, budget: RetentionRunBudget): Promise<void> {
+    const state = this.observeResultAvailability(jobId);
+    if (state.kind !== 'repair-pending' && !(state.kind === 'failed' && state.retryScheduled)) return;
+    try {
+      if (budget.canMutate?.() !== false) this.ensureResultMarkdownArtifact(jobId);
+    } catch (error) {
+      budget.record({ kind: 'failed', subject: jobId, reason: errorMessage(error) });
+    }
+    await setImmediate();
   }
 }
 

@@ -19,3 +19,10 @@ it('checks snapshot syntax at the invocation boundary before preflight or reques
   for (const lines of ['0', '501', '1.1', 'not-a-number'])
     expect(() => validateWaitJobsOptions({ now: true, lines })).toThrow('--lines must be an integer');
 });
+
+it.each(['embed', 'verbose'] as const)('rejects --now with --%s before requesting a snapshot', (option) => {
+  expect(() => validateWaitJobsOptions({ now: true, [option]: true })).toThrow(
+    '--now cannot be used with --embed or --verbose',
+  );
+  expect(() => validateWaitJobsOptions({ [option]: true })).not.toThrow();
+});

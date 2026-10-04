@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { WaitInvocation, WaitInvocationEnded } from './wait-invocation.js';
-import { decodeSerializedWaitCursor, waitJobHash, WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait-cursor.js';
+import { decodeSerializedWaitCursor, waitJobHash, WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait/cursor.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
@@ -9,8 +9,9 @@ import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStatus, JobTerminal } from '../jobs/records.js';
-import { serializeWaitCursor, waitCursorForJobs, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
-import { advanceWaitRenderCursor, isWaitHandoverNotice, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
+import { type WaitCursor, type WaitStreamEvent } from '../jobs/wait/contract.js';
+import { serializeWaitCursor, waitCursorForJobs } from '../jobs/wait/cursor.js';
+import { advanceWaitRenderCursor, isWaitHandoverNotice, parseWaitStreamEventValue } from '../jobs/wait/stream-event.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
 import { jobsWaitRequest } from '../transport/rpc/jobs.js';
 import { BackendUnreachableError, isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
@@ -33,7 +34,6 @@ import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handof
 import { mapWaitSubscriptionError } from './wait-stream-error.js';
 import {
   formatWaitProgress,
-  formatResultAvailability,
   formatWaitContinuation,
   formatWaitQueued,
   formatWaitTerminal,
@@ -42,6 +42,7 @@ import {
   renderWaitLine,
   type WaitRenderContext,
 } from './format/wait.js';
+import { formatResultAvailability } from './format/result-availability.js';
 
 /**
  * A bounded wait has to finish inside the Bash tool's hard ceiling, which `clients/hooks/bash-rewrite.mjs`

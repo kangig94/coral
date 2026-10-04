@@ -4,7 +4,8 @@ import type * as FollowModule from '#src/cli/follow.js';
 import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
 import type * as HandoffRunnerModule from '#src/coordinator/handoff-routing/runner.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
-import { serializeWaitCursor, type WaitStreamEvent } from '#src/jobs/wait.js';
+import { type WaitStreamEvent } from '#src/jobs/wait/contract.js';
+import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const mockState = vi.hoisted(() => ({

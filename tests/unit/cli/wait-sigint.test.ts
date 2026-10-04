@@ -2,9 +2,9 @@ import { Command } from 'commander';
 import { afterEach, expect, it, vi } from 'vitest';
 import { followJobs } from '#src/cli/follow.js';
 import { WaitInvocation, waitInvocationMode } from '#src/cli/wait-invocation.js';
-import { serializeWaitCursor } from '#src/jobs/wait.js';
+import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { IpcRequestTimeout } from '#src/transport/ipc/client.js';
-import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait-cursor.js';
+import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait/cursor.js';
 
 const invocations: WaitInvocation[] = [];
 afterEach(() => {

@@ -42,12 +42,13 @@ const mockState = vi.hoisted(() => ({
   readBuildFlavor: vi.fn(),
   resolveStrictBundleIdentity: vi.fn(),
   spawn: vi.fn(),
+  execFile: vi.fn(),
   publishGenerationCoordinatedHandoffRoutingTransitions: vi.fn(),
 }));
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual('node:child_process');
-  return { ...actual, spawn: mockState.spawn };
+  return { ...actual, spawn: mockState.spawn, execFile: mockState.execFile };
 });
 
 vi.mock('#src/infra/plugin-identity.js', () => ({ pluginRootNamespace: () => 'handoff-runner' }));
@@ -260,6 +261,60 @@ afterEach(() => {
 });
 
 describe('handoff-routing/runner', () => {
+  it.each(['timeout', 'abort'] as const)(
+    'terminates a hung wait capability probe gracefully on %s and never escalates unknown life',
+    async (trigger) => {
+      for (const liveness of ['alive', 'unknown'] as const) {
+        vi.useFakeTimers();
+        vi.spyOn(runtime.time, 'setTimeout').mockImplementation((callback, delay) => setTimeout(callback, delay));
+        vi.spyOn(runtime.time, 'clearTimeout').mockImplementation((handle) => clearTimeout(handle as NodeJS.Timeout));
+        const observe = vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue(liveness);
+        const controller = new AbortController();
+        const child = childThatStaysAlive();
+        child.kill = vi.fn((signal) => {
+          if (signal === 'SIGKILL') child.emit('close', null, signal);
+          return true;
+        });
+        const started = deferred();
+        mockState.execFile.mockImplementation(() => {
+          started.resolve();
+          return child;
+        });
+        const result = runHandoff(cliOperation('wait', 'jobs', 'a'), {
+          pluginRoot: '/plugin/root',
+          waitInvocation: {
+            mode: 'bounded',
+            signal: controller.signal,
+            originalCommand: 'coral-cli wait jobs a',
+            remainingMs: () => 10000,
+            cleanupRemainingMs: () => 1000,
+            saveContinuation: vi.fn(),
+          },
+        });
+        void result.catch(() => undefined);
+        await started.promise;
+        const options = mockState.execFile.mock.calls.at(-1)![2];
+        expect(options).not.toHaveProperty('killSignal');
+        expect(options).not.toHaveProperty('signal');
+        expect(options).not.toHaveProperty('timeout');
+        if (trigger === 'abort') controller.abort();
+        else await vi.advanceTimersByTimeAsync(3000);
+        expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+        await vi.advanceTimersByTimeAsync(749);
+        expect(child.kill).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(observe).toHaveBeenCalledWith(SPAWNED_CHILD_PID);
+        expect(vi.mocked(child.kill).mock.calls.map(([signal]) => signal)).toEqual(
+          liveness === 'alive' ? ['SIGTERM', 'SIGKILL'] : ['SIGTERM'],
+        );
+        await expect(result).rejects.toThrow('cannot preserve this monitor invocation budget');
+        expect(mockState.spawn).not.toHaveBeenCalled();
+        observe.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('should commit selection before execution and finalize with its committed sequence', async () => {
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     mockState.publishGenerationCoordinatedHandoffRoutingTransitions

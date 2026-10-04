@@ -14,7 +14,7 @@ import type {
 } from '../jobs/launch.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, LaunchReadiness } from '../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
-import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait/contract.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { CanonicalWorkflowCommand } from '../workflow/compile.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';

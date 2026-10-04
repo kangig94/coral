@@ -2,11 +2,21 @@ import { JobAddressing } from '#src/jobs/addressing.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { describe, expect, it } from 'vitest';
-import { WaitSession } from '#src/jobs/wait-session.js';
-import { waitEpochToken, waitJobHash } from '#src/jobs/wait-cursor.js';
-import { selectWaitSnapshot } from '#src/jobs/wait-snapshot.js';
+import { WaitSession } from '#src/jobs/wait/session.js';
+import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 
 describe('wait session', () => {
+  it('rejects identical repeated job IDs before constructing a cursor', () => {
+    expect(() => new WaitSession(['a', 'a'])).toThrow('Each job ID must appear only once');
+  });
+
+  it('sorts unknown carrier IDs independently of admission order', () => {
+    const session = new WaitSession(['z', 'a']);
+    session.reconcile([admitted('z', [], false), admitted('a', [], false)]);
+    expect(session.unknownCarriers()).toEqual(['a', 'z']);
+  });
+
   it('consumes an epoch prefix without skipping an interleaved sibling or hiding its terminal', () => {
     const session = new WaitSession(['a', 'b']);
     session.reconcile([

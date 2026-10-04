@@ -1,10 +1,10 @@
-import type { WaitSnapshotRequest } from '../jobs/wait.js';
+import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
-import type { WaitCursor, WaitHandoverNotice, WaitStreamEvent } from '../jobs/wait.js';
+import type { WaitCursor, WaitHandoverNotice, WaitStreamEvent } from '../jobs/wait/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import {
   canonicalizeWorkDir,

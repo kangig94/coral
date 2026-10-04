@@ -1,8 +1,8 @@
-import type { JobDetailResponse, JobProgressEvent, JobTerminal } from './records.js';
-import type { ContinuitySnapshot } from '../sessions/continuity.js';
-import type { ResultAvailability } from './terminal/export.js';
-import type { WaitCursor, WaitCursorV3, WaitStreamEvent } from './wait.js';
-import { UNRESOLVED_EPOCH, waitEpochToken, waitJobHash } from './wait-cursor.js';
+import type { JobDetailResponse, JobProgressEvent, JobTerminal } from '../records.js';
+import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { ResultAvailability } from '../terminal/export.js';
+import type { WaitCursor, WaitCursorV3, WaitStreamEvent } from './contract.js';
+import { ACKNOWLEDGED_FLAG, ARTIFACT_PENDING_FLAG, UNRESOLVED_EPOCH, waitEpochToken, waitJobHash } from './cursor.js';
 
 export type WaitDisposition =
   | 'admitted'
@@ -100,11 +100,20 @@ export class WaitSession {
     this.jobIds = jobIds;
     this.input = input;
     this.activeEpochKey = activeEpochKey;
-    if (new Set(jobIds.map(waitJobHash)).size !== new Set(jobIds).size)
-      throw new WaitSessionError('wait_cursor_mismatch', 'Conflicting job identities');
+    if (new Set(jobIds.map(waitJobHash)).size !== jobIds.length)
+      throw new WaitSessionError(
+        'wait_cursor_mismatch',
+        'Each job ID must appear only once; remove duplicate or conflicting job IDs.',
+      );
   }
 
   reconcile(admissions: WaitAdmission[]): void {
+    this.validateEpochTokens(admissions);
+    this.admissions = admissions;
+    for (const admission of admissions) this.reconcileMember(admission);
+  }
+
+  private validateEpochTokens(admissions: WaitAdmission[]): void {
     const tokens = new Map<string, string>();
     for (const admission of admissions) {
       if (!admission.epochKey) continue;
@@ -114,80 +123,92 @@ export class WaitSession {
         throw new WaitSessionError('wait_cursor_mismatch', 'Ambiguous epoch token');
       tokens.set(token, admission.epochKey);
     }
-    this.admissions = admissions;
-    for (const admission of admissions) {
-      const { jobId, epochKey, disposition } = admission;
-      if (disposition !== 'admitted' || epochKey === undefined) {
-        if (!this.members.has(jobId)) this.members.set(jobId, { acknowledged: false, artifactPending: false });
-        continue;
-      }
-      const previous = this.members.get(jobId);
-      if (previous?.epochKey === epochKey) continue;
-      const token = waitEpochToken(epochKey);
-      const inputJob =
-        this.input?.version === 'jobs.wait.v3'
-          ? this.input.jobs.find((job) => job.hash === waitJobHash(jobId))
-          : undefined;
-      const inputEpoch =
-        this.input?.version === 'jobs.wait.v3' && inputJob && inputJob.epoch !== UNRESOLVED_EPOCH
-          ? this.input.epochs[inputJob.epoch]
-          : undefined;
-      if (inputEpoch && inputEpoch.token !== token)
-        throw new WaitSessionError('wait_cursor_mismatch', `Job ${jobId} changed epoch identity`);
-      const legacy = this.input?.version !== 'jobs.wait.v3' ? this.input : undefined;
-      if (
-        legacy?.version === 'jobs.wait.v2' &&
+  }
+
+  private inputMembership(jobId: string, epochKey: string) {
+    const token = waitEpochToken(epochKey);
+    const inputJob =
+      this.input?.version === 'jobs.wait.v3'
+        ? this.input.jobs.find((job) => job.hash === waitJobHash(jobId))
+        : undefined;
+    const inputEpoch =
+      this.input?.version === 'jobs.wait.v3' && inputJob && inputJob.epoch !== UNRESOLVED_EPOCH
+        ? this.input.epochs[inputJob.epoch]
+        : undefined;
+    const legacy = this.input?.version !== 'jobs.wait.v3' ? this.input : undefined;
+    if (
+      (inputEpoch && inputEpoch.token !== token) ||
+      (legacy?.version === 'jobs.wait.v2' &&
         legacy.locations[jobId] !== undefined &&
-        legacy.locations[jobId] !== epochKey
-      )
-        throw new WaitSessionError('wait_cursor_mismatch', `Job ${jobId} changed epoch identity`);
-      const unchanged =
-        inputEpoch !== undefined ||
-        (legacy?.version === 'jobs.wait.v2' && legacy.locations[jobId] === epochKey) ||
+        legacy.locations[jobId] !== epochKey)
+    )
+      throw new WaitSessionError('wait_cursor_mismatch', `Job ${jobId} changed epoch identity`);
+    const unchanged =
+      inputEpoch !== undefined ||
+      (legacy?.version === 'jobs.wait.v2' && legacy.locations[jobId] === epochKey) ||
+      (legacy?.version === undefined &&
+        legacy !== undefined &&
+        epochKey === this.activeEpochKey &&
+        (legacy.afterSeq === 0 || legacy.deliveredJobIds?.includes(jobId) === true));
+    const inputPosition =
+      inputEpoch ??
+      (legacy?.version === 'jobs.wait.v2' && legacy.positions[epochKey] !== undefined
+        ? { watermark: legacy.positions[epochKey], lineOffset: 0 }
+        : legacy?.version === undefined && legacy !== undefined
+          ? { watermark: legacy.afterSeq, lineOffset: 0 }
+          : undefined);
+    return { token, inputJob, legacy, unchanged, inputPosition };
+  }
+
+  private reconcileEpoch(jobId: string, epochKey: string, input: ReturnType<WaitSession['inputMembership']>): void {
+    const { token, legacy, unchanged, inputPosition } = input;
+    if (!this.epochs.has(epochKey))
+      this.epochs.set(epochKey, {
+        token,
+        watermark: unchanged ? (inputPosition?.watermark ?? 0) : 0,
+        lineOffset: unchanged ? (inputPosition?.lineOffset ?? 0) : 0,
+      });
+    const affected =
+      !unchanged &&
+      ((this.epochs.get(epochKey)?.watermark ?? 0) > 0 ||
+        (this.input?.version === 'jobs.wait.v3' && this.input.epochs.some((epoch) => epoch.token === token)) ||
+        (legacy?.version === 'jobs.wait.v2' && legacy.positions[epochKey] !== undefined) ||
         (legacy?.version === undefined &&
           legacy !== undefined &&
-          epochKey === this.activeEpochKey &&
-          (legacy.afterSeq === 0 || legacy.deliveredJobIds?.includes(jobId) === true));
-      const inputPosition =
-        inputEpoch ??
-        (legacy?.version === 'jobs.wait.v2' && legacy.positions[epochKey] !== undefined
-          ? { watermark: legacy.positions[epochKey], lineOffset: 0 }
-          : legacy?.version === undefined && legacy !== undefined
-            ? { watermark: legacy.afterSeq, lineOffset: 0 }
-            : undefined);
-      if (!this.epochs.has(epochKey))
-        this.epochs.set(epochKey, {
-          token,
-          watermark: unchanged ? (inputPosition?.watermark ?? 0) : 0,
-          lineOffset: unchanged ? (inputPosition?.lineOffset ?? 0) : 0,
-        });
-      const affected =
-        !unchanged &&
-        ((this.epochs.get(epochKey)?.watermark ?? 0) > 0 ||
-          (this.input?.version === 'jobs.wait.v3' && this.input.epochs.some((epoch) => epoch.token === token)) ||
-          (legacy?.version === 'jobs.wait.v2' && legacy.positions[epochKey] !== undefined) ||
-          (legacy?.version === undefined &&
-            legacy !== undefined &&
-            legacy.afterSeq > 0 &&
-            epochKey === this.activeEpochKey));
-      if (affected) {
-        this.epochs.set(epochKey, { token, watermark: 0, lineOffset: 0 });
-        const notice = `Collection membership changed for ${jobId}; earlier progress in this epoch may replay.`;
-        if (!this.notices.includes(notice)) this.notices.push(notice);
-      }
-      this.members.set(jobId, {
-        epochKey,
-        acknowledged:
-          previous?.acknowledged ??
-          (inputJob !== undefined ? (inputJob.flags & 1) !== 0 : (legacy?.deliveredJobIds?.includes(jobId) ?? false)),
-        artifactPending:
-          previous?.artifactPending ??
-          (inputJob !== undefined
-            ? (inputJob.flags & 2) !== 0
-            : legacy?.deliveredJobIds?.includes(jobId) === true && admission.availability?.kind === 'repair-pending'),
-      });
-      if (!admission.detail?.exit) this.coverage.set(jobId, { kind: 'unknown', frontier: 0 });
+          legacy.afterSeq > 0 &&
+          epochKey === this.activeEpochKey));
+    if (affected) {
+      this.epochs.set(epochKey, { token, watermark: 0, lineOffset: 0 });
+      const notice = `Collection membership changed for ${jobId}; earlier progress in this epoch may replay.`;
+      if (!this.notices.includes(notice)) this.notices.push(notice);
     }
+  }
+
+  private reconcileMember(admission: WaitAdmission): void {
+    const { jobId, epochKey, disposition } = admission;
+    if (disposition !== 'admitted' || epochKey === undefined) {
+      if (!this.members.has(jobId)) this.members.set(jobId, { acknowledged: false, artifactPending: false });
+      return;
+    }
+    const previous = this.members.get(jobId);
+    if (previous?.epochKey === epochKey) return;
+    const input = this.inputMembership(jobId, epochKey);
+    this.reconcileEpoch(jobId, epochKey, input);
+    const { inputJob, legacy } = input;
+    this.members.set(jobId, {
+      epochKey,
+      acknowledged:
+        previous?.acknowledged ??
+        (inputJob !== undefined
+          ? (inputJob.flags & ACKNOWLEDGED_FLAG) !== 0
+          : (legacy?.deliveredJobIds?.includes(jobId) ?? false)),
+      artifactPending:
+        previous?.artifactPending ??
+        (inputJob !== undefined
+          ? (inputJob.flags & ARTIFACT_PENDING_FLAG) !== 0
+          : legacy?.deliveredJobIds?.includes(jobId) === true && admission.availability?.kind === 'repair-pending'),
+    });
+    if (!admission.detail?.exit) this.coverage.set(jobId, { kind: 'unknown', frontier: 0 });
   }
 
   observeCoverage(jobIds: readonly string[], unknownJobIds: readonly string[], frontier: number): void {
@@ -210,7 +231,8 @@ export class WaitSession {
           this.coverage.get(job.jobId)?.kind !== 'live' &&
           this.coverage.get(job.jobId)?.kind !== 'absent',
       )
-      .map((job) => job.jobId);
+      .map((job) => job.jobId)
+      .sort();
   }
   acknowledged(jobId: string): boolean {
     return this.members.get(jobId)?.acknowledged === true;
@@ -333,7 +355,7 @@ export class WaitSession {
       jobs.push({
         hash: waitJobHash(jobId),
         epoch: keys.indexOf(epochKey),
-        flags: (member.acknowledged ? 1 : 0) | (member.artifactPending ? 2 : 0),
+        flags: (member.acknowledged ? ACKNOWLEDGED_FLAG : 0) | (member.artifactPending ? ARTIFACT_PENDING_FLAG : 0),
       });
     }
     return { version: 'jobs.wait.v3', epochs, jobs };

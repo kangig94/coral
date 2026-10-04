@@ -1,4 +1,4 @@
-import { WAIT_SNAPSHOT_BYTES } from '../../jobs/wait.js';
+import { WAIT_SNAPSHOT_BYTES } from '../../jobs/wait/contract.js';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';

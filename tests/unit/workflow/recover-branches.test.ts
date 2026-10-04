@@ -13,7 +13,7 @@ import { createSimulationBackend } from '#tools/simulation/core/backend.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait/contract.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';

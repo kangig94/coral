@@ -275,10 +275,7 @@ export function createStorageRetentionScheduler(input: {
             if (next !== '') budget.record({ kind: 'kept', subject: 'exports', reason: 'scan-pending' });
           });
           await step('result-repair', (budget) =>
-            progressStore.getResultExportOwner().repairPass(
-              input.jobLocations.locations().map((location) => location.jobId),
-              budget,
-            ),
+            progressStore.getResultExportOwner().repairPass(input.jobLocations.jobIds(), budget),
           );
           await step('journal-progress', async (budget) => {
             if ((await pruneJobProgress({ db, readCtx: progressStore, cutoff, afterSeq: 0, budget })) !== 0)

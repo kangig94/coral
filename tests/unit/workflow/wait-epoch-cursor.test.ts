@@ -7,7 +7,7 @@ import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { waitForAtoms } from '../../../src/workflow/wait.js';
-import type { WaitStreamEvent } from '../../../src/jobs/wait.js';
+import type { WaitStreamEvent } from '../../../src/jobs/wait/contract.js';
 
 function atom(jobId: string, atomIndex: number): LaunchedAtom {
   return {

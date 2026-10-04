@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
-import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait.js';
+import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { launchAtomWithRetry } from '#src/workflow/launch.js';
 import { executePipeline } from '#src/workflow/executor.js';

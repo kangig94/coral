@@ -20,18 +20,18 @@ import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
-import { parseWaitSnapshot } from '#src/jobs/wait-snapshot.js';
-import { serializeWaitCursor } from '#src/jobs/wait.js';
+import { parseWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { formatWaitSnapshot } from '#src/cli/format/wait.js';
 import { formatJobDetail, renderJobsOperatorCommand } from '#src/cli/format/jobs.js';
-import { WaitSession } from '#src/jobs/wait-session.js';
+import { WaitSession } from '#src/jobs/wait/session.js';
 import { createRealTimePort } from '#src/infra/time.js';
-import type { WaitSnapshot } from '#src/jobs/wait-session.js';
+import type { WaitSnapshot } from '#src/jobs/wait/session.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { jobsWaitExtensions } from '#src/transport/rpc/jobs.js';
-import { parseWaitStreamEventValue } from '#src/jobs/wait-stream-event.js';
+import { parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -89,6 +89,71 @@ function ports(addressing?: JobAddressing): HttpHandlerPorts {
 }
 
 describe('actual wait carriage', () => {
+  it.each(['jobs.wait', 'jobs.wait.snapshot'] as const)(
+    'rejects duplicate IDs before %s executes over IPC and HTTP',
+    async (method) => {
+      const f = createTerminalExportFixture();
+      cleanup.push(f.close);
+      const p = ports();
+      p.jobs.scopeCheck = vi.fn(() => ({ valid: ['a'], missing: [], mismatch: [] }));
+      p.jobs.admitWait = vi.fn();
+      p.jobs.snapshot = vi.fn();
+      p.jobs.waitStream = vi.fn();
+      const listener = createIpcServer(p);
+      cleanup.push(() => closeIpcServer(listener));
+      const socketPath = join(f.root, 'duplicates.sock');
+      await new Promise<void>((resolve) => listener.server.listen(socketPath, resolve));
+      const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
+      const input = { jobIds: ['a', 'a'], projectRoot: f.root };
+      const response = method === 'jobs.wait' ? client.subscribe(method, input) : client.request(method, input);
+      await expect(response).rejects.toMatchObject({
+        data: {
+          issues: expect.arrayContaining([
+            expect.objectContaining({
+              path: ['jobIds'],
+              message: 'Each job ID must appear only once; remove duplicate job IDs.',
+            }),
+          ]),
+        },
+      });
+      const handler = createHttpHandler(p);
+      const server = createServer((req, res) => void handler(req, res));
+      cleanup.push(
+        () =>
+          new Promise<void>((resolve) => {
+            server.closeAllConnections();
+            server.close(() => resolve());
+          }),
+      );
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const http = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = request(
+          {
+            hostname: '127.0.0.1',
+            port: (server.address() as { port: number }).port,
+            path: method === 'jobs.wait' ? '/jobs/wait' : '/jobs/wait/snapshot',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': 'http-token' },
+          },
+          (res) => {
+            let body = '';
+            res.on('data', (chunk: Buffer) => {
+              body += chunk.toString();
+            });
+            res.on('end', () => resolve({ status: res.statusCode!, body }));
+          },
+        );
+        req.on('error', reject);
+        req.end(JSON.stringify(input));
+      });
+      expect(http.status).toBe(400);
+      expect(http.body).toContain('Each job ID must appear only once');
+      expect(p.jobs.admitWait).not.toHaveBeenCalled();
+      expect(p.jobs.snapshot).not.toHaveBeenCalled();
+      expect(p.jobs.waitStream).not.toHaveBeenCalled();
+    },
+  );
+
   it('delivers 128 huge retained outcomes in one complete unary IPC envelope and full detail keeps diagnostics and trailing text', async () => {
     const f = createTerminalExportFixture('provider', true);
     cleanup.push(f.close);

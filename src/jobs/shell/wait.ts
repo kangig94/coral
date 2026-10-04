@@ -1,5 +1,5 @@
-import { readWaitSession } from '../wait-reader.js';
-import { WaitSessionError, type WaitAdmission } from '../wait-session.js';
+import { readWaitSession } from '../wait/reader.js';
+import { WaitSessionError, type WaitAdmission } from '../wait/session.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { CarrierLiveness } from '../carrier-observation.js';
@@ -17,7 +17,7 @@ import {
   type WaitStreamEvent,
   type WaitStreamOnceResult,
   type WaitStreamRequest,
-} from '../wait.js';
+} from '../wait/contract.js';
 import type { JobQueueReadPort } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
 import { queuedProgressTiming } from '../progress-timing.js';

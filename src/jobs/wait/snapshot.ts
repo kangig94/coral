@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { decodeWaitCursor, waitJobHash } from './wait-cursor.js';
-import { WAIT_SNAPSHOT_BYTES, type WaitCursorV3 } from './wait.js';
-import { resultAvailabilitySchema } from './wait-stream-event.js';
-import type { WaitSession, WaitSnapshot, WaitSnapshotJob, WaitTerminalSummary } from './wait-session.js';
-import { WaitSessionError, waitTerminalExitCode } from './wait-session.js';
+import { decodeWaitCursor, waitJobHash } from './cursor.js';
+import { WAIT_SNAPSHOT_BYTES, type WaitCursorV3 } from './contract.js';
+import { resultAvailabilitySchema } from './stream-event.js';
+import type { WaitAdmission, WaitSession, WaitSnapshot, WaitSnapshotJob, WaitTerminalSummary } from './session.js';
+import { WaitSessionError, waitTerminalExitCode } from './session.js';
 
 export const WAIT_PROGRESS_LINES = 500;
 export const WAIT_PROGRESS_BYTES = 64 * 1024;
@@ -30,40 +30,61 @@ function preview(text: string, budget: number): { text: string; omitted: number 
 /** Summary delivery acknowledges the outcome, independently of progress or full text retrieval. */
 export function selectWaitSnapshot(session: WaitSession, lines?: number): WaitSnapshot {
   const notices = [...session.notices];
-  const jobs: WaitSnapshotJob[] = session.admissions.map((admission) => {
-    const { jobId, disposition, message, detail, availability } = admission;
-    const row: WaitSnapshotJob = { jobId, disposition, ...(message === undefined ? {} : { message }), progress: [] };
-    if (disposition !== 'admitted') return row;
-    row.epochToken = session.cursor([jobId]).epochs[0]?.token;
-    row.phase = detail?.status.phase ?? 'unresolved';
-    if (admission.progressLost) notices.push(`earlier progress for ${jobId} is no longer kept`);
-    if (detail?.exit) {
-      row.availability = availability;
-      row.alreadyCollected = session.acknowledged(jobId);
-      row.artifactFollowUp = row.alreadyCollected && session.artifactPending(jobId);
-      if (!row.alreadyCollected) {
-        const content = preview(detail.exit.content, 2048);
-        const diagnostic = preview(
-          JSON.stringify({ outcome: detail.exit.outcome, diagnostics: detail.exit.diagnostics }),
-          2048,
-        );
-        const terminal: WaitTerminalSummary = {
-          seq: detail.events.find((event) => event.type === 'terminal')?.seq ?? detail.status.lastSeq ?? 0,
-          outcomeKind: detail.exit.outcome.kind,
-          exitCode: waitTerminalExitCode(detail.exit),
-          durationMs: detail.exit.durationMs,
-          contentPreview: content.text,
-          contentOmittedBytes: content.omitted,
-          diagnosticPreview: diagnostic.text,
-          diagnosticOmittedBytes: diagnostic.omitted,
-        };
-        row.terminal = terminal;
-        session.acknowledge(admission);
-      } else if (row.artifactFollowUp && availability?.kind !== 'repair-pending') session.settleArtifact(jobId);
-    }
-    return row;
-  });
+  const jobs = session.admissions.map((admission) => snapshotJob(session, admission, notices));
   const originalProgress = session.cursor();
+  validateSnapshotMetadata(session, jobs, notices);
+  const selectedCount = selectSnapshotProgress(session, jobs, notices, lines);
+  const remainingJobIds = session.remaining();
+  const snapshot: WaitSnapshot = {
+    version: 'jobs.wait.v3',
+    jobs,
+    notices,
+    remainingJobIds,
+    cursor: session.cursor(remainingJobIds),
+    exitCode: session.exitCode(),
+  };
+  fitSnapshotResponse(session, snapshot, originalProgress, selectedCount);
+  return snapshot;
+}
+
+function snapshotJob(session: WaitSession, admission: WaitAdmission, notices: string[]): WaitSnapshotJob {
+  const { jobId, disposition, message, detail, availability } = admission;
+  const row: WaitSnapshotJob = { jobId, disposition, ...(message === undefined ? {} : { message }), progress: [] };
+  if (disposition !== 'admitted') return row;
+  row.epochToken = session.cursor([jobId]).epochs[0]?.token;
+  row.phase = detail?.status.phase ?? 'unresolved';
+  if (admission.progressLost) notices.push(`earlier progress for ${jobId} is no longer kept`);
+  if (detail?.exit) {
+    row.availability = availability;
+    row.alreadyCollected = session.acknowledged(jobId);
+    row.artifactFollowUp = row.alreadyCollected && session.artifactPending(jobId);
+    if (!row.alreadyCollected) {
+      row.terminal = terminalSummary(detail, detail.exit);
+      session.acknowledge(admission);
+    } else if (row.artifactFollowUp && availability?.kind !== 'repair-pending') session.settleArtifact(jobId);
+  }
+  return row;
+}
+
+function terminalSummary(
+  detail: NonNullable<WaitAdmission['detail']>,
+  terminal: NonNullable<NonNullable<WaitAdmission['detail']>['exit']>,
+): WaitTerminalSummary {
+  const content = preview(terminal.content, 2048);
+  const diagnostic = preview(JSON.stringify({ outcome: terminal.outcome, diagnostics: terminal.diagnostics }), 2048);
+  return {
+    seq: detail.events.find((event) => event.type === 'terminal')?.seq ?? detail.status.lastSeq ?? 0,
+    outcomeKind: terminal.outcome.kind,
+    exitCode: waitTerminalExitCode(terminal),
+    durationMs: terminal.durationMs,
+    contentPreview: content.text,
+    contentOmittedBytes: content.omitted,
+    diagnosticPreview: diagnostic.text,
+    diagnosticOmittedBytes: diagnostic.omitted,
+  };
+}
+
+function validateSnapshotMetadata(session: WaitSession, jobs: WaitSnapshotJob[], notices: string[]): void {
   const mandatory = {
     version: 'jobs.wait.v3',
     jobs: jobs.map((job) => ({
@@ -75,32 +96,37 @@ export function selectWaitSnapshot(session: WaitSession, lines?: number): WaitSn
     notices,
     exitCode: session.exitCode(),
   };
-  if (encodedBytes({ kind: 'response', id: 'x'.repeat(1024), result: mandatory }) > WAIT_SNAPSHOT_BYTES)
-    throw new WaitSessionError(
-      'wait_snapshot_too_large',
-      'Snapshot identity metadata exceeds the response size budget; retry a smaller job set with the original cursor.',
-    );
+  assertSnapshotFits(mandatory);
+}
+
+function lastLinesPerJob(available: ReturnType<WaitSession['progress']>, count: number): typeof available {
+  const offsets = new Map<string, number>();
+  for (const line of available) offsets.set(line.jobId, (offsets.get(line.jobId) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return available.filter((line) => {
+    const index = (seen.get(line.jobId) ?? 0) + 1;
+    seen.set(line.jobId, index);
+    return index > (offsets.get(line.jobId) ?? 0) - count;
+  });
+}
+
+function selectSnapshotProgress(
+  session: WaitSession,
+  jobs: WaitSnapshotJob[],
+  notices: string[],
+  lines?: number,
+): number {
   const available = session.progress();
   let selected: typeof available;
   if (lines !== undefined) {
     let perJob = lines;
-    const last = (count: number) => {
-      const offsets = new Map<string, number>();
-      for (const line of available) offsets.set(line.jobId, (offsets.get(line.jobId) ?? 0) + 1);
-      const seen = new Map<string, number>();
-      return available.filter((line) => {
-        const index = (seen.get(line.jobId) ?? 0) + 1;
-        seen.set(line.jobId, index);
-        return index > (offsets.get(line.jobId) ?? 0) - count;
-      });
-    };
-    selected = last(perJob);
+    selected = lastLinesPerJob(available, perJob);
     while (
       perJob > 0 &&
       (selected.length > WAIT_PROGRESS_LINES ||
         selected.reduce((sum, line) => sum + Buffer.byteLength(line.text), 0) > WAIT_PROGRESS_BYTES)
     )
-      selected = last(--perJob);
+      selected = lastLinesPerJob(available, --perJob);
     if (selected.length < available.length)
       notices.push(`${available.length - selected.length} earlier progress lines were not shown.`);
     session.skipEarlierProgress();
@@ -117,17 +143,17 @@ export function selectWaitSnapshot(session: WaitSession, lines?: number): WaitSn
       notices.push('Progress truncated; run the continuation to collect the remaining lines.');
   }
   for (const line of selected) jobs.find((job) => job.jobId === line.jobId)?.progress.push(line.text);
-  const remainingJobIds = session.remaining();
-  const snapshot: WaitSnapshot = {
-    version: 'jobs.wait.v3',
-    jobs,
-    notices,
-    remainingJobIds,
-    cursor: session.cursor(remainingJobIds),
-    exitCode: session.exitCode(),
-  };
+  return selected.length;
+}
+
+function fitSnapshotResponse(
+  session: WaitSession,
+  snapshot: WaitSnapshot,
+  originalProgress: WaitCursorV3,
+  selectedCount: number,
+): void {
   if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) > WAIT_SNAPSHOT_BYTES) {
-    for (const job of jobs) {
+    for (const job of snapshot.jobs) {
       if (job.terminal) {
         job.terminal.contentOmittedBytes += Buffer.byteLength(job.terminal.contentPreview);
         job.terminal.contentPreview = '[preview omitted: response size budget]';
@@ -137,22 +163,25 @@ export function selectWaitSnapshot(session: WaitSession, lines?: number): WaitSn
     }
     if (
       encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) > WAIT_SNAPSHOT_BYTES &&
-      selected.length > 0
+      selectedCount > 0
     ) {
-      for (const job of jobs) job.progress = [];
-      if (lines === undefined) session.restoreProgress(originalProgress);
-      notices.push('Progress omitted to fit the complete response; run the continuation.');
+      for (const job of snapshot.jobs) job.progress = [];
+      session.restoreProgress(originalProgress);
+      snapshot.notices.push('Progress omitted to fit the complete response; run the continuation.');
       snapshot.remainingJobIds = session.remaining();
       snapshot.cursor = session.cursor(snapshot.remainingJobIds);
       snapshot.exitCode = session.exitCode();
     }
-    if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) > WAIT_SNAPSHOT_BYTES)
-      throw new WaitSessionError(
-        'wait_snapshot_too_large',
-        'Snapshot identity metadata exceeds the response size budget; retry a smaller job set with the original cursor.',
-      );
+    assertSnapshotFits(snapshot);
   }
-  return snapshot;
+}
+
+function assertSnapshotFits(snapshot: unknown): void {
+  if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) > WAIT_SNAPSHOT_BYTES)
+    throw new WaitSessionError(
+      'wait_snapshot_too_large',
+      'Snapshot identity metadata exceeds the response size budget; retry a smaller job set with the original cursor.',
+    );
 }
 
 /** A partial or malformed unary response must not advance collection state. */

@@ -126,6 +126,17 @@ export class WaitResumeError extends Error {
   }
 }
 
+export class WaitSnapshotResponseError extends Error {
+  readonly code = 'transient';
+  readonly exitCode = 75;
+  readonly remediation: string;
+
+  constructor(originalCommand: string) {
+    super('The coordinator returned an invalid snapshot. No collection cursor advanced.');
+    this.remediation = `Run ${originalCommand}`;
+  }
+}
+
 export function normalizeUsageError(error: unknown): unknown {
   if (!(error instanceof ZodError)) {
     return error;
@@ -246,6 +257,7 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
     error instanceof StoreResetCliError ||
     error instanceof ChildPrincipalBindingError ||
     error instanceof WaitResumeError ||
+    error instanceof WaitSnapshotResponseError ||
     error instanceof WaitInvocationReadinessError
   ) {
     return remediatedError(error);

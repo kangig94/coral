@@ -1,9 +1,9 @@
 import { isRecord } from '../infra/json.js';
-import type { WaitSnapshotRequest } from '../jobs/wait.js';
-import type { WaitSnapshot } from '../jobs/wait-session.js';
+import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
+import type { WaitSnapshot } from '../jobs/wait/session.js';
 import { UsageError } from './errors.js';
 import { getWaitInvocation } from './wait-invocation.js';
-import { WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait-cursor.js';
+import { WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait/cursor.js';
 import type { Command } from 'commander';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 

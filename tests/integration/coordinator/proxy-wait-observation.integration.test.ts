@@ -20,7 +20,7 @@ import { collectLocalCarrierInputs } from '#src/coordinator/composition/carrier-
 import { carrierStatusOperationKey, observeCarrierStatuses } from '#src/coordinator/live/carrier-observer.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import type { WaitStreamEvent } from '#src/jobs/wait.js';
+import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import type { CarrierWaitObservation } from '#src/jobs/shell/wait.js';
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';

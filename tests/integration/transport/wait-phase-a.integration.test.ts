@@ -29,7 +29,7 @@ beforeAll(async () => {
             builder.onResolve({ filter: /^#tools\// }, ({ path }) => ({
               path: join(root, path.replace('#tools/', 'tools/').replace(/\.js$/, '.ts')),
             }));
-            builder.onLoad({ filter: /(?:handler|dispatch|wait-cursor|wait-session|wait)\.ts$/ }, ({ path }) => {
+            builder.onLoad({ filter: /(?:handler|dispatch|cursor|session|wait)\.ts$/ }, ({ path }) => {
               let source = readFileSync(path, 'utf8');
               if (variant === 'unbounded-observer' && path.endsWith('/jobs/shell/wait.ts'))
                 source = source.replace(
@@ -44,12 +44,12 @@ beforeAll(async () => {
                     "const next = await raceWithSignal(iterator.next(), deps.jobs.waitHandoverSignal(), () => ({ done: false, value: { type: 'handover' } }));",
                   );
               }
-              if (variant === 'include-missing' && path.endsWith('/jobs/wait-session.ts'))
+              if (variant === 'include-missing' && path.endsWith('/jobs/wait/session.ts'))
                 source = source.replace(
                   "job.disposition === 'discovery-unknown' ||",
                   "job.disposition === 'missing' || job.disposition === 'discovery-unknown' ||",
                 );
-              if (variant === 'property-decoder' && path.endsWith('/jobs/wait-cursor.ts'))
+              if (variant === 'property-decoder' && path.endsWith('/jobs/wait/cursor.ts'))
                 source = source.replace(
                   "if (!isRecord(value)) return rejected('wait_cursor_malformed');",
                   "if (!isRecord(value)) return rejected('wait_cursor_malformed'); if ('afterSeq' in value) return { kind: 'decoded', cursor: value as WaitCursor };",

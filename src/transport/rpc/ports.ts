@@ -1,10 +1,10 @@
-import type { WaitAdmission, WaitSnapshot } from '../../jobs/wait.js';
-import type { WaitSnapshotRequest } from '../../jobs/wait.js';
+import type { WaitAdmission, WaitSnapshot } from '../../jobs/wait/session.js';
+import type { WaitSnapshotRequest } from '../../jobs/wait/contract.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
 import type { JobStatus } from '../../jobs/records.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait/contract.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
 import type { AbortDecision } from '../../jobs/contracts/abort-registry.js';

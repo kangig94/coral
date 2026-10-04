@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { decodeSerializedWaitCursor, decodeWaitCursor } from '#src/jobs/wait-cursor.js';
-import { serializeWaitCursor, waitCursorForJobs, type WaitCursor } from '#src/jobs/wait.js';
+import { decodeSerializedWaitCursor, decodeWaitCursor } from '#src/jobs/wait/cursor.js';
+import { type WaitCursor } from '#src/jobs/wait/contract.js';
+import { serializeWaitCursor, waitCursorForJobs } from '#src/jobs/wait/cursor.js';
 import { jobWaitSchema, jobsWaitRequest } from '#src/transport/rpc/jobs.js';
-import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '#src/jobs/wait-stream-event.js';
+import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
 
 const v2: WaitCursor = {
   version: 'jobs.wait.v2',
@@ -83,7 +84,7 @@ describe('wait cursor codec', () => {
 });
 
 it.each([64, 128])('encodes %i jobs at maximum frontiers under the authenticated header budget', async (count) => {
-  const { waitEpochToken, waitJobHash } = await import('#src/jobs/wait-cursor.js');
+  const { waitEpochToken, waitJobHash } = await import('#src/jobs/wait/cursor.js');
   for (const shared of [true, false]) {
     const cursor = {
       version: 'jobs.wait.v3' as const,
@@ -109,7 +110,7 @@ it.each([64, 128])('encodes %i jobs at maximum frontiers under the authenticated
 });
 
 it('round trips unresolved entries and rejects malformed v3 flags, ordinals, lengths and duplicates', async () => {
-  const { waitEpochToken, waitJobHash } = await import('#src/jobs/wait-cursor.js');
+  const { waitEpochToken, waitJobHash } = await import('#src/jobs/wait/cursor.js');
   const cursor = {
     version: 'jobs.wait.v3' as const,
     epochs: [{ token: waitEpochToken('e'), watermark: 17, lineOffset: 3 }],
@@ -155,7 +156,7 @@ it('a legacy progress watermark cannot hide an unrelated terminal or consume its
 });
 
 it('a V3 notice or observation without a cursor preserves collected outcomes and artifact flags', async () => {
-  const { WaitSession } = await import('#src/jobs/wait-session.js');
+  const { WaitSession } = await import('#src/jobs/wait/session.js');
   const { admitted } = await import('#tests/helpers/wait-session.js');
   const a = admitted('a');
   a.availability = { kind: 'repair-pending', ageUncertain: false };

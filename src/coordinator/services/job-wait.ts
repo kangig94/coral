@@ -3,7 +3,12 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { JobEvent, LaunchReadiness } from '../../jobs/records.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { JobProjectionDetail } from '../../jobs/read-queries.js';
-import type { JobWaitPort, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../../jobs/wait.js';
+import type {
+  JobWaitPort,
+  WaitStreamEvent,
+  WaitStreamOnceResult,
+  WaitStreamRequest,
+} from '../../jobs/wait/contract.js';
 
 export interface JobWaitServiceDeps {
   runtime: Pick<Runtime, 'time'>;

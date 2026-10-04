@@ -1,13 +1,13 @@
-import { waitJobHash, decodeWaitCursor } from './wait-cursor.js';
+import { waitJobHash, decodeWaitCursor } from './cursor.js';
 import { z } from 'zod';
 
-import { isRecord } from '../infra/json.js';
-import { continuitySnapshotSchema } from '../sessions/continuity.js';
-import { jobPhaseSchema } from './phase.js';
-import { jobProgressTimingSchema } from './event-bodies.js';
-import { jobTerminalSchema } from './terminal/result.js';
-import { usageSummarySchema } from '../providers/contract.js';
-import { type WaitCursor, type WaitHandoverNotice, type WaitStreamEvent } from './wait.js';
+import { isRecord } from '../../infra/json.js';
+import { continuitySnapshotSchema } from '../../sessions/continuity.js';
+import { jobPhaseSchema } from '../phase.js';
+import { jobProgressTimingSchema } from '../event-bodies.js';
+import { jobTerminalSchema } from '../terminal/result.js';
+import { usageSummarySchema } from '../../providers/contract.js';
+import { type WaitCursor, type WaitHandoverNotice, type WaitStreamEvent } from './contract.js';
 
 const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>([
   'progress',

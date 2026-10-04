@@ -1,12 +1,12 @@
-import { decodeWaitCursor } from '../../jobs/wait.js';
+import { decodeWaitCursor } from '../../jobs/wait/cursor.js';
 import type { RpcPorts } from './ports.js';
 import { z } from 'zod';
 
 import { parseBooleanQuery } from '../../infra/json.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { jobPhaseSchema } from '../../jobs/phase.js';
-import { type WaitCursor } from '../../jobs/wait.js';
-import { MAX_WAIT_JOB_IDS } from '../../jobs/wait-stream-event.js';
+import { type WaitCursor } from '../../jobs/wait/contract.js';
+import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');
@@ -22,7 +22,11 @@ export const jobWaitSchema = z
     jobIds: z
       .array(z.string().min(1))
       .min(1, 'At least one job required')
-      .max(MAX_WAIT_JOB_IDS, `At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once`),
+      .max(MAX_WAIT_JOB_IDS, `At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once`)
+      .refine(
+        (ids) => new Set(ids).size === ids.length,
+        'Each job ID must appear only once; remove duplicate job IDs.',
+      ),
     projectRoot: projectRootSchema,
     timeoutSeconds: z.number().int().min(1).max(1200).optional(),
     cursor: waitCursorSchema.optional(),

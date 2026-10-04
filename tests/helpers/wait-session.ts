@@ -1,4 +1,4 @@
-import type { WaitAdmission } from '#src/jobs/wait-session.js';
+import type { WaitAdmission } from '#src/jobs/wait/session.js';
 
 export function admitted(
   jobId: string,

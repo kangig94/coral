@@ -1,4 +1,4 @@
-import type { WaitAdmission } from '../jobs/wait-session.js';
+import type { WaitAdmission } from '../jobs/wait/session.js';
 import type { ResultAvailability } from '../jobs/terminal/export.js';
 import type {
   JobLaunchRequest,
@@ -12,7 +12,7 @@ import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { JobPhase } from '../jobs/phase.js';
-import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait/contract.js';
 import type { ProviderStopCause, UsageSummary } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';

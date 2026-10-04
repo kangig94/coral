@@ -5,9 +5,9 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
-import { decodeSerializedWaitCursor } from '#src/jobs/wait-cursor.js';
+import { decodeSerializedWaitCursor } from '#src/jobs/wait/cursor.js';
 import { jobsWaitRequest, jobWaitSchema } from '#src/transport/rpc/jobs.js';
-import type { WaitCursor } from '#src/jobs/wait.js';
+import type { WaitCursor } from '#src/jobs/wait/contract.js';
 import type { z } from 'zod';
 
 const root = resolve('.');
@@ -26,7 +26,7 @@ beforeAll(async () => {
   symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
   for (const release of releases) {
     const sources = new Map(
-      ['src/jobs/wait.ts', 'src/transport/rpc/jobs.ts'].map((path) => [
+      ['src/jobs/wait.ts', 'src/jobs/wait-stream-event.ts', 'src/transport/rpc/jobs.ts'].map((path) => [
         join(root, path),
         execFileSync('git', ['show', `${release}:${path}`], { cwd: root, encoding: 'utf8' }),
       ]),
@@ -46,7 +46,11 @@ beforeAll(async () => {
         {
           name: 'released-cursor-contract',
           setup(builder) {
-            builder.onLoad({ filter: /(?:wait|jobs)\.ts$/ }, ({ path }) => {
+            builder.onResolve({ filter: /(?:wait(?:-stream-event)?|jobs)\.(?:ts|js)$/ }, ({ path, resolveDir }) => {
+              const resolved = resolve(resolveDir, path).replace(/\.js$/, '.ts');
+              return sources.has(resolved) ? { path: resolved } : undefined;
+            });
+            builder.onLoad({ filter: /(?:wait(?:-stream-event)?|jobs)\.ts$/ }, ({ path }) => {
               const source = sources.get(path);
               return source === undefined ? undefined : { contents: source, loader: 'ts' };
             });

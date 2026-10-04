@@ -9,7 +9,7 @@ import { createRealTimePort } from '#src/infra/time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { errorCodeToExit } from '#src/cli/errors.js';
 import type { JobDetailLookup } from '#src/jobs/contracts/addressing.js';
-import type { WaitStreamRequest } from '#src/jobs/wait.js';
+import type { WaitStreamRequest } from '#src/jobs/wait/contract.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';

@@ -14,10 +14,9 @@ The core vocabulary lives as TypeScript-first records in `src/jobs/records.ts`, 
 and `jobs.detail` lack response schemas in `src/transport/rpc/catalog.ts`. Other catalog methods already
 carry `responseSchema`; see the provider-host and provider-proxy-set specs there. Producer values pass through `executeJobsListCatalogRequest` / `executeJobsDetailCatalogRequest`
 (`src/transport/dispatch.ts`), both of which reach their input by `request as …` cast, and
-`src/cli/dispatch.ts` requests typed values rather than parsing `unknown`. Measured today, the type
-family (`JobStatus`, `JobEvent`, `JobExit`, `JobsListResponse`, `JobDetailResponse`) has **120 references
-across 24 files** in `src/`, so changing the source of those types is a cross-surface conversion, not a local
-annotation.
+`src/cli/dispatch.ts` requests typed values rather than parsing `unknown`. Changing the source of the core type family
+(`JobStatus`, `JobEvent`, `JobExit`, `JobsListResponse`, `JobDetailResponse`) requires a cross-surface
+conversion across producers, transport, CLI dispatch and formatting.
 
 ### Correction — the field that motivated this no longer crosses the wire
 
@@ -69,7 +68,7 @@ does not make breaking changes safe by itself.
 
 ## Why it is split
 
-Converting a core type family with 120 references across 24 files, adding parsing on both producer and
+Converting a core type family across its public surfaces, adding parsing on both producer and
 consumer sides, and pinning mixed-build behavior is too broad to hide inside a workflow slot/job identity PR.
 A partial conversion would be worse than the current visible gap because callers could not tell which types
 had runtime authority.

@@ -1,11 +1,11 @@
 import { expect, it } from 'vitest';
-import { readWaitSession } from '#src/jobs/wait-reader.js';
-import { WaitSession, type WaitAdmission } from '#src/jobs/wait-session.js';
-import { selectWaitSnapshot } from '#src/jobs/wait-snapshot.js';
+import { readWaitSession } from '#src/jobs/wait/reader.js';
+import { WaitSession, type WaitAdmission } from '#src/jobs/wait/session.js';
+import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
-import type { WaitStreamEvent, WaitCursorV3 } from '#src/jobs/wait.js';
+import type { WaitStreamEvent, WaitCursorV3 } from '#src/jobs/wait/contract.js';
 
 async function collect(stream: AsyncGenerator<WaitStreamEvent>): Promise<WaitStreamEvent[]> {
   const events = [];

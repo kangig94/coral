@@ -8,7 +8,7 @@ import { JobAddressing } from '../../../src/jobs/addressing.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 
-import type { WaitCursor } from '../../../src/jobs/wait.js';
+import type { WaitCursor } from '../../../src/jobs/wait/contract.js';
 import { canonicalWorkDirWireSchema } from '../../../src/runtime/canonical-work-dir.js';
 import type { JobDetailResponse } from '../../../src/jobs/records.js';
 

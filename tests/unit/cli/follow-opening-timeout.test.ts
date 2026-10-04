@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 
-import { serializeWaitCursor } from '#src/jobs/wait.js';
+import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { WaitInvocation } from '#src/cli/wait-invocation.js';
-import { WaitSession } from '#src/jobs/wait-session.js';
+import { WaitSession } from '#src/jobs/wait/session.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { followJobs } from '#src/cli/follow.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';

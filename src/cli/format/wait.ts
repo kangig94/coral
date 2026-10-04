@@ -1,11 +1,10 @@
 import { formatResultAvailability } from './result-availability.js';
-export { formatResultAvailability } from './result-availability.js';
-import type { WaitSnapshot } from '../../jobs/wait-session.js';
-import { serializeWaitCursor } from '../../jobs/wait.js';
+import type { WaitSnapshot } from '../../jobs/wait/session.js';
+import { serializeWaitCursor } from '../../jobs/wait/cursor.js';
 import { assertNever } from '../../infra/error-format.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import type { JobTerminal } from '../../jobs/records.js';
-import type { WaitStreamEvent } from '../../jobs/wait.js';
+import type { WaitStreamEvent } from '../../jobs/wait/contract.js';
 import {
   type CauseRefDescriber,
   pickTerminalPreviewSource,
@@ -147,8 +146,6 @@ export function formatWaitWaiting(
     resumeJobIds.length > 0
       ? ` Run coral-cli wait jobs ${resumeJobIds.join(' ')}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`
       : '';
-  // Named as unconfirmed rather than folded into the waiting list: these are the jobs nothing could answer
-  // for, and a reader deciding whether to keep waiting needs that distinction.
   const unknown =
     event.carrierUnknownJobIds === undefined
       ? undefined

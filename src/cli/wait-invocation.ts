@@ -191,7 +191,17 @@ export function installWaitInvocation(invocation: WaitInvocation | undefined): v
   currentInvocation = invocation;
 }
 
-export function validateWaitJobsOptions(opts: { now?: boolean; lines?: string; cursor?: string }): number | undefined {
+export function validateWaitJobsOptions(opts: {
+  now?: boolean;
+  lines?: string;
+  cursor?: string;
+  embed?: boolean;
+  verbose?: boolean;
+}): number | undefined {
+  if (opts.now && (opts.embed || opts.verbose))
+    throw new UsageError(
+      '--now cannot be used with --embed or --verbose; use coral-cli jobs detail <jobId> --full for full content.',
+    );
   if (opts.lines !== undefined && opts.cursor !== undefined)
     throw new UsageError('--lines cannot be used with --cursor');
   if (opts.lines !== undefined && opts.now !== true) throw new UsageError('--lines requires --now');

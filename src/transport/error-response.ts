@@ -1,4 +1,4 @@
-import { WaitSessionError } from '../jobs/wait.js';
+import { WaitSessionError } from '../jobs/wait/session.js';
 import { RecoveryQuarantineClearError } from '../recovery/source-registry.js';
 import { SuccessionWriterParkedError } from '../store/db.js';
 import {

@@ -433,8 +433,6 @@ export function waitForInflightDrain(
   });
 }
 
-export { resolveJobRetentionMs } from '../jobs/retention-clock.js';
-
 function isAgedOut(updatedAt: string, nowMs: number, retentionMs: number): boolean {
   const terminalMs = Date.parse(updatedAt);
   return Number.isFinite(terminalMs) && nowMs - terminalMs > retentionMs;

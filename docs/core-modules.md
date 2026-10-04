@@ -64,7 +64,7 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 ### Jobs wait and terminal owners
 
-`jobs/wait-session.ts:WaitSession` owns the shared streaming/snapshot session contract: admission, progress frontiers/line offsets, terminal acknowledgement, artifact settlement, carrier coverage and exit precedence. `jobs/wait-reader.ts` reads streams; `jobs/wait-snapshot.ts` selects bounded unary snapshots for `wait jobs --now`. Snapshot continuations retain `--now`; dropping it opens a blocking wait. `jobs/wait-cursor.ts` own strict legacy/v2/v3 decoding and compact encoding, with explicit notices when replay is required.
+`jobs/wait/session.ts:WaitSession` owns the shared streaming/snapshot session contract: admission, progress frontiers/line offsets, terminal acknowledgement, artifact settlement, carrier coverage and exit precedence. `jobs/wait/reader.ts` reads streams; `jobs/wait/snapshot.ts` selects bounded unary snapshots for `wait jobs --now`. Snapshot continuations retain `--now`; dropping it opens a blocking wait. `jobs/wait/cursor.ts` owns strict legacy/v2/v3 decoding and compact encoding, with explicit notices when replay is required.
 
 `jobs/location-index.ts:JobLocationView` supplies read-only locations to `JobAddressing`. Historical source reads use no-repair shared guards and read-only SQLite opens; SQLite reader sidecars are allowed, while Coral-record writes and fsync/fdatasync are forbidden. Startup and epoch maintenance own hydration. Validated retained terminals survive source retirement; failed reads without usable retained outcomes stay unresolved.
 

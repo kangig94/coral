@@ -5,8 +5,8 @@ import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import * as dispatch from '#src/cli/dispatch.js';
 import * as ensure from '#src/transport/ipc/ensure.js';
 import { WaitInvocation, installWaitInvocation } from '#src/cli/wait-invocation.js';
-import { WaitSession } from '#src/jobs/wait-session.js';
-import { selectWaitSnapshot } from '#src/jobs/wait-snapshot.js';
+import { WaitSession } from '#src/jobs/wait/session.js';
+import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 
 let invocation: WaitInvocation | undefined;
@@ -67,9 +67,18 @@ it('commits only a complete validated snapshot, preserves --now, and cannot ackn
   expect(process.exitCode).toBe(75);
   save.mockClear();
   client.snapshotJobsWait.mockResolvedValue({ ...snapshot, jobs: [{ jobId: 'a' }] });
-  vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
+  let errorOutput = '';
+  vi.spyOn(process.stderr, 'write').mockImplementation(((text: string) => {
+    errorOutput += text;
+    return true;
+  }) as never);
   await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
   expect(save).not.toHaveBeenCalled();
+  expect(process.exitCode).toBe(75);
+  expect(errorOutput).toContain('transient');
+  expect(errorOutput).toContain('invalid snapshot');
+  expect(errorOutput).toContain('No collection cursor advanced');
+  expect(errorOutput).toContain('Run coral-cli wait jobs a --now');
 });
 
 it('maps an unknown snapshot method to the older-coordinator refusal', async () => {
@@ -105,6 +114,32 @@ it.each(['refusal', 'disconnect', 'output failure'])(
     installWaitInvocation(invocation);
     const save = vi.spyOn(invocation, 'saveContinuation');
     await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
+    expect(save).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['shape', 'membership'])(
+  'invalid snapshot %s prints the unchanged original command as transient remediation',
+  async (failure) => {
+    const session = new WaitSession(['a']);
+    session.reconcile([admitted('a')]);
+    const snapshot = selectWaitSnapshot(session);
+    const response = failure === 'shape' ? { ...snapshot, cursor: {} } : { ...snapshot, jobs: [] };
+    vi.spyOn(dispatch, 'makeClient').mockReturnValue({ snapshotJobsWait: async () => response } as never);
+    let stderr = '';
+    vi.spyOn(process.stderr, 'write').mockImplementation(((text: string) => {
+      stderr += text;
+      return true;
+    }) as never);
+    const argv = ['node', 'coral-cli', 'wait', 'jobs', '--lines', '5', 'a', '--now'];
+    invocation = new WaitInvocation('snapshot', argv);
+    installWaitInvocation(invocation);
+    const save = vi.spyOn(invocation, 'saveContinuation');
+    await program().parseAsync(argv);
+    expect(process.exitCode).toBe(75);
+    expect(stderr).toContain('transient');
+    expect(stderr).toContain('No collection cursor advanced');
+    expect(stderr).toContain(`Run ${invocation.originalCommand}`);
     expect(save).not.toHaveBeenCalled();
   },
 );

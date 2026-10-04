@@ -1,15 +1,11 @@
-import type { JobTerminal } from './records.js';
-import type { ContinuitySnapshot } from '../sessions/continuity.js';
-import type { JobProgressTiming } from './event-bodies.js';
-import type { JobPhase } from './phase.js';
-import type { ResultAvailability } from './terminal/export.js';
-import type { WaitAdmission } from './wait-session.js';
-import { encodeWaitCursorV3, filterWaitCursorV3 } from './wait-cursor.js';
-import type { UsageSummary } from '../providers/contract.js';
+import type { JobTerminal } from '../records.js';
+import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { JobProgressTiming } from '../event-bodies.js';
+import type { JobPhase } from '../phase.js';
+import type { ResultAvailability } from '../terminal/export.js';
+import type { WaitAdmission } from './session.js';
+import type { UsageSummary } from '../../providers/contract.js';
 
-export { decodeWaitCursor, decodeSerializedWaitCursor } from './wait-cursor.js';
-export { WaitSessionError } from './wait-session.js';
-export type { WaitAdmission, WaitSnapshot } from './wait-session.js';
 export const WAIT_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
@@ -29,33 +25,6 @@ export type WaitCursor =
       locations: Record<string, string>;
       deliveredJobIds?: string[];
     };
-
-export function serializeWaitCursor(cursor: WaitCursor): string {
-  if (cursor.version === 'jobs.wait.v3') return encodeWaitCursorV3(cursor);
-  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
-}
-
-export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor {
-  if (cursor.version === 'jobs.wait.v3') return filterWaitCursorV3(cursor, jobIds);
-  const deliveredJobIds = cursor.deliveredJobIds?.filter((id) => jobIds.includes(id));
-  if (cursor.version === undefined) return { ...cursor, ...(deliveredJobIds === undefined ? {} : { deliveredJobIds }) };
-  const locations = Object.fromEntries(
-    jobIds.flatMap((jobId) => {
-      const epochKey = cursor.locations[jobId];
-      return epochKey === undefined ? [] : [[jobId, epochKey]];
-    }),
-  );
-  const requestedEpochs = new Set(Object.values(locations));
-  const positions = Object.fromEntries(
-    Object.entries(cursor.positions).filter(([epochKey]) => requestedEpochs.has(epochKey)),
-  );
-  return {
-    version: 'jobs.wait.v2',
-    locations,
-    positions,
-    ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds }),
-  };
-}
 
 export interface WaitRequest {
   jobIds: string[];

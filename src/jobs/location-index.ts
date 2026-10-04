@@ -572,6 +572,17 @@ export class JobLocationIndex {
     return result;
   }
 
+  *jobIds(): IterableIterator<string> {
+    const dir = join(this.root, 'jobs');
+    if (!this.runtime.storage.existsSync(dir)) return;
+    for (const name of this.runtime.storage.readdirSync(dir).sort()) {
+      if (!name.endsWith('.json')) continue;
+      const encoded = name.slice(0, -5);
+      const jobId = Buffer.from(encoded, 'base64url').toString('utf8');
+      if (Buffer.from(jobId).toString('base64url') === encoded) yield jobId;
+    }
+  }
+
   locations(): JobLocation[] {
     return this.scan().readable;
   }

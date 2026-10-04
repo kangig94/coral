@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { advanceWaitRenderCursor, parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
+import { advanceWaitRenderCursor, parseWaitStreamEvent } from '#src/jobs/wait/stream-event.js';
 
-import type { CarrierInterruptedWaitEvent } from '#src/jobs/wait.js';
+import type { CarrierInterruptedWaitEvent } from '#src/jobs/wait/contract.js';
 
 const INTERRUPTED: CarrierInterruptedWaitEvent = {
   type: 'interrupted',

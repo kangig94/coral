@@ -14,7 +14,7 @@ import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait/contract.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';

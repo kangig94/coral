@@ -15,6 +15,49 @@ afterEach(() => {
 });
 
 describe('terminal export owner', () => {
+  it.each(['pending', 'failed'])(
+    'resumes a bounded repair scan and retries a %s eligible tail across exhausted runs',
+    async (state) => {
+      const f = fixture();
+      f.complete();
+      const owner = f.store.getResultExportOwner();
+      const wakeup = vi.fn();
+      owner.onRepairHint(wakeup);
+      const write = vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync');
+      if (state === 'failed') {
+        write.mockReturnValueOnce(false);
+        expect(() => owner.publishTerminalResult(f.jobId)).toThrow('Failed to write result artifact');
+        expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'failed', retryScheduled: true });
+      }
+      const observe = owner.observeResultAvailability.bind(owner);
+      const visited: string[] = [];
+      vi.spyOn(owner, 'observeResultAvailability').mockImplementation((jobId) => {
+        visited.push(jobId);
+        return jobId === f.jobId ? observe(jobId) : { kind: 'available', resultPath: '/head' };
+      });
+      const candidates = ['head-1', 'head-2', f.jobId];
+      for (let pass = 0; pass < 3; pass++) {
+        let left = 2;
+        await owner.repairPass(candidates, { canContinue: () => left-- > 0, record: vi.fn() });
+        if (pass === 0) {
+          if (state === 'failed') expect(existsSync(f.resultPath)).toBe(true);
+          else expect(visited).toEqual(['head-1', 'head-2']);
+        }
+      }
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(visited).toContain(f.jobId);
+      expect(write).toHaveBeenCalledTimes(state === 'failed' ? 2 : 1);
+      expect(readFileSync(f.resultPath, 'utf8')).toBe('canonical result\n');
+    },
+  );
+
+  it('enumerates repair identities without eagerly reading every retained location', () => {
+    const f = fixture();
+    const read = vi.spyOn(f.runtime.storage, 'readFileSync');
+    expect([...f.index.jobIds()]).toContain(f.jobId);
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('renders a real workflow step report through deletion and repair', () => {
     const f = fixture('workflow');
     f.complete({

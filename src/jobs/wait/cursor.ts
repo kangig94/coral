@@ -1,6 +1,33 @@
 import { createHash } from 'node:crypto';
-import { isRecord } from '../infra/json.js';
-import type { WaitCursor, WaitCursorV3 } from './wait.js';
+import { isRecord } from '../../infra/json.js';
+import type { WaitCursor, WaitCursorV3 } from './contract.js';
+
+export function serializeWaitCursor(cursor: WaitCursor): string {
+  if (cursor.version === 'jobs.wait.v3') return encodeWaitCursorV3(cursor);
+  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+}
+
+export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor {
+  if (cursor.version === 'jobs.wait.v3') return filterWaitCursorV3(cursor, jobIds);
+  const deliveredJobIds = cursor.deliveredJobIds?.filter((id) => jobIds.includes(id));
+  if (cursor.version === undefined) return { ...cursor, ...(deliveredJobIds === undefined ? {} : { deliveredJobIds }) };
+  const locations = Object.fromEntries(
+    jobIds.flatMap((jobId) => {
+      const epochKey = cursor.locations[jobId];
+      return epochKey === undefined ? [] : [[jobId, epochKey]];
+    }),
+  );
+  const requestedEpochs = new Set(Object.values(locations));
+  const positions = Object.fromEntries(
+    Object.entries(cursor.positions).filter(([epochKey]) => requestedEpochs.has(epochKey)),
+  );
+  return {
+    version: 'jobs.wait.v2',
+    locations,
+    positions,
+    ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds }),
+  };
+}
 
 export type WaitCursorRejection = Readonly<{
   code: 'wait_cursor_unsupported' | 'wait_cursor_malformed';
@@ -80,6 +107,9 @@ export function decodeSerializedWaitCursor(raw: string): WaitCursorDecoded {
 export const WAIT_CURSOR_REPLAY_NOTICE =
   'saved cursor not accepted by this coordinator; progress and results are replayed from the start, so earlier results may repeat';
 
+export const ACKNOWLEDGED_FLAG = 1;
+export const ARTIFACT_PENDING_FLAG = 2;
+
 const V3_PREFIX = 'jobs.wait.v3:';
 const MAX_CURSOR_BYTES = 8192;
 export const UNRESOLVED_EPOCH = 0xff;
@@ -131,9 +161,9 @@ function validV3(value: Record<string, unknown>): boolean {
       (job.epoch !== UNRESOLVED_EPOCH && ((job.epoch as number) < 0 || (job.epoch as number) >= value.epochs.length)) ||
       !Number.isInteger(job.flags) ||
       (job.flags as number) < 0 ||
-      (job.flags as number) > 3 ||
+      (job.flags as number) > (ACKNOWLEDGED_FLAG | ARTIFACT_PENDING_FLAG) ||
       (job.epoch === UNRESOLVED_EPOCH && job.flags !== 0) ||
-      job.flags === 2
+      job.flags === ARTIFACT_PENDING_FLAG
     )
       return false;
     hashes.add(job.hash);

@@ -14,7 +14,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
-import type { WaitStreamEvent } from '#src/jobs/wait.js';
+import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import type { StoragePort } from '#src/infra/port-types.js';
 
 const fixtures: ReturnType<typeof createTerminalExportFixture>[] = [];

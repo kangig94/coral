@@ -1,13 +1,17 @@
 import { expect, it } from 'vitest';
-import { formatResultAvailability, formatWaitTerminal } from '#src/cli/format/wait.js';
+import { formatWaitTerminal } from '#src/cli/format/wait.js';
+import { formatResultAvailability } from '#src/cli/format/result-availability.js';
 import type { ResultAvailability } from '#src/jobs/terminal/export.js';
 
 it.each([
   [{ kind: 'available', resultPath: '/real/result.md' }, 'Result path: /real/result.md'],
   [{ kind: 'retained-away', retentionDays: 14 }, 'no longer kept: past the 14-day retention window'],
   [{ kind: 'repair-pending', ageUncertain: false }, 'the outcome above is final; Coral is writing the result file'],
-  [{ kind: 'failed', cause: 'repair-failed', retryScheduled: true }, 'Coral retries on its next maintenance pass'],
-  [{ kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false }, 'not repaired: source-epoch-retired'],
+  [{ kind: 'failed', cause: 'repair-failed', retryScheduled: true }, 'Coral will retry on its next maintenance pass.'],
+  [
+    { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false },
+    'the source journal is no longer retained. Coral cannot repair this file automatically.',
+  ],
 ] as const)('prints truthful artifact state %j', (availability, text) => {
   const output = formatResultAvailability(availability as ResultAvailability);
   expect(output).toContain(text);

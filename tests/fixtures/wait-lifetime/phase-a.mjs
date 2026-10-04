@@ -4,10 +4,10 @@ import { createConnection } from 'node:net';
 import { join } from 'node:path';
 import { createHttpHandler } from '#src/transport/http/handler.js';
 import { createIpcServer, closeIpcServer } from '#src/transport/ipc/server.js';
-import { decodeWaitCursor } from '#src/jobs/wait-cursor.js';
-import { serializeWaitCursor, waitCursorForJobs } from '#src/jobs/wait.js';
+import { decodeWaitCursor } from '#src/jobs/wait/cursor.js';
+import { serializeWaitCursor, waitCursorForJobs } from '#src/jobs/wait/cursor.js';
 import { formatWaitWaiting } from '#src/cli/format/wait.js';
-import { WaitSession } from '#src/jobs/wait-session.js';
+import { WaitSession } from '#src/jobs/wait/session.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 

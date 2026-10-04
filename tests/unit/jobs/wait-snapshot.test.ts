@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { WaitSession } from '#src/jobs/wait-session.js';
-import { parseWaitSnapshot, selectWaitSnapshot } from '#src/jobs/wait-snapshot.js';
+import { WaitSession } from '#src/jobs/wait/session.js';
+import { parseWaitSnapshot, selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
 import { formatWaitSnapshot } from '#src/cli/format/wait.js';
 import { admitted } from '#tests/helpers/wait-session.js';
@@ -127,6 +127,25 @@ describe('wait snapshot', () => {
     expect(full).toContain('BEYOND_10000_MARKER\nTRAILING_CONTENT\n');
     expect(full).toContain(jobs[0].detail!.exit!.diagnostics.warnings![0]);
     expect(formatJobDetail(jobs[0].detail!)).not.toContain('BEYOND_10000_MARKER');
+  });
+
+  it('keeps all omitted --lines progress resumable when 128 large rows exhaust the envelope', () => {
+    const jobs = Array.from({ length: 128 }, (_, i) => admitted(`j${i}`, [[i + 1, 'x'.repeat(500)]]));
+    const empty = collect(jobs.map((job) => ({ ...job, detail: { ...job.detail!, events: [] } })));
+    const overhead = Buffer.byteLength(JSON.stringify({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: empty }));
+    const messageBytes = Math.floor((2 * 1024 * 1024 - 20000 - overhead) / jobs.length);
+    for (const job of jobs) job.message = 'm'.repeat(messageBytes);
+    const snapshot = collect(jobs, 1);
+    expect(snapshot.jobs.every((job) => job.progress.length === 0)).toBe(true);
+    expect(snapshot.notices).toContain('Progress omitted to fit the complete response; run the continuation.');
+    expect(snapshot.remainingJobIds).toEqual(jobs.map((job) => job.jobId));
+    expect(parseWaitSnapshot(snapshot)).toEqual(snapshot);
+    const resumed = new WaitSession(snapshot.remainingJobIds, snapshot.cursor);
+    resumed.reconcile(jobs.map(({ message: _message, ...job }) => job));
+    const continuation = selectWaitSnapshot(resumed);
+    expect(continuation.jobs.every((job) => job.progress.length === 1 && !job.terminal)).toBe(true);
+    expect(continuation.remainingJobIds).toEqual([]);
+    expect(continuation.exitCode).toBe(0);
   });
 
   it('refuses oversized mandatory identities without changing the input collection cursor', () => {

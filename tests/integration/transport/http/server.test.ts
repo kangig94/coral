@@ -9,7 +9,7 @@ import {
   type Server as HttpServer,
 } from 'node:http';
 import { join } from 'node:path';
-import type { WaitStreamEvent } from '#src/jobs/wait.js';
+import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';

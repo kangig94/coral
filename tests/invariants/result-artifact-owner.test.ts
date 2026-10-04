@@ -37,3 +37,17 @@ it('keeps jobs independent of the workflow domain through the injected report po
     edges.filter((edge) => edge.source.startsWith('src/jobs/') && edge.target.startsWith('src/workflow/')),
   ).toEqual([]);
 });
+
+it.each<[string, string[]]>([
+  ['src/jobs/wait/contract.ts', ['./cursor.js', './session.js']],
+  ['src/cli/format/wait.ts', ['./result-availability.js']],
+  ['src/coordinator/lifecycle.ts', ['../jobs/retention-clock.js']],
+])('keeps owner-specific APIs out of foreign re-exports in %s', (path, owners) => {
+  const source = ts.createSourceFile(path, readFileSync(resolve(root, path), 'utf8'), ts.ScriptTarget.Latest, true);
+  const reexports = source.statements.flatMap((node) =>
+    ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)
+      ? [node.moduleSpecifier.text]
+      : [],
+  );
+  expect(reexports.filter((owner) => owners.includes(owner))).toEqual([]);
+});

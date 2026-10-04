@@ -1,20 +1,20 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Command } from 'commander';
 import { expect, it } from 'vitest';
 import { registerSessionCommands } from '#src/cli/commands/session.js';
 import { formatLaunch } from '#src/cli/format/jobs.js';
 import {
-  formatResultAvailability,
   formatWaitContinuation,
   formatWaitSnapshot,
   formatWaitTerminal,
   formatWaitWaiting,
 } from '#src/cli/format/wait.js';
-import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait-cursor.js';
-import { WaitSession } from '#src/jobs/wait-session.js';
-import { selectWaitSnapshot } from '#src/jobs/wait-snapshot.js';
-import { serializeWaitCursor } from '#src/jobs/wait.js';
+import { formatResultAvailability } from '#src/cli/format/result-availability.js';
+import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait/cursor.js';
+import { WaitSession } from '#src/jobs/wait/session.js';
+import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
@@ -24,10 +24,7 @@ import { admitted } from '#tests/helpers/wait-session.js';
 
 const root = resolve('.');
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
-const skills = readdirSync(resolve(root, 'clients/skills')).filter((name) => {
-  const text = read(`clients/skills/${name}/SKILL.md`);
-  return text.includes('coral-cli wait');
-});
+const skills = ['analyze', 'bugfix', 'code-simplify', 'plan', 'preplan', 'ralph'];
 
 it.each([false, true])(
   'M1 terminal and waiting output contain one runnable cursor-aware command, embed=%s',
@@ -86,7 +83,10 @@ it('M2 help and exit documentation preserve failure precedence even with sibling
   session.reconcile([admitted('a'), pending]);
   expect(session.exitCode()).toBe(75);
   expect(output).toContain('--now');
-  expect(output).toContain('drop --now');
+  expect(output.replace(/\s+/g, ' ')).toContain('continuations keep --now');
+  expect(output.replace(/\s+/g, ' ')).toContain('drop it explicitly to switch to a blocking wait');
+  expect(output.replace(/\s+/g, ' ')).toContain('first terminal or ~590 s');
+  expect(output.replace(/\s+/g, ' ')).toContain('--now returns immediately');
   expect(output.replace(/\s+/g, ' ')).toContain('artifact availability is reported separately');
 });
 
@@ -127,6 +127,8 @@ it.each(skills)('M3/M4 skill %s follows rendered launch, availability and snapsh
     'Unverified result path:',
     WAIT_CURSOR_REPLAY_NOTICE,
     '--now --cursor <c>',
+    'Snapshot continuations keep `--now`; drop it explicitly only to switch to a blocking wait.',
+    'line starting with `Still waiting` anywhere in the output',
     'Siblings are results still to collect.',
     'Carrier unconfirmed for: <ids>',
     'change cwd',
@@ -141,15 +143,21 @@ it.each(skills)('M3/M4 skill %s follows rendered launch, availability and snapsh
   );
 });
 
+it('plan retrieves full retained workflow content when no result path is available', () => {
+  const text = read('clients/skills/plan/SKILL.md');
+  expect(text).toContain('Full retained outcome: <command>');
+  expect(text).toContain('run that exact command from `{work_dir}` for the full workflow content');
+});
+
 it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contracts are accurate in %s', (path) => {
   const text = read(path);
   for (const owner of [
     'jobs/terminal/recording.ts:appendJobTerminalRecorded',
     'jobs/terminal/export.ts:TerminalResultExportOwner',
     'jobs/location-index.ts:JobLocationView',
-    'jobs/wait-session.ts:WaitSession',
-    'jobs/wait-cursor.ts',
-    'jobs/wait-snapshot.ts',
+    'jobs/wait/session.ts:WaitSession',
+    'jobs/wait/cursor.ts',
+    'jobs/wait/snapshot.ts',
     'jobs/export-retention.ts:terminalEligibility',
     'JobLocationIndex.resultDurable',
   ])
