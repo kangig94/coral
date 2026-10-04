@@ -1,3 +1,4 @@
+import { WAIT_SNAPSHOT_BYTES } from '../../jobs/wait.js';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
@@ -35,7 +36,7 @@ import {
   type RpcMethodSpec,
 } from '../rpc/catalog.js';
 import { readIpcOperationalSpec, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
-import { JOBS_WAIT_EXTENSIONS } from '../rpc/jobs.js';
+import { jobsWaitExtensions } from '../rpc/jobs.js';
 import { authorizationFailurePayload, type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
@@ -377,7 +378,7 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
     pid: health.pid,
     ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
     ...(health.sentinel === undefined ? {} : { sentinel: health.sentinel }),
-    jobsWaitExtensions: JOBS_WAIT_EXTENSIONS,
+    jobsWaitExtensions: jobsWaitExtensions(rpcPorts.jobs),
   };
 }
 
@@ -780,7 +781,7 @@ async function handleIpcOperationalRequest(
     await finishUnaryResponse({
       kind: 'response',
       id: request.id,
-      result: { ...rpcPorts.health.read(), jobsWaitExtensions: JOBS_WAIT_EXTENSIONS },
+      result: { ...rpcPorts.health.read(), jobsWaitExtensions: jobsWaitExtensions(rpcPorts.jobs) },
     });
     return true;
   }
@@ -941,6 +942,21 @@ async function dispatchIpcCatalogRequest(
         const body = invocation.body as { code?: unknown; message?: unknown };
         const message = typeof body.message === 'string' ? body.message : 'request failed';
         await finishUnaryResponse(requestErrorResponse(request.id, message, invocation.body));
+        return;
+      }
+      if (
+        request.method === 'jobs.wait.snapshot' &&
+        Buffer.byteLength(encode({ kind: 'response', id: request.id, result: invocation.body })) > WAIT_SNAPSHOT_BYTES
+      ) {
+        const refusal = {
+          code: 'wait_snapshot_too_large',
+          message:
+            'Snapshot envelope exceeds the response size budget; retry a smaller job set with the original cursor.',
+        };
+        const response = requestErrorResponse(request.id, refusal.message, refusal);
+        await finishUnaryResponse(
+          Buffer.byteLength(encode(response)) <= WAIT_SNAPSHOT_BYTES ? response : { ...response, id: null },
+        );
         return;
       }
       const completeShutdownRecovery =

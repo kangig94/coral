@@ -415,7 +415,7 @@ export function seedHistoricalEpoch(
 
 export type HistoricalSourceRead =
   | Readonly<{ kind: 'read'; locations: ReadonlyMap<string, JobLocation | null> }>
-  | Readonly<{ kind: 'unreadable' }>;
+  | Readonly<{ kind: 'unreadable'; retired?: boolean }>;
 
 export type HistoricalSourceReader = (epochKey: string, jobIds: readonly string[]) => HistoricalSourceRead;
 
@@ -426,7 +426,8 @@ export function readHistoricalSource(
   jobIds: readonly string[],
 ): HistoricalSourceRead {
   const source = historicalSources.get(view)?.get(epochKey);
-  if (source === undefined || readers[source.fingerprint] === undefined) return { kind: 'unreadable' };
+  if (source === undefined) return { kind: 'unreadable', retired: true };
+  if (readers[source.fingerprint] === undefined) return { kind: 'unreadable' };
   let release: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
@@ -438,7 +439,7 @@ export function readHistoricalSource(
         source.originalEpoch.lineageKey ?? epochKey,
       ) ??
       source.originalEpoch;
-    if (!source.storage.existsSync(epoch.path)) return { kind: 'unreadable' };
+    if (!source.storage.existsSync(epoch.path)) return { kind: 'unreadable', retired: true };
     release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), STORE_LOCK_FILE_NAME));
     const identity = epochKey.startsWith('{')
       ? inspectResolvedStoreEpochKey({ storage: source.storage }, epoch)

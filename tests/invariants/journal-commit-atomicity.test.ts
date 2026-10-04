@@ -149,7 +149,9 @@ function createWorkflowExecutionPort(
           ? 0
           : 'afterSeq' in req.cursor
             ? req.cursor.afterSeq
-            : Math.max(0, ...Object.values(req.cursor.positions)),
+            : req.cursor.version === 'jobs.wait.v3'
+              ? Math.max(0, ...req.cursor.epochs.map((epoch) => epoch.watermark))
+              : Math.max(0, ...Object.values(req.cursor.positions)),
         100,
       );
       return emitWaitEvents(

@@ -186,6 +186,10 @@ describe('wait SSE reconnect', () => {
       getCurrentJournalSeq: () =>
         (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
       resultJobsRoot: '/tmp/coral-exports/jobs',
+      observeResultAvailability: (jobId) => ({
+        kind: 'available',
+        resultPath: `${'/tmp/coral-exports/jobs'}/${jobId}/result.md`,
+      }),
     });
 
     const firstIterator = coordinator.waitForJobs({ jobIds: [jobId], timeoutSeconds: 5 })[Symbol.asyncIterator]();
@@ -379,6 +383,10 @@ describe('wait SSE reconnect', () => {
       getCurrentJournalSeq: () =>
         (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
       resultJobsRoot: '/tmp/coral-exports/jobs',
+      observeResultAvailability: (jobId) => ({
+        kind: 'available',
+        resultPath: `${'/tmp/coral-exports/jobs'}/${jobId}/result.md`,
+      }),
     });
 
     const iterator = coordinator.waitForJobs({ jobIds: [jobId], timeoutSeconds: 1 })[Symbol.asyncIterator]();

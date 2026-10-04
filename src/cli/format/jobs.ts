@@ -1,3 +1,4 @@
+import { formatResultAvailability } from './result-availability.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import { assertNever } from '../../infra/error-format.js';
@@ -237,6 +238,7 @@ export function formatJobDetail(
   response: JobDetailResponse,
   describeCauseRef?: CauseRefDescriber,
   workflowChildren: ReadonlyArray<WorkflowChildJob> = [],
+  full = false,
 ): string {
   const status = response.status;
   const usage = formatUsageSegment(response.exit?.diagnostics.usage, {
@@ -263,13 +265,15 @@ export function formatJobDetail(
     status.lastSeq === undefined ? undefined : `Last seq: ${status.lastSeq}`,
     response.exit === null ? undefined : `Exit: ${terminalOutcomeText(response.exit, describeCauseRef)}`,
     response.exit?.endTime === undefined ? undefined : `Ended: ${response.exit.endTime}`,
+    full && response.exit ? `Diagnostics:\n${JSON.stringify(response.exit.diagnostics, null, 2)}` : undefined,
+    response.availability === undefined ? undefined : formatResultAvailability(response.availability),
     usage === undefined ? undefined : `Usage:\n  ${usage}`,
     response.exit === null
       ? [
           'Follow it with the command below.',
           formatJobsOperatorCommand({ kind: 'wait-job', jobId: status.jobId }),
         ].join('\n')
-      : `Result:\n${truncatePreview(pickTerminalPreviewSource(response.exit, describeCauseRef))}`,
+      : `Result:\n${full ? (response.exit.content.length > 0 ? response.exit.content : pickTerminalPreviewSource(response.exit, describeCauseRef)) : truncatePreview(pickTerminalPreviewSource(response.exit, describeCauseRef))}`,
   ];
 
   return joinLines(lines);
@@ -338,12 +342,17 @@ export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFil
 
   return sections.join('\n\n');
 }
-type JobsOperatorCommand = JobOperatorRemedy | Readonly<{ kind: 'wait-job'; jobId: string }>;
+export type JobsOperatorCommand =
+  | Readonly<{ kind: 'jobs-detail-full'; jobId: string }>
+  | JobOperatorRemedy
+  | Readonly<{ kind: 'wait-job'; jobId: string }>;
 
-function renderJobsOperatorCommand(command: JobsOperatorCommand): string {
+export function renderJobsOperatorCommand(command: JobsOperatorCommand): string {
   switch (command.kind) {
     case 'abort-job':
       return `coral-cli abort jobs ${command.jobId}`;
+    case 'jobs-detail-full':
+      return `coral-cli jobs detail ${command.jobId} --full`;
     case 'jobs-detail':
       return `coral-cli jobs detail ${command.jobId}`;
     case 'wait-job':

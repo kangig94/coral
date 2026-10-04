@@ -34,6 +34,11 @@ describe('planCarrierWaitEvents', () => {
     expect(pending).toEqual(new Set([JOB_A, JOB_B]));
   });
 
+  it('preserves unknown for a missing observer reply', () => {
+    const plan = planCarrierWaitEvents([observation(JOB_A, 'live')], new Set([JOB_A, JOB_B]), new Set());
+    expect(plan.unknownJobIds).toEqual([JOB_B]);
+  });
+
   it('collects unknowns for the waiting snapshot in sorted order and emits nothing for them', () => {
     const plan = planCarrierWaitEvents(
       [observation(JOB_B, 'unknown'), observation(JOB_A, 'unknown')],
@@ -67,6 +72,10 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,
     resultJobsRoot: '/unused',
+    observeResultAvailability: (jobId: string) => ({
+      kind: 'available',
+      resultPath: `${'/unused'}/${jobId}/result.md`,
+    }),
     subscribeJobEvents: () => ({ [Symbol.asyncIterator]: () => ({ next: () => stuck, return: () => stuck }) }),
     observeCarriers: async () => {
       calls++;

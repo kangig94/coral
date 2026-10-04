@@ -318,6 +318,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.waitService.awaitLaunch(jobId, timeoutMs);
   }
 
+  readWaitAdmission(jobId: string, epochKey: string) {
+    return this.waitService.readWaitAdmission(jobId, epochKey);
+  }
+
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     yield* this.waitService.waitStream(req);
   }

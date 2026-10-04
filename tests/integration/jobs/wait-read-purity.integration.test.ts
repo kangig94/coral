@@ -1,3 +1,4 @@
+import { formatJobDetail } from '#src/cli/format/jobs.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -76,6 +77,7 @@ function fixture(historical = false) {
     reader,
     (id) => owner.observeResultAvailability(id),
     (id) => owner.hintRepair(id),
+    (id) => owner.progressRetentionExpired(id),
   );
   return { ...f, addressing, closure, reader, detail, owner };
 }
@@ -202,7 +204,7 @@ async function terminal(stream: AsyncGenerator<WaitStreamEvent>): Promise<WaitSt
 }
 
 describe('Phase D wait read purity (Revision S3)', () => {
-  it.each(['scopeCheck', 'detail', 'validateWait', 'waitStream'] as const)(
+  it.each(['scopeCheck', 'detail', 'validateWait', 'waitStream', 'snapshot', 'detailFull'] as const)(
     'admits an unindexed active terminal through %s without registration',
     async (entry) => {
       const f = fixture();
@@ -214,11 +216,21 @@ describe('Phase D wait read purity (Revision S3)', () => {
           valid: [f.jobId],
           missing: [],
         });
+      if (entry === 'detailFull') {
+        const detail = f.addressing.detail(f.jobId);
+        if (detail && 'status' in detail)
+          expect(formatJobDetail(detail, undefined, [], true)).toContain('canonical result');
+      }
+      if (entry === 'snapshot')
+        expect(
+          f.addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true }).jobs[0].terminal?.contentPreview,
+        ).toContain('canonical result');
       if (entry === 'detail')
         expect(f.addressing.detail(f.jobId)).toMatchObject({ exit: { content: 'canonical result' } });
-      if (entry === 'validateWait') expect(f.addressing.validateWait({ jobIds: [f.jobId] })).toBeNull();
+      if (entry === 'validateWait')
+        expect(f.addressing.validateWait({ jobIds: [f.jobId], supportsWaitV3: true })).toBeNull();
       if (entry === 'waitStream')
-        expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId], supportsWaitV2: true }))).toMatchObject({
+        expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId], supportsWaitV3: true }))).toMatchObject({
           type: 'terminal',
           result: { content: 'canonical result' },
         });
@@ -234,7 +246,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const observation = vi.spyOn(f.owner, 'observeResultAvailability');
     const hint = vi.spyOn(f.owner, 'hintRepair');
     const check = measure(f);
-    expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId] }))).toMatchObject({
+    expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId], supportsWaitV3: true }))).toMatchObject({
       type: 'terminal',
       result: { content: 'canonical result' },
     });
@@ -244,7 +256,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     expect(existsSync(f.resultPath)).toBe(false);
   });
 
-  it.each(['scopeCheck', 'detail', 'validateWait', 'waitStream'] as const)(
+  it.each(['scopeCheck', 'detail', 'validateWait', 'waitStream', 'snapshot', 'detailFull'] as const)(
     'reads a historical terminal committed only in WAL through %s without hydration',
     async (entry) => {
       const f = fixture(true);
@@ -263,6 +275,15 @@ describe('Phase D wait read purity (Revision S3)', () => {
         expect(
           f.addressing.scopeCheck([f.jobId], canonicalWorkDirWireSchema.parse(f.root), 'contains').missing,
         ).toEqual([]);
+      if (entry === 'detailFull') {
+        const detail = f.addressing.detail(f.jobId);
+        if (detail && 'status' in detail)
+          expect(formatJobDetail(detail, undefined, [], true)).toContain('terminal only in WAL');
+      }
+      if (entry === 'snapshot')
+        expect(
+          f.addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true }).jobs[0].terminal?.contentPreview,
+        ).toContain('terminal only in WAL');
       if (entry === 'detail')
         expect(f.addressing.detail(f.jobId)).toMatchObject({
           exit: { content: 'terminal only in WAL' },
@@ -272,9 +293,9 @@ describe('Phase D wait read purity (Revision S3)', () => {
           ],
         });
       if (entry === 'validateWait')
-        expect(f.addressing.validateWait({ jobIds: [f.jobId], supportsWaitV2: true })).toBeNull();
+        expect(f.addressing.validateWait({ jobIds: [f.jobId], supportsWaitV3: true })).toBeNull();
       if (entry === 'waitStream')
-        expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId], supportsWaitV2: true }))).toMatchObject({
+        expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId], supportsWaitV3: true }))).toMatchObject({
           type: 'terminal',
           result: { content: 'terminal only in WAL', durationMs: 9 },
         });
@@ -356,7 +377,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     );
     const check = measure(f);
     expect(addressing.detail(f.jobId)).toMatchObject({ exit: { content: 'never exported' } });
-    expect(await terminal(addressing.waitStream({ jobIds: [f.jobId], supportsWaitV2: true }))).toMatchObject({
+    expect(await terminal(addressing.waitStream({ jobIds: [f.jobId], supportsWaitV3: true }))).toMatchObject({
       type: 'terminal',
       result: { content: 'never exported' },
     });
@@ -380,7 +401,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
       'typo',
     ]);
     expect(f.addressing.detail('typo')).toBeNull();
-    expect(f.addressing.validateWait({ jobIds: ['typo'] })).toBeNull();
+    expect(f.addressing.validateWait({ jobIds: ['typo'], supportsWaitV3: true })).toBeNull();
     const disposition = f.addressing.unknownJobDisposition();
     const caveat = f.addressing.unknownJobCaveat();
     check();
@@ -422,7 +443,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const check = measure(f);
     expect(addressing.scopeCheck([f.jobId], canonicalWorkDirWireSchema.parse(f.root), 'contains').missing).toEqual([]);
     expect(addressing.detail(f.jobId)).toMatchObject({ status: { jobKind: 'kb' } });
-    expect(addressing.validateWait({ jobIds: [f.jobId] })).toBeNull();
+    expect(addressing.validateWait({ jobIds: [f.jobId], supportsWaitV3: true })).toBeNull();
     check();
   });
 

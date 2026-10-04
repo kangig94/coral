@@ -1,0 +1,518 @@
+import { build } from 'esbuild';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { Command } from 'commander';
+import { registerSessionCommands } from '#src/cli/commands/session.js';
+import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
+import * as dispatch from '#src/cli/dispatch.js';
+import { createConnection } from 'node:net';
+import { createServer, request } from 'node:http';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createIpcServer, closeIpcServer } from '#src/transport/ipc/server.js';
+import { createIpcClient } from '#src/transport/ipc/client.js';
+import { createHttpHandler } from '#src/transport/http/handler.js';
+import { JobAddressing } from '#src/jobs/addressing.js';
+import { seedHistoricalEpoch, historicalSourceReader } from '#src/jobs/historical-reader.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
+import { initTestJob } from '#tests/helpers/session.js';
+import { commitJobTerminal } from '#tests/helpers/job-commits.js';
+import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
+import { parseWaitSnapshot } from '#src/jobs/wait-snapshot.js';
+import { serializeWaitCursor } from '#src/jobs/wait.js';
+import { formatWaitSnapshot } from '#src/cli/format/wait.js';
+import { formatJobDetail, renderJobsOperatorCommand } from '#src/cli/format/jobs.js';
+import { WaitSession } from '#src/jobs/wait-session.js';
+import { createRealTimePort } from '#src/infra/time.js';
+import type { WaitSnapshot } from '#src/jobs/wait-session.js';
+import type { JobDetailResponse } from '#src/jobs/records.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { admitted } from '#tests/helpers/wait-session.js';
+import { jobsWaitExtensions } from '#src/transport/rpc/jobs.js';
+import { parseWaitStreamEventValue } from '#src/jobs/wait-stream-event.js';
+
+const cleanup: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+  vi.restoreAllMocks();
+  for (const close of cleanup.splice(0).reverse()) await close();
+});
+
+function ports(addressing?: JobAddressing): HttpHandlerPorts {
+  const noop = () => {};
+  return {
+    identity: {
+      pluginRoot: '/tmp',
+      token: 'http-token',
+      bootToken: 'boot-token',
+      namespace: 'fixture',
+      instanceId: 'fixture',
+      log: noop,
+      now: Date.now,
+    },
+    admin: {
+      isLifecycleRunning: () => true,
+      isDrainRequested: () => false,
+      isLaunchFenceActive: () => false,
+      beginRequest: noop,
+      endRequest: noop,
+    },
+    events: { addResponse: noop, removeResponse: noop },
+    health: {
+      read: () => ({
+        status: 'ok',
+        version: '0.10.17',
+        bundleHash: 'fixture',
+        flavor: 'prod',
+        namespace: 'fixture',
+        instanceId: 'fixture',
+        pid: process.pid,
+      }),
+    },
+    coralEnvSnapshot: {},
+    systemProviderScope: {},
+    jobs: addressing
+      ? {
+          scopeCheck: addressing.scopeCheck.bind(addressing),
+          validateWait: addressing.validateWait.bind(addressing),
+          admitWait: addressing.admitWait.bind(addressing),
+          snapshot: addressing.snapshot.bind(addressing),
+          waitStream: addressing.waitStream.bind(addressing),
+          detail: addressing.detail.bind(addressing),
+          unknownJobDisposition: addressing.unknownJobDisposition.bind(addressing),
+          outcomeUnrecoverable: addressing.outcomeUnrecoverable.bind(addressing),
+          waitHandoverSignal: () => new AbortController().signal,
+        }
+      : {},
+  } as never;
+}
+
+describe('actual wait carriage', () => {
+  it('delivers 128 huge retained outcomes in one complete unary IPC envelope and full detail keeps diagnostics and trailing text', async () => {
+    const f = createTerminalExportFixture('provider', true);
+    cleanup.push(f.close);
+    const ids = Array.from({ length: 128 }, (_, i) => (i === 0 ? f.jobId : `large-${i}`));
+    const content = '🙂\\\"\n'.repeat(16000) + '\nUNIQUE_BEYOND_10000\nTAIL_CONTENT\n';
+    const warning = 'complete diagnostic '.repeat(8000) + 'DIAGNOSTIC_TAIL';
+    for (const [i, jobId] of ids.entries()) {
+      if (i > 0)
+        initTestJob(f.store, {
+          jobId,
+          sessionId: `session-${i}`,
+          provider: 'claude',
+          projectRoot: f.root,
+          backendNamespace: 'fixture',
+        });
+      const seq = commitJobTerminal(
+        f.store,
+        jobId,
+        i === 0 ? 'session-1' : `session-${i}`,
+        { content, outcome: { kind: 'provider_exit', code: 0, note: 'large note '.repeat(10000) }, durationMs: 9 },
+        { diagnostics: { warnings: [warning] } },
+      );
+      const d = f.store.loadJobProjectionDetail(jobId);
+      f.index.recordTerminal(
+        jobId,
+        { status: d.status!, exit: d.exit, events: f.store.readJobEvents(jobId), readiness: deriveLaunchReadiness(d) },
+        f.index.resultPathFor(jobId),
+        seq,
+        f.db,
+        true,
+      );
+    }
+    f.advance(15 * 86400000);
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    f.removeSource();
+    const addressing = new JobAddressing(
+      f.index.readOnlyView(),
+      {
+        epochKey: () => 'other',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+      () => 'decided',
+      historicalSourceReader(f.index),
+      (id) => f.store.getResultExportOwner().observeResultAvailability(id),
+    );
+    const listenerPorts = ports(addressing);
+    const listener = createIpcServer(listenerPorts);
+    cleanup.push(() => closeIpcServer(listener));
+    const socketPath = join(f.root, 'snapshot.sock');
+    await new Promise<void>((resolve) => listener.server.listen(socketPath, resolve));
+    const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
+    expect(jobsWaitExtensions(listenerPorts.jobs)).toContain('supportsWaitV3');
+    expect(await client.health<{ jobsWaitExtensions: string[] }>()).toMatchObject({
+      jobsWaitExtensions: expect.arrayContaining(['supportsWaitV3']),
+    });
+    const stream = await client.subscribe('jobs.wait', { jobIds: [ids[0]], projectRoot: f.root, supportsWaitV3: true });
+    try {
+      for await (const event of stream) {
+        const decoded = parseWaitStreamEventValue(event);
+        if (decoded?.type === 'terminal') {
+          expect(decoded.availability?.kind).toBe('retained-away');
+          break;
+        }
+      }
+    } finally {
+      await stream.close();
+    }
+    const response = client.request<WaitSnapshot>('jobs.wait.snapshot', { jobIds: ids, projectRoot: f.root });
+    await expect(response).resolves.toHaveProperty('version', 'jobs.wait.v3');
+    const snapshot = parseWaitSnapshot(await response);
+    expect(snapshot.jobs).toHaveLength(128);
+    expect(
+      snapshot.jobs.every(
+        (job) => job.terminal && job.terminal.contentOmittedBytes > 0 && job.terminal.diagnosticOmittedBytes > 0,
+      ),
+    ).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify({ kind: 'response', id: 1, result: snapshot }))).toBeLessThan(
+      2 * 1024 * 1024,
+    );
+    const printed = formatWaitSnapshot(snapshot);
+    expect(printed).not.toContain('Result path:');
+    expect(printed).toContain('no longer kept: past the 14-day retention window');
+    const command = renderJobsOperatorCommand({ kind: 'jobs-detail-full', jobId: ids[0] });
+    expect(printed).toContain(command);
+    const resumed = parseWaitSnapshot(
+      await client.request('jobs.wait.snapshot', {
+        jobIds: ids,
+        projectRoot: f.root,
+        cursor: new WaitSession([]).cursor(),
+      }),
+    );
+    expect(resumed.jobs).toHaveLength(128);
+    const acknowledged = new WaitSession(ids);
+    acknowledged.reconcile(addressing.admitWait({ jobIds: ids, projectRoot: f.root }));
+    for (const job of acknowledged.admissions) acknowledged.acknowledge(job);
+    const collected = parseWaitSnapshot(
+      await client.request('jobs.wait.snapshot', {
+        jobIds: ids,
+        projectRoot: f.root,
+        cursor: acknowledged.cursor(),
+      }),
+    );
+    expect(collected.jobs.every((job) => job.alreadyCollected && !job.terminal)).toBe(true);
+    const detail = await client.request<JobDetailResponse>('jobs.detail', { jobId: ids[0], projectRoot: f.root });
+    const full = formatJobDetail(detail, undefined, [], true);
+    expect(detail.exit!.content).toBe(content);
+    vi.spyOn(dispatch, 'makeClient').mockReturnValue({
+      snapshotJobsWait: (fields: Record<string, unknown>) =>
+        client.request('jobs.wait.snapshot', { ...fields, projectRoot: f.root }),
+      detailJob: (jobId: string) => client.request('jobs.detail', { jobId, projectRoot: f.root }),
+    } as never);
+    let output = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, callback?: () => void) => {
+      output += chunk;
+      callback?.();
+      return true;
+    }) as never);
+    const program = new Command();
+    registerSessionCommands(program, createBuiltInProviderRegistry());
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', ...ids, '--now']);
+    expect(output).toContain('Content preview:');
+    expect(output).toContain(command);
+    output = '';
+    await program.parseAsync(['node', ...command.split(' ')]);
+    expect(output).toContain('UNIQUE_BEYOND_10000\nTAIL_CONTENT\n');
+    expect(output).toContain(warning);
+    expect(output).toContain('no longer kept');
+    expect(full).toContain('UNIQUE_BEYOND_10000\nTAIL_CONTENT\n');
+    expect(full).toContain(warning);
+    expect(full).toContain('provider exited 0');
+    vi.restoreAllMocks();
+    const original = addressing.snapshot({ jobIds: ids, projectRoot: f.root });
+    const raw = createConnection(socketPath);
+    await new Promise<void>((resolve) => raw.once('connect', resolve));
+    raw.write(
+      JSON.stringify({
+        kind: 'request',
+        id: 'disconnect',
+        method: 'jobs.wait.snapshot',
+        auth: { kind: 'boot', token: 'boot-token' },
+        params: { jobIds: ids, projectRoot: f.root },
+      }) + '\n',
+    );
+    raw.destroy();
+    expect(addressing.snapshot({ jobIds: ids, projectRoot: f.root }).jobs[0].terminal).toEqual(
+      original.jobs[0].terminal,
+    );
+  }, 30000);
+
+  it.each([64, 128])(
+    'real authenticated HTTP accepts %i-epoch cursors and reassembles complete SSE frames without 431',
+    async (count) => {
+      const jobs = Array.from({ length: count }, (_, i) => admitted(`j${i}`, [], false, `/tmp/epoch-${i}`));
+      const session = new WaitSession(jobs.map((job) => job.jobId));
+      session.reconcile(jobs);
+      const cursor = session.cursor();
+      for (const epoch of cursor.epochs) {
+        epoch.watermark = Number.MAX_SAFE_INTEGER;
+        epoch.lineOffset = 0xffffffff;
+      }
+      const p = ports();
+      p.jobs.scopeCheck = () => ({ valid: jobs.map((job) => job.jobId), missing: [], mismatch: [] });
+      p.jobs.admitWait = () => jobs;
+      p.jobs.validateWait = () => null;
+      p.jobs.waitStream = async function* () {
+        yield {
+          type: 'waiting',
+          version: 'jobs.wait.v3',
+          waitingJobIds: jobs.map((job) => job.jobId),
+          cursor,
+          exitCode: 75,
+        };
+      };
+      const handler = createHttpHandler(p);
+      const server = createServer((req, res) => void handler(req, res));
+      cleanup.push(
+        () =>
+          new Promise<void>((resolve) => {
+            server.closeAllConnections();
+            server.close(() => resolve());
+          }),
+      );
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const port = (server.address() as { port: number }).port;
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = request(
+          {
+            hostname: '127.0.0.1',
+            port,
+            path: '/jobs/wait',
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'http-token',
+              'Last-Event-ID': serializeWaitCursor(cursor),
+            },
+          },
+          (res) => {
+            let body = '';
+            res.on('data', (chunk: Buffer) => {
+              body += chunk.toString();
+            });
+            res.on('end', () => resolve({ status: res.statusCode!, body }));
+          },
+        );
+        req.on('error', reject);
+        req.end(JSON.stringify({ jobIds: jobs.map((job) => job.jobId), projectRoot: '/tmp', supportsWaitV3: true }));
+      });
+      expect(response.status).toBe(200);
+      expect(response.body.endsWith('\n\n')).toBe(true);
+      const data = response.body
+        .split('\n')
+        .find((line) => line.startsWith('data: '))!
+        .slice(6);
+      expect(JSON.parse(data).cursor).toEqual(cursor);
+    },
+  );
+  it.each(['drains', 'expires'])('wait SSE backpressure %s through a bounded, resumable carriage', async (mode) => {
+    const p = ports();
+    const job = admitted('a', [], false);
+    const session = new WaitSession(['a']);
+    session.reconcile([job]);
+    p.jobs.scopeCheck = () => ({ valid: ['a'], missing: [], mismatch: [] });
+    p.jobs.admitWait = () => [job];
+    p.jobs.validateWait = () => null;
+    p.jobs.waitStream = async function* () {
+      yield { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['a'], cursor: session.cursor(), exitCode: 75 };
+    };
+    const handler = createHttpHandler(p);
+    let responseClosed = false;
+    const server = createServer((req, res) => {
+      const write = res.write.bind(res);
+      let blocked = false;
+      res.write = ((data: string) => {
+        if (!blocked && data.includes('event: waiting')) {
+          blocked = true;
+          if (mode === 'drains')
+            setTimeout(() => {
+              write(data);
+              res.emit('drain');
+            }, 25);
+          return false;
+        }
+        return write(data);
+      }) as typeof res.write;
+      res.once('close', () => {
+        responseClosed = true;
+      });
+      void handler(req, res);
+    });
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const started = performance.now();
+    const response = new Promise<string>((resolve, reject) => {
+      const req = request(
+        {
+          hostname: '127.0.0.1',
+          port: (server.address() as { port: number }).port,
+          path: '/jobs/wait',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': 'http-token' },
+        },
+        (res) => {
+          let text = '';
+          res.on('data', (chunk: Buffer) => {
+            text += chunk.toString();
+          });
+          res.on('end', () => resolve(text));
+          res.on('error', reject);
+        },
+      );
+      req.on('error', reject);
+      req.end(JSON.stringify({ jobIds: ['a'], projectRoot: '/tmp', supportsWaitV3: true, timeoutSeconds: 1 }));
+    });
+    await expect(response).resolves.toEqual(expect.any(String));
+    const body = await response;
+    expect(responseClosed).toBe(true);
+    expect(body.endsWith('\n\n')).toBe(true);
+    if (mode === 'drains') {
+      expect(performance.now() - started).toBeGreaterThanOrEqual(20);
+      expect(body).toContain('event: waiting');
+      expect(body).toContain(serializeWaitCursor(session.cursor()));
+    } else {
+      expect(performance.now() - started).toBeLessThan(1500);
+      expect(body).toContain('event: error');
+      expect(body).toContain('last completely received cursor');
+      expect(body).not.toContain('id: ');
+    }
+  });
+
+  it('advertises V3 only with a working snapshot and validates its admission, artifact and continuation contracts', async () => {
+    const p = ports();
+    expect(jobsWaitExtensions(p.jobs)).not.toContain('supportsWaitV3');
+    const a = admitted('a');
+    a.availability = { kind: 'repair-pending', ageUncertain: false };
+    const admissions = [
+      a,
+      { jobId: 'ghost', disposition: 'missing' as const },
+      { jobId: 'u', disposition: 'discovery-unknown' as const },
+    ];
+    const addressing = new JobAddressing(
+      { time: createRealTimePort() } as never,
+      { epochKey: () => 'epoch-E' } as never,
+      () => false,
+      () => 'pending',
+    );
+    vi.spyOn(addressing, 'admitWait').mockReturnValue(admissions);
+    const complete = ports(addressing);
+    expect(jobsWaitExtensions(complete.jobs)).toContain('supportsWaitV3');
+    const snapshot = parseWaitSnapshot(complete.jobs.snapshot!({ jobIds: ['a', 'ghost', 'u'], projectRoot: '/tmp' }));
+    expect(snapshot.jobs[0].availability?.kind).toBe('repair-pending');
+    expect(snapshot.remainingJobIds).toEqual(['a', 'u']);
+    expect(snapshot.exitCode).toBe(1);
+    for await (const event of complete.jobs.waitStream({
+      jobIds: ['a', 'ghost', 'u'],
+      projectRoot: '/tmp',
+      supportsWaitV3: true,
+    }))
+      expect(parseWaitStreamEventValue(event)).toEqual(event);
+    complete.jobs.snapshot = undefined;
+    expect(jobsWaitExtensions(complete.jobs)).not.toContain('supportsWaitV3');
+  });
+  it('collects a cross-process maintenance export after an acknowledged snapshot without replaying its outcome', async () => {
+    const f = createTerminalExportFixture('provider', true);
+    cleanup.push(f.close);
+    f.complete();
+    const hints = new Set<string>();
+    const addressing = new JobAddressing(
+      f.index.readOnlyView(),
+      {
+        epochKey: () => f.epochKey,
+        detail: (id) =>
+          ({
+            ...f.store.loadJobProjectionDetail(id),
+            events: f.store.readJobEvents(id),
+            readiness: 'ready',
+          }) as JobDetailResponse,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+      () => 'pending',
+      historicalSourceReader(f.index),
+      (id) => f.store.getResultExportOwner().observeResultAvailability(id),
+      (id) => hints.add(id),
+    );
+    const snapshot = addressing.snapshot({ jobIds: [f.jobId], projectRoot: f.root });
+    expect(snapshot.jobs[0].availability?.kind).toBe('repair-pending');
+    expect(snapshot.cursor.jobs[0].flags).toBe(3);
+    expect(hints.has(f.jobId)).toBe(true);
+    const imports = [
+      ['createRealRuntime', 'src/runtime/real.ts'],
+      ['JobStore', 'src/jobs/store.ts'],
+      ['JobLocationIndex', 'src/jobs/location-index.ts'],
+      ['createEventBodyCodec', 'src/store/event-body-codec.ts'],
+      ['newRawDatabase', 'tests/helpers/test-db.ts'],
+      ['permissiveProviderLookupPort', 'tests/helpers/append-context.ts'],
+    ]
+      .map(([name, path]) => `import { ${name} } from ${JSON.stringify(resolve(path))};`)
+      .join('\n');
+    const entry = join(f.root, 'maintenance.ts');
+    const outfile = join(f.root, 'maintenance.mjs');
+    writeFileSync(
+      entry,
+      imports +
+        `
+const runtime = createRealRuntime('prod', { baseDir: process.argv[2] });
+const db = newRawDatabase(process.argv[3]);
+const index = new JobLocationIndex(runtime, process.argv[2]);
+const store = new JobStore('fixture', runtime, createEventBodyCodec(), { db, providers: permissiveProviderLookupPort });
+store.configureResultExports(index);
+console.log(JSON.stringify(store.ensureResultArtifact(process.argv[4])));
+db.close();
+`,
+    );
+    symlinkSync(resolve('node_modules'), join(f.root, 'node_modules'), 'dir');
+    await build({
+      entryPoints: [entry],
+      outfile,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      packages: 'external',
+      loader: { '.sql': 'text' },
+    });
+    const childHome = join(f.root, 'maintenance-home');
+    mkdirSync(childHome);
+    const published = execFileSync(process.execPath, [outfile, f.root, f.epoch.path, f.jobId], {
+      env: { PATH: process.env.PATH, HOME: childHome, LANG: 'C.UTF-8', TMPDIR: f.root, CORAL_TEST_TIER: 'integration' },
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    expect(JSON.parse(published)).toBe(f.resultPath);
+    const events = [];
+    for await (const event of addressing.waitStream({
+      jobIds: [f.jobId],
+      cursor: snapshot.cursor,
+      supportsWaitV3: true,
+    }))
+      events.push(event);
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'artifact',
+        availability: { kind: 'available', resultPath: f.resultPath },
+        remainingJobIds: [],
+        exitCode: 0,
+      }),
+    ]);
+  });
+});

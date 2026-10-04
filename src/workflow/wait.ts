@@ -89,6 +89,7 @@ function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number
 
 function cloneCursor(cursor?: WaitCursor): WaitCursor {
   if (cursor === undefined) return { afterSeq: 0 };
+  if (cursor.version === 'jobs.wait.v3') return structuredClone(cursor);
   return cursor.version === 'jobs.wait.v2'
     ? {
         version: 'jobs.wait.v2',
@@ -213,6 +214,10 @@ function handleWaitEvent(
   options: Pick<WaitForAtomsOptions, 'onProgress' | 'onAtomTerminal' | 'onFailureDrain' | 'time' | 'drainDeadlineMs'>,
 ): 'handled' | 'check-stale' {
   switch (event.type) {
+    case 'notice':
+    case 'disposition':
+    case 'artifact':
+      return 'handled';
     case 'queued': {
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
@@ -301,6 +306,7 @@ async function awaitWaitCycle(
 
   for await (const event of executionSvc.waitStream({
     jobIds: [...state.pending.keys()],
+    supportsWaitV3: true,
     timeoutSeconds,
     cursor: waitCursorForJobs(state.cursor, [...state.pending.keys()]),
   })) {

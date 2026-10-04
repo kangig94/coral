@@ -556,6 +556,7 @@ describe('interrupted recovery settlement ownership', () => {
       deps: {
         runtime,
         sessionManager: { finalizeJobContinuityAtomic, recordArtifactHandleAtomic },
+        publishTerminalResult: vi.fn((jobId: string) => `/jobs/${jobId}/result.md`),
         abortRegistry,
         launchAdmission,
         launchPermit,

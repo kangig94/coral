@@ -57,7 +57,7 @@ globalThis.waitProbe = {
       return never;
     }
     return {
-      jobsWaitExtensions: ['supportsWaitV2', 'supportsHandover', 'supportsInterrupted'],
+      jobsWaitExtensions: ['supportsWaitV2', 'supportsHandover', 'supportsInterrupted', ...(process.env.WAIT_PROBE_MODE === 'snapshot' ? ['supportsWaitV3'] : [])],
       async subscribe(method, params) {
         if (scenario === 'opening') return never;
         if (scenario === 'backoff') throw new IpcRequestTimeout('probe retry');
@@ -99,7 +99,8 @@ globalThis.waitProbe = {
           },
         };
       },
-      async request() {
+      async request(method) {
+        if (method === 'jobs.wait.snapshot') return never;
         process.stderr.write('ABORT CALLED\n');
         throw new Error('ABORT MUST NOT RUN');
       },

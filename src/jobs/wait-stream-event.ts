@@ -1,4 +1,4 @@
-import { decodeWaitCursor } from './wait-cursor.js';
+import { waitJobHash, decodeWaitCursor } from './wait-cursor.js';
 import { z } from 'zod';
 
 import { isRecord } from '../infra/json.js';
@@ -9,10 +9,23 @@ import { jobTerminalSchema } from './terminal/result.js';
 import { usageSummarySchema } from '../providers/contract.js';
 import { type WaitCursor, type WaitHandoverNotice, type WaitStreamEvent } from './wait.js';
 
-const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>(['progress', 'queued', 'terminal', 'interrupted', 'waiting']);
-const waitCursorV2Schema = z.custom<Extract<WaitCursor, { version: 'jobs.wait.v2' }>>((value) => {
+const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>([
+  'progress',
+  'queued',
+  'terminal',
+  'interrupted',
+  'waiting',
+  'notice',
+  'disposition',
+  'artifact',
+]);
+const waitCursorV3Schema = z.custom<Extract<WaitCursor, { version: 'jobs.wait.v3' }>>((value) => {
   const decoded = decodeWaitCursor(value);
-  return decoded.kind === 'decoded' && decoded.cursor.version === 'jobs.wait.v2';
+  return decoded.kind === 'decoded' && decoded.cursor.version === 'jobs.wait.v3';
+});
+const waitCursorV2Schema = z.custom<Exclude<WaitCursor, { afterSeq: number }>>((value) => {
+  const decoded = decodeWaitCursor(value);
+  return decoded.kind === 'decoded' && decoded.cursor.version !== undefined;
 });
 
 export const MAX_WAIT_JOB_IDS = 128;
@@ -23,8 +36,16 @@ export type WaitRenderDecision = Readonly<{
 }>;
 
 export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEvent): WaitRenderDecision {
+  if ('cursor' in event && event.cursor?.version === 'jobs.wait.v3') {
+    const acknowledged =
+      cursor.version === 'jobs.wait.v3' &&
+      event.type === 'terminal' &&
+      cursor.jobs.some((job) => job.hash === waitJobHash(event.jobId) && (job.flags & 1) !== 0);
+    return { cursor: event.cursor, shouldRender: !acknowledged };
+  }
+  if (cursor.version === 'jobs.wait.v3') return { cursor, shouldRender: true };
   if (event.type === 'progress' || event.type === 'terminal') {
-    if (event.epochKey !== undefined && event.cursor !== undefined) {
+    if (event.epochKey !== undefined && event.cursor?.version === 'jobs.wait.v2') {
       const previous = cursor.version === 'jobs.wait.v2' ? (cursor.positions[event.epochKey] ?? 0) : 0;
       if (
         event.type === 'terminal' &&
@@ -50,9 +71,14 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
     }
 
     const legacy = cursor.version === 'jobs.wait.v2' ? legacyRenderCursor(cursor.deliveredJobIds) : cursor;
-    if (event.seq <= legacy.afterSeq || (event.type === 'terminal' && legacy.deliveredJobIds?.includes(event.jobId))) {
-      return { cursor: legacy, shouldRender: false };
+    if (event.type === 'terminal') {
+      if (legacy.deliveredJobIds?.includes(event.jobId)) return { cursor: legacy, shouldRender: false };
+      return {
+        cursor: { ...legacy, deliveredJobIds: [...(legacy.deliveredJobIds ?? []), event.jobId] },
+        shouldRender: true,
+      };
     }
+    if (event.seq <= legacy.afterSeq) return { cursor: legacy, shouldRender: false };
     return { cursor: { ...legacy, afterSeq: event.seq }, shouldRender: true };
   }
 
@@ -75,7 +101,7 @@ const waitProgressEventSchema = z
     seq: z.number().int().nonnegative(),
     message: z.string(),
     timing: jobProgressTimingSchema,
-    version: z.literal('jobs.wait.v2').optional(),
+    version: z.enum(['jobs.wait.v2', 'jobs.wait.v3']).optional(),
     epochKey: z.string().min(1).optional(),
     cursor: waitCursorV2Schema.optional(),
   })
@@ -111,15 +137,39 @@ const waitQueuedKbEventSchema = waitQueuedEventBaseSchema
   })
   .passthrough();
 
+export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('available'), resultPath: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('retained-away'), retentionDays: z.number().positive() }).strict(),
+  z.object({ kind: z.literal('repair-pending'), ageUncertain: z.boolean() }).strict(),
+  z
+    .object({
+      kind: z.literal('failed'),
+      cause: z.enum([
+        'repair-failed',
+        'workflow-facts-unavailable',
+        'source-epoch-retired',
+        'terminal-age-unknown',
+        'terminal-clock-regression',
+        'cutoff-untrusted',
+        'terminal-unusable',
+      ]),
+      retryScheduled: z.boolean(),
+      ageUncertain: z.boolean().optional(),
+    })
+    .strict(),
+]);
+
 const waitTerminalEventSchema = z
   .object({
     type: z.literal('terminal'),
     jobId: z.string(),
     seq: z.number().int().nonnegative(),
     remainingJobIds: z.array(z.string()).max(MAX_WAIT_JOB_IDS),
-    resultPath: z.string(),
+    resultPath: z.string().min(1).optional(),
+    availability: resultAvailabilitySchema.optional(),
+    exitCode: z.number().int().min(0).max(255).optional(),
     result: jobTerminalSchema,
-    version: z.literal('jobs.wait.v2').optional(),
+    version: z.enum(['jobs.wait.v2', 'jobs.wait.v3']).optional(),
     continuity: continuitySnapshotSchema.nullable().optional(),
     usage: usageSummarySchema.optional(),
     epochKey: z.string().min(1).optional(),
@@ -135,6 +185,7 @@ const waitTerminalEventSchema = z
 const waitCarrierInterruptedEventSchema = z
   .object({
     type: z.literal('interrupted'),
+    version: z.literal('jobs.wait.v3').optional(),
     jobId: z.string().min(1),
     storedPhase: jobPhaseSchema,
     observedMaxJournalSeq: z.number().int().nonnegative(),
@@ -149,6 +200,8 @@ const waitCarrierInterruptedEventSchema = z
 const waitWaitingEventSchema = z
   .object({
     type: z.literal('waiting'),
+    version: z.literal('jobs.wait.v3').optional(),
+    exitCode: z.number().int().min(0).max(255).optional(),
     waitingJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS),
     // Omitted rather than empty: a renderer distinguishes "no unknowns" from "this build does not report
     // unknowns" by the field's absence, and an always-present empty array erases that distinction.
@@ -157,15 +210,74 @@ const waitWaitingEventSchema = z
   })
   .passthrough();
 
-const waitStreamEventSchema = z.union([
-  waitProgressEventSchema,
-  waitQueuedProviderEventSchema,
-  waitQueuedWorkflowEventSchema,
-  waitQueuedKbEventSchema,
-  waitTerminalEventSchema,
-  waitCarrierInterruptedEventSchema,
-  waitWaitingEventSchema,
-]);
+const waitStreamEventSchema = z
+  .union([
+    waitProgressEventSchema,
+    waitQueuedProviderEventSchema,
+    waitQueuedWorkflowEventSchema,
+    waitQueuedKbEventSchema,
+    waitTerminalEventSchema,
+    waitCarrierInterruptedEventSchema,
+    waitWaitingEventSchema,
+    z
+      .object({
+        type: z.literal('notice'),
+        version: z.literal('jobs.wait.v3'),
+        message: z.string(),
+        cursor: waitCursorV3Schema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal('disposition'),
+        version: z.literal('jobs.wait.v3'),
+        jobId: z.string().min(1),
+        disposition: z.enum([
+          'missing',
+          'discovery-unknown',
+          'pre-epoch-history',
+          'outcome-unrecoverable',
+          'scope-mismatch',
+        ]),
+        message: z.string().optional(),
+        cursor: waitCursorV3Schema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal('artifact'),
+        version: z.literal('jobs.wait.v3'),
+        jobId: z.string().min(1),
+        availability: resultAvailabilitySchema,
+        remainingJobIds: z.array(z.string()).max(MAX_WAIT_JOB_IDS),
+        cursor: waitCursorV3Schema,
+        exitCode: z.number().int().min(0).max(255),
+      })
+      .strict(),
+  ])
+  .superRefine((event, ctx) => {
+    const generation = 'version' in event ? event.version : undefined;
+    if (generation !== 'jobs.wait.v3' && event.cursor?.version === 'jobs.wait.v3')
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'V3 cursor requires a V3 event' });
+    if (generation === 'jobs.wait.v3' && event.cursor && event.cursor.version !== 'jobs.wait.v3')
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'V3 event requires a V3 cursor' });
+    if (
+      generation === 'jobs.wait.v3' &&
+      (event.type === 'terminal' || event.type === 'progress' || event.type === 'waiting') &&
+      (!event.cursor || ((event.type === 'terminal' || event.type === 'waiting') && event.exitCode === undefined))
+    )
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Incomplete V3 delivery contract' });
+    if (
+      event.type === 'terminal' &&
+      (generation === 'jobs.wait.v3'
+        ? !event.availability ||
+          (event.availability.kind === 'available'
+            ? event.resultPath !== event.availability.resultPath
+            : event.resultPath !== undefined)
+        : !event.resultPath || event.availability !== undefined)
+    )
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Terminal artifact contract mismatch' });
+  });
 
 export function parseWaitStreamEvent(eventType: string | undefined, rawData: string): WaitStreamEvent | null {
   if (!eventType || !KNOWN_WAIT_STREAM_EVENT_TYPES.has(eventType)) {

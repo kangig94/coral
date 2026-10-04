@@ -1,3 +1,4 @@
+import type { WaitAdmission } from '../jobs/wait-session.js';
 import type { ResultAvailability } from '../jobs/terminal/export.js';
 import type {
   JobLaunchRequest,
@@ -42,6 +43,7 @@ interface CoordinatorSessionOps {
 }
 
 interface CoordinatorJobOps {
+  readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
   holdsLocalAppServerExecution?(jobId: string): boolean;
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;

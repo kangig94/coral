@@ -1,10 +1,10 @@
-import { serializeWaitCursor, waitCursorForJobs } from '../jobs/wait.js';
+import type { WaitSnapshotRequest } from '../jobs/wait.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
-import type { WaitCursor, WaitHandoverNotice, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { WaitCursor, WaitHandoverNotice, WaitStreamEvent } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import {
   canonicalizeWorkDir,
@@ -1167,55 +1167,39 @@ async function executeJobsWaitCatalogRequest({
     cursor?: WaitCursor;
     supportsInterrupted?: boolean;
     supportsWaitV2?: boolean;
+    supportsWaitV3?: boolean;
     supportsHandover?: boolean;
   };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, callerRoot, 'contains');
-  if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
-  }
-  if (
-    scopeCheck.missing.length === parsed.jobIds.length ||
-    (scopeCheck.missing.length > 0 && rpcPorts.jobs.unknownJobDisposition() !== 'not-found')
-  ) {
-    const continuation = `coral-cli wait jobs ${parsed.jobIds.join(' ')}${parsed.cursor === undefined ? '' : ` --cursor ${serializeWaitCursor(parsed.cursor)}`}`;
-    return unknownJobsAnswer(
-      rpcPorts,
-      rpcPorts.jobs.unknownJobDisposition() === 'discovery-unknown' ? parsed.jobIds : scopeCheck.missing,
-      continuation,
-    );
-  }
-  const unrecoverable = rpcPorts.jobs.outcomeUnrecoverable(parsed.jobIds);
-  if (unrecoverable.length > 0) {
+  if (!rpcPorts.jobs.admitWait)
     return unary(
-      {
-        code: 'job_outcome_unrecoverable',
-        message: `${unrecoverable.join(', ')} never reached a recorded outcome in a superseded store epoch that nothing will write again, so no outcome will ever be recorded. Waiting cannot end; wait only on the other jobs.`,
-        detail: { jobs: unrecoverable },
-      },
-      409,
+      { code: 'wait_epoch_unsupported', message: 'Wait admission is unavailable on this coordinator.' },
+      400,
     );
+  const admissions = rpcPorts.jobs.admitWait(parsed);
+  const cursorError = rpcPorts.jobs.validateWait({ ...parsed, admissions });
+  if (cursorError) {
+    const status =
+      cursorError.code === 'transient'
+        ? 503
+        : cursorError.code === 'scope_mismatch'
+          ? 403
+          : cursorError.code === 'job_outcome_unrecoverable'
+            ? 409
+            : cursorError.code === 'jobs_not_found' || cursorError.code === 'job_pre_epoch_history'
+              ? 404
+              : 400;
+    return unary(cursorError, status);
   }
-
-  const { supportsInterrupted, supportsHandover, ...waitFields } = parsed;
-  const missing = new Set(scopeCheck.missing);
-  const admittedIds = parsed.jobIds.filter((id) => !missing.has(id));
-  const waitRequest: WaitStreamRequest = {
-    ...waitFields,
-    jobIds: admittedIds,
-    ...(parsed.cursor === undefined ? {} : { cursor: waitCursorForJobs(parsed.cursor, admittedIds) }),
-  };
-  const cursorError = rpcPorts.jobs.validateWait(waitRequest);
-  if (cursorError) return unary(cursorError, 400);
   return {
     kind: 'subscription',
     notifications: withSuccessionHandover(
       withInterruptedGate(
-        rpcPorts.jobs.waitStream(withAbortSignal(waitRequest, abortSignal)) as AsyncIterable<WaitStreamEvent>,
-        supportsInterrupted === true,
+        rpcPorts.jobs.waitStream(withAbortSignal({ ...parsed, admissions }, abortSignal)),
+        parsed.supportsInterrupted === true,
       ),
-      supportsHandover === true ? rpcPorts.jobs.waitHandoverSignal() : undefined,
+      parsed.supportsHandover === true ? rpcPorts.jobs.waitHandoverSignal() : undefined,
     ),
   };
 }
@@ -1228,6 +1212,16 @@ function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<C
       return executeJobsListCatalogRequest(context);
     case 'jobs.detail':
       return executeJobsDetailCatalogRequest(context);
+    case 'jobs.wait.snapshot':
+      if (!context.rpcPorts.jobs.snapshot)
+        return Promise.resolve(unary({ code: 'unknown_method', message: 'This coordinator predates --now.' }, 400));
+      return Promise.resolve(
+        unary(
+          context.rpcPorts.jobs.snapshot(
+            withAbortSignal({ ...(context.request as WaitSnapshotRequest), supportsWaitV3: true }, context.abortSignal),
+          ),
+        ),
+      );
     case 'jobs.wait':
       return executeJobsWaitCatalogRequest(context);
     default:

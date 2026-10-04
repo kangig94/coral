@@ -24,6 +24,7 @@ const expectedRpcRequires = {
   'jobs.list': 'jobs:read',
   'jobs.detail': 'jobs:read',
   'jobs.wait': 'jobs:read',
+  'jobs.wait.snapshot': 'jobs:read',
   'discuss.persona.generate': 'discuss:participate',
   'discuss.session.create': 'discuss:participate',
   'discuss.session.list': 'discuss:participate',

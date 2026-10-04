@@ -6,8 +6,15 @@ export type WaitCursorError = Readonly<{
     | 'wait_cursor_mismatch'
     | 'wait_epoch_unsupported'
     | 'wait_cursor_unsupported'
-    | 'wait_cursor_malformed';
+    | 'wait_cursor_malformed'
+    | 'jobs_not_found'
+    | 'job_pre_epoch_history'
+    | 'transient'
+    | 'scope_mismatch'
+    | 'job_outcome_unrecoverable';
   message: string;
+  detail?: { jobs: string[]; disposition?: string };
+  remediation?: string;
 }>;
 
 export type JobDetailLookup =

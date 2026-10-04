@@ -63,6 +63,10 @@ export class JobWaitService {
     }
   }
 
+  readWaitAdmission(jobId: string, epochKey: string) {
+    return this.deps.waitCoordinator.readWaitAdmission?.(jobId, epochKey) ?? null;
+  }
+
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     yield* this.deps.waitCoordinator.waitForJobs(req);
   }

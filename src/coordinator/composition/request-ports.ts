@@ -66,6 +66,8 @@ export function createCoordinatorRequestPorts(input: {
     {
       epochKey: currentJobEpochKey,
       detail: activeJobDetail,
+      readWaitAdmission: (jobId, epochKey) =>
+        services.getExecutionService(readOnlyInvocationContext).readWaitAdmission?.(jobId, epochKey) ?? null,
       abort: control.abortJobs,
       waitStream: (request) =>
         services
@@ -89,6 +91,7 @@ export function createCoordinatorRequestPorts(input: {
     historicalSourceReader(jobLocationIndex),
     (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
     (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
+    (jobId) => getProgressStore().getResultExportOwner().progressRetentionExpired(jobId),
   );
 
   const rpcPorts = createCoordinatorRpcPorts({

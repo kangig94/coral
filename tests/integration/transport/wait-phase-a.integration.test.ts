@@ -29,7 +29,7 @@ beforeAll(async () => {
             builder.onResolve({ filter: /^#tools\// }, ({ path }) => ({
               path: join(root, path.replace('#tools/', 'tools/').replace(/\.js$/, '.ts')),
             }));
-            builder.onLoad({ filter: /(?:handler|dispatch|wait-cursor|wait)\.ts$/ }, ({ path }) => {
+            builder.onLoad({ filter: /(?:handler|dispatch|wait-cursor|wait-session|wait)\.ts$/ }, ({ path }) => {
               let source = readFileSync(path, 'utf8');
               if (variant === 'unbounded-observer' && path.endsWith('/jobs/shell/wait.ts'))
                 source = source.replace(
@@ -44,10 +44,10 @@ beforeAll(async () => {
                     "const next = await raceWithSignal(iterator.next(), deps.jobs.waitHandoverSignal(), () => ({ done: false, value: { type: 'handover' } }));",
                   );
               }
-              if (variant === 'include-missing' && path.endsWith('/transport/dispatch.ts'))
+              if (variant === 'include-missing' && path.endsWith('/jobs/wait-session.ts'))
                 source = source.replace(
-                  'const admittedIds = parsed.jobIds.filter((id) => !missing.has(id));',
-                  'const admittedIds = parsed.jobIds;',
+                  "job.disposition === 'discovery-unknown' ||",
+                  "job.disposition === 'missing' || job.disposition === 'discovery-unknown' ||",
                 );
               if (variant === 'property-decoder' && path.endsWith('/jobs/wait-cursor.ts'))
                 source = source.replace(

@@ -127,6 +127,9 @@ function createPorts(succession?: (method: string, params: unknown) => Promise<u
     jobs: {
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),
       abort: vi.fn(),
+      admitWait: vi.fn((req: { jobIds: string[] }) =>
+        req.jobIds.map((jobId) => ({ jobId, disposition: 'admitted' as const })),
+      ),
       validateWait: vi.fn(() => null),
       waitHandoverSignal: vi.fn(() => new AbortController().signal),
       waitStream: vi.fn(),

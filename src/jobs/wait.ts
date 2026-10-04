@@ -2,13 +2,26 @@ import type { JobTerminal } from './records.js';
 import type { ContinuitySnapshot } from '../sessions/continuity.js';
 import type { JobProgressTiming } from './event-bodies.js';
 import type { JobPhase } from './phase.js';
+import type { ResultAvailability } from './terminal/export.js';
+import type { WaitAdmission } from './wait-session.js';
+import { encodeWaitCursorV3, filterWaitCursorV3 } from './wait-cursor.js';
 import type { UsageSummary } from '../providers/contract.js';
 
 export { decodeWaitCursor, decodeSerializedWaitCursor } from './wait-cursor.js';
+export { WaitSessionError } from './wait-session.js';
+export type { WaitAdmission, WaitSnapshot } from './wait-session.js';
+export const WAIT_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
+export type WaitCursorV3 = {
+  version: 'jobs.wait.v3';
+  epochs: Array<{ token: string; watermark: number; lineOffset: number }>;
+  jobs: Array<{ hash: string; epoch: number; flags: number }>;
+};
+
 export type WaitCursor =
+  | WaitCursorV3
   | { version?: never; afterSeq: number; deliveredJobIds?: string[] }
   | {
       version: 'jobs.wait.v2';
@@ -18,10 +31,12 @@ export type WaitCursor =
     };
 
 export function serializeWaitCursor(cursor: WaitCursor): string {
+  if (cursor.version === 'jobs.wait.v3') return encodeWaitCursorV3(cursor);
   return Buffer.from(JSON.stringify(cursor)).toString('base64url');
 }
 
 export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor {
+  if (cursor.version === 'jobs.wait.v3') return filterWaitCursorV3(cursor, jobIds);
   const deliveredJobIds = cursor.deliveredJobIds?.filter((id) => jobIds.includes(id));
   if (cursor.version === undefined) return { ...cursor, ...(deliveredJobIds === undefined ? {} : { deliveredJobIds }) };
   const locations = Object.fromEntries(
@@ -52,6 +67,13 @@ export interface WaitStreamRequest extends WaitRequest {
   cursor?: WaitCursor;
   abortSignal?: AbortSignal;
   supportsWaitV2?: boolean;
+  supportsWaitV3?: boolean;
+  admissions?: WaitAdmission[];
+  onCoverage?: (jobIds: readonly string[], unknownJobIds: readonly string[], frontier: number) => void;
+}
+
+export interface WaitSnapshotRequest extends WaitStreamRequest {
+  lines?: number;
 }
 
 export type WaitStreamOnceResult = {
@@ -68,49 +90,71 @@ type QueuedWaitEventBase = {
 };
 
 export type WaitStreamEvent =
+  | { type: 'notice'; version: 'jobs.wait.v3'; message: string; cursor?: WaitCursorV3 }
+  | {
+      type: 'disposition';
+      version: 'jobs.wait.v3';
+      jobId: string;
+      disposition: Exclude<WaitAdmission['disposition'], 'admitted'>;
+      message?: string;
+      cursor?: WaitCursorV3;
+    }
+  | {
+      type: 'artifact';
+      version: 'jobs.wait.v3';
+      jobId: string;
+      availability: ResultAvailability;
+      remainingJobIds: string[];
+      cursor: WaitCursorV3;
+      exitCode: number;
+    }
   | {
       type: 'progress';
       jobId: string;
       seq: number;
       message: string;
       timing: JobProgressTiming;
-      version?: 'jobs.wait.v2';
+      version?: 'jobs.wait.v2' | 'jobs.wait.v3';
       epochKey?: string;
-      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
     }
   | (QueuedWaitEventBase & {
       jobKind: 'provider';
       sessionId: string;
-      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
     })
   | (QueuedWaitEventBase & {
       jobKind: 'workflow';
       workflowId: string;
-      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
     })
   | (QueuedWaitEventBase & {
       jobKind: 'kb';
       systemTaskId: string;
-      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
     })
   | {
       type: 'terminal';
       jobId: string;
       seq: number;
       remainingJobIds: string[];
-      resultPath: string;
+      resultPath?: string;
+      availability?: ResultAvailability;
+      exitCode?: number;
       result: JobTerminal;
-      version?: 'jobs.wait.v2';
+      version?: 'jobs.wait.v2' | 'jobs.wait.v3';
       continuity?: ContinuitySnapshot | null;
       usage?: UsageSummary;
       epochKey?: string;
-      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
     }
   | CarrierInterruptedWaitEvent
   | {
       type: 'waiting';
       waitingJobIds: string[];
-      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+      version?: 'jobs.wait.v3';
+      exitCode?: number;
+      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
       /** Sorted; omitted entirely when empty, so "nothing unknown" costs no wire field. */
       carrierUnknownJobIds?: string[];
     };
@@ -132,6 +176,7 @@ export type WaitHandoverNotice = { type: 'handover' };
  */
 export type CarrierInterruptedWaitEvent = {
   type: 'interrupted';
+  version?: 'jobs.wait.v3';
   jobId: string;
   storedPhase: JobPhase;
   observedMaxJournalSeq: number;
@@ -139,7 +184,7 @@ export type CarrierInterruptedWaitEvent = {
   observation: { kind: 'carrier_interrupted'; reason: 'carrier_absent' };
   continuity: 'unavailable';
   outcome: 'unknown';
-  cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+  cursor?: Exclude<WaitCursor, { afterSeq: number }>;
 };
 
 /**
@@ -149,6 +194,7 @@ export type CarrierInterruptedWaitEvent = {
  * was over-decomposition.
  */
 export interface JobWaitPort {
+  readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
   waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;

@@ -1,3 +1,4 @@
+import { UsageError } from './errors.js';
 import { Command } from 'commander';
 import { performance } from 'node:perf_hooks';
 import { raceWithSignal } from '../infra/promise-signal.js';
@@ -46,11 +47,13 @@ export function waitInvocationMode(program: Command, argv: readonly string[]): W
   }
   let mode: WaitInvocationMode | undefined;
   jobsParser.action(() => {
+    validateWaitJobsOptions(jobsParser.opts());
     mode = jobsParser.opts().now === true ? 'snapshot' : 'bounded';
   });
   try {
     parser.parse([...argv]);
-  } catch {
+  } catch (error) {
+    if (error instanceof UsageError) throw error;
     return undefined;
   }
   return mode;
@@ -166,7 +169,8 @@ export class WaitInvocation implements WaitInvocationHandoff {
     this.continuationFlushed = true;
     process.exitCode = 75;
     process.stdout.write(
-      this.continuation ?? `Wait admission did not complete; monitoring ended.\nRun ${this.originalCommand}\n`,
+      this.continuation ??
+        `${this.mode === 'snapshot' ? 'coordinator not ready; snapshot admission did not complete.' : 'Wait admission did not complete; monitoring ended.'}\nRun ${this.originalCommand}\n`,
     );
   }
 
@@ -185,4 +189,14 @@ export function getWaitInvocation(): WaitInvocation | undefined {
 
 export function installWaitInvocation(invocation: WaitInvocation | undefined): void {
   currentInvocation = invocation;
+}
+
+export function validateWaitJobsOptions(opts: { now?: boolean; lines?: string; cursor?: string }): number | undefined {
+  if (opts.lines !== undefined && opts.cursor !== undefined)
+    throw new UsageError('--lines cannot be used with --cursor');
+  if (opts.lines !== undefined && opts.now !== true) throw new UsageError('--lines requires --now');
+  const lines = opts.lines === undefined ? undefined : Number(opts.lines);
+  if (lines !== undefined && (!Number.isInteger(lines) || lines < 1 || lines > 500))
+    throw new UsageError('--lines must be an integer from 1 to 500');
+  return lines;
 }

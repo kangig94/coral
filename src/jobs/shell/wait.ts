@@ -1,3 +1,5 @@
+import { readWaitSession } from '../wait-reader.js';
+import { WaitSessionError, type WaitAdmission } from '../wait-session.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { CarrierLiveness } from '../carrier-observation.js';
@@ -12,7 +14,6 @@ import {
 import {
   WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
   type CarrierInterruptedWaitEvent,
-  type WaitRequest,
   type WaitStreamEvent,
   type WaitStreamOnceResult,
   type WaitStreamRequest,
@@ -25,7 +26,7 @@ import type { SessionJobReadPort } from '../../sessions/contracts.js';
 import type { JobProjectionDetail } from '../read-queries.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { resultPathFor as defaultResultPathFor, type ResultAvailability } from '../terminal/export.js';
+import type { ResultAvailability } from '../terminal/export.js';
 import type { HostRef, UsageSummary } from '../../providers/contract.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import {
@@ -263,7 +264,9 @@ export function planCarrierWaitEvents(
   alreadyReported: Set<string>,
 ): CarrierWaitPlan {
   const interrupted: CarrierInterruptedWaitEvent[] = [];
-  const unknownJobIds: string[] = [];
+  const unknownJobIds: string[] = [...pending].filter(
+    (jobId) => !observations.some((observation) => observation.jobId === jobId),
+  );
   for (const observation of observations) {
     if (!pending.has(observation.jobId)) continue;
     if (observation.liveness === 'unknown') {
@@ -328,7 +331,8 @@ export class WaitCoordinator {
     alreadyReported: Set<string>,
   ): Promise<CarrierWaitPlan> {
     const observe = this.deps.observeCarriers;
-    if (observe === undefined || pending.size === 0) return EMPTY_CARRIER_PLAN;
+    if (pending.size === 0) return EMPTY_CARRIER_PLAN;
+    if (observe === undefined) return { interrupted: [], unknownJobIds: [...pending].sort() };
 
     try {
       return planCarrierWaitEvents(await observe([...pending]), pending, alreadyReported);
@@ -352,7 +356,10 @@ export class WaitCoordinator {
     const availability = this.deps.observeResultAvailability?.(jobId);
     if (availability?.kind === 'available') return availability.resultPath;
     if (availability?.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
-    return defaultResultPathFor(this.deps.resultJobsRoot, jobId);
+    throw new WaitSessionError(
+      'wait_epoch_unsupported',
+      `Job ${jobId} has a final outcome but its result artifact is ${availability?.kind ?? 'unavailable'}. Run coral-cli jobs detail ${jobId} --full.`,
+    );
   }
 
   private readPendingHistory(pending: ReadonlySet<string>, observedSeq: number, maxSeq: number): JobEvent[] {
@@ -473,12 +480,86 @@ export class WaitCoordinator {
     });
   }
 
+  private queuedWaitEvent(status: JobStatus): Extract<WaitStreamEvent, { type: 'queued' }> {
+    const jobId = status.jobId;
+    const reservation = this.deps.launchQueue.reservationFor(jobId);
+    const queued = {
+      type: 'queued' as const,
+      jobId,
+      queuePosition: reservation?.kind === 'queued' ? reservation.position : 0,
+      runningJobIds: reservation === null ? [] : this.deps.launchQueue.getActiveJobIds(reservation.pool),
+      timing: queuedProgressTiming(status, this.deps.time.now()),
+    };
+    if (status.jobKind === 'provider') {
+      if (status.sessionId === null) throw new Error(`Queued provider job '${jobId}' has no provider session.`);
+      return { ...queued, jobKind: 'provider', sessionId: status.sessionId };
+    }
+    if (status.jobKind === 'workflow') return { ...queued, jobKind: 'workflow', workflowId: status.owner.id };
+    return { ...queued, jobKind: 'kb', systemTaskId: status.owner.id };
+  }
+
+  readWaitAdmission(jobId: string, epochKey: string): WaitAdmission {
+    const projected = this.deps.loadJobProjectionDetail(jobId);
+    if (!projected.status) return { jobId, disposition: 'missing' };
+    const events = this.deps.readJobEvents(jobId);
+    const terminal = events.find((event): event is JobTerminalEvent => event.type === 'terminal');
+    const exit =
+      projected.exit && terminal
+        ? {
+            ...projected.exit,
+            ...surfaceProviderHostRecovery(terminal, projected),
+            diagnostics: { ...projected.exit.diagnostics, usage: this.readTerminalUsage(terminal) },
+          }
+        : projected.exit;
+    const availability = exit
+      ? (this.deps.observeResultAvailability?.(jobId) ?? {
+          kind: 'failed' as const,
+          cause: 'terminal-unusable' as const,
+          retryScheduled: false,
+        })
+      : undefined;
+    if (availability?.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
+    return {
+      jobId,
+      disposition: 'admitted',
+      epochKey,
+      detail: { status: projected.status, events, readiness: 'ready', exit },
+      availability,
+      continuity: this.readQueryContinuity(jobId),
+      ...(projected.status.phase === 'queued' && !exit ? { queued: this.queuedWaitEvent(projected.status) } : {}),
+    };
+  }
+
   async *waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
+    if (req.supportsWaitV3) {
+      const epochKey = ':active:';
+      yield* readWaitSession({
+        request: req,
+        time: this.deps.time,
+        activeEpochKey: epochKey,
+        read: () => req.jobIds.map((jobId) => this.readWaitAdmission(jobId, epochKey)),
+        observe: (session, signal) => {
+          const pending = new Set(
+            session.admissions
+              .filter((job) => job.disposition === 'admitted' && !job.detail?.exit)
+              .map((job) => job.jobId),
+          );
+          void this.observePendingCarriers(pending, new Set()).then((observed) => {
+            if (signal.aborted) return;
+            const frontier = this.deps.getCurrentJournalSeq();
+            session.observeCoverage([...pending], observed.unknownJobIds, frontier);
+            req.onCoverage?.([...pending], observed.unknownJobIds, frontier);
+            for (const event of observed.interrupted) session.observeAbsent(event.jobId, event.observedMaxJournalSeq);
+          });
+        },
+      });
+      return;
+    }
     yield* this.waitForJobsFromJournal(req);
   }
 
   private async *waitForJobsFromJournal(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    const { launchQueue, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
+    const { subscribeJobEvents, getCurrentJournalSeq } = this.deps;
     const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
     const startMs = Number(this.deps.time.monotonicNow());
     const timeoutMs = timeoutSeconds * 1000;
@@ -518,24 +599,7 @@ export class WaitCoordinator {
 
         if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
           emittedQueued.add(jobId);
-          const reservation = launchQueue.reservationFor(jobId);
-          const queued = {
-            type: 'queued',
-            jobId,
-            queuePosition: reservation?.kind === 'queued' ? reservation.position : 0,
-            runningJobIds: reservation === null ? [] : launchQueue.getActiveJobIds(reservation.pool),
-            timing: queuedProgressTiming(status, this.deps.time.now()),
-          } as const;
-          if (status.jobKind === 'provider') {
-            if (status.sessionId === null) {
-              throw new Error(`Queued provider job '${jobId}' has no provider session.`);
-            }
-            yield { ...queued, jobKind: 'provider', sessionId: status.sessionId };
-          } else if (status.jobKind === 'workflow') {
-            yield { ...queued, jobKind: 'workflow', workflowId: status.owner.id };
-          } else {
-            yield { ...queued, jobKind: 'kb', systemTaskId: status.owner.id };
-          }
+          yield this.queuedWaitEvent(status);
         }
       }
 
@@ -580,6 +644,7 @@ export class WaitCoordinator {
           return;
         }
         carrierUnknownJobIds = observed.unknownJobIds;
+        req.onCoverage?.([...pending], carrierUnknownJobIds, getCurrentJournalSeq());
         for (const event of observed.interrupted) yield event;
       }
 
@@ -630,6 +695,7 @@ export class WaitCoordinator {
             return;
           }
           carrierUnknownJobIds = observed.unknownJobIds;
+          req.onCoverage?.([...pending], carrierUnknownJobIds, getCurrentJournalSeq());
           for (const event of observed.interrupted) yield event;
           continue;
         }
@@ -669,7 +735,7 @@ export class WaitCoordinator {
   }
 
   async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult> {
-    const request: WaitRequest = { jobIds: [jobId] };
+    const request: WaitStreamRequest = { jobIds: [jobId], supportsWaitV3: true };
     if (timeoutMs !== undefined) {
       request.timeoutSeconds = timeoutMs / 1000;
     }

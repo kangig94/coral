@@ -17,7 +17,13 @@ import {
   discussSessionListRequestSchema,
   discussSessionSpeechRequestSchema,
 } from './discuss.js';
-import { jobAbortSchema, jobDetailRequestSchema, jobsListRequestSchema, jobWaitSchema } from './jobs.js';
+import {
+  jobAbortSchema,
+  jobDetailRequestSchema,
+  jobsListRequestSchema,
+  jobWaitSchema,
+  jobWaitSnapshotSchema,
+} from './jobs.js';
 import {
   kbCommunityListStaleRequestSchema,
   kbCommunityReadRequestSchema,
@@ -712,6 +718,15 @@ export const rpcCatalog = [
     responseKind: 'json',
     portKey: 'jobs',
     http: { method: 'GET', path: '/jobs/:jobId' },
+  },
+  {
+    name: 'jobs.wait.snapshot',
+    kind: 'unary',
+    requires: 'jobs:read',
+    requestSchema: jobWaitSnapshotSchema,
+    responseKind: 'json',
+    portKey: 'jobs',
+    http: { method: 'POST', path: '/jobs/wait/snapshot' },
   },
   {
     name: 'jobs.wait',

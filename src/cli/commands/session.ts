@@ -1,4 +1,12 @@
-import { getWaitInvocation } from '../wait-invocation.js';
+import { decodeSerializedWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait-cursor.js';
+import type { WaitCursor } from '../../jobs/wait.js';
+import { parseWaitSnapshot } from '../../jobs/wait-snapshot.js';
+import { formatWaitSnapshot, formatWaitContinuation } from '../format/wait.js';
+import { serializeWaitCursor } from '../../jobs/wait.js';
+import { mapWaitSubscriptionError } from '../wait-stream-error.js';
+import { BackendToolHttpError } from '../../transport/http/errors.js';
+import { isRecord } from '../../infra/json.js';
+import { getWaitInvocation, WaitInvocationEnded, validateWaitJobsOptions } from '../wait-invocation.js';
 import type { Command } from 'commander';
 import { z } from 'zod';
 
@@ -29,6 +37,8 @@ type AbortQuerySelector = {
 };
 
 type WaitJobsOptions = {
+  now?: boolean;
+  lines?: string;
   cursor?: string;
   embed?: boolean;
   verbose?: boolean;
@@ -156,7 +166,8 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
   jobsDetailCommand
     .description('Show detailed status for one job')
     .argument('<jobId>', 'Job ID')
-    .action(async (jobId: string) => {
+    .option('--full', 'Print full retained terminal content and diagnostics')
+    .action(async (jobId: string, opts: { full?: boolean }) => {
       try {
         const projectRoot = process.cwd();
         const client = makeClient(projectRoot, jobsDetailCommand);
@@ -177,6 +188,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
                 ? undefined
                 : (ref) => renderCauseRef(ref, result.exit?.outcome, result.epochKey),
               workflowChildren,
+              opts.full === true,
             ) + '\n',
           );
           flushPendingReadStoreNote('text');
@@ -189,8 +201,65 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     });
 
   async function runWaitJobs(jobIds: string[], opts: WaitJobsOptions, command: Command): Promise<void> {
+    const lines = validateWaitJobsOptions(opts);
     const projectRoot = process.cwd();
     const client = makeClient(projectRoot, command);
+    if (opts.now) {
+      const invocation = getWaitInvocation();
+      let cursor: WaitCursor | undefined;
+      if (opts.cursor !== undefined) {
+        const decoded = decodeSerializedWaitCursor(opts.cursor);
+        if (decoded.kind === 'decoded') cursor = decoded.cursor;
+        else process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
+      }
+      const reset = () => {
+        cursor = undefined;
+        process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
+      };
+      const read = () =>
+        client.snapshotJobsWait(
+          {
+            jobIds,
+            projectRoot,
+            ...(cursor === undefined ? {} : { cursor }),
+            ...(lines === undefined ? {} : { lines }),
+          },
+          reset,
+        );
+      let response;
+      try {
+        response = await read();
+      } catch (error) {
+        const mapped = mapWaitSubscriptionError(error);
+        if (
+          !(mapped instanceof BackendToolHttpError) ||
+          !isRecord(mapped.body) ||
+          ![
+            'wait_cursor_epoch_required',
+            'wait_cursor_unsupported',
+            'wait_cursor_malformed',
+            'wait_cursor_mismatch',
+          ].includes(String(mapped.body.code))
+        )
+          throw error;
+        reset();
+        response = await read();
+      }
+      invocation?.check();
+      const snapshot = parseWaitSnapshot(response, jobIds);
+      const output = formatWaitSnapshot(snapshot) + '\n';
+      const write = () =>
+        new Promise<void>((resolve, reject) =>
+          process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
+        );
+      await (invocation ? invocation.run(write) : write());
+      invocation?.saveContinuation(
+        formatWaitContinuation(snapshot.remainingJobIds, serializeWaitCursor(snapshot.cursor), true) + '\n',
+        true,
+      );
+      process.exitCode = snapshot.exitCode;
+      return;
+    }
 
     process.exitCode = await followJobs({
       start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
@@ -222,7 +291,9 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .description('Stream job progress for one or more jobs')
     .argument('<jobIds...>', 'Job IDs')
     .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
-    .option('--embed', 'Embed terminal result content when size permits (path is always present)')
+    .option('--now', 'Read an immediate snapshot; drop --now from its continuation for a blocking wait')
+    .option('--lines <N>', 'Most recent progress lines per job with --now (1..500, default 20; no cursor)')
+    .option('--embed', 'Embed terminal result content when size permits; artifact availability is reported separately')
     .option('--verbose', 'Show detailed usage breakdown on terminal events')
     .addHelpText(
       'after',
@@ -231,7 +302,12 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         'Run the continuation or remediation command printed in the output.\n',
     )
     .action(async (jobIdArgs: string[], opts: WaitJobsOptions) => {
-      await runWaitJobs(parseJobIds(jobIdArgs.join(' ')), opts, waitJobsCommand);
+      try {
+        await runWaitJobs(parseJobIds(jobIdArgs.join(' ')), opts, waitJobsCommand);
+      } catch (error) {
+        if (error instanceof WaitInvocationEnded) throw error;
+        emitError(normalizeUsageError(error));
+      }
     });
 
   const abortCommand = program.command('abort');

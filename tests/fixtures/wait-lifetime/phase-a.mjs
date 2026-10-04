@@ -7,6 +7,7 @@ import { createIpcServer, closeIpcServer } from '#src/transport/ipc/server.js';
 import { decodeWaitCursor } from '#src/jobs/wait-cursor.js';
 import { serializeWaitCursor, waitCursorForJobs } from '#src/jobs/wait.js';
 import { formatWaitWaiting } from '#src/cli/format/wait.js';
+import { WaitSession } from '#src/jobs/wait-session.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 
@@ -93,6 +94,7 @@ const ports = {
   jobs: {
     outcomeUnrecoverable: () => [],
     unknownJobDisposition: () => 'not-found',
+    admitWait: (req) => req.jobIds.map((jobId) => ({ jobId, epochKey: 'epoch', disposition: scenario === 'missing' && jobId === 'ghost' ? 'missing' : 'admitted' })),
     validateWait: () => null,
     scopeCheck: () => ({ valid: ['known'], missing: scenario === 'missing' ? ['ghost'] : [], mismatch: [] }),
     waitHandoverSignal: () => handover.signal,
@@ -113,7 +115,10 @@ const ports = {
         };
         await hold;
       }
-      yield { type: 'waiting', waitingJobIds: req.jobIds, cursor: waitCursorForJobs(req.cursor ?? cursor, req.jobIds) };
+      const session = new WaitSession(req.jobIds, req.cursor);
+      session.reconcile(req.admissions);
+      const remaining = session.remaining();
+      yield { type: 'waiting', waitingJobIds: remaining, cursor: waitCursorForJobs(req.cursor ?? cursor, remaining) };
     },
   },
 };

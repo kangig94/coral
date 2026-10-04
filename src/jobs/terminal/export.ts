@@ -202,6 +202,10 @@ export class TerminalResultExportOwner {
   }
 
   /** Availability observation never synchronizes or repairs storage. */
+  progressRetentionExpired(jobId: string): boolean {
+    return this.eligibility(jobId).kind === 'expired';
+  }
+
   observeResultAvailability(jobId: string): ResultAvailability {
     const location = this.input.location(jobId);
     if (!location || !hasReadableTerminalDetail(location))

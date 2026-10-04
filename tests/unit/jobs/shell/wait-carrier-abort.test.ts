@@ -32,6 +32,10 @@ it.each(['direct', 'v2', 'live'])(
       aggregateWorkflowUsage: () => undefined,
       getCurrentJournalSeq: () => 0,
       resultJobsRoot: '/unused',
+      observeResultAvailability: (jobId: string) => ({
+        kind: 'available',
+        resultPath: `${'/unused'}/${jobId}/result.md`,
+      }),
       subscribeJobEvents,
       observeCarriers: () => {
         observationStarted();

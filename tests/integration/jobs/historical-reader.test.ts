@@ -276,7 +276,7 @@ describe('historical job readers', () => {
       () => 'decided',
     );
     expect(addressing.detail('finished')).toMatchObject({ status: { phase: 'completed' } });
-    const stream = addressing.waitStream({ jobIds: ['finished'], supportsWaitV2: true });
+    const stream = addressing.waitStream({ jobIds: ['finished'], supportsWaitV3: true });
     expect((await stream.next()).value).toMatchObject({ type: 'terminal', jobId: 'finished' });
     await stream.return(undefined);
   });

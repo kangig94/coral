@@ -40,6 +40,7 @@ const ports = {
     outcomeUnrecoverable: () => [],
     unknownJobDisposition: () => 'not-found',
     scopeCheck: () => ({ valid: ['job-1'], missing: [], mismatch: [] }),
+    admitWait: (req) => req.jobIds.map((jobId) => ({ jobId, disposition: 'admitted' })),
     validateWait: () => null,
     waitHandoverSignal: () => handover.signal,
     async *waitStream(req) {

@@ -1,0 +1,110 @@
+import { Command } from 'commander';
+import { afterEach, expect, it, vi } from 'vitest';
+import { registerSessionCommands } from '#src/cli/commands/session.js';
+import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
+import * as dispatch from '#src/cli/dispatch.js';
+import * as ensure from '#src/transport/ipc/ensure.js';
+import { WaitInvocation, installWaitInvocation } from '#src/cli/wait-invocation.js';
+import { WaitSession } from '#src/jobs/wait-session.js';
+import { selectWaitSnapshot } from '#src/jobs/wait-snapshot.js';
+import { admitted } from '#tests/helpers/wait-session.js';
+
+let invocation: WaitInvocation | undefined;
+afterEach(() => {
+  vi.restoreAllMocks();
+  invocation?.dispose(true);
+  invocation = undefined;
+  installWaitInvocation(undefined);
+  process.exitCode = 0;
+});
+function program() {
+  const p = new Command();
+  registerSessionCommands(p, createBuiltInProviderRegistry());
+  return p;
+}
+
+it('refuses --now locally on an older coordinator without opening a subscription or sending snapshot', async () => {
+  const request = vi.fn();
+  const subscribe = vi.fn();
+  vi.spyOn(ensure, 'ensure').mockResolvedValue({ jobsWaitExtensions: ['supportsWaitV2'], request, subscribe } as never);
+  const p = program();
+  const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
+  await expect(
+    dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], projectRoot: process.cwd() }),
+  ).rejects.toThrow('this coordinator predates --now; run coral-cli wait jobs a');
+  expect(request).not.toHaveBeenCalled();
+  expect(subscribe).not.toHaveBeenCalled();
+});
+
+it('commits only a complete validated snapshot, preserves --now, and cannot acknowledge a malformed response', async () => {
+  const a = admitted('a', [[1, Array.from({ length: 501 }, (_, i) => `${i}`).join('\n')]]);
+  const session = new WaitSession(['a']);
+  session.reconcile([a]);
+  const snapshot = selectWaitSnapshot(session);
+  const client = { snapshotJobsWait: vi.fn().mockResolvedValue(snapshot) };
+  vi.spyOn(dispatch, 'makeClient').mockReturnValue(client as never);
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: (error?: Error) => void) => {
+    output += text;
+    callback?.();
+    return true;
+  }) as never);
+  invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
+  installWaitInvocation(invocation);
+  const save = vi.spyOn(invocation, 'saveContinuation');
+  await program().parseAsync([
+    'node',
+    'coral-cli',
+    'wait',
+    'jobs',
+    'a',
+    '--now',
+    '--cursor',
+    Buffer.from(JSON.stringify({ afterSeq: 0 })).toString('base64url'),
+  ]);
+  expect(save).toHaveBeenCalledOnce();
+  expect(output).toContain(' --now --cursor ');
+  expect(process.exitCode).toBe(75);
+  save.mockClear();
+  client.snapshotJobsWait.mockResolvedValue({ ...snapshot, jobs: [{ jobId: 'a' }] });
+  vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
+  await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
+  expect(save).not.toHaveBeenCalled();
+});
+
+it('maps an unknown snapshot method to the older-coordinator refusal', async () => {
+  const request = vi.fn().mockRejectedValue(new Error('Method not found'));
+  vi.spyOn(ensure, 'ensure').mockResolvedValue({ jobsWaitExtensions: ['supportsWaitV3'], request } as never);
+  const p = program();
+  const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
+  await expect(
+    dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], projectRoot: process.cwd() }),
+  ).rejects.toThrow('this coordinator predates --now; run coral-cli wait jobs a');
+});
+
+it.each(['refusal', 'disconnect', 'output failure'])(
+  'a snapshot %s preserves the last delivered collection cursor',
+  async (failure) => {
+    const session = new WaitSession(['a']);
+    session.reconcile([admitted('a')]);
+    const response = selectWaitSnapshot(session);
+    vi.spyOn(dispatch, 'makeClient').mockReturnValue({
+      snapshotJobsWait:
+        failure === 'output failure'
+          ? async () => response
+          : async () => {
+              throw new Error(failure, { cause: { code: 'wait_snapshot_too_large', message: failure } });
+            },
+    } as never);
+    vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: (error?: Error) => void) => {
+      callback?.(new Error('write failed'));
+      return false;
+    }) as never);
+    vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
+    invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
+    installWaitInvocation(invocation);
+    const save = vi.spyOn(invocation, 'saveContinuation');
+    await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
+    expect(save).not.toHaveBeenCalled();
+  },
+);

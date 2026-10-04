@@ -79,6 +79,8 @@ function historicalAddressing(index: JobLocationIndex): JobAddressing {
     },
     () => false,
     () => 'pending',
+    undefined,
+    (jobId) => ({ kind: 'available', resultPath: index.resultPathFor(jobId) }),
   );
 }
 
@@ -100,7 +102,7 @@ describe('job addressing', () => {
       positions: { 'lineage-old:7': 0 },
     };
     expect(addressing.detail('old')).toMatchObject({ epochKey: 'lineage-old:7' });
-    expect(addressing.validateWait({ jobIds: ['old'], cursor })).toBeNull();
+    expect(addressing.validateWait({ jobIds: ['old'], cursor, supportsWaitV2: true })).toBeNull();
     const stream = addressing.waitStream({ jobIds: ['old'], cursor, supportsWaitV2: true });
     expect((await stream.next()).value).toMatchObject({
       type: 'terminal',
@@ -182,8 +184,9 @@ it.each([false, true])('excludes a proven missing sibling from direct continuati
   const stream = addressing.waitStream({ jobIds: ['known', 'ghost'], supportsWaitV2, timeoutSeconds: 0 });
   const next = await stream.next();
   expect(next.value).toMatchObject({ waitingJobIds: ['known'] });
-  if (!supportsWaitV2) expect(seen).toEqual([['known']]);
-  else
+  expect(seen).toEqual([]);
+  expect(next.value).toMatchObject({ carrierUnknownJobIds: ['known'] });
+  if (supportsWaitV2)
     expect(next.value).toMatchObject({
       cursor: { locations: { known: 'lineage-new:8' }, positions: { 'lineage-new:8': 0 } },
     });
@@ -204,7 +207,12 @@ it('keeps retryable unknown IDs in a direct continuation and re-admits them afte
   const { index } = fixture();
   index.holdUnknownLocations('recovering', 'recovery pending', true);
   const addressing = historicalAddressing(index);
-  const waiting = addressing.waitStream({ jobIds: ['unknown'], supportsWaitV2: true, timeoutSeconds: 0 });
+  const waiting = addressing.waitStream({ jobIds: ['unknown'], supportsWaitV3: true, timeoutSeconds: 0 });
+  expect((await waiting.next()).value).toMatchObject({
+    type: 'disposition',
+    jobId: 'unknown',
+    disposition: 'discovery-unknown',
+  });
   expect((await waiting.next()).value).toMatchObject({ type: 'waiting', waitingJobIds: ['unknown'] });
   await waiting.return(undefined);
   index.register('unknown', 'lineage-old:7', {

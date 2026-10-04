@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { WaitInvocation, WaitInvocationEnded } from './wait-invocation.js';
-import { decodeSerializedWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait-cursor.js';
+import { decodeSerializedWaitCursor, waitJobHash, WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait-cursor.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
@@ -33,6 +33,8 @@ import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handof
 import { mapWaitSubscriptionError } from './wait-stream-error.js';
 import {
   formatWaitProgress,
+  formatResultAvailability,
+  formatWaitContinuation,
   formatWaitQueued,
   formatWaitTerminal,
   formatWaitCarrierInterrupted,
@@ -195,6 +197,15 @@ function emitWaitEvent(
 ): void {
   let line: string;
   switch (event.type) {
+    case 'notice':
+      line = event.message;
+      break;
+    case 'disposition':
+      line = `Job ${event.jobId}: ${event.disposition}${event.message ? ` — ${event.message}` : ''}`;
+      break;
+    case 'artifact':
+      line = `Job ${event.jobId}: ${formatResultAvailability(event.availability, true)}\n${formatWaitContinuation(event.remainingJobIds, cursor)}`;
+      break;
     case 'progress':
       line = formatWaitProgress(event, jobLabels?.get(event.jobId)?.stream);
       break;
@@ -202,17 +213,13 @@ function emitWaitEvent(
       line = formatWaitQueued(event, jobLabels?.get(event.jobId)?.stream);
       break;
     case 'terminal':
-      line = formatWaitTerminal(
-        { ...event, jobId: jobLabels?.get(event.jobId)?.terminal ?? event.jobId },
-        cursor,
-        renderOptions.embed,
-        {
-          describeCauseRef: renderCauseRef
-            ? (ref) => renderCauseRef(ref, event.result.outcome, 'epochKey' in event ? event.epochKey : undefined)
-            : undefined,
-          verbose: renderOptions.verbose,
-        },
-      );
+      line = formatWaitTerminal(event, cursor, renderOptions.embed, {
+        describeCauseRef: renderCauseRef
+          ? (ref) => renderCauseRef(ref, event.result.outcome, 'epochKey' in event ? event.epochKey : undefined)
+          : undefined,
+        verbose: renderOptions.verbose,
+        label: jobLabels?.get(event.jobId)?.terminal,
+      });
       break;
     case 'interrupted':
       line = formatWaitCarrierInterrupted({
@@ -350,7 +357,7 @@ async function connectFollowStream(
     const connection = await options.connect({
       jobIds: state.remainingJobIds,
       ...(state.sendCursor || serializedCursor(state.currentCursor) !== undefined
-        ? { cursor: waitCursorForJobs(state.currentCursor, state.remainingJobIds) }
+        ? { cursor: state.currentCursor }
         : {}),
       timeoutSeconds:
         options.reconnectPolicy === 'bounded' ? boundedTimeoutSeconds(deadlineMs) : FOLLOW_TIMEOUT_SECONDS,
@@ -467,9 +474,18 @@ function applyFollowStreamEvent(
         ? event.remainingJobIds
         : event.type === 'waiting'
           ? event.waitingJobIds
-          : event.cursor
-            ? Object.keys(event.cursor.locations).filter((id) => !event.cursor?.deliveredJobIds?.includes(id))
-            : state.remainingJobIds;
+          : event.type === 'artifact'
+            ? event.remainingJobIds
+            : event.cursor?.version === 'jobs.wait.v3'
+              ? state.remainingJobIds.filter(
+                  (id) =>
+                    event.cursor?.version === 'jobs.wait.v3' &&
+                    event.cursor.jobs.some((entry) => entry.hash === waitJobHash(id)),
+                )
+              : event.cursor?.version === 'jobs.wait.v2'
+                ? Object.keys(event.cursor.locations)
+                : state.remainingJobIds;
+    state.remainingJobIds = [...remaining];
     const unknown = remaining.filter((id) => state.carrierUnknownJobIds.includes(id));
     const savedCursor = waitCursorForJobs(state.currentCursor, remaining);
     const savedContinuation =
@@ -495,8 +511,12 @@ function applyFollowStreamEvent(
     );
   }
 
+  if (event.type === 'artifact') {
+    state.remainingJobIds = event.remainingJobIds;
+    return { kind: 'exit', code: event.exitCode };
+  }
   if (event.type === 'terminal') {
-    const exitCode = toExitCode(event.result);
+    const exitCode = event.exitCode ?? toExitCode(event.result);
     if (exitCode !== 0) return { kind: 'exit', code: exitCode };
     state.remainingJobIds = [...event.remainingJobIds];
     state.currentCursor = waitCursorForJobs(state.currentCursor, state.remainingJobIds);
@@ -506,6 +526,7 @@ function applyFollowStreamEvent(
   if (event.type === 'waiting') {
     state.remainingJobIds = [...event.waitingJobIds];
     state.currentCursor = waitCursorForJobs(state.currentCursor, state.remainingJobIds);
+    if (event.exitCode !== undefined) return { kind: 'exit', code: event.exitCode };
     if (state.remainingJobIds.length === 0) return { kind: 'exit', code: 0 };
     return options.reconnectPolicy === 'bounded'
       ? { kind: 'exit', code: errorCodeToExit('transient') }

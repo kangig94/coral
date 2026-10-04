@@ -1,3 +1,4 @@
+import { WaitSessionError } from '../jobs/wait.js';
 import { RecoveryQuarantineClearError } from '../recovery/source-registry.js';
 import { SuccessionWriterParkedError } from '../store/db.js';
 import {
@@ -10,7 +11,7 @@ import {
 export type TransportErrorResponse = {
   readonly message: string;
   readonly statusCode: number;
-  readonly data?: SerializedCoralSetupError | Readonly<{ code: 'succession_writer_parked'; message: string }>;
+  readonly data?: SerializedCoralSetupError | Readonly<{ code: string; message: string }>;
   readonly body: Record<string, unknown>;
 };
 
@@ -86,6 +87,10 @@ const SUCCESSION_WRITER_PARKED_MESSAGE =
   'The coordinator store writer was parked by an upgrade commit while this request ran, so whether the request took effect is not known. A read can be repeated once the commit settles; before repeating a request that changes state, read whether it already took effect.';
 
 export function buildTransportErrorResponse(error: unknown): TransportErrorResponse {
+  if (error instanceof WaitSessionError) {
+    const data = { code: error.code, message: error.message };
+    return { message: error.message, statusCode: 409, data, body: data };
+  }
   if (error instanceof SuccessionWriterParkedError) {
     const parked = { code: 'succession_writer_parked', message: SUCCESSION_WRITER_PARKED_MESSAGE } as const;
     return { message: SUCCESSION_WRITER_PARKED_MESSAGE, statusCode: 503, data: parked, body: parked };

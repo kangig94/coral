@@ -64,7 +64,9 @@ beforeAll(async () => {
                 if (path.endsWith('/cli/wait-invocation.ts')) {
                   source = source
                     .replace('const WAIT_BUDGET_MS = 590_000', 'const WAIT_BUDGET_MS = 600')
-                    .replace('const WAIT_CLEANUP_MS = 10_000', 'const WAIT_CLEANUP_MS = 200');
+                    .replace('const WAIT_CLEANUP_MS = 10_000', 'const WAIT_CLEANUP_MS = 200')
+                    .replace('const SNAPSHOT_BUDGET_MS = 30_000', 'const SNAPSHOT_BUDGET_MS = 600')
+                    .replace('const SNAPSHOT_CLEANUP_MS = 1_000', 'const SNAPSHOT_CLEANUP_MS = 200');
                   if (variant === 'no-backstop') source = source.replace('process.exit(75)', 'undefined');
                   if (variant === 'monitor-abort')
                     source = source.replace(
@@ -147,6 +149,7 @@ async function probe(
   scenario: string,
   variant = 'real',
   interrupt = false,
+  snapshot = false,
 ): Promise<{ code: number | null; timedOut: boolean; stdout: string; stderr: string; elapsed: number }> {
   const entry = join(directory, variant, 'coral-cli.cjs');
   const start = performance.now();
@@ -157,17 +160,22 @@ async function probe(
       : scenario === 'old-hanging-target'
         ? join(directory, 'hanging', 'coral-cli')
         : entry;
-  const child = spawn(process.execPath, [entry, 'wait', 'jobs', 'a', 'ghost', '--embed', '--cursor', saved], {
-    env: {
-      PATH: process.env.PATH,
-      HOME: home,
-      LANG: 'C.UTF-8',
-      TMPDIR: '/tmp',
-      WAIT_PROBE_SCENARIO: scenario,
-      WAIT_PROBE_TARGET: target,
+  const child = spawn(
+    process.execPath,
+    [entry, 'wait', 'jobs', 'a', 'ghost', ...(snapshot ? ['--now'] : ['--embed']), '--cursor', saved],
+    {
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        LANG: 'C.UTF-8',
+        TMPDIR: '/tmp',
+        WAIT_PROBE_SCENARIO: scenario,
+        WAIT_PROBE_MODE: snapshot ? 'snapshot' : 'bounded',
+        WAIT_PROBE_TARGET: target,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  );
   let stdout = '';
   let stderr = '';
   let timedOut = false;
@@ -310,3 +318,44 @@ it.each(['sync-delivery', 'delegated-sync-delivery'])(
     else assertBounded(result);
   },
 );
+
+it.each(['routing', 'selection', 'terminal', 'bootstrap', 'opening', 'delegation'])(
+  'snapshot bounds %s from the original invocation before admission',
+  async (scenario) => {
+    const result = await probe(scenario, 'real', false, true);
+    expect(result.timedOut).toBe(false);
+    expect(result.code).toBe(75);
+    expect(result.elapsed).toBeLessThan(1400);
+    expect(result.stdout).toContain('--now');
+    expect(result.stdout).not.toContain('Cursor:');
+    expect(result.stderr).not.toContain('ABORT CALLED');
+    expect(result.stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+  },
+);
+
+it.each(['late-boundary', 'no-backstop'])(
+  'snapshot negative control %s fails the original invocation bound',
+  async (variant) => {
+    const result = await probe('routing', variant, false, true);
+    expect(result.timedOut).toBe(true);
+    expect(result.stdout).not.toContain('Cursor:');
+  },
+);
+
+it('snapshot delegation cannot restart the invocation budget', async () => {
+  const original = await probe('late-delegation', 'real', false, true);
+  assertBounded(original);
+  expect(original.stdout).toContain('--now');
+  expect(Number([...original.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeLessThan(250);
+  const control = await probe('late-delegation', 'restart-budget', false, true);
+  expect(Number([...control.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeGreaterThan(250);
+});
+
+it.each(['sync', 'delegated-sync'])('snapshot records the S2 synchronous-stall residual: %s', async (scenario) => {
+  const result = await probe(scenario, 'real', false, true);
+  expect(result.timedOut).toBe(false);
+  expect(result.code).toBe(75);
+  expect(result.stdout).toContain('--now');
+  expect(result.stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+  if (scenario === 'sync') expect(result.elapsed).toBeGreaterThan(800);
+});

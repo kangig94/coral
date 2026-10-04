@@ -153,10 +153,25 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
         continue
       if terminal contains `Result path: <path>`:
         output = Read(<path>)
+        if terminal prints a continuation:
+          terminal = Bash(`cd "<work_dir>" && <the exact printed continuation command>`)
+          continue
+        break
+      if terminal contains `Unverified result path: <path>` and the file exists:
+        output = Read(<path>)
+        if terminal prints a continuation:
+          terminal = Bash(`cd "<work_dir>" && <the exact printed continuation command>`)
+          continue
+        break
+      if terminal reports a final outcome with an unavailable artifact or a settled failed artifact:
+        output = Bash(`cd "<work_dir>" && coral-cli jobs detail ${job} --full`)
+        if terminal prints a continuation:
+          terminal = Bash(`cd "<work_dir>" && <the exact printed continuation command>`)
+          continue
         break
       stop with the rendered error
     ```
-    Classify the rendered output before reading an artifact; do not classify exit code `75` alone. `Result path: <path>` marks a terminal result even when a terminal `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
+    Classify the rendered output before reading an artifact; do not classify exit code `75` alone. `Result path: <path>` identifies an available terminal artifact even when a terminal `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 
     **Usage-limit fallback** (`--deep`): pioneer runs on `fable`. If the call returns a usage-limit
     or rate-limit warning instead of a report, retry once on `opus` with the same prompt —
@@ -423,3 +438,5 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
 
 </Output_Format>
 </Preplan_Protocol>
+
+Artifact collection: the outcome is final even without a result path. For `Unverified result path: <path>`, read the file if it exists; the older coordinator cannot certify availability. `no longer kept: past the N-day retention window` means the artifact is gone. `the outcome above is final; Coral is writing the result file` keeps artifact collection in the printed continuation; `result file now available` supplies its available `Result path:` without replaying the outcome. A `failed` artifact line reports its cause and whether maintenance retries it; collect full retained content with `coral-cli jobs detail <jobId> --full`. Follow the exact cursor-aware continuation for remaining results, progress, discovery or artifact settlement. `--now` reads an immediate snapshot with labeled terminal previews; dropping `--now` from its continuation opens a blocking wait. A saved-cursor replay notice means earlier outcomes may repeat; a membership-change notice replays progress while keeping collected outcomes acknowledged.

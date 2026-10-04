@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
 import type { LaunchedAtom, WorkflowExecutionPort } from '../../../src/workflow/execution-contract.js';
+import { admitted } from '#tests/helpers/wait-session.js';
+import { WaitCoordinator } from '#src/jobs/shell/wait.js';
+import { TypedEventBus } from '#src/coordinator/event-bus.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { waitForAtoms } from '../../../src/workflow/wait.js';
 import type { WaitStreamEvent } from '../../../src/jobs/wait.js';
 
@@ -40,6 +44,43 @@ function terminal(jobId: string, seq: number, epochKey: string, remainingJobIds:
 }
 
 describe('workflow wait epoch cursor', () => {
+  it('collects a workflow atom without an available artifact', async () => {
+    const runtime = new SimulationRuntime();
+    const job = admitted('job-1');
+    const wait = new WaitCoordinator({
+      time: runtime.time,
+      eventBus: new TypedEventBus(),
+      sessionManager: { get: () => null } as never,
+      launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
+      loadJobProjectionDetail: () => ({
+        status: job.detail!.status,
+        launch: null,
+        runtime: null,
+        exit: { ...job.detail!.exit!, endTime: '' },
+      }),
+      readJobEvents: () => job.detail!.events,
+      aggregateWorkflowUsage: () => undefined,
+      getCurrentJournalSeq: () => 1000,
+      resultJobsRoot: '/results',
+      observeResultAvailability: () => ({ kind: 'repair-pending', ageUncertain: false }),
+      subscribeJobEvents: async function* () {},
+    });
+    const result = waitForAtoms(
+      [atom('job-1', 0)],
+      { waitStream: (request) => wait.waitForJobs(request) } as WorkflowExecutionPort,
+      {} as InvocationContext,
+      {
+        time: runtime.time,
+        staleTimeoutMs: 0,
+        staleCheckIntervalMs: 1000,
+        staleAbortTimeoutMs: 30000,
+        drainDeadlineMs: 30000,
+        onProgress: () => {},
+      },
+    );
+    await expect(result).resolves.toEqual(new Map([['0:0', 'job-1 result']]));
+  });
+
   it('persists the remaining job epoch and resumes its local position after another epoch terminates', async () => {
     const waitStream = vi
       .fn()

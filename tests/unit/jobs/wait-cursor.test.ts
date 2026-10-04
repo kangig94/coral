@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { decodeSerializedWaitCursor, decodeWaitCursor } from '#src/jobs/wait-cursor.js';
 import { serializeWaitCursor, waitCursorForJobs, type WaitCursor } from '#src/jobs/wait.js';
 import { jobWaitSchema, jobsWaitRequest } from '#src/transport/rpc/jobs.js';
-import { parseWaitStreamEventValue } from '#src/jobs/wait-stream-event.js';
+import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '#src/jobs/wait-stream-event.js';
 
 const v2: WaitCursor = {
   version: 'jobs.wait.v2',
@@ -22,7 +22,7 @@ describe('wait cursor codec', () => {
     },
   );
 
-  it.each(['jobs.wait.v3', 'jobs.wait.v999', null, 2])(
+  it.each(['jobs.wait.v999', null, 2])(
     'rejects an unknown generation even when it has legacy fields: %s',
     (version) => {
       const cursor = { version, afterSeq: 4, positions: {}, locations: {} };
@@ -77,6 +77,93 @@ describe('wait cursor codec', () => {
     expect(jobsWaitRequest(fields, [], reset)).not.toHaveProperty('cursor');
     expect(reset).toHaveBeenCalledOnce();
     expect(jobsWaitRequest(fields, ['supportsWaitV2'], reset).cursor).toBe(v2);
+    expect(jobsWaitRequest(fields, ['supportsWaitV3'], reset).cursor).toBe(v2);
     expect(reset).toHaveBeenCalledOnce();
   });
+});
+
+it.each([64, 128])('encodes %i jobs at maximum frontiers under the authenticated header budget', async (count) => {
+  const { waitEpochToken, waitJobHash } = await import('#src/jobs/wait-cursor.js');
+  for (const shared of [true, false]) {
+    const cursor = {
+      version: 'jobs.wait.v3' as const,
+      epochs: Array.from({ length: shared ? 1 : count }, (_, i) => ({
+        token: waitEpochToken(`/absolute/epoch/${i}`),
+        watermark: Number.MAX_SAFE_INTEGER,
+        lineOffset: 0xffffffff,
+      })),
+      jobs: Array.from({ length: count }, (_, i) => ({
+        hash: waitJobHash(`job-${i}`),
+        epoch: shared ? 0 : i,
+        flags: 3,
+      })),
+    };
+    const encoded = serializeWaitCursor(cursor);
+    expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(8192);
+    expect(encoded).not.toContain('/absolute');
+    expect(decodeSerializedWaitCursor(encoded)).toEqual({ kind: 'decoded', cursor });
+    const headers = `POST /jobs/wait HTTP/1.1\r\nHost: 127.0.0.1:49152\r\nAuthorization: Bearer ${'a'.repeat(256)}\r\nContent-Type: application/json\r\nLast-Event-ID: ${encoded}\r\nContent-Length: 4096\r\nConnection: keep-alive\r\n\r\n`;
+    expect(Buffer.byteLength(headers)).toBeLessThanOrEqual(12288);
+    if (count === 128 && !shared) expect(encoded).toHaveLength(6504);
+  }
+});
+
+it('round trips unresolved entries and rejects malformed v3 flags, ordinals, lengths and duplicates', async () => {
+  const { waitEpochToken, waitJobHash } = await import('#src/jobs/wait-cursor.js');
+  const cursor = {
+    version: 'jobs.wait.v3' as const,
+    epochs: [{ token: waitEpochToken('e'), watermark: 17, lineOffset: 3 }],
+    jobs: [
+      { hash: waitJobHash('a'), epoch: 0, flags: 3 },
+      { hash: waitJobHash('u'), epoch: 255, flags: 0 },
+    ],
+  };
+  expect(decodeSerializedWaitCursor(serializeWaitCursor(cursor))).toEqual({ kind: 'decoded', cursor });
+  expect(waitCursorForJobs(cursor, ['u'])).toEqual({ version: 'jobs.wait.v3', epochs: [], jobs: [cursor.jobs[1]] });
+  expect(waitCursorForJobs(cursor, ['a'])).toEqual({ ...cursor, jobs: [cursor.jobs[0]] });
+  for (const bad of [
+    { ...cursor, jobs: [{ ...cursor.jobs[0], flags: 4 }] },
+    { ...cursor, jobs: [{ ...cursor.jobs[1], flags: 1 }] },
+    { ...cursor, jobs: [{ ...cursor.jobs[0], epoch: 1 }] },
+    { ...cursor, jobs: [cursor.jobs[0], cursor.jobs[0]] },
+    { ...cursor, epochs: [cursor.epochs[0], cursor.epochs[0]] },
+    { ...cursor, epochs: [{ ...cursor.epochs[0], watermark: Number.MAX_SAFE_INTEGER + 1 }] },
+  ])
+    expect(decodeWaitCursor(bad).kind).toBe('rejected');
+  expect(decodeSerializedWaitCursor(serializeWaitCursor(cursor).slice(0, -1)).kind).toBe('rejected');
+  const reset = vi.fn();
+  expect(jobsWaitRequest({ jobIds: ['a'], projectRoot: '/tmp', cursor }, ['supportsWaitV2'], reset)).not.toHaveProperty(
+    'cursor',
+  );
+  expect(reset).toHaveBeenCalledOnce();
+  expect(jobsWaitRequest({ jobIds: ['a'], projectRoot: '/tmp', cursor }, ['supportsWaitV3']).cursor).toBe(cursor);
+});
+
+it('a legacy progress watermark cannot hide an unrelated terminal or consume its progress', () => {
+  const event = {
+    type: 'terminal',
+    jobId: 'b',
+    seq: 3,
+    result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+    resultPath: '/result/b',
+    remainingJobIds: [],
+  } as const;
+  const decision = advanceWaitRenderCursor({ afterSeq: 100 }, { ...event, remainingJobIds: [] });
+  expect(decision.shouldRender).toBe(true);
+  expect(decision.cursor).toEqual({ afterSeq: 100, deliveredJobIds: ['b'] });
+  expect(advanceWaitRenderCursor(decision.cursor, { ...event, remainingJobIds: [] }).shouldRender).toBe(false);
+});
+
+it('a V3 notice or observation without a cursor preserves collected outcomes and artifact flags', async () => {
+  const { WaitSession } = await import('#src/jobs/wait-session.js');
+  const { admitted } = await import('#tests/helpers/wait-session.js');
+  const a = admitted('a');
+  a.availability = { kind: 'repair-pending', ageUncertain: false };
+  const session = new WaitSession(['a']);
+  session.reconcile([a]);
+  session.acknowledge(a);
+  const cursor = session.cursor();
+  expect(
+    advanceWaitRenderCursor(cursor, { type: 'notice', version: 'jobs.wait.v3', message: 'progress retired' }).cursor,
+  ).toBe(cursor);
 });

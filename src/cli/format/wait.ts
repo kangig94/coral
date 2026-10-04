@@ -1,8 +1,17 @@
+import { formatResultAvailability } from './result-availability.js';
+export { formatResultAvailability } from './result-availability.js';
+import type { WaitSnapshot } from '../../jobs/wait-session.js';
+import { serializeWaitCursor } from '../../jobs/wait.js';
 import { assertNever } from '../../infra/error-format.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import type { JobTerminal } from '../../jobs/records.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
-import { type CauseRefDescriber, pickTerminalPreviewSource, truncatePreview } from './jobs.js';
+import {
+  type CauseRefDescriber,
+  pickTerminalPreviewSource,
+  truncatePreview,
+  renderJobsOperatorCommand,
+} from './jobs.js';
 import { appendCursor, joinLines } from './text.js';
 import { formatUsageSegment } from './usage.js';
 
@@ -54,9 +63,9 @@ function terminalOutcomeHeader(jobId: string, result: JobTerminal, describeCause
   }
 }
 
-function formatWaitContinuation(jobIds: readonly string[], cursor: string | null): string {
+export function formatWaitContinuation(jobIds: readonly string[], cursor: string | null, now = false): string {
   if (jobIds.length === 0) return 'No remaining jobs.';
-  return `Run coral-cli wait jobs ${jobIds.join(' ')}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`;
+  return `Run coral-cli wait jobs ${jobIds.join(' ')}${now ? ' --now' : ''}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`;
 }
 
 export function formatWaitProgress(event: WaitProgressEvent, label?: string): string {
@@ -72,22 +81,37 @@ export function formatWaitTerminal(
   event: WaitTerminalEvent,
   cursor: string | null,
   inline: boolean,
-  options: { describeCauseRef?: CauseRefDescriber; verbose?: boolean } = {},
+  options: { describeCauseRef?: CauseRefDescriber; verbose?: boolean; label?: string } = {},
 ): string {
   const header = [
-    terminalOutcomeHeader(event.jobId, event.result, options.describeCauseRef),
+    terminalOutcomeHeader(options.label ?? event.jobId, event.result, options.describeCauseRef),
     formatUsageSegment(event.usage, options),
   ]
     .filter((segment): segment is string => segment !== undefined)
     .join(' · ');
   const continuation = formatWaitContinuation(event.remainingJobIds, cursor);
+  const fullDetail =
+    (event.version === 'jobs.wait.v3' && event.availability?.kind !== 'available') ||
+    (inline && event.result.content.length > 10_000)
+      ? `Full retained outcome: ${renderJobsOperatorCommand({ kind: 'jobs-detail-full', jobId: event.jobId })}`
+      : undefined;
   if (!inline) {
-    return joinLines([header, `Result path: ${event.resultPath}`, continuation]);
+    return joinLines([
+      header,
+      fullDetail,
+      event.version === 'jobs.wait.v3' && event.availability
+        ? formatResultAvailability(event.availability)
+        : `Unverified result path: ${event.resultPath}`,
+      continuation,
+    ]);
   }
 
   return joinLines([
     header,
-    `Result path: ${event.resultPath}`,
+    fullDetail,
+    event.version === 'jobs.wait.v3' && event.availability
+      ? formatResultAvailability(event.availability)
+      : `Unverified result path: ${event.resultPath}`,
     truncatePreview(pickTerminalPreviewSource(event.result, options.describeCauseRef)),
     continuation,
     cursor === null ? undefined : `Cursor: ${cursor}`,
@@ -141,4 +165,43 @@ export function renderWaitLine(text: string, ctx: WaitRenderContext): string {
   }
 
   return `\r${text.padEnd(columns)}`;
+}
+
+export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
+  const blocks = snapshot.jobs.map((job) => {
+    const header =
+      job.disposition !== 'admitted'
+        ? `Job ${job.jobId}: ${job.disposition}${job.message ? ` — ${job.message}` : ''}`
+        : job.terminal || job.alreadyCollected
+          ? `Job ${job.jobId}: terminal${job.alreadyCollected ? '/already collected' : ''}`
+          : `Job ${job.jobId}: ${job.phase ?? 'nonterminal'}`;
+    const terminal = job.terminal;
+    return joinLines([
+      header,
+      ...job.progress,
+      terminal
+        ? `Outcome: ${terminal.outcomeKind}; exit ${terminal.exitCode}; duration ${terminal.durationMs} ms`
+        : undefined,
+      terminal ? `Content preview:\n${terminal.contentPreview}` : undefined,
+      terminal?.contentOmittedBytes ? `Content omitted: ${terminal.contentOmittedBytes} bytes` : undefined,
+      terminal ? `Diagnostic preview:\n${terminal.diagnosticPreview}` : undefined,
+      terminal?.diagnosticOmittedBytes ? `Diagnostics omitted: ${terminal.diagnosticOmittedBytes} bytes` : undefined,
+      job.availability && (!job.alreadyCollected || job.artifactFollowUp)
+        ? formatResultAvailability(job.availability, job.artifactFollowUp)
+        : undefined,
+      terminal &&
+      (terminal.contentOmittedBytes > 0 ||
+        terminal.diagnosticOmittedBytes > 0 ||
+        job.availability?.kind !== 'available')
+        ? `Full retained outcome: ${renderJobsOperatorCommand({ kind: 'jobs-detail-full', jobId: job.jobId })}`
+        : undefined,
+    ]);
+  });
+  return joinLines([
+    ...snapshot.notices,
+    ...blocks,
+    snapshot.remainingJobIds.length
+      ? formatWaitContinuation(snapshot.remainingJobIds, serializeWaitCursor(snapshot.cursor), true)
+      : undefined,
+  ]);
 }

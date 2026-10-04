@@ -1174,9 +1174,8 @@ describe('execution backend server', () => {
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({
       code: 'scope_mismatch',
-      message: "Jobs are outside the caller's work directory scope",
-      remediation:
-        "Rerun from the job's work directory, or from a directory that contains it — `coral-cli jobs` groups every job under the work directory it ran in.",
+      message:
+        'Job job-foreign: scope-mismatch. Change cwd to the job work directory; coral-cli jobs --all includes terminal jobs. Read coral-cli jobs detail job-foreign --full.',
       detail: { jobs: ['job-foreign'] },
     });
     expect(fakeService.waitStream).not.toHaveBeenCalled();

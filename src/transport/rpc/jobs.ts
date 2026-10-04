@@ -1,4 +1,5 @@
 import { decodeWaitCursor } from '../../jobs/wait.js';
+import type { RpcPorts } from './ports.js';
 import { z } from 'zod';
 
 import { parseBooleanQuery } from '../../infra/json.js';
@@ -31,12 +32,36 @@ export const jobWaitSchema = z
     // that sends `false` are indistinguishable to the coordinator, and both get the pre-`interrupted` stream.
     supportsInterrupted: z.boolean().optional(),
     supportsWaitV2: z.boolean().optional(),
+    supportsWaitV3: z.boolean().optional(),
     // A subscriber that omits this reads a clean end as final, so it must never be sent a handover notice.
     supportsHandover: z.boolean().optional(),
   })
   .strict();
 
-export const JOBS_WAIT_EXTENSIONS = ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'] as const;
+export const jobWaitSnapshotSchema = jobWaitSchema
+  .omit({
+    timeoutSeconds: true,
+    supportsInterrupted: true,
+    supportsHandover: true,
+    supportsWaitV2: true,
+    supportsWaitV3: true,
+  })
+  .extend({ lines: z.number().int().min(1).max(500).optional() })
+  .superRefine((value, ctx) => {
+    if (value.lines !== undefined && value.cursor !== undefined)
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--lines cannot be used with --cursor' });
+  });
+
+export const JOBS_WAIT_EXTENSIONS = [
+  'supportsInterrupted',
+  'supportsWaitV2',
+  'supportsHandover',
+  'supportsWaitV3',
+] as const;
+
+export function jobsWaitExtensions(jobs: Pick<RpcPorts['jobs'], 'snapshot' | 'admitWait'>): readonly string[] {
+  return JOBS_WAIT_EXTENSIONS.filter((flag) => flag !== 'supportsWaitV3' || (jobs.snapshot && jobs.admitWait));
+}
 
 export type JobsWaitFields = Readonly<{
   jobIds: readonly string[];
@@ -45,16 +70,23 @@ export type JobsWaitFields = Readonly<{
   cursor?: WaitCursor;
 }>;
 
-/** A vector cursor must be omitted for a coordinator without `supportsWaitV2`; it cannot parse one. */
+/** A saved cursor accepted by the coordinator must be sent unchanged. */
 export function jobsWaitRequest(
   fields: JobsWaitFields,
   extensions: readonly string[],
   onCursorReset?: () => void,
 ): Record<string, unknown> {
-  const waitV2 = extensions.includes('supportsWaitV2');
-  if (fields.cursor?.version === 'jobs.wait.v2' && !waitV2) onCursorReset?.();
-  const cursor =
-    fields.cursor === undefined || (!waitV2 && fields.cursor.version === 'jobs.wait.v2') ? undefined : fields.cursor;
+  const decoded = fields.cursor === undefined ? undefined : decodeWaitCursor(fields.cursor);
+  const generation = decoded?.kind === 'decoded' ? decoded.cursor.version : undefined;
+  const accepted =
+    decoded === undefined ||
+    (decoded.kind === 'decoded' &&
+      (generation === undefined ||
+        (generation === 'jobs.wait.v2' &&
+          (extensions.includes('supportsWaitV2') || extensions.includes('supportsWaitV3'))) ||
+        (generation === 'jobs.wait.v3' && extensions.includes('supportsWaitV3'))));
+  if (!accepted) onCursorReset?.();
+  const cursor = accepted ? fields.cursor : undefined;
   return {
     jobIds: [...fields.jobIds],
     projectRoot: fields.projectRoot,

@@ -1,3 +1,5 @@
+import type { WaitAdmission, WaitSnapshot } from '../../jobs/wait.js';
+import type { WaitSnapshotRequest } from '../../jobs/wait.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
@@ -56,6 +58,8 @@ interface SessionRequestPort {
 }
 
 interface JobsRequestPort {
+  admitWait?(req: WaitStreamRequest): WaitAdmission[];
+  snapshot?(req: WaitSnapshotRequest): WaitSnapshot;
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
   validateWait(req: WaitStreamRequest): WaitCursorError | null;

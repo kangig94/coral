@@ -1,3 +1,7 @@
+import { isRecord } from '../infra/json.js';
+import type { WaitSnapshotRequest } from '../jobs/wait.js';
+import type { WaitSnapshot } from '../jobs/wait-session.js';
+import { UsageError } from './errors.js';
 import { getWaitInvocation } from './wait-invocation.js';
 import { WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait-cursor.js';
 import type { Command } from 'commander';
@@ -142,6 +146,7 @@ type CliCommandClient = AbortCapableClient & {
   workflow(expression: string, options: WorkflowRequestOptions): Promise<AcceptedLaunchResponse>;
   listJobs(options?: JobsListOptions): Promise<JobsListResponse>;
   detailJob(jobId: string): Promise<JobDetailResponse>;
+  snapshotJobsWait(fields: WaitSnapshotRequest, onCursorReset?: () => void): Promise<WaitSnapshot>;
   discussSeed(args: DiscussSeedArgs): Promise<PersonaSeedOutput>;
   discussStart(args: {
     agents: Array<{
@@ -939,6 +944,38 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     ...createKbSourceCommunityClient(bindings),
     ...createKbMemoClient(bindings),
     subscribe,
+    snapshotJobsWait: async (fields, onCursorReset) => {
+      const invocation = getWaitInvocation();
+      const run = <T>(work: () => Promise<T>) => (invocation ? invocation.run(work) : work());
+      const refusal = () =>
+        new UsageError(`this coordinator predates --now; run coral-cli wait jobs ${fields.jobIds.join(' ')}`);
+      await run(reconcileKbBoot);
+      const coordinator = await run(() => ensure('jobs.wait.snapshot', resolvePluginRoot()));
+      if (!coordinator.jobsWaitExtensions.includes('supportsWaitV3')) throw refusal();
+      const negotiated = jobsWaitRequest({ ...fields, projectRoot }, coordinator.jobsWaitExtensions, onCursorReset);
+      const request = {
+        jobIds: fields.jobIds,
+        projectRoot,
+        ...(negotiated.cursor === undefined ? {} : { cursor: negotiated.cursor }),
+        ...(fields.lines === undefined ? {} : { lines: fields.lines }),
+      };
+      try {
+        return await run(() =>
+          coordinator.request<WaitSnapshot>('jobs.wait.snapshot', request, {
+            timeoutMs: Math.max(1, Math.ceil(invocation?.remainingMs() ?? 30_000)),
+            ...ipcAuthOptions(),
+          }),
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (/unknown.method|method not found/i.test(error.message) ||
+            (isRecord(error.cause) && error.cause.code === 'unknown_method'))
+        )
+          throw refusal();
+        throw error;
+      }
+    },
     subscribeJobsWait: (fields, options, onCursorReset) =>
       subscribeTo(
         'jobs.wait',
