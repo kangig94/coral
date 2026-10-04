@@ -48,9 +48,9 @@ interface CoordinatorSessionOps {
 }
 
 interface CoordinatorJobOps {
-  readWaitAdmissions?(jobIds: readonly string[], epochKey: string): WaitAdmission[];
+  readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
-  readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
+  readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
   holdsLocalAppServerExecution?(jobId: string): boolean;
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
@@ -96,7 +96,7 @@ export type ExecutionServiceDeps = {
   };
   coordinatorCommit: CommitEventsFn;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  readJobEvents: (jobId: string) => JobEvent[];
+  readJobEvents: (jobId: string, afterSeq?: number) => JobEvent[];
   aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;
   subscribeJobEvents: (options: {
     afterSeq: number;
@@ -105,7 +105,7 @@ export type ExecutionServiceDeps = {
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
   currentJobEpochKey?: () => string | null;
-  observeResultAvailability?: (jobId: string) => ResultAvailability;
+  observeResultAvailability: (jobId: string) => ResultAvailability;
   hintResultRepair?: (jobId: string) => void;
   /** Tries to route an app-server operation through a live provider proxy set (W2.3). Optional because most
    *  compositions (every test, and any coordinator with no live set) never wire it — `LaunchOrchestrator`

@@ -128,10 +128,24 @@ export async function parseProgramWithHandoff(
   };
   try {
     const outcome = invocation === undefined ? await dispatch() : await invocation.run(dispatch);
+    if (outcome?.kind === 'handoff-exit' && outcome.exitCode === 75) invocation?.flushContinuation();
     await invocation?.flushOutput();
     return outcome;
   } catch (error: unknown) {
     if (!(error instanceof WaitInvocationEnded) || invocation === undefined) throw error;
+    if (invocation.monitorEnding) {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          invocation.monitorEnding.catch(() => undefined),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, Math.max(0, invocation.cleanupRemainingMs() - 25));
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
     invocation.flushContinuation();
     return { kind: 'handoff-exit', exitCode: 75 };
   } finally {

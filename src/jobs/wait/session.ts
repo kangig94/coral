@@ -170,6 +170,7 @@ export class WaitSession {
         epochKey === this.activeEpochKey &&
         (this.internal ||
           legacy.afterSeq === 0 ||
+          (legacy.admittedJobIds === undefined && legacy.deliveredJobIds === undefined) ||
           (legacy.admittedJobIds ?? legacy.deliveredJobIds)?.includes(jobId) === true));
     const inputPosition =
       inputEpoch ??
@@ -279,6 +280,7 @@ export class WaitSession {
     const result: WaitProgressLine[] = [];
     this.unreadByJob.clear();
     for (const [epochKey, position] of this.epochs) {
+      if (this.admissions.some((job) => job.epochKey === epochKey && job.progressUnknown)) continue;
       const lines: WaitProgressLine[] = [];
       for (const job of this.admissions) {
         if (job.disposition !== 'admitted' || job.epochKey !== epochKey) continue;
@@ -314,8 +316,7 @@ export class WaitSession {
         }
       }
       lines.sort((a, b) => a.seq - b.seq || a.offset - b.offset);
-      if (!this.admissions.some((job) => job.epochKey === epochKey && job.progressUnknown))
-        for (const line of lines) result.push(line);
+      for (const line of lines) result.push(line);
     }
     this.progressLines = result;
     this.progressHead = 0;
@@ -425,6 +426,8 @@ export class WaitSession {
     }
     return { version: 'jobs.wait.v3', epochs, jobs };
   }
+  legacyCursor(v2: false): Extract<WaitCursor, { afterSeq: number }>;
+  legacyCursor(v2: true): Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
   legacyCursor(v2: boolean): Exclude<WaitCursor, WaitCursorV3> {
     const deliveredJobIds = this.admissions.filter((job) => this.acknowledged(job.jobId)).map((job) => job.jobId);
     if (!v2)

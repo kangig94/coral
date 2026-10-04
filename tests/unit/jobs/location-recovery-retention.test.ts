@@ -46,3 +46,32 @@ it('recovers terminals without loading progress and writes nothing on an unchang
     value: { events: [{ type: 'progress' }, { type: 'progress' }] },
   });
 });
+
+it('isolates a failing terminal record while recovering its siblings', () => {
+  const f = createRetentionFixture();
+  fixtures.push(f);
+  const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+  for (const id of ['bad', 'good']) {
+    initTestJob(f.store, {
+      jobId: id,
+      sessionId: id,
+      provider: 'codex',
+      projectRoot: '/workspace',
+      backendNamespace: 'test',
+    });
+    commitJobTerminal(f.store, id, id, { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
+  }
+  const record = index.recordTerminal.bind(index);
+  vi.spyOn(index, 'recordTerminal').mockImplementation((...args) => {
+    if (args[0] === 'bad') throw new Error('record failed');
+    return record(...args);
+  });
+  expect(() => recoverJobLocations(index, 'epoch', f.store)).toThrow('record failed');
+  expect(index.read('good')?.detail.kind).toBe('recorded');
+  expect(index.read('good')?.terminalSeq).toBeDefined();
+  expect(index.unknownLocationHolds()).toContainEqual({
+    epochKey: 'epoch',
+    reason: 'record failed',
+    retryScheduled: true,
+  });
+});

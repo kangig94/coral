@@ -461,12 +461,12 @@ describe('terminal export owner', () => {
     f.db.prepare('DELETE FROM events WHERE seq = 1').run();
     const location = f.index.read(f.jobId);
     if (location?.detail.kind !== 'recorded') throw new Error('missing fixture terminal');
-    const read = f.runtime.storage.readFileSync;
+    const stat = f.runtime.storage.lstatSync;
     let observations = 0;
-    vi.spyOn(f.runtime.storage, 'readFileSync').mockImplementation((path, encoding) => {
+    vi.spyOn(f.runtime.storage, 'lstatSync').mockImplementation(((path, options) => {
       if (path === f.locationPath && ++observations === 2) writeFileSync(f.locationPath, JSON.stringify(retained));
-      return read(path, encoding);
-    });
+      return stat(path, options);
+    }) as typeof stat);
     f.index.recordTerminal(f.jobId, location.detail.value, f.resultPath, seq, f.db);
     expect(f.index.terminalEligibility(f.jobId).age).toBe('regression');
   });

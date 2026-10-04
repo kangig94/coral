@@ -133,7 +133,8 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
       jobId: 'workflow-job',
     })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
-    waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
+    waitStream: vi.fn(async function* (request): AsyncGenerator<WaitStreamEvent> {
+      request.onLegacyCursor?.({ afterSeq: 7, admittedJobIds: ['job-1'], deliveredJobIds: [] });
       yield {
         type: 'progress',
         jobId: 'job-1',
@@ -141,6 +142,7 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
         message: 'working',
         timing: waitTiming,
       };
+      request.onLegacyCursor?.({ afterSeq: 8, admittedJobIds: ['job-1'], deliveredJobIds: ['job-1'] });
       yield {
         type: 'terminal',
         jobId: 'job-1',
@@ -944,6 +946,29 @@ describe('execution backend server', () => {
       }
     });
 
+    it('carries the session frontier rather than inventing one from a delivered event', async () => {
+      const service = createFakeExecutionService({
+        waitStream: vi.fn(async function* (request) {
+          request.onLegacyCursor?.({ afterSeq: 4, admittedJobIds: ['job-1'], deliveredJobIds: [] });
+          yield { type: 'progress', jobId: 'job-1', seq: 7, message: 'working', timing: waitTiming };
+        }),
+      });
+      const { deps } = createHttpHandlerDeps({ executionService: service });
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const response = await fetch(`${started.baseUrl}/jobs/wait`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': 'test-token' },
+          body: JSON.stringify({ jobIds: ['job-1'], timeoutSeconds: 1, projectRoot: DEFAULT_PROJECT_ROOT }),
+        });
+        const body = await response.text();
+        const id = body.match(/^id: (.+)$/m)?.[1];
+        expect(id && decodeSerializedWaitCursor(id)).toMatchObject({ kind: 'decoded', cursor: { afterSeq: 4 } });
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
     it('ends a non-handover HTTP wait with the same lifecycle refusal as IPC', async () => {
       const handover = new AbortController();
       const service = createFakeExecutionService({
@@ -976,6 +1001,34 @@ describe('execution backend server', () => {
         expect(deps.streamResponses.size).toBe(0);
       } finally {
         handover.abort();
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('ends a passive SSE response when its ready frame hits backpressure', async () => {
+      const originalWrite = ServerResponse.prototype.write;
+      const responses: ServerResponse[] = [];
+      vi.spyOn(ServerResponse.prototype, 'write').mockImplementation(function (
+        this: ServerResponse,
+        ...args: unknown[]
+      ) {
+        if (String(args[0]).startsWith('event: ready')) {
+          responses.push(this);
+          return false;
+        }
+        return Reflect.apply(originalWrite, this, args) as boolean;
+      } as typeof originalWrite);
+      const { deps } = createHttpHandlerDeps();
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const result = await fetch(`${started.baseUrl}/events/stream`, {
+          headers: { 'X-Coral-Backend-Token': 'test-token' },
+        });
+        expect(responses[0]?.writableEnded).toBe(true);
+        expect(deps.streamResponses.size).toBe(0);
+        await result.text();
+      } finally {
+        responses[0]?.destroy();
         await _closeHttpServer(started.server);
       }
     });

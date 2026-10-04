@@ -369,3 +369,56 @@ it('durably refuses a damaged identity, advances past it, and retries it after r
   expect(JSON.parse(readFileSync(paths[1], 'utf8')).detail.events).toHaveLength(1);
   expect(runtime.storage.existsSync(refusal)).toBe(false);
 });
+
+it.each(['{', '{"version":"v99","reason":"future"}'])('isolates an undecodable unknown-location hold: %s', (bytes) => {
+  const { root, index } = fixture();
+  index.holdUnknownLocations('epoch', 'known hold', true);
+  writeFileSync(
+    join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256('epoch'), 'unknown-locations.v1.json'),
+    bytes,
+  );
+  expect(index.unknownLocationHolds()).toEqual([
+    expect.objectContaining({ retryScheduled: false, reason: expect.stringContaining('cannot be decoded') }),
+  ]);
+  expect(index.unknownLocationHold('epoch')).toContain('cannot be decoded');
+});
+
+it('observes another index writer even when the jobs directory mtime is restored', () => {
+  const { root, index } = fixture();
+  index.register('a', 'epoch', { projectRoot: '/workspace', workDir: '/workspace', jobKind: 'provider' });
+  expect(index.locationsFor('epoch').map((item) => item.jobId)).toEqual(['a']);
+  const directory = join(root, 'job-locations.v1', 'jobs');
+  const lstat = runtime.storage.lstatSync.bind(runtime.storage);
+  const mtimeNs = lstat(directory, { bigint: true }).mtimeNs;
+  vi.spyOn(runtime.storage, 'lstatSync').mockImplementation((path, options) => {
+    const stat = lstat(path, options);
+    return path === directory
+      ? { ...stat, mtimeNs, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile() }
+      : stat;
+  });
+  const writer = new JobLocationIndex(runtime, root);
+  writer.register('b', 'epoch', { projectRoot: '/workspace', workDir: '/workspace', jobKind: 'kb' });
+  expect(
+    index
+      .locationsFor('epoch')
+      .map((item) => item.jobId)
+      .sort(),
+  ).toEqual(['a', 'b']);
+});
+
+it('reuses an unchanged decided certificate and invalidates it on another owner revision', () => {
+  const { root, index } = fixture();
+  index.register('a', 'epoch', { projectRoot: '/workspace', workDir: null, jobKind: 'provider' });
+  index.recordTerminal('a', terminalDetail('a'), join(root, 'a'), 2);
+  expect(index.certify('epoch', 2)?.jobIds).toEqual(['a']);
+  expect(index.certificate('epoch')?.jobIds).toEqual(['a']);
+  const read = vi.spyOn(runtime.storage, 'readFileSync');
+  for (let poll = 0; poll < 20; poll++) expect(index.certificate('epoch')?.jobIds).toEqual(['a']);
+  expect(read.mock.calls.filter(([path]) => String(path).endsWith('certificate.v1.json'))).toHaveLength(0);
+  const writer = new JobLocationIndex(runtime, root);
+  writer.register('b', 'epoch', { projectRoot: '/workspace', workDir: null, jobKind: 'provider' });
+  expect(index.certificate('epoch')).toBeNull();
+  writer.recordTerminal('b', terminalDetail('b'), join(root, 'b'), 2);
+  writer.certify('epoch', 2);
+  expect(index.certificate('epoch')?.jobIds).toEqual(['a', 'b']);
+});

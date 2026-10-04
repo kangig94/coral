@@ -23,9 +23,13 @@ describe('sessionCreateSchema', () => {
 
 describe('jobWaitSchema', () => {
   it.each([jobWaitSchema, jobWaitSnapshotSchema])('rejects duplicate membership at wait ingress', (schema) => {
-    expect(() => schema.parse({ jobIds: ['a', 'a'], projectRoot: '/tmp' })).toThrow(
-      'Each job ID must appear only once; remove duplicate job IDs.',
-    );
+    expect(() =>
+      schema.parse({
+        jobIds: ['a', 'a'],
+        projectRoot: '/tmp',
+        ...(schema === jobWaitSchema ? { supportsWaitV3: true } : {}),
+      }),
+    ).toThrow('Each job ID must appear only once; remove duplicate job IDs.');
   });
 
   it('bounds jobIds at the wait cap so one request cannot ask for an unbounded fan-out', () => {

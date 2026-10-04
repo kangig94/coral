@@ -307,7 +307,7 @@ describe('handoff-routing/runner', () => {
         expect(vi.mocked(child.kill).mock.calls.map(([signal]) => signal)).toEqual(
           liveness === 'alive' ? ['SIGTERM', 'SIGKILL'] : ['SIGTERM'],
         );
-        await expect(result).rejects.toThrow('cannot preserve this monitor invocation budget');
+        await expect(result).rejects.toThrow('could not be observed within the invocation budget');
         expect(mockState.spawn).not.toHaveBeenCalled();
         observe.mockRestore();
         vi.useRealTimers();

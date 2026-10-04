@@ -269,7 +269,7 @@ it('holds the shared progress frontier while one member history is unreadable', 
   session.reconcile([a, b]);
   const first = selectWaitSnapshot(session, 20);
   expect(first.jobs[1].progress).toEqual([]);
-  expect(first.remainingJobIds).toEqual(['a', 'b']);
+  expect(first.remainingJobIds).toEqual(['a']);
   expect(first.cursor.epochs[0].watermark).toBe(0);
   const resumed = new WaitSession(['a', 'b'], first.cursor);
   resumed.reconcile([admitted('a', [[3, 'recovered backlog']]), b]);

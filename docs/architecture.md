@@ -387,7 +387,7 @@ Each projected job retains project identity and canonical work directory. Ambien
 
 ### Result exports
 
-`jobs/terminal/export.ts:TerminalResultExportOwner` is the single result.md writer. Callers pass a job id; the owner renders accepted terminal facts from that job's source epoch. Workflow composition injects `workflow/result-report.ts:renderWorkflowReport` with the pure `workflow/result-rendering.ts:serializeWorkflowResult` step renderer. Missing workflow facts are a failure, never a final-output substitute. Empty terminals render nonempty outcome explanations. Repair preserves available files.
+`jobs/terminal/export.ts:TerminalResultExportOwner` is the single result.md writer. Callers pass a job id; the owner renders accepted terminal facts from that job's source epoch. Workflow composition injects `workflow/result-report.ts:renderWorkflowReport` with the pure `workflow/result-rendering.ts:serializeWorkflowResult` step renderer. Without `workflow.completed`, an accepted workflow terminal renders a nonempty outcome explanation. Present completion facts must validate before their step output can be rendered. Empty terminals render nonempty outcome explanations. Repair preserves available files.
 
 | Availability | Read output and collection effect |
 | --- | --- |

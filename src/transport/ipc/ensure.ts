@@ -1492,8 +1492,9 @@ export async function issueWithSuccessorAfterLifecycleRefusal<TResult>(
   pluginRoot: string | undefined,
   issue: (client: Pick<IpcClient, 'request'>) => Promise<TResult>,
   timePort?: TimePort,
+  initialClient?: Pick<IpcClient, 'request'>,
 ): Promise<TResult> {
-  const incumbent = await ensure(method, pluginRoot, timePort);
+  const incumbent = initialClient ?? (await ensure(method, pluginRoot, timePort));
   try {
     return await issue(incumbent);
   } catch (error: unknown) {

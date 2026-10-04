@@ -218,14 +218,19 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
       }
       expect(first.filter((event) => event.type === 'progress').map((event) => event.jobId)).toEqual(['b']);
       expect(first.find((event) => event.type === 'terminal')).toMatchObject({ jobId: 'b', remainingJobIds: ['a'] });
-      await expect(
-        readWaitSession({
-          request: { jobIds: ['a'], cursor: legacy },
-          time: createRealTimePort(),
-          activeEpochKey: 'epoch-E',
-          read: () => [a],
-        }).next(),
-      ).rejects.toMatchObject({ code: 'wait_cursor_epoch_required' });
+      const resumed = readWaitSession({
+        request: { jobIds: ['a'], cursor: legacy },
+        time: createRealTimePort(),
+        activeEpochKey: 'epoch-E',
+        read: () => [a],
+      });
+      const resumedEvents: WaitStreamEvent[] = [];
+      for await (const event of resumed) {
+        reader.parseWaitStreamEventValue(event);
+        resumedEvents.push(event);
+      }
+      expect(resumedEvents.find((event) => event.type === 'progress')).toMatchObject({ jobId: 'a', seq: 100 });
+      expect(resumedEvents.find((event) => event.type === 'terminal')).toMatchObject({ jobId: 'a' });
       legacy = { afterSeq: 0, deliveredJobIds: ['b'] };
       const next: WaitStreamEvent[] = [];
       for await (const event of readWaitSession({
@@ -310,15 +315,17 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
         expect(pending.some((event) => event.type === 'terminal')).toBe(false);
         continue;
       }
-      await expect(async () => {
-        for await (const event of addressing(availability).waitStream(
-          jobsWaitRequest(
-            { jobIds: ['a'], projectRoot: '/tmp', cursor: acknowledged, timeoutSeconds: 0 },
-            flags,
-          ) as never,
-        ))
-          reader.parseWaitStreamEventValue(event);
-      }).rejects.toMatchObject({ code: 'wait_epoch_unsupported' });
+      const alreadyAcknowledged: WaitStreamEvent[] = [];
+      for await (const event of addressing(availability).waitStream(
+        jobsWaitRequest(
+          { jobIds: ['a'], projectRoot: '/tmp', cursor: acknowledged, timeoutSeconds: 0 },
+          flags,
+        ) as never,
+      )) {
+        reader.parseWaitStreamEventValue(event);
+        alreadyAcknowledged.push(event);
+      }
+      expect(alreadyAcknowledged.filter((event) => event.type === 'terminal')).toEqual([]);
       let refusal: unknown;
       try {
         for await (const event of addressing(availability).waitStream(request as never))

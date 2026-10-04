@@ -46,6 +46,7 @@ it('reads same-epoch members at one cut when a writer commits between member rea
         }
         return result;
       },
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     const cursor = {
       version: 'jobs.wait.v3' as const,
@@ -133,6 +134,7 @@ it('does not acknowledge a retained terminal committed after the historical prog
         }
         return result;
       },
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     const first = addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true });
     expect(first.jobs[0].terminal).toBeUndefined();

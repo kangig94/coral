@@ -372,6 +372,8 @@ describe('Phase D wait read purity (Revision S3)', () => {
       },
       () => false,
       () => 'decided',
+      undefined,
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     const check = measure(f);
     expect(addressing.detail(f.jobId)).toMatchObject({ exit: { content: 'never exported' } });
@@ -435,6 +437,8 @@ describe('Phase D wait read purity (Revision S3)', () => {
       },
       () => false,
       () => 'pending',
+      undefined,
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     rmSync(f.locationPath);
     const check = measure(f);
@@ -447,6 +451,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
   it('passes only a read-only location surface to addressing', () => {
     const f = fixture();
     expect(Object.keys(f.index.readOnlyView()).sort()).toEqual([
+      'historicalSourceState',
       'read',
       'readHistorical',
       'resultPathFor',

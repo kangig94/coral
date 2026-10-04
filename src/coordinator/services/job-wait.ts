@@ -68,8 +68,8 @@ export class JobWaitService {
     }
   }
 
-  readWaitAdmissions(jobIds: readonly string[], epochKey: string) {
-    return this.deps.waitCoordinator.readWaitAdmissions?.(jobIds, epochKey) ?? [];
+  readWaitAdmissions(jobIds: readonly string[], epochKey: string, session?: object) {
+    return this.deps.waitCoordinator.readWaitAdmissions?.(jobIds, epochKey, session) ?? [];
   }
 
   observeWaitCarriers(jobIds: readonly string[], signal: AbortSignal) {
@@ -79,8 +79,8 @@ export class JobWaitService {
     );
   }
 
-  readWaitAdmission(jobId: string, epochKey: string) {
-    return this.deps.waitCoordinator.readWaitAdmission?.(jobId, epochKey) ?? null;
+  readWaitAdmission(jobId: string, epochKey: string, session?: object) {
+    return this.deps.waitCoordinator.readWaitAdmission?.(jobId, epochKey, session) ?? null;
   }
 
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {

@@ -25,6 +25,8 @@ type DeliveryState = {
 };
 
 function eventCursor(session: WaitSession, request: WaitStreamRequest) {
+  if (request.supportsWaitV3 !== true && request.supportsWaitV2 !== true)
+    request.onLegacyCursor?.(session.legacyCursor(false));
   return request.supportsWaitV3 === true
     ? session.cursor(session.remaining())
     : request.supportsWaitV2 === true
@@ -68,6 +70,8 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
   };
   let observing = false;
   let crossedTimer = false;
+  let unknownReadAttempts = 0;
+  const retryDelays = [250, 1000, 5000];
   try {
     while (!signal.aborted) {
       session.reconcile(read());
@@ -95,13 +99,25 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
           };
         return;
       }
-      if ((!input.internal && session.hasProgress()) || Number(time.monotonicNow()) >= deadline) {
+      const unknownRead = session.admissions.some((job) => job.progressUnknown);
+      if (!unknownRead) unknownReadAttempts = 0;
+      if (
+        (unknownRead && unknownReadAttempts === retryDelays.length) ||
+        (!input.internal && session.hasProgress()) ||
+        Number(time.monotonicNow()) >= deadline
+      ) {
         if (input.internal && !crossedTimer) await time.sleep(0, { signal });
         yield waitingEvent(session, request);
         return;
       }
       await time
-        .sleep(Math.min(250, Math.max(0, deadline - Number(time.monotonicNow()))), { signal })
+        .sleep(
+          Math.min(
+            unknownRead ? retryDelays[unknownReadAttempts++] : 250,
+            Math.max(0, deadline - Number(time.monotonicNow())),
+          ),
+          { signal },
+        )
         .catch(() => undefined);
       crossedTimer = true;
     }
@@ -181,7 +197,7 @@ function* memberAdmissionEvents(
       yield {
         type: 'notice',
         version: 'jobs.wait.v3',
-        message: `Earlier progress for ${job.jobId} could not be read; retry the continuation.`,
+        message: `Earlier progress for ${job.jobId} could not be read. Bounded waits retry after 250 ms, 1 s and 5 s, then exit 75 unresolved with a cursor. Inspect coral-cli jobs detail ${job.jobId} --full.`,
         cursor: session.cursor(session.remaining()),
       };
   }
@@ -236,18 +252,27 @@ function* progressEvents(
     .filter((line) => !versionless || !nextTerminal || line.seq <= terminalSeq(nextTerminal));
   for (let index = 0; index < unread.length; ) {
     const first = unread[index];
-    const group =
-      request.supportsWaitV3 === true
-        ? [first]
-        : unread.slice(index).filter((line) => line.epochKey === first.epochKey && line.seq === first.seq);
+    const group = [first];
+    if (internal || request.supportsWaitV3 !== true) {
+      while (index + group.length < unread.length) {
+        const next = unread[index + group.length];
+        if (next.epochKey !== first.epochKey || next.seq !== first.seq) break;
+        group.push(next);
+      }
+    }
     const bytes = group.reduce((sum, line) => sum + Buffer.byteLength(line.text), 0);
-    if (request.supportsWaitV3 !== true && (group.length > WAIT_PROGRESS_LINES || bytes > WAIT_PROGRESS_BYTES))
+    if (
+      request.supportsWaitV2 === true &&
+      request.supportsWaitV3 !== true &&
+      (group.length > WAIT_PROGRESS_LINES || bytes > WAIT_PROGRESS_BYTES)
+    )
       throw new WaitSessionError(
         'wait_epoch_unsupported',
         `Progress for ${first.jobId} requires a V3 reader; run coral-cli jobs detail ${first.jobId}.`,
       );
     if (
       !internal &&
+      !versionless &&
       (state.progressLines + group.length > WAIT_PROGRESS_LINES || state.progressBytes + bytes > WAIT_PROGRESS_BYTES)
     )
       break;
@@ -321,6 +346,7 @@ function* terminalEvents(
   for (const job of terminals) {
     if (!job.detail?.exit) continue;
     const availability = job.availability;
+    if (session.acknowledged(job.jobId) && !session.artifactPending(job.jobId)) continue;
     if (request.supportsWaitV3 !== true && availability?.kind === 'repair-pending') continue;
     if (request.supportsWaitV3 !== true && availability?.kind !== 'available')
       throw new WaitSessionError(

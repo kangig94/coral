@@ -17,16 +17,12 @@ const providerNameSchema = z
   .string()
   .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
 
-export const jobWaitSchema = z
+const jobWaitFieldsSchema = z
   .object({
     jobIds: z
       .array(z.string().min(1))
       .min(1, 'At least one job required')
-      .max(MAX_WAIT_JOB_IDS, `At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once`)
-      .refine(
-        (ids) => new Set(ids).size === ids.length,
-        'Each job ID must appear only once; remove duplicate job IDs.',
-      ),
+      .max(MAX_WAIT_JOB_IDS, `At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once`),
     projectRoot: projectRootSchema,
     timeoutSeconds: z.number().int().min(1).max(1200).optional(),
     cursor: waitCursorSchema.optional(),
@@ -42,7 +38,18 @@ export const jobWaitSchema = z
   })
   .strict();
 
-export const jobWaitSnapshotSchema = jobWaitSchema
+export const jobWaitSchema = jobWaitFieldsSchema
+  .superRefine((value, ctx) => {
+    if (value.supportsWaitV3 && new Set(value.jobIds).size !== value.jobIds.length)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['jobIds'],
+        message: 'Each job ID must appear only once; remove duplicate job IDs.',
+      });
+  })
+  .transform((value) => (value.supportsWaitV3 ? value : { ...value, jobIds: [...new Set(value.jobIds)] }));
+
+export const jobWaitSnapshotSchema = jobWaitFieldsSchema
   .omit({
     timeoutSeconds: true,
     supportsInterrupted: true,
@@ -52,6 +59,12 @@ export const jobWaitSnapshotSchema = jobWaitSchema
   })
   .extend({ lines: z.number().int().min(1).max(500).optional() })
   .superRefine((value, ctx) => {
+    if (new Set(value.jobIds).size !== value.jobIds.length)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['jobIds'],
+        message: 'Each job ID must appear only once; remove duplicate job IDs.',
+      });
     if (value.lines !== undefined && value.cursor !== undefined)
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--lines cannot be used with --cursor' });
   });

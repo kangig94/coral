@@ -7,7 +7,9 @@ export class WaitInvocationReadinessError extends Error {
   readonly remediation: string;
 
   constructor(originalCommand: string) {
-    super('The selected CLI cannot preserve this monitor invocation budget. Wait admission did not complete.');
+    super(
+      'The selected CLI wait contract could not be observed within the invocation budget. Wait admission did not complete.',
+    );
     this.remediation = `Run ${originalCommand}`;
   }
 }
@@ -18,6 +20,7 @@ export interface WaitInvocationHandoff {
   readonly mode: WaitInvocationMode;
   readonly signal: AbortSignal;
   readonly originalCommand: string;
+  monitorEnding?: Promise<unknown>;
   remainingMs(): number;
   cleanupRemainingMs(): number;
   saveContinuation(text: string, complete?: boolean): void;

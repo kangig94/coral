@@ -588,3 +588,67 @@ it('crosses a timer boundary before returning an immediate internal deadline wit
   expect((await next).value).toMatchObject({ type: 'waiting' });
   await stream.return(undefined);
 });
+
+it('settles an acknowledged legacy terminal before refusing unavailable artifact carriage', async () => {
+  const job = admitted('a');
+  job.availability = { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false };
+  const events = await collect(
+    readWaitSession({
+      request: {
+        jobIds: ['a'],
+        supportsWaitV2: true,
+        cursor: {
+          version: 'jobs.wait.v2',
+          locations: { a: 'epoch-E' },
+          positions: { 'epoch-E': 0 },
+          deliveredJobIds: ['a'],
+        },
+        timeoutSeconds: 0,
+      },
+      time: createRealTimePort(),
+      activeEpochKey: 'epoch-E',
+      read: () => [job],
+    }),
+  );
+  expect(events.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: [] });
+});
+
+it('retries an unknown historical read on a bounded schedule, then exits 75 unresolved', async () => {
+  const a = admitted('a', [], false);
+  a.progressUnknown = true;
+  let monotonic = 0n;
+  const sleep = vi.fn(async (ms: number) => {
+    monotonic += BigInt(ms);
+  });
+  const read = vi.fn(() => [a]);
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 590 },
+      time: { ...createRealTimePort(), monotonicNow: () => monotonic, sleep },
+      activeEpochKey: 'epoch-E',
+      read,
+    }),
+  );
+  expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([250, 1000, 5000]);
+  expect(read).toHaveBeenCalledTimes(4);
+  expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 75, waitingJobIds: ['a'] });
+  expect(events.find((event) => event.type === 'notice')).toMatchObject({
+    message: expect.stringContaining('exit 75'),
+  });
+});
+
+it('keeps a multiline child message in one internal progress event', async () => {
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
+      time: createRealTimePort(),
+      activeEpochKey: 'epoch-E',
+      internal: true,
+      read: () => [admitted('a', [[1, 'first\nsecond\nthird']])],
+    }),
+  );
+  expect(events.filter((event) => event.type === 'progress')).toMatchObject([
+    { seq: 1, message: 'first\nsecond\nthird' },
+  ]);
+  expect(events.filter((event) => event.type === 'progress')).toHaveLength(1);
+});

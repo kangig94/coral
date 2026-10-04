@@ -63,3 +63,37 @@ import type * as StoreEpoch from '#src/store/epoch/index.js';
     }
   });
 }
+
+import * as historical from '#src/jobs/historical-reader.js';
+
+it('wakes the sweep on historical hydration hints and removes the listener on stop', async () => {
+  vi.useFakeTimers();
+  const subscribe = vi.spyOn(historical, 'onHistoricalHydrationHint');
+  const f = createTerminalExportFixture();
+  const timer = vi.spyOn(f.runtime.time, 'setTimeout');
+  const scheduler = createStoreEpochSweepScheduler({
+    runtime: f.runtime,
+    world: { log: vi.fn() },
+    jobLocationIndex: f.index,
+    selectedStoreEpochKey: () => f.epochKey,
+    onOpen: vi.fn(),
+    closeProxySetForEpochClosure: vi.fn(),
+  });
+  try {
+    scheduler.schedule(f.epoch);
+    await vi.advanceTimersByTimeAsync(0);
+    const listener = subscribe.mock.calls.at(-1)?.[1];
+    expect(listener).toBeTypeOf('function');
+    listener?.('historical-epoch');
+    expect(timer.mock.calls.at(-1)?.[1]).toBe(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refreshHistoricalEpochs).toHaveBeenCalledTimes(2);
+    listener?.(f.epochKey);
+    expect(timer.mock.calls.at(-1)?.[1]).toBe(5000);
+    await scheduler.stop();
+    expect(subscribe).toHaveBeenLastCalledWith(f.index, null);
+  } finally {
+    await scheduler.stop();
+    f.close();
+  }
+});

@@ -54,7 +54,9 @@ function snapshotJob(session: WaitSession, admission: WaitAdmission, notices: st
   row.epochToken = session.cursor([jobId]).epochs[0]?.token;
   row.phase = detail?.status.phase ?? 'unresolved';
   if (admission.progressUnknown)
-    notices.push(`Earlier progress for ${jobId} could not be read; retry the continuation.`);
+    notices.push(
+      `Earlier progress for ${jobId} could not be read. Snapshot exits 75 unresolved; its bounded wait continuation retries after 250 ms, 1 s and 5 s. Inspect coral-cli jobs detail ${jobId} --full.`,
+    );
   if (admission.progressLost) notices.push(`earlier progress for ${jobId} is no longer kept`);
   if (detail?.exit) {
     row.availability = availability;

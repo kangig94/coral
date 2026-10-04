@@ -4,6 +4,7 @@ import { registerSessionCommands } from '#src/cli/commands/session.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import * as dispatch from '#src/cli/dispatch.js';
 import * as ensure from '#src/transport/ipc/ensure.js';
+import { IpcLifecycleRefusal } from '#src/transport/ipc/client.js';
 import { WaitInvocation, installWaitInvocation } from '#src/cli/wait-invocation.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
 import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
@@ -31,7 +32,7 @@ it('refuses --now locally on an older coordinator without opening a subscription
   const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
   await expect(
     dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], projectRoot: process.cwd() }),
-  ).rejects.toThrow('this coordinator predates --now; run coral-cli wait jobs a');
+  ).rejects.toThrow('this coordinator predates --now');
   expect(request).not.toHaveBeenCalled();
   expect(subscribe).not.toHaveBeenCalled();
 });
@@ -88,7 +89,7 @@ it('maps an unknown snapshot method to the older-coordinator refusal', async () 
   const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
   await expect(
     dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], projectRoot: process.cwd() }),
-  ).rejects.toThrow('this coordinator predates --now; run coral-cli wait jobs a');
+  ).rejects.toThrow('this coordinator predates --now');
 });
 
 it.each(['refusal', 'disconnect', 'output failure'])(
@@ -152,3 +153,72 @@ it.each(['shape', 'membership'])(
     expect(save).not.toHaveBeenCalled();
   },
 );
+
+import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
+
+it.each([{ afterSeq: 42 }, { version: 'jobs.wait.v2' as const, positions: { e: 42 }, locations: { a: 'e' } }])(
+  'preserves a compatible saved cursor in the older-coordinator --now refusal: %j',
+  async (cursor) => {
+    vi.spyOn(ensure, 'ensure').mockResolvedValue({ jobsWaitExtensions: ['supportsWaitV2'], request: vi.fn() } as never);
+    const p = program();
+    const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
+    await expect(
+      dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], cursor }),
+    ).rejects.toMatchObject({
+      remediation: `Run coral-cli wait jobs a --cursor ${serializeWaitCursor(cursor)}`,
+      code: 'transient',
+      exitCode: 75,
+    });
+  },
+);
+
+it('uses the successor retry path for snapshot reads while preserving their request cursor', async () => {
+  const cursor = { afterSeq: 42 };
+  const refusal = new IpcLifecycleRefusal('/tmp/isolated-snapshot.sock', 'jobs.wait.snapshot');
+  const request = vi.fn().mockRejectedValue(refusal);
+  const successorRequest = vi.fn().mockResolvedValue('snapshot');
+  const incumbent = { jobsWaitExtensions: ['supportsWaitV3'], request };
+  const successor = { request: successorRequest };
+  vi.spyOn(ensure, 'ensure').mockResolvedValue(incumbent as never);
+  vi.spyOn(ensure, 'issueWithSuccessorAfterLifecycleRefusal').mockImplementation(async (_method, _root, issue) => {
+    await expect(issue(incumbent as never)).rejects.toBe(refusal);
+    return issue(successor as never) as never;
+  });
+  const p = program();
+  const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
+  expect(await dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], cursor })).toBe('snapshot');
+  expect(request).toHaveBeenCalledExactlyOnceWith(
+    'jobs.wait.snapshot',
+    expect.objectContaining({ cursor }),
+    expect.anything(),
+  );
+  expect(successorRequest).toHaveBeenCalledExactlyOnceWith(
+    'jobs.wait.snapshot',
+    expect.objectContaining({ cursor }),
+    expect.anything(),
+  );
+});
+
+it('describes a reset snapshot cursor as a latest progress tail', async () => {
+  const session = new WaitSession(['a']);
+  session.reconcile([
+    admitted(
+      'a',
+      Array.from({ length: 30 }, (_, i) => [i + 1, `line-${i}`]),
+      false,
+    ),
+  ]);
+  vi.spyOn(dispatch, 'makeClient').mockReturnValue({
+    snapshotJobsWait: async () => selectWaitSnapshot(session),
+  } as never);
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: (error?: Error) => void) => {
+    output += text;
+    callback?.();
+    return true;
+  }) as never);
+  await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--now', '--cursor', 'malformed']);
+  expect(output).toContain('this snapshot shows the latest progress tail');
+  expect(output).not.toContain('from the start');
+  expect(output).toContain('line-29');
+});

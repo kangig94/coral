@@ -781,18 +781,13 @@ async function writeWaitSseEvent(
   event: WaitStreamEvent | { type: 'handover'; code: string; message: string },
   deadline: number,
   signal: AbortSignal,
-  deliveredJobIds: readonly string[] = [],
-  admittedJobIds: readonly string[] = [],
+  legacyCursor?: Extract<WaitCursor, { afterSeq: number }>,
 ): Promise<boolean> {
   const cursor =
     'cursor' in event && event.cursor
       ? serializeWaitCursor(event.cursor)
-      : event.type === 'progress' || event.type === 'terminal'
-        ? serializeWaitCursor({
-            afterSeq: event.seq,
-            deliveredJobIds: [...deliveredJobIds],
-            admittedJobIds: [...admittedJobIds],
-          })
+      : legacyCursor && (event.type === 'progress' || event.type === 'terminal')
+        ? serializeWaitCursor(legacyCursor)
         : undefined;
   if (writeSseEvent(res, event.type, event, cursor)) return true;
   if (res.destroyed || res.writableEnded || signal.aborted) return false;
@@ -851,9 +846,12 @@ async function handleJobsWaitSubscription(
 
   const deadline = performance.now() + (request.timeoutSeconds ?? 600) * 1000;
   const controller = new AbortController();
-  const deliveredJobIds = new Set(headerCursor?.version === undefined ? headerCursor?.deliveredJobIds : []);
+  let legacyCursor: Extract<WaitCursor, { afterSeq: number }> | undefined;
   const waitRequest: WaitStreamRequest = {
     ...request,
+    onLegacyCursor: (cursor) => {
+      legacyCursor = cursor;
+    },
     ...(headerCursor === undefined ? {} : { cursor: headerCursor }),
   };
   const principal = authenticateCatalogPrincipal(req, deps);
@@ -924,8 +922,7 @@ async function handleJobsWaitSubscription(
       }
 
       const event = next.value as WaitStreamEvent;
-      if (event.type === 'terminal') deliveredJobIds.add(event.jobId);
-      if (!(await writeWaitSseEvent(res, event, deadline, controller.signal, [...deliveredJobIds], request.jobIds))) {
+      if (!(await writeWaitSseEvent(res, event, deadline, controller.signal, legacyCursor))) {
         if (!res.destroyed && !res.writableEnded)
           writeSseEvent(res, 'error', {
             code: 'transient',
@@ -1167,6 +1164,7 @@ async function handleEventStream(
   res.flushHeaders?.();
   if (!writeSseEvent(res, 'ready', { streamId, startedAt: deps.events.nowIsoString() })) {
     deps.events.removeResponse(res);
+    res.end();
     return;
   }
 

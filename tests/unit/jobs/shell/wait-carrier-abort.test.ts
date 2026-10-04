@@ -61,6 +61,8 @@ it.each(['direct', 'v2', 'live'])(
       },
       () => false,
       () => 'pending',
+      undefined,
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     const stream =
       mode !== 'v2' ? wait.waitForJobs(request) : addressing.waitStream({ ...request, supportsWaitV2: true });

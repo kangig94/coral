@@ -21,7 +21,7 @@ const PROJECT_ROOT = canonicalizeWorkDir(FIXTURE_ROOT, FIXTURE_ROOT);
 
 afterAll(() => rmSync(FIXTURE_ROOT, { recursive: true, force: true }));
 
-async function detailFor(lookup: JobDetailLookup): Promise<unknown> {
+async function detailFor(lookup: JobDetailLookup, caveat?: string): Promise<unknown> {
   const spec = rpcCatalog.find((candidate) => candidate.name === 'jobs.detail');
   if (spec === undefined) throw new Error('Missing RPC method jobs.detail.');
   const ports = {
@@ -31,6 +31,8 @@ async function detailFor(lookup: JobDetailLookup): Promise<unknown> {
     jobs: {
       scopeCheck: () => ({ mismatch: [], missing: [] }),
       detail: () => lookup,
+      unknownJobDisposition: () => 'not-found',
+      unknownJobCaveat: () => caveat,
     },
   } as unknown as HttpHandlerPorts;
   const request = spec.requestSchema.parse({ jobId: 'job-1', projectRoot: PROJECT_ROOT });
@@ -82,7 +84,8 @@ async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: o
     } as never,
     () => unknown === 'pre-epoch-history',
     () => 'decided',
-    () => ({ kind: 'read', locations: new Map() }),
+    () => ({ kind: 'read', locations: new Map(unrecoverable.map((id) => [id, null])) }),
+    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
   );
   const validateWait = vi.isMockFunction(supplied.validateWait)
     ? vi.mocked(supplied.validateWait).mockImplementation(owner.validateWait.bind(owner))
@@ -307,4 +310,11 @@ it('answers a typo as missing with the permanent unreadable-epoch caveat', async
     body: { code: 'jobs_not_found', message: expect.stringContaining('permanently-lost: retained-store-root-missing') },
   });
   expect(errorCodeToExit('jobs_not_found', 404)).toBe(1);
+});
+
+it('keeps the singular missing-job detail code when an epoch caveat is present', async () => {
+  expect(await detailFor(null, 'Unreadable epoch retired: retained-store-root-missing.')).toMatchObject({
+    kind: 'unary',
+    body: { code: 'job_not_found', message: expect.stringContaining('retained-store-root-missing') },
+  });
 });

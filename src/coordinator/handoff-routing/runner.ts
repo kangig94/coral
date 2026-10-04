@@ -1,7 +1,7 @@
 import {
+  WaitInvocationReadinessError,
   WAIT_INVOCATION_CONTEXT_ENV,
   WAIT_INVOCATION_CONTRACT_ARGUMENT,
-  WaitInvocationReadinessError,
   type WaitInvocationHandoff,
 } from '../../cli/wait-invocation-context.js';
 import { isRecord } from '../../infra/json.js';
@@ -160,7 +160,7 @@ export type HandoffOutcome =
 export type HandoffContinuationReason =
   | Readonly<{ kind: 'routing'; basis: HandoffRoutingBasis }>
   | Readonly<{ kind: 'handoff-not-applicable'; reason: 'display-only' }>
-  | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' }>;
+  | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' | 'wait-contract-unsupported' }>;
 
 // A routing continuation must resolve its obligation through its basis table.
 export const HANDOFF_CONTINUATION_REASON_OBLIGATIONS = {
@@ -1107,7 +1107,15 @@ function terminalRecordingFor(continuation: HandoffContinuationResult): Terminal
         case 'handoff-abandoned':
           return {
             kind: 'publish',
-            disposition: { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } },
+            disposition: {
+              kind: 'continued-current',
+              reason: {
+                kind:
+                  continuation.reason.reason === 'stdout-drain-incomplete'
+                    ? 'handoff-abandoned-stdout'
+                    : 'handoff-abandoned-contract',
+              },
+            },
           };
         case 'handoff-not-applicable':
           throw new Error('Display-only handoff continuations cannot enter routing-status recording.');
@@ -1202,10 +1210,14 @@ async function recordTerminal(
   );
 }
 
-function supportsWaitInvocation(target: string, invocation: WaitInvocationHandoff, runtime: Runtime): Promise<boolean> {
+function supportsWaitInvocation(
+  target: string,
+  invocation: WaitInvocationHandoff,
+  runtime: Runtime,
+): Promise<boolean | null> {
   return new Promise((resolveContract) => {
     let cancelling = false;
-    const finish = (supported: boolean) => {
+    const finish = (supported: boolean | null) => {
       runtime.time.clearTimeout(timeout);
       invocation.signal.removeEventListener('abort', cancel);
       resolveContract(supported);
@@ -1216,7 +1228,7 @@ function supportsWaitInvocation(target: string, invocation: WaitInvocationHandof
       { maxBuffer: 1024, env: { ...process.env } },
       (error, stdout) => {
         if (cancelling) return;
-        if (error) return finish(false);
+        if (error) return finish(typeof error.code === 'number' ? false : null);
         try {
           const contract: unknown = JSON.parse(stdout);
           finish(isRecord(contract) && contract.version === 1 && contract.monitorOnly === true);
@@ -1243,8 +1255,8 @@ function supportsWaitInvocation(target: string, invocation: WaitInvocationHandof
         },
         runtime.process.observeLiveness,
       );
-      if ('settlement' in termination) void termination.settlement.then(() => finish(false));
-      else finish(false);
+      if ('settlement' in termination) void termination.settlement.then(() => finish(null));
+      else finish(null);
     };
     const timeout = runtime.time.setTimeout(cancel, Math.max(1, Math.min(3_000, Math.ceil(invocation.remainingMs()))));
     invocation.signal.addEventListener('abort', cancel, { once: true });
@@ -1259,6 +1271,7 @@ function bindMonitorChild(
   invocation: WaitInvocationHandoff,
   runtime: Runtime,
 ): void {
+  invocation.monitorEnding = observation.ending;
   let terminate: NodeJS.Timeout | undefined;
   const onMessage = (message: unknown) => {
     if (
@@ -1351,8 +1364,11 @@ async function executeResolvedHandoff(
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : CLI_BUNDLE_FILE;
       const target = join(execution.bundleDir, executable);
       execution.assertExecutable();
-      if (waitInvocation !== undefined && !(await supportsWaitInvocation(target, waitInvocation, runtime))) {
-        throw new WaitInvocationReadinessError(waitInvocation.originalCommand);
+      if (waitInvocation !== undefined) {
+        const supported = await supportsWaitInvocation(target, waitInvocation, runtime);
+        if (supported === null) throw new WaitInvocationReadinessError(waitInvocation.originalCommand);
+        if (!supported)
+          return { kind: 'run-current', reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' } };
       }
       if (signal?.aborted) throw signal.reason;
       const sentinel = join(dirname(process.argv[1] ?? ''), 'coral-sentinel.cjs');

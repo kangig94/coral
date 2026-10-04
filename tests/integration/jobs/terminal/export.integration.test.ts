@@ -273,9 +273,8 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
         },
       });
       expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
-        kind: 'failed',
-        cause: 'repair-failed',
-        retryScheduled: true,
+        kind: 'repair-pending',
+        ageUncertain: true,
       });
       unreadable = false;
       owner.ensureResultMarkdownArtifact(f.jobId);
@@ -324,11 +323,14 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       f.close();
     }
   });
-  it('does not call an unregistered historical source retired', async () => {
+  it('observes absence before calling an unregistered historical source retired', async () => {
     const f = createTerminalExportFixture();
     try {
       const { readHistoricalSource } = await import('#src/jobs/historical-reader.js');
-      expect(readHistoricalSource(f.index.readOnlyView(), f.epochKey, [f.jobId])).toEqual({ kind: 'unreadable' });
+      expect(readHistoricalSource(f.index.readOnlyView(), f.epochKey, [f.jobId])).toEqual({
+        kind: 'unreadable',
+        retired: true,
+      });
     } finally {
       f.close();
     }
@@ -381,9 +383,8 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       }) as typeof stat);
       const owner = f.store.getResultExportOwner();
       expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
-        kind: 'failed',
-        cause: 'repair-failed',
-        retryScheduled: true,
+        kind: 'repair-pending',
+        ageUncertain: true,
       });
       vi.restoreAllMocks();
       owner.ensureResultMarkdownArtifact(f.jobId);
@@ -491,8 +492,8 @@ it('unknown-age discharge requires an observed source and cannot use a failed re
   try {
     f.complete();
     const location = JSON.parse(readFileSync(f.locationPath, 'utf8'));
-    location.terminalAge.kind = 'unknown';
-    delete location.terminalAge.terminalAt;
+    delete location.terminalAge;
+    f.db.prepare("UPDATE events SET ts = 'unparseable' WHERE type = 'job.launch.requested'").run();
     writeFileSync(f.locationPath, JSON.stringify(location));
     expect(f.index.resultDurable(f.jobId)).toBe(true);
     const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync').mockImplementation(() => {
@@ -537,6 +538,42 @@ it('does not re-record a verified terminal when its result file is already avail
     expect(record).not.toHaveBeenCalled();
   } finally {
     vi.restoreAllMocks();
+    f.close();
+  }
+});
+
+it('leaves an untrusted hydration capture absent so a later trusted owner can recapture it', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    f.complete();
+    const legacy = JSON.parse(readFileSync(f.locationPath, 'utf8'));
+    delete legacy.terminalAge;
+    writeFileSync(f.locationPath, JSON.stringify(legacy));
+    f.index.markUncertified(f.jobId);
+    f.index.terminalEligibility(f.jobId);
+    f.jump(120_000);
+    f.store.ensureResultArtifact(f.jobId);
+    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toBeUndefined();
+    f.advance(5_000);
+    f.store.ensureResultArtifact(f.jobId);
+    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge.kind).toBe('known');
+    expect(existsSync(f.resultPath)).toBe(true);
+  } finally {
+    f.close();
+  }
+});
+
+it('cannot discharge an absent legacy directory while the cutoff is untrusted', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    f.complete();
+    const legacy = JSON.parse(readFileSync(f.locationPath, 'utf8'));
+    delete legacy.terminalAge;
+    writeFileSync(f.locationPath, JSON.stringify(legacy));
+    f.index.terminalEligibility(f.jobId);
+    f.jump(120_000);
+    expect(f.index.resultDurable(f.jobId)).toBe(false);
+  } finally {
     f.close();
   }
 });

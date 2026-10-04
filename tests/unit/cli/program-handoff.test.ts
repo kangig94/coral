@@ -243,3 +243,27 @@ it.each(['routing', 'selection publication', 'terminal publication', 'delegation
     }
   },
 );
+
+it('prints the relayed continuation when a delegated bounded monitor exits 75', async () => {
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, callback?: (error?: Error) => void) => {
+    output += chunk;
+    callback?.();
+    return true;
+  }) as never);
+  mockState.runHandoff.mockImplementation(async (_operation, options) => {
+    options.waitInvocation.saveContinuation('Still waiting. Run coral-cli wait jobs a --cursor C1\n', false);
+    return recorded({
+      kind: 'delegated',
+      version: '2.3.4',
+      outcome: { kind: 'handoff-exit', exitCode: 75 },
+    });
+  });
+  const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
+  expect(await parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a'])).toMatchObject({
+    kind: 'handoff-exit',
+    exitCode: 75,
+  });
+  expect(output).toContain('Run coral-cli wait jobs a --cursor C1');
+  expect(output.match(/Still waiting/g)).toHaveLength(1);
+});

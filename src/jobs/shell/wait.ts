@@ -67,7 +67,7 @@ export interface WaitCoordinatorDeps {
   eventBus: JobEventBus;
   time: TimePort;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  readJobEvents: (jobId: string) => JobEvent[];
+  readJobEvents: (jobId: string, afterSeq?: number) => JobEvent[];
   aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;
   subscribeJobEvents: (options: {
     afterSeq: number;
@@ -77,7 +77,7 @@ export interface WaitCoordinatorDeps {
   getCurrentJournalSeq: () => number;
   currentJobEpochKey?: () => string | null;
   resultJobsRoot: string;
-  observeResultAvailability?: (jobId: string) => ResultAvailability;
+  observeResultAvailability: (jobId: string) => ResultAvailability;
   hintResultRepair?: (jobId: string) => void;
   /**
    * Reports what is carrying each still-pending job. Optional because a wait works without it — the journal
@@ -141,6 +141,8 @@ export function planCarrierWaitEvents(
   }
   return { interrupted, unknownJobIds: unknownJobIds.sort() };
 }
+
+type WaitEventFrontier = { epochKey: string; frontier: number; events: JobEvent[]; terminal?: JobTerminalEvent };
 
 export class WaitCoordinator {
   private readonly deps: WaitCoordinatorDeps;
@@ -300,9 +302,9 @@ export class WaitCoordinator {
     return { ...queued, jobKind: 'kb', systemTaskId: status.owner.id };
   }
 
-  readWaitAdmissions(jobIds: readonly string[], epochKey: string): WaitAdmission[] {
+  readWaitAdmissions(jobIds: readonly string[], epochKey: string, session: object = this): WaitAdmission[] {
     const frontier = this.deps.getCurrentJournalSeq();
-    return jobIds.map((jobId) => this.readWaitAdmission(jobId, epochKey, frontier));
+    return jobIds.map((jobId) => this.readWaitAdmission(jobId, epochKey, session, frontier));
   }
 
   async observeWaitCarriers(jobIds: readonly string[], signal: AbortSignal) {
@@ -310,11 +312,34 @@ export class WaitCoordinator {
     return { ...observed, frontier: signal.aborted ? 0 : this.deps.getCurrentJournalSeq() };
   }
 
-  readWaitAdmission(jobId: string, epochKey: string, frontier?: number): WaitAdmission {
+  private readonly eventFrontiers = new WeakMap<object, Map<string, WaitEventFrontier>>();
+
+  readWaitAdmission(
+    jobId: string,
+    epochKey: string,
+    session: object = this,
+    frontier = this.deps.getCurrentJournalSeq(),
+  ): WaitAdmission {
+    const frontiers = this.eventFrontiers.get(session) ?? new Map<string, WaitEventFrontier>();
+    this.eventFrontiers.set(session, frontiers);
     const projected = this.deps.loadJobProjectionDetail(jobId);
     if (!projected.status) return { jobId, disposition: 'missing' };
-    const events = this.deps.readJobEvents(jobId).filter((event) => frontier === undefined || event.seq <= frontier);
-    const terminal = events.find((event): event is JobTerminalEvent => event.type === 'terminal');
+    let cached = frontiers.get(jobId);
+    if (!cached || cached.epochKey !== epochKey || cached.frontier > frontier) {
+      cached = { epochKey, frontier: -1, events: [] };
+    }
+    if (cached.frontier !== frontier) {
+      const afterSeq = Math.max(0, cached.frontier);
+      const appended = this.deps
+        .readJobEvents(jobId, afterSeq)
+        .filter((event) => event.seq > afterSeq && event.seq <= frontier);
+      cached.events.push(...appended);
+      cached.terminal ??= appended.find((event): event is JobTerminalEvent => event.type === 'terminal');
+      cached.frontier = frontier;
+      frontiers.set(jobId, cached);
+    }
+    const events = cached.events;
+    const terminal = cached.terminal;
     const exit =
       projected.exit && terminal
         ? {
@@ -323,13 +348,7 @@ export class WaitCoordinator {
             diagnostics: { ...projected.exit.diagnostics, usage: this.readTerminalUsage(terminal) },
           }
         : null;
-    const availability = exit
-      ? (this.deps.observeResultAvailability?.(jobId) ?? {
-          kind: 'failed' as const,
-          cause: 'terminal-unusable' as const,
-          retryScheduled: false,
-        })
-      : undefined;
+    const availability = exit ? this.deps.observeResultAvailability(jobId) : undefined;
     if (availability?.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
     return {
       jobId,
@@ -358,7 +377,7 @@ export class WaitCoordinator {
       internal,
       time: this.deps.time,
       activeEpochKey: epochKey,
-      read: () => this.readWaitAdmissions(req.jobIds, epochKey),
+      read: () => this.readWaitAdmissions(req.jobIds, epochKey, req),
       observe: async (session, signal) => {
         const pending = session.admissions
           .filter((job) => job.disposition === 'admitted' && !job.detail?.exit)

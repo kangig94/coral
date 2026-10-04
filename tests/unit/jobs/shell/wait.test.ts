@@ -122,6 +122,8 @@ describe('WaitCoordinator', () => {
       },
       () => false,
       () => 'pending',
+      undefined,
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     const stream = addressing.waitStream({
       jobIds: ['job-1'],
@@ -261,6 +263,7 @@ describe('WaitCoordinator', () => {
     const f = fixture();
     const detail = admitted('job-1').detail!;
     f.deps.readJobEvents = () => detail.events;
+    f.deps.getCurrentJournalSeq = () => detail.events.at(-1)?.seq ?? 0;
     const usage = { inputTokens: 123, outputTokens: 456 } as never;
     f.deps.aggregateWorkflowUsage = () => usage;
     f.deps.sessionManager = {
@@ -432,4 +435,116 @@ it('a missing internal job is a failed outcome after one read, without re-enteri
   const wait = new WaitCoordinator(f.deps);
   await expect(wait.waitStreamOnce('missing', 1000)).rejects.toThrow('missing');
   expect(load).toHaveBeenCalledTimes(1);
+});
+
+it('reuses the active frontier and decodes only newly appended progress', () => {
+  const f = fixture();
+  const read = vi.spyOn(f.deps, 'readJobEvents');
+  for (let seq = 1; seq <= 1000; seq++)
+    f.journal.push({
+      ...f.terminal(),
+      type: 'progress',
+      seq,
+      message: `line ${seq}`,
+      timing: {
+        origin: 'runtime',
+        originAt: '2026-10-04T00:00:00.000Z',
+        emittedAt: '2026-10-04T00:00:00.000Z',
+        elapsedMs: 0,
+      },
+    });
+  f.wait.readWaitAdmissions(['job-1'], 'epoch');
+  read.mockClear();
+  for (let poll = 0; poll < 20; poll++) f.wait.readWaitAdmissions(['job-1'], 'epoch');
+  expect(read).not.toHaveBeenCalled();
+  f.journal.push({ ...f.journal[0], seq: 1001 });
+  const next = f.wait.readWaitAdmissions(['job-1'], 'epoch');
+  expect(read).toHaveBeenCalledExactlyOnceWith('job-1', 1000);
+  expect(next[0].detail?.events).toHaveLength(1001);
+});
+
+it('accepts v0.10.15 cursors without recorded membership and drains their full terminal backlog', async () => {
+  const f = fixture();
+  const index = new JobLocationIndex(f.runtime, '/state');
+  index.register('job-1', 'epoch', { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
+  const addressing = new JobAddressing(
+    index,
+    {
+      epochKey: () => 'epoch',
+      detail: () => f.wait.readWaitAdmission('job-1', 'epoch').detail ?? null,
+      readWaitAdmissions: (ids, epoch) => f.wait.readWaitAdmissions(ids, epoch),
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+    undefined,
+    (id) => ({ kind: 'available', resultPath: `/results/${id}/result.md` }),
+  );
+  for (let seq = 1; seq <= 700; seq++)
+    f.journal.push({
+      ...f.terminal(),
+      type: 'progress',
+      seq,
+      message: `line ${seq}`,
+      timing: {
+        origin: 'runtime',
+        originAt: '2026-10-04T00:00:00.000Z',
+        emittedAt: '2026-10-04T00:00:00.000Z',
+        elapsedMs: 0,
+      },
+    });
+  f.journal.push({ ...f.terminal(), seq: 701 });
+  f.terminalize();
+  expect(addressing.validateWait({ jobIds: ['job-1'], cursor: { afterSeq: 500 } })).toBeNull();
+  const events = [];
+  for await (const event of addressing.waitStream({ jobIds: ['job-1'] })) events.push(event);
+  expect(events.filter((event) => event.type === 'progress')).toHaveLength(700);
+  expect(events.at(-1)?.type).toBe('terminal');
+  const resumed = [];
+  for await (const event of addressing.waitStream({ jobIds: ['job-1'], cursor: { afterSeq: 500 } }))
+    resumed.push(event);
+  expect(resumed.filter((event) => event.type === 'progress')).toHaveLength(200);
+});
+
+it('keeps independent incremental frontiers for separate wait sessions', () => {
+  const f = fixture();
+  f.journal.push(...admitted('job-1', [[1, 'first']], false).detail!.events);
+  const read = vi.spyOn(f.deps, 'readJobEvents');
+  const first = {};
+  const second = {};
+  const a = f.wait.readWaitAdmissions(['job-1'], 'e', first)[0];
+  for (let poll = 0; poll < 20; poll++) f.wait.readWaitAdmissions(['job-1'], 'e', first);
+  const b = f.wait.readWaitAdmissions(['job-1'], 'e', second)[0];
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(a.detail?.events).not.toBe(b.detail?.events);
+});
+
+it('observes availability once per terminal poll and emits one repair hint', () => {
+  const f = fixture();
+  f.journal.push(f.terminal());
+  f.terminalize();
+  const observe = vi.fn(() => ({ kind: 'repair-pending' as const, ageUncertain: false }));
+  const hint = vi.fn();
+  f.deps.observeResultAvailability = observe;
+  f.deps.hintResultRepair = hint;
+  const index = new JobLocationIndex(f.runtime, '/state');
+  index.register('job-1', 'epoch', { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      epochKey: () => 'epoch',
+      detail: () => null,
+      readWaitAdmissions: (ids, epoch, session) => f.wait.readWaitAdmissions(ids, epoch, session),
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+    undefined,
+    observe,
+    hint,
+  );
+  const request = { jobIds: ['job-1'], supportsWaitV3: true };
+  for (let poll = 0; poll < 20; poll++) addressing.admitWait(request);
+  expect(observe).toHaveBeenCalledTimes(20);
+  expect(hint).toHaveBeenCalledTimes(20);
 });

@@ -63,6 +63,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
   readonly signal: AbortSignal;
   readonly mode: WaitInvocationMode;
   readonly originalCommand: string;
+  monitorEnding?: Promise<unknown>;
   private readonly controller = new AbortController();
   private readonly deadline: number;
   private readonly hardDeadline: number;
@@ -72,7 +73,9 @@ export class WaitInvocation implements WaitInvocationHandoff {
   private continuationFlushed = false;
   private continuationFlushPending = false;
   private readonly delegated: boolean;
-  private readonly onSigint = () => this.stop();
+  private readonly onSigint = () => {
+    if (!this.continuationFlushed) this.stop();
+  };
   private readonly onMessage = (message: unknown) => {
     if (isRecord(message) && message.type === 'wait-cancel') this.stop();
   };
@@ -183,10 +186,10 @@ export class WaitInvocation implements WaitInvocationHandoff {
 
   dispose(force = false): void {
     clearTimeout(this.watchdog);
-    if (this.signal.aborted && !force) return;
-    clearTimeout(this.backstop);
-    process.off('SIGINT', this.onSigint);
     process.off('message', this.onMessage);
+    if (this.signal.aborted && !force) return;
+    process.off('SIGINT', this.onSigint);
+    clearTimeout(this.backstop);
   }
 }
 

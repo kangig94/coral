@@ -949,3 +949,118 @@ it('retires small expired residues in bounded fenced turns while preserving iden
   );
   expect(exec.mock.calls.filter(([sql]) => sql === 'COMMIT').length).toBeLessThanOrEqual(6);
 });
+
+import { terminalEligibility } from '#src/jobs/export-retention.js';
+import { createTerminalExportFixture, TERMINAL_EXPORT_CUTOFF } from '#tests/helpers/terminal-export.js';
+
+it.each(['saved expired', 'source absent', 'source throws', 'source contradicts', 'inside', 'untrusted'])(
+  'classifies terminal eligibility evidence: %s',
+  (scenario) => {
+    const f = createTerminalExportFixture();
+    try {
+      f.complete({ terminalAt: scenario === 'saved expired' ? TERMINAL_EXPORT_CUTOFF - 1000 : undefined });
+      const location = f.index.read(f.jobId)!;
+      if (scenario === 'untrusted') f.jump(120_000);
+      const source = vi.fn((read: (db: typeof f.db) => unknown) => {
+        if (scenario === 'source throws') throw new Error('transient');
+        if (scenario === 'source absent') return null;
+        if (scenario === 'source contradicts')
+          f.db.prepare("DELETE FROM events WHERE type = 'job.terminal.recorded'").run();
+        return read(f.db);
+      });
+      const eligibility = terminalEligibility(f.runtime, location, source as never);
+      expect(eligibility.kind).toBe(
+        scenario === 'saved expired' ? 'expired' : scenario === 'untrusted' ? 'unknown' : 'inside',
+      );
+      expect(eligibility.sourceReadFailed).toBe(scenario === 'source throws');
+      expect(eligibility.sourceContradictory).toBe(scenario === 'source contradicts');
+      expect(eligibility.publicationAuthorized).toBe(scenario === 'inside');
+      expect(source).toHaveBeenCalledTimes(scenario === 'saved expired' ? 0 : 1);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+it.each([
+  'no location',
+  'nonterminal location',
+  'absent detail',
+  'absent sequence',
+  'invalid retained terminal',
+  'saved unknown',
+  'saved regression',
+  'legacy age',
+  'legacy source absent',
+  'source timestamp mismatch',
+  'source outcome mismatch',
+  'source body corrupt',
+  'source observation suppressed',
+])('classifies terminal eligibility return path: %s', (scenario) => {
+  const f = createTerminalExportFixture();
+  try {
+    f.complete();
+    let location = f.index.read(f.jobId);
+    if (!location) throw new Error('missing fixture location');
+    if (scenario === 'nonterminal location') location = { ...location, disposition: 'unresolved' };
+    if (scenario === 'absent detail') location = { ...location, detail: { kind: 'absent' } };
+    if (scenario === 'absent sequence') location = { ...location, terminalSeq: undefined };
+    if (scenario === 'invalid retained terminal' && location.detail.kind === 'recorded')
+      location = {
+        ...location,
+        detail: {
+          kind: 'recorded',
+          value: { ...location.detail.value, status: { ...location.detail.value.status, updatedAt: 'invalid' } },
+        },
+      };
+    if (scenario === 'saved unknown' || scenario === 'saved regression')
+      location = {
+        ...location,
+        terminalAge: { ...location.terminalAge!, kind: scenario === 'saved unknown' ? 'unknown' : 'regression' },
+      };
+    if (scenario.startsWith('legacy')) location = { ...location, terminalAge: undefined };
+    if (scenario === 'source timestamp mismatch')
+      f.db.prepare("UPDATE events SET ts = '2099-01-01T00:00:00Z' WHERE type = 'job.terminal.recorded'").run();
+    if (scenario === 'source outcome mismatch' || scenario === 'source body corrupt') {
+      const row = f.db.prepare("SELECT body FROM events WHERE type = 'job.terminal.recorded'").get() as {
+        body: Uint8Array;
+      };
+      const body = JSON.parse(Buffer.from(row.body).toString('utf8'));
+      body.terminal.content = 'different content';
+      f.db
+        .prepare("UPDATE events SET body = ? WHERE type = 'job.terminal.recorded'")
+        .run(Buffer.from(scenario === 'source body corrupt' ? '{' : JSON.stringify(body)));
+    }
+    const source = vi.fn((read: (db: typeof f.db) => unknown) =>
+      scenario === 'legacy source absent' ? null : read(f.db),
+    );
+    const eligibility = terminalEligibility(
+      f.runtime,
+      scenario === 'no location' ? null : location,
+      source as never,
+      scenario !== 'source observation suppressed',
+    );
+    const denied = [
+      'no location',
+      'nonterminal location',
+      'absent detail',
+      'absent sequence',
+      'invalid retained terminal',
+    ].includes(scenario);
+    expect(source).toHaveBeenCalledTimes(denied || scenario === 'source observation suppressed' ? 0 : 1);
+    expect(eligibility.kind).toBe(
+      denied || scenario === 'saved unknown' || scenario === 'legacy source absent'
+        ? 'unknown'
+        : scenario === 'saved regression'
+          ? 'regression'
+          : 'inside',
+    );
+    expect(eligibility.publicationAuthorized).toBe(['saved regression', 'legacy age'].includes(scenario));
+    expect(eligibility.sourceReadFailed === true).toBe(scenario === 'source body corrupt');
+    expect(eligibility.sourceContradictory === true).toBe(
+      scenario === 'source timestamp mismatch' || scenario === 'source outcome mismatch',
+    );
+  } finally {
+    f.close();
+  }
+});

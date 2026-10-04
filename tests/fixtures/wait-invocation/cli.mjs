@@ -8,6 +8,11 @@ const scenario = process.env.WAIT_PROBE_SCENARIO;
 const delegated = process.env.CORAL_CLI_HANDOFF_DELEGATED === '1';
 const never = new Promise(() => {});
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+if (delegated && scenario === 'late-child-output') {
+  process.on('message', (message) => {
+    if (message?.type === 'wait-cancel') setTimeout(() => process.stdout.write('late child output\n'), 50);
+  });
+}
 const cursor = { version: 'jobs.wait.v2', locations: { a: 'epoch' }, positions: { epoch: 42 }, deliveredJobIds: [] };
 const timing = { origin: 'runtime', originAt: '2026-10-04T00:00:00Z', emittedAt: '2026-10-04T00:00:00Z', elapsedMs: 0 };
 
@@ -24,6 +29,7 @@ globalThis.waitProbe = {
         [
           'delegation',
           'delegated-delivery',
+          'late-child-output',
           'late-delegation',
           'ignores-cancel',
           'old-target',
@@ -70,6 +76,7 @@ globalThis.waitProbe = {
               [
                 'delivery',
                 'delegated-delivery',
+                'late-child-output',
                 'late-delegation',
                 'close',
                 'sync-delivery',

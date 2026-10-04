@@ -63,6 +63,7 @@ export type StorageBigIntStat = {
   readonly uid?: bigint;
   readonly size: bigint;
   readonly mtimeNs: bigint;
+  readonly ctimeNs?: bigint;
   isDirectory(): boolean;
   isFile(): boolean;
 };

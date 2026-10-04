@@ -1113,9 +1113,13 @@ async function executeJobsDetailCatalogRequest({
 
   const detail = rpcPorts.jobs.detail(parsed.jobId);
   if (!detail) {
-    if (rpcPorts.jobs.unknownJobDisposition() === 'discovery-unknown' || rpcPorts.jobs.unknownJobCaveat?.())
+    if (rpcPorts.jobs.unknownJobDisposition() === 'discovery-unknown')
       return unknownJobsAnswer(rpcPorts, [parsed.jobId]);
-    return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
+    const caveat = rpcPorts.jobs.unknownJobCaveat?.();
+    return unary(
+      { code: 'job_not_found', message: `Job not found: ${parsed.jobId}${caveat ? `. ${caveat}` : ''}` },
+      404,
+    );
   }
   if ('kind' in detail && detail.kind === 'pre-epoch-history') {
     return unknownJobsAnswer(rpcPorts, [parsed.jobId]);

@@ -80,7 +80,7 @@ export function terminalEligibility(
   let sourceReadable = false;
   let sourceReadFailed = false;
   let sourceContradictory = false;
-  if (observeSource || age === 'unknown') {
+  if (observeSource && !(cutoff !== null && typeof age === 'number' && age < cutoff)) {
     try {
       withSource((db) => {
         const accepted = readAcceptedTerminal(db, location.jobId);

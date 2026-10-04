@@ -918,7 +918,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
           ...deps,
           coordinatorCommit,
           loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
-          readJobEvents: (jobId: string) => readJobEvents(getQueryDb(), jobId, readCtx),
+          readJobEvents: (jobId: string, afterSeq?: number) =>
+            readJobEvents(getQueryDb(), jobId, readCtx, false, afterSeq),
           aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(getQueryDb(), workflowJobId),
           subscribeJobEvents,
           getCurrentJournalSeq,

@@ -375,7 +375,7 @@ const finalizedDispositionSchema = z.union([
           .strict()
           .readonly(),
         z
-          .object({ kind: z.literal('handoff-abandoned-stdout') })
+          .object({ kind: z.enum(['handoff-abandoned-stdout', 'handoff-abandoned-contract']) })
           .strict()
           .readonly(),
       ]),

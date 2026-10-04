@@ -20,9 +20,9 @@ import {
 export interface ActiveJobAccess {
   epochKey(): string | null;
   detail(jobId: string): JobDetailResponse | null;
-  readWaitAdmissions?(jobIds: readonly string[], epochKey: string): WaitAdmission[];
+  readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
-  readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
+  readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
   abort(jobIds: string[]): AbortDecision;
 }
 
@@ -41,7 +41,7 @@ export type HistoricalClosureProbe = (epochKey: string) => 'pending' | 'decided'
 export class JobAddressing {
   private readonly locations: JobLocationView;
   private readonly readHistorical: HistoricalSourceReader;
-  private readonly observeResultAvailability?: (jobId: string) => ResultAvailability;
+  private readonly observeResultAvailability: (jobId: string) => ResultAvailability;
   private readonly progressRetentionExpired?: (jobId: string) => boolean;
   private readonly hintRepair?: (jobId: string) => void;
   private readonly active: ActiveJobAccess;
@@ -53,9 +53,9 @@ export class JobAddressing {
     active: ActiveJobAccess,
     preEpochHistoryExists: PreEpochHistoryProbe,
     historicalClosure: HistoricalClosureProbe,
-    readHistorical: HistoricalSourceReader = (epochKey, jobIds) =>
-      locations.readHistorical?.(epochKey, jobIds) ?? { kind: 'unreadable' },
-    observeResultAvailability?: (jobId: string) => ResultAvailability,
+    readHistorical: HistoricalSourceReader = (epochKey, jobIds, session) =>
+      locations.readHistorical?.(epochKey, jobIds, session) ?? { kind: 'unreadable' },
+    observeResultAvailability: (jobId: string) => ResultAvailability,
     hintRepair?: (jobId: string) => void,
     progressRetentionExpired?: (jobId: string) => boolean,
   ) {
@@ -95,7 +95,8 @@ export class JobAddressing {
     if (observed && hasReadableTerminalDetail(observed)) return { location: observed, outcomeUnrecoverable: false };
     return {
       location: observed ?? { ...retained, disposition: 'unresolved', detail: { kind: 'absent' } },
-      outcomeUnrecoverable: closure === 'decided',
+      outcomeUnrecoverable:
+        closure === 'decided' && read.locations.has(retained.jobId) && !read.unreadableJobs?.has(retained.jobId),
     };
   }
 
@@ -244,11 +245,7 @@ export class JobAddressing {
   }
 
   private availability(jobId: string): ResultAvailability {
-    const availability = this.observeResultAvailability?.(jobId) ?? {
-      kind: 'failed' as const,
-      cause: 'terminal-unusable' as const,
-      retryScheduled: false,
-    };
+    const availability = this.observeResultAvailability(jobId);
     if (availability.kind === 'repair-pending') this.hintRepair?.(jobId);
     return availability;
   }
@@ -265,12 +262,13 @@ export class JobAddressing {
     }
     const historicalEpochs = [...epochMembers].filter(([epoch]) => epoch !== activeEpochKey);
     const closures = new Map(historicalEpochs.map(([epoch]) => [epoch, this.historicalClosure(epoch)]));
-    const historical = new Map(historicalEpochs.map(([epoch, ids]) => [epoch, this.readHistorical(epoch, ids)]));
+    const historical = new Map(
+      historicalEpochs.map(([epoch, ids]) => [epoch, this.readHistorical(epoch, ids, request)]),
+    );
     const activeAdmissions = new Map(
-      (this.active.readWaitAdmissions?.(epochMembers.get(activeEpochKey) ?? [], activeEpochKey) ?? []).map((job) => [
-        job.jobId,
-        job,
-      ]),
+      (this.active.readWaitAdmissions?.(epochMembers.get(activeEpochKey) ?? [], activeEpochKey, request) ?? []).map(
+        (job) => [job.jobId, job],
+      ),
     );
     return request.jobIds.map((jobId): WaitAdmission => {
       const location = locations.get(jobId) ?? null;
@@ -300,10 +298,12 @@ export class JobAddressing {
           message: 'Change cwd to the job work directory; coral-cli jobs --all includes terminal jobs.',
         };
       if (location.epochKey === activeEpochKey) {
-        const admission = activeAdmissions.get(jobId) ?? this.active.readWaitAdmission?.(jobId, location.epochKey);
+        const admission =
+          activeAdmissions.get(jobId) ?? this.active.readWaitAdmission?.(jobId, location.epochKey, request);
         const detail = admission?.detail ?? this.active.detail(jobId);
         if (admission && admission.disposition !== 'admitted') return admission;
         if (!detail && !admission?.queued) return { jobId, disposition: 'missing' };
+        const availability = detail?.exit ? (admission?.availability ?? this.availability(jobId)) : undefined;
         return {
           ...admission,
           jobId,
@@ -312,9 +312,8 @@ export class JobAddressing {
           ...(detail === null ? {} : { detail }),
           ...(detail?.exit
             ? {
-                availability: this.availability(jobId),
-                progressLost:
-                  this.progressRetentionExpired?.(jobId) ?? this.availability(jobId).kind === 'retained-away',
+                availability,
+                progressLost: this.progressRetentionExpired?.(jobId) ?? availability?.kind === 'retained-away',
               }
             : {}),
         };
@@ -330,7 +329,12 @@ export class JobAddressing {
           ? observed
           : null;
       if (!accepted || !hasReadableTerminalDetail(accepted)) {
-        if (closure === 'decided' && source.kind === 'read')
+        if (
+          closure === 'decided' &&
+          source.kind === 'read' &&
+          source.locations.has(jobId) &&
+          !source.unreadableJobs?.has(jobId)
+        )
           return { jobId, disposition: 'outcome-unrecoverable', epochKey: location.epochKey };
         return {
           jobId,
@@ -339,6 +343,9 @@ export class JobAddressing {
           ...(source.kind === 'read' && observed?.detail.kind === 'recorded' && !observed.detail.value.exit
             ? { detail: observed.detail.value }
             : {}),
+          progressUnknown:
+            (source.kind === 'unreadable' && source.retired !== true) ||
+            (source.kind === 'read' && source.unreadableJobs?.has(jobId) === true),
           progressLost: source.kind === 'unreadable' && source.retired === true,
         };
       }
@@ -405,20 +412,6 @@ export class JobAddressing {
       admissions.some((job) => job.disposition === 'admitted' && job.epochKey !== activeEpochKey)
     )
       return { code: 'wait_cursor_epoch_required', message: 'The legacy cursor cannot identify historical epochs.' };
-    if (
-      request.supportsWaitV3 !== true &&
-      cursor?.version === undefined &&
-      cursor !== undefined &&
-      cursor.afterSeq > 0 &&
-      admissions.some(
-        (job) =>
-          job.disposition === 'admitted' && !(cursor.admittedJobIds ?? cursor.deliveredJobIds)?.includes(job.jobId),
-      )
-    )
-      return {
-        code: 'wait_cursor_epoch_required',
-        message: 'This legacy cursor does not record admitted membership; rerun the wait without its cursor.',
-      };
     if (request.supportsWaitV3 !== true && cursor?.version === 'jobs.wait.v3')
       return { code: 'wait_cursor_unsupported', message: 'V3 cursor requires supportsWaitV3.' };
     if (

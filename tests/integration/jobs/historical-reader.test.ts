@@ -1,7 +1,9 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import * as epochObservation from '#src/store/epoch/observation.js';
+import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { newRawDatabase } from '../../helpers/test-db.js';
@@ -291,6 +293,8 @@ describe('historical job readers', () => {
       },
       () => false,
       () => 'decided',
+      undefined,
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     expect(addressing.detail('finished')).toMatchObject({ status: { phase: 'completed' } });
     const stream = addressing.waitStream({ jobIds: ['finished'], supportsWaitV3: true });
@@ -377,6 +381,8 @@ describe('historical job readers', () => {
       },
       () => false,
       () => 'decided',
+      undefined,
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     expect(addressing.outcomeUnrecoverable(['known-live'])).toEqual([]);
     expect(addressing.detail('known-live')).not.toMatchObject({ kind: 'outcome-unrecoverable' });
@@ -533,6 +539,8 @@ describe('historical job readers', () => {
       },
       () => false,
       () => 'decided',
+      undefined,
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
 
     expect(addressing.detail('projection-lost')).toEqual({
@@ -608,6 +616,8 @@ describe('historical job readers', () => {
       },
       () => false,
       () => 'pending',
+      undefined,
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     expect(addressing.detail('finished')).toMatchObject({
       status: { jobId: 'finished', phase: 'completed' },
@@ -893,6 +903,8 @@ process.stdin.on('data', (input) => {
           },
           () => false,
           () => 'pending',
+          undefined,
+          () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
         );
         const snap = addressing.snapshot({ jobIds: ['typo-id'] } as never);
         expect(index.unknownLocationHolds()[0]).toMatchObject({ retryScheduled: false });
@@ -947,6 +959,8 @@ process.stdin.on('data', (input) => {
           },
           () => false,
           () => 'pending',
+          undefined,
+          () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
         );
         const admissions = addressing.admitWait({ jobIds: ['typo-not-a-job'], supportsWaitV3: true });
         const session = new WaitSession(['typo-not-a-job']);
@@ -1002,6 +1016,8 @@ process.stdin.on('data', (input) => {
         },
         () => false,
         () => 'pending',
+        undefined,
+        () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
       );
       expect(addressing.snapshot({ jobIds: ['typo'] }).jobs[0].disposition).toBe('missing');
     } finally {
@@ -1126,6 +1142,8 @@ it('isolates invalid job reads, continues hydration after a recording failure an
     },
     () => false,
     () => 'pending',
+    undefined,
+    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
   );
   expect(addressing.admitWait({ jobIds: ['good'], supportsWaitV3: true })[0].detail?.exit).not.toBeNull();
   expect(addressing.admitWait({ jobIds: ['good'], supportsWaitV3: true })[0].progressUnknown).toBe(false);
@@ -1160,8 +1178,298 @@ it('isolates invalid job reads, continues hydration after a recording failure an
     expect(reads.mock.calls.filter(([path]) => String(path).includes('/job-locations.v1/jobs/'))).toHaveLength(0);
     rmSync(epoch.path);
     refreshHistoricalEpochs(index);
-    expect(readHistoricalSource(index, epochKey, ['good'])).toEqual({ kind: 'unreadable' });
+    expect(readHistoricalSource(index, epochKey, ['good'])).toEqual({ kind: 'unreadable', retired: true });
   } finally {
     vi.restoreAllMocks();
+  }
+});
+
+// Round 3 retired-source and per-job decode probes, exercised through the real reader.
+import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { commitJobTerminal } from '#tests/helpers/job-commits.js';
+import { historicalSourceReader } from '#src/jobs/historical-reader.js';
+
+describe('historical read dispositions', () => {
+  it('settles retired progress before sweep, after sweep, and after restart', async () => {
+    const f = createTerminalExportFixture('provider', true);
+    try {
+      f.complete();
+      seedHistoricalEpoch(
+        f.runtime,
+        f.index,
+        f.epoch,
+        f.epochKey,
+        currentCoralStoreFormat().fingerprint,
+        f.runtime.paths.coral.exports.jobsRoot,
+        f.runtime.storage,
+      );
+      f.removeSource();
+      for (const phase of ['before sweep', 'after sweep', 'restart']) {
+        if (phase === 'after sweep') refreshHistoricalEpochs(f.index);
+        const index = phase === 'restart' ? new JobLocationIndex(f.runtime, f.root) : f.index;
+        const addressing = new JobAddressing(
+          index.readOnlyView(),
+          {
+            epochKey: () => 'other',
+            detail: () => null,
+            abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+          },
+          () => false,
+          () => 'decided',
+          historicalSourceReader(index),
+          (id) => f.store.getResultExportOwner().observeResultAvailability(id),
+        );
+        const [admission] = addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true });
+        expect(admission.progressUnknown, phase).not.toBe(true);
+        expect(admission.progressLost, phase).toBe(true);
+        const first = addressing.snapshot({ jobIds: [f.jobId] });
+        expect(first.jobs[0].terminal, phase).toBeDefined();
+        expect(first.notices.join(' '), phase).toContain('no longer kept');
+        expect(first.remainingJobIds, phase).toEqual([]);
+        expect(first.exitCode, phase).toBe(0);
+        const events = [];
+        for await (const event of addressing.waitStream({
+          jobIds: [f.jobId],
+          supportsWaitV3: true,
+          cursor: first.cursor,
+          timeoutSeconds: 1,
+        }))
+          events.push(event);
+        expect(events.at(-1), phase).toMatchObject({ exitCode: 0 });
+        expect(
+          events.some((event) => event.type === 'waiting'),
+          phase,
+        ).toBe(false);
+      }
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each(['projection', 'terminal'] as const)(
+    'keeps a per-job %s decode failure unresolved after decided closure',
+    (failure) => {
+      const f = createTerminalExportFixture('provider', true);
+      try {
+        seedHistoricalEpoch(
+          f.runtime,
+          f.index,
+          f.epoch,
+          f.epochKey,
+          currentCoralStoreFormat().fingerprint,
+          f.runtime.paths.coral.exports.jobsRoot,
+          f.runtime.storage,
+        );
+        const seq = commitJobTerminal(f.store, f.jobId, 'session-1', {
+          content: 'real outcome',
+          outcome: { kind: 'completed' },
+          durationMs: 1,
+        });
+        if (failure === 'projection') f.db.prepare('DELETE FROM projection_jobs WHERE job_id = ?').run(f.jobId);
+        else {
+          const raw = f.db.prepare('SELECT body FROM events WHERE seq = ?').get(seq) as { body: Uint8Array };
+          const body = JSON.parse(Buffer.from(raw.body).toString('utf8'));
+          body.terminal.outcome = { kind: 'future_kind' };
+          f.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(Buffer.from(JSON.stringify(body)), seq);
+        }
+        const addressing = new JobAddressing(
+          f.index.readOnlyView(),
+          {
+            epochKey: () => 'other',
+            detail: () => null,
+            abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+          },
+          () => false,
+          () => 'decided',
+          historicalSourceReader(f.index),
+          (id) => f.store.getResultExportOwner().observeResultAvailability(id),
+        );
+        expect(addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true })[0].disposition).toBe('admitted');
+        expect(addressing.detail(f.jobId)).toMatchObject({ kind: 'unresolved' });
+        expect(addressing.outcomeUnrecoverable([f.jobId])).toEqual([]);
+        expect(addressing.snapshot({ jobIds: [f.jobId] })).toMatchObject({ remainingJobIds: [f.jobId], exitCode: 75 });
+      } finally {
+        f.close();
+      }
+    },
+  );
+});
+
+it('gates unchanged historical polls and unresolved sweeps on the journal frontier', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    for (let i = 0; i < 100; i++) f.store.appendProgress(f.jobId, 'session-1', `line ${i}`);
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    const reader = historicalSourceReader(f.index);
+    reader(f.epochKey, [f.jobId]);
+    refreshHistoricalEpochs(f.index);
+    const originalOpen = f.runtime.storage.openSqliteDatabaseSync.bind(f.runtime.storage);
+    const sql: string[] = [];
+    vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync').mockImplementation((...args) => {
+      const db = originalOpen(...args);
+      const prepare = db.prepare.bind(db);
+      db.prepare = (query) => {
+        sql.push(query);
+        return prepare(query);
+      };
+      return db;
+    });
+    const scan = vi.spyOn(f.index, 'locations');
+    const certify = vi.spyOn(f.index, 'certify');
+    for (let poll = 0; poll < 20; poll++) {
+      reader(f.epochKey, [f.jobId]);
+      refreshHistoricalEpochs(f.index);
+    }
+    expect(sql.filter((query) => /projection_jobs|SELECT seq, ts, type, body/.test(query))).toEqual([]);
+    expect(scan).not.toHaveBeenCalled();
+    expect(certify).not.toHaveBeenCalled();
+    sql.length = 0;
+    f.store.appendProgress(f.jobId, 'session-1', 'new line');
+    const changed = reader(f.epochKey, [f.jobId]);
+    expect(changed.kind === 'read' && changed.locations.get(f.jobId)?.detail.kind).toBe('recorded');
+    expect(sql.filter((query) => /SELECT seq, ts, type, body/.test(query))).toHaveLength(1);
+    expect(sql.find((query) => /SELECT seq, ts, type, body/.test(query))).toContain('seq >');
+    refreshHistoricalEpochs(f.index);
+    expect(certify).toHaveBeenCalledTimes(1);
+    expect(sql.some((query) => /SELECT \* FROM projection_jobs ORDER BY/.test(query))).toBe(false);
+  } finally {
+    vi.restoreAllMocks();
+    f.close();
+  }
+});
+
+it.each([
+  'unregistered present',
+  'unregistered absent',
+  'registered absent',
+  'unsupported',
+  'read failure',
+  'identity mismatch',
+  'identity unobservable',
+  'guard unobservable',
+  'explicit job absence',
+])('classifies historical source observation: %s', (scenario) => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      scenario === 'unsupported' ? 'future-format' : currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    const index = scenario.startsWith('unregistered') ? new JobLocationIndex(f.runtime, f.root) : f.index;
+    if (scenario.endsWith(' absent')) rmSync(f.epoch.path);
+    if (scenario === 'guard unobservable') rmSync(join(dirname(f.epoch.path), '.lock'));
+    const identity = scenario.startsWith('identity')
+      ? vi
+          .spyOn(epochObservation, 'inspectResolvedStoreEpochKey')
+          .mockReturnValue(scenario === 'identity mismatch' ? 'other epoch' : null)
+      : undefined;
+    const open =
+      scenario === 'read failure'
+        ? vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync').mockImplementation(() => {
+            throw new Error('temporary I/O failure');
+          })
+        : undefined;
+    try {
+      const result = readHistoricalSource(index, f.epochKey, ['typo']);
+      if (scenario === 'unsupported' || scenario.endsWith(' absent') || scenario === 'identity mismatch')
+        expect(result).toEqual({ kind: 'unreadable', retired: true });
+      else if (
+        ['unregistered present', 'read failure', 'identity unobservable', 'guard unobservable'].includes(scenario)
+      ) {
+        expect(result.kind).toBe('unreadable');
+        if (result.kind === 'unreadable') expect(result.retired).not.toBe(true);
+      } else {
+        expect(result.kind).toBe('read');
+        if (result.kind === 'read') {
+          expect(result.locations.has('typo')).toBe(true);
+          expect(result.locations.get('typo')).toBeNull();
+          expect(result.unreadableJobs?.has('typo')).toBe(false);
+        }
+      }
+    } finally {
+      open?.mockRestore();
+      identity?.mockRestore();
+    }
+  } finally {
+    f.close();
+  }
+});
+
+it('holds the identity guard only during each historical read and releases it on failed reads', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    const path = join(dirname(f.epoch.path), '.lock');
+    const open = f.runtime.storage.openSqliteDatabaseSync.bind(f.runtime.storage);
+    const spy = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync').mockImplementation((...args) => {
+      const attempt = attemptExclusiveFileLockSync(path);
+      if (attempt.kind === 'acquired') attempt.lease();
+      expect(attempt.kind).toBe('contended');
+      return open(...args);
+    });
+    const session = {};
+    for (let poll = 0; poll < 20; poll++) {
+      expect(readHistoricalSource(f.index, f.epochKey, [f.jobId], session).kind).toBe('read');
+      const attempt = attemptExclusiveFileLockSync(path);
+      expect(attempt.kind).toBe('acquired');
+      if (attempt.kind === 'acquired') attempt.lease();
+    }
+    spy.mockImplementation(() => {
+      throw new Error('temporary open failure');
+    });
+    expect(readHistoricalSource(f.index, f.epochKey, [f.jobId], session)).toEqual({ kind: 'unreadable' });
+    spy.mockRestore();
+    const attempt = attemptExclusiveFileLockSync(path);
+    expect(attempt.kind).toBe('acquired');
+    if (attempt.kind === 'acquired') attempt.lease();
+  } finally {
+    f.close();
+  }
+});
+
+it('skips settled retired epochs without rewriting their recovery hold on later sweeps', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    rmSync(f.epoch.path);
+    refreshHistoricalEpochs(f.index);
+    const write = vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync');
+    for (let sweep = 0; sweep < 20; sweep++) refreshHistoricalEpochs(f.index);
+    expect(write).not.toHaveBeenCalled();
+    expect(f.index.unknownLocationHolds()).toContainEqual(expect.objectContaining({ retryScheduled: false }));
+    expect(readHistoricalSource(f.index, f.epochKey, [f.jobId])).toEqual({ kind: 'unreadable', retired: true });
+  } finally {
+    vi.restoreAllMocks();
+    f.close();
   }
 });

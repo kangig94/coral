@@ -1,6 +1,10 @@
 import { formatError } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
-import { refreshHistoricalEpochs, retryUnknownHistoricalEpochs } from '../../jobs/historical-reader.js';
+import {
+  refreshHistoricalEpochs,
+  retryUnknownHistoricalEpochs,
+  onHistoricalHydrationHint,
+} from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { sweepStoreEpochsPostReady, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
@@ -66,10 +70,18 @@ export function createStoreEpochSweepScheduler(input: {
         timer.unref?.();
       };
 
+      onHistoricalHydrationHint(jobLocationIndex, (epochKey) => {
+        if (epochKey === input.selectedStoreEpochKey() || controller.signal.aborted || timer === null) return;
+        runtime.time.clearTimeout(timer);
+        timer = null;
+        settleScheduled?.();
+        schedule(0);
+      });
       schedule(0);
     },
     stop: async () => {
       abort?.abort();
+      onHistoricalHydrationHint(jobLocationIndex, null);
       if (timer !== null) {
         runtime.time.clearTimeout(timer);
         timer = null;

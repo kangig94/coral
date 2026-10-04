@@ -103,7 +103,11 @@ describe('actual wait carriage', () => {
       const socketPath = join(f.root, 'duplicates.sock');
       await new Promise<void>((resolve) => listener.server.listen(socketPath, resolve));
       const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
-      const input = { jobIds: ['a', 'a'], projectRoot: f.root };
+      const input = {
+        jobIds: ['a', 'a'],
+        projectRoot: f.root,
+        ...(method === 'jobs.wait' ? { supportsWaitV3: true } : {}),
+      };
       const response = method === 'jobs.wait' ? client.subscribe(method, input) : client.request(method, input);
       await expect(response).rejects.toMatchObject({
         data: {
@@ -474,6 +478,8 @@ describe('actual wait carriage', () => {
       { epochKey: () => 'epoch-E' } as never,
       () => false,
       () => 'pending',
+      undefined,
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     vi.spyOn(addressing, 'admitWait').mockReturnValue(admissions);
     const complete = ports(addressing);

@@ -343,3 +343,56 @@ describe('ipc ensure', () => {
     expect(mockState.shutdown).not.toHaveBeenCalled();
   });
 });
+
+it('retries one snapshot lifecycle refusal on the successor without changing its cursor', async () => {
+  makeHome();
+  mockState.bindSocket.mockResolvedValue({ kind: 'bound' });
+  vi.useFakeTimers();
+  const root = createPluginRoot();
+  writeDiscovery(root, { instanceId: 'draining-coordinator' });
+  mockState.health
+    .mockResolvedValueOnce({
+      status: 'draining',
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'draining-coordinator',
+      namespace: pluginRootNamespace(root),
+    })
+    .mockResolvedValue({
+      status: 'ok',
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'replacement-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+  mockState.spawn.mockImplementation(() => {
+    writeDiscovery(root, { instanceId: 'replacement-coordinator' });
+    return spawnedChild();
+  });
+  const { IpcLifecycleRefusal } = await import('#src/transport/ipc/client.js');
+  const refusal = new IpcLifecycleRefusal(socketPath(root), 'jobs.wait.snapshot');
+  const cursor = { afterSeq: 42 };
+  const params = { jobIds: ['a'], projectRoot: '/project', cursor };
+  const initial = { request: vi.fn().mockRejectedValue(refusal) };
+  const answer = { snapshot: 'successor snapshot' };
+  mockState.request.mockResolvedValue(answer);
+  const { issueWithSuccessorAfterLifecycleRefusal } = await importEnsure();
+  const result = issueWithSuccessorAfterLifecycleRefusal(
+    'jobs.wait.snapshot',
+    root,
+    (client) => client.request('jobs.wait.snapshot', params),
+    undefined,
+    initial as never,
+  );
+  const settled = result.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+  await vi.advanceTimersByTimeAsync(800);
+  expect(await settled).toEqual({ value: answer });
+  expect(initial.request).toHaveBeenCalledExactlyOnceWith('jobs.wait.snapshot', params);
+  expect(mockState.request).toHaveBeenCalledExactlyOnceWith(socketPath(root), 'jobs.wait.snapshot', params, undefined);
+  expect(mockState.spawn).toHaveBeenCalledTimes(1);
+});

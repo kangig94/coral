@@ -40,6 +40,7 @@ export function createStorageRetentionScheduler(input: {
   let running = Promise.resolve();
   const outstandingOwners = new Map<string, Promise<void>>();
   let started = false;
+  let hintOwner: ReturnType<JobStore['getResultExportOwner']> | undefined;
   let repairHinted = false;
   let lastRepairRun = -1000n;
   const owners = new Map<string, { dailyDue: bigint; fastDue: bigint | null; outcomes: RetentionOutcome[] }>(
@@ -239,7 +240,8 @@ export function createStorageRetentionScheduler(input: {
                 !abort.signal.aborted &&
                 !outstandingOwners.has(subject) &&
                 (exhausted || (scanPending && progressed) || repairPending || (failed && subject === 'result-repair'));
-              if (!executed && !abort.signal.aborted) owner.fastDue = runtime.time.monotonicNow() + 1000n;
+              if (!executed && !abort.signal.aborted)
+                owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
               else if (fastRetry) owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
               finished = true;
               if (exhausted) record({ kind: 'kept', subject, reason: 'scan-pending' }, subject);
@@ -370,7 +372,8 @@ export function createStorageRetentionScheduler(input: {
       input.publish(status);
       for (const subject of dueOwners) {
         const owner = owners.get(subject);
-        if (owner && owner.dailyDue <= startedAt) owner.fastDue = runtime.time.monotonicNow() + 1000n;
+        if (owner && owner.dailyDue <= startedAt)
+          owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
       }
       const delay = nextDelay();
       if (!hintedOnly)
@@ -391,13 +394,12 @@ export function createStorageRetentionScheduler(input: {
   };
   return {
     start: () => {
-      if (started || abort.signal.aborted) return;
-      started = true;
-      trustedJobRetentionCutoff(runtime);
-      input
-        .getProgressStore()
-        ?.getResultExportOwner()
-        .onRepairHint(() => {
+      if (abort.signal.aborted) return;
+      const currentOwner = input.getProgressStore()?.getResultExportOwner();
+      if (hintOwner !== currentOwner) {
+        hintOwner?.onRepairHint(null);
+        hintOwner = currentOwner;
+        hintOwner?.onRepairHint(() => {
           const owner = owners.get('result-repair');
           if (!owner || owner.fastDue !== null || outstandingOwners.has('result-repair')) return;
           const now = runtime.time.monotonicNow();
@@ -409,11 +411,16 @@ export function createStorageRetentionScheduler(input: {
             schedule(nextDelay());
           }
         });
+      }
+      if (started) return;
+      started = true;
+      trustedJobRetentionCutoff(runtime);
       schedule(0);
     },
     stop: async () => {
       abort.abort();
-      input.getProgressStore()?.getResultExportOwner().onRepairHint(null);
+      hintOwner?.onRepairHint(null);
+      hintOwner = undefined;
       if (timer !== null) runtime.time.clearTimeout(timer);
       timer = null;
       await running;

@@ -79,6 +79,7 @@ type ExpectedOperationalRouteId =
   | 'ipc.transport.kb.restart'
   | `ipc.${(typeof SUCCESSION_METHODS)[keyof typeof SUCCESSION_METHODS]}`
   | 'ipc.jobs.abort.drain-recovery'
+  | 'ipc.jobs.wait.snapshot'
   | 'ipc.provider-host.list.drain-observation'
   | 'ipc.provider-host.list-v2.drain-observation'
   | 'ipc.provider-host.inspect.drain-observation'
@@ -240,6 +241,15 @@ const expectedOperationalSpecs = {
     method: 'jobs.abort',
     requires: 'jobs:control',
     requiresRunningLifecycle: false,
+    dispatchKind: 'catalog',
+    onRefusal: 'spawn-successor',
+    authentication: 'principal',
+  },
+  'ipc.jobs.wait.snapshot': {
+    transport: 'ipc',
+    method: 'jobs.wait.snapshot',
+    requires: 'jobs:read',
+    requiresRunningLifecycle: true,
     dispatchKind: 'catalog',
     onRefusal: 'spawn-successor',
     authentication: 'principal',

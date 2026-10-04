@@ -32,7 +32,7 @@ function unavailableForEligibility(eligibility: TerminalEligibility, retentionDa
     };
   if (!eligibility.cutoffTrusted)
     return { kind: 'repair-pending', ageUncertain: eligibility.age === 'unknown' || eligibility.age === 'regression' };
-  if (eligibility.sourceReadFailed) return { kind: 'failed', cause: 'repair-failed', retryScheduled: true };
+  if (eligibility.sourceReadFailed) return { kind: 'repair-pending', ageUncertain: true };
   if (eligibility.sourceContradictory) return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false };
   if (eligibility.age === 'unknown')
     return { kind: 'failed', cause: 'terminal-age-unknown', retryScheduled: false, ageUncertain: true };
@@ -261,7 +261,7 @@ export class TerminalResultExportOwner {
         )
           return { kind: 'repair-pending', ageUncertain: true };
       } catch {
-        return { kind: 'failed', cause: 'repair-failed', retryScheduled: true, unverifiedResultPath };
+        return { kind: 'repair-pending', ageUncertain: true };
       }
       return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, unverifiedResultPath };
     }
@@ -280,7 +280,7 @@ export class TerminalResultExportOwner {
       if (location.subject.jobKind === 'workflow' && this.render(jobId) === null)
         return { kind: 'failed', cause: 'workflow-facts-unavailable', retryScheduled: false };
     } catch {
-      return { kind: 'failed', cause: 'repair-failed', retryScheduled: true };
+      return { kind: 'repair-pending', ageUncertain: true };
     }
     return { kind: 'repair-pending', ageUncertain: eligibility.age === 'regression' };
   }

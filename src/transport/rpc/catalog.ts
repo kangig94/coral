@@ -610,6 +610,16 @@ export const providerProxySetContainRpcSpec = {
   http: { method: 'POST', path: '/coordinator/provider-proxy-sets/contain/v2' },
 } as const satisfies RpcMethodSpec<unknown, unknown>;
 
+export const jobWaitSnapshotRpcSpec = {
+  name: 'jobs.wait.snapshot',
+  kind: 'unary',
+  requires: 'jobs:read',
+  requestSchema: jobWaitSnapshotSchema,
+  responseKind: 'json',
+  portKey: 'jobs',
+  http: { method: 'POST', path: '/jobs/wait/snapshot' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
 export const jobsAbortRpcSpec = {
   name: 'jobs.abort',
   kind: 'unary',
@@ -719,15 +729,7 @@ export const rpcCatalog = [
     portKey: 'jobs',
     http: { method: 'GET', path: '/jobs/:jobId' },
   },
-  {
-    name: 'jobs.wait.snapshot',
-    kind: 'unary',
-    requires: 'jobs:read',
-    requestSchema: jobWaitSnapshotSchema,
-    responseKind: 'json',
-    portKey: 'jobs',
-    http: { method: 'POST', path: '/jobs/wait/snapshot' },
-  },
+  jobWaitSnapshotRpcSpec,
   {
     name: 'jobs.wait',
     kind: 'subscription',

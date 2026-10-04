@@ -69,10 +69,7 @@ beforeAll(async () => {
                     .replace('const SNAPSHOT_CLEANUP_MS = 1_000', 'const SNAPSHOT_CLEANUP_MS = 200');
                   if (variant === 'no-backstop') source = source.replace('process.exit(75)', 'undefined');
                   if (variant === 'monitor-abort')
-                    source = source.replace(
-                      'private readonly onSigint = () => this.stop()',
-                      'private readonly onSigint = () => {}',
-                    );
+                    source = source.replace('if (!this.continuationFlushed) this.stop();', 'undefined;');
                 }
                 if (path.endsWith('/cli/follow.ts'))
                   source = source.replace(
@@ -263,12 +260,13 @@ it.each(['routing', 'selection', 'terminal', 'delegation', 'delegated-delivery',
   },
 );
 
-it('refuses an older target before starting an unbounded monitor', async () => {
+it('continues in the current build after a deterministic older-target contract mismatch', async () => {
   const result = await probe('old-target');
   expect(result.code).toBe(75);
   expect(result.timedOut).toBe(false);
-  expect(result.stderr).toContain('cannot preserve this monitor invocation budget');
-  expect(result.stderr).toContain(`coral-cli wait jobs a ghost --embed --cursor ${saved}`);
+  expect(result.stderr).not.toContain('cannot preserve this monitor invocation budget');
+  expect(result.stderr).toContain('HANDLER_BUDGET:');
+  expect(result.stdout).toContain(`--cursor ${saved}`);
   expect(result.stderr).not.toContain('OWNED_MONITOR:');
 });
 
@@ -367,4 +365,15 @@ it.each(['sync', 'delegated-sync'])('snapshot records the S2 synchronous-stall r
   expect(result.stdout).toContain('--now');
   expect(result.stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
   if (scenario === 'sync') expect(result.elapsed).toBeGreaterThan(800);
+});
+
+it('freezes delegated output before printing the parent continuation', async () => {
+  const result = await probe('late-child-output');
+  assertBounded(result);
+  expect(result.stdout).toContain('confirmed delivery');
+  expect(result.stdout).toContain('late child output');
+  expect(result.stdout.indexOf('late child output')).toBeLessThan(result.stdout.indexOf('Run coral-cli wait jobs'));
+  expect(result.stdout.slice(result.stdout.indexOf('Run coral-cli wait jobs'))).not.toContain('late child output');
+  expect(result.stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+  expect(result.stdout).toContain(`--cursor ${frontier}`);
 });

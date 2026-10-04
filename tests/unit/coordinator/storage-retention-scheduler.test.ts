@@ -67,12 +67,12 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-function fixture(f = createRetentionFixture()) {
+function fixture(f = createRetentionFixture(), getProgressStore = () => f.store) {
   if (!fixtures.includes(f)) fixtures.push(f);
   const statuses: RetentionRunStatus[] = [];
   const scheduler = createStorageRetentionScheduler({
     runtime: f.runtime,
-    getProgressStore: () => f.store,
+    getProgressStore,
     openEpoch: () => ({
       storeRoot: f.runtime.paths.coral.store.dbDir,
       epoch: '1',
@@ -606,4 +606,38 @@ it('runs a held owner at its daily deadline while another owner keeps draining',
   } finally {
     owners.exports.mockResolvedValue('');
   }
+});
+
+it('backs off a parked writer instead of polling and logging every second', async () => {
+  owners.parked = true;
+  const { scheduler, statuses } = fixture();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  const completed = statuses.length;
+  await vi.advanceTimersByTimeAsync(299_999);
+  expect(statuses).toHaveLength(completed);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(statuses.length).toBeGreaterThan(completed);
+});
+
+it('rebinds repair hints when lifecycle recovery starts with a replacement progress store', async () => {
+  const first = createRetentionFixture();
+  const second = createRetentionFixture();
+  fixtures.push(second);
+  let selected = first.store;
+  const { scheduler } = fixture(first, () => selected);
+  const oldOwner = first.store.getResultExportOwner();
+  const newOwner = second.store.getResultExportOwner();
+  const detach = vi.spyOn(oldOwner, 'onRepairHint');
+  const repair = vi.spyOn(newOwner, 'repairPass').mockResolvedValue();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  selected = second.store;
+  scheduler.start();
+  newOwner.hintRepair('replacement-job');
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(detach).toHaveBeenLastCalledWith(null);
+  expect(repair).toHaveBeenCalledOnce();
+  await scheduler.stop();
+  expect(detach).toHaveBeenLastCalledWith(null);
 });

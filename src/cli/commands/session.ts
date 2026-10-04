@@ -1,4 +1,4 @@
-import { decodeSerializedWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
+import { decodeSerializedWaitCursor } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
 import { formatWaitSnapshot, formatWaitContinuation } from '../format/wait.js';
@@ -210,11 +210,11 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       if (opts.cursor !== undefined) {
         const decoded = decodeSerializedWaitCursor(opts.cursor);
         if (decoded.kind === 'decoded') cursor = decoded.cursor;
-        else process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
+        else process.stdout.write(`Collection cursor was reset; this snapshot shows the latest progress tail.\n`);
       }
       const reset = () => {
         cursor = undefined;
-        process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
+        process.stdout.write(`Collection cursor was reset; this snapshot shows the latest progress tail.\n`);
       };
       const read = () =>
         client.snapshotJobsWait(

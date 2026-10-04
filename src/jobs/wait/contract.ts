@@ -38,6 +38,7 @@ export interface WaitStreamRequest extends WaitRequest {
   supportsWaitV2?: boolean;
   supportsWaitV3?: boolean;
   admissions?: WaitAdmission[];
+  onLegacyCursor?: (cursor: Extract<WaitCursor, { afterSeq: number }>) => void;
   onCoverage?: (jobIds: readonly string[], unknownJobIds: readonly string[], frontier: number) => void;
 }
 
@@ -162,9 +163,9 @@ export type WaitCarrierCoverage = {
 };
 
 export interface JobWaitPort {
-  readWaitAdmissions?(jobIds: readonly string[], epochKey: string): WaitAdmission[];
+  readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
-  readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
+  readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
   waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitForOutcomes?(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;

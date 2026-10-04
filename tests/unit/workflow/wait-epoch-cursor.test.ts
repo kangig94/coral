@@ -199,6 +199,7 @@ it('a workflow child missing from the real reader fails its atom after one proje
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,
     currentJobEpochKey: () => 'real-epoch',
+    observeResultAvailability: () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     resultJobsRoot: '/tmp/no-workflow-artifacts',
     subscribeJobEvents: async function* () {},
   });

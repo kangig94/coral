@@ -12,7 +12,7 @@ export function readAcceptedTerminal(db: Database, jobId: string): EventsRow | n
     .prepare<
       [string],
       EventsRow
-    >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
+    >("SELECT * FROM events WHERE type = 'job.terminal.recorded' AND stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
     .get(jobId);
   if (!row || row.type !== 'job.terminal.recorded') return null;
   jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf8')));

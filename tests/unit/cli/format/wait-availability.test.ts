@@ -6,7 +6,10 @@ import type { ResultAvailability } from '#src/jobs/terminal/export.js';
 it.each([
   [{ kind: 'available', resultPath: '/real/result.md' }, 'Result path: /real/result.md'],
   [{ kind: 'retained-away', retentionDays: 14 }, 'no longer kept: past the 14-day retention window'],
-  [{ kind: 'repair-pending', ageUncertain: false }, 'the outcome above is final; Coral is writing the result file'],
+  [
+    { kind: 'repair-pending', ageUncertain: false },
+    'Result file pending; Coral will retry on its next maintenance pass.',
+  ],
   [{ kind: 'failed', cause: 'repair-failed', retryScheduled: true }, 'Coral will retry on its next maintenance pass.'],
   [
     { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false },

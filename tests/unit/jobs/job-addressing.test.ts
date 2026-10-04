@@ -175,6 +175,8 @@ it.each([false, true])('refuses a partially missing legacy batch at admission, v
     },
     () => false,
     () => 'pending',
+    undefined,
+    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
   );
   const request = { jobIds: ['known', 'ghost'], supportsWaitV2, timeoutSeconds: 0 };
   expect(addressing.validateWait(request)).toMatchObject({
@@ -235,6 +237,8 @@ it('does not admit an active location when its launch append never became accept
     },
     () => false,
     () => 'pending',
+    undefined,
+    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
   );
   const snapshot = addressing.snapshot({ jobIds: ['never-accepted'] });
   expect(snapshot.jobs[0].disposition).toBe('missing');

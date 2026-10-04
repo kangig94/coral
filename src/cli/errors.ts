@@ -142,8 +142,11 @@ export class WaitSnapshotResponseError extends Error {
   readonly exitCode = 75;
   readonly remediation: string;
 
-  constructor(originalCommand: string) {
-    super('The coordinator returned an invalid snapshot. No collection cursor advanced.');
+  constructor(
+    originalCommand: string,
+    message = 'The coordinator returned an invalid snapshot. No collection cursor advanced.',
+  ) {
+    super(message);
     this.remediation = `Run ${originalCommand}`;
   }
 }

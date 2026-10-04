@@ -8,7 +8,7 @@ export function readJobTerminalAge(db: Database, terminal: EventsRow): number | 
     .prepare<
       [string, number],
       { ts: string }
-    >("SELECT ts FROM events WHERE stream_kind = 'job' AND stream_id = ? AND seq < ? ORDER BY ts DESC LIMIT 1")
+    >("SELECT ts FROM events WHERE type IN ('job.launch.requested', 'job.launch.rejected', 'job.queue.queued', 'job.queue.admitted', 'job.runtime.started', 'job.progress.emitted', 'job.terminal.recorded', 'job.aborted') AND stream_kind = 'job' AND stream_id = ? AND seq < ? ORDER BY ts DESC LIMIT 1")
     .get(terminal.stream_id, terminal.seq);
   if (preceding === undefined) return terminalAt;
   const precedingAt = Date.parse(preceding.ts);

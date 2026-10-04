@@ -543,8 +543,8 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId);
   }
 
-  readJobEvents(jobId: string, terminalOnly = false) {
-    return readJobEvents(this.db, jobId, this, terminalOnly);
+  readJobEvents(jobId: string, terminalOnly = false, afterSeq = 0) {
+    return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq);
   }
 
   private resultExports: TerminalResultExportOwner | null = null;
@@ -577,7 +577,12 @@ export class JobStore implements JobProgressStore {
       prepareTerminal: (jobId) => {
         const index = this.exportLocations;
         const location = index?.read(jobId);
-        if (!index || !location || hasReadableTerminalDetail(location) || index.unknownLocationHold(location.epochKey))
+        if (
+          !index ||
+          !location ||
+          (hasReadableTerminalDetail(location) && location.terminalAge !== undefined) ||
+          index.unknownLocationHold(location.epochKey)
+        )
           return;
         withTerminalSource(this.runtime, location.epochKey, (db) => {
           const accepted = readAcceptedTerminal(db, jobId);
@@ -604,7 +609,7 @@ export class JobStore implements JobProgressStore {
         if (!detail.status || !detail.exit) return null;
         const accepted = readAcceptedTerminal(this.db, jobId);
         if (!accepted) return null;
-        if (!this.localTerminalAges.has(jobId)) {
+        if (!this.localTerminalAges.has(jobId) && trustedJobRetentionCutoff(this.runtime) !== null) {
           const age = readIntactJobTerminalAge(this.db, accepted, trustedJobRetentionCutoff(this.runtime));
           this.localTerminalAges.set(jobId, {
             epochKey: ':memory:',

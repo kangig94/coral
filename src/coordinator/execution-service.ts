@@ -319,8 +319,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.waitService.awaitLaunch(jobId, timeoutMs);
   }
 
-  readWaitAdmissions(jobIds: readonly string[], epochKey: string) {
-    return this.waitService.readWaitAdmissions?.(jobIds, epochKey) ?? [];
+  readWaitAdmissions(jobIds: readonly string[], epochKey: string, session?: object) {
+    return this.waitService.readWaitAdmissions?.(jobIds, epochKey, session) ?? [];
   }
 
   observeWaitCarriers(jobIds: readonly string[], signal: AbortSignal) {
@@ -330,8 +330,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     );
   }
 
-  readWaitAdmission(jobId: string, epochKey: string) {
-    return this.waitService.readWaitAdmission(jobId, epochKey);
+  readWaitAdmission(jobId: string, epochKey: string, session?: object) {
+    return this.waitService.readWaitAdmission(jobId, epochKey, session);
   }
 
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {

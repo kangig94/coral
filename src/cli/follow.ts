@@ -333,7 +333,7 @@ function boundedTimeoutSeconds(deadlineMs: number): number {
   return Math.max(1, Math.floor(remaining / 1000) - 1);
 }
 
-function withWaitRecovery(error: unknown, jobIds: readonly string[]): unknown {
+function withWaitRecovery(error: unknown, jobIds: readonly string[], cursor: WaitCursor): unknown {
   const body = error instanceof BackendToolHttpError && isRecord(error.body) ? error.body : null;
   if (!(error instanceof BackendUnreachableError) && body?.code !== 'backend_unreachable') {
     return error;
@@ -342,7 +342,7 @@ function withWaitRecovery(error: unknown, jobIds: readonly string[]): unknown {
   const message = body !== null && typeof body.message === 'string' ? body.message : (error as Error).message;
   return new BackendUnreachableError(
     `${message} Run \`coral-cli backend status\` and follow its recovery guidance, then rerun ` +
-      `\`coral-cli wait jobs ${jobIds.join(' ')}\` to continue waiting.`,
+      `\`coral-cli wait jobs ${jobIds.join(' ')} --cursor ${serializeWaitCursor(cursor)}\` to continue waiting.`,
   );
 }
 
@@ -404,7 +404,7 @@ async function connectFollowStream(
       ].includes(String(handledError.body.code))
     ) {
       if (!state.sendCursor) {
-        options.emitError(withWaitRecovery(handledError, state.remainingJobIds));
+        options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
         return { kind: 'exit', code: fallbackExitCode() };
       }
       writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
@@ -413,7 +413,7 @@ async function connectFollowStream(
       return { kind: 'retry' };
     }
     if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
-      options.emitError(withWaitRecovery(handledError, state.remainingJobIds));
+      options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
       return { kind: 'exit', code: fallbackExitCode() };
     }
     if (state.retriesLeft === 0) {
@@ -427,7 +427,7 @@ async function connectFollowStream(
         );
         return { kind: 'exit', code: errorCodeToExit('transient') };
       }
-      options.emitError(withWaitRecovery(handledError, state.remainingJobIds));
+      options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
       return { kind: 'exit', code: fallbackExitCode() };
     }
     state.retriesLeft -= 1;
@@ -453,6 +453,8 @@ async function finishDelegatedFollow(
     return { kind: 'exit', code: 0 };
   }
   if (outcome.kind === 'handoff-exit') {
+    if (outcome.exitCode === 75 && state.sigintCount === 1 && options.reconnectPolicy === 'until-terminal')
+      return { kind: 'retry' };
     return { kind: 'exit', code: normalizeExitCode(outcome.exitCode) };
   }
   if (outcome.signal === 'SIGINT' && state.sigintCount === 1) return { kind: 'retry' };
@@ -608,7 +610,7 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   if (error instanceof WaitOutputError) throw error;
   const handledError = mapWaitSubscriptionError(error);
   if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
-    options.emitError(withWaitRecovery(handledError, state.remainingJobIds));
+    options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
     return { kind: 'exit', code: fallbackExitCode() };
   }
   if (state.retriesLeft === 0) {
@@ -682,6 +684,7 @@ function installFollowSignals(context: FollowContext, allJobIds: string[]): () =
   const { options, state, controller, abortState } = context;
   const onInvocationEnd = () => controller.abort();
   const onSigint = () => {
+    if (state.remainingJobIds.length === 0) return;
     state.sigintCount += 1;
     if (state.sigintCount === 1) {
       process.stderr.write('\nPress Ctrl+C again to abort the job.\n');
@@ -739,11 +742,7 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
     if (connected.kind === 'exit') return connected.code;
     if (abortState.promise !== null) return await finishAbortAttempt(abortState.promise, options.emitError);
     const { connection } = connected;
-    if (
-      connection.kind === 'subscription' &&
-      options.start.kind === 'jobs' &&
-      options.start.serializedCursor !== undefined
-    ) {
+    if (connection.kind === 'subscription' && options.reconnectPolicy === 'bounded') {
       options.invocation?.saveContinuation(
         formatWaitWaiting(
           { type: 'waiting', waitingJobIds: state.remainingJobIds },
@@ -752,7 +751,7 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
       );
     }
     if (connection.kind === 'fatal-error') {
-      options.emitError(withWaitRecovery(connection.error, state.remainingJobIds));
+      options.emitError(withWaitRecovery(connection.error, state.remainingJobIds, state.currentCursor));
       return fallbackExitCode();
     }
     const decision =

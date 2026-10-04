@@ -20,3 +20,55 @@ it('checks only the job predecessors and never counts the full journal when eval
     f.close();
   }
 });
+
+it('uses the logical-stream index even before retention indexes were installed', () => {
+  const f = createTerminalExportFixture();
+  try {
+    f.complete();
+    f.db.exec('DROP INDEX events_retention_stream; DROP INDEX events_retention_age');
+    const prepare = vi.spyOn(f.db, 'prepare');
+    const terminal = readAcceptedTerminal(f.db, f.jobId)!;
+    readIntactJobTerminalAge(f.db, terminal, TERMINAL_EXPORT_CUTOFF);
+    const queries = prepare.mock.calls.map(([sql]) => sql);
+    prepare.mockRestore();
+    for (const sql of queries) {
+      const plan = f.db
+        .prepare('EXPLAIN QUERY PLAN ' + sql)
+        .all(...(sql.includes('seq <') ? [f.jobId, terminal.seq] : [f.jobId]));
+      expect(JSON.stringify(plan)).toContain('events_logical_stream');
+    }
+  } finally {
+    f.close();
+  }
+});
+
+import { readJobTerminalAge } from '#src/jobs/terminal-age.js';
+
+it.each(['known', 'no predecessor', 'bad terminal', 'bad predecessor', 'regression', 'untrusted cutoff'])(
+  'classifies terminal age: %s',
+  (scenario) => {
+    const f = createTerminalExportFixture();
+    try {
+      f.complete();
+      const row = readAcceptedTerminal(f.db, f.jobId)!;
+      if (scenario === 'no predecessor')
+        f.db.prepare('DELETE FROM events WHERE stream_id = ? AND seq < ?').run(f.jobId, row.seq);
+      if (scenario === 'bad terminal') row.ts = 'invalid';
+      if (scenario === 'bad predecessor' || scenario === 'regression')
+        f.db
+          .prepare('UPDATE events SET ts = ? WHERE stream_id = ? AND seq < ?')
+          .run(scenario === 'regression' ? '2099-01-01T00:00:00Z' : 'invalid', f.jobId, row.seq);
+      const result =
+        scenario === 'untrusted cutoff' ? readIntactJobTerminalAge(f.db, row, null) : readJobTerminalAge(f.db, row);
+      expect(result).toBe(
+        scenario === 'regression'
+          ? 'regression'
+          : scenario.startsWith('bad') || scenario === 'untrusted cutoff'
+            ? 'unknown'
+            : Date.parse(row.ts),
+      );
+    } finally {
+      f.close();
+    }
+  },
+);

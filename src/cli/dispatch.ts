@@ -1,9 +1,9 @@
 import { isRecord } from '../infra/json.js';
 import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
 import type { WaitSnapshot } from '../jobs/wait/session.js';
-import { UsageError } from './errors.js';
+import { WaitSnapshotResponseError } from './errors.js';
 import { getWaitInvocation } from './wait-invocation.js';
-import { WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait/cursor.js';
+import { serializeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait/cursor.js';
 import type { Command } from 'commander';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 
@@ -948,7 +948,10 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       const invocation = getWaitInvocation();
       const run = <T>(work: () => Promise<T>) => (invocation ? invocation.run(work) : work());
       const refusal = () =>
-        new UsageError(`this coordinator predates --now; run coral-cli wait jobs ${fields.jobIds.join(' ')}`);
+        new WaitSnapshotResponseError(
+          `coral-cli wait jobs ${fields.jobIds.join(' ')}${fields.cursor && fields.cursor.version !== 'jobs.wait.v3' ? ` --cursor ${serializeWaitCursor(fields.cursor)}` : ''}`,
+          'this coordinator predates --now; no collection cursor advanced.',
+        );
       await run(reconcileKbBoot);
       const coordinator = await run(() => ensure('jobs.wait.snapshot', resolvePluginRoot()));
       if (!coordinator.jobsWaitExtensions.includes('supportsWaitV3')) throw refusal();
@@ -961,10 +964,17 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       };
       try {
         return await run(() =>
-          coordinator.request<WaitSnapshot>('jobs.wait.snapshot', request, {
-            timeoutMs: Math.max(1, Math.ceil(invocation?.remainingMs() ?? 30_000)),
-            ...ipcAuthOptions(),
-          }),
+          issueWithSuccessorAfterLifecycleRefusal(
+            'jobs.wait.snapshot',
+            resolvePluginRoot(),
+            (client) =>
+              client.request<WaitSnapshot>('jobs.wait.snapshot', request, {
+                timeoutMs: Math.max(1, Math.ceil(invocation?.remainingMs() ?? 30_000)),
+                ...ipcAuthOptions(),
+              }),
+            undefined,
+            coordinator,
+          ),
         );
       } catch (error) {
         if (
