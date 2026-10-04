@@ -265,7 +265,9 @@ it('returns artifact settlement without replaying the terminal and re-evaluates 
   time.tick(250);
   await flushMicrotasks(20);
   await expect(next).resolves.toMatchObject({ value: { type: 'disposition', disposition: 'outcome-unrecoverable' } });
-  await expect(stream.next()).resolves.toMatchObject({ value: { type: 'waiting', waitingJobIds: [], exitCode: 1 } });
+  await expect(stream.next()).resolves.toMatchObject({
+    value: { type: 'notice', message: 'Wait complete; no jobs remain.', exitCode: 1 },
+  });
   await stream.return(undefined);
 });
 

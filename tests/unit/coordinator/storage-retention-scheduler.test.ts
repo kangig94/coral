@@ -3,6 +3,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { RetentionOutcome, RetentionRunBudget, RetentionRunStatus } from '#src/store/retention-outcome.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
+import { trustedJobRetentionCutoff } from '#src/jobs/retention-clock.js';
 
 const owners = vi.hoisted(() => ({
   exports: vi.fn(async (_input?: { budget: RetentionRunBudget }) => ''),
@@ -95,7 +96,7 @@ describe('storage retention schedule', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(owners.progress).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        cutoff: first.f.runtime.time.now() - 14 * 86_400_000,
+        cutoff: first.f.runtime.time.now() - 14 * 86_400_000 - 60_000,
       }),
     );
     await first.scheduler.stop();
@@ -106,7 +107,7 @@ describe('storage retention schedule', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(owners.progress).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        cutoff: first.f.runtime.time.now() - 14 * 86_400_000,
+        cutoff: first.f.runtime.time.now() - 14 * 86_400_000 - 60_000,
       }),
     );
   });
@@ -162,10 +163,12 @@ describe('storage retention schedule', () => {
     const { f, scheduler, statuses } = fixture();
     scheduler.start();
     await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(86_400_000 - 1);
+    trustedJobRetentionCutoff(f.runtime);
     owners.exports.mockClear();
     owners.progress.mockClear();
     f.setNow(f.runtime.time.now() + 15 * 86_400_000);
-    await vi.advanceTimersByTimeAsync(86_400_000);
+    await vi.advanceTimersByTimeAsync(1);
     expect(owners.exports).not.toHaveBeenCalled();
     expect(owners.progress).not.toHaveBeenCalled();
     expect(statuses.at(-1)?.phase).toBe('partial');

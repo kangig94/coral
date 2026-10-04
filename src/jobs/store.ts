@@ -24,6 +24,7 @@ import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } fro
 import type { JobLocationIndex, JobLocation } from './location-index.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
 import { readIntactJobTerminalAge } from './terminal-age.js';
+import { trustedJobRetentionCutoff } from './retention-clock.js';
 import { deriveLaunchReadiness } from './launch-readiness.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
@@ -583,7 +584,7 @@ export class JobStore implements JobProgressStore {
         const accepted = readAcceptedTerminal(this.db, jobId);
         if (!accepted) return null;
         if (!this.localTerminalAges.has(jobId)) {
-          const age = readIntactJobTerminalAge(this.db, accepted);
+          const age = readIntactJobTerminalAge(this.db, accepted, trustedJobRetentionCutoff(this.runtime));
           this.localTerminalAges.set(jobId, {
             epochKey: ':memory:',
             terminalSeq: accepted.seq,
@@ -624,8 +625,8 @@ export class JobStore implements JobProgressStore {
     return this.resultExports;
   }
 
-  publishTerminalResult(jobId: string): string {
-    return this.getResultExportOwner().publishTerminalResult(jobId);
+  publishTerminalResult(jobId: string, newlyAppendedSeq?: number): string {
+    return this.getResultExportOwner().publishTerminalResult(jobId, newlyAppendedSeq);
   }
 
   ensureResultArtifact(jobId: string): string {

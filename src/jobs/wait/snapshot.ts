@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { decodeWaitCursor, waitJobHash } from './cursor.js';
+import { decodeWaitCursor, waitJobHash, serializeWaitCursor } from './cursor.js';
 import { WAIT_SNAPSHOT_BYTES, type WaitCursorV3 } from './contract.js';
 import { resultAvailabilitySchema } from './stream-event.js';
 import type { WaitAdmission, WaitSession, WaitSnapshot, WaitSnapshotJob, WaitTerminalSummary } from './session.js';
@@ -96,7 +96,7 @@ function validateSnapshotMetadata(session: WaitSession, jobs: WaitSnapshotJob[],
     notices,
     exitCode: session.exitCode(),
   };
-  assertSnapshotFits(mandatory);
+  assertSnapshotFits(mandatory, session);
 }
 
 function lastLinesPerJob(available: ReturnType<WaitSession['progress']>, count: number): typeof available {
@@ -172,16 +172,18 @@ function fitSnapshotResponse(
       snapshot.cursor = session.cursor(snapshot.remainingJobIds);
       snapshot.exitCode = session.exitCode();
     }
-    assertSnapshotFits(snapshot);
+    assertSnapshotFits(snapshot, session);
   }
 }
 
-function assertSnapshotFits(snapshot: unknown): void {
-  if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) > WAIT_SNAPSHOT_BYTES)
-    throw new WaitSessionError(
-      'wait_snapshot_too_large',
-      'Snapshot identity metadata exceeds the response size budget; retry a smaller job set with the original cursor.',
-    );
+function assertSnapshotFits(snapshot: unknown, session: WaitSession): void {
+  if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) <= WAIT_SNAPSHOT_BYTES) return;
+  const jobId = session.jobIds[0];
+  const retry = `coral-cli wait jobs '${jobId.replaceAll("'", "'\\''")}' --now${session.input ? ` --cursor ${serializeWaitCursor(session.input)}` : ''}`;
+  throw new WaitSessionError(
+    'wait_snapshot_too_large',
+    `Snapshot identity metadata exceeds the response size budget. Retry a smaller job set: ${retry}. The input cursor has not advanced.`,
+  );
 }
 
 /** A partial or malformed unary response must not advance collection state. */
@@ -230,12 +232,12 @@ const waitSnapshotSchema = z
                 diagnosticPreview: z.string(),
                 diagnosticOmittedBytes: z.number().int().nonnegative(),
               })
-              .strict()
+              .strip()
               .optional(),
             availability: resultAvailabilitySchema.optional(),
             artifactFollowUp: z.boolean().optional(),
           })
-          .strict(),
+          .strip(),
       )
       .max(128),
     notices: z.array(z.string()),
@@ -246,7 +248,7 @@ const waitSnapshotSchema = z
     remainingJobIds: z.array(z.string()).max(128),
     exitCode: z.number().int().min(0).max(255),
   })
-  .strict()
+  .strip()
   .superRefine((snapshot, ctx) => {
     const lines = snapshot.jobs.flatMap((job) => job.progress);
     if (

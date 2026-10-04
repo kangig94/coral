@@ -224,13 +224,13 @@ describe('WaitCoordinator', () => {
       'b committed',
     ]);
   });
-  it('refuses an unavailable legacy artifact instead of naming a file', async () => {
+  it('delivers an internal terminal without claiming an unavailable artifact', async () => {
     const f = fixture();
     f.deps.observeResultAvailability = () => ({ kind: 'repair-pending', ageUncertain: false });
     f.journal.push(f.terminal());
-    await expect(f.wait.waitForJobs({ jobIds: ['job-1'] }).next()).rejects.toMatchObject({
-      code: 'wait_epoch_unsupported',
-    });
+    const event = (await f.wait.waitForJobs({ jobIds: ['job-1'] }).next()).value;
+    expect(event).toMatchObject({ type: 'terminal' });
+    expect(event).not.toHaveProperty('resultPath');
   });
 
   it('preserves queued activity when the shared V3 reader has no journal progress', async () => {

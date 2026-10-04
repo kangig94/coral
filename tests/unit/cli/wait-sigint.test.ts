@@ -81,7 +81,8 @@ it('returns transient remediation with the unchanged command on a failed stream 
       envelope: expect.objectContaining({ code: 'transient', remediation: `Run ${budget.originalCommand}` }),
     }),
   );
-  expect(save).not.toHaveBeenCalled();
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(save.mock.calls[0][1]).not.toBe(true);
 });
 
 it.each([
@@ -163,6 +164,9 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
       expect(frozen).toContain(`--cursor ${serializeWaitCursor(frontier)}`);
       expect(frozen).not.toContain('ghost');
       expect(frozen).toContain('Carrier unconfirmed for: a');
+    } else if (stall === 'silent') {
+      expect(frozen).toContain('Still waiting on 2 jobs.');
+      expect(frozen).not.toContain('admission did not complete');
     } else {
       expect(frozen).toContain('admission did not complete');
       expect(frozen).toContain('Run coral-cli wait jobs a ghost --cursor opaque');
@@ -199,8 +203,9 @@ it('a stdout drain cannot outlive the invocation or advance an undelivered curso
   const budget = invocation();
   const callbacks: Array<() => void> = [];
   let stdout = '';
+  let waitingWrites = 0;
   vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array, callback?: () => void) => {
-    if (chunk.toString().includes('admission did not complete')) stdout += chunk.toString();
+    if (chunk.toString().includes('Still waiting') && ++waitingWrites > 1) stdout += chunk.toString();
     if (callback) callbacks.push(callback);
     return false;
   }) as typeof process.stdout.write);
@@ -223,7 +228,10 @@ it('a stdout drain cannot outlive the invocation or advance an undelivered curso
   });
   await vi.advanceTimersByTimeAsync(590_000);
   expect(await code).toBe(75);
-  expect(stdout).toContain('Run coral-cli wait jobs a ghost --cursor opaque');
+  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(exit).toHaveBeenCalledWith(75);
+  expect(stdout).toContain(`Run coral-cli wait jobs a --cursor ${serializeWaitCursor({ afterSeq: 0 })}`);
   for (const callback of callbacks) callback();
   expect(stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
 });

@@ -16,8 +16,13 @@ export function readJobTerminalAge(db: Database, terminal: EventsRow): number | 
   return terminalAt < precedingAt ? 'regression' : terminalAt;
 }
 
-/** A pruned prefix cannot establish the preceding timestamp evidence for a legacy backfill. */
-export function readIntactJobTerminalAge(db: Database, terminal: EventsRow): number | 'unknown' | 'regression' {
+/** Pruning outside the trusted window cannot hide a later timestamp than an inside-window terminal. */
+export function readIntactJobTerminalAge(
+  db: Database,
+  terminal: EventsRow,
+  cutoff: number | null = null,
+): number | 'unknown' | 'regression' {
+  if (cutoff !== null && Date.parse(terminal.ts) >= cutoff) return readJobTerminalAge(db, terminal);
   const prefix = db
     .prepare<[number], { count: number }>('SELECT COUNT(*) AS count FROM events WHERE seq < ?')
     .get(terminal.seq);

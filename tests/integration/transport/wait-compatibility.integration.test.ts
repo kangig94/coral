@@ -301,6 +301,16 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
     await flushMicrotasks(20);
     await expect(next).rejects.toMatchObject({ code: 'wait_epoch_unsupported' });
     for (const availability of ['repair-pending', 'failed', 'retained-away'] as const) {
+      if (availability === 'repair-pending') {
+        const pending: WaitStreamEvent[] = [];
+        for await (const event of addressing(availability).waitStream({ ...request, timeoutSeconds: 0 } as never)) {
+          reader.parseWaitStreamEventValue(event);
+          pending.push(event);
+        }
+        expect(pending.find((event) => event.type === 'waiting')).toMatchObject({ waitingJobIds: ['a'] });
+        expect(pending.some((event) => event.type === 'terminal')).toBe(false);
+        continue;
+      }
       await expect(async () => {
         for await (const event of addressing(availability).waitStream(
           jobsWaitRequest(

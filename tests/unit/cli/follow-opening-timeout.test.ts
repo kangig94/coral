@@ -87,8 +87,8 @@ it('saves an exact continuation after a refused sibling disposition is delivered
       }),
     });
     expect(saved).toHaveBeenCalled();
-    expect(saved.mock.calls[0][0]).toContain('coral-cli wait jobs known --cursor jobs.wait.v3:');
-    expect(saved.mock.calls[0][0]).not.toContain('ghost');
+    expect(saved.mock.calls.at(-1)![0]).toContain('coral-cli wait jobs known --cursor jobs.wait.v3:');
+    expect(saved.mock.calls.at(-1)![0]).not.toContain('ghost');
   } finally {
     invocation.dispose(true);
   }

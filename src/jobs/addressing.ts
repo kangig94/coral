@@ -320,14 +320,13 @@ export class JobAddressing {
       const closure = closures.get(location.epochKey);
       const source = historical.get(location.epochKey);
       if (!source) throw new Error(`Missing historical read for epoch ${location.epochKey}`);
-      const retained = this.locations.read(jobId) ?? location;
+      const retained = location;
       const observed = source.kind === 'read' ? source.locations.get(jobId) : null;
-      const accepted =
-        source.kind === 'read' && observed?.detail.kind === 'recorded'
+      const accepted = hasReadableTerminalDetail(retained)
+        ? retained
+        : source.kind === 'read' && observed?.detail.kind === 'recorded'
           ? observed
-          : hasReadableTerminalDetail(retained)
-            ? retained
-            : observed;
+          : null;
       if (!accepted || !hasReadableTerminalDetail(accepted)) {
         if (closure === 'decided' && source.kind === 'read')
           return { jobId, disposition: 'outcome-unrecoverable', epochKey: location.epochKey };

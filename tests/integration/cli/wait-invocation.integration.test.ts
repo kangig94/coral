@@ -74,6 +74,11 @@ beforeAll(async () => {
                       'private readonly onSigint = () => {}',
                     );
                 }
+                if (path.endsWith('/cli/follow.ts'))
+                  source = source.replace(
+                    'deadlineMs - performance.now() <= 1000',
+                    'deadlineMs - performance.now() <= 1',
+                  );
                 if (variant === 'monitor-abort' && path.endsWith('/cli/follow.ts'))
                   source = source.replaceAll("if (options.reconnectPolicy === 'until-terminal') process.", 'process.');
                 if (variant === 'monitor-abort' && path.endsWith('/commands/session.ts'))
@@ -241,6 +246,10 @@ it.each([
     expect(result.stdout).toContain('confirmed delivery');
     expect(result.stdout).toContain(`--cursor ${frontier}`);
     expect(result.stdout).not.toContain('wait jobs a ghost');
+  } else if (scenario === 'silent') {
+    expect(result.stdout).toContain('Still waiting on 2 jobs.');
+    expect(result.stdout).toContain(`--cursor ${saved}`);
+    expect(result.stdout).not.toContain('admission did not complete');
   } else expect(result.stdout).toContain(`Run coral-cli wait jobs a ghost --embed --cursor ${saved}`);
   if (scenario === 'late-delegation')
     expect(Number([...result.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeLessThan(250);

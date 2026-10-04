@@ -19,6 +19,11 @@ const roots: string[] = [];
 const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
 const storage = runtime.storage;
 
+const origin = Date.now() - 20_000;
+const launchAt = new Date(origin).toISOString();
+const progressAt = new Date(origin + 5000).toISOString();
+const terminalAt = new Date(origin + 10_000).toISOString();
+
 const writer = `
 import { DatabaseSync } from 'node:sqlite';
 const db = new DatabaseSync(process.argv[1]);
@@ -33,10 +38,10 @@ db.exec(\`CREATE TABLE projection_jobs (
 db.prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
   'old-live', JSON.stringify({ kind: 'provider-session', id: 'session-1' }), 'running',
   JSON.stringify({ progressFaults: [] }), 'session-1', 'claude', '/workspace/project',
-  'old-namespace', null, 'provider', null, null, null, null, '2026-09-25T00:00:00.000Z', 1,
+  'old-namespace', null, 'provider', null, null, null, null, '${launchAt}', 1,
 );
 db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
-  1, '2026-09-25T00:00:00.000Z', 'job.launch.requested', 'job', 'old-live',
+  1, '${launchAt}', 'job.launch.requested', 'job', 'old-live',
   Buffer.from(JSON.stringify({ projectRoot: '/workspace/project', jobKind: 'provider', request: { cwd: '/workspace/project' } })),
 );
 console.log('ready');
@@ -45,10 +50,10 @@ process.stdin.on('data', (input) => {
   if (input.includes('progress')) {
     db.prepare('UPDATE projection_jobs SET last_seq = ? WHERE job_id = ?').run(2, 'old-live');
     db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
-      2, '2026-09-25T00:00:05.000Z', 'job.progress.emitted', 'job', 'old-live',
+      2, '${progressAt}', 'job.progress.emitted', 'job', 'old-live',
       Buffer.from(JSON.stringify({ kind: 'message', message: 'old progress', timing: {
-        origin: 'runtime', originAt: '2026-09-25T00:00:00.000Z',
-        emittedAt: '2026-09-25T00:00:05.000Z', elapsedMs: 5000,
+        origin: 'runtime', originAt: '${launchAt}',
+        emittedAt: '${progressAt}', elapsedMs: 5000,
       } })),
     );
     console.log('progressed');
@@ -56,11 +61,11 @@ process.stdin.on('data', (input) => {
   if (input.includes('finish')) {
     db.exec('BEGIN IMMEDIATE');
     db.prepare('INSERT INTO events SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM events WHERE seq = 2)').run(
-      2, '2026-09-25T00:00:05.000Z', 'fixture.preceding', 'workflow', 'unrelated', Buffer.from('{}'),
+      2, '${progressAt}', 'fixture.preceding', 'workflow', 'unrelated', Buffer.from('{}'),
     );
     db.prepare('UPDATE projection_jobs SET phase = ?, last_seq = ? WHERE job_id = ?').run('completed', 3, 'old-live');
     db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
-      3, '2026-09-25T00:00:10.000Z', 'job.terminal.recorded', 'job', 'old-live',
+      3, '${terminalAt}', 'job.terminal.recorded', 'job', 'old-live',
       Buffer.from(JSON.stringify({ terminal: { content: 'old result', outcome: { kind: 'completed' }, durationMs: 10000 } })),
     );
     db.exec('COMMIT');

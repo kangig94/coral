@@ -70,6 +70,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
   private readonly backstop: NodeJS.Timeout;
   private continuation: string | undefined;
   private continuationFlushed = false;
+  private continuationFlushPending = false;
   private readonly delegated: boolean;
   private readonly onSigint = () => this.stop();
   private readonly onMessage = (message: unknown) => {
@@ -115,7 +116,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
     this.watchdog.unref();
     this.backstop = setTimeout(() => {
       this.stop();
-      this.flushContinuation();
+      this.flushContinuation(true);
       process.exit(75);
     }, budget + cleanup);
     this.backstop.unref();
@@ -133,7 +134,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
   }
 
   saveContinuation(text: string, complete = false): void {
-    if (this.signal.aborted) return;
+    if (this.signal.aborted && !complete) return;
     this.continuation = text;
     this.continuationFlushed ||= complete;
     if (this.delegated && process.connected)
@@ -164,8 +165,14 @@ export class WaitInvocation implements WaitInvocationHandoff {
     );
   }
 
-  flushContinuation(): void {
+  flushContinuation(force = false): void {
     if (this.continuationFlushed || this.delegated) return;
+    if (!force && this.continuation !== undefined) {
+      if (this.continuationFlushPending) return;
+      this.continuationFlushPending = true;
+      process.stdout.write('', () => this.flushContinuation(true));
+      return;
+    }
     this.continuationFlushed = true;
     process.exitCode = 75;
     process.stdout.write(

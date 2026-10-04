@@ -40,7 +40,7 @@ function formatElapsed(ms: number): string {
 
 function formatTimedMessage(elapsedMs: number, message: string, label?: string): string {
   const body = label === undefined ? message : `${label} - ${message}`;
-  return `[${formatElapsed(elapsedMs)}] ${body}`;
+  return `[${formatElapsed(elapsedMs)}] ${body.replace(/\r\n|[\r\n\u2028\u2029]/g, '\n> ')}`;
 }
 
 function terminalOutcomeHeader(jobId: string, result: JobTerminal, describeCauseRef?: CauseRefDescriber): string {
@@ -121,7 +121,7 @@ export function formatWaitTerminal(
       : `Unverified result path: ${event.resultPath}`,
     frameWaitContent(truncatePreview(pickTerminalPreviewSource(event.result, options.describeCauseRef))),
     continuation,
-    cursor === null ? undefined : `Cursor: ${cursor}`,
+    cursor === null || event.remainingJobIds.length === 0 ? undefined : `Cursor: ${cursor}`,
   ]);
 }
 
@@ -134,20 +134,19 @@ export function formatWaitWaiting(
   cursor: string | null,
   resumeJobIds: readonly string[] = event.waitingJobIds,
 ): string {
-  const jobs = event.waitingJobIds.length > 0 ? event.waitingJobIds.join(', ') : 'none';
+  if (resumeJobIds.length === 0) return 'Wait complete; no jobs remain.';
   const waitingCount = event.waitingJobIds.length;
   const status =
     resumeJobIds.length > 0 && waitingCount > 0
       ? `Still waiting on ${waitingCount} ${waitingCount === 1 ? 'job' : 'jobs'}.`
-      : `Still waiting; jobs: ${jobs}.`;
+      : 'Wait complete; no jobs remain.';
   const continuation =
     resumeJobIds.length > 0
       ? ` Run coral-cli wait jobs ${resumeJobIds.join(' ')}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`
       : '';
-  const unknown =
-    event.carrierUnknownJobIds === undefined
-      ? undefined
-      : `Carrier unconfirmed for: ${event.carrierUnknownJobIds.join(', ')}.`;
+  const unknown = !event.carrierUnknownJobIds?.length
+    ? undefined
+    : `Carrier unconfirmed for: ${event.carrierUnknownJobIds.join(', ')}.`;
 
   return joinLines([appendCursor(`${status}${continuation}`, cursor), unknown]);
 }
@@ -173,7 +172,7 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
     const terminal = job.terminal;
     return joinLines([
       header,
-      ...job.progress,
+      ...job.progress.map(frameWaitContent),
       terminal
         ? `Outcome: ${terminal.outcomeKind}; exit ${terminal.exitCode}; duration ${terminal.durationMs} ms`
         : undefined,

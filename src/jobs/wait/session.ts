@@ -94,7 +94,7 @@ export class WaitSession {
   private readonly coverage = new Map<string, { kind: 'live' | 'absent' | 'unknown'; frontier: number }>();
 
   readonly jobIds: readonly string[];
-  private readonly input?: WaitCursor;
+  readonly input?: WaitCursor;
   private readonly activeEpochKey?: string;
   constructor(jobIds: readonly string[], input?: WaitCursor, activeEpochKey?: string) {
     this.jobIds = jobIds;
@@ -198,12 +198,12 @@ export class WaitSession {
     this.members.set(jobId, {
       epochKey,
       acknowledged:
-        previous?.acknowledged ??
+        (previous?.epochKey === undefined ? undefined : previous.acknowledged) ??
         (inputJob !== undefined
           ? (inputJob.flags & ACKNOWLEDGED_FLAG) !== 0
           : (legacy?.deliveredJobIds?.includes(jobId) ?? false)),
       artifactPending:
-        previous?.artifactPending ??
+        (previous?.epochKey === undefined ? undefined : previous.artifactPending) ??
         (inputJob !== undefined
           ? (inputJob.flags & ARTIFACT_PENDING_FLAG) !== 0
           : legacy?.deliveredJobIds?.includes(jobId) === true && admission.availability?.kind === 'repair-pending'),
@@ -331,7 +331,7 @@ export class WaitSession {
   }
   exitCode(): number {
     for (const job of this.admissions)
-      if (job.detail?.exit) {
+      if (job.detail?.exit && this.acknowledged(job.jobId)) {
         const code = waitTerminalExitCode(job.detail.exit);
         if (code !== 0) return code;
       }

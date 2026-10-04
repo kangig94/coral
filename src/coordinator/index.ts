@@ -394,7 +394,7 @@ function createCoordinatorJournalAssembly({
 }) {
   const { getStoreServices, getStoreDb, getQueryDb, getConsumerDriver } = createCoordinatorStoreAccess(readCore);
   const exportTerminalResults = observeTerminalResultExports(
-    (jobId) => getStoreServices().progressStore.publishTerminalResult(jobId),
+    (jobId, seq) => getStoreServices().progressStore.publishTerminalResult(jobId, seq),
     (jobId, seq) => {
       const progressStore = getStoreServices().progressStore;
       progressStore.configureResultExports(jobLocations);

@@ -80,7 +80,7 @@ describe('terminal export owner', () => {
       expect(f.index.resultDurable(f.jobId)).toBe(true);
       for (const jobId of heads) {
         expect(attempts.filter((id) => id === jobId).length).toBeGreaterThan(1);
-        expect(owner.observeResultAvailability(jobId)).toMatchObject({ kind: 'failed', retryScheduled: true });
+        expect(owner.observeResultAvailability(jobId)).toMatchObject({ kind: 'repair-pending' });
       }
       expect(wakeup).not.toHaveBeenCalled();
     },
@@ -98,9 +98,14 @@ describe('terminal export owner', () => {
       if (state === 'failed') {
         write.mockReturnValueOnce(false);
         expect(() => owner.publishTerminalResult(f.jobId)).toThrow('Failed to write result artifact');
-        expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'failed', retryScheduled: true });
+        expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
       }
       const observe = owner.observeResultAvailability.bind(owner);
+      const location = f.index.read(f.jobId);
+      const read = f.index.read.bind(f.index);
+      vi.spyOn(f.index, 'read').mockImplementation((jobId) =>
+        jobId.startsWith('head-') && location ? { ...location, jobId } : read(jobId),
+      );
       const visited: string[] = [];
       vi.spyOn(owner, 'observeResultAvailability').mockImplementation((jobId) => {
         visited.push(jobId);
@@ -115,7 +120,8 @@ describe('terminal export owner', () => {
           else expect(visited).toEqual(['head-1', 'head-2']);
         }
       }
-      expect(wakeup).not.toHaveBeenCalled();
+      if (state === 'failed') expect(wakeup).toHaveBeenCalled();
+      else expect(wakeup).not.toHaveBeenCalled();
       expect(visited).toContain(f.jobId);
       expect(write).toHaveBeenCalledTimes(state === 'failed' ? 2 : 1);
       expect(readFileSync(f.resultPath, 'utf8')).toBe('canonical result\n');
@@ -200,9 +206,7 @@ describe('terminal export owner', () => {
     const write = vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
     expect(() => f.store.publishTerminalResult(f.jobId)).toThrow('Failed to write');
     expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
-      kind: 'failed',
-      cause: 'repair-failed',
-      retryScheduled: true,
+      kind: 'repair-pending',
       ageUncertain: true,
     });
     write.mockRestore();
@@ -253,8 +257,8 @@ describe('terminal export owner', () => {
       await owner.repairPass([], { canContinue: () => left-- > 0, record: vi.fn() });
     }
     expect(write).toHaveBeenCalledTimes(3);
-    expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'failed', retryScheduled: true });
-    expect(wakeup).not.toHaveBeenCalled();
+    expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
+    expect(wakeup).toHaveBeenCalled();
   });
 
   it('supplies file-based retirement proof for a fresh source-backed regression', () => {
@@ -304,7 +308,7 @@ describe('terminal export owner', () => {
     expect(restarted.resultDurable(f.jobId)).toBe(true);
     delete record.terminalAge;
     writeFileSync(f.locationPath, JSON.stringify(record));
-    expect(restarted.resultDurable(f.jobId)).toBe(false);
+    expect(restarted.resultDurable(f.jobId)).toBe(true);
     expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
       kind: 'failed',
       cause: 'terminal-age-unknown',
@@ -321,7 +325,7 @@ describe('terminal export owner', () => {
     f.db.prepare('DELETE FROM events WHERE seq = 1').run();
     f.store.ensureResultArtifact(f.jobId);
     expect(existsSync(f.resultPath)).toBe(false);
-    expect(f.index.resultDurable(f.jobId)).toBe(false);
+    expect(f.index.resultDurable(f.jobId)).toBe(true);
     for (const terminalAge of [
       { kind: 'known', terminalAt: TERMINAL_EXPORT_CUTOFF - 1 },
       { ...record.terminalAge, epochKey: 'other' },
@@ -421,9 +425,7 @@ describe('terminal export owner', () => {
     expect(sync).not.toHaveBeenCalled();
     f.jump(86_400_000);
     expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
-      kind: 'failed',
-      cause: 'cutoff-untrusted',
-      retryScheduled: true,
+      kind: 'repair-pending',
     });
     f.store.ensureResultArtifact(f.jobId);
     expect(existsSync(f.resultPath)).toBe(false);

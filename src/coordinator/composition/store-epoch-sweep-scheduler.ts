@@ -1,6 +1,10 @@
 import { formatError } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
-import { refreshHistoricalEpochs, retryUnknownHistoricalEpochs } from '../../jobs/historical-reader.js';
+import {
+  refreshHistoricalEpochs,
+  retryUnknownHistoricalEpochs,
+  onHistoricalHydrationHint,
+} from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { sweepStoreEpochsPostReady, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
@@ -20,6 +24,7 @@ export function createStoreEpochSweepScheduler(input: {
   let timer: TimerHandle | null = null;
   let settleScheduled: (() => void) | null = null;
   let settlement = Promise.resolve();
+  let hydrationHinted = false;
 
   return {
     schedule: (openStore) => {
@@ -60,14 +65,26 @@ export function createStoreEpochSweepScheduler(input: {
             .finally(() => {
               settleScheduled?.();
               settleScheduled = null;
-              if (!controller.signal.aborted) schedule(5_000);
+              if (!controller.signal.aborted) schedule(hydrationHinted ? 0 : 5_000);
+              hydrationHinted = false;
             });
         }, delayMs);
         timer.unref?.();
       };
+      onHistoricalHydrationHint(jobLocationIndex, () => {
+        if (controller.signal.aborted) return;
+        hydrationHinted = true;
+        if (timer !== null) {
+          runtime.time.clearTimeout(timer);
+          settleScheduled?.();
+          hydrationHinted = false;
+          schedule(0);
+        }
+      });
       schedule(0);
     },
     stop: async () => {
+      onHistoricalHydrationHint(jobLocationIndex, null);
       abort?.abort();
       if (timer !== null) {
         runtime.time.clearTimeout(timer);

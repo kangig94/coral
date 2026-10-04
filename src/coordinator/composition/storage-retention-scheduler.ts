@@ -57,8 +57,8 @@ export function createStorageRetentionScheduler(input: {
     const now = runtime.time.monotonicNow();
     let due = now + BigInt(DAILY_MS);
     for (const owner of owners.values()) {
-      if (owner.dailyDue < due) due = owner.dailyDue;
-      if (owner.fastDue !== null && owner.fastDue < due) due = owner.fastDue;
+      const ownerDue = owner.fastDue ?? owner.dailyDue;
+      if (ownerDue < due) due = ownerDue;
     }
     return Math.max(0, Number(due - now));
   };
@@ -103,10 +103,8 @@ export function createStorageRetentionScheduler(input: {
     const startedAt = runtime.time.monotonicNow();
     const dueOwners = new Set<string>();
     for (const [subject, owner] of owners) {
-      if (owner.dailyDue <= startedAt || (owner.fastDue !== null && owner.fastDue <= startedAt)) {
+      if ((owner.fastDue ?? owner.dailyDue) <= startedAt) {
         dueOwners.add(subject);
-        owner.dailyDue = startedAt + BigInt(DAILY_MS);
-        owner.fastDue = null;
       }
     }
     let partial = false;
@@ -156,6 +154,7 @@ export function createStorageRetentionScheduler(input: {
             if (owner === undefined || !dueOwners.has(subject)) return;
             owner.outcomes = [];
             if (outstandingOwners.has(subject)) {
+              owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
               record({ kind: 'kept', subject, reason: 'previous-owner-still-running' }, subject);
               return;
             }
@@ -169,16 +168,19 @@ export function createStorageRetentionScheduler(input: {
             );
             let operations = 0;
             let finished = false;
+            let executed = false;
             let exhausted = false;
             let scanPending = false;
             let progressed = false;
             let failed = false;
+            let repairPending = false;
             const budget = {
               record: (outcome) => {
                 if (!finished && !ownerAbort.signal.aborted) {
                   scanPending ||= outcome.kind === 'kept' && outcome.reason === 'scan-pending';
                   progressed ||= outcome.kind === 'deleted' && outcome.count > 0;
                   failed ||= outcome.kind === 'failed';
+                  repairPending ||= outcome.kind === 'kept' && outcome.reason === 'repair-pending';
                   record(outcome, subject);
                 }
               },
@@ -211,7 +213,10 @@ export function createStorageRetentionScheduler(input: {
             try {
               if (budget.canContinue()) {
                 const work = Promise.resolve().then(() => {
-                  if (ownerAbort.signal.aborted || abort.signal.aborted) return;
+                  if (ownerAbort.signal.aborted || abort.signal.aborted || !budget.canMutate()) return;
+                  executed = true;
+                  owner.dailyDue = startedAt + BigInt(DAILY_MS);
+                  owner.fastDue = null;
                   return operation(budget, ownerAbort.signal, mutate);
                 });
                 outstandingOwners.set(subject, work);
@@ -226,11 +231,12 @@ export function createStorageRetentionScheduler(input: {
               exhausted ||=
                 runtime.time.monotonicNow() >= deadline || (ownerAbort.signal.aborted && !abort.signal.aborted);
               const fastRetry =
-                !failed &&
+                (!failed || subject === 'result-repair') &&
                 !abort.signal.aborted &&
                 !outstandingOwners.has(subject) &&
-                (exhausted || (scanPending && progressed));
-              if (fastRetry) owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
+                (exhausted || (scanPending && progressed) || repairPending || (failed && subject === 'result-repair'));
+              if (!executed && !abort.signal.aborted) owner.fastDue = runtime.time.monotonicNow() + 1000n;
+              else if (fastRetry) owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
               finished = true;
               if (exhausted) record({ kind: 'kept', subject, reason: 'scan-pending' }, subject);
               if (ownerAbort.signal.aborted && outstandingOwners.has(subject))
@@ -357,6 +363,10 @@ export function createStorageRetentionScheduler(input: {
       status.phase =
         partial || (status.failed > 0 && status.deleted > 0) ? 'partial' : status.failed > 0 ? 'failed' : 'completed';
       input.publish(status);
+      for (const subject of dueOwners) {
+        const owner = owners.get(subject);
+        if (owner && owner.dailyDue <= startedAt) owner.fastDue = runtime.time.monotonicNow() + 1000n;
+      }
       const delay = nextDelay();
       input.log(
         `Storage retention ${status.phase}: deleted=${status.deleted}, kept=${status.kept}, failed=${status.failed}; next cycle in ${delay === DAILY_MS ? '24h' : `${Math.ceil(delay / 60_000)}m`}.\n`,

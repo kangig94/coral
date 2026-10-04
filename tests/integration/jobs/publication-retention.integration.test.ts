@@ -255,9 +255,7 @@ describe('publication and retention under Revision S1', () => {
       ).kind,
     ).toBe('uncertified');
     expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
-      kind: 'failed',
-      cause: 'repair-failed',
-      retryScheduled: true,
+      kind: 'repair-pending',
     });
     const restarted = new JobLocationIndex(f.runtime, f.root, f.index.workflowReport);
     f.store.configureResultExports(restarted);

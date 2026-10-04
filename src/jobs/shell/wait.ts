@@ -1,5 +1,5 @@
 import { readWaitSession } from '../wait/reader.js';
-import { WaitSessionError, type WaitAdmission } from '../wait/session.js';
+import type { WaitAdmission } from '../wait/session.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { CarrierLiveness } from '../carrier-observation.js';
@@ -60,7 +60,7 @@ function toProgressWaitEvent(event: JobProgressEvent): WaitStreamEvent {
 function toTerminalWaitEvent(
   event: JobTerminalEvent,
   pending: ReadonlySet<string>,
-  resultPath: string,
+  resultPath: string | undefined,
   continuity: ContinuitySnapshot | null,
   usage: UsageSummary | undefined = event.usage,
   result: JobTerminal = event.result,
@@ -77,7 +77,7 @@ function toTerminalWaitEvent(
     jobId: event.jobId,
     seq: event.seq,
     remainingJobIds,
-    resultPath,
+    ...(resultPath === undefined ? {} : { resultPath }),
     result,
     continuity,
     ...(usage === undefined ? {} : { usage }),
@@ -352,14 +352,11 @@ export class WaitCoordinator {
       : { type: 'waiting', waitingJobIds: [...pending], carrierUnknownJobIds: [...carrierUnknownJobIds] };
   }
 
-  private resultPathFor(jobId: string): string {
+  private resultPathFor(jobId: string): string | undefined {
     const availability = this.deps.observeResultAvailability?.(jobId);
     if (availability?.kind === 'available') return availability.resultPath;
     if (availability?.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
-    throw new WaitSessionError(
-      'wait_epoch_unsupported',
-      `Job ${jobId} has a final outcome but its result artifact is ${availability?.kind ?? 'unavailable'}. Run coral-cli jobs detail ${jobId} --full.`,
-    );
+    return undefined;
   }
 
   private readPendingHistory(pending: ReadonlySet<string>, observedSeq: number, maxSeq: number): JobEvent[] {

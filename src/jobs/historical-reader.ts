@@ -24,6 +24,7 @@ import {
 import { phaseForOutcome, jobProgressFaultSchema } from './outcome.js';
 import { aggregateWorkflowUsage } from './workflow-usage.js';
 import type { Database } from '../store/db.js';
+import { observeStorePath } from '../store/path-observation.js';
 import {
   jobKindSchema,
   type JobDetailResponse,
@@ -107,8 +108,47 @@ type HistoricalEpochSource = {
   readonly fingerprint: string;
   readonly jobsRoot: string;
   readonly storage: StoragePort;
+  readonly attempts: number;
 };
 const historicalSources = new WeakMap<JobLocationView, Map<string, HistoricalEpochSource>>();
+const hydrationListeners = new WeakMap<JobLocationIndex, () => void>();
+
+export function onHistoricalHydrationHint(index: JobLocationIndex, listener: (() => void) | null): void {
+  if (listener) hydrationListeners.set(index, listener);
+  else hydrationListeners.delete(index);
+}
+
+export function hintHistoricalHydration(index: JobLocationIndex, jobId: string): void {
+  const location = index.read(jobId);
+  if (location && !hasReadableTerminalDetail(location)) hydrationListeners.get(index)?.();
+}
+
+function holdSeedFailure(
+  index: JobLocationIndex,
+  epochKey: string,
+  error: unknown,
+  attempts: number,
+  deterministicData = true,
+): string {
+  const deterministic =
+    deterministicData &&
+    (error instanceof z.ZodError ||
+      error instanceof SyntaxError ||
+      (error instanceof Error &&
+        /not a database|database disk image is malformed|no such (table|column)/i.test(error.message)));
+  const reason =
+    error instanceof z.ZodError
+      ? 'Retained store data cannot be decoded by this build'
+      : error instanceof Error
+        ? error.message
+        : 'Retained store could not be read';
+  const retryScheduled = !deterministic && attempts < 3;
+  const message = retryScheduled
+    ? reason
+    : `${reason}; no reachable clearing event${deterministic ? '' : ' after 3 seed attempts'}`;
+  index.holdUnknownLocations(epochKey, message, retryScheduled);
+  return message;
+}
 export function retryUnknownHistoricalEpochs(index: JobLocationIndex): void {
   for (const [epochKey, source] of historicalSources.get(index) ?? []) {
     try {
@@ -312,7 +352,14 @@ export function seedHistoricalEpoch(
   certifyRetiredEpoch = false,
 ): HistoricalSeedResult {
   const sources = historicalSources.get(index) ?? new Map<string, HistoricalEpochSource>();
-  const source: HistoricalEpochSource = { runtime, originalEpoch: epoch, fingerprint, jobsRoot, storage };
+  const source: HistoricalEpochSource = {
+    runtime,
+    originalEpoch: epoch,
+    fingerprint,
+    jobsRoot,
+    storage,
+    attempts: (sources.get(epochKey)?.attempts ?? 0) + 1,
+  };
   sources.set(epochKey, source);
   historicalSources.set(index, sources);
   for (const known of knownJobs) {
@@ -324,8 +371,9 @@ export function seedHistoricalEpoch(
     addressedEpoch =
       observeProtectedEpoch({ storage }, epoch.canonicalStoreRoot ?? epoch.storeRoot, lineageKey) ?? epoch;
   } catch (error: unknown) {
-    index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error), true);
-    for (const location of index.locationsFor(epochKey)) index.markUnresolved(location.jobId);
+    holdSeedFailure(index, epochKey, error, source.attempts, false);
+    for (const location of index.locationsFor(epochKey))
+      if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
     return {
       kind: 'unrecoverable-retained',
       knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
@@ -334,21 +382,22 @@ export function seedHistoricalEpoch(
   }
   const reader = readers[fingerprint];
   const dbPath = addressedEpoch.path;
-  if (reader === undefined || !storage.existsSync(dbPath)) {
-    index.holdUnknownLocations(
-      epochKey,
-      reader === undefined ? 'unsupported-store-fingerprint' : 'retained-store-root-missing',
-    );
-    for (const location of index.locationsFor(epochKey)) index.markUnresolved(location.jobId);
-    return {
-      kind: 'unrecoverable-retained',
-      knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
-      reason: reader === undefined ? 'unsupported-store-fingerprint' : 'retained-store-root-missing',
-    };
-  }
   let releaseLock: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
+    if (reader === undefined || observeStorePath(storage, dbPath) === 'absent') {
+      index.holdUnknownLocations(
+        epochKey,
+        reader === undefined ? 'unsupported-store-fingerprint' : 'retained-store-root-missing',
+      );
+      for (const location of index.locationsFor(epochKey))
+        if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
+      return {
+        kind: 'unrecoverable-retained',
+        knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
+        reason: reader === undefined ? 'unsupported-store-fingerprint' : 'retained-store-root-missing',
+      };
+    }
     releaseLock = acquireSharedFileLockSync(join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME));
     db = storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
     const rows = reader(db);
@@ -416,12 +465,13 @@ export function seedHistoricalEpoch(
       ? { kind: 'unrecoverable-retained', knownJobIds: [...observed], reason: 'known-jobs-unresolved' }
       : { kind: 'complete', jobIds: certificate.jobIds };
   } catch (error: unknown) {
-    index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error), true);
-    for (const location of index.locationsFor(epochKey)) index.markUnresolved(location.jobId);
+    holdSeedFailure(index, epochKey, error, source.attempts);
+    for (const location of index.locationsFor(epochKey))
+      if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
     return {
       kind: 'unrecoverable-retained',
       knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
-      reason: error instanceof Error ? error.message : String(error),
+      reason: index.unknownLocationHold(epochKey) ?? 'retained-store-unreadable',
     };
   } finally {
     db?.close();
@@ -442,7 +492,7 @@ export function readHistoricalSource(
   jobIds: readonly string[],
 ): HistoricalSourceRead {
   const source = historicalSources.get(view)?.get(epochKey);
-  if (source === undefined) return { kind: 'unreadable', retired: true };
+  if (source === undefined) return { kind: 'unreadable' };
   if (readers[source.fingerprint] === undefined) return { kind: 'unreadable' };
   let release: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
@@ -455,7 +505,7 @@ export function readHistoricalSource(
         source.originalEpoch.lineageKey ?? epochKey,
       ) ??
       source.originalEpoch;
-    if (!source.storage.existsSync(epoch.path)) return { kind: 'unreadable', retired: true };
+    if (observeStorePath(source.storage, epoch.path) === 'absent') return { kind: 'unreadable', retired: true };
     release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), STORE_LOCK_FILE_NAME));
     const identity = epochKey.startsWith('{')
       ? inspectResolvedStoreEpochKey({ storage: source.storage }, epoch)

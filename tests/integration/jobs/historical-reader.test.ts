@@ -21,7 +21,8 @@ const fingerprints = [
   'sha256:ca97b533a127b1475b45a487793ab7183ae70620894d1ca36e193431065b2521',
 ];
 const directories: string[] = [];
-const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
+const realRuntime = createRealRuntime('prod', { baseDir: tmpdir() });
+const runtime = { ...realRuntime, time: { ...realRuntime.time, now: () => Date.parse('2026-09-25T00:00:20.000Z') } };
 const storage = runtime.storage;
 
 function fixture(fingerprint: string) {

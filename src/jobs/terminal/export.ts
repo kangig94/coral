@@ -25,7 +25,8 @@ import { resolveJobRetentionMs } from '../retention-clock.js';
 import type { RetentionRunBudget } from '../../store/retention-outcome.js';
 
 function unavailableForEligibility(eligibility: TerminalEligibility, retentionDays: number): ResultAvailability | null {
-  if (!eligibility.cutoffTrusted) return { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true };
+  if (!eligibility.cutoffTrusted || eligibility.sourceReadFailed)
+    return { kind: 'repair-pending', ageUncertain: eligibility.age === 'unknown' || eligibility.age === 'regression' };
   if (eligibility.kind === 'expired')
     return {
       kind: 'retained-away',
@@ -183,9 +184,12 @@ export class TerminalResultExportOwner {
     for (const jobId of this.failures) this.hints.add(jobId);
   }
 
-  private eligibility(jobId: string): TerminalEligibility {
-    return terminalEligibility(this.input.runtime, this.input.location(jobId), (read) =>
-      this.input.withSource(jobId, (db) => read(db)),
+  private eligibility(jobId: string, observeSource = true): TerminalEligibility {
+    return terminalEligibility(
+      this.input.runtime,
+      this.input.location(jobId),
+      (read) => this.input.withSource(jobId, (db) => read(db)),
+      observeSource,
     );
   }
 
@@ -227,12 +231,13 @@ export class TerminalResultExportOwner {
 
   /** Availability observation never synchronizes or repairs storage. */
   progressRetentionExpired(jobId: string): boolean {
-    return this.eligibility(jobId).kind === 'expired';
+    return this.eligibility(jobId, false).kind === 'expired';
   }
 
   observeResultAvailability(jobId: string): ResultAvailability {
     const location = this.input.location(jobId);
-    if (!location || !hasReadableTerminalDetail(location))
+    if (!location || location.disposition !== 'terminal') return { kind: 'repair-pending', ageUncertain: true };
+    if (!hasReadableTerminalDetail(location))
       return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false };
     if (this.available(jobId))
       return { kind: 'available', resultPath: location.resultPath ?? resultPathFor(this.input.jobsRoot, jobId) };
@@ -243,32 +248,31 @@ export class TerminalResultExportOwner {
     );
     if (unavailable) return unavailable;
     try {
-      if (this.render(jobId) === null)
+      if (location.subject.jobKind === 'workflow' && this.render(jobId) === null)
         return { kind: 'failed', cause: 'workflow-facts-unavailable', retryScheduled: false };
     } catch {
-      return { kind: 'failed', cause: 'workflow-facts-unavailable', retryScheduled: false };
+      return { kind: 'repair-pending', ageUncertain: eligibility.age === 'regression' };
     }
-    if (this.failures.has(jobId))
-      return {
-        kind: 'failed',
-        cause: 'repair-failed',
-        retryScheduled: true,
-        ageUncertain: eligibility.age === 'regression',
-      };
     return { kind: 'repair-pending', ageUncertain: eligibility.age === 'regression' };
   }
 
   /** Callers supply identity; all publication bytes come from the accepted source terminal. */
-  publishTerminalResult(jobId: string): string {
-    return this.publish(jobId, false);
+  publishTerminalResult(jobId: string, newlyAppendedSeq?: number): string {
+    return this.publish(jobId, false, newlyAppendedSeq);
   }
 
   ensureResultMarkdownArtifact(jobId: string): string {
     return this.publish(jobId, true);
   }
 
-  private publish(jobId: string, repair: boolean): string {
-    this.input.prepareTerminal?.(jobId);
+  private publish(jobId: string, repair: boolean, newlyAppendedSeq?: number): string {
+    try {
+      this.input.prepareTerminal?.(jobId);
+    } catch (error) {
+      if (repair) this.hints.add(jobId);
+      else this.hintRepair(jobId);
+      throw error;
+    }
     const targetPath = this.input.location(jobId)?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
     if (this.available(jobId)) return targetPath;
     const availability = this.observeResultAvailability(jobId);
@@ -277,29 +281,40 @@ export class TerminalResultExportOwner {
       !(availability.kind === 'failed' && availability.retryScheduled && availability.cause === 'repair-failed')
     )
       return targetPath;
+    const authorized = (): boolean => {
+      const eligibility = this.eligibility(jobId);
+      if (eligibility.publicationAuthorized) return true;
+      return (
+        !repair &&
+        newlyAppendedSeq !== undefined &&
+        this.input.location(jobId)?.terminalSeq === newlyAppendedSeq &&
+        !eligibility.cutoffTrusted &&
+        eligibility.sourceReadable
+      );
+    };
     try {
       this.input.withSource(jobId, () => {
         const markdown = this.render(jobId);
-        if (!markdown || !this.eligibility(jobId).publicationAuthorized || (repair && this.available(jobId))) return;
+        if (!markdown || !authorized() || (repair && this.available(jobId))) return;
         writeResultArtifact(this.input.runtime.storage, targetPath, markdown, () => {
-          return (
-            this.eligibility(jobId).publicationAuthorized &&
-            this.render(jobId) === markdown &&
-            !(repair && this.available(jobId))
-          );
+          return authorized() && this.render(jobId) === markdown && !(repair && this.available(jobId));
         });
       });
       this.failures.delete(jobId);
+      if (this.observeResultAvailability(jobId).kind === 'repair-pending') {
+        if (repair) this.hints.add(jobId);
+        else this.hintRepair(jobId);
+      }
     } catch (error) {
       this.failures.add(jobId);
-      this.hints.add(jobId);
+      if (repair) this.hints.add(jobId);
+      else this.hintRepair(jobId);
       throw error;
     }
     return targetPath;
   }
 
   hintRepair(jobId: string): void {
-    if (this.hints.has(jobId)) return;
     this.hints.add(jobId);
     this.hintListener?.();
   }
@@ -337,10 +352,13 @@ export class TerminalResultExportOwner {
   }
 
   private async repairCandidate(jobId: string, budget: RetentionRunBudget): Promise<void> {
+    if (this.input.location(jobId)?.disposition !== 'terminal') return;
     const state = this.observeResultAvailability(jobId);
     if (state.kind !== 'repair-pending' && !(state.kind === 'failed' && state.retryScheduled)) return;
     try {
       if (budget.canMutate?.() !== false) this.ensureResultMarkdownArtifact(jobId);
+      if (this.observeResultAvailability(jobId).kind === 'repair-pending')
+        budget.record({ kind: 'kept', subject: jobId, reason: 'repair-pending' });
     } catch (error) {
       budget.record({ kind: 'failed', subject: jobId, reason: errorMessage(error) });
     }
@@ -366,7 +384,7 @@ function writeResultArtifact(
 }
 
 export function observeTerminalResultExports(
-  ensureResultArtifact: (jobId: string) => string,
+  ensureResultArtifact: (jobId: string, newlyAppendedSeq: number) => string,
   recordTerminal?: (jobId: string, seq: number) => void,
 ): PostCommitObserver {
   return (appended: readonly AppendedEvent[]): void => {
@@ -376,7 +394,7 @@ export function observeTerminalResultExports(
       }
       try {
         recordTerminal?.(event.stream.id, event.seq);
-        ensureResultArtifact(event.stream.id);
+        ensureResultArtifact(event.stream.id, event.seq);
       } catch (error: unknown) {
         backendLog.warn(`Writing terminal export failed for ${event.stream.id}: ${errorMessage(error)}`);
       }

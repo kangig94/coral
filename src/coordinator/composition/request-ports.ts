@@ -1,3 +1,4 @@
+import { hintHistoricalHydration } from '../../jobs/historical-reader.js';
 import { join } from 'node:path';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
@@ -95,7 +96,10 @@ export function createCoordinatorRequestPorts(input: {
     (epochKey) => probeHistoricalClosure(epochKey),
     historicalSourceReader(jobLocationIndex),
     (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
-    (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
+    (jobId) => {
+      hintHistoricalHydration(jobLocationIndex, jobId);
+      getProgressStore().getResultExportOwner().hintRepair(jobId);
+    },
     (jobId) => getProgressStore().getResultExportOwner().progressRetentionExpired(jobId),
   );
 

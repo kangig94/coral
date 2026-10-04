@@ -22,6 +22,7 @@ import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } fro
 import { sameTerminal, validatedTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
 import { readIntactJobTerminalAge, readJobTerminalAge } from './terminal-age.js';
+import { trustedJobRetentionCutoff } from './retention-clock.js';
 import { composeReducers } from '../store/reducers.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { jobsRegistry } from './events.js';
@@ -405,7 +406,9 @@ export class JobLocationIndex {
       ).terminal;
       if (!sameTerminal(sourceTerminal, terminal.result))
         throw new Error(`Source terminal content disagrees: ${jobId}`);
-      const age = newlyAppended ? readJobTerminalAge(db, accepted) : readIntactJobTerminalAge(db, accepted);
+      const age = newlyAppended
+        ? readJobTerminalAge(db, accepted)
+        : readIntactJobTerminalAge(db, accepted, trustedJobRetentionCutoff(this.runtime));
       return {
         epochKey: existing.epochKey,
         terminalSeq,
@@ -642,7 +645,18 @@ export class JobLocationIndex {
     if (location === null || !hasReadableTerminalDetail(location)) {
       return false;
     }
-    if (this.terminalEligibility(jobId).kind === 'expired') return true;
+    const eligibility = this.terminalEligibility(jobId);
+    if (eligibility.kind === 'expired') return true;
+    if (eligibility.age === 'unknown' && eligibility.ageUnproven) {
+      try {
+        if (
+          observeStorePath(this.runtime.storage, dirname(location.resultPath ?? this.resultPathFor(jobId))) === 'absent'
+        )
+          return true;
+      } catch {
+        return false;
+      }
+    }
     if (location.resultPath === undefined) return false;
     try {
       const fd = this.runtime.storage.openSync(location.resultPath, 'r');
@@ -683,11 +697,7 @@ export class JobLocationIndex {
     const location = this.read(jobId);
     return terminalEligibility(this.runtime, location, (read) => {
       if (location === null) return null;
-      try {
-        return withTerminalSource(this.runtime, location.epochKey, read);
-      } catch {
-        return null;
-      }
+      return withTerminalSource(this.runtime, location.epochKey, read);
     });
   }
 

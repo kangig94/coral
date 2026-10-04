@@ -66,7 +66,7 @@ type QueuedWaitEventBase = {
 };
 
 export type WaitStreamEvent =
-  | { type: 'notice'; version: 'jobs.wait.v3'; message: string; cursor?: WaitCursorV3 }
+  | { type: 'notice'; version: 'jobs.wait.v3'; message: string; cursor?: WaitCursorV3; exitCode?: number }
   | {
       type: 'disposition';
       version: 'jobs.wait.v3';

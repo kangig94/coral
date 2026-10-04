@@ -326,7 +326,8 @@ async function finishAbortAttempt(
 }
 
 function boundedTimeoutSeconds(deadlineMs: number): number {
-  return Math.max(1, Math.ceil((deadlineMs - performance.now()) / 1_000));
+  const remaining = Math.max(0, deadlineMs - performance.now());
+  return Math.max(1, Math.floor(remaining / 1000) - 1);
 }
 
 function withWaitRecovery(error: unknown, jobIds: readonly string[]): unknown {
@@ -362,6 +363,10 @@ async function connectFollowStream(
   abortState: { promise: Promise<AbortAttempt> | null },
 ): Promise<FollowStep | { kind: 'connected'; connection: FollowConnection }> {
   try {
+    if (options.reconnectPolicy === 'bounded' && deadlineMs - performance.now() <= 1000) {
+      options.invocation?.stop();
+      throw new WaitInvocationEnded();
+    }
     const connection = await options.connect({
       jobIds: state.remainingJobIds,
       ...(state.sendCursor || serializedCursor(state.currentCursor) !== undefined
@@ -503,7 +508,13 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
       remaining,
     ) + '\n';
   const delivery = emitWaitEvent(event, cursor, jobLabels, remaining, options.render, causeRenderer.render, () => {
-    options.invocation?.saveContinuation(savedContinuation, event.type === 'terminal' || event.type === 'waiting');
+    options.invocation?.saveContinuation(
+      savedContinuation,
+      event.type === 'terminal' ||
+        event.type === 'waiting' ||
+        event.type === 'artifact' ||
+        (event.type === 'notice' && event.exitCode !== undefined),
+    );
   }).catch((error: unknown) => {
     throw new WaitOutputError(error, followOriginalCommand(options));
   });
@@ -522,6 +533,8 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
 
 function followEventDecision(event: WaitStreamEvent, context: FollowContext): FollowStep | { kind: 'continue' } {
   const { options, state } = context;
+  if (event.type === 'notice' && event.exitCode !== undefined && state.remainingJobIds.length === 0)
+    return { kind: 'exit', code: event.exitCode };
   if (event.type === 'artifact') {
     state.remainingJobIds = event.remainingJobIds;
     return { kind: 'exit', code: event.exitCode };
@@ -553,8 +566,7 @@ async function applyFollowStreamEvent(
   options.invocation?.check();
   if (event.type === 'interrupted')
     state.carrierUnknownJobIds = state.carrierUnknownJobIds.filter((id) => id !== event.jobId);
-  else if (event.type === 'waiting' && event.carrierUnknownJobIds !== undefined)
-    state.carrierUnknownJobIds = [...event.carrierUnknownJobIds];
+  else if (event.type === 'waiting') state.carrierUnknownJobIds = [...(event.carrierUnknownJobIds ?? [])];
   const decision = advanceWaitRenderCursor(state.currentCursor, event);
   state.currentCursor = decision.cursor;
   state.sendCursor ||= serializedCursor(state.currentCursor) !== undefined;
@@ -719,6 +731,14 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
     if (connected.kind === 'exit') return connected.code;
     if (abortState.promise !== null) return await finishAbortAttempt(abortState.promise, options.emitError);
     const { connection } = connected;
+    if (connection.kind === 'subscription') {
+      options.invocation?.saveContinuation(
+        formatWaitWaiting(
+          { type: 'waiting', waitingJobIds: state.remainingJobIds, carrierUnknownJobIds: state.carrierUnknownJobIds },
+          serializeWaitCursor(state.currentCursor),
+        ) + '\n',
+      );
+    }
     if (connection.kind === 'fatal-error') {
       options.emitError(withWaitRecovery(connection.error, state.remainingJobIds));
       return fallbackExitCode();

@@ -82,11 +82,24 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       yield* progressEvents(session, request, state, terminals);
       if (yield* terminalEvents(session, request, terminals)) return;
       yield* carrierEvents(session, request, state.absentReported);
-      if (
-        session.remaining().length === 0 ||
-        session.progress().length > 0 ||
-        Number(time.monotonicNow()) >= deadline
-      ) {
+      if (session.remaining().length === 0) {
+        if (request.supportsWaitV3 === true)
+          yield {
+            type: 'notice',
+            version: 'jobs.wait.v3',
+            message: 'Wait complete; no jobs remain.',
+            cursor: session.cursor([]),
+            exitCode: session.exitCode(),
+          };
+        return;
+      }
+      if (session.progress().length > 0 || Number(time.monotonicNow()) >= deadline) {
+        if (observing && Number(time.monotonicNow()) >= deadline) {
+          const pending = session.admissions
+            .filter((job) => job.disposition === 'admitted' && !job.detail?.exit)
+            .map((job) => job.jobId);
+          session.observeCoverage(pending, pending, 0);
+        }
         yield waitingEvent(session, request);
         return;
       }
@@ -103,7 +116,6 @@ async function observeCarriers(input: WaitReadInput, session: WaitSession, signa
   const pending = session.admissions
     .filter((job) => job.disposition === 'admitted' && !job.detail?.exit)
     .map((job) => job.jobId);
-  session.observeCoverage(pending, pending, 0);
   try {
     await raceWithSignal(Promise.resolve(input.observe?.(session, signal)), signal, () => undefined);
   } catch {
@@ -297,6 +309,7 @@ function* terminalEvents(
   for (const job of terminals) {
     if (!job.detail?.exit) continue;
     const availability = job.availability;
+    if (request.supportsWaitV3 !== true && availability?.kind === 'repair-pending') continue;
     if (request.supportsWaitV3 !== true && availability?.kind !== 'available')
       throw new WaitSessionError(
         'wait_epoch_unsupported',

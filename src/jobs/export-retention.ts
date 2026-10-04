@@ -34,6 +34,8 @@ export type TerminalEligibility = Readonly<{
   kind: 'expired' | 'inside' | 'unknown' | 'regression';
   age: number | 'unknown' | 'regression';
   sourceReadable: boolean;
+  sourceReadFailed?: boolean;
+  ageUnproven?: boolean;
   publicationAuthorized: boolean;
   cutoffTrusted: boolean;
 }>;
@@ -43,6 +45,7 @@ export function terminalEligibility(
   runtime: Pick<Runtime, 'time' | 'env'>,
   location: JobLocation | null,
   withSource: <T>(read: (db: Database) => T) => T | null,
+  observeSource = true,
 ): TerminalEligibility {
   const cutoff = trustedJobRetentionCutoff(runtime);
   const denied = {
@@ -74,17 +77,21 @@ export function terminalEligibility(
         ? 'regression'
         : 'unknown';
   let sourceReadable = false;
-  try {
-    withSource((db) => {
-      const accepted = readAcceptedTerminal(db, location.jobId);
-      if (!accepted || accepted.seq !== terminal.seq || accepted.ts !== terminal.ts) return;
-      const body = jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
-      if (!sameTerminal(terminal.result, body.terminal)) return;
-      sourceReadable = true;
-      if (location.terminalAge === undefined) age = readIntactJobTerminalAge(db, accepted);
-    });
-  } catch {
-    sourceReadable = false;
+  let sourceReadFailed = false;
+  if (observeSource || age === 'unknown') {
+    try {
+      withSource((db) => {
+        const accepted = readAcceptedTerminal(db, location.jobId);
+        if (!accepted || accepted.seq !== terminal.seq || accepted.ts !== terminal.ts) return;
+        const body = jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
+        if (!sameTerminal(terminal.result, body.terminal)) return;
+        sourceReadable = true;
+        if (location.terminalAge === undefined || (matches && saved.data.kind === 'unknown'))
+          age = readIntactJobTerminalAge(db, accepted, cutoff);
+      });
+    } catch {
+      sourceReadFailed = true;
+    }
   }
   const kind = cutoff === null ? 'unknown' : typeof age === 'number' ? (age < cutoff ? 'expired' : 'inside') : age;
   const regressionAuthorized = age === 'regression' && matches && saved.data.kind === 'regression' && sourceReadable;
@@ -92,6 +99,8 @@ export function terminalEligibility(
     kind,
     age,
     sourceReadable,
+    sourceReadFailed,
+    ageUnproven: location.terminalAge === undefined || (matches && saved.data.kind === 'unknown'),
     cutoffTrusted: cutoff !== null,
     publicationAuthorized: cutoff !== null && sourceReadable && (kind === 'inside' || regressionAuthorized),
   };

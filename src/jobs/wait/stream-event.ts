@@ -135,9 +135,9 @@ const waitQueuedKbEventSchema = waitQueuedEventBaseSchema
   .passthrough();
 
 export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('available'), resultPath: z.string().min(1) }).strict(),
-  z.object({ kind: z.literal('retained-away'), retentionDays: z.number().positive() }).strict(),
-  z.object({ kind: z.literal('repair-pending'), ageUncertain: z.boolean() }).strict(),
+  z.object({ kind: z.literal('available'), resultPath: z.string().min(1) }).strip(),
+  z.object({ kind: z.literal('retained-away'), retentionDays: z.number().positive() }).strip(),
+  z.object({ kind: z.literal('repair-pending'), ageUncertain: z.boolean() }).strip(),
   z
     .object({
       kind: z.literal('failed'),
@@ -153,7 +153,7 @@ export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
       retryScheduled: z.boolean(),
       ageUncertain: z.boolean().optional(),
     })
-    .strict(),
+    .strip(),
 ]);
 
 const waitTerminalEventSchema = z
@@ -183,12 +183,12 @@ const waitCarrierInterruptedEventSchema = z
     storedPhase: jobPhaseSchema,
     observedMaxJournalSeq: z.number().int().nonnegative(),
     remainingJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS),
-    observation: z.object({ kind: z.literal('carrier_interrupted'), reason: z.literal('carrier_absent') }).strict(),
+    observation: z.object({ kind: z.literal('carrier_interrupted'), reason: z.literal('carrier_absent') }).strip(),
     continuity: z.literal('unavailable'),
     outcome: z.literal('unknown'),
     cursor: waitCursorV2Schema.optional(),
   })
-  .strict();
+  .strip();
 
 const waitWaitingEventSchema = z
   .object({
@@ -216,9 +216,10 @@ const waitStreamEventSchema = z
         type: z.literal('notice'),
         version: z.literal('jobs.wait.v3'),
         message: z.string(),
+        exitCode: z.number().int().min(0).max(255).optional(),
         cursor: waitCursorV3Schema.optional(),
       })
-      .strict(),
+      .strip(),
     z
       .object({
         type: z.literal('disposition'),
@@ -234,7 +235,7 @@ const waitStreamEventSchema = z
         message: z.string().optional(),
         cursor: waitCursorV3Schema.optional(),
       })
-      .strict(),
+      .strip(),
     z
       .object({
         type: z.literal('artifact'),
@@ -245,7 +246,7 @@ const waitStreamEventSchema = z
         cursor: waitCursorV3Schema,
         exitCode: z.number().int().min(0).max(255),
       })
-      .strict(),
+      .strip(),
   ])
   .superRefine((event, ctx) => {
     const generation = 'version' in event ? event.version : undefined;
@@ -277,8 +278,8 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
   }
 
   const parsed: unknown = JSON.parse(rawData);
-  const event = waitStreamEventSchema.parse(parsed);
-  if (event.type !== eventType) {
+  const event = parseWaitStreamEventValue(parsed);
+  if (event === null || event.type !== eventType) {
     throw new Error(`Invalid wait stream event payload for ${eventType}`);
   }
   return event;
@@ -289,6 +290,11 @@ export function parseWaitStreamEventValue(value: unknown): WaitStreamEvent | nul
   if (!isRecord(value) || typeof value.type !== 'string' || !KNOWN_WAIT_STREAM_EVENT_TYPES.has(value.type)) {
     return null;
   }
+  if (
+    value.type === 'interrupted' &&
+    ['result', 'resultPath', 'availability', 'exitCode', 'usage'].some((key) => key in value)
+  )
+    throw new Error('Carrier interruption cannot deliver a terminal outcome');
   return waitStreamEventSchema.parse(value);
 }
 
