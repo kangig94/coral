@@ -163,6 +163,8 @@ function createExecutionServiceRegistry(input: {
           hasStartupRecoveryPassed: () => world.startupRecoveryBarrier.hasPassed(),
           isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
           registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
+          holdsLocalAppServerExecution: (jobId) =>
+            [...services.values()].some((service) => service.holdsLocalAppServerExecution?.(jobId) === true),
         },
         getCurrentJournalSeq,
         (records) =>

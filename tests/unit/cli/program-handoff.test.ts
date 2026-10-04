@@ -202,3 +202,44 @@ describe('program', () => {
     expect(filterForwardableCoralEnv({ [GUARD_ENV]: '1' })).toEqual({ [GUARD_ENV]: '1' });
   });
 });
+
+it.each(['routing', 'selection publication', 'terminal publication', 'delegation'])(
+  'two SIGINTs during %s preserve pre-admission argv and skip command dispatch',
+  async () => {
+    vi.useFakeTimers();
+    const stdout: string[] = [];
+    const handlers = process.listeners('SIGINT');
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stdout.push(chunk.toString());
+      return true;
+    }) as typeof process.stdout.write);
+    mockState.runHandoff.mockImplementation(() => new Promise<never>(() => {}));
+    const { parseProgramWithHandoff } = await loadProgramFresh();
+    const program = new Command();
+    const action = vi.fn();
+    program
+      .command('wait')
+      .command('jobs')
+      .argument('<ids...>')
+      .option('--cursor <cursor>')
+      .option('--embed')
+      .action(action);
+    const argv = ['node', 'coral-cli', 'wait', 'jobs', 'a', 'ghost', '--embed', '--cursor', 'original'];
+    try {
+      const result = parseProgramWithHandoff(program, argv);
+      process.emit('SIGINT');
+      process.emit('SIGINT');
+      await expect(result).resolves.toEqual({ kind: 'handoff-exit', exitCode: 75 });
+      expect(action).not.toHaveBeenCalled();
+      expect(stdout.join('')).toContain('admission did not complete');
+      expect(stdout.join('')).toContain(`Run coral-cli ${argv.slice(2).join(' ')}`);
+      expect(stdout.join('').match(/Run coral-cli/g)).toHaveLength(1);
+      expect(mockState.runHandoff.mock.calls[0][1].signal.aborted).toBe(true);
+    } finally {
+      for (const handler of process.listeners('SIGINT'))
+        if (!handlers.includes(handler)) process.off('SIGINT', handler);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  },
+);

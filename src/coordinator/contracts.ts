@@ -41,6 +41,7 @@ interface CoordinatorSessionOps {
 }
 
 interface CoordinatorJobOps {
+  holdsLocalAppServerExecution?(jobId: string): boolean;
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;

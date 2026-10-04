@@ -1,7 +1,7 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { TimePort } from '../infra/port-types.js';
-import { isWaitCursorV2, waitCursorForJobs, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
+import { waitCursorForJobs, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
 import { advanceWaitRenderCursor } from '../jobs/wait-stream-event.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {
@@ -89,7 +89,7 @@ function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number
 
 function cloneCursor(cursor?: WaitCursor): WaitCursor {
   if (cursor === undefined) return { afterSeq: 0 };
-  return isWaitCursorV2(cursor)
+  return cursor.version === 'jobs.wait.v2'
     ? {
         version: 'jobs.wait.v2',
         positions: { ...cursor.positions },

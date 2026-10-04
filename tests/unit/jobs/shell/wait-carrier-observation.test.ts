@@ -45,3 +45,46 @@ describe('planCarrierWaitEvents', () => {
     expect(plan.unknownJobIds).toEqual([JOB_A, JOB_B]);
   });
 });
+
+it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier observation', async (stall) => {
+  const { WaitCoordinator } = await import('#src/jobs/shell/wait.js');
+  const { VirtualTime, flushMicrotasks } = await import('#tools/simulation/core/virtual-time.js');
+  const time = new VirtualTime();
+  const stuck = new Promise<never>(() => {});
+  let calls = 0;
+  const wait = new WaitCoordinator({
+    time,
+    eventBus: { on: () => {}, off: () => {} },
+    sessionManager: { get: () => null },
+    launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] },
+    loadJobProjectionDetail: () => ({
+      status: { jobId: JOB_A, phase: 'running' },
+      launch: null,
+      runtime: null,
+      exit: null,
+    }),
+    readJobEvents: () => [],
+    aggregateWorkflowUsage: () => undefined,
+    getCurrentJournalSeq: () => 0,
+    resultJobsRoot: '/unused',
+    subscribeJobEvents: () => ({ [Symbol.asyncIterator]: () => ({ next: () => stuck, return: () => stuck }) }),
+    observeCarriers: async () => {
+      calls++;
+      if (stall === 'throw') throw new Error('observer unavailable');
+      return stall === 'poll' && calls === 1 ? [observation(JOB_A, 'unknown')] : stuck;
+    },
+  } as never);
+  const stream = wait.waitForJobs({ jobIds: [JOB_A], timeoutSeconds: 1 });
+  const next = stream.next();
+  await flushMicrotasks(20);
+  for (let i = 0; i < 4; i++) {
+    time.tick(250);
+    await flushMicrotasks(20);
+  }
+  await expect(next).resolves.toMatchObject({
+    done: false,
+    value: { type: 'waiting', waitingJobIds: [JOB_A], carrierUnknownJobIds: [JOB_A] },
+  });
+  await stream.return(undefined);
+  expect(calls).toBe(stall === 'initial' ? 1 : stall === 'poll' ? 2 : 4);
+});

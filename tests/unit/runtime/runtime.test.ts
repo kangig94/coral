@@ -299,7 +299,10 @@ describe('createRealRuntime', () => {
       const runtime = createMockedRuntime('prod');
 
       expect(runtime.storage.writeAtomicDurableSync(statePath, '{}')).toBe(false);
-      expect(openSyncMock).toHaveBeenCalledWith(`${statePath}.tmp`, 'w');
+      expect(openSyncMock).toHaveBeenCalledWith(
+        expect.stringMatching(new RegExp(`^${statePath.replaceAll('.', '\\.')}\\.stage-`)),
+        'wx',
+      );
     } finally {
       vi.doUnmock('node:fs');
       vi.resetModules();

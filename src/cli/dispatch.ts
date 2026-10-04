@@ -1,3 +1,5 @@
+import { getWaitInvocation } from './wait-invocation.js';
+import { WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait-cursor.js';
 import type { Command } from 'commander';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 
@@ -191,7 +193,11 @@ type CliCommandClient = AbortCapableClient & {
     params?: unknown,
     options?: IpcSubscriptionOptions,
   ): Promise<IpcSubscription<TResult>>;
-  subscribeJobsWait(fields: JobsWaitFields, options?: IpcSubscriptionOptions): Promise<IpcSubscription<unknown>>;
+  subscribeJobsWait(
+    fields: JobsWaitFields,
+    options?: IpcSubscriptionOptions,
+    onCursorReset?: () => void,
+  ): Promise<IpcSubscription<unknown>>;
 };
 
 type CliClientBindings = {
@@ -887,13 +893,27 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     }
 
     const authOptions = ipcAuthOptions();
-    await reconcileKbBoot();
-    const client = await ensure(method, resolvePluginRoot());
-    return client.subscribe<TResult>(method, paramsFor(client), {
-      timeoutMs: HEALTH_TIMEOUT_MS,
-      ...options,
-      ...authOptions,
-    });
+    const invocation = path === 'wait jobs' ? getWaitInvocation() : undefined;
+    const run = <T>(work: () => Promise<T>) => (invocation ? invocation.run(work) : work());
+    await run(reconcileKbBoot);
+    const client = await run(() => ensure(method, resolvePluginRoot()));
+    invocation?.check();
+    return run(() =>
+      client.subscribe<TResult>(method, paramsFor(client), {
+        timeoutMs: HEALTH_TIMEOUT_MS,
+        ...options,
+        ...authOptions,
+        ...(invocation === undefined
+          ? {}
+          : {
+              signal: options?.signal ? AbortSignal.any([options.signal, invocation.signal]) : invocation.signal,
+              timeoutMs: Math.min(
+                options?.timeoutMs ?? HEALTH_TIMEOUT_MS,
+                Math.max(1, Math.ceil(invocation.remainingMs())),
+              ),
+            }),
+      }),
+    );
   };
   const subscribe = <TResult>(
     method: string,
@@ -919,8 +939,17 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     ...createKbSourceCommunityClient(bindings),
     ...createKbMemoClient(bindings),
     subscribe,
-    subscribeJobsWait: (fields, options) =>
-      subscribeTo('jobs.wait', (coordinator) => jobsWaitRequest(fields, coordinator.jobsWaitExtensions), options),
+    subscribeJobsWait: (fields, options, onCursorReset) =>
+      subscribeTo(
+        'jobs.wait',
+        (coordinator) =>
+          jobsWaitRequest(
+            fields,
+            coordinator.jobsWaitExtensions,
+            onCursorReset ?? (() => process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE}\n`)),
+          ),
+        options,
+      ),
   };
 }
 

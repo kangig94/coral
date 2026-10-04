@@ -1403,6 +1403,8 @@ function writeAtomicSyncNode(
   }
 }
 
+let durableStageCounter = 0;
+
 function writeAtomicDurableSyncNode(
   path: string,
   data: StorageData,
@@ -1410,12 +1412,14 @@ function writeAtomicDurableSyncNode(
 ): boolean {
   const mode = options?.mode;
   const parent = dirname(path);
-  const tempPath = `${path}.tmp`;
+  const tempPath = `${path}.stage-${process.pid}-${++durableStageCounter}-${randomUUID()}`;
   mkdirSync(parent, { recursive: true });
 
   let fd: number | null = null;
+  let ownsStage = false;
   try {
-    fd = mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', mode);
+    fd = mode === undefined ? openSync(tempPath, 'wx') : openSync(tempPath, 'wx', mode);
+    ownsStage = true;
     if (mode !== undefined) {
       fchmodSync(fd, mode);
     }
@@ -1429,15 +1433,16 @@ function writeAtomicDurableSyncNode(
     if (fd !== null) {
       closeSync(fd);
     }
-    try {
-      unlinkSync(tempPath);
-    } catch {
-      /* best effort */
-    }
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return false;
     }
     throw error;
+  } finally {
+    try {
+      if (ownsStage) unlinkSync(tempPath);
+    } catch {
+      /* best effort */
+    }
   }
 }
 

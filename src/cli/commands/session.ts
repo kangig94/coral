@@ -1,3 +1,4 @@
+import { getWaitInvocation } from '../wait-invocation.js';
 import type { Command } from 'commander';
 import { z } from 'zod';
 
@@ -194,6 +195,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     process.exitCode = await followJobs({
       start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
       reconnectPolicy: 'bounded',
+      invocation: getWaitInvocation(),
       projectRoot,
       emitError,
       render: {
@@ -201,12 +203,12 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         embed: opts.embed === true,
         verbose: opts.verbose === true,
       },
-      abortJobs: async (ids) => client.abortJobs([...ids]),
-      connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal }) => ({
+      connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal, onCursorReset }) => ({
         kind: 'subscription',
         subscription: await client.subscribeJobsWait(
           { jobIds: activeJobIds, timeoutSeconds, projectRoot, ...(cursor ? { cursor } : {}) },
           { signal },
+          onCursorReset,
         ),
       }),
     });
@@ -225,6 +227,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .addHelpText(
       'after',
       '\nExits 75 when requested work remains (not 0).\n' +
+        'Ctrl+C stops monitoring with exit 75 and a continuation; it never aborts jobs.\n' +
         'Run the continuation or remediation command printed in the output.\n',
     )
     .action(async (jobIdArgs: string[], opts: WaitJobsOptions) => {

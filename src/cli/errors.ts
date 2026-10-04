@@ -1,3 +1,4 @@
+import { WaitInvocationReadinessError } from '../infra/wait-invocation-context.js';
 import { CommanderError } from 'commander';
 import { ZodError } from 'zod';
 
@@ -244,7 +245,8 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
   if (
     error instanceof StoreResetCliError ||
     error instanceof ChildPrincipalBindingError ||
-    error instanceof WaitResumeError
+    error instanceof WaitResumeError ||
+    error instanceof WaitInvocationReadinessError
   ) {
     return remediatedError(error);
   }

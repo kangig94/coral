@@ -1,3 +1,4 @@
+import { decodeWaitCursor } from './wait-cursor.js';
 import { raceObserved } from '../infra/promise-signal.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
@@ -6,7 +7,7 @@ import { hasHistoricalSource, refreshHistoricalEpoch, retryUnknownHistoricalEpoc
 import { type JobLocationIndex, type JobLocation } from './location-index.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse, JobProgressEvent } from './records.js';
-import { isWaitCursorV2, type WaitCursor, type WaitStreamEvent, type WaitStreamRequest } from './wait.js';
+import { type WaitCursor, type WaitStreamEvent, type WaitStreamRequest } from './wait.js';
 
 export interface ActiveJobAccess {
   epochKey(): string | null;
@@ -187,10 +188,14 @@ export class JobAddressing {
   }
 
   validateWait(request: WaitStreamRequest): WaitCursorError | null {
+    if (request.cursor !== undefined) {
+      const decoded = decodeWaitCursor(request.cursor);
+      if (decoded.kind === 'rejected') return decoded.error;
+    }
     const locations = request.jobIds.map((jobId) => this.location(jobId));
     const activeEpochKey = this.active.epochKey();
     const cursor = request.cursor;
-    if (cursor !== undefined && !isWaitCursorV2(cursor)) {
+    if (cursor !== undefined && cursor.version === undefined) {
       return locations.every((location) => location !== null && location.epochKey === activeEpochKey)
         ? null
         : {
@@ -244,8 +249,8 @@ export class JobAddressing {
     const positions = Object.fromEntries(
       [...new Set(locations.map((location) => location.epochKey))].map((key) => [key, 0]),
     );
-    if (request.cursor && isWaitCursorV2(request.cursor)) Object.assign(positions, request.cursor.positions);
-    if (request.cursor && !isWaitCursorV2(request.cursor)) {
+    if (request.cursor && request.cursor.version === 'jobs.wait.v2') Object.assign(positions, request.cursor.positions);
+    if (request.cursor && request.cursor.version === undefined) {
       const activeEpoch = this.active.epochKey();
       if (activeEpoch !== null) positions[activeEpoch] = request.cursor.afterSeq;
     }
@@ -374,12 +379,14 @@ export class JobAddressing {
     const locations = request.jobIds
       .map((jobId) => this.location(jobId))
       .filter((location): location is JobLocation => location !== null);
+    const admittedIds = locations.map((location) => location.jobId);
+    request = { ...request, jobIds: admittedIds };
     const activeEpochKey = this.active.epochKey();
 
     if (
       locations.every((location) => location.epochKey === activeEpochKey) &&
       request.supportsWaitV2 !== true &&
-      (request.cursor === undefined || !isWaitCursorV2(request.cursor))
+      (request.cursor === undefined || request.cursor.version === undefined)
     ) {
       yield* this.active.waitStream(request);
       return;

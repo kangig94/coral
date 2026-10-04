@@ -19,6 +19,7 @@ export type CarrierLiveness = 'live' | 'absent' | 'unknown';
 export type CarrierObservationSource =
   | 'local-admission'
   | 'local-operation-registry'
+  | 'local-app-server-execution'
   | 'local-workflow-owner'
   | 'local-internal-registry'
   | 'durable-cli-process'
@@ -75,6 +76,7 @@ export type CarrierEvidence =
   | Readonly<{
       carrierClass: 'app-server-acquired';
       registryState: LocalOperationRegistryState;
+      localExecutionHeld?: boolean;
       proxyOperationStatus?: 'held' | 'absent' | 'unknown';
     }>
   | Readonly<{ carrierClass: 'workflow'; ownedByThisCoordinator: boolean }>
@@ -122,6 +124,7 @@ type Verdict = Readonly<{ liveness: CarrierLiveness; source: CarrierObservationS
  * all the way through is locally indistinguishable from one it never had — both read as `inherited`.
  */
 function acquiredVerdict(evidence: Extract<CarrierEvidence, { carrierClass: 'app-server-acquired' }>): Verdict {
+  if (evidence.localExecutionHeld === true) return { liveness: 'live', source: 'local-app-server-execution' };
   switch (evidence.registryState) {
     case 'activated':
     case 'attached':

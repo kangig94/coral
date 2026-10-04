@@ -322,18 +322,6 @@ export class WaitCoordinator {
     return event.usage;
   }
 
-  /**
-   * Asks what is carrying the still-pending jobs, and turns the answer into stream events.
-   *
-   * Absence is reported once per job per stream: it is an event about a discovery, not a snapshot, so
-   * repeating it every poll tick would say the same thing over and over while the job is still pending —
-   * and it *stays* pending, because nothing here removes it from `pending` or ends the stream. Unknowns are
-   * returned rather than emitted, since they belong on the waiting snapshot as a list of jobs nothing could
-   * answer for.
-   *
-   * A failure to observe yields nothing at all. The wait is still correct without it — the journal is what
-   * ends a job — and a build that could not ask must not report absences it never saw.
-   */
   private async observePendingCarriers(
     pending: ReadonlySet<string>,
     alreadyReported: Set<string>,
@@ -345,7 +333,7 @@ export class WaitCoordinator {
       return planCarrierWaitEvents(await observe([...pending]), pending, alreadyReported);
     } catch (error: unknown) {
       backendLog.warn(`wait: carrier observation failed: ${errorMessage(error)}`);
-      return EMPTY_CARRIER_PLAN;
+      return { interrupted: [], unknownJobIds: [...pending].sort() };
     }
   }
 
@@ -500,7 +488,7 @@ export class WaitCoordinator {
     const startMs = Number(this.deps.time.monotonicNow());
     const timeoutMs = timeoutSeconds * 1000;
     const deadlineMs = startMs + timeoutMs;
-    const afterSeq = cursor && 'afterSeq' in cursor ? cursor.afterSeq : 0;
+    const afterSeq = cursor?.version === undefined ? (cursor?.afterSeq ?? 0) : 0;
     const pending = new Set(jobIds);
     const emittedQueued = new Set<string>();
     const currentMaxSeq = getCurrentJournalSeq();
@@ -571,17 +559,34 @@ export class WaitCoordinator {
       // Once after catch-up: the journal has had its say about every pending job, so anything still
       // pending here is a job whose carrier is worth asking about.
       const carrierReported = new Set<string>();
-      let carrierUnknownJobIds: readonly string[] = [];
-      {
-        const observed = await this.observePendingCarriers(pending, carrierReported);
-        carrierUnknownJobIds = observed.unknownJobIds;
-        for (const event of observed.interrupted) yield event;
-      }
-
+      let carrierUnknownJobIds: readonly string[] = [...pending].sort();
       timeoutWaiter = createTimeoutWaiter(
         this.deps.time,
         Math.max(0, deadlineMs - Number(this.deps.time.monotonicNow())),
       );
+      const timeout = timeoutWaiter.promise;
+      const observeBeforeDeadline = async () => {
+        const abortWaiter = createAbortWaiter(controller.signal);
+        try {
+          return await raceObserved([
+            this.observePendingCarriers(pending, carrierReported),
+            timeout,
+            ...(abortWaiter ? [abortWaiter.promise] : []),
+          ]);
+        } finally {
+          abortWaiter?.dispose();
+        }
+      };
+      {
+        const observed = await observeBeforeDeadline();
+        if (observed === ABORTED) return;
+        if (observed === TIMED_OUT) {
+          yield this.waitingSnapshot(pending, carrierUnknownJobIds);
+          return;
+        }
+        carrierUnknownJobIds = observed.unknownJobIds;
+        for (const event of observed.interrupted) yield event;
+      }
 
       while (pending.size > 0) {
         if (controller.signal.aborted) return;
@@ -623,7 +628,12 @@ export class WaitCoordinator {
           observedSeq = Math.max(observedSeq, maxSeq);
           // After the replay, never before it: a terminal that arrived in this same tick has already
           // returned above, so an observation can never contradict a journal result that exists.
-          const observed = await this.observePendingCarriers(pending, carrierReported);
+          const observed = await observeBeforeDeadline();
+          if (observed === ABORTED) return;
+          if (observed === TIMED_OUT) {
+            yield this.waitingSnapshot(pending, carrierUnknownJobIds);
+            return;
+          }
           carrierUnknownJobIds = observed.unknownJobIds;
           for (const event of observed.interrupted) yield event;
           continue;
@@ -658,8 +668,8 @@ export class WaitCoordinator {
       timeoutWaiter?.dispose();
       abortSignal?.removeEventListener('abort', onExternalAbort);
       controller.abort();
-      await pendingNext?.catch(() => undefined);
-      await iterator.return?.();
+      void pendingNext?.catch(() => undefined);
+      void iterator.return?.().catch(() => undefined);
     }
   }
 

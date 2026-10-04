@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { errorCodeToExit } from '#src/cli/errors.js';
 import type { JobDetailLookup } from '#src/jobs/contracts/addressing.js';
+import type { WaitStreamRequest } from '#src/jobs/wait.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
@@ -173,4 +174,38 @@ describe('jobs.detail retained-epoch dispositions', () => {
       },
     });
   });
+});
+
+it('excludes proven missing siblings before opening a wait and filters the cursor to match', async () => {
+  const validateWait = vi.fn(() => null);
+  const cursor = {
+    version: 'jobs.wait.v2',
+    positions: { e: 12, missing: 9 },
+    locations: { known: 'e', ghost: 'missing' },
+    deliveredJobIds: ['ghost'],
+  };
+  const waitStream = vi.fn(async function* (request: WaitStreamRequest) {
+    yield { type: 'waiting' as const, waitingJobIds: request.jobIds };
+  });
+  const result = await execute(
+    'jobs.wait',
+    { jobIds: ['known', 'ghost'], cursor, supportsWaitV2: true },
+    {
+      scopeCheck: () => ({ valid: ['known', 'ghost'], mismatch: [], missing: ['ghost'] }),
+      unknownJobDisposition: () => 'not-found',
+      outcomeUnrecoverable: () => [],
+      validateWait,
+      waitStream,
+    },
+  );
+  expect(result).toMatchObject({ kind: 'subscription' });
+  expect(validateWait).toHaveBeenCalledWith({
+    jobIds: ['known'],
+    projectRoot: PROJECT_ROOT,
+    supportsWaitV2: true,
+    cursor: { version: 'jobs.wait.v2', positions: { e: 12 }, locations: { known: 'e' }, deliveredJobIds: [] },
+  });
+  const stream = (result as { notifications: AsyncIterable<unknown> }).notifications;
+  for await (const event of stream) expect(event).toMatchObject({ waitingJobIds: ['known'] });
+  expect(waitStream.mock.calls[0][0]).toMatchObject({ jobIds: ['known'] });
 });

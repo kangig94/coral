@@ -156,3 +156,46 @@ it.each([0, -3_600_000, 3_600_000])('bounds historical waiting across a %s ms wa
   await expect(result).resolves.toMatchObject({ done: false, value: { type: 'waiting' } });
   await iterator.return(undefined);
 });
+
+it.each([false, true])('excludes a proven missing sibling from direct continuations, v2=%s', async (supportsWaitV2) => {
+  const { index } = fixture();
+  index.register('known', 'lineage-new:8', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const seen: string[][] = [];
+  const addressing = new JobAddressing(
+    index,
+    {
+      epochKey: () => 'lineage-new:8',
+      detail: (id) => (id === 'known' ? detail(id, 'running') : null),
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      waitStream: async function* (request) {
+        seen.push(request.jobIds);
+        yield { type: 'waiting', waitingJobIds: request.jobIds };
+      },
+    },
+    () => false,
+    () => 'pending',
+  );
+  const stream = addressing.waitStream({ jobIds: ['known', 'ghost'], supportsWaitV2, timeoutSeconds: 0 });
+  const next = await stream.next();
+  expect(next.value).toMatchObject({ waitingJobIds: ['known'] });
+  if (!supportsWaitV2) expect(seen).toEqual([['known']]);
+  else
+    expect(next.value).toMatchObject({
+      cursor: { locations: { known: 'lineage-new:8' }, positions: { 'lineage-new:8': 0 } },
+    });
+  await stream.return(undefined);
+});
+
+it('rejects an unsupported generation before reading structural cursor fields', () => {
+  const { index } = fixture();
+  expect(
+    historicalAddressing(index).validateWait({
+      jobIds: ['ghost'],
+      cursor: { version: 'unknown', afterSeq: 0 } as never,
+    }),
+  ).toMatchObject({ code: 'wait_cursor_unsupported' });
+});

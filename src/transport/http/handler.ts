@@ -1,15 +1,9 @@
-import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z, type ZodError } from 'zod';
-import {
-  parseSerializedWaitCursor,
-  serializeWaitCursor,
-  type WaitCursor,
-  type WaitStreamEvent,
-  type WaitStreamRequest,
-} from '../../jobs/wait.js';
+import { serializeWaitCursor, type WaitCursor, type WaitStreamEvent, type WaitStreamRequest } from '../../jobs/wait.js';
+import { decodeSerializedWaitCursor } from '../../jobs/wait-cursor.js';
 import { advanceWaitRenderCursor } from '../../jobs/wait-stream-event.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
@@ -822,6 +816,7 @@ async function handleJobsWaitSubscription(
     timeoutSeconds?: number;
     cursor?: WaitCursor;
     supportsWaitV2?: boolean;
+    supportsHandover?: boolean;
   },
 ): Promise<void> {
   if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
@@ -836,17 +831,18 @@ async function handleJobsWaitSubscription(
   const serializedCursorHeader = Array.isArray(req.headers['last-event-id'])
     ? req.headers['last-event-id'][0]
     : req.headers['last-event-id'];
-  const headerCursor = parseSerializedWaitCursor(serializedCursorHeader);
-  if (serializedCursorHeader && !headerCursor) {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid Last-Event-ID cursor' });
+  const decoded = serializedCursorHeader === undefined ? undefined : decodeSerializedWaitCursor(serializedCursorHeader);
+  if (decoded?.kind === 'rejected') {
+    sendJson(res, 400, decoded.error);
     return;
   }
+  const headerCursor = decoded?.kind === 'decoded' ? decoded.cursor : undefined;
 
   let currentCursor: WaitCursor = headerCursor ?? { afterSeq: 0 };
   const controller = new AbortController();
   const waitRequest: WaitStreamRequest = {
     ...request,
-    ...(headerCursor === null ? {} : { cursor: headerCursor }),
+    ...(headerCursor === undefined ? {} : { cursor: headerCursor }),
   };
   const principal = authenticateCatalogPrincipal(req, deps);
   if (principal === null) {
@@ -892,12 +888,10 @@ async function handleJobsWaitSubscription(
   req.once('close', close);
   runOnResponseDone(res, close);
 
-  const handover = deps.jobs.waitHandoverSignal();
-
   try {
     while (true) {
-      const next = await raceWithSignal(iterator.next(), handover, () => 'handover' as const);
-      if (next === 'handover' || (!next.done && (next.value as { type?: unknown }).type === 'handover')) {
+      const next = await iterator.next();
+      if (!next.done && (next.value as { type?: unknown }).type === 'handover') {
         writeSseEvent(
           res,
           'handover',

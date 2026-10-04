@@ -7,7 +7,7 @@ import type { UsageSummary } from '../providers/contract.js';
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
 export type WaitCursor =
-  | { afterSeq: number; deliveredJobIds?: string[] }
+  | { version?: never; afterSeq: number; deliveredJobIds?: string[] }
   | {
       version: 'jobs.wait.v2';
       positions: Record<string, number>;
@@ -15,61 +15,13 @@ export type WaitCursor =
       deliveredJobIds?: string[];
     };
 
-export function isWaitCursor(value: unknown): value is WaitCursor {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return false;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  if (candidate.version === 'jobs.wait.v2') {
-    const positions = candidate.positions;
-    const locations = candidate.locations;
-    return (
-      positions !== null &&
-      typeof positions === 'object' &&
-      !Array.isArray(positions) &&
-      Object.values(positions).every((seq) => Number.isSafeInteger(seq) && (seq as number) >= 0) &&
-      locations !== null &&
-      typeof locations === 'object' &&
-      !Array.isArray(locations) &&
-      Object.values(locations).every((key) => typeof key === 'string' && key.length > 0) &&
-      (candidate.deliveredJobIds === undefined ||
-        (Array.isArray(candidate.deliveredJobIds) &&
-          candidate.deliveredJobIds.every((jobId) => typeof jobId === 'string' && jobId.length > 0)))
-    );
-  }
-  return (
-    Number.isSafeInteger(candidate.afterSeq) &&
-    (candidate.afterSeq as number) >= 0 &&
-    (candidate.deliveredJobIds === undefined ||
-      (Array.isArray(candidate.deliveredJobIds) &&
-        candidate.deliveredJobIds.every((jobId) => typeof jobId === 'string' && jobId.length > 0)))
-  );
-}
-
-export function isWaitCursorV2(cursor: WaitCursor): cursor is Extract<WaitCursor, { version: 'jobs.wait.v2' }> {
-  return 'version' in cursor;
-}
-
-export function parseSerializedWaitCursor(raw: string | undefined): WaitCursor | null {
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf-8')) as unknown;
-    return isWaitCursor(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 export function serializeWaitCursor(cursor: WaitCursor): string {
   return Buffer.from(JSON.stringify(cursor)).toString('base64url');
 }
 
 export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor {
-  if (!isWaitCursorV2(cursor)) return cursor;
+  const deliveredJobIds = cursor.deliveredJobIds?.filter((id) => jobIds.includes(id));
+  if (cursor.version === undefined) return { ...cursor, ...(deliveredJobIds === undefined ? {} : { deliveredJobIds }) };
   const locations = Object.fromEntries(
     jobIds.flatMap((jobId) => {
       const epochKey = cursor.locations[jobId];
@@ -84,7 +36,7 @@ export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[])
     version: 'jobs.wait.v2',
     locations,
     positions,
-    ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds: [...cursor.deliveredJobIds] }),
+    ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds }),
   };
 }
 

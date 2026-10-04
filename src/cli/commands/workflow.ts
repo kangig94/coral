@@ -22,6 +22,7 @@ export function registerWorkflowCommands(program: Command): void {
     .option('-w, --work-dir <path>', 'Working directory')
     .option('-o, --owner <id>', 'Session owner ID for memo isolation')
     .option('-d, --detach', 'Return launch decision without waiting')
+    .addHelpText('after', '\nWhile following a launch, press Ctrl+C twice to abort the job.\n')
     .action(async (opts: WorkflowOptions) => {
       try {
         const { expression } = opts;

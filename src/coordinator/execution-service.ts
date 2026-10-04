@@ -196,6 +196,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
   }
 
+  holdsLocalAppServerExecution(jobId: string): boolean {
+    return this.launchOrchestrator.holdsLocalAppServerExecution(jobId);
+  }
+
   private runWithInvocationScope<T>(ctx: InvocationContext, run: () => T): T {
     return withInvocationScope(
       {

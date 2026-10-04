@@ -1,3 +1,4 @@
+import { waitCursorForJobs } from '../jobs/wait.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
@@ -1175,7 +1176,13 @@ async function executeJobsWaitCatalogRequest({
   }
 
   const { supportsInterrupted, supportsHandover, ...waitFields } = parsed;
-  const waitRequest: WaitStreamRequest = waitFields;
+  const missing = new Set(scopeCheck.missing);
+  const admittedIds = parsed.jobIds.filter((id) => !missing.has(id));
+  const waitRequest: WaitStreamRequest = {
+    ...waitFields,
+    jobIds: admittedIds,
+    ...(parsed.cursor === undefined ? {} : { cursor: waitCursorForJobs(parsed.cursor, admittedIds) }),
+  };
   const cursorError = rpcPorts.jobs.validateWait(waitRequest);
   if (cursorError) return unary(cursorError, 400);
   return {

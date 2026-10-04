@@ -1,14 +1,15 @@
+import { decodeWaitCursor } from '../../jobs/wait-cursor.js';
 import { z } from 'zod';
 
 import { parseBooleanQuery } from '../../infra/json.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { jobPhaseSchema } from '../../jobs/phase.js';
-import { isWaitCursor, isWaitCursorV2, type WaitCursor } from '../../jobs/wait.js';
+import { type WaitCursor } from '../../jobs/wait.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait-stream-event.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');
-const waitCursorSchema = z.custom<WaitCursor>(isWaitCursor, {
+const waitCursorSchema = z.custom<WaitCursor>((value) => decodeWaitCursor(value).kind === 'decoded', {
   message: 'cursor must be a valid wait cursor',
 });
 const providerNameSchema = z
@@ -45,14 +46,15 @@ export type JobsWaitFields = Readonly<{
 }>;
 
 /** A vector cursor must be omitted for a coordinator without `supportsWaitV2`; it cannot parse one. */
-export function jobsWaitRequest(fields: JobsWaitFields, extensions: readonly string[]): Record<string, unknown> {
+export function jobsWaitRequest(
+  fields: JobsWaitFields,
+  extensions: readonly string[],
+  onCursorReset?: () => void,
+): Record<string, unknown> {
   const waitV2 = extensions.includes('supportsWaitV2');
+  if (fields.cursor?.version === 'jobs.wait.v2' && !waitV2) onCursorReset?.();
   const cursor =
-    fields.cursor === undefined || (!waitV2 && isWaitCursorV2(fields.cursor))
-      ? undefined
-      : isWaitCursorV2(fields.cursor)
-        ? fields.cursor
-        : { afterSeq: fields.cursor.afterSeq };
+    fields.cursor === undefined || (!waitV2 && fields.cursor.version === 'jobs.wait.v2') ? undefined : fields.cursor;
   return {
     jobIds: [...fields.jobIds],
     projectRoot: fields.projectRoot,

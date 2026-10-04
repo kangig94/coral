@@ -1,3 +1,4 @@
+import { decodeWaitCursor } from './wait-cursor.js';
 import { z } from 'zod';
 
 import { isRecord } from '../infra/json.js';
@@ -6,14 +7,12 @@ import { jobPhaseSchema } from './phase.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobTerminalSchema } from './terminal/result.js';
 import { usageSummarySchema } from '../providers/contract.js';
-import { isWaitCursorV2, type WaitCursor, type WaitHandoverNotice, type WaitStreamEvent } from './wait.js';
+import { type WaitCursor, type WaitHandoverNotice, type WaitStreamEvent } from './wait.js';
 
 const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>(['progress', 'queued', 'terminal', 'interrupted', 'waiting']);
-const waitCursorV2Schema = z.object({
-  version: z.literal('jobs.wait.v2'),
-  positions: z.record(z.string(), z.number().int().nonnegative()),
-  locations: z.record(z.string(), z.string().min(1)),
-  deliveredJobIds: z.array(z.string().min(1)).optional(),
+const waitCursorV2Schema = z.custom<Extract<WaitCursor, { version: 'jobs.wait.v2' }>>((value) => {
+  const decoded = decodeWaitCursor(value);
+  return decoded.kind === 'decoded' && decoded.cursor.version === 'jobs.wait.v2';
 });
 
 export const MAX_WAIT_JOB_IDS = 128;
@@ -26,8 +25,12 @@ export type WaitRenderDecision = Readonly<{
 export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEvent): WaitRenderDecision {
   if (event.type === 'progress' || event.type === 'terminal') {
     if (event.epochKey !== undefined && event.cursor !== undefined) {
-      const previous = isWaitCursorV2(cursor) ? (cursor.positions[event.epochKey] ?? 0) : 0;
-      if (event.type === 'terminal' && isWaitCursorV2(cursor) && cursor.deliveredJobIds?.includes(event.jobId))
+      const previous = cursor.version === 'jobs.wait.v2' ? (cursor.positions[event.epochKey] ?? 0) : 0;
+      if (
+        event.type === 'terminal' &&
+        cursor.version === 'jobs.wait.v2' &&
+        cursor.deliveredJobIds?.includes(event.jobId)
+      )
         return { cursor, shouldRender: false };
       if (event.type === 'progress' && event.seq <= previous) return { cursor, shouldRender: false };
       return {
@@ -38,7 +41,7 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
           positions: Object.fromEntries(
             Object.entries(event.cursor.positions).map(([key, seq]) => [
               key,
-              Math.max(seq, isWaitCursorV2(cursor) ? (cursor.positions[key] ?? 0) : 0),
+              Math.max(seq, cursor.version === 'jobs.wait.v2' ? (cursor.positions[key] ?? 0) : 0),
             ]),
           ),
         },
@@ -46,7 +49,7 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
       };
     }
 
-    const legacy = isWaitCursorV2(cursor) ? legacyRenderCursor(cursor.deliveredJobIds) : cursor;
+    const legacy = cursor.version === 'jobs.wait.v2' ? legacyRenderCursor(cursor.deliveredJobIds) : cursor;
     if (event.seq <= legacy.afterSeq || (event.type === 'terminal' && legacy.deliveredJobIds?.includes(event.jobId))) {
       return { cursor: legacy, shouldRender: false };
     }

@@ -26,6 +26,7 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
       .option('-o, --owner <id>', 'Owner ID for memo isolation')
       .option('-b, --bypass-permissions', 'Bypass permission checks')
       .option('-d, --detach', 'Return launch decision without waiting')
+      .addHelpText('after', '\nWhile following a launch, press Ctrl+C twice to abort the job.\n')
       .action(async (agent: string | undefined, opts: ProviderRunOptions) => {
         try {
           if (opts.input === undefined) {

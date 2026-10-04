@@ -1,7 +1,12 @@
 import type { JobDetailResponse } from '../records.js';
 
 export type WaitCursorError = Readonly<{
-  code: 'wait_cursor_epoch_required' | 'wait_cursor_mismatch' | 'wait_epoch_unsupported';
+  code:
+    | 'wait_cursor_epoch_required'
+    | 'wait_cursor_mismatch'
+    | 'wait_epoch_unsupported'
+    | 'wait_cursor_unsupported'
+    | 'wait_cursor_malformed';
   message: string;
 }>;
 

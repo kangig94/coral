@@ -21,6 +21,7 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 import { observeProcessLiveness, probeProcessIncarnation } from '#src/infra/node-process.js';
 import {
   admittedByThisCoordinator,
+  classifyLocalCarriers,
   collectLocalCarrierInputs,
   createObserveCarriers,
   type LocalCarrierRegistries,
@@ -137,6 +138,53 @@ describe('admittedByThisCoordinator', () => {
 });
 
 describe('createObserveCarriers', () => {
+  it('observes an acquired local execution without a durable proxy tuple', async () => {
+    const db = createDb();
+    try {
+      const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
+      const registries = registriesFor(details, {
+        getDb: () => db,
+        hasStartupRecoveryPassed: () => true,
+        holdsLocalAppServerExecution: (jobId) => jobId === ACQUIRED_JOB_ID,
+      });
+      const external = vi.fn(async () => new Map());
+      await expect(createObserveCarriers(registries, () => 7, external)([ACQUIRED_JOB_ID])).resolves.toEqual([
+        { jobId: ACQUIRED_JOB_ID, liveness: 'live', storedPhase: 'running', observedMaxJournalSeq: 7 },
+      ]);
+      expect(external).not.toHaveBeenCalled();
+      expect(classifyLocalCarriers([ACQUIRED_JOB_ID], registries, 7)[0]?.observation).toMatchObject({
+        liveness: 'live',
+        source: 'local-app-server-execution',
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps an acquired admission unknown when this coordinator holds no execution', async () => {
+    const db = createDb();
+    try {
+      const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
+      const registries = registriesFor(details, {
+        getDb: () => db,
+        hasStartupRecoveryPassed: () => true,
+        isAdmittedByThisCoordinator: () => true,
+        holdsLocalAppServerExecution: () => false,
+      });
+      const external = vi.fn(async () => new Map());
+      await expect(createObserveCarriers(registries, () => 7, external)([ACQUIRED_JOB_ID])).resolves.toMatchObject([
+        { liveness: 'unknown' },
+      ]);
+      expect(external).not.toHaveBeenCalled();
+      expect(classifyLocalCarriers([ACQUIRED_JOB_ID], registries, 7)[0]?.observation).toMatchObject({
+        liveness: 'unknown',
+        defect: 'local-unknown-after-recovery-decision',
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it('skips a job with no stored status rather than reporting on it', async () => {
     const registries = registriesFor(new Map());
     const observe = createObserveCarriers(registries, () => 7);
@@ -193,21 +241,27 @@ describe('createObserveCarriers', () => {
     expect(observation).toMatchObject({ liveness, source: 'proxy-operation-status' });
   });
 
-  it('batches the exact durable operation and proxy locator instead of deriving either from HostRef', async () => {
-    const db = createDb();
-    const record = providerOperationRecord('executing', { job: 98 });
-    insertProviderOperation(db, record);
-    const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
-    const observeExternal = vi.fn(
-      async () => new Map([[carrierStatusOperationKey(record.operation), 'absent' as const]]),
-    );
-    const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7, observeExternal);
+  it.each([
+    ['held', 'live'],
+    ['absent', 'absent'],
+  ] as const)(
+    'looks up the exact durable operation and proxy locator for %s status',
+    async (externalStatus, liveness) => {
+      const db = createDb();
+      const record = providerOperationRecord('executing', { job: 98 });
+      insertProviderOperation(db, record);
+      const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
+      const observeExternal = vi.fn(
+        async () => new Map([[carrierStatusOperationKey(record.operation), externalStatus]]),
+      );
+      const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7, observeExternal);
 
-    await expect(observe([ACQUIRED_JOB_ID])).resolves.toEqual([
-      { jobId: ACQUIRED_JOB_ID, liveness: 'absent', storedPhase: 'running', observedMaxJournalSeq: 7 },
-    ]);
-    expect(observeExternal).toHaveBeenCalledWith([record]);
-  });
+      await expect(observe([ACQUIRED_JOB_ID])).resolves.toEqual([
+        { jobId: ACQUIRED_JOB_ID, liveness, storedPhase: 'running', observedMaxJournalSeq: 7 },
+      ]);
+      expect(observeExternal).toHaveBeenCalledWith([record]);
+    },
+  );
 
   it('treats a missing durable record and a missing observer map entry as unknown', async () => {
     const missingRecordDb = createDb();

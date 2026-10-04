@@ -54,9 +54,9 @@ function terminalOutcomeHeader(jobId: string, result: JobTerminal, describeCause
   }
 }
 
-function formatWaitContinuation(jobIds: readonly string[]): string {
+function formatWaitContinuation(jobIds: readonly string[], cursor: string | null): string {
   if (jobIds.length === 0) return 'No remaining jobs.';
-  return `Run coral-cli wait jobs ${jobIds.join(' ')} to continue waiting.`;
+  return `Run coral-cli wait jobs ${jobIds.join(' ')}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`;
 }
 
 export function formatWaitProgress(event: WaitProgressEvent, label?: string): string {
@@ -80,7 +80,7 @@ export function formatWaitTerminal(
   ]
     .filter((segment): segment is string => segment !== undefined)
     .join(' · ');
-  const continuation = formatWaitContinuation(event.remainingJobIds);
+  const continuation = formatWaitContinuation(event.remainingJobIds, cursor);
   if (!inline) {
     return joinLines([header, `Result path: ${event.resultPath}`, continuation]);
   }
@@ -120,7 +120,9 @@ export function formatWaitWaiting(
       ? `Still waiting on ${waitingCount} ${waitingCount === 1 ? 'job' : 'jobs'}.`
       : `Still waiting; jobs: ${jobs}.`;
   const continuation =
-    resumeJobIds.length > 0 ? ` Run coral-cli wait jobs ${resumeJobIds.join(' ')} to continue waiting.` : '';
+    resumeJobIds.length > 0
+      ? ` Run coral-cli wait jobs ${resumeJobIds.join(' ')}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`
+      : '';
   // Named as unconfirmed rather than folded into the waiting list: these are the jobs nothing could answer
   // for, and a reader deciding whether to keep waiting needs that distinction.
   const unknown =

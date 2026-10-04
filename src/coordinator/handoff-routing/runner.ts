@@ -1,7 +1,14 @@
+import {
+  WAIT_INVOCATION_CONTEXT_ENV,
+  WAIT_INVOCATION_CONTRACT_ARGUMENT,
+  WaitInvocationReadinessError,
+  type WaitInvocationHandoff,
+} from '../../infra/wait-invocation-context.js';
+import { isRecord } from '../../infra/json.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import { processIncarnationSchema } from '../../infra/node-process.js';
 import { CLI_BUNDLE_FILE } from '../../infra/bundle-manifest-address.js';
-import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
@@ -325,6 +332,7 @@ export type RunHandoffOptions = Readonly<{
   pluginRoot?: string;
   time?: TimePort;
   signal?: AbortSignal;
+  waitInvocation?: WaitInvocationHandoff;
   activeSelectionTarget?: ValidatedHandoffTarget;
   onSelectionPublicationIncident?: (incident: HandoffPublicationIncident) => void;
 }>;
@@ -1193,6 +1201,72 @@ async function recordTerminal(
   );
 }
 
+function supportsWaitInvocation(target: string, invocation: WaitInvocationHandoff): Promise<boolean> {
+  return new Promise((resolveContract) => {
+    const child = execFile(
+      process.execPath,
+      [target, WAIT_INVOCATION_CONTRACT_ARGUMENT],
+      {
+        timeout: Math.max(1, Math.min(3_000, Math.ceil(invocation.remainingMs()))),
+        killSignal: 'SIGKILL',
+        maxBuffer: 1024,
+        signal: invocation.signal,
+        env: { ...process.env },
+      },
+      (error, stdout) => {
+        if (error) {
+          resolveContract(false);
+          return;
+        }
+        try {
+          const contract: unknown = JSON.parse(stdout);
+          resolveContract(isRecord(contract) && contract.version === 1 && contract.monitorOnly === true);
+        } catch {
+          resolveContract(false);
+        }
+      },
+    );
+    const cancel = () => child.kill('SIGKILL');
+    invocation.signal.addEventListener('abort', cancel, { once: true });
+    child.once('close', () => invocation.signal.removeEventListener('abort', cancel));
+    if (invocation.signal.aborted) cancel();
+  });
+}
+
+/** Only the delegated monitor belongs to this cancellation set; jobs and providers do not. */
+function bindMonitorChild(child: ChildProcess, observation: ObservedChild, invocation: WaitInvocationHandoff): void {
+  let terminate: NodeJS.Timeout | undefined;
+  let kill: NodeJS.Timeout | undefined;
+  const onMessage = (message: unknown) => {
+    if (
+      isRecord(message) &&
+      message.type === 'wait-delivery' &&
+      typeof message.continuation === 'string' &&
+      Buffer.byteLength(message.continuation) <= 1024 * 1024
+    )
+      invocation.saveContinuation(message.continuation, message.complete === true);
+  };
+  const cancel = () => {
+    if (child.connected) child.send({ type: 'wait-cancel' }, () => {});
+    const remaining = invocation.cleanupRemainingMs();
+    terminate = setTimeout(() => child.kill('SIGTERM'), Math.min(250, remaining / 3));
+    kill = setTimeout(() => child.kill('SIGKILL'), Math.max(0, Math.min(1_000, remaining - 50)));
+    terminate.unref();
+    kill.unref();
+  };
+  child.on('message', onMessage);
+  invocation.signal.addEventListener('abort', cancel, { once: true });
+  if (invocation.signal.aborted) cancel();
+  void observation.ending
+    .finally(() => {
+      clearTimeout(terminate);
+      clearTimeout(kill);
+      child.off('message', onMessage);
+      invocation.signal.removeEventListener('abort', cancel);
+    })
+    .catch(() => undefined);
+}
+
 async function executeResolvedHandoff(
   operation: HandoffOperation,
   routing: HandoffRoutingResult,
@@ -1200,6 +1274,7 @@ async function executeResolvedHandoff(
   time: TimePort,
   signal: AbortSignal | undefined,
   executionPhase: { current: ExecutionThrowPhase },
+  waitInvocation?: WaitInvocationHandoff,
 ): Promise<HandoffContinuationResult> {
   switch (routing.kind) {
     case 'continue-current':
@@ -1238,6 +1313,11 @@ async function executeResolvedHandoff(
           : undefined;
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : CLI_BUNDLE_FILE;
       const target = join(execution.bundleDir, executable);
+      execution.assertExecutable();
+      if (waitInvocation !== undefined && !(await supportsWaitInvocation(target, waitInvocation))) {
+        throw new WaitInvocationReadinessError(waitInvocation.originalCommand);
+      }
+      if (signal?.aborted) throw signal.reason;
       const sentinel = join(dirname(process.argv[1] ?? ''), 'coral-sentinel.cjs');
       if (operation.kind === 'backend-startup' && !runtime.storage.existsSync(sentinel))
         throw new Error('The current build has no coordinator supervisor executable.');
@@ -1250,10 +1330,19 @@ async function executeResolvedHandoff(
         env: {
           ...runtime.env.fullSnapshot(),
           [CLI_HANDOFF_GUARD_ENV]: '1',
+          ...(waitInvocation === undefined
+            ? {}
+            : {
+                [WAIT_INVOCATION_CONTEXT_ENV]: JSON.stringify({
+                  mode: waitInvocation.mode,
+                  remainingMs: waitInvocation.remainingMs(),
+                  cleanupMs: Math.max(0, waitInvocation.cleanupRemainingMs() - waitInvocation.remainingMs()),
+                }),
+              }),
           ...(startup === undefined ? {} : { CORAL_STARTUP_ATTEMPT_ID: startup.expectedAttemptId }),
           ...(startup === undefined ? {} : { CORAL_SENTINEL_RUN_DIR: runtime.paths.coral.coordinator.runDir }),
         },
-        stdio: 'inherit',
+        stdio: waitInvocation === undefined ? 'inherit' : ['inherit', 'inherit', 'inherit', 'ipc'],
         ...(operation.kind === 'backend-startup' ? { detached: true } : {}),
       };
 
@@ -1263,6 +1352,7 @@ async function executeResolvedHandoff(
       // Runtime ports do not expose the executable for the current Node process.
       const child = spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
+      if (waitInvocation !== undefined) bindMonitorChild(child, childObservation, waitInvocation);
       await childObservation.spawned;
       executionPhase.current = 'child-outcome-wait';
       if (startup !== undefined) {
@@ -1337,14 +1427,17 @@ export async function runHandoff(
         time,
         options.signal,
         executionPhase,
+        options.waitInvocation,
       ),
     };
   }
 
+  if (options.signal?.aborted) throw options.signal.reason;
   const invocationId = runtime.ids.uuid();
   const incidents: HandoffPublicationIncident[] = [];
   const selection = await recordSelection(runtime, time, routing, invocationId, options.signal);
   const selectionIncident = recordIncident(incidents, invocationId, { phase: 'selection', publication: selection });
+  if (options.signal?.aborted) throw options.signal.reason;
   if (selectionIncident?.phase === 'selection') {
     options.onSelectionPublicationIncident?.(selectionIncident);
   }
@@ -1357,6 +1450,7 @@ export async function runHandoff(
       time,
       options.signal,
       executionPhase,
+      options.waitInvocation,
     );
     const recording = terminalRecordingFor(continuation);
     if (recording.kind === 'withhold') {
