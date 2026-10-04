@@ -12,7 +12,12 @@ import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { JobPhase } from '../jobs/phase.js';
-import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait/contract.js';
+import type {
+  WaitStreamEvent,
+  WaitStreamOnceResult,
+  WaitStreamRequest,
+  WaitCarrierCoverage,
+} from '../jobs/wait/contract.js';
 import type { ProviderStopCause, UsageSummary } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
@@ -43,6 +48,8 @@ interface CoordinatorSessionOps {
 }
 
 interface CoordinatorJobOps {
+  readWaitAdmissions?(jobIds: readonly string[], epochKey: string): WaitAdmission[];
+  observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
   readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
   holdsLocalAppServerExecution?(jobId: string): boolean;
   abort(jobIds: string[]): AbortResult;

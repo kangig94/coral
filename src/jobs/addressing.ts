@@ -10,11 +10,18 @@ import { hasReadableTerminalDetail, type JobLocationView, type JobLocation } fro
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse } from './records.js';
 import { type ResultAvailability } from './terminal/export.js';
-import { type WaitStreamEvent, type WaitStreamRequest, type WaitSnapshotRequest } from './wait/contract.js';
+import {
+  type WaitStreamEvent,
+  type WaitStreamRequest,
+  type WaitSnapshotRequest,
+  type WaitCarrierCoverage,
+} from './wait/contract.js';
 
 export interface ActiveJobAccess {
   epochKey(): string | null;
   detail(jobId: string): JobDetailResponse | null;
+  readWaitAdmissions?(jobIds: readonly string[], epochKey: string): WaitAdmission[];
+  observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
   readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
   abort(jobIds: string[]): AbortDecision;
   waitStream(request: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
@@ -248,8 +255,25 @@ export class JobAddressing {
 
   admitWait(request: WaitStreamRequest): WaitAdmission[] {
     const activeEpochKey = this.active.epochKey() ?? ':memory:';
+    const locations = new Map(request.jobIds.map((jobId) => [jobId, this.location(jobId)]));
+    const epochMembers = new Map<string, string[]>();
+    for (const [jobId, location] of locations) {
+      if (!location) continue;
+      const members = epochMembers.get(location.epochKey) ?? [];
+      members.push(jobId);
+      epochMembers.set(location.epochKey, members);
+    }
+    const historicalEpochs = [...epochMembers].filter(([epoch]) => epoch !== activeEpochKey);
+    const closures = new Map(historicalEpochs.map(([epoch]) => [epoch, this.historicalClosure(epoch)]));
+    const historical = new Map(historicalEpochs.map(([epoch, ids]) => [epoch, this.readHistorical(epoch, ids)]));
+    const activeAdmissions = new Map(
+      (this.active.readWaitAdmissions?.(epochMembers.get(activeEpochKey) ?? [], activeEpochKey) ?? []).map((job) => [
+        job.jobId,
+        job,
+      ]),
+    );
     return request.jobIds.map((jobId): WaitAdmission => {
-      const location = this.location(jobId);
+      const location = locations.get(jobId) ?? null;
       if (location === null) {
         const unknown = this.unknownJobDisposition();
         return {
@@ -276,7 +300,7 @@ export class JobAddressing {
           message: 'Change cwd to the job work directory; coral-cli jobs --all includes terminal jobs.',
         };
       if (location.epochKey === activeEpochKey) {
-        const admission = this.active.readWaitAdmission?.(jobId, location.epochKey);
+        const admission = activeAdmissions.get(jobId) ?? this.active.readWaitAdmission?.(jobId, location.epochKey);
         const detail = admission?.detail ?? this.active.detail(jobId);
         return {
           ...admission,
@@ -293,12 +317,13 @@ export class JobAddressing {
             : {}),
         };
       }
-      const closure = this.historicalClosure(location.epochKey);
-      const source = this.readHistorical(location.epochKey, [jobId]);
+      const closure = closures.get(location.epochKey);
+      const source = historical.get(location.epochKey);
+      if (!source) throw new Error(`Missing historical read for epoch ${location.epochKey}`);
       const retained = this.locations.read(jobId) ?? location;
       const observed = source.kind === 'read' ? source.locations.get(jobId) : null;
       const accepted =
-        observed && hasReadableTerminalDetail(observed)
+        source.kind === 'read' && observed?.detail.kind === 'recorded'
           ? observed
           : hasReadableTerminalDetail(retained)
             ? retained
@@ -343,7 +368,7 @@ export class JobAddressing {
     }
     const admissions = request.admissions ?? this.admitWait(request);
     const activeEpochKey = this.active.epochKey() ?? ':memory:';
-    if (!request.supportsWaitV3) {
+    if (request.supportsWaitV3 !== true) {
       const refusal = admissions.find((job) => job.disposition !== 'admitted' && job.disposition !== 'missing');
       if (refusal?.disposition === 'discovery-unknown')
         return {
@@ -363,10 +388,11 @@ export class JobAddressing {
           message: `Job ${refusal.jobId}: ${refusal.disposition}. ${refusal.message ?? ''} Read coral-cli jobs detail ${refusal.jobId} --full.`,
           detail: { jobs: admissions.filter((job) => job.disposition === refusal.disposition).map((job) => job.jobId) },
         };
-      if (admissions.every((job) => job.disposition === 'missing'))
+      const missing = admissions.filter((job) => job.disposition === 'missing').map((job) => job.jobId);
+      if (missing.length > 0)
         return {
           code: 'jobs_not_found',
-          message: `Jobs not found: ${request.jobIds.join(', ')}. ${this.unknownJobCaveat()}`,
+          message: `Jobs not found: ${missing.join(', ')}. Remove those IDs to collect the remaining jobs. ${this.unknownJobCaveat()}`,
         };
     }
     if (
@@ -376,7 +402,7 @@ export class JobAddressing {
     )
       return { code: 'wait_cursor_epoch_required', message: 'The legacy cursor cannot identify historical epochs.' };
     if (
-      !request.supportsWaitV3 &&
+      request.supportsWaitV3 !== true &&
       cursor?.version === undefined &&
       cursor !== undefined &&
       cursor.afterSeq > 0 &&
@@ -386,11 +412,11 @@ export class JobAddressing {
         code: 'wait_cursor_epoch_required',
         message: 'This legacy cursor does not record admitted membership; rerun the wait without its cursor.',
       };
-    if (!request.supportsWaitV3 && cursor?.version === 'jobs.wait.v3')
+    if (request.supportsWaitV3 !== true && cursor?.version === 'jobs.wait.v3')
       return { code: 'wait_cursor_unsupported', message: 'V3 cursor requires supportsWaitV3.' };
     if (
-      !request.supportsWaitV3 &&
-      !request.supportsWaitV2 &&
+      request.supportsWaitV3 !== true &&
+      request.supportsWaitV2 !== true &&
       admissions.some((job) => job.disposition === 'admitted' && job.epochKey !== activeEpochKey)
     )
       return {
@@ -400,8 +426,10 @@ export class JobAddressing {
     try {
       const session = new WaitSession(request.jobIds, cursor, activeEpochKey);
       session.reconcile(admissions);
+      if (request.supportsWaitV3 !== true) session.requireLegacyReplaySupport();
     } catch (error) {
-      if (error instanceof WaitSessionError) return { code: 'wait_cursor_mismatch', message: error.message };
+      if (error instanceof WaitSessionError)
+        return { code: error.code as WaitCursorError['code'], message: error.message };
       throw error;
     }
     return null;
@@ -425,26 +453,15 @@ export class JobAddressing {
       time: this.locations.time,
       activeEpochKey,
       read: () => this.admitWait(request),
-      observe: (session, signal) => {
+      observe: async (session, signal) => {
         const activeIds = session.admissions
           .filter((job) => job.disposition === 'admitted' && job.epochKey === activeEpochKey && !job.detail?.exit)
           .map((job) => job.jobId);
-        if (activeIds.length === 0) return;
-        void (async () => {
-          try {
-            for await (const event of this.active.waitStream({
-              ...request,
-              jobIds: activeIds,
-              cursor: undefined,
-              abortSignal: signal,
-              onCoverage: (ids, unknown, frontier) => session.observeCoverage(ids, unknown, frontier),
-            })) {
-              if (event.type === 'interrupted') session.observeAbsent(event.jobId, event.observedMaxJournalSeq);
-            }
-          } catch {
-            session.observeCoverage(activeIds, activeIds, 0);
-          }
-        })();
+        if (activeIds.length === 0 || !this.active.observeWaitCarriers) return;
+        const coverage = await this.active.observeWaitCarriers(activeIds, signal);
+        if (signal.aborted) return;
+        session.observeCoverage(activeIds, coverage.unknownJobIds, coverage.frontier);
+        for (const event of coverage.interrupted) session.observeAbsent(event.jobId, event.observedMaxJournalSeq);
       },
     });
   }

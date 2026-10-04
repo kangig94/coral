@@ -105,7 +105,6 @@ function coralSnapshot(tree: Snapshot, opened: ReadonlySet<string>): unknown[] {
   return [...tree]
     .filter(([path]) => ![...opened].some((db) => path === `${db}-wal` || path === `${db}-shm`))
     .map(([path, entry]) => {
-      // SQLite reader sidecars can change their parent directory's metadata (Revision S3).
       if (entry.directory && [...opened].some((db) => dirname(db) === path))
         return [path, { directory: true, inode: entry.inode }];
       return [path, entry];

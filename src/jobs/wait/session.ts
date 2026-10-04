@@ -298,12 +298,20 @@ export class WaitSession {
     position.watermark = line.seq;
     position.lineOffset = line.last ? 0 : line.offset + 1;
   }
+  requireLegacyReplaySupport(): void {
+    if (this.notices.length > 0)
+      throw new WaitSessionError(
+        'wait_cursor_epoch_required',
+        'Collection membership changed; rerun the wait without its cursor to collect earlier progress.',
+      );
+  }
+
   skipEarlierProgress(): void {
     for (const admission of this.admissions) {
       if (!admission.epochKey || admission.disposition !== 'admitted') continue;
       const position = this.epochs.get(admission.epochKey);
       if (!position) continue;
-      position.watermark = Math.max(position.watermark, ...(admission.detail?.events ?? []).map((event) => event.seq));
+      for (const event of admission.detail?.events ?? []) position.watermark = Math.max(position.watermark, event.seq);
       position.lineOffset = 0;
     }
   }

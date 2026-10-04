@@ -1,4 +1,4 @@
-import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
+import type { WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
@@ -1170,6 +1170,13 @@ async function executeJobsWaitCatalogRequest({
     supportsWaitV3?: boolean;
     supportsHandover?: boolean;
   };
+  const waitRequest = {
+    ...parsed,
+    supportsWaitV2: parsed.supportsWaitV2 === true,
+    supportsWaitV3: parsed.supportsWaitV3 === true,
+    supportsInterrupted: parsed.supportsInterrupted === true,
+    supportsHandover: parsed.supportsHandover === true,
+  } satisfies CanonicalWaitStreamRequest;
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   if (!rpcPorts.jobs.admitWait)
@@ -1177,8 +1184,8 @@ async function executeJobsWaitCatalogRequest({
       { code: 'wait_epoch_unsupported', message: 'Wait admission is unavailable on this coordinator.' },
       400,
     );
-  const admissions = rpcPorts.jobs.admitWait(parsed);
-  const cursorError = rpcPorts.jobs.validateWait({ ...parsed, admissions });
+  const admissions = rpcPorts.jobs.admitWait(waitRequest);
+  const cursorError = rpcPorts.jobs.validateWait({ ...waitRequest, admissions });
   if (cursorError) {
     const status =
       cursorError.code === 'transient'
@@ -1196,10 +1203,10 @@ async function executeJobsWaitCatalogRequest({
     kind: 'subscription',
     notifications: withSuccessionHandover(
       withInterruptedGate(
-        rpcPorts.jobs.waitStream(withAbortSignal({ ...parsed, admissions }, abortSignal)),
-        parsed.supportsInterrupted === true,
+        rpcPorts.jobs.waitStream(withAbortSignal({ ...waitRequest, admissions }, abortSignal)),
+        waitRequest.supportsInterrupted,
       ),
-      parsed.supportsHandover === true ? rpcPorts.jobs.waitHandoverSignal() : undefined,
+      waitRequest.supportsHandover ? rpcPorts.jobs.waitHandoverSignal() : undefined,
     ),
   };
 }

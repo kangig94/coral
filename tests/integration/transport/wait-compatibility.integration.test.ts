@@ -59,6 +59,48 @@ beforeAll(async () => {
 });
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
+it.each(['v0.10.16', 'v0.10.17'])(
+  '%s gets supported refusals before unrepresentable membership or missing siblings',
+  async (tag) => {
+    const reader = released.get(tag)!;
+    for (const scenario of ['membership', 'missing'] as const) {
+      const owner = addressing('available');
+      const request =
+        scenario === 'membership'
+          ? {
+              jobIds: ['a', 'b'],
+              supportsWaitV2: true,
+              cursor: {
+                version: 'jobs.wait.v2' as const,
+                locations: { a: 'active-epoch' },
+                positions: { 'active-epoch': 100 },
+              },
+            }
+          : { jobIds: ['a', 'ghost'], supportsWaitV2: true };
+      const code = scenario === 'membership' ? 'wait_cursor_epoch_required' : 'jobs_not_found';
+      expect(owner.validateWait(request)).toMatchObject({ code });
+      const delivered: WaitStreamEvent[] = [];
+      let refusal: unknown;
+      try {
+        for await (const event of owner.waitStream(request)) {
+          reader.parseWaitStreamEventValue(event);
+          delivered.push(event);
+        }
+      } catch (error) {
+        refusal = error;
+      }
+      expect(delivered).toEqual([]);
+      expect(refusal).toMatchObject({ code });
+      const typed = refusal as { code: string; message: string };
+      const mapped = reader.mapWaitSubscriptionError(
+        new Error(typed.message, { cause: { code: typed.code, message: typed.message } }),
+      );
+      expect(mapped.message).toContain(scenario === 'membership' ? 'without its cursor' : 'ghost');
+      expect(reader.errorCodeToExit(code)).toBe(1);
+    }
+  },
+);
+
 function addressing(artifact: 'available' | 'repair-pending' | 'retained-away' | 'failed', historical = false) {
   const a = admitted('a', [[1, 'first\nsecond']], true, historical ? 'old-epoch' : 'active-epoch');
   const availability =
@@ -177,6 +219,15 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
       }
       expect(first.filter((event) => event.type === 'progress').map((event) => event.jobId)).toEqual(['b']);
       expect(first.find((event) => event.type === 'terminal')).toMatchObject({ jobId: 'b', remainingJobIds: ['a'] });
+      await expect(
+        readWaitSession({
+          request: { jobIds: ['a'], cursor: legacy },
+          time: createRealTimePort(),
+          activeEpochKey: 'epoch-E',
+          read: () => [a],
+        }).next(),
+      ).rejects.toMatchObject({ code: 'wait_cursor_epoch_required' });
+      legacy = { afterSeq: 0, deliveredJobIds: ['b'] };
       const next: WaitStreamEvent[] = [];
       for await (const event of readWaitSession({
         request: { jobIds: ['a'], cursor: legacy },

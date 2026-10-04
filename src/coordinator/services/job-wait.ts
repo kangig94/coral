@@ -68,6 +68,17 @@ export class JobWaitService {
     }
   }
 
+  readWaitAdmissions(jobIds: readonly string[], epochKey: string) {
+    return this.deps.waitCoordinator.readWaitAdmissions?.(jobIds, epochKey) ?? [];
+  }
+
+  observeWaitCarriers(jobIds: readonly string[], signal: AbortSignal) {
+    return (
+      this.deps.waitCoordinator.observeWaitCarriers?.(jobIds, signal) ??
+      Promise.resolve({ unknownJobIds: [...jobIds], interrupted: [], frontier: 0 })
+    );
+  }
+
   readWaitAdmission(jobId: string, epochKey: string) {
     return this.deps.waitCoordinator.readWaitAdmission?.(jobId, epochKey) ?? null;
   }

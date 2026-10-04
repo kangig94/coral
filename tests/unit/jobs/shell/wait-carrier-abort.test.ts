@@ -53,6 +53,7 @@ it.each(['direct', 'v2', 'live'])(
       {
         epochKey: () => 'epoch-1',
         waitStream: (r) => wait.waitForJobs(r),
+        observeWaitCarriers: (ids, signal) => wait.observeWaitCarriers(ids, signal),
         detail: () => null,
         abort: () => {
           throw new Error('unused');

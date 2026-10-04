@@ -176,3 +176,17 @@ describe('wait snapshot', () => {
     expect(second.exitCode).toBe(0);
   });
 });
+it('bounds a default snapshot over 150000 recorded progress events without stack overflow', () => {
+  const session = new WaitSession(['a']);
+  session.reconcile([
+    admitted(
+      'a',
+      Array.from({ length: 150000 }, (_, i) => [i + 1, `line ${i}`]),
+      false,
+    ),
+  ]);
+  const snapshot = selectWaitSnapshot(session, 20);
+  expect(snapshot.jobs[0].progress).toHaveLength(20);
+  expect(snapshot.jobs[0].progress.at(-1)).toBe('line 149999');
+  expect(snapshot.cursor.epochs[0].watermark).toBe(150000);
+});

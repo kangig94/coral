@@ -66,6 +66,11 @@ export function createCoordinatorRequestPorts(input: {
     {
       epochKey: currentJobEpochKey,
       detail: activeJobDetail,
+      readWaitAdmissions: (jobIds, epochKey) =>
+        services.getExecutionService(readOnlyInvocationContext).readWaitAdmissions?.(jobIds, epochKey) ?? [],
+      observeWaitCarriers: (jobIds, signal) =>
+        services.getExecutionService(readOnlyInvocationContext).observeWaitCarriers?.(jobIds, signal) ??
+        Promise.resolve({ unknownJobIds: [...jobIds], interrupted: [], frontier: 0 }),
       readWaitAdmission: (jobId, epochKey) =>
         services.getExecutionService(readOnlyInvocationContext).readWaitAdmission?.(jobId, epochKey) ?? null,
       abort: control.abortJobs,

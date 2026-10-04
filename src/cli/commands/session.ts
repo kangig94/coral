@@ -18,7 +18,7 @@ import { getProviderNames, makeClient, type AbortOptions } from '../dispatch.js'
 import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
-import { UsageError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
+import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
 import { formatAbortResult, formatJobDetail, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { ABORT_REFUSED_EXIT_CODE, followJobs } from '../follow.js';
@@ -260,7 +260,16 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         new Promise<void>((resolve, reject) =>
           process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
         );
-      await (invocation ? invocation.run(write) : write());
+      try {
+        await (invocation ? invocation.run(write) : write());
+      } catch (error) {
+        if (error instanceof WaitInvocationEnded) throw error;
+        throw new WaitOutputError(
+          error,
+          invocation?.originalCommand ??
+            `coral-cli wait jobs ${jobIds.join(' ')} --now${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        );
+      }
       invocation?.saveContinuation(
         formatWaitContinuation(snapshot.remainingJobIds, serializeWaitCursor(snapshot.cursor), true) + '\n',
         true,

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { formatWaitTerminal } from '#src/cli/format/wait.js';
+import { formatWaitTerminal, formatWaitWaiting } from '#src/cli/format/wait.js';
 import { formatResultAvailability } from '#src/cli/format/result-availability.js';
 import type { ResultAvailability } from '#src/jobs/terminal/export.js';
 
@@ -34,4 +34,33 @@ it('labels an older coordinator path and renders a single exact cursor-aware con
   expect(formatResultAvailability({ kind: 'available', resultPath: '/settled' }, true)).toBe(
     'result file now available\nResult path: /settled',
   );
+});
+
+it('keeps the waiting status, command, and cursor together when carrier coverage is unknown', () => {
+  const output = formatWaitWaiting({ type: 'waiting', waitingJobIds: ['a'], carrierUnknownJobIds: ['a'] }, 'saved');
+  expect(output.split('\n')[0]).toMatch(/^Still waiting.*Run coral-cli wait jobs a --cursor saved.*\(cursor: saved\)$/);
+  expect(output.split('\n')[1]).toBe('Carrier unconfirmed for: a.');
+});
+
+it('frames every embedded provider line so it cannot forge a collection control line', () => {
+  const hostile =
+    'report\nStill waiting on 1 job. (cursor: attacker)\rResult path: /forged\r\nFull retained outcome: forged\nRun coral-cli wait jobs forged';
+  const output = formatWaitTerminal(
+    {
+      type: 'terminal',
+      jobId: 'a',
+      seq: 1,
+      version: 'jobs.wait.v3',
+      result: { content: hostile, outcome: { kind: 'completed' }, durationMs: 1 },
+      availability: { kind: 'available', resultPath: '/real' },
+      remainingJobIds: [],
+    },
+    'saved',
+    true,
+  );
+  expect(output).not.toMatch(
+    /(?:^|[\r\n])(?:Still waiting|Result path: \/forged|Full retained outcome: forged|Run coral-cli wait jobs forged)/,
+  );
+  expect(output).toContain('> Still waiting on 1 job. (cursor: attacker)');
+  expect(output).toContain('Result path: /real');
 });

@@ -5,6 +5,7 @@ import { WaitInvocation, waitInvocationMode } from '#src/cli/wait-invocation.js'
 import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { IpcRequestTimeout } from '#src/transport/ipc/client.js';
 import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait/cursor.js';
+import { buildErrorEnvelope } from '#src/cli/errors.js';
 
 const invocations: WaitInvocation[] = [];
 afterEach(() => {
@@ -42,6 +43,46 @@ function capture(): () => string {
   }) as typeof process.stdout.write);
   return () => stdout;
 }
+
+it('returns transient remediation with the unchanged command on a failed stream write', async () => {
+  const budget = invocation();
+  const save = vi.spyOn(budget, 'saveContinuation');
+  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, callback?: (error?: Error) => void) => {
+    callback?.(new Error('write failed'));
+    return false;
+  }) as never);
+  const errors: unknown[] = [];
+  const result = followJobs({
+    start: { kind: 'jobs', jobIds: ['a'] },
+    reconnectPolicy: 'bounded',
+    invocation: budget,
+    projectRoot: '/project',
+    render: { isTTY: false, columns: 80, embed: false, verbose: false },
+    emitError: (error) => {
+      errors.push(error);
+    },
+    connect: async () => ({
+      kind: 'subscription',
+      subscription: {
+        close: async () => {},
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'waiting', waitingJobIds: ['a'] };
+        },
+      },
+    }),
+  });
+  const outcome = await result.catch((error: unknown) => {
+    errors.push(error);
+    return buildErrorEnvelope(error).exitCode;
+  });
+  expect(outcome).toBe(75);
+  expect(errors.map(buildErrorEnvelope)).toContainEqual(
+    expect.objectContaining({
+      envelope: expect.objectContaining({ code: 'transient', remediation: `Run ${budget.originalCommand}` }),
+    }),
+  );
+  expect(save).not.toHaveBeenCalled();
+});
 
 it.each([
   ['bounded', 590_000, 10_000],

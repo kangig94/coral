@@ -318,6 +318,17 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.waitService.awaitLaunch(jobId, timeoutMs);
   }
 
+  readWaitAdmissions(jobIds: readonly string[], epochKey: string) {
+    return this.waitService.readWaitAdmissions?.(jobIds, epochKey) ?? [];
+  }
+
+  observeWaitCarriers(jobIds: readonly string[], signal: AbortSignal) {
+    return (
+      this.waitService.observeWaitCarriers?.(jobIds, signal) ??
+      Promise.resolve({ unknownJobIds: [...jobIds], interrupted: [], frontier: 0 })
+    );
+  }
+
   readWaitAdmission(jobId: string, epochKey: string) {
     return this.waitService.readWaitAdmission(jobId, epochKey);
   }

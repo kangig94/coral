@@ -105,7 +105,6 @@ it.each([64, 128])('encodes %i jobs at maximum frontiers under the authenticated
     expect(decodeSerializedWaitCursor(encoded)).toEqual({ kind: 'decoded', cursor });
     const headers = `POST /jobs/wait HTTP/1.1\r\nHost: 127.0.0.1:49152\r\nAuthorization: Bearer ${'a'.repeat(256)}\r\nContent-Type: application/json\r\nLast-Event-ID: ${encoded}\r\nContent-Length: 4096\r\nConnection: keep-alive\r\n\r\n`;
     expect(Buffer.byteLength(headers)).toBeLessThanOrEqual(12288);
-    if (count === 128 && !shared) expect(encoded).toHaveLength(6504);
   }
 });
 

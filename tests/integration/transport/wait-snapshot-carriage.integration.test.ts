@@ -488,6 +488,9 @@ describe('actual wait carriage', () => {
       jobIds: ['a', 'ghost', 'u'],
       projectRoot: '/tmp',
       supportsWaitV3: true,
+      supportsWaitV2: false,
+      supportsInterrupted: false,
+      supportsHandover: false,
     }))
       expect(parseWaitStreamEventValue(event)).toEqual(event);
     complete.jobs.snapshot = undefined;

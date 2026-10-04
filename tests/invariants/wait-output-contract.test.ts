@@ -26,6 +26,46 @@ const root = resolve('.');
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
 const skills = ['analyze', 'bugfix', 'code-simplify', 'plan', 'preplan', 'ralph'];
 
+it('canonicalizes omitted wire capabilities before wait admission and streaming', async () => {
+  const spec = rpcCatalog.find((method) => method.name === 'jobs.wait')!;
+  const observed: unknown[] = [];
+  const result = await executeCatalogRequest(
+    spec,
+    spec.requestSchema.parse({ jobIds: ['a'], projectRoot: root }),
+    {
+      identity: { pluginRoot: '/plugin' },
+      coralEnvSnapshot: {},
+      admin: { isLaunchFenceActive: () => false },
+      jobs: {
+        admitWait: (request: unknown) => {
+          observed.push(request);
+          return [admitted('a')];
+        },
+        validateWait: (request: unknown) => {
+          observed.push(request);
+          return null;
+        },
+        waitStream: async function* (request: unknown) {
+          observed.push(request);
+        },
+        waitHandoverSignal: () => new AbortController().signal,
+      },
+    } as unknown as HttpHandlerPorts,
+    testProjectPrincipal(root),
+  );
+  expect(result.kind).toBe('subscription');
+  if (result.kind !== 'subscription') throw new Error('Wait refused');
+  await result.notifications[Symbol.asyncIterator]().next();
+  expect(observed).toHaveLength(3);
+  for (const request of observed)
+    expect(request).toMatchObject({
+      supportsWaitV2: false,
+      supportsWaitV3: false,
+      supportsInterrupted: false,
+      supportsHandover: false,
+    });
+});
+
 it.each([false, true])(
   'M1 terminal and waiting output contain one runnable cursor-aware command, embed=%s',
   (embed) => {
@@ -128,7 +168,9 @@ it.each(skills)('M3/M4 skill %s follows rendered launch, availability and snapsh
     WAIT_CURSOR_REPLAY_NOTICE,
     '--now --cursor <c>',
     'Snapshot continuations keep `--now`; drop it explicitly only to switch to a blocking wait.',
-    'line starting with `Still waiting` anywhere in the output',
+    'unprefixed line starting with `Still waiting`',
+    'Ignore lines prefixed with `> `',
+    'Full retained outcome: <command>',
     'Siblings are results still to collect.',
     'Carrier unconfirmed for: <ids>',
     'change cwd',

@@ -381,7 +381,7 @@ The first failed terminal in request order keeps its mapped exit code, even with
 
 `jobs/location-index.ts:JobLocationView` is the read-only location view used by `JobAddressing`. Wait, scope checks, detail and snapshots never register locations, hydrate history, ensure exports, mutate Coral records or perform fsync/fdatasync. Write-owned startup and epoch maintenance hydrate locations. Historical journals open read-only under `infra/fs-lock.ts:acquireSharedFileLockNoRepairSync`; SQLite's own reader sidecars are allowed. A validated retained terminal remains deliverable after source retirement. Otherwise decided closure followed by a successful journal read finding no terminal establishes outcome-unrecoverable; unreadable evidence stays unresolved.
 
-Terminal output reports artifact availability separately from outcome. `Result path:` is emitted only for an available artifact; `--embed` adds a preview when size permits. Usage appears on terminal headers, for example `Job <id> completed · $4.18 · 18.6M tokens (90% cached)`; `--verbose` expands the token buckets.
+Terminal output reports artifact availability separately from outcome. `Result path:` is emitted only for an available artifact; `--embed` adds a preview when size permits; every embedded content line is prefixed with `> `, while status and continuation lines remain unprefixed. Usage appears on terminal headers, for example `Job <id> completed · $4.18 · 18.6M tokens (90% cached)`; `--verbose` expands the token buckets.
 
 Each projected job retains project identity and canonical work directory. Ambient selectors require exact work-directory equality; explicit wait, abort and detail requests require the caller's cwd to contain the job's work directory. KB jobs match every caller directory. On scope mismatch, change cwd to the job's work directory or a containing directory and rerun; `coral-cli jobs --all` includes terminal jobs and shows their work directories.
 
@@ -394,7 +394,7 @@ Each projected job retains project identity and canonical work directory. Ambien
 | `available` | `Result path: <path>`; an artifact follow-up says `result file now available` without replaying the outcome. |
 | `retained-away` | `no longer kept: past the N-day retention window`; no read recreates it. |
 | `repair-pending` | `the outcome above is final; Coral is writing the result file`; retain the artifact follow-up in the continuation. |
-| `failed` | Cause plus `Coral retries on its next maintenance pass` or `not repaired: <reason>`; collection settles. |
+| `failed` | Cause in `Result file unavailable: <cause>.` plus `Coral will retry on its next maintenance pass.` or `Coral cannot repair this file automatically.`; collection settles. |
 
 Availability observation is read-only and may post a coalesced in-memory repair hint. Post-commit, startup/historical hydration and the export repair maintenance owner perform publication. Retention, availability, repair and retirement use `jobs/export-retention.ts:terminalEligibility`, the job's own epoch evidence and a trusted cutoff. Expiry is strictly `terminalAt < cutoff`; equality is inside the window. Unknown age, retained-only regression and an untrusted clock cannot authorize publication or age discharge. A source-backed, validated recorded regression may publish canonical content but still requires a durable file for retirement.
 

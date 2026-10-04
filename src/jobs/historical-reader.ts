@@ -21,7 +21,7 @@ import {
   type JobLocationView,
   type JobLocation,
 } from './location-index.js';
-import { phaseForOutcome } from './outcome.js';
+import { phaseForOutcome, jobProgressFaultSchema } from './outcome.js';
 import { aggregateWorkflowUsage } from './workflow-usage.js';
 import type { Database } from '../store/db.js';
 import {
@@ -180,6 +180,22 @@ function diagnosticsFrom(raw: string): JobDiagnostics {
   return jobDiagnosticsSchema.parse(JSON.parse(raw) as unknown);
 }
 
+function historicalProgressFaults(row: Projection, events: readonly z.infer<typeof eventSchema>[]) {
+  const recorded = events
+    .filter((event) => event.type === 'job.progress.emitted')
+    .map((event) => jobProgressFaultSchema.safeParse(parseBody(event.body)))
+    .flatMap((fault) => (fault.success ? [fault.data] : []));
+  if (events.some((event) => event.type === 'job.launch.requested')) return recorded;
+  const retained = [...diagnosticsFrom(row.diagnostics).progressFaults];
+  const unmatched = [...retained];
+  for (const fault of recorded) {
+    const index = unmatched.findIndex((known) => JSON.stringify(known) === JSON.stringify(fault));
+    if (index >= 0) unmatched.splice(index, 1);
+    else retained.push(fault);
+  }
+  return retained;
+}
+
 function historicalDetail(
   db: SqliteDatabasePort,
   row: Projection,
@@ -228,7 +244,7 @@ function historicalDetail(
     terminalBody === null
       ? diagnosticsFrom(row.diagnostics)
       : {
-          progressFaults: [],
+          progressFaults: historicalProgressFaults(row, events),
           ...jobDiagnosticsSchema.omit({ progressFaults: true }).parse(terminalBody.diagnostics ?? {}),
         };
   if (jobKind === 'workflow') {

@@ -1,4 +1,4 @@
-import { UsageError } from './errors.js';
+import { UsageError, WaitOutputError } from './errors.js';
 import { Command } from 'commander';
 import { performance } from 'node:perf_hooks';
 import { raceWithSignal } from '../infra/promise-signal.js';
@@ -157,7 +157,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
       () =>
         new Promise<void>((resolve, reject) => {
           process.stdout.write('', (error) => {
-            if (error) reject(error);
+            if (error) reject(new WaitOutputError(error, this.originalCommand));
             else resolve();
           });
         }),
@@ -200,13 +200,20 @@ export function validateWaitJobsOptions(opts: {
 }): number | undefined {
   if (opts.now && (opts.embed || opts.verbose))
     throw new UsageError(
-      '--now cannot be used with --embed or --verbose; use coral-cli jobs detail <jobId> --full for full content.',
+      `--now cannot be used with --embed or --verbose. Remove ${[opts.embed ? '--embed' : '', opts.verbose ? '--verbose' : ''].filter(Boolean).join(' and ')} for an immediate snapshot, or remove --now for a streaming wait. Use coral-cli jobs detail <jobId> --full for full content.`,
     );
   if (opts.lines !== undefined && opts.cursor !== undefined)
-    throw new UsageError('--lines cannot be used with --cursor');
-  if (opts.lines !== undefined && opts.now !== true) throw new UsageError('--lines requires --now');
+    throw new UsageError(
+      '--lines cannot be used with --cursor. Remove --lines to resume from that cursor, or remove --cursor to show the most recent lines.',
+    );
+  if (opts.lines !== undefined && opts.now !== true)
+    throw new UsageError(
+      '--lines requires --now. Add --now for an immediate snapshot of recent lines, or remove --lines for a streaming wait.',
+    );
   const lines = opts.lines === undefined ? undefined : Number(opts.lines);
   if (lines !== undefined && (!Number.isInteger(lines) || lines < 1 || lines > 500))
-    throw new UsageError('--lines must be an integer from 1 to 500');
+    throw new UsageError(
+      '--lines must be an integer from 1 to 500. Choose a value in that range, or remove --lines to use the default 20.',
+    );
   return lines;
 }

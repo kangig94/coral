@@ -159,7 +159,7 @@ it.each([0, -3_600_000, 3_600_000])('bounds historical waiting across a %s ms wa
   await iterator.return(undefined);
 });
 
-it.each([false, true])('excludes a proven missing sibling from direct continuations, v2=%s', async (supportsWaitV2) => {
+it.each([false, true])('refuses a partially missing legacy batch at admission, v2=%s', async (supportsWaitV2) => {
   const { index } = fixture();
   index.register('known', 'lineage-new:8', {
     projectRoot: '/workspace/project',
@@ -181,16 +181,13 @@ it.each([false, true])('excludes a proven missing sibling from direct continuati
     () => false,
     () => 'pending',
   );
-  const stream = addressing.waitStream({ jobIds: ['known', 'ghost'], supportsWaitV2, timeoutSeconds: 0 });
-  const next = await stream.next();
-  expect(next.value).toMatchObject({ waitingJobIds: ['known'] });
+  const request = { jobIds: ['known', 'ghost'], supportsWaitV2, timeoutSeconds: 0 };
+  expect(addressing.validateWait(request)).toMatchObject({
+    code: 'jobs_not_found',
+    message: expect.stringContaining('ghost'),
+  });
+  await expect(addressing.waitStream(request).next()).rejects.toMatchObject({ code: 'jobs_not_found' });
   expect(seen).toEqual([]);
-  expect(next.value).toMatchObject({ carrierUnknownJobIds: ['known'] });
-  if (supportsWaitV2)
-    expect(next.value).toMatchObject({
-      cursor: { locations: { known: 'lineage-new:8' }, positions: { 'lineage-new:8': 0 } },
-    });
-  await stream.return(undefined);
 });
 
 it('rejects an unsupported generation before reading structural cursor fields', () => {

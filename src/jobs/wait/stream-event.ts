@@ -91,9 +91,6 @@ function legacyRenderCursor(deliveredJobIds: readonly string[] | undefined): Ext
     : { afterSeq: 0, deliveredJobIds: [...deliveredJobIds] };
 }
 
-// Every variant below but `interrupted` is `.passthrough()`, not `.strict()`: a coordinator newer than
-// this build may add an optional field to any of them, and tolerating that one unknown key is what lets
-// this build keep decoding the event instead of `.parse` throwing partway through the wait stream.
 const waitProgressEventSchema = z
   .object({
     type: z.literal('progress'),
@@ -177,11 +174,7 @@ const waitTerminalEventSchema = z
   })
   .passthrough();
 
-/**
- * Structurally incapable of carrying a terminal: no `seq`, no `result`, no `resultPath`, no continuity
- * snapshot. `.strict()` is what enforces that — a producer that tried to smuggle a terminal field through
- * this variant fails to parse rather than reaching a consumer that might honour it.
- */
+/** Carrier interruption must reject terminal fields and cannot acknowledge an outcome. */
 const waitCarrierInterruptedEventSchema = z
   .object({
     type: z.literal('interrupted'),
@@ -203,8 +196,7 @@ const waitWaitingEventSchema = z
     version: z.literal('jobs.wait.v3').optional(),
     exitCode: z.number().int().min(0).max(255).optional(),
     waitingJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS),
-    // Omitted rather than empty: a renderer distinguishes "no unknowns" from "this build does not report
-    // unknowns" by the field's absence, and an always-present empty array erases that distinction.
+    // Empty unknown coverage must omit the wire field.
     carrierUnknownJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS).nonempty().optional(),
     cursor: waitCursorV2Schema.optional(),
   })
@@ -292,12 +284,7 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
   return event;
 }
 
-/**
- * Same forward-compatibility gate as `parseWaitStreamEvent`, for a value that has already been decoded —
- * an IPC notification's `params`, rather than a raw SSE `data:` string. A build receiving a `type` it does
- * not recognize (a newer coordinator's addition) returns `null` here instead of throwing, so the caller can
- * skip that one event and keep the stream alive rather than crash on it.
- */
+/** Unknown event types must not terminate the subscription. */
 export function parseWaitStreamEventValue(value: unknown): WaitStreamEvent | null {
   if (!isRecord(value) || typeof value.type !== 'string' || !KNOWN_WAIT_STREAM_EVENT_TYPES.has(value.type)) {
     return null;

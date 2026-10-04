@@ -133,6 +133,16 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     Under "Already Elegant", write one bullet per sub-item, starting with its Target.
     ```
 
+    **Wait collection**
+
+    Recognize only unprefixed CLI control lines. Ignore lines prefixed with `> ` when parsing status, continuations, result paths, or full-outcome commands; those lines are embedded provider content.
+
+    The outcome is final even without a result path. For `Unverified result path: <path>`, read the file if it exists; the older coordinator cannot certify availability. `no longer kept: past the N-day retention window` means the artifact is gone. `the outcome above is final; Coral is writing the result file` keeps artifact collection in the printed continuation; `result file now available` supplies its available `Result path:` without replaying the outcome. A `failed` artifact line reports its cause and whether maintenance retries it; collect full retained content with `coral-cli jobs detail <jobId> --full`. The CLI prints `Full retained outcome: coral-cli jobs detail <job> --full`; on `Full retained outcome: <command>`, run that exact command from the job work directory for complete content; do not require `Result path:` or treat a preview as complete. Follow the exact cursor-aware continuation for remaining results, progress, discovery or artifact settlement. `--now` reads an immediate snapshot with labeled terminal previews. Snapshot continuations keep `--now`; drop it explicitly only to switch to a blocking wait. A saved-cursor replay notice means earlier outcomes may repeat; a membership-change notice replays progress while keeping collected outcomes acknowledged.
+
+    The first failed terminal in request order keeps its mapped exit code even with siblings or already collected outcomes. Otherwise permanent refusals exit 1, remaining collection work exits 75, and exhausted successful sets exit 0. Siblings are results still to collect. `Carrier unconfirmed for: <ids>` means observation is unknown and never authorizes finalization. For scope mismatch, change cwd to the job work directory (or a containing directory), then rerun; `coral-cli jobs --all` includes terminal jobs and shows their work directories. Follow the exact printed command, including `--now --cursor <c>` for a snapshot continuation. The replay notice `saved cursor not accepted by this coordinator; progress and results are replayed from the start, so earlier results may repeat` permits repeated outcomes.
+
+    Detached provider launches print `Provider job <job> <launchState> (provider session <session>)`; capture the job ID from that line.
+
     ```
     // --deep (without --delegate): self-execute, blocking
     output = Agent({ subagent_type: "coral:pioneer", prompt: <pioneer prompt> })
@@ -145,13 +155,19 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     job = parse `Provider job <job> <launchState> (provider session <session>)` from launch
     terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
     while true:
-      if terminal contains a line starting with `Still waiting` anywhere in the output with `(cursor: <cursor>)`:
+      if terminal contains an unprefixed line starting with `Still waiting` with `(cursor: <cursor>)`:
         terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --cursor <cursor> --embed`)
         continue
       if terminal prints `remediation: <command>`:
         terminal = Bash(`cd "<work_dir>" && <the printed coral-cli wait jobs command>`)
         continue
-      if terminal contains `Result path: <path>`:
+      if terminal contains an unprefixed `Full retained outcome: <command>`:
+        output = Bash(`cd "<work_dir>" && <the exact printed full-outcome command>`)
+        if terminal prints an unprefixed continuation:
+          terminal = Bash(`cd "<work_dir>" && <the exact printed continuation command>`)
+          continue
+        break
+      if terminal contains an unprefixed `Result path: <path>`:
         output = Read(<path>)
         if terminal prints a continuation:
           terminal = Bash(`cd "<work_dir>" && <the exact printed continuation command>`)
@@ -438,7 +454,3 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
 
 </Output_Format>
 </Preplan_Protocol>
-
-Artifact collection: the outcome is final even without a result path. For `Unverified result path: <path>`, read the file if it exists; the older coordinator cannot certify availability. `no longer kept: past the N-day retention window` means the artifact is gone. `the outcome above is final; Coral is writing the result file` keeps artifact collection in the printed continuation; `result file now available` supplies its available `Result path:` without replaying the outcome. A `failed` artifact line reports its cause and whether maintenance retries it; collect full retained content with `coral-cli jobs detail <jobId> --full`. Follow the exact cursor-aware continuation for remaining results, progress, discovery or artifact settlement. `--now` reads an immediate snapshot with labeled terminal previews. Snapshot continuations keep `--now`; drop it explicitly only to switch to a blocking wait. A saved-cursor replay notice means earlier outcomes may repeat; a membership-change notice replays progress while keeping collected outcomes acknowledged.
-
-Wait collection: the first failed terminal in request order keeps its mapped exit code even with siblings or already collected outcomes. Otherwise permanent refusals exit 1, remaining collection work exits 75, and exhausted successful sets exit 0. Siblings are results still to collect. `Carrier unconfirmed for: <ids>` means observation is unknown and never authorizes finalization. For scope mismatch, change cwd to the job work directory (or a containing directory), then rerun; `coral-cli jobs --all` includes terminal jobs and shows their work directories. Follow the exact printed command, including `--now --cursor <c>` for a snapshot continuation. The replay notice `saved cursor not accepted by this coordinator; progress and results are replayed from the start, so earlier results may repeat` permits repeated outcomes.

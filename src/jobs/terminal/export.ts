@@ -24,6 +24,27 @@ import { terminalEligibility, type TerminalEligibility } from '../export-retenti
 import { resolveJobRetentionMs } from '../retention-clock.js';
 import type { RetentionRunBudget } from '../../store/retention-outcome.js';
 
+function unavailableForEligibility(eligibility: TerminalEligibility, retentionDays: number): ResultAvailability | null {
+  if (!eligibility.cutoffTrusted) return { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true };
+  if (eligibility.kind === 'expired')
+    return {
+      kind: 'retained-away',
+      retentionDays,
+    };
+  if (eligibility.age === 'unknown')
+    return { kind: 'failed', cause: 'terminal-age-unknown', retryScheduled: false, ageUncertain: true };
+  if (!eligibility.sourceReadable)
+    return {
+      kind: 'failed',
+      cause: 'source-epoch-retired',
+      retryScheduled: false,
+      ageUncertain: eligibility.age === 'regression',
+    };
+  if (!eligibility.publicationAuthorized)
+    return { kind: 'failed', cause: 'terminal-clock-regression', retryScheduled: false, ageUncertain: true };
+  return null;
+}
+
 export function resultPathFor(jobsRoot: string, jobId: string): string {
   return join(jobsRoot, jobId, 'result.md');
 }
@@ -216,23 +237,11 @@ export class TerminalResultExportOwner {
     if (this.available(jobId))
       return { kind: 'available', resultPath: location.resultPath ?? resultPathFor(this.input.jobsRoot, jobId) };
     const eligibility = this.eligibility(jobId);
-    if (!eligibility.cutoffTrusted) return { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true };
-    if (eligibility.kind === 'expired')
-      return {
-        kind: 'retained-away',
-        retentionDays: resolveJobRetentionMs(this.input.runtime.env.get('CORAL_JOBS_RETENTION_DAYS')) / 86_400_000,
-      };
-    if (eligibility.age === 'unknown')
-      return { kind: 'failed', cause: 'terminal-age-unknown', retryScheduled: false, ageUncertain: true };
-    if (!eligibility.sourceReadable)
-      return {
-        kind: 'failed',
-        cause: 'source-epoch-retired',
-        retryScheduled: false,
-        ageUncertain: eligibility.age === 'regression',
-      };
-    if (!eligibility.publicationAuthorized)
-      return { kind: 'failed', cause: 'terminal-clock-regression', retryScheduled: false, ageUncertain: true };
+    const unavailable = unavailableForEligibility(
+      eligibility,
+      resolveJobRetentionMs(this.input.runtime.env.get('CORAL_JOBS_RETENTION_DAYS')) / 86_400_000,
+    );
+    if (unavailable) return unavailable;
     try {
       if (this.render(jobId) === null)
         return { kind: 'failed', cause: 'workflow-facts-unavailable', retryScheduled: false };

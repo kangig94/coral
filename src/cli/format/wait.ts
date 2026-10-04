@@ -76,6 +76,13 @@ export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string
   return formatTimedMessage(event.timing.elapsedMs, body, label);
 }
 
+function frameWaitContent(content: string): string {
+  return content
+    .split(/\r\n|[\r\n\u2028\u2029]/)
+    .map((line) => `> ${line}`)
+    .join('\n');
+}
+
 export function formatWaitTerminal(
   event: WaitTerminalEvent,
   cursor: string | null,
@@ -87,7 +94,8 @@ export function formatWaitTerminal(
     formatUsageSegment(event.usage, options),
   ]
     .filter((segment): segment is string => segment !== undefined)
-    .join(' · ');
+    .join(' · ')
+    .replace(/\r\n|[\r\n\u2028\u2029]/g, '\n> ');
   const continuation = formatWaitContinuation(event.remainingJobIds, cursor);
   const fullDetail =
     (event.version === 'jobs.wait.v3' && event.availability?.kind !== 'available') ||
@@ -111,23 +119,13 @@ export function formatWaitTerminal(
     event.version === 'jobs.wait.v3' && event.availability
       ? formatResultAvailability(event.availability)
       : `Unverified result path: ${event.resultPath}`,
-    truncatePreview(pickTerminalPreviewSource(event.result, options.describeCauseRef)),
+    frameWaitContent(truncatePreview(pickTerminalPreviewSource(event.result, options.describeCauseRef))),
     continuation,
     cursor === null ? undefined : `Cursor: ${cursor}`,
   ]);
 }
 
-/**
- * Reports what was observed without claiming the job ended. The wording is deliberately about the carrier,
- * not the job — "still waiting" stays true, because this event releases nothing and the durable terminal is
- * still the only thing that will end the stream.
- */
 export function formatWaitCarrierInterrupted(event: WaitCarrierInterruptedEvent): string {
-  // No continuation line, unlike every other event that renders one. Those are printed where this process is
-  // about to hand control back, so "run this to continue waiting" names a real next step. This event returns
-  // control to nobody — the subscription stays open and the exit code stays pending — so the same line would
-  // instruct an action that is not needed, and a caller following it literally would open a second
-  // subscription to a stream it is already reading.
   return `Job ${event.jobId} carrier is no longer present (stored phase: ${event.storedPhase}); still waiting for a durable result — this wait is still open, no action needed.`;
 }
 
@@ -151,7 +149,7 @@ export function formatWaitWaiting(
       ? undefined
       : `Carrier unconfirmed for: ${event.carrierUnknownJobIds.join(', ')}.`;
 
-  return appendCursor(joinLines([`${status}${continuation}`, unknown]), cursor);
+  return joinLines([appendCursor(`${status}${continuation}`, cursor), unknown]);
 }
 
 export function renderWaitLine(text: string, ctx: WaitRenderContext): string {
@@ -179,9 +177,9 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
       terminal
         ? `Outcome: ${terminal.outcomeKind}; exit ${terminal.exitCode}; duration ${terminal.durationMs} ms`
         : undefined,
-      terminal ? `Content preview:\n${terminal.contentPreview}` : undefined,
+      terminal ? `Content preview:\n${frameWaitContent(terminal.contentPreview)}` : undefined,
       terminal?.contentOmittedBytes ? `Content omitted: ${terminal.contentOmittedBytes} bytes` : undefined,
-      terminal ? `Diagnostic preview:\n${terminal.diagnosticPreview}` : undefined,
+      terminal ? `Diagnostic preview:\n${frameWaitContent(terminal.diagnosticPreview)}` : undefined,
       terminal?.diagnosticOmittedBytes ? `Diagnostics omitted: ${terminal.diagnosticOmittedBytes} bytes` : undefined,
       job.availability && (!job.alreadyCollected || job.artifactFollowUp)
         ? formatResultAvailability(job.availability, job.artifactFollowUp)

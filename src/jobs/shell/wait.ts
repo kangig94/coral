@@ -498,10 +498,20 @@ export class WaitCoordinator {
     return { ...queued, jobKind: 'kb', systemTaskId: status.owner.id };
   }
 
-  readWaitAdmission(jobId: string, epochKey: string): WaitAdmission {
+  readWaitAdmissions(jobIds: readonly string[], epochKey: string): WaitAdmission[] {
+    const frontier = this.deps.getCurrentJournalSeq();
+    return jobIds.map((jobId) => this.readWaitAdmission(jobId, epochKey, frontier));
+  }
+
+  async observeWaitCarriers(jobIds: readonly string[], signal: AbortSignal) {
+    const observed = await this.observePendingCarriers(new Set(jobIds), new Set());
+    return { ...observed, frontier: signal.aborted ? 0 : this.deps.getCurrentJournalSeq() };
+  }
+
+  readWaitAdmission(jobId: string, epochKey: string, frontier?: number): WaitAdmission {
     const projected = this.deps.loadJobProjectionDetail(jobId);
     if (!projected.status) return { jobId, disposition: 'missing' };
-    const events = this.deps.readJobEvents(jobId);
+    const events = this.deps.readJobEvents(jobId).filter((event) => frontier === undefined || event.seq <= frontier);
     const terminal = events.find((event): event is JobTerminalEvent => event.type === 'terminal');
     const exit =
       projected.exit && terminal
@@ -510,7 +520,7 @@ export class WaitCoordinator {
             ...surfaceProviderHostRecovery(terminal, projected),
             diagnostics: { ...projected.exit.diagnostics, usage: this.readTerminalUsage(terminal) },
           }
-        : projected.exit;
+        : null;
     const availability = exit
       ? (this.deps.observeResultAvailability?.(jobId) ?? {
           kind: 'failed' as const,
@@ -531,26 +541,22 @@ export class WaitCoordinator {
   }
 
   async *waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    if (req.supportsWaitV3) {
+    if (req.supportsWaitV3 === true) {
       const epochKey = ':active:';
       yield* readWaitSession({
         request: req,
         time: this.deps.time,
         activeEpochKey: epochKey,
-        read: () => req.jobIds.map((jobId) => this.readWaitAdmission(jobId, epochKey)),
-        observe: (session, signal) => {
-          const pending = new Set(
-            session.admissions
-              .filter((job) => job.disposition === 'admitted' && !job.detail?.exit)
-              .map((job) => job.jobId),
-          );
-          void this.observePendingCarriers(pending, new Set()).then((observed) => {
-            if (signal.aborted) return;
-            const frontier = this.deps.getCurrentJournalSeq();
-            session.observeCoverage([...pending], observed.unknownJobIds, frontier);
-            req.onCoverage?.([...pending], observed.unknownJobIds, frontier);
-            for (const event of observed.interrupted) session.observeAbsent(event.jobId, event.observedMaxJournalSeq);
-          });
+        read: () => this.readWaitAdmissions(req.jobIds, epochKey),
+        observe: async (session, signal) => {
+          const pending = session.admissions
+            .filter((job) => job.disposition === 'admitted' && !job.detail?.exit)
+            .map((job) => job.jobId);
+          const observed = await this.observeWaitCarriers(pending, signal);
+          if (signal.aborted) return;
+          session.observeCoverage(pending, observed.unknownJobIds, observed.frontier);
+          req.onCoverage?.(pending, observed.unknownJobIds, observed.frontier);
+          for (const event of observed.interrupted) session.observeAbsent(event.jobId, event.observedMaxJournalSeq);
         },
       });
       return;
@@ -740,17 +746,20 @@ export class WaitCoordinator {
       request.timeoutSeconds = timeoutMs / 1000;
     }
 
-    for await (const event of this.waitForJobs(request)) {
-      if (event.type === 'terminal' && event.jobId === jobId) {
-        return {
-          content: event.result.content,
-          continuity: this.readQueryContinuity(jobId),
-        };
+    const deadline = Number(this.deps.time.monotonicNow()) + (timeoutMs ?? 600_000);
+    do {
+      request.timeoutSeconds = Math.max(0, deadline - Number(this.deps.time.monotonicNow())) / 1000;
+      for await (const event of this.waitForJobs(request)) {
+        if (event.type === 'terminal' && event.jobId === jobId) {
+          return { content: event.result.content, continuity: this.readQueryContinuity(jobId) };
+        }
+        if (event.type === 'waiting') {
+          if (Number(this.deps.time.monotonicNow()) >= deadline)
+            throw new Error('Wait expired while job still running');
+          request.cursor = event.cursor;
+        }
       }
-      if (event.type === 'waiting') {
-        throw new Error('Wait expired while job still running');
-      }
-    }
+    } while (Number(this.deps.time.monotonicNow()) < deadline);
 
     throw new Error(`Job ${jobId} ended without a terminal result`);
   }

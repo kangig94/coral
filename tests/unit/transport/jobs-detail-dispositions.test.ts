@@ -242,7 +242,7 @@ it('maps jobs-owned admission without filtering the request or its saved cursor'
   });
   const result = await execute(
     'jobs.wait',
-    { jobIds: ['known', 'ghost'], cursor, supportsWaitV2: true },
+    { jobIds: ['known', 'ghost'], cursor, supportsWaitV2: true, supportsWaitV3: true },
     {
       scopeCheck: () => ({ valid: ['known', 'ghost'], mismatch: [], missing: ['ghost'] }),
       unknownJobDisposition: () => 'not-found',

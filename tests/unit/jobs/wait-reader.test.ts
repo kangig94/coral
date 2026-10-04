@@ -13,6 +13,118 @@ async function collect(stream: AsyncGenerator<WaitStreamEvent>): Promise<WaitStr
   return events;
 }
 
+it('refuses a legacy membership replay before delivering any member', async () => {
+  const events: WaitStreamEvent[] = [];
+  await expect(
+    (async () => {
+      for await (const event of readWaitSession({
+        request: {
+          jobIds: ['a', 'b'],
+          supportsWaitV2: true,
+          cursor: {
+            version: 'jobs.wait.v2',
+            locations: { a: 'epoch-E' },
+            positions: { 'epoch-E': 100 },
+          },
+        },
+        time: createRealTimePort(),
+        activeEpochKey: 'epoch-E',
+        read: () => [admitted('a', [], false), admitted('b', [[10, 'unread b']])],
+      }))
+        events.push(event);
+    })(),
+  ).rejects.toMatchObject({ code: 'wait_cursor_epoch_required', message: expect.stringContaining('without') });
+  expect(events).toEqual([]);
+});
+
+it('refuses a legacy partially missing batch before delivering its successful sibling', async () => {
+  const stream = readWaitSession({
+    request: { jobIds: ['a', 'ghost'], supportsWaitV2: true, timeoutSeconds: 0 },
+    time: createRealTimePort(),
+    activeEpochKey: 'epoch-E',
+    read: () => [admitted('a'), { jobId: 'ghost', disposition: 'missing' }],
+  });
+  await expect(stream.next()).rejects.toMatchObject({
+    code: 'jobs_not_found',
+    message: expect.stringContaining('ghost'),
+  });
+});
+
+it('refuses a missing legacy member discovered during streaming', async () => {
+  const time = new VirtualTime();
+  let missing = false;
+  const stream = readWaitSession({
+    request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 1 },
+    time,
+    activeEpochKey: 'epoch-E',
+    read: () => (missing ? [{ jobId: 'a', disposition: 'missing' }] : [admitted('a', [], false)]),
+  });
+  const next = stream.next();
+  const assertion = expect(next).rejects.toMatchObject({ code: 'jobs_not_found' });
+  await flushMicrotasks(20);
+  missing = true;
+  time.tick(250);
+  await flushMicrotasks(20);
+  await assertion;
+});
+
+it('refreshes carrier coverage from live to unknown within the original deadline', async () => {
+  const time = new VirtualTime();
+  let calls = 0;
+  const stream = readWaitSession({
+    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
+    time,
+    activeEpochKey: 'epoch-E',
+    read: () => [admitted('a', [], false)],
+    observe: (session) => {
+      session.observeCoverage(['a'], ++calls === 1 ? [] : ['a'], 0);
+    },
+  });
+  const next = stream.next();
+  await flushMicrotasks(20);
+  for (let i = 0; i < 4; i++) {
+    time.tick(250);
+    await flushMicrotasks(20);
+  }
+  expect((await next).value).toMatchObject({ type: 'waiting', carrierUnknownJobIds: ['a'] });
+  expect(calls).toBeGreaterThan(1);
+  await stream.return(undefined);
+});
+
+it('keeps one cancellable carrier observation in flight and ignores its late reply', async () => {
+  const time = new VirtualTime();
+  let calls = 0;
+  let observedSignal: AbortSignal | undefined;
+  let complete!: () => void;
+  const stream = readWaitSession({
+    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
+    time,
+    activeEpochKey: 'epoch-E',
+    read: () => [admitted('a', [], false)],
+    observe: async (session, signal) => {
+      calls++;
+      observedSignal = signal;
+      await new Promise<void>((resolve) => {
+        complete = resolve;
+      });
+      if (!signal.aborted) session.observeCoverage(['a'], [], 0);
+    },
+  });
+  const next = stream.next();
+  await flushMicrotasks(20);
+  for (let i = 0; i < 4; i++) {
+    time.tick(250);
+    await flushMicrotasks(20);
+  }
+  expect((await next).value).toMatchObject({ type: 'waiting', carrierUnknownJobIds: ['a'] });
+  await stream.return(undefined);
+  expect(calls).toBe(1);
+  expect(observedSignal?.aborted).toBe(true);
+  complete();
+  await flushMicrotasks(20);
+  expect(calls).toBe(1);
+});
+
 it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
   'exchanges real %s readers when unresolved U joins below A frontier',
   async (direction) => {

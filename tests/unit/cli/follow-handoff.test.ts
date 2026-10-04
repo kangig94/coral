@@ -181,6 +181,54 @@ describe('cli follow handoff', () => {
     expect(mockState.renderHandoffNotice).toHaveBeenCalledWith({ kind: 'handoff-success', version: '2.0.0' });
   });
 
+  it('reports a buffered stdout failure during handoff with the original command', async () => {
+    const secondRunStarted = createDeferred<void>();
+    const handoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
+    let failWrite!: (error: Error) => void;
+    const subscribe = vi.fn().mockResolvedValue(
+      makeSubscription([
+        { type: 'progress', jobId: 'job-1', seq: 4, message: 'buffered-progress', timing: waitTiming },
+        { type: 'waiting', waitingJobIds: ['job-1'] },
+      ]),
+    );
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
+      if (chunk.toString().includes('buffered-progress')) failWrite = (error) => callback?.(error);
+      else callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    mockState.ensure.mockResolvedValueOnce(makeBackend(subscribe)).mockResolvedValueOnce(makeBackend());
+    mockState.runHandoff
+      .mockResolvedValueOnce(
+        recorded({ kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } }),
+      )
+      .mockImplementationOnce(() => {
+        secondRunStarted.resolve();
+        return handoff.promise;
+      });
+    const options = makeOptions();
+    const { launchAndFollow } = await import('#src/cli/follow.js');
+    const follow = launchAndFollow(options);
+    await secondRunStarted.promise;
+    failWrite(new Error('stdout unavailable'));
+    handoff.resolve(
+      recorded({
+        kind: 'delegated',
+        version: '2.0.0',
+        outcome: { kind: 'handoff-success', version: '2.0.0' } as HandoffRunnerModule.HandoffOutcome,
+      }),
+    );
+    await expect(follow).resolves.toBe(75);
+    expect(options.emitError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'transient',
+        remediation: 'Run coral-cli wait jobs job-1',
+      }),
+    );
+  });
+
   it('should resume a transient retry from afterSeq and suppress replayed journal facts', async () => {
     const output: string[] = [];
     const progressEvent: WaitStreamEvent = {

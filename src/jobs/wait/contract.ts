@@ -41,6 +41,13 @@ export interface WaitStreamRequest extends WaitRequest {
   onCoverage?: (jobIds: readonly string[], unknownJobIds: readonly string[], frontier: number) => void;
 }
 
+export type CanonicalWaitStreamRequest = WaitStreamRequest & {
+  supportsWaitV2: boolean;
+  supportsWaitV3: boolean;
+  supportsInterrupted: boolean;
+  supportsHandover: boolean;
+};
+
 export interface WaitSnapshotRequest extends WaitStreamRequest {
   lines?: number;
 }
@@ -124,7 +131,7 @@ export type WaitStreamEvent =
       version?: 'jobs.wait.v3';
       exitCode?: number;
       cursor?: Exclude<WaitCursor, { afterSeq: number }>;
-      /** Sorted; omitted entirely when empty, so "nothing unknown" costs no wire field. */
+      /** Unknown carrier IDs must be sorted, and empty coverage must omit this field. */
       carrierUnknownJobIds?: string[];
     };
 
@@ -134,15 +141,7 @@ export type WaitStreamEvent =
  */
 export type WaitHandoverNotice = { type: 'handover' };
 
-/**
- * The wire-only report that a job's carrier was observed absent.
- *
- * Deliberately nonterminal, and deliberately missing everything a terminal has: no journal `seq`, no
- * `result`, no `resultPath`, no continuity snapshot, and no session release. Derived absence may tell a
- * waiting human what it sees; it may not end the job, free its claim, or become a stored
- * `SessionInterruptedFault`. The subscription stays open and the exit code stays pending, because the
- * journal terminal is still the only thing that decides either — and if one arrives after this, it wins.
- */
+/** Carrier absence cannot end a job, release its claim, or become a recorded interruption fault. */
 export type CarrierInterruptedWaitEvent = {
   type: 'interrupted';
   version?: 'jobs.wait.v3';
@@ -156,13 +155,15 @@ export type CarrierInterruptedWaitEvent = {
   cursor?: Exclude<WaitCursor, { afterSeq: number }>;
 };
 
-/**
- * Coordinator-facing wait surface that the jobs domain exposes. Defined here
- * (next to the WaitStream value types) so the port and the values it carries
- * stay in one place — splitting the interface into a separate `wait-port.ts`
- * was over-decomposition.
- */
+export type WaitCarrierCoverage = {
+  unknownJobIds: readonly string[];
+  interrupted: readonly CarrierInterruptedWaitEvent[];
+  frontier: number;
+};
+
 export interface JobWaitPort {
+  readWaitAdmissions?(jobIds: readonly string[], epochKey: string): WaitAdmission[];
+  observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
   readWaitAdmission?(jobId: string, epochKey: string): WaitAdmission | null;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
   waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;

@@ -126,6 +126,17 @@ export class WaitResumeError extends Error {
   }
 }
 
+export class WaitOutputError extends Error {
+  readonly code = 'transient';
+  readonly exitCode = 75;
+  readonly remediation: string;
+
+  constructor(cause: unknown, originalCommand: string) {
+    super(`Wait output could not be delivered: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.remediation = `Run ${originalCommand}`;
+  }
+}
+
 export class WaitSnapshotResponseError extends Error {
   readonly code = 'transient';
   readonly exitCode = 75;
@@ -257,6 +268,7 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
     error instanceof StoreResetCliError ||
     error instanceof ChildPrincipalBindingError ||
     error instanceof WaitResumeError ||
+    error instanceof WaitOutputError ||
     error instanceof WaitSnapshotResponseError ||
     error instanceof WaitInvocationReadinessError
   ) {

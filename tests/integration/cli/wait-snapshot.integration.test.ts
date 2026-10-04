@@ -109,12 +109,21 @@ it.each(['refusal', 'disconnect', 'output failure'])(
       callback?.(new Error('write failed'));
       return false;
     }) as never);
-    vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
+    let stderr = '';
+    vi.spyOn(process.stderr, 'write').mockImplementation(((text: string) => {
+      stderr += text;
+      return true;
+    }) as never);
     invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
     installWaitInvocation(invocation);
     const save = vi.spyOn(invocation, 'saveContinuation');
     await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
     expect(save).not.toHaveBeenCalled();
+    if (failure === 'output failure') {
+      expect(process.exitCode).toBe(75);
+      expect(stderr).toContain('transient');
+      expect(stderr).toContain(`Run ${invocation.originalCommand}`);
+    }
   },
 );
 

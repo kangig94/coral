@@ -4,7 +4,7 @@ import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../.
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
 import type { JobStatus } from '../../jobs/records.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait/contract.js';
+import type { WaitStreamEvent, CanonicalWaitStreamRequest } from '../../jobs/wait/contract.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
 import type { AbortDecision } from '../../jobs/contracts/abort-registry.js';
@@ -58,12 +58,12 @@ interface SessionRequestPort {
 }
 
 interface JobsRequestPort {
-  admitWait?(req: WaitStreamRequest): WaitAdmission[];
+  admitWait?(req: CanonicalWaitStreamRequest): WaitAdmission[];
   snapshot?(req: WaitSnapshotRequest): WaitSnapshot;
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
-  validateWait(req: WaitStreamRequest): WaitCursorError | null;
-  waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
+  validateWait(req: CanonicalWaitStreamRequest): WaitCursorError | null;
+  waitStream(req: CanonicalWaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
 
   waitHandoverSignal(): AbortSignal;
   list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;

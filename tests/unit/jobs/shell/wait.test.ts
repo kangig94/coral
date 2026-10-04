@@ -7,6 +7,10 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+import { JobAddressing } from '#src/jobs/addressing.js';
+import { JobLocationIndex } from '#src/jobs/location-index.js';
+import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 
 function fixture() {
   const runtime = new SimulationRuntime();
@@ -84,6 +88,142 @@ function fixture() {
 }
 
 describe('WaitCoordinator', () => {
+  it('observes active carriers independently of a previously collected 501-line backlog', async () => {
+    const f = fixture();
+    f.journal.push(
+      ...admitted(
+        'job-1',
+        Array.from({ length: 501 }, (_, i) => [i + 1, `line ${i}`]),
+        false,
+      ).detail!.events,
+    );
+    let calls = 0;
+    f.deps.observeCarriers = async () => [
+      {
+        jobId: 'job-1',
+        storedPhase: 'running',
+        observedMaxJournalSeq: 501,
+        liveness: ++calls === 1 ? 'live' : 'unknown',
+      },
+    ];
+    const index = new JobLocationIndex(f.runtime, '/coral');
+    index.register('job-1', 'epoch', { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
+    const addressing = new JobAddressing(
+      index.readOnlyView(),
+      {
+        epochKey: () => 'epoch',
+        detail: () => ({ ...admitted('job-1', [], false).detail!, events: f.journal }),
+        readWaitAdmission: (id, epoch) => f.wait.readWaitAdmission(id, epoch),
+        readWaitAdmissions: (ids, epoch) => f.wait.readWaitAdmissions(ids, epoch),
+        observeWaitCarriers: (ids, signal) => f.wait.observeWaitCarriers(ids, signal),
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: (request) => f.wait.waitForJobs(request),
+      },
+      () => false,
+      () => 'pending',
+    );
+    const stream = addressing.waitStream({
+      jobIds: ['job-1'],
+      supportsWaitV3: true,
+      timeoutSeconds: 1,
+      cursor: {
+        version: 'jobs.wait.v3',
+        epochs: [{ token: waitEpochToken('epoch'), watermark: 501, lineOffset: 0 }],
+        jobs: [{ hash: waitJobHash('job-1'), epoch: 0, flags: 0 }],
+      },
+    });
+    const next = stream.next();
+    await flushMicrotasks(40);
+    for (let i = 0; i < 4; i++) {
+      f.runtime.time.tick(250);
+      await flushMicrotasks(40);
+    }
+    expect((await next).value).toMatchObject({ type: 'waiting', carrierUnknownJobIds: ['job-1'] });
+    expect(calls).toBeGreaterThan(1);
+    await stream.return(undefined);
+  });
+  it('continues internal outcome waiting past progress pages without renewing the deadline', async () => {
+    const f = fixture();
+    f.journal.push(
+      ...admitted(
+        'job-1',
+        Array.from({ length: 501 }, (_, i) => [i + 1, `line ${i}`]),
+        false,
+      ).detail!.events,
+    );
+    let settled = false;
+    const result = f.wait.waitStreamOnce('job-1', 1000).finally(() => {
+      settled = true;
+    });
+    const assertion = expect(result).resolves.toMatchObject({ content: 'done' });
+    await flushMicrotasks(100);
+    expect(settled).toBe(false);
+    f.runtime.time.tick(250);
+    await flushMicrotasks(30);
+    f.journal.push({ ...f.terminal(), seq: 502 });
+    f.runtime.time.tick(250);
+    await flushMicrotasks(30);
+    await assertion;
+  });
+
+  it('times out an internal paginated outcome wait only at its original deadline', async () => {
+    const f = fixture();
+    f.journal.push(
+      ...admitted(
+        'job-1',
+        Array.from({ length: 1001 }, (_, i) => [i + 1, `line ${i}`]),
+        false,
+      ).detail!.events,
+    );
+    let settled = false;
+    const result = f.wait.waitStreamOnce('job-1', 1000).finally(() => {
+      settled = true;
+    });
+    const assertion = expect(result).rejects.toThrow('Wait expired');
+    await flushMicrotasks(5000);
+    expect(settled).toBe(false);
+    for (let i = 0; i < 4; i++) {
+      f.runtime.time.tick(250);
+      await flushMicrotasks(50);
+    }
+    await assertion;
+  });
+
+  it('bounds active sibling progress by one frontier across a between-read commit', async () => {
+    const f = fixture();
+    let committed = false;
+    let frontier = 0;
+    f.deps.getCurrentJournalSeq = () => frontier;
+    f.deps.loadJobProjectionDetail = (id) => ({
+      status: { ...admitted(id, [], false).detail!.status },
+      launch: null,
+      runtime: null,
+      exit: null,
+    });
+    f.deps.readJobEvents = (id) => {
+      const events = admitted(id, committed ? [[id === 'a' ? 1 : 2, `${id} committed`]] : [], false).detail!.events;
+      if (id === 'a' && !committed) {
+        committed = true;
+        frontier = 2;
+      }
+      return events;
+    };
+    const events = [];
+    for await (const event of f.wait.waitForJobs({ jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 0 }))
+      events.push(event);
+    const cursor = events.at(-1)!.cursor;
+    for await (const event of f.wait.waitForJobs({
+      jobIds: ['a', 'b'],
+      supportsWaitV3: true,
+      timeoutSeconds: 0,
+      cursor,
+    }))
+      events.push(event);
+    expect(events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual([
+      'a committed',
+      'b committed',
+    ]);
+  });
   it('refuses an unavailable legacy artifact instead of naming a file', async () => {
     const f = fixture();
     f.deps.observeResultAvailability = () => ({ kind: 'repair-pending', ageUncertain: false });
