@@ -142,7 +142,7 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     launch = Bash(`coral-cli <other-host> pioneer --work-dir "<work_dir>" -d -i - <<'CORAL_INPUT'
     <pioneer prompt>
     CORAL_INPUT`)
-    job = parse `Job <job> <launchState> (session <session>)` from launch
+    job = parse `Provider job <job> <launchState> (provider session <session>)` from launch
     terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
     while true:
       if terminal begins `Still waiting` with `(cursor: <cursor>)`:
@@ -440,3 +440,5 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
 </Preplan_Protocol>
 
 Artifact collection: the outcome is final even without a result path. For `Unverified result path: <path>`, read the file if it exists; the older coordinator cannot certify availability. `no longer kept: past the N-day retention window` means the artifact is gone. `the outcome above is final; Coral is writing the result file` keeps artifact collection in the printed continuation; `result file now available` supplies its available `Result path:` without replaying the outcome. A `failed` artifact line reports its cause and whether maintenance retries it; collect full retained content with `coral-cli jobs detail <jobId> --full`. Follow the exact cursor-aware continuation for remaining results, progress, discovery or artifact settlement. `--now` reads an immediate snapshot with labeled terminal previews; dropping `--now` from its continuation opens a blocking wait. A saved-cursor replay notice means earlier outcomes may repeat; a membership-change notice replays progress while keeping collected outcomes acknowledged.
+
+Wait collection: the first failed terminal in request order keeps its mapped exit code even with siblings or already collected outcomes. Otherwise permanent refusals exit 1, remaining collection work exits 75, and exhausted successful sets exit 0. Siblings are results still to collect. `Carrier unconfirmed for: <ids>` means observation is unknown and never authorizes finalization. For scope mismatch, change cwd to the job work directory (or a containing directory), then rerun; `coral-cli jobs --all` includes terminal jobs and shows their work directories. Follow the exact printed command, including `--now --cursor <c>` for a snapshot continuation. The replay notice `saved cursor not accepted by this coordinator; progress and results are replayed from the start, so earlier results may repeat` permits repeated outcomes.

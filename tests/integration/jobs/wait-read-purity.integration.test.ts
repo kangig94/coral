@@ -71,6 +71,7 @@ function fixture(historical = false) {
       detail: historical ? () => null : detail,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
       waitStream: (request) => wait.waitForJobs(request),
+      readWaitAdmission: (id, epochKey) => wait.readWaitAdmission(id, epochKey),
     },
     () => false,
     closure,

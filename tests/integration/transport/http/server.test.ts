@@ -1137,7 +1137,7 @@ describe('execution backend server', () => {
       code: 'scope_mismatch',
       message: "Jobs are outside the caller's work directory scope",
       remediation:
-        "Rerun from the job's work directory, or from a directory that contains it — `coral-cli jobs` groups every job under the work directory it ran in.",
+        "Change cwd to the job's work directory, or a directory that contains it, then rerun. Use `coral-cli jobs --all` to find its work directory, including terminal jobs.",
       detail: { jobs: ['job-foreign-project'] },
     });
   });

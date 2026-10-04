@@ -297,7 +297,8 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .option('--verbose', 'Show detailed usage breakdown on terminal events')
     .addHelpText(
       'after',
-      '\nExits 75 when requested work remains (not 0).\n' +
+      '\nThe first failed terminal in request order keeps its mapped exit code, even with pending siblings.\n' +
+        'Otherwise permanent refusals exit 1; remaining collection work exits 75; exhausted successful sets exit 0.\n' +
         'Ctrl+C stops monitoring with exit 75 and a continuation; it never aborts jobs.\n' +
         'Run the continuation or remediation command printed in the output.\n',
     )

@@ -55,7 +55,7 @@ from an unexpected result on its own. Both halves live in
 than wait on them. The decision leaves one constraint in its place: a CLI surface may not be changed so
 that a stale reader's existing expectation silently becomes wrong.
 
-**What the compatibility decision left behind.** `build-identity-and-upgrade` asks for a repository-wide mixed-build record gate. `jobs-read-contract-schema-first` and `result-artifact-availability` consume that rule.
+**What the compatibility decision left behind.** `build-identity-and-upgrade` asks for a repository-wide mixed-build record gate. `jobs-read-contract-schema-first` consumes that rule. Wait artifact availability is implemented through the negotiated v3 contract.
 
 **Relationships that matter before starting.** `legacy-v1-capsule-retirement` and
 `foreign-capsule-retirement-terminal-recovery`
@@ -328,7 +328,6 @@ can ship independently, but only as the whole-directory move its start condition
 |                                                                              |                                                                                                                                                                                                  |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) | `jobs.list` and `jobs.detail` still lack `responseSchema`; seven other catalog specs now carry one. The jobs conversion remains open, with job scope settled and the consumer inventory ready to audit. |
-| [`result-artifact-availability.md`](./result-artifact-availability.md) | Crash-gap recovery now materializes known terminal results; the remaining gap is a wait event that reports an unverified result path after materialization failure. |
 
 ---
 

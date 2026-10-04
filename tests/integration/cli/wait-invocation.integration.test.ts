@@ -246,7 +246,7 @@ it.each([
     expect(Number([...result.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeLessThan(250);
 });
 
-it.each(['routing', 'selection', 'terminal', 'delegation', 'delegated-delivery'])(
+it.each(['routing', 'selection', 'terminal', 'delegation', 'delegated-delivery', 'silent'])(
   'two SIGINTs during %s never abort',
   async (scenario) => {
     const result = await probe(scenario, 'real', true);

@@ -3,6 +3,8 @@
 **Status**: open. Split from PR #309 after the round-5 design pass settled compatibility rules but found the
 conversion too broad for a workflow-identity change.
 
+The wait read/write split gives wait sessions, cursors and snapshots their own validated contract. It does not convert `jobs.list` or `jobs.detail` to schema-first responses; this TODO remains open for those boundaries.
+
 ## The problem
 
 Jobs list/detail responses cross producer, RPC, CLI dispatch, and formatting boundaries without one runtime
