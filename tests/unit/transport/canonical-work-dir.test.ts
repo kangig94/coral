@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
+import { hostKeyFromSpec } from '#src/providers/host-identity.js';
 import {
   canonicalizeWorkDir,
   canonicalWorkDirWireSchema,

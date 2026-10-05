@@ -525,6 +525,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
         }) as unknown as DurableProviderProxyOperationAuthority,
     );
     const reconciler = new ProviderOperationReconciler({
+      requestContainment: () => {},
       getProgressStore: () => progressStore,
       authorityFor,
       startupSetRecovery: {

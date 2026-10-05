@@ -10,6 +10,7 @@ export type AppServerProxyPlacementResult =
   | Readonly<{ kind: 'rekey-refused-contained'; operationId: string; reason: string }>;
 
 export interface AppServerProxyRoute {
+  hostRoot(): string;
   /**
    * A non-local result cannot permit an in-process start because, once journalled, the same operation identity
    * may still acquire remote execution until reconciliation proves release or publishes the activation ACK.

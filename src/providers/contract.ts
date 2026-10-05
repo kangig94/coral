@@ -267,6 +267,7 @@ export type ProviderCurationRequest = {
 };
 
 export type ProviderCurationPreparationRuntime = {
+  readonly hostRoot: string;
   readonly storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'>;
   readonly ids: Pick<IdPort, 'uuid' | 'sha256'>;
   readonly baseEnv: Readonly<Record<string, string>>;
@@ -603,6 +604,7 @@ export type ProviderMiddleware<
 > = (next: Provider<Plan, ExecutionRuntime>) => Provider<Plan, ExecutionRuntime>;
 
 type ProviderHostPlanningContext<Access extends ProviderAccess> = Readonly<{
+  hostRoot: string;
   access: Access;
   baseEnv: Readonly<Record<string, string>>;
   platform: string;

@@ -38,6 +38,7 @@ export type LocalCarrierRegistries = Readonly<{
   /** Keeps the mutation authority out of every carrier consumer while letting each job resolve durable
    *  recovery ownership only after lifecycle has published the one-way startup boundary. */
   hasStartupRecoveryPassed: () => boolean;
+  isWorkflowOwnedByThisCoordinator: (jobId: string) => boolean;
   isAdmittedByThisCoordinator: (jobId: string) => boolean;
   /** `LocalOperationRegistry.stateForJob` (W2.3) — `null` when this coordinator has no live entry for the
    *  job, which `evidenceFor` below maps to `'inherited'`, never to a guessed `'activated'`. */
@@ -106,7 +107,7 @@ function evidenceFor(jobId: string, detail: JobProjectionDetail, registries: Loc
           }
         : { carrierClass: 'app-server-acquired', registryState: registries.registryStateForJob(jobId) ?? 'inherited' };
     case 'workflow':
-      return { carrierClass: 'workflow', ownedByThisCoordinator: registries.isAdmittedByThisCoordinator(jobId) };
+      return { carrierClass: 'workflow', ownedByThisCoordinator: registries.isWorkflowOwnedByThisCoordinator(jobId) };
     case 'internal':
       return { carrierClass: 'internal-hosted-kb', memberOfSupervisor: registries.isAdmittedByThisCoordinator(jobId) };
     case 'durable-cli':

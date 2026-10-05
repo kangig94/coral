@@ -166,7 +166,7 @@ export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecuti
           : { cwd: input.request.cwd, coralEnv: { CORAL_CLAUDE_TRANSPORT: 'print' } },
       baseEnv: input.baseEnv,
       platform: input.platform,
-      storage: input.storage,
+      hostRoot: input.hostRoot,
       transportMode: input.purpose === 'curation' ? 'print' : resolveClaudeTransportMode(input.request.coralEnv),
     }),
   compileStableHost: (host) =>

@@ -34,7 +34,7 @@ function makeRuntime(): Runtime {
       readProcessIncarnation: () => testIncarnation(1_700_000_000),
     },
     ids: {
-      uuid: () => 'uuid',
+      uuid: () => '40000000-0000-4000-8000-000000000001',
       randomBytes: () => Buffer.alloc(32),
       sha256: () => 'sha256',
     },

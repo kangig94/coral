@@ -1,10 +1,5 @@
-declare const __PLUGIN_ROOT__: string;
-declare const __BUNDLE_DIR__: string | undefined;
-
-import { join } from 'node:path';
 import { z } from 'zod';
 
-import type { StoragePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
 import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
@@ -186,30 +181,6 @@ export function snapshotClaudePersistedContinuity(state: {
       : { brokerSessionKey: state.brokerSessionKey, brokerTurnId: state.brokerTurnId }),
   };
   return Object.keys(candidate).length === 0 ? null : readClaudePersistedContinuity(candidate);
-}
-
-export function resolveClaudeBrokerEntrypoint(storage: Pick<StoragePort, 'existsSync'>): string {
-  if (typeof __PLUGIN_ROOT__ !== 'string') {
-    throw new Error('Claude broker entrypoint requires __PLUGIN_ROOT__ to be defined at build time.');
-  }
-
-  const activeBundleDir = typeof __BUNDLE_DIR__ === 'string' && __BUNDLE_DIR__.length > 0 ? __BUNDLE_DIR__ : null;
-  const activeBundlePath = activeBundleDir === null ? null : join(activeBundleDir, 'coral-claude-appserver.cjs');
-  if (activeBundlePath !== null && storage.existsSync(activeBundlePath)) {
-    return activeBundlePath;
-  }
-
-  const bundledPath = join(__PLUGIN_ROOT__, 'bridge', 'coral-claude-appserver.cjs');
-  if (storage.existsSync(bundledPath)) {
-    return bundledPath;
-  }
-
-  const compiledPath = join(__PLUGIN_ROOT__, 'dist', 'providers', 'claude', 'appserver', 'server.js');
-  if (storage.existsSync(compiledPath)) {
-    return compiledPath;
-  }
-
-  return bundledPath;
 }
 
 function buildSystemPromptSignature(ids: Pick<IdPort, 'sha256'>, derivedSystemPrompt?: string): string {

@@ -16,11 +16,15 @@ import { providerOperationPrepareAttempt, providerOperationSetLocator } from './
 import type { ProviderOperationReconciler } from './provider-operation-reconciler.js';
 
 export function createAppServerProxyRoute(deps: {
-  readonly hostManager: Pick<ProviderHostManager, 'routeAppServerOperation' | 'awaitAppServerOperationRoute'>;
+  readonly hostManager: Pick<
+    ProviderHostManager,
+    'proxyHostRoot' | 'routeAppServerOperation' | 'awaitAppServerOperationRoute'
+  >;
   readonly reconciler: Pick<ProviderOperationReconciler, 'begin'>;
   readonly now: () => number;
 }): AppServerProxyRoute {
   return {
+    hostRoot: () => deps.hostManager.proxyHostRoot(),
     async activate(request: AppServerProxyRouteRequest, signal: AbortSignal) {
       const authority =
         deps.hostManager.routeAppServerOperation(request.hostSpec) ??

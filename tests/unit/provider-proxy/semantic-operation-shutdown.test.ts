@@ -2,6 +2,7 @@ import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { hostFingerprintFromSpec } from '#src/providers/host-identity.js';
 
 /**
  * `SemanticOperationRuntime.shutdown` (BLOCKING B6) coverage, kept in its own file rather than added to the
@@ -103,7 +104,7 @@ function fakeHostSpec(provider = 'claude'): ProviderServerSpec {
 function fakeHostRef(provider = 'claude'): HostRef {
   return {
     provider,
-    fingerprint: 'a'.repeat(64),
+    fingerprint: hostFingerprintFromSpec(fakeHostSpec(provider)),
     instanceId: 'inst-1',
     leaseMode: 'job-exclusive',
     ownerJobId: 'job-1',
@@ -220,7 +221,13 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
       value: fakeBoundProviderStuckUntilAborted(closeStaged),
     });
 
-    const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
+    const host = createSemanticOperationRuntime({
+      hostRoot: '/test/plugin',
+      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+      runtime,
+      hostAuthority: fakeHostAuthority(),
+      getProxy: () => proxy,
+    });
     await host.ensureProviderRoot(key, prepared);
     const start = host.host.start({ key, prepared });
     await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: fakeHostRef() });

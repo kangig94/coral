@@ -586,3 +586,121 @@ describe('ProviderProxySetLifecycle', () => {
     }
   });
 });
+
+it('owns an operation containment request through route removal, the mutation fence and ordinary absence delivery', async () => {
+  const record = providerOperationRecord('proxy-activation-pending');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'operation-release-absence' }));
+  const authority = fakeAuthority({ record, stopAndReap });
+  const time = new ManualClock();
+  const fenced = vi.fn();
+  const lifecycle = lifecycleFor({
+    claims,
+    time,
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: {
+      containmentDisappeared: vi.fn(async () => ({
+        kind: 'accepted' as const,
+        acceptance: { kind: 'accepted' as const, operation: record.operation, disposition: 'record-absent' as const },
+      })),
+    },
+    proveContainmentAbsent: noContainmentProof,
+    fenceProviderOperationMutations: (identity) => {
+      fenced(identity);
+      return new ProviderOperationMutationAdmission().closeSet(identity);
+    },
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  const admission = lifecycle.beginFreshAcquisition('operation-route');
+  if (admission.kind !== 'accepted') throw new Error('acquisition refused');
+  lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
+  expect(lifecycle.routeFor('operation-route')).toBe(authority);
+  expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+  lifecycle.requestOperationContainment(authority.setIdentity, 'provider_activation_ack_invalid');
+  expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+  expect(lifecycle.routeFor('operation-route')).toBeNull();
+  expect(fenced).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+});
+
+it.each(['proxy-activation-pending', 'activation-resolution-pending'] as const)(
+  'refuses released operator containment on an available stuck %s set with live claims',
+  (phase) => {
+    const record = providerOperationRecord(phase);
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const authority = fakeAuthority({ record });
+    const lifecycle = lifecycleFor({
+      claims,
+      time: new ManualClock(),
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: vi.fn() },
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    expect(lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity))).toEqual({
+      kind: 'not-held',
+      state: 'available',
+    });
+  },
+);
+
+it('preserves all live claims when one operation requests containment and records its exit', async () => {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record]);
+  const stopAndReap = vi.fn();
+  const authority = fakeAuthority({ record, stopAndReap });
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  lifecycle.requestOperationContainment(authority.setIdentity, 'provider_operation_retries_exhausted');
+  await drainMicrotasks();
+  expect(stopAndReap).not.toHaveBeenCalled();
+  expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+  expect(JSON.stringify(lifecycle.snapshot())).toContain('operation-control-outcome-unknown');
+});
+
+it('delivers ordinary disappearance to live claims when an operation release failure meets teardown-latched authority', async () => {
+  const record = providerOperationRecord('activation-resolution-pending');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record]);
+  const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'teardown-latched-absence' }));
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const authority = fakeAuthority({ record, stopAndReap, faults });
+  const consumed = vi.fn(async () => ({
+    kind: 'accepted' as const,
+    acceptance: {
+      kind: 'accepted' as const,
+      operation: record.operation,
+      disposition: 'terminalization-committed' as const,
+    },
+  }));
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: consumed },
+    proveContainmentAbsent: noContainmentProof,
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  lifecycle.requestOperationContainment(authority.setIdentity, 'provider_activation_ack_invalid');
+  faults.latch(terminalAuthorityFault());
+  expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+  await vi.waitFor(() => expect(consumed).toHaveBeenCalledOnce());
+  expect(consumed).toHaveBeenCalledWith(expect.objectContaining({ disappearanceReceipt: 'teardown-latched-absence' }));
+});

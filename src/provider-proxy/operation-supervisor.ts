@@ -542,7 +542,6 @@ export class OperationSupervisor {
     const entry = this.#ledger.get(record.key);
     if (entry === null) return this.#recordNeverStartedReceipt(record);
     if (
-      entry.state === 'started-awaiting-publication' ||
       entry.state === 'executing' ||
       entry.state === 'terminal-awaiting-settlement' ||
       entry.state === 'suspended-awaiting-durable-decision'
@@ -551,6 +550,13 @@ export class OperationSupervisor {
     }
     if (record.releaseIntent !== null && record.releaseIntent.kind !== 'never-started') {
       throw new ProxyControlProtocolError('invalid_state', 'Activation has begun for this operation.');
+    }
+    if (entry.state === 'started-awaiting-publication') {
+      await this.stop(operation, 'signal_abort');
+      throw new ProxyControlProtocolError(
+        'invalid_state',
+        'The unpublished start was stopped and released; inspect its release receipt.',
+      );
     }
     if (record.releaseIntent === null) this.#beginRelease(record, { kind: 'never-started' });
     const receipt = await this.#driveRelease(record, true);
@@ -590,6 +596,12 @@ export class OperationSupervisor {
       const next = isInterruptionStopCause(effectiveCause)
         ? 'suspended-awaiting-durable-decision'
         : 'terminal-awaiting-settlement';
+      if (entry.state === 'started-awaiting-publication') {
+        await this.#options.host.stop({ key: record.key, cause: effectiveCause });
+        this.#beginRelease(record, { kind: 'activation-indeterminate' });
+        await this.#driveRelease(record, true);
+        return proxyOperationStopResultSchema.parse({ state: 'released', committedThroughProviderSeq: 0 });
+      }
       if (entry.state === 'executing') {
         await this.#options.host.stop({ key: record.key, cause: effectiveCause });
         if (this.#ledger.get(record.key)?.state === 'executing') this.#ledger.transition(record.key, next);

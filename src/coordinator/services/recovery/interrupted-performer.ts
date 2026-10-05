@@ -1,3 +1,4 @@
+import { localProviderHostRoot } from '../../../infra/bundle-manifest.js';
 import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { join } from 'node:path';
 
@@ -150,6 +151,7 @@ function replacementInput(
   runtime: PerformerRuntime,
 ): BoundProviderHostPreparationInput {
   return {
+    hostRoot: localProviderHostRoot(),
     request: plan.request,
     persistedContinuity: plan.continuity,
     baseEnv: runtime.env.fullSnapshot(),

@@ -17,7 +17,11 @@ type FaultlessDecisionFields = Readonly<{
   error?: never;
 }>;
 
-export type ProviderProxySetRetirementReason = 'graceful_idle' | 'excess_capacity' | 'unclaimed_discovery';
+export type ProviderProxySetRetirementReason =
+  | 'graceful_idle'
+  | 'excess_capacity'
+  | 'unclaimed_discovery'
+  | 'operation_release_failed';
 export type ProviderProxySetClaimBearingRetirementReason = Exclude<
   ProviderProxySetRetirementReason,
   'unclaimed_discovery'
@@ -378,6 +382,7 @@ export function renderProviderProxySetDecision(
     case 'graceful_idle':
     case 'excess_capacity':
     case 'unclaimed_discovery':
+    case 'operation_release_failed':
       fault = 'none';
       subject = 'retirement';
       error = 'none';

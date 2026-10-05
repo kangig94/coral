@@ -1,3 +1,4 @@
+import { ControlClientError } from '../../provider-proxy/control-client.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -119,7 +120,7 @@ export type ProviderOperationReconciliationEvidence =
 
 export type ProviderStopOutcome =
   | Readonly<{ kind: 'no-operation' }>
-  | Readonly<{ kind: 'recorded' }>
+  | Readonly<{ kind: 'recorded'; lastError?: ProviderOperationRecord['lastError'] }>
   | Readonly<{ kind: 'unrecorded'; reason: string }>;
 
 export type ProviderStopDecision =
@@ -345,6 +346,7 @@ function isTemporarilyUnavailableAcquisition(
 }
 
 type ProviderOperationReconcilerDeps = Readonly<{
+  requestContainment(identity: ProviderProxySetIdentity, cause: string): void;
   getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'>;
   custody?: () => Readonly<{ runtime: Runtime; runDir: string; epoch: string; nowMs: number; bindWithinMs: number }>;
   authorityFor: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
@@ -520,6 +522,45 @@ function retryDelayMs(retryCount: number): number {
 }
 
 const OPERATION_CONTROL_OUTCOME_UNKNOWN = 'operation-control-outcome-unknown';
+// Two reattachment spans leave room beyond semantic cancellation and multiple RPC budgets.
+const PRE_EXECUTION_FAILURE_BOUND_MS = 120_000;
+
+class OperationNoProgressError extends Error {}
+const ACTIVATION_ACK_INVALID = 'provider_activation_ack_invalid';
+const OPERATION_RETRIES_EXHAUSTED = 'provider_operation_retries_exhausted';
+
+class ActivationAckInvalidError extends Error {
+  readonly code = ACTIVATION_ACK_INVALID;
+}
+
+function permanentOperationFailure(record: ProviderOperationRecord): ProviderOperationTerminalDirective | null {
+  const error = record.lastError;
+  if (error === null) return null;
+  if (error.code === ACTIVATION_ACK_INVALID || error.code === OPERATION_RETRIES_EXHAUSTED) {
+    return { kind: 'terminal-failed', code: error.code, reason: error.message };
+  }
+  if (record.phase !== 'proxy-activation-pending' && record.phase !== 'activation-resolution-pending') return null;
+  try {
+    const issues: unknown = JSON.parse(error.message);
+    if (
+      Array.isArray(issues) &&
+      issues.some(
+        (issue: { path?: unknown }) =>
+          Array.isArray(issue.path) && issue.path.join('.') === 'activationAck.hostRef.fingerprint',
+      )
+    ) {
+      return {
+        kind: 'terminal-failed',
+        code: ACTIVATION_ACK_INVALID,
+        reason:
+          'The proxy activation host fingerprint differs from the durable locator. Automatic set containment is required.',
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 function isProviderOperationRecoveryAcceptance(
   value: unknown,
@@ -575,6 +616,10 @@ export class ProviderOperationReconciler
   implements ProviderContainmentDisappearanceConsumer, ProviderRepresentationAbandonmentConsumer
 {
   readonly #deps: ProviderOperationReconcilerDeps;
+  readonly #failureWindows = new Map<
+    string,
+    { phase: ProviderOperationRecord['phase']; elapsedMs: number; observedAt: bigint | null }
+  >();
   readonly #batchSize: number;
   readonly #publications = new Map<string, ActivePublication>();
   readonly #attachments = new Map<string, ProviderOperationIdentity>();
@@ -922,6 +967,7 @@ export class ProviderOperationReconciler
   }
 
   #scheduleStartupSetRetry(record: ProviderOperationRecord, reason: string, nextAttemptAtMs: number): void {
+    this.#pauseFailureWindow(record);
     const now = this.#deps.time.now();
     const next = providerOperationRecordSchema.parse({
       ...record,
@@ -1047,7 +1093,12 @@ export class ProviderOperationReconciler
           cause,
           new Date(this.#deps.time.now()).toISOString(),
         );
-        outcomes.set(jobId, result.kind === 'not-applicable' ? { kind: 'no-operation' } : { kind: 'recorded' });
+        outcomes.set(
+          jobId,
+          result.kind === 'not-applicable'
+            ? { kind: 'no-operation' }
+            : { kind: 'recorded', ...(record.lastError === null ? {} : { lastError: record.lastError }) },
+        );
       } catch (error: unknown) {
         const reason = providerOperationErrorReason(error);
         outcomes.set(jobId, { kind: 'unrecorded', reason });
@@ -1415,15 +1466,41 @@ export class ProviderOperationReconciler
           ? authority
           : this.#deps.authorityFor(record);
       if (authority === null && this.#deps.acquireAuthority !== undefined) {
+        this.#pauseFailureWindow(record);
         const acquired = await this.#awaitAuthority(this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS));
         if (isTemporarilyUnavailableAcquisition(acquired)) {
-          await this.#recordRetry(record, new Error(acquired.reason));
+          await this.#waitForAuthority(record, acquired.reason);
           return;
         }
         authority = acquired;
       }
       if (authority === null) {
-        await this.#recordRetry(record, new Error('No live control authority is available for this proxy set.'));
+        await this.#waitForAuthority(record, 'No live control authority is available for this proxy set.');
+        return;
+      }
+
+      const key = operationKey(record.operation);
+      let window = this.#failureWindows.get(key);
+      if (window === undefined || window.phase !== record.phase) {
+        window = { phase: record.phase, elapsedMs: 0, observedAt: this.#deps.time.monotonicNow() };
+        this.#failureWindows.set(key, window);
+      }
+      window.observedAt ??= this.#deps.time.monotonicNow();
+      const permanent = permanentOperationFailure(record);
+      const exhausted =
+        record.phase !== 'executing' &&
+        record.phase !== 'settlement-pending' &&
+        window.elapsedMs >= PRE_EXECUTION_FAILURE_BOUND_MS;
+      if (permanent !== null || exhausted) {
+        await this.#releaseFailedOperation(
+          record,
+          authority,
+          permanent ?? {
+            kind: 'terminal-failed',
+            code: OPERATION_RETRIES_EXHAUSTED,
+            reason: `Provider operation ${record.phase} made no progress for ${PRE_EXECUTION_FAILURE_BOUND_MS} ms of decisive proxy failures.`,
+          },
+        );
         return;
       }
 
@@ -1622,6 +1699,8 @@ export class ProviderOperationReconciler
     result: Awaited<ReturnType<DurableProviderProxyOperationAuthority['prepareOperation']>>,
   ): ProviderOperationRecord | null {
     if (result.state === 'permanent-refusal') {
+      if (result.reason.startsWith('provider_host_fingerprint_mismatch:'))
+        this.#deps.onError?.(`Provider placement refused job=${record.operation.jobId}: ${result.reason}`);
       return this.#transition(record, this.#prepareRefusalRecord(record, result));
     }
     if (result.state === 'capacity') {
@@ -1697,6 +1776,7 @@ export class ProviderOperationReconciler
       ) {
         throw new Error('Cancellation acknowledgement did not fence the journaled prepare attempt.');
       }
+      this.#failureWindows.delete(operationKey(record.operation));
 
       const materialized = await this.#awaitAuthority(Promise.resolve(this.#deps.materializePrepare(record)));
       if (materialized.state === 'permanent-refusal') {
@@ -1717,7 +1797,7 @@ export class ProviderOperationReconciler
         prepareAttemptKey: attempt.prepareAttemptKey,
         revision: record.revision + 1,
         retryNotBeforeMs: this.#deps.time.now(),
-        retryCount: 0,
+        retryCount: record.retryCount,
         lastError: null,
       });
       if (rotated.phase !== 'prepare-pending') throw new Error('Prepare attempt rotation failed validation.');
@@ -1886,6 +1966,14 @@ export class ProviderOperationReconciler
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current?.phase === 'executing') return current;
       if (current !== null && current.revision !== record.revision) return current;
+      if (error instanceof ActivationAckInvalidError) {
+        await this.#releaseFailedOperation(record, authority, {
+          kind: 'terminal-failed',
+          code: error.code,
+          reason: error.message,
+        });
+        return null;
+      }
       await this.#recordRetry(record, error);
       return null;
     }
@@ -1912,7 +2000,7 @@ export class ProviderOperationReconciler
     }
     if (inspected.state === 'released-activation-indeterminate') {
       try {
-        return this.#terminalize(record, record.activationIndeterminate);
+        return this.#terminalize(record, this.#stopAbortDirective(record) ?? record.activationIndeterminate);
       } catch (error: unknown) {
         await this.#recordRetry(record, error);
         return null;
@@ -1940,11 +2028,29 @@ export class ProviderOperationReconciler
       }
     }
     if (inspected.state === 'released-after-terminal' || inspected.state === 'releasing') {
-      await this.#recordRetry(record, new Error('Indeterminate remote activation requires operator recovery.'));
+      await this.#recordRetry(record, new Error('Remote release is pending; the proxy retains operation ownership.'));
       return null;
     }
     if (inspected.state === 'preparing') {
       await this.#recordRetry(record, new Error('Proxy still reports the operation as preparing.'));
+      return null;
+    }
+    if (inspected.state === 'started-awaiting-publication' && record.onNeverStarted.kind === 'terminal-aborted') {
+      try {
+        await this.#awaitAuthority(authority.buildOperationControl(record.operation).stop(record.onNeverStarted.cause));
+        const stopped = await this.#awaitAuthority(
+          authority.inspectOperation(record.operation, record.prepareAttemptKey),
+        );
+        if (stopped.state === 'released-activation-indeterminate') {
+          return this.#terminalize(record, record.onNeverStarted);
+        }
+        await this.#recordRetry(
+          record,
+          new OperationNoProgressError('Unpublished provider stop has not released the operation.'),
+        );
+      } catch (error: unknown) {
+        await this.#recordRetry(record, error);
+      }
       return null;
     }
 
@@ -1960,13 +2066,21 @@ export class ProviderOperationReconciler
         return this.#transition(record, this.#prestartCleanupRecord(record, record.onNeverStarted));
       }
       if (activationOutcome.state === 'released-activation-indeterminate') {
-        return this.#terminalize(record, record.activationIndeterminate);
+        return this.#terminalize(record, this.#stopAbortDirective(record) ?? record.activationIndeterminate);
       }
       return await this.#commitExecuting(record, activationOutcome);
     } catch (error: unknown) {
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current?.phase === 'executing') return current;
       if (current !== null && current.revision !== record.revision) return current;
+      if (error instanceof ActivationAckInvalidError) {
+        await this.#releaseFailedOperation(record, authority, {
+          kind: 'terminal-failed',
+          code: error.code,
+          reason: error.message,
+        });
+        return null;
+      }
       await this.#recordRetry(record, error);
       return null;
     }
@@ -2070,7 +2184,8 @@ export class ProviderOperationReconciler
       if (
         record.phase === 'proxy-activation-pending' ||
         record.phase === 'activation-resolution-pending' ||
-        record.phase === 'executing'
+        record.phase === 'executing' ||
+        permanentOperationFailure(record) !== null
       ) {
         const fallback =
           record.phase === 'activation-resolution-pending'
@@ -2086,7 +2201,11 @@ export class ProviderOperationReconciler
                   code: 'provider_lost',
                   reason: 'The provider became unavailable, so this job stopped before completion. Retry the job.',
                 };
-        const directive = this.#rekeyRefusalDirective(record) ?? this.#stopAbortDirective(record) ?? fallback;
+        const directive =
+          this.#stopAbortDirective(record) ??
+          permanentOperationFailure(record) ??
+          this.#rekeyRefusalDirective(record) ??
+          fallback;
         const terminalized = await this.#terminalizeDisappearance(record, directive);
         if (terminalized.kind === 'operational-failure') return terminalized;
         if (terminalized.kind === 'conflict') continue;
@@ -2242,9 +2361,9 @@ export class ProviderOperationReconciler
   ): Promise<Extract<ProviderOperationRecord, { phase: 'executing' }>> {
     this.#assertActiveDrive();
     if (activationAck.committedThroughProviderSeq !== 0) {
-      throw new Error('A fresh activation acknowledgement must begin at provider watermark zero.');
+      throw new ActivationAckInvalidError('A fresh activation acknowledgement must begin at provider watermark zero.');
     }
-    const next = providerOperationRecordSchema.parse({
+    const validated = providerOperationRecordSchema.safeParse({
       version: record.version,
       operation: record.operation,
       locator: record.locator,
@@ -2270,6 +2389,8 @@ export class ProviderOperationReconciler
       retryCount: 0,
       lastError: null,
     });
+    if (!validated.success) throw new ActivationAckInvalidError(validated.error.message);
+    const next = validated.data;
     if (next.phase !== 'executing') throw new Error('Executing journal transition failed validation.');
 
     const progressStore = this.#deps.getProgressStore();
@@ -2279,7 +2400,7 @@ export class ProviderOperationReconciler
       throw new Error('Provider operation runtime publication lacks matching durable job metadata.');
     }
     if (launch.provider !== activationAck.hostRef.provider) {
-      throw new Error('Activation acknowledgement provider does not match the durable job launch.');
+      throw new ActivationAckInvalidError('Activation acknowledgement provider does not match the durable job launch.');
     }
     let updated = false;
     progressStore.commit((commit) => {
@@ -2694,13 +2815,20 @@ export class ProviderOperationReconciler
   #transition(expected: ProviderOperationRecord, next: ProviderOperationRecord): ProviderOperationRecord | null {
     this.#assertActiveDrive();
     const result = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), expected, next);
-    if (result.kind === 'updated') return result.record;
+    if (result.kind === 'updated') {
+      if (next.phase !== expected.phase || next.lastError === null)
+        this.#failureWindows.delete(operationKey(expected.operation));
+      return result.record;
+    }
     return result.current;
   }
 
   #deleteRecord(record: ProviderOperationRecord): ReturnType<typeof deleteProviderOperation> {
     const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
-    if (deleted.kind === 'deleted') this.#deps.onRecordRemoved?.();
+    if (deleted.kind === 'deleted') {
+      this.#failureWindows.delete(operationKey(record.operation));
+      this.#deps.onRecordRemoved?.();
+    }
     return deleted;
   }
 
@@ -2759,6 +2887,11 @@ export class ProviderOperationReconciler
   #stopAbortDirective(
     record: ProviderOperationRecord,
   ): Extract<ProviderOperationTerminalDirective, { kind: 'terminal-aborted' }> | null {
+    if (record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind === 'terminal-aborted')
+      return record.afterRelease;
+    if (record.phase === 'activation-resolution-pending' && record.onNeverStarted.kind === 'terminal-aborted') {
+      return record.onNeverStarted;
+    }
     if (
       record.phase !== 'executing' ||
       record.controlIntent.kind !== 'stop' ||
@@ -2787,10 +2920,121 @@ export class ProviderOperationReconciler
     );
   }
 
+  async #releaseFailedOperation(
+    record: ProviderOperationRecord,
+    authority: DurableProviderProxyOperationAuthority,
+    directive: ProviderOperationTerminalDirective,
+  ): Promise<void> {
+    if (directive.kind !== 'terminal-failed') throw new Error('Permanent operation failure requires a named cause.');
+    const exhausted = directive.code === OPERATION_RETRIES_EXHAUSTED;
+    const firstOccurrence = record.lastError?.code !== directive.code;
+    const next = this.#transition(
+      record,
+      providerOperationRecordSchema.parse({
+        ...record,
+        revision: record.revision + 1,
+        retryNotBeforeMs: this.#deps.time.now() + TIMER_MAX_MS,
+        lastError: {
+          observedAtMs: this.#deps.time.now(),
+          code: directive.code,
+          message: directive.reason.slice(0, 4096),
+        },
+      }),
+    );
+    if (next === null) return;
+    if (firstOccurrence)
+      this.#deps.onError?.(
+        `Provider operation permanent failure job=${record.operation.jobId} code=${directive.code}; exit=single-operation-release: ${directive.reason}`,
+      );
+    let release: 'released-never-started' | 'released-activation-indeterminate' | 'pending';
+    try {
+      release = await this.#releaseSingleOperation(next, authority);
+    } catch (error: unknown) {
+      this.#assertActiveDrive();
+      this.#deps.requestContainment(authority.setIdentity, directive.code);
+      await this.#recordRetry(next, error);
+      return;
+    }
+    if (release === 'pending') {
+      await this.#recordRetry(next, new Error('Single-operation release is pending; remote ownership is retained.'));
+      return;
+    }
+    try {
+      if (release === 'released-activation-indeterminate') {
+        this.#terminalize(next, this.#stopAbortDirective(next) ?? directive);
+        return;
+      }
+      const afterRelease =
+        this.#stopAbortDirective(next) ??
+        (exhausted
+          ? { kind: 'local-authorized' as const, reason: directive.reason }
+          : next.phase === 'prestart-cleanup-pending'
+            ? next.afterRelease
+            : directive);
+      const cleanup = this.#transition(next, this.#prestartCleanupRecord(next, afterRelease));
+      if (cleanup?.phase === 'prestart-cleanup-pending') await this.#drivePrestartCleanup(cleanup, authority);
+    } catch (error: unknown) {
+      await this.#recordRetry(next, error);
+    }
+  }
+
+  async #releaseSingleOperation(
+    record: ProviderOperationRecord,
+    authority: DurableProviderProxyOperationAuthority,
+  ): Promise<'released-never-started' | 'released-activation-indeterminate' | 'pending'> {
+    const neverStarted =
+      record.phase === 'prepare-pending' ||
+      record.phase === 'guardian-activation-pending' ||
+      record.phase === 'prestart-cleanup-pending';
+    if (!neverStarted) {
+      await this.#awaitAuthority(
+        authority.buildOperationControl(record.operation).stop(this.#stopAbortDirective(record)?.cause ?? 'restart'),
+      );
+    }
+    const released = neverStarted
+      ? await this.#awaitAuthority(
+          authority.cancelOperation(record.operation, record.prepareAttemptNumber, record.prepareAttemptKey),
+        )
+      : await this.#awaitAuthority(authority.inspectOperation(record.operation, record.prepareAttemptKey));
+    if (released.state === 'releasing') return 'pending';
+    if (released.state !== 'released-never-started' && released.state !== 'released-activation-indeterminate') {
+      throw new Error(`Single-operation release failed: proxy still reports ${released.state}.`);
+    }
+    if (
+      operationKey(released.operation) !== operationKey(record.operation) ||
+      released.prepareAttemptNumber !== record.prepareAttemptNumber ||
+      released.prepareAttemptKey !== record.prepareAttemptKey
+    ) {
+      throw new Error('Release acknowledgement did not fence the journaled prepare attempt.');
+    }
+    return released.state;
+  }
+
+  async #waitForAuthority(record: ProviderOperationRecord, reason: string): Promise<void> {
+    this.#pauseFailureWindow(record);
+    await this.#recordRetry(record, new Error(reason));
+  }
+
+  #pauseFailureWindow(record: ProviderOperationRecord): void {
+    const window = this.#failureWindows.get(operationKey(record.operation));
+    if (window !== undefined) window.observedAt = null;
+  }
+
   async #recordRetry(record: ProviderOperationRecord, error: unknown, operationControlHeld = false): Promise<void> {
     this.#assertActiveDrive();
     const now = this.#deps.time.now();
-    const preserveHostRefusal = !operationControlHeld && preservesHostRefusalEvidence(record);
+    const window = this.#failureWindows.get(operationKey(record.operation));
+    if (window !== undefined) {
+      const observedAt = this.#deps.time.monotonicNow();
+      const decisive =
+        error instanceof OperationNoProgressError ||
+        (error instanceof ControlClientError && error.origin === 'remote-response');
+      if (decisive && !operationControlHeld && window.observedAt !== null)
+        window.elapsedMs += Number(observedAt - window.observedAt);
+      window.observedAt = decisive && !operationControlHeld ? observedAt : null;
+    }
+    const preserveHostRefusal =
+      permanentOperationFailure(record) !== null || (!operationControlHeld && preservesHostRefusalEvidence(record));
     const next = providerOperationRecordSchema.parse({
       ...record,
       revision: record.revision + 1,

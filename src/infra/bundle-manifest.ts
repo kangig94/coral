@@ -9,6 +9,7 @@ import { nodeFsBoundedReadStorage, readBoundedFileAtIdentity } from './bounded-f
 import { CLI_BUNDLE_FILE, CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from './bundle-manifest-address.js';
 import { isRecord } from './json.js';
 
+declare const __PLUGIN_ROOT__: string;
 declare const __BUNDLE_DIR__: string | undefined;
 declare const __VERSION__: string | undefined;
 declare const __BUILD_SET_ID__: string | undefined;
@@ -71,6 +72,28 @@ export type BoundedAdjacentManifestResult =
 
 function bundleDir(): string | null {
   return typeof __BUNDLE_DIR__ === 'string' && __BUNDLE_DIR__.length > 0 ? __BUNDLE_DIR__ : null;
+}
+
+/** Local provider paths belong to the running bundle, including development builds. */
+export function localProviderHostRoot(): string {
+  if (typeof __PLUGIN_ROOT__ !== 'string') {
+    throw new Error('Provider host root requires __PLUGIN_ROOT__ to be defined at build time.');
+  }
+  const running = bundleDir();
+  if (running !== null) return running;
+  const bridge = join(__PLUGIN_ROOT__, 'bridge');
+  try {
+    if (lstatSync(join(bridge, 'coral-claude-appserver.cjs')).isFile()) return bridge;
+  } catch {
+    /* Source builds may only have dist output. */
+  }
+  try {
+    if (lstatSync(join(__PLUGIN_ROOT__, 'dist', 'providers', 'claude', 'appserver', 'server.js')).isFile())
+      return join(__PLUGIN_ROOT__, 'dist');
+  } catch {
+    /* An unbuilt source tree keeps the expected bundle path. */
+  }
+  return bridge;
 }
 
 export function resolveRunningBundleDir(pluginRoot: string): string | null {

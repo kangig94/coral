@@ -1,3 +1,4 @@
+import { hostFingerprintFromSpec } from '#src/providers/host-identity.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
 import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
 import { TEST_CODEX_PLAN } from '#tests/helpers/provider-credentials.js';
@@ -173,7 +174,7 @@ function fakeHostSpec(provider = 'claude'): ProviderServerSpec {
 function fakeHostRef(provider = 'claude'): HostRef {
   return {
     provider,
-    fingerprint: 'a'.repeat(64),
+    fingerprint: hostFingerprintFromSpec(fakeHostSpec(provider)),
     instanceId: 'inst-1',
     leaseMode: 'job-exclusive',
     ownerJobId: 'job-1',
@@ -319,7 +320,13 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
       }),
     });
 
-    const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
+    const host = createSemanticOperationRuntime({
+      hostRoot: '/test/plugin',
+      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+      runtime,
+      hostAuthority: fakeHostAuthority(),
+      getProxy: () => proxy,
+    });
     await host.ensureProviderRoot(key, prepared);
     const start = host.host.start({ key, prepared });
 
@@ -372,6 +379,8 @@ describe('semantic-operation runtime: replay admission', () => {
 
     const proxy = {} as Proxy;
     const semantic = createSemanticOperationRuntime({
+      hostRoot: '/test/plugin',
+      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
       runtime,
       hostAuthority: fakeHostAuthority(),
       getProxy: () => proxy,
@@ -411,7 +420,7 @@ describe('semantic-operation runtime: replay admission', () => {
 
     const prepareRequest = {
       operation,
-      hostFingerprint: 'a'.repeat(64),
+      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
       prepareAttemptNumber: 1,
       prepared,
     };
@@ -516,6 +525,8 @@ it.each(['config-error', 'abort-before-turn', 'completed-turn'])(
     });
     providerRegistryDouble.rehydrateBinding.mockReturnValue({ ok: true, value: bound });
     const semantic = createSemanticOperationRuntime({
+      hostRoot: '/test/plugin',
+      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
       runtime,
       hostAuthority: fakeHostAuthority(),
       getProxy: () => proxy,
@@ -568,6 +579,8 @@ it('releases a Claude session/ensure failure before turn/start', async () => {
   });
   const relinquish = vi.fn();
   const semantic = createSemanticOperationRuntime({
+    hostRoot: '/test/plugin',
+    hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
     runtime,
     hostAuthority: fakeHostAuthority(),
     getProxy: () => proxy,
@@ -615,6 +628,8 @@ it('releases a pre-turn config failure through the real operation supervisor', a
   const proxy = {} as Proxy;
   const relinquish = vi.fn();
   const semantic = createSemanticOperationRuntime({
+    hostRoot: '/test/plugin',
+    hostFingerprint: hostFingerprintFromSpec(fakeHostSpec('codex')),
     runtime,
     hostAuthority: fakeHostAuthority(),
     getProxy: () => proxy,
@@ -654,7 +669,7 @@ it('releases a pre-turn config failure through the real operation supervisor', a
       prepareAttemptNumber: 1,
       prepareAttemptKey: operationPrepareAttemptKey({
         operation,
-        hostFingerprint: 'a'.repeat(64),
+        hostFingerprint: hostFingerprintFromSpec(fakeHostSpec('codex')),
         prepareAttemptNumber: 1,
         prepared,
       }),
@@ -710,6 +725,8 @@ it.each(['submitted', 'unknown'] as const)('requires cessation evidence for a %s
   const prepared = preparedFixture();
   const relinquish = vi.fn();
   const semantic = createSemanticOperationRuntime({
+    hostRoot: '/test/plugin',
+    hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
     runtime,
     hostAuthority: fakeHostAuthority(),
     getProxy: () => proxy,
@@ -721,4 +738,33 @@ it.each(['submitted', 'unknown'] as const)('requires cessation evidence for a %s
   await vi.waitFor(() => expect(emittedEvents.some(({ event }) => event.kind === 'terminal')).toBe(true));
   await expect(start.abortAndRelease()).rejects.toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
   expect(relinquish).toHaveBeenCalledOnce();
+});
+
+it('refuses a compiled fingerprint mismatch with local fallback before opening a host', async () => {
+  const close = vi.fn();
+  const open = vi.fn(async () => ({ hostRef: fakeHostRef(), close }));
+  const execute = vi.fn(async function* () {});
+  providerRegistryDouble.rehydrateBinding.mockReturnValue({
+    ok: true,
+    value: fakeBoundProvider({ execute, openReplacement: open }),
+  });
+  const { proxy } = createTestProxy();
+  const semantic = createSemanticOperationRuntime({
+    runtime,
+    hostRoot: '/retained/build',
+    hostFingerprint: 'b'.repeat(64),
+    hostAuthority: fakeHostAuthority(),
+    getProxy: () => proxy,
+  });
+  const stage = semantic.stage(testKey(), preparedFixture());
+  await expect(stage.result).resolves.toMatchObject({
+    state: 'permanent-refusal',
+    code: 'proxy_prepare_refused',
+    disposition: 'local-fallback',
+    reason: expect.stringContaining('provider_host_fingerprint_mismatch'),
+  });
+  await stage.abortAndRelease();
+  expect(execute).not.toHaveBeenCalled();
+  expect(open).not.toHaveBeenCalled();
+  expect(close).not.toHaveBeenCalled();
 });

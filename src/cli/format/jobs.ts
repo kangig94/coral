@@ -130,8 +130,17 @@ export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'jobId
 }
 
 export function formatAbortResult(result: AbortResult): string {
+  const aborted = result.aborted.filter((jobId) => !result.stopRequested?.includes(jobId));
   return joinLines([
-    result.aborted.length > 0 ? `Aborted jobs: ${result.aborted.join(', ')}` : 'No jobs aborted',
+    aborted.length > 0
+      ? `Aborted jobs: ${aborted.join(', ')}`
+      : result.stopRequested?.length
+        ? undefined
+        : 'No jobs aborted',
+    result.stopRequested !== undefined && result.stopRequested.length > 0
+      ? `Stop requested for jobs: ${result.stopRequested.join(', ')}`
+      : undefined,
+    ...(result.stopDiagnostics ?? []).map(({ jobId, lastError }) => `Stop diagnostic for ${jobId}: ${lastError}`),
     result.notFound.length > 0 ? `Not found: ${result.notFound.join(', ')}` : undefined,
     ...(result.refused ?? []).flatMap((refusal) => [
       refusal.reason === 'job_pre_epoch_history'

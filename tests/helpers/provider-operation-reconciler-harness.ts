@@ -79,7 +79,13 @@ function preparedFor(provider: string) {
 }
 
 export type ProviderOperationReconcilerHarnessOverrides = {
+  progressStore?: (
+    db: ReturnType<typeof newRawDatabase>,
+    record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
+  ) => JobProgressStore;
   providerName?: string;
+  commitContainment?: DurableProviderProxyOperationAuthority['commitContainment'];
+  requestContainment?: ConstructorParameters<typeof ProviderOperationReconciler>[0]['requestContainment'];
   prepareOperation?: DurableProviderProxyOperationAuthority['prepareOperation'];
   inspectOperation?: DurableProviderProxyOperationAuthority['inspectOperation'];
   authorizeOperation?: DurableProviderProxyOperationAuthority['authorizeOperation'];
@@ -97,10 +103,7 @@ export type ProviderOperationReconcilerHarnessOverrides = {
   ) => Promise<ProviderOperationRecoveryAcceptance>;
   completeLocalRecovery?: (jobId: string) => void;
   authorityFor?: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
-  acquireAuthority?: (
-    record: ProviderOperationRecord,
-    signal: AbortSignal,
-  ) => Promise<DurableProviderProxyOperationAuthority | null>;
+  acquireAuthority?: ConstructorParameters<typeof ProviderOperationReconciler>[0]['acquireAuthority'];
   stopOperation?: (
     cause: Parameters<ReturnType<DurableProviderProxyOperationAuthority['buildOperationControl']>['stop']>[0],
   ) => Promise<void>;
@@ -151,41 +154,42 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
       throw error;
     }
   };
-  const progressStore: Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'> = {
-    getDb: () => db,
-    commit,
-    readStatus: () => ({
-      jobId: record.operation.jobId,
-      owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
-      sessionId: record.prepareSource.sessionId,
-      provider: providerName,
-      projectRoot: fixtureCanonicalWorkDir(process.cwd()),
-      workDir: fixtureCanonicalWorkDir(process.cwd()),
-      backendNamespace: 'tests',
-      jobKind: 'provider',
-      phase: 'running',
-      updatedAt: '2026-08-09T12:34:55.000Z',
-    }),
-    readLaunchProjection: () => ({
-      jobId: record.operation.jobId,
-      owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
-      sessionId: record.prepareSource.sessionId,
-      provider: providerName,
-      projectRoot: fixtureCanonicalWorkDir(process.cwd()),
-      backendNamespace: 'tests',
-      pool: 'curate',
-      enqueueSequence: 1,
-      createdAt: '2026-08-09T12:34:55.000Z',
-      jobKind: 'provider',
-      providerAction: 'exec',
-      request: {
-        prompt: 'do the thing',
-        cwd: fixtureCanonicalWorkDir(process.cwd()),
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-    }),
-  };
+  const progressStore: Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'> =
+    overrides.progressStore?.(db, record) ?? {
+      getDb: () => db,
+      commit,
+      readStatus: () => ({
+        jobId: record.operation.jobId,
+        owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
+        sessionId: record.prepareSource.sessionId,
+        provider: providerName,
+        projectRoot: fixtureCanonicalWorkDir(process.cwd()),
+        workDir: fixtureCanonicalWorkDir(process.cwd()),
+        backendNamespace: 'tests',
+        jobKind: 'provider',
+        phase: 'running',
+        updatedAt: '2026-08-09T12:34:55.000Z',
+      }),
+      readLaunchProjection: () => ({
+        jobId: record.operation.jobId,
+        owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
+        sessionId: record.prepareSource.sessionId,
+        provider: providerName,
+        projectRoot: fixtureCanonicalWorkDir(process.cwd()),
+        backendNamespace: 'tests',
+        pool: 'curate',
+        enqueueSequence: 1,
+        createdAt: '2026-08-09T12:34:55.000Z',
+        jobKind: 'provider',
+        providerAction: 'exec',
+        request: {
+          prompt: 'do the thing',
+          cwd: fixtureCanonicalWorkDir(process.cwd()),
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+      }),
+    };
   const phasesBeforeMutation: string[] = [];
   const readPhase = (): string => readProviderOperation(db, record.operation)?.phase ?? 'missing';
   const authority: DurableProviderProxyOperationAuthority = {
@@ -228,7 +232,8 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
     registerSuccessionOperation:
       overrides.registerSuccessionOperation ?? (async () => ({ kind: 'registered' as const })),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
-    commitContainment: async () => ({ kind: 'containment-absent', disappearanceReceipt: 'gone' }),
+    commitContainment:
+      overrides.commitContainment ?? (async () => ({ kind: 'containment-absent', disappearanceReceipt: 'gone' })),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
     prepareOperation:
@@ -337,6 +342,7 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
     },
   );
   const reconcilerDependencies = {
+    requestContainment: overrides.requestContainment ?? (() => undefined),
     getProgressStore: () => progressStore,
     authorityFor: overrides.authorityFor ?? (() => authority),
     ...(overrides.acquireAuthority === undefined ? {} : { acquireAuthority: overrides.acquireAuthority }),

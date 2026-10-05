@@ -146,6 +146,7 @@ describe('LaunchOrchestrator', () => {
   it('does not write a second terminal for terminalized proxy placement', async () => {
     const f = fixture({
       route: {
+        hostRoot: () => '/test/plugin',
         activate: async () => {
           commitJobTerminal(f.store, JOB_ID, f.session.sessionId, {
             content: 'done',
@@ -207,6 +208,7 @@ describe('LaunchOrchestrator', () => {
     const placed = createDeferred<void>();
     const f = fixture({
       route: {
+        hostRoot: () => '/test/plugin',
         activate: async () => {
           placed.resolve();
           return { kind: 'remote-executing', operationId: 'operation-1' };

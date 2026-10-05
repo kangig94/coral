@@ -80,6 +80,7 @@ describe('provider host idle properties', () => {
       loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
       platform: runtime.env.platform() as NodeJS.Platform,
       hasStartupRecoveryPassed: () => true,
+      isWorkflowOwnedByThisCoordinator: () => false,
       isAdmittedByThisCoordinator: () => false,
       registryStateForJob: (jobId) => operationRegistry.stateForJob(jobId),
     });

@@ -46,6 +46,8 @@ export type AbortHoldDisposition =
 
 export type AbortResult = {
   aborted: string[];
+  stopRequested?: string[];
+  stopDiagnostics?: Readonly<{ jobId: string; lastError: string }>[];
   notFound: string[];
   refused?: AbortRefusal[];
   held?: AbortHold[];

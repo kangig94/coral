@@ -47,7 +47,7 @@ const ALLOWED_TRANSITIONS: Readonly<Record<ProviderOperationState, readonly (Pro
     preparing: ['prepared', 'releasing'],
     prepared: ['starting', 'releasing'],
     starting: ['started-awaiting-publication', 'releasing'],
-    'started-awaiting-publication': ['executing'],
+    'started-awaiting-publication': ['executing', 'releasing'],
     executing: ['terminal-awaiting-settlement', 'suspended-awaiting-durable-decision'],
     'terminal-awaiting-settlement': ['releasing'],
     'suspended-awaiting-durable-decision': ['terminal-awaiting-settlement', 'releasing'],

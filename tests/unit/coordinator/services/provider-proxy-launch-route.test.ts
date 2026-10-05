@@ -117,7 +117,7 @@ describe('createAppServerProxyRoute', () => {
     const { prepareOperation: _prepare, ...legacy } = set;
     const begin = vi.fn();
     const route = createAppServerProxyRoute({
-      hostManager: { routeAppServerOperation: () => legacy },
+      hostManager: { proxyHostRoot: () => '/test/plugin', routeAppServerOperation: () => legacy },
       reconciler: { begin },
       now: () => 10,
     });

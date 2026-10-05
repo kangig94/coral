@@ -36,6 +36,7 @@ import { providerBindingFailureCode } from '../../providers/contracts/binding.js
 
 export interface WorkflowExecutionServiceDeps {
   runtime: Runtime;
+  runningJobs: Set<string>;
   abortRegistry: JobAbortRegistryPort;
   backendNamespace: string;
   bundleHash: string;
@@ -138,6 +139,7 @@ export class WorkflowExecutionService {
       this.deps.abortRegistry.remove(jobId);
       throw error;
     }
+    this.deps.runningJobs.add(jobId);
     this.deps.launchOrchestrator.markJobRunning(jobId);
 
     this.runWorkflowAsync(jobId, providerName, ast, input, boundCtx, plan, workDir);
@@ -183,7 +185,10 @@ export class WorkflowExecutionService {
     workDir: CanonicalWorkDir,
   ): void {
     const signal = this.deps.abortRegistry.getSignal(jobId);
-    if (!signal) return;
+    if (!signal) {
+      this.deps.runningJobs.delete(jobId);
+      return;
+    }
 
     void executePipeline(ast, input.startPrompt, providerName, this.deps.executionPort, ctx, {
       context: input.context,
@@ -199,29 +204,31 @@ export class WorkflowExecutionService {
       time: this.deps.runtime.time,
       drainDeadlineMs: resolveDrainDeadlineMs(this.deps.runtime.env),
       staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(this.deps.runtime.env),
-    }).then(
-      (result: PipelineResult) => {
-        const serialized = serializeWorkflowResult(result.stepDetails);
-        try {
-          this.commitWorkflowJobTerminal(jobId, {
-            outcome: 'completed',
-            workflowJobId: jobId,
-            finalOutput: result.finalOutput,
-            stepDetails: result.stepDetails,
-          });
-          this.finishWorkflowJobPostCommit(jobId, serialized.markdown);
-        } catch (error: unknown) {
-          this.handleWorkflowFinalizationError(jobId, error);
-        }
-      },
-      (err: unknown) => {
-        try {
-          this.handleWorkflowError(err, jobId);
-        } catch (error: unknown) {
-          this.handleWorkflowFinalizationError(jobId, error);
-        }
-      },
-    );
+    })
+      .then(
+        (result: PipelineResult) => {
+          const serialized = serializeWorkflowResult(result.stepDetails);
+          try {
+            this.commitWorkflowJobTerminal(jobId, {
+              outcome: 'completed',
+              workflowJobId: jobId,
+              finalOutput: result.finalOutput,
+              stepDetails: result.stepDetails,
+            });
+            this.finishWorkflowJobPostCommit(jobId, serialized.markdown);
+          } catch (error: unknown) {
+            this.handleWorkflowFinalizationError(jobId, error);
+          }
+        },
+        (err: unknown) => {
+          try {
+            this.handleWorkflowError(err, jobId);
+          } catch (error: unknown) {
+            this.handleWorkflowFinalizationError(jobId, error);
+          }
+        },
+      )
+      .finally(() => this.deps.runningJobs.delete(jobId));
   }
 
   private handleWorkflowError(err: unknown, jobId: string): void {
