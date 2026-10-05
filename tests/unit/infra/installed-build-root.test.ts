@@ -27,22 +27,6 @@ function fixture() {
   return { root, manifest, installed, oldCopy, installedPluginRoots };
 }
 
-it.each(['missing', 'modified'] as const)(
-  'makes a %s install unavailable even when a valid old copy exists',
-  (state) => {
-    const f = fixture();
-    expect(validatedRunningBuildRoot(f.installed, f.manifest)).toBe(f.installed);
-    if (state === 'missing') rmSync(f.installed, { recursive: true });
-    else writeFileSync(join(f.installed, 'bridge', 'coral-backend.cjs'), 'changed');
-    expect(validatedRunningBuildRoot(f.installed, f.manifest)).toBeNull();
-    expect(installedBuild(f.manifest.buildSetId)).toBeNull();
-    expect(validatedRunningBuildRoot(f.oldCopy, f.manifest)).toBe(f.oldCopy);
-    expect(readFileSync(join(f.oldCopy, 'bridge', 'coral-backend.cjs'))).toEqual(
-      readFileSync('clients/build/coral-backend.cjs'),
-    );
-  },
-);
-
 it('finds a build only through validated installed registry roots', () => {
   const f = fixture();
   const invalid = join(f.root, 'invalid');

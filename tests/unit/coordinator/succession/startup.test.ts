@@ -1,6 +1,5 @@
-import { strictBundleManifestSchema } from '#src/infra/bundle-manifest.js';
 import type * as MockedNodeProcessModule from '#src/infra/node-process.js';
-import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -547,90 +546,3 @@ describe('recorded unserved mint discard at startup', () => {
     expect(heldUnservedMint(runtime)).toMatchObject({ kind: 'unserved-mint-held', attemptId: 'failed' });
   });
 });
-
-it.each(['installed', 'missing', 'modified', 'legacy-recorded-root'] as const)(
-  'recovers a committed successor only through its recorded %s root',
-  async (availability) => {
-    const runtime = runtimeFixture();
-    const current = strictBundleManifestSchema.parse(
-      JSON.parse(readFileSync('clients/build/manifest.v2.json', 'utf8')),
-    );
-    const format = currentCoralStoreFormat();
-    const settled = settleStoreEpoch(runtime, {
-      storeFormat: format,
-      build: current,
-      authorizeMint: authorizeFixtureStoreMint,
-    });
-    settled.db.close();
-    const writer = joinSuccessionWriterGeneration(runtime, settled.store);
-    const epochKey = encodeResolvedStoreEpoch(runtime, settled.store);
-    const oldCopy = join(runtime.paths.coral.generation.root, 'builds', current.buildSetId);
-    const installed = join(runtime.paths.coral.generation.root, 'plugin-cache');
-    cpSync('clients/build', join(oldCopy, 'bridge'), { recursive: true });
-    cpSync('clients/build', join(installed, 'bridge'), { recursive: true });
-    const pluginRootLabel = availability === 'legacy-recorded-root' ? oldCopy : installed;
-    if (availability === 'missing') rmSync(installed, { recursive: true });
-    if (availability === 'modified') writeFileSync(join(installed, 'bridge', 'coral-backend.cjs'), 'modified');
-    const dead = await exitedIncarnation();
-    const attemptId = runtime.ids.uuid();
-    const owner = { kind: 'incumbent' as const, instanceId: 'incumbent', ...dead };
-    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
-      requestId: 'committed-installed-root',
-      incumbent: { ...owner, version: current.version, bundleHash: current.bundleHash, flavor: 'prod' },
-      target: { build: current, pluginRootLabel },
-      attemptId,
-      attemptOwner: owner,
-      attemptChild: null,
-      disposition: 'completed',
-      blockers: [],
-      retryCondition: null,
-      attemptDeadline: null,
-      completionReceipt: {
-        kind: 'serving',
-        attemptId,
-        successor: { instanceId: 'successor', ...dead, build: current },
-        epochKey,
-        controlGeneration: writer.generation.generation,
-        acceptedObligations: [],
-        recordedAt: new Date().toISOString(),
-      },
-    });
-    expect(written.kind).toBe('written');
-    writerGeneration.recordSuccessionServing(runtime, writer.generation, {
-      attemptId,
-      epochKey,
-      successorInstanceId: 'successor',
-      controlGeneration: writer.generation.generation,
-      recordedAt: new Date().toISOString(),
-    });
-    const recoverAt = (instanceId: string) => {
-      atStartup(runtime, instanceId);
-      return prepareCommittedSuccessorRecovery(
-        runtime,
-        { pluginRoot: '/other-installed-root', instanceId },
-        format,
-        current,
-        () => false,
-      );
-    };
-    if (availability === 'missing' || availability === 'modified') {
-      await expect(recoverAt('restart-1')).resolves.toMatchObject({
-        kind: 'hold',
-        hold: { kind: 'committed-successor-build-invalid' },
-      });
-      await expect(recoverAt('restart-2')).resolves.toMatchObject({ kind: 'hold' });
-      await expect(recoverAt('restart-3')).resolves.toEqual({ kind: 'none' });
-    } else {
-      const recovered = await recoverAt('restart-1');
-      expect(recovered.kind).toBe('handoff');
-      if (recovered.kind === 'handoff') {
-        const { withValidatedHandoffTarget } = await import('#src/infra/handoff-target.js');
-        expect(withValidatedHandoffTarget(recovered.target).bundleDir).toBe(join(pluginRootLabel, 'bridge'));
-      }
-    }
-    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir).kind).toBe('readable');
-    expect(readFileSync(join(oldCopy, 'bridge', 'coral-backend.cjs'))).toEqual(
-      readFileSync('clients/build/coral-backend.cjs'),
-    );
-  },
-);

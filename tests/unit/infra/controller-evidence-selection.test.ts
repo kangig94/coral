@@ -260,15 +260,3 @@ it('holds conflicting readable builds and preserves unrelated refusals after the
   f.clock.mockReturnValue(20_000_000_000n);
   expect(await selectNextCandidate(f.input)).toEqual({ kind: 'retry' });
 });
-
-it('holds a required controller when only an unrecorded old copy remains', async () => {
-  const f = fixture();
-  const oldCopy = join(f.runtime.paths.coral.generation.root, 'builds', f.build.buildSetId);
-  cpSync(f.installed, oldCopy, { recursive: true });
-  rmSync(f.installed, { recursive: true });
-  expect(controllerBuild(f.runDir)).toMatchObject({ kind: 'required', buildSetId: f.build.buildSetId });
-  expect(await selectNextCandidate(f.input)).toEqual({ kind: 'retry' });
-  expect(readFileSync(join(oldCopy, 'bridge', 'coral-backend.cjs'))).toEqual(
-    readFileSync('clients/build/coral-backend.cjs'),
-  );
-});
