@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { followJobs } from '#src/cli/follow.js';
@@ -63,8 +64,8 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
   }
   const cursor = {
     version: 'jobs.wait.v3' as const,
-    epochs: [{ token: waitEpochToken('epoch'), watermark: 7, lineOffset: 0 }],
-    jobs: [{ hash: waitJobHash('live-job'), epoch: 0, flags: 0 }],
+
+    jobs: [{ hash: waitJobHash('live-job'), epoch: waitEpochToken('epoch'), seq: 7, lineOffset: 0, flags: 0 }],
   };
   describe('CLI watchdog flush (server waiting event arrives after the 590 s CLI deadline)', () => {
     it('clears omitted coverage on a server waiting event', async () => {
@@ -81,8 +82,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
             emittedAt: '2026-10-04T00:00:01.000Z',
             elapsedMs: 1000,
           },
-          epochKey: 'epoch',
-          cursor,
+          entry: cursor.jobs[0],
         },
         { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['live-job'], cursor, exitCode: 75 },
       ]);
@@ -208,6 +208,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
       const addressing = new JobAddressing(
         index.readOnlyView(),
         {
+          visitProgress: progressVisitFromDetails(() => null),
           epochKey: () => 'epoch',
           detail: () => null,
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -260,7 +261,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
               }
             ).type === 'waiting',
         ),
-      ).toBe(false);
+      ).toBe(true);
       expect(code).toBe(1);
       expect(stdout).toContain('Wait complete; no jobs remain.');
       expect(stdout).not.toContain('cursor:');
@@ -283,8 +284,10 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
   };
   const cursor = (ack: number) => ({
     version: 'jobs.wait.v3' as const,
-    epochs: [{ token: waitEpochToken('epoch'), watermark: 7, lineOffset: 0 }],
-    jobs: ack < 0 ? [] : [{ hash: waitJobHash('job-1'), epoch: 0, flags: ack }],
+    jobs:
+      ack < 0
+        ? []
+        : [{ hash: waitJobHash('job-1'), epoch: waitEpochToken('epoch'), seq: 7, lineOffset: 0, flags: ack }],
   });
 
   it('launch-and-follow (until-terminal) keeps following across a V3 waiting event', async () => {
@@ -319,8 +322,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
                   seq: 7,
                   message: 'line',
                   timing,
-                  epochKey: 'epoch',
-                  cursor: cursor(0),
+                  entry: cursor(0).jobs[0],
                 },
                 // what readWaitSession sends at its deadline or once the 500-line/64 KiB progress budget is spent
                 { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['job-1'], cursor: cursor(0), exitCode: 75 },
@@ -388,14 +390,14 @@ it('separates TTY notice, disposition and artifact lines with trailing newlines'
                 jobId: 'a',
                 availability: { kind: 'failed', cause: 'repair-failed', retryScheduled: true },
                 remainingJobIds: [],
-                cursor: { version: 'jobs.wait.v3', epochs: [], jobs: [] },
+                cursor: { version: 'jobs.wait.v3', jobs: [] },
                 exitCode: 1,
               };
               yield {
                 type: 'waiting',
                 version: 'jobs.wait.v3',
                 waitingJobIds: [],
-                cursor: { version: 'jobs.wait.v3', epochs: [], jobs: [] },
+                cursor: { version: 'jobs.wait.v3', jobs: [] },
                 exitCode: 1,
               };
             },
@@ -510,12 +512,12 @@ it('trims a legacy saved cursor before connecting a subset wait', async () => {
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 
-it.each([1, 42])('preserves exit %s when a handover cuts the closing notice', async (exitCode) => {
+it.each([1, 42])('preserves exit %s when a handover follows the final event', async (exitCode) => {
   vi.spyOn(process.stdout, 'write').mockImplementation(((_text: unknown, callback?: () => void) => {
     callback?.();
     return true;
   }) as typeof process.stdout.write);
-  const empty = { version: 'jobs.wait.v3' as const, epochs: [], jobs: [] };
+  const empty = { version: 'jobs.wait.v3' as const, jobs: [] };
   try {
     const code = await followJobs({
       start: { kind: 'jobs', jobIds: ['job'] },
@@ -534,9 +536,8 @@ it.each([1, 42])('preserves exit %s when a handover cuts the closing notice', as
               version: 'jobs.wait.v3',
               jobId: 'job',
               message: 'Job is missing',
-              cursor: empty,
-              exitCode,
             };
+            yield { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: [], cursor: empty, exitCode };
             yield { type: 'handover' };
           },
         },
@@ -557,8 +558,8 @@ it('resets a V3 cursor rejected mid-stream and completes the reconnect', async (
   }) as typeof process.stdout.write);
   const cursor = {
     version: 'jobs.wait.v3' as const,
-    epochs: [{ token: waitEpochToken('e'), watermark: 1, lineOffset: 0 }],
-    jobs: [{ hash: waitJobHash('job'), epoch: 0, flags: 0 }],
+
+    jobs: [{ hash: waitJobHash('job'), epoch: waitEpochToken('e'), seq: 1, lineOffset: 0, flags: 0 }],
   };
   const emitError = vi.fn();
   const cursors: unknown[] = [];
@@ -583,7 +584,7 @@ it('resets a V3 cursor rejected mid-stream and completes the reconnect', async (
                 type: 'waiting',
                 version: 'jobs.wait.v3',
                 waitingJobIds: [],
-                cursor: { version: 'jobs.wait.v3', epochs: [], jobs: [] },
+                cursor: { version: 'jobs.wait.v3', jobs: [] },
                 exitCode: 0,
               };
             },
@@ -633,8 +634,8 @@ it('launch-and-follow prints a continuation for an accepted outcome awaiting its
               remainingJobIds: ['job'],
               cursor: {
                 version: 'jobs.wait.v3',
-                epochs: [{ token: waitEpochToken('e'), watermark: 2, lineOffset: 0 }],
-                jobs: [{ hash: waitJobHash('job'), epoch: 0, flags: 3 }],
+
+                jobs: [{ hash: waitJobHash('job'), epoch: waitEpochToken('e'), seq: 2, lineOffset: 0, flags: 3 }],
               },
               exitCode: 75,
             };
@@ -642,7 +643,7 @@ it('launch-and-follow prints a continuation for an accepted outcome awaiting its
         },
       }),
     });
-    expect(code).toBe(0);
+    expect(code).toBe(75);
     expect(output).toContain('coral-cli wait jobs job --cursor');
   } finally {
     vi.restoreAllMocks();
@@ -675,7 +676,7 @@ it.each([0, 42])(
                 type: 'waiting',
                 version: 'jobs.wait.v3',
                 waitingJobIds: [],
-                cursor: { version: 'jobs.wait.v3', epochs: [], jobs: [] },
+                cursor: { version: 'jobs.wait.v3', jobs: [] },
                 exitCode,
               };
             },

@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { retryUnknownHistoricalEpochs } from '#src/jobs/historical-reader.js';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -94,6 +95,7 @@ it('uses a short epoch label for a settled historical source', () => {
   const addressing = new JobAddressing(
     index.readOnlyView(),
     {
+      visitProgress: progressVisitFromDetails(() => null),
       epochKey: () => 'new:8',
       detail: () => null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -131,6 +133,7 @@ it.each([
     const addressing = new JobAddressing(
       index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'new:8',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -155,6 +158,7 @@ function historicalAddressing(index: JobLocationIndex): JobAddressing {
   return new JobAddressing(
     index,
     {
+      visitProgress: progressVisitFromDetails(() => null),
       epochKey: () => 'lineage-new:8',
       detail: () => null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -257,6 +261,7 @@ it.each([false, true])('refuses a partially missing legacy batch at admission, v
   const addressing = new JobAddressing(
     index,
     {
+      visitProgress: progressVisitFromDetails((id) => (id === 'known' ? detail(id, 'running') : null)),
       epochKey: () => 'lineage-new:8',
       detail: (id) => (id === 'known' ? detail(id, 'running') : null),
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -323,6 +328,7 @@ it('holds an unaccepted active launch until write-owned recovery observes its ex
   const addressing = new JobAddressing(
     index.readOnlyView(),
     {
+      visitProgress: progressVisitFromDetails(() => null),
       epochKey: () => 'active',
       detail: () => null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -353,8 +359,25 @@ it('keeps an unreadable historical progress backlog pending and recovers it on t
   index.recordTerminal(jobId, retained, '/result', 12);
   let readable = false;
   const addressing = new JobAddressing(
-    index.readOnlyView(),
     {
+      ...index.readOnlyView(),
+      visitProgress: progressVisitFromDetails(() => ({
+        ...retained,
+        events: [
+          {
+            type: 'progress',
+            jobId,
+            sessionId: null,
+            seq: 3,
+            ts: '',
+            message: 'unread backlog',
+            timing: { origin: 'runtime', originAt: '', emittedAt: '', elapsedMs: 0 },
+          },
+        ],
+      })),
+    },
+    {
+      visitProgress: progressVisitFromDetails(() => null),
       epochKey: () => 'active',
       detail: () => null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -419,6 +442,7 @@ it.each([false, true])(
     const addressing = new JobAddressing(
       index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => detail('known', 'running')),
         epochKey: () => epoch,
         detail: () => detail('known', 'running'),
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -452,6 +476,7 @@ it('reclassifies the previous active epoch after a proven selection change withi
   const addressing = new JobAddressing(
     index.readOnlyView(),
     {
+      visitProgress: progressVisitFromDetails(() => detail('known', 'running')),
       epochKey: () => epoch,
       detail: () => detail('known', 'running'),
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -517,8 +542,15 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
           }
         : a;
     const addressing = new JobAddressing(
-      index.readOnlyView(),
       {
+        ...index.readOnlyView(),
+        visitProgress: progressVisitFromDetails((id) => {
+          const location = id === 'A' ? observedA : u;
+          return location.detail.kind === 'recorded' ? location.detail.value : null;
+        }),
+      },
+      {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'current',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -537,14 +569,16 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
         ]),
       }),
       (id) => ({ kind: 'available', resultPath: join(root, `${id}.md`) }),
+      undefined,
+      () => sourceRead === 'retired',
     );
     const admissions = addressing.admitWait({ jobIds: ['A', 'U'], supportsWaitV3: true });
     expect(admissions[1].sourceRead).toBe(sourceRead);
     const snapshot = addressing.snapshot({ jobIds: ['A', 'U'] });
-    expect(snapshot.remainingJobIds).toEqual(sourceRead === 'transient-unknown' ? ['A', 'U'] : []);
-    expect(snapshot.jobs[0].progress).toEqual(sourceRead === 'transient-unknown' ? [] : ['sibling backlog']);
+    expect(snapshot.remainingJobIds).toEqual(sourceRead === 'transient-unknown' ? ['U'] : []);
+    expect(snapshot.jobs[0].progress).toEqual(['sibling backlog']);
     if (sourceRead === 'transient-unknown') {
-      expect(snapshot.notices.join(' ')).toContain('Earlier progress for A is held');
+      expect(snapshot.notices.join(' ')).toContain('Earlier progress for U is held');
       expect(snapshot.notices.join(' ')).toContain('Snapshots return immediately with a continuation');
     }
     if (sourceRead === 'settled-unreadable') {
@@ -563,6 +597,7 @@ it('historical maintenance never settles an active recovery hold', () => {
   const addressing = new JobAddressing(
     index.readOnlyView(),
     {
+      visitProgress: progressVisitFromDetails(() => null),
       epochKey: () => key,
       detail: () => null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -590,6 +625,7 @@ it.each(['pending', 'decided'] as const)(
     const addressing = new JobAddressing(
       index,
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'active',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -623,6 +659,7 @@ it('isolates a schema-incompatible location from readable siblings', () => {
   const addressing = new JobAddressing(
     index,
     {
+      visitProgress: progressVisitFromDetails((id) => (id === 'good' ? detail('good', 'completed') : null)),
       epochKey: () => 'active',
       detail: (id) => (id === 'good' ? detail('good', 'completed') : null),
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -668,6 +705,7 @@ it.each([false, true])('first poll observes every member without false holds, te
   const addressing = new JobAddressing(
     index.readOnlyView(),
     {
+      visitProgress: progressVisitFromDetails((id) => jobs.get(id)?.detail ?? null),
       epochKey: () => 'epoch-E',
       detail: (id) => jobs.get(id)?.detail ?? null,
       readWaitAdmissions: (members) => members.map((id) => jobs.get(id)!),
@@ -682,8 +720,13 @@ it.each([false, true])('first poll observes every member without false holds, te
   const cursor: WaitCursorV3 | undefined = terminal
     ? {
         version: 'jobs.wait.v3',
-        epochs: [{ token: waitEpochToken('epoch-E'), watermark: 100_000, lineOffset: 0 }],
-        jobs: ids.map((id) => ({ hash: waitJobHash(id), epoch: 0, flags: ACKNOWLEDGED_FLAG })),
+        jobs: ids.map((id) => ({
+          hash: waitJobHash(id),
+          epoch: waitEpochToken('epoch-E'),
+          seq: 100_000,
+          lineOffset: 0,
+          flags: ACKNOWLEDGED_FLAG,
+        })),
       }
     : undefined;
   const request = { jobIds, supportsWaitV3: true, timeoutSeconds: 0, cursor };
@@ -692,7 +735,7 @@ it.each([false, true])('first poll observes every member without false holds, te
   for await (const event of addressing.waitStream({ ...request, admissions })) events.push(event);
   expect(events.filter((e) => e.type === 'disposition' && e.disposition === 'discovery-unknown')).toEqual([]);
   expect(events.filter((e) => e.type === 'notice' && e.message.includes('held'))).toEqual([]);
-  if (terminal) expect(events.at(-1)).toMatchObject({ type: 'notice', exitCode: 1, cursor: { jobs: [] } });
+  if (terminal) expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 1, cursor: { jobs: [] } });
   else {
     const progress = events.filter((e) => e.type === 'progress');
     expect(progress.length).toBeGreaterThan(0);

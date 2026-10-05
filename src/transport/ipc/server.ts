@@ -1,3 +1,5 @@
+import { serializeWaitCursor } from '../../jobs/wait/cursor.js';
+import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { WAIT_SNAPSHOT_BYTES } from '../../jobs/wait/contract.js';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
@@ -948,10 +950,14 @@ async function dispatchIpcCatalogRequest(
         request.method === 'jobs.wait.snapshot' &&
         Buffer.byteLength(encode({ kind: 'response', id: request.id, result: invocation.body })) > WAIT_SNAPSHOT_BYTES
       ) {
+        const input = parsed.data as { jobIds: string[]; cursor?: WaitCursor };
+        const retries = input.jobIds.map(
+          (id) =>
+            `coral-cli wait jobs '${id.replaceAll("'", "'\\''")}' --now${input.cursor ? ` --cursor ${serializeWaitCursor(input.cursor)}` : ''}`,
+        );
         const refusal = {
           code: 'wait_snapshot_too_large',
-          message:
-            'Snapshot envelope exceeds the response size budget; retry a smaller job set with the original cursor.',
+          message: `Snapshot envelope exceeds the response size budget. Retry subsets with the original cursor: ${retries.join('; ')}.`,
         };
         const response = requestErrorResponse(request.id, refusal.message, refusal);
         await finishUnaryResponse(

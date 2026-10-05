@@ -105,7 +105,7 @@ export type WaitFailure = {
 export type WaitInternalState = {
   atoms: LaunchedAtom[];
   completedOutputs: Map<string, string>;
-  cursor: WaitCursor;
+  cursor: WaitCursor | undefined;
   lastActivityAt: Map<string, number>;
   staleRetries: Map<string, number>;
   expectedStaleAborts: Set<string>;

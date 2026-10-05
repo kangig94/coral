@@ -192,6 +192,7 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   }
   if (
     code === 'transient' ||
+    code === 'wait_snapshot_too_large' ||
     code === 'backend_shutting_down' ||
     code === 'coordinator_drain_unanswered' ||
     code === 'provider_host_inventory_unavailable' ||

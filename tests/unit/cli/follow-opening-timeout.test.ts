@@ -2,8 +2,6 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { WaitInvocation } from '#src/cli/wait-invocation.js';
-import { WaitSession } from '#src/jobs/wait/session.js';
-import { admitted } from '#tests/helpers/wait-session.js';
 import { followJobs } from '#src/cli/follow.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
 import { IpcRequestTimeout } from '#src/transport/ipc/client.js';
@@ -57,8 +55,6 @@ it('saves an exact continuation after a refused sibling disposition is delivered
     callback?.();
     return true;
   }) as typeof process.stdout.write);
-  const session = new WaitSession(['known', 'ghost']);
-  session.reconcile([admitted('known', [], false), { jobId: 'ghost', disposition: 'missing' }]);
   const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'known', 'ghost']);
   const saved = vi.spyOn(invocation, 'saveContinuation');
   try {
@@ -78,7 +74,6 @@ it('saves an exact continuation after a refused sibling disposition is delivered
               version: 'jobs.wait.v3',
               jobId: 'ghost',
               disposition: 'missing',
-              cursor: session.cursor(session.remaining()),
             };
             throw new Error('disconnected after the complete disposition');
           },
@@ -87,7 +82,7 @@ it('saves an exact continuation after a refused sibling disposition is delivered
       }),
     });
     expect(saved).toHaveBeenCalled();
-    expect(saved.mock.calls.at(-1)![0]).toContain('coral-cli wait jobs known --cursor jobs.wait.v3:');
+    expect(saved.mock.calls.at(-1)![0]).toContain('coral-cli wait jobs known to continue');
     expect(saved.mock.calls.at(-1)![0]).not.toContain('ghost');
   } finally {
     invocation.dispose(true);

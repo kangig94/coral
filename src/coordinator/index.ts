@@ -1,3 +1,5 @@
+import type { ProgressSource } from '../jobs/wait/contract.js';
+import { visitJobProgress } from '../jobs/read-queries.js';
 import { renderWorkflowReport } from '../workflow/result-report.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { providerLookupPortFromCatalog } from '../providers/catalog.js';
@@ -35,7 +37,7 @@ import {
 } from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
-import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
+import { loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
 import { composeReducers } from '../store/reducers.js';
 import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
@@ -917,8 +919,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
           ...deps,
           coordinatorCommit,
           loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
-          readJobEvents: (jobId: string, afterSeq?: number, window?: { tail?: number; limit?: number }) =>
-            readJobEvents(getQueryDb(), jobId, readCtx, false, afterSeq, window),
+
+          visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) => ({
+            kind: 'read' as const,
+            value: visitJobProgress(getQueryDb(), readCtx, read),
+          }),
           aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(getQueryDb(), workflowJobId),
           subscribeJobEvents,
           getCurrentJournalSeq,

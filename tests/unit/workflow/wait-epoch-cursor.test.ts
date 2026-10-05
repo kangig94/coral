@@ -1,3 +1,4 @@
+import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
@@ -49,17 +50,21 @@ describe('workflow wait epoch cursor', () => {
     const runtime = new SimulationRuntime();
     const job = admitted('job-1');
     const wait = new WaitCoordinator({
+      visitProgress: progressVisitFromEvents(
+        () => job.detail.events,
+        () => 1000,
+      ),
       time: runtime.time,
       eventBus: new TypedEventBus(),
       sessionManager: { get: () => null } as never,
       launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
       loadJobProjectionDetail: () => ({
-        status: job.detail!.status,
+        status: job.detail.status,
         launch: null,
         runtime: null,
-        exit: { ...job.detail!.exit!, endTime: '' },
+        exit: { ...job.detail.exit!, endTime: '' },
       }),
-      readJobEvents: () => job.detail!.events,
+
       aggregateWorkflowUsage: () => undefined,
       getCurrentJournalSeq: () => 1000,
       resultJobsRoot: '/results',
@@ -143,6 +148,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'new-selected-epoch',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -158,6 +164,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
     );
     const ctx = { projectRoot: f.root } as InvocationContext;
     const service = new ExecutionService(ctx, {
+      visitProgress: progressVisitFromEvents(f.store.readJobEvents.bind(f.store), () => seq),
       runtime: f.runtime,
       progressStore: f.store,
       backendNamespace: 'fixture',
@@ -165,7 +172,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
       eventBus: new TypedEventBus(),
       coordinatorCommit: f.store.commit.bind(f.store),
       loadJobProjectionDetail: f.store.loadJobProjectionDetail.bind(f.store),
-      readJobEvents: f.store.readJobEvents.bind(f.store),
+
       aggregateWorkflowUsage: () => undefined,
       subscribeJobEvents: async function* () {},
       getCurrentJournalSeq: () => seq,
@@ -208,12 +215,16 @@ it('a workflow child missing from the real reader fails its atom after one proje
     return { status: null, launch: null, runtime: null, exit: null };
   });
   const wait = new WaitCoordinator({
+    visitProgress: progressVisitFromEvents(
+      () => [],
+      () => 0,
+    ),
     time: runtime.time,
     eventBus: new TypedEventBus(),
     sessionManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     loadJobProjectionDetail: load,
-    readJobEvents: () => [],
+
     observeJobAbsence: () => true,
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,

@@ -78,7 +78,7 @@ it.each(['recovery', 'seed', 'repair'] as const)('preserves legacy past-window d
         true,
       );
     else f.store.getResultExportOwner().ensureResultMarkdownArtifact(f.jobId);
-    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toBeUndefined();
+    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toMatchObject({ kind: 'known' });
     expect(f.index.certify(f.epochKey, seq)).not.toBeNull();
     expect(f.index.resultsReleased(f.epochKey)).toBe(true);
   } finally {
@@ -87,7 +87,7 @@ it.each(['recovery', 'seed', 'repair'] as const)('preserves legacy past-window d
 });
 
 import { trustedJobRetentionCutoff } from '#src/jobs/retention-clock.js';
-it('untrusted post-commit capture remains legacy after past-window hydration', () => {
+it('trusted hydration records provable expiry after an untrusted post-commit capture', () => {
   const f = createTerminalExportFixture('provider', true);
   try {
     trustedJobRetentionCutoff(f.runtime);
@@ -100,7 +100,7 @@ it('untrusted post-commit capture remains legacy after past-window hydration', (
     f.advance(300_000);
     rmSync(dirname(f.resultPath), { recursive: true, force: true });
     recoverJobLocations(f.index, f.epochKey, f.store);
-    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toBeUndefined();
+    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toMatchObject({ kind: 'known' });
     expect(f.index.certify(f.epochKey, seq)).not.toBeNull();
     expect(f.index.resultsReleased(f.epochKey)).toBe(true);
   } finally {

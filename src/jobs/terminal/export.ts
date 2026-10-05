@@ -1,3 +1,4 @@
+import { jobProgressRetentionExpired } from '../progress-retention.js';
 import { observeResolvedStoreEpoch } from '../../store/epoch/index.js';
 import { sourceReadFailureDisposition, sourceReadStamp } from '../source-read.js';
 import { dirname, join } from 'node:path';
@@ -189,56 +190,30 @@ class RepairSet extends Set<string> {
 }
 
 class RepairFailureSet extends Set<string> {
-  private readonly root: string;
-  private spilled: boolean;
-  private readonly runtime: Pick<Runtime, 'storage' | 'paths'>;
+  private overflowed = false;
   private readonly limit: number;
-  constructor(runtime: Pick<Runtime, 'storage' | 'paths'>, limit = 1024) {
+  constructor(limit = 1024) {
     super();
-    this.runtime = runtime;
     this.limit = limit;
-    this.root = join(runtime.paths.coral.generation.dataRoot, 'result-repair-failures.v1');
-    this.spilled = runtime.storage.existsSync(this.root);
-  }
-  private path(jobId: string): string {
-    return join(this.root, Buffer.from(jobId).toString('base64url') + '.json');
   }
   override has(jobId: string): boolean {
-    return super.has(jobId) || (this.spilled && this.runtime.storage.existsSync(this.path(jobId)));
+    return this.overflowed || super.has(jobId);
   }
   override add(jobId: string): this {
     if (!super.has(jobId) && this.size >= this.limit) {
-      const oldest = this.values().next().value;
-      if (oldest !== undefined) {
-        this.runtime.storage.mkdirSync(this.root, { recursive: true });
-        if (
-          !this.runtime.storage.writeAtomicDurableSync(
-            this.path(oldest),
-            JSON.stringify({ version: 'v1', jobId: oldest }),
-            { mode: 0o600 },
-          )
-        )
-          throw new Error('Repair failure evidence could not be retained');
-        this.spilled = true;
-        super.delete(oldest);
-      }
+      this.overflowed = true;
+      return this;
     }
     return super.add(jobId);
-  }
-  override delete(jobId: string): boolean {
-    const present = this.has(jobId);
-    if (this.spilled) this.runtime.storage.rmSync(this.path(jobId), { force: true });
-    super.delete(jobId);
-    return present;
   }
 }
 
 const repairFailures = new WeakMap<object, Set<string>>();
 
-export function resultRepairFailuresFor(ownerScope: object, runtime: Pick<Runtime, 'storage' | 'paths'>): Set<string> {
+export function resultRepairFailuresFor(ownerScope: object): Set<string> {
   let failures = repairFailures.get(ownerScope);
   if (!failures) {
-    failures = new RepairFailureSet(runtime);
+    failures = new RepairFailureSet();
     repairFailures.set(ownerScope, failures);
   }
   return failures;
@@ -248,6 +223,7 @@ const repairQueues = new WeakMap<object, { hints: Set<string>; listener: (() => 
 
 export class TerminalResultExportOwner {
   private readonly failures: Set<string>;
+  private readonly uncaptured = new RepairFailureSet();
   private publicationLocation: JobLocation | null | undefined;
   private publicationTerminal: { accepted: EventsRow; terminal: JobTerminal } | undefined;
   private sourceSession: { db: Database; ctx: StoreReadContext } | undefined;
@@ -278,7 +254,7 @@ export class TerminalResultExportOwner {
 
   constructor(input: TerminalResultExportOwner['input']) {
     this.input = input;
-    this.failures = input.failures ?? new RepairFailureSet(input.runtime, input.repairQueueLimit);
+    this.failures = input.failures ?? new RepairFailureSet(input.repairQueueLimit);
     const scope = input.repairScope ?? this;
     this.repairQueue = repairQueues.get(scope) ?? { hints: new RepairSet(input.repairQueueLimit), listener: null };
     repairQueues.set(scope, this.repairQueue);
@@ -325,7 +301,7 @@ export class TerminalResultExportOwner {
 
   private workflowReadable(jobId: string, session?: object): boolean {
     const location = this.input.location(jobId);
-    const epoch = session && location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
+    const epoch = location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
     const stamp = epoch ? sourceReadStamp(this.input.runtime.storage, epoch.path) : null;
     const cache = session ? this.observedWorkflowReports.get(session) : undefined;
     const previous = cache?.get(jobId);
@@ -379,20 +355,30 @@ export class TerminalResultExportOwner {
 
   /** Availability observation never synchronizes or repairs storage. */
   progressRetentionExpired(jobId: string): boolean | undefined {
-    const kind = this.eligibility(jobId, false, true).kind;
-    return kind === 'unknown' || kind === 'regression' ? undefined : kind === 'expired';
+    const cutoff = trustedJobRetentionCutoff(this.input.runtime);
+    if (cutoff === null) return undefined;
+    try {
+      return (
+        this.withSource(jobId, (db) => {
+          const terminal = readAcceptedTerminal(db, jobId);
+          return terminal ? jobProgressRetentionExpired(db, terminal, cutoff) : undefined;
+        }) ?? undefined
+      );
+    } catch {
+      return undefined;
+    }
   }
 
-  private readonly observedEligibility = new WeakMap<
-    object,
-    Map<string, { stamp: string; identity: string | undefined; eligibility: TerminalEligibility }>
+  private readonly observedEligibility = new Map<
+    string,
+    { stamp: string; identity: string | undefined; eligibility: TerminalEligibility }
   >();
 
-  private observeEligibility(jobId: string, session?: object): TerminalEligibility {
+  private observeEligibility(jobId: string): TerminalEligibility {
     const location = this.input.location(jobId);
-    const epoch = session && location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
+    const epoch = location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
     const stamp = epoch ? sourceReadStamp(this.input.runtime.storage, epoch.path) : null;
-    const previous = session ? this.observedEligibility.get(session)?.get(jobId) : undefined;
+    const previous = this.observedEligibility.get(jobId);
     if (
       stamp !== null &&
       previous?.stamp === stamp &&
@@ -423,10 +409,11 @@ export class TerminalResultExportOwner {
       };
     }
     const eligibility = this.eligibility(jobId, true, true);
-    if (session && location && stamp !== null && !eligibility.sourceReadFailed) {
-      const cache = this.observedEligibility.get(session) ?? new Map();
-      cache.set(jobId, { stamp, identity: location.storedIdentity, eligibility });
-      this.observedEligibility.set(session, cache);
+    if (location && stamp !== null && !eligibility.sourceReadFailed) {
+      this.observedEligibility.delete(jobId);
+      this.observedEligibility.set(jobId, { stamp, identity: location.storedIdentity, eligibility });
+      const oldest = this.observedEligibility.keys().next().value;
+      if (this.observedEligibility.size > 128 && oldest !== undefined) this.observedEligibility.delete(oldest);
     }
     return eligibility;
   }
@@ -434,6 +421,8 @@ export class TerminalResultExportOwner {
   observeResultAvailability(jobId: string, session?: object): ResultAvailability {
     const location = this.input.location(jobId);
     if (!location || location.disposition !== 'terminal') {
+      if (this.uncaptured.has(jobId) && this.input.hydrationRetry?.(jobId) !== true)
+        return { kind: 'failed', cause: 'repair-failed', retryScheduled: false };
       const path = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
       const unverifiedResultPath = this.readableFile(path) ? path : undefined;
       try {
@@ -463,7 +452,7 @@ export class TerminalResultExportOwner {
       return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false };
     if (this.available(jobId))
       return { kind: 'available', resultPath: location.resultPath ?? resultPathFor(this.input.jobsRoot, jobId) };
-    const eligibility = this.observeEligibility(jobId, session);
+    const eligibility = this.observeEligibility(jobId);
     if (eligibility.sourceReadFailed && this.input.hydrationRetry?.(jobId) === false)
       return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, ageUncertain: true };
     const unavailable = unavailableForEligibility(
@@ -496,6 +485,8 @@ export class TerminalResultExportOwner {
   private publish(jobId: string, repair: boolean): string {
     const location = this.input.publicationLocation?.(jobId) ?? this.input.location(jobId);
     const targetPath = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
+    if (repair && location && hasReadableTerminalDetail(location) && this.eligibility(jobId, false).kind === 'expired')
+      return targetPath;
     if (location && hasReadableTerminalDetail(location) && this.readableFile(targetPath)) {
       this.failures.delete(jobId);
       return targetPath;
@@ -542,7 +533,11 @@ export class TerminalResultExportOwner {
       return targetPath;
     }
     const accepted = readAcceptedTerminal(db, jobId);
-    if (!location || !accepted) return targetPath;
+    if (!accepted) return targetPath;
+    if (!location || !hasReadableTerminalDetail(location)) {
+      this.uncaptured.add(jobId);
+      return targetPath;
+    }
     const body = jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
     this.publicationTerminal = { accepted, terminal: body.terminal };
     const eligibility = this.eligibility(jobId);
@@ -584,6 +579,7 @@ export class TerminalResultExportOwner {
   }
 
   hintRepair(jobId: string): void {
+    if (this.uncaptured.has(jobId) && this.input.hydrationRetry?.(jobId) !== true) return;
     if (this.hints.has(jobId)) return;
     this.hints.add(jobId);
     this.repairQueue.listener?.();

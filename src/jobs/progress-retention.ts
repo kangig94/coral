@@ -109,19 +109,9 @@ export async function pruneJobProgress(input: {
       let unknownEvidence = false;
       try {
         decodeBody(terminal, jobTerminalRecordedBodySchema, readCtx);
-        const latest = db
-          .prepare<
-            [string],
-            { seq: number }
-          >("SELECT seq FROM events INDEXED BY events_retention_stream WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
-          .get(terminal.stream_id);
-        const terminalAt = readJobTerminalAge(db, terminal);
-        if (latest?.seq !== terminal.seq) {
-          budget.record({ kind: 'kept', subject, reason: 'terminal-state-unproven' });
-        } else if (terminalAt === 'regression') {
-          budget.record({ kind: 'kept', subject, reason: 'terminal-clock-regression' });
-        } else if (terminalAt === 'unknown' || terminalAt >= cutoff) {
-          budget.record({ kind: 'kept', subject, reason: 'terminal-not-expired-or-unknown' });
+        const reason = progressRetentionKeepReason(db, terminal, cutoff);
+        if (reason) {
+          budget.record({ kind: 'kept', subject, reason });
         } else {
           while (budget.canContinue()) {
             const rows = db
@@ -207,4 +197,22 @@ export async function pruneJobProgress(input: {
   save();
   budget.record({ kind: 'kept', subject: 'journal-progress', reason: 'scan-pending' });
   return cursor.afterSeq;
+}
+
+function progressRetentionKeepReason(db: Database, terminal: EventsRow, cutoff: number): string | undefined {
+  const latest = db
+    .prepare<
+      [string],
+      { seq: number }
+    >("SELECT seq FROM events INDEXED BY events_retention_stream WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
+    .get(terminal.stream_id);
+  if (latest?.seq !== terminal.seq) return 'terminal-state-unproven';
+  const age = readJobTerminalAge(db, terminal);
+  if (age === 'regression') return 'terminal-clock-regression';
+  if (age === 'unknown' || age >= cutoff) return 'terminal-not-expired-or-unknown';
+  return undefined;
+}
+
+export function jobProgressRetentionExpired(db: Database, terminal: EventsRow, cutoff: number): boolean {
+  return progressRetentionKeepReason(db, terminal, cutoff) === undefined;
 }

@@ -484,3 +484,25 @@ it.each(['', 'relative', '/tmp/../store'])('retains an invalid pending-protectio
   writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), storeRoot }));
   expect(readPendingProtections(runtime)).toMatchObject({ records: [], unreadableNames: [name] });
 });
+
+it('observes a protected lineage after bounded contention and refuses an undecided lineage', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'coral-protected-lineage-contention-'));
+  roots.push(root);
+  const runtime = createRealRuntime('prod', { baseDir: root });
+  const storeRoot = join(root, 'db');
+  const lineage = '00000000-0000-4000-8000-000000000001';
+  const epochKey = `${lineage}:1`;
+  const path = join(epochProtection.protectedStoreEpochRoot(storeRoot), lineage, 'epoch-1');
+  mkdirSync(path, { recursive: true });
+  writeFileSync(join(path, '.coral-lineage.v1.json'), JSON.stringify({ version: 'v1', lineageId: lineage }));
+  const locks = await import('#src/infra/fs-lock.js');
+  const lock = vi.spyOn(locks, 'acquireSharedFileLockNoRepairSync').mockImplementation((_path, busyTimeoutMs) => {
+    if ((busyTimeoutMs ?? 0) < 5000) throw new Error('SQLITE_BUSY');
+    return () => {};
+  });
+  expect(epochProtection.observeProtectedEpoch(runtime, storeRoot, epochKey)?.lineageKey).toBe(epochKey);
+  lock.mockImplementation(() => {
+    throw new Error('SQLITE_BUSY');
+  });
+  expect(() => epochProtection.observeProtectedEpoch(runtime, storeRoot, epochKey)).toThrow('lineage is unobservable');
+});

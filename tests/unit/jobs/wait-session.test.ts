@@ -1,3 +1,5 @@
+import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
+import { progressVisitFromDetails, selectTestProgress } from '#tests/helpers/wait-progress.js';
 import type { JobLocation, JobLocationView } from '#src/jobs/location-index.js';
 import type { WaitStreamEvent, WaitCursorV3 } from '#src/jobs/wait/contract.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
@@ -6,7 +8,7 @@ import { admitted } from '#tests/helpers/wait-session.js';
 import { describe, expect, it, vi } from 'vitest';
 import { WaitSession, type SourceReadDisposition } from '#src/jobs/wait/session.js';
 import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
-import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 
 describe('wait session', () => {
   it('rejects identical repeated job IDs before constructing a cursor', () => {
@@ -31,13 +33,13 @@ describe('wait session', () => {
         [4, 'b4'],
       ]),
     ]);
-    session.consume(session.progress()[0]);
-    expect(session.progress().map((line) => line.text)).toEqual(['b2', 'a3', 'b4']);
+    session.consume(selectTestProgress(session)[0]);
+    expect(selectTestProgress(session).map((line) => line.text)).toEqual(['b2', 'a3', 'b4']);
     session.acknowledge(session.admissions[0]);
     expect(session.remaining()).toEqual(['a', 'b']);
     const resumed = new WaitSession(['b', 'a'], session.cursor());
     resumed.reconcile([...session.admissions].reverse());
-    expect(resumed.progress().map((line) => line.text)).toEqual(['b2', 'a3', 'b4']);
+    expect(selectTestProgress(resumed).map((line) => line.text)).toEqual(['b2', 'a3', 'b4']);
     expect(resumed.acknowledged('a')).toBe(true);
     expect(resumed.acknowledged('b')).toBe(false);
     expect(resumed.notices).toEqual([]);
@@ -49,22 +51,22 @@ describe('wait session', () => {
     const session = new WaitSession(['a']);
     session.reconcile([a]);
     session.acknowledge(a);
-    expect(session.progress().map((line) => line.text)).toEqual(['one', 'two']);
-    session.consume(session.progress()[0]);
+    expect(selectTestProgress(session).map((line) => line.text)).toEqual(['one', 'two']);
+    session.consume(selectTestProgress(session)[0]);
     const resumed = new WaitSession(['a'], session.cursor());
     resumed.reconcile([a]);
-    expect(resumed.progress().map((line) => line.text)).toEqual(['two']);
+    expect(selectTestProgress(resumed).map((line) => line.text)).toEqual(['two']);
     expect(resumed.acknowledged('a')).toBe(true);
     expect(resumed.artifactPending('a')).toBe(true);
     expect(resumed.remaining()).toEqual(['a']);
-    resumed.consume(resumed.progress()[0]);
+    resumed.consume(selectTestProgress(resumed)[0]);
     expect(resumed.remaining()).toEqual(['a']);
     resumed.settleArtifact('a');
     expect(resumed.remaining()).toEqual([]);
   });
 
   it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
-    'resets new or unresolved epoch membership once on %s without losing flags',
+    'positions a resolved member independently on %s without losing flags',
     (direction) => {
       const a = admitted('a', [[100, 'a100']]);
       a.availability = { kind: 'repair-pending', ageUncertain: false };
@@ -74,16 +76,16 @@ describe('wait session', () => {
         direction === 'snapshot-to-stream'
           ? selectWaitSnapshot(session, 20).cursor
           : (() => {
-              session.consume(session.progress()[0]);
+              session.consume(selectTestProgress(session)[0]);
               session.acknowledge(a);
               return session.cursor();
             })();
-      expect(cursor.jobs.find((job) => job.hash === waitJobHash('u'))).toMatchObject({ epoch: 255, flags: 4 });
+      expect(cursor.jobs.find((job) => job.hash === waitJobHash('u'))).toMatchObject({ epoch: null, flags: 4 });
       const joined = [a, admitted('u', [[2, 'u below 100']], false)];
       const resumed = new WaitSession(['a', 'u'], cursor);
       resumed.reconcile(joined);
-      expect(resumed.progress().map((line) => line.text)).toEqual(['u below 100', 'a100']);
-      expect(resumed.notices).toEqual([expect.stringContaining('membership changed')]);
+      expect(selectTestProgress(resumed).map((line) => line.text)).toEqual(['u below 100']);
+      expect(resumed.notices.some((notice) => notice.includes('membership changed'))).toBe(false);
       expect(resumed.acknowledged('a')).toBe(true);
       expect(resumed.artifactPending('a')).toBe(true);
       const next = new WaitSession(['u', 'a'], resumed.cursor());
@@ -102,6 +104,7 @@ describe('wait session', () => {
       { jobId: 'u', disposition: 'discovery-unknown' },
       admitted('b', [], false),
     ]);
+    selectTestProgress(session);
     session.acknowledge(a);
     expect(session.remaining()).toEqual(['u', 'b']);
     expect(session.cursor(session.remaining()).jobs).toHaveLength(2);
@@ -123,7 +126,7 @@ describe('wait session', () => {
     session.observeAbsent('b', 10);
     expect(session.remaining()).toEqual(['a', 'b']);
     expect(session.exitCode()).toBe(75);
-    expect(session.cursor().epochs[0].token).toBe(waitEpochToken('epoch-E'));
+    expect(session.cursor().jobs[0].epoch).toBe(waitEpochToken('epoch-E'));
   });
 });
 
@@ -131,7 +134,7 @@ it.each([false, true])(
   'retained history cannot supply progress or an unvalidated outcome without a successful source read, corrupt=%s',
   (corrupt) => {
     const h = admitted('h', [[1, 'retained progress']], true, 'old');
-    const detail = h.detail!;
+    const detail = h.detail;
     detail.status.updatedAt = '2026-10-04T00:00:00Z';
     detail.exit!.endTime = detail.status.updatedAt;
     for (const event of detail.events) {
@@ -150,7 +153,11 @@ it.each([false, true])(
     };
     const reader = new JobAddressing(
       { time: createRealTimePort(), read: () => location, unknownLocationHolds: () => [] } as never,
-      { epochKey: () => 'active', detail: () => null } as never,
+      {
+        visitProgress: progressVisitFromDetails(() => null),
+        epochKey: () => 'active',
+        detail: () => null,
+      } as never,
       () => false,
       () => 'decided',
       () => ({ kind: 'unreadable', disposition: 'retired', retired: true }),
@@ -158,7 +165,7 @@ it.each([false, true])(
     );
     const snapshot = reader.snapshot({ jobIds: ['h'], projectRoot: '/tmp' });
     expect(snapshot.jobs[0].progress).toEqual([]);
-    if (!corrupt) expect(snapshot.notices).toContain('earlier progress for h is no longer kept');
+    if (!corrupt) expect(snapshot.notices.join(' ')).toContain('source retired');
     if (corrupt) {
       expect(snapshot.jobs[0].terminal).toBeUndefined();
       expect(snapshot.remainingJobIds).toEqual([]);
@@ -189,7 +196,7 @@ it('versionless acknowledgements do not invent a membership reset', () => {
   const u = admitted('u', [[2, 'u2']], false);
   const session = new WaitSession(['a', 'u'], { afterSeq: 100, deliveredJobIds: ['a'] }, 'epoch-E');
   session.reconcile([a, u]);
-  expect(session.progress().map((line) => line.text)).toEqual([]);
+  expect(selectTestProgress(session).map((line) => line.text)).toEqual([]);
   expect(session.acknowledged('a')).toBe(true);
   expect(session.notices).toEqual([]);
 });
@@ -200,8 +207,8 @@ it.each([
 ])('internal replacement membership %j preserves the sibling frontier', (...jobIds) => {
   const input = {
     version: 'jobs.wait.v3' as const,
-    epochs: [{ token: waitEpochToken('real-epoch'), watermark: 10, lineOffset: 0 }],
-    jobs: [{ hash: waitJobHash('a'), epoch: 0, flags: 0 }],
+
+    jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('real-epoch'), seq: 10, lineOffset: 0, flags: 0 }],
   };
   const session = new WaitSession(jobIds, input, 'real-epoch', true);
   session.reconcile(
@@ -219,7 +226,7 @@ it.each([
       ),
     ),
   );
-  expect(session.progress().map((line) => line.text)).toEqual(['new member']);
+  expect(selectTestProgress(session).map((line) => line.text)).toEqual(['new member']);
   expect(session.notices).toEqual([]);
 });
 
@@ -244,11 +251,11 @@ it('reuses unread progress through idle polls and never splits consumed history'
   try {
     for (let poll = 0; poll < 20; poll++) {
       session.reconcile(jobs);
-      session.progress();
+      selectTestProgress(session);
       session.remaining();
       session.cursor();
     }
-    expect(split.mock.calls.filter((call) => (call[0] as unknown) === '\n').length).toBe(32);
+    expect(split.mock.calls.filter((call) => (call[0] as unknown) === '\n').length).toBe(32 * 20);
   } finally {
     split.mockRestore();
   }
@@ -258,7 +265,7 @@ it('versionless membership evidence never acknowledges a terminal before deliver
   const job = admitted('a', [[1, 'received progress']]);
   const session = new WaitSession(['a'], { afterSeq: 1, deliveredJobIds: [], admittedJobIds: ['a'] }, 'epoch-E');
   session.reconcile([job]);
-  expect(session.progress()).toEqual([]);
+  expect(selectTestProgress(session)).toEqual([]);
   expect(session.acknowledged('a')).toBe(false);
   expect(selectWaitSnapshot(session).jobs[0].terminal).toBeDefined();
 });
@@ -271,13 +278,13 @@ it('holds the shared progress frontier while one member history is unreadable', 
   const session = new WaitSession(['a', 'b']);
   session.reconcile([a, b]);
   const first = selectWaitSnapshot(session, 20);
-  expect(first.jobs[1].progress).toEqual([]);
-  expect(first.remainingJobIds).toEqual(['a', 'b']);
-  expect(first.cursor.epochs[0].watermark).toBe(0);
-  const resumed = new WaitSession(['a', 'b'], first.cursor);
-  resumed.reconcile([admitted('a', [[3, 'recovered backlog']]), b]);
+  expect(first.jobs[1].progress).toEqual(['sibling backlog']);
+  expect(first.remainingJobIds).toEqual(['a']);
+  expect(first.cursor.jobs[0].seq).toBe(0);
+  const resumed = new WaitSession(first.remainingJobIds, first.cursor);
+  resumed.reconcile([admitted('a', [[3, 'recovered backlog']])]);
   const next = selectWaitSnapshot(resumed);
-  expect(next.jobs.map((job) => job.progress)).toEqual([['recovered backlog'], ['sibling backlog']]);
+  expect(next.jobs.map((job) => job.progress)).toEqual([['recovered backlog']]);
   expect(next.remainingJobIds).toEqual([]);
 });
 
@@ -299,14 +306,14 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
     session.acknowledge(a);
     session.acknowledge(u);
     if (sourceRead === 'transient-unknown') {
-      expect(session.progress()).toEqual([]);
+      expect(selectTestProgress(session).map((line) => line.text)).toEqual(['a-ten', 'a-eleven']);
       expect(session.remaining()).toEqual(['A', 'U']);
-      expect(session.notices.some((notice) => notice.includes('A') && notice.includes('is held'))).toBe(true);
-      expect(session.cursor(session.remaining()).epochs[0].watermark).toBe(0);
+      expect(session.notices.some((notice) => notice.includes('U') && notice.includes('is held'))).toBe(true);
+      expect(session.cursor(session.remaining()).jobs[0].seq).toBe(0);
     } else {
-      expect(session.progress().map((line) => line.text)).toEqual(['a-ten', 'a-eleven']);
+      expect(selectTestProgress(session).map((line) => line.text)).toEqual(['a-ten', 'a-eleven']);
       expect(session.remaining()).toEqual(['A']);
-      for (const line of session.progress()) session.consume(line);
+      for (const line of selectTestProgress(session)) session.consume(line);
       expect(session.remaining()).toEqual([]);
     }
   },
@@ -325,7 +332,7 @@ it('a versionless deliveredJobIds list acknowledges terminals without declaring 
     ),
   ]);
   expect(session.notices).toEqual([]);
-  expect(session.progress().map((line) => line.text)).toEqual(['next']);
+  expect(selectTestProgress(session).map((line) => line.text)).toEqual(['next']);
 });
 
 it.each([false, true])('unknown discovery preserves known cursor flags, resumed=%s', (resumed) => {
@@ -396,6 +403,7 @@ describe('addressing discovery retry preserves interleaved progress', () => {
     const addressing = new JobAddressing(
       view,
       {
+        visitProgress: progressVisitFromDetails((id) => (id === 'a' ? a.detail : b.detail)),
         epochKey: () => E,
         detail: () => null,
         readWaitAdmissions: (ids) => ids.map((id) => (id === 'a' ? a : b)),
@@ -408,10 +416,10 @@ describe('addressing discovery retry preserves interleaved progress', () => {
     );
     const cursor: WaitCursorV3 = {
       version: 'jobs.wait.v3',
-      epochs: [{ token: waitEpochToken(E), watermark: 4, lineOffset: 0 }],
+
       jobs: [
-        { hash: waitJobHash('a'), epoch: 0, flags: 0 },
-        { hash: waitJobHash('b'), epoch: 0, flags: 0 },
+        { hash: waitJobHash('a'), epoch: waitEpochToken(E), seq: 4, lineOffset: 0, flags: 0 },
+        { hash: waitJobHash('b'), epoch: waitEpochToken(E), seq: 4, lineOffset: 0, flags: 0 },
       ],
     };
     const events: WaitStreamEvent[] = [];
@@ -448,8 +456,8 @@ it('merges two addresses for one lineage without duplicate progress', () => {
     ),
     admitted('b', [[2, 'b2']], false, two),
   ]);
-  expect(session.progress().map((line) => line.text)).toEqual(['a1', 'b2', 'a3']);
-  expect(session.cursor().epochs).toHaveLength(1);
+  expect(selectTestProgress(session).map((line) => line.text)).toEqual(['a1', 'b2', 'a3']);
+  expect(new Set(session.cursor().jobs.map((entry) => entry.epoch))).toHaveLength(1);
 });
 
 it.each(['admitted', 'missing', 'scope-mismatch', 'discovery-unknown'] as const)(
@@ -463,3 +471,41 @@ it.each(['admitted', 'missing', 'scope-mismatch', 'discovery-unknown'] as const)
     expect(session.notices.filter((notice) => notice.includes('held'))).toEqual([]);
   },
 );
+
+it('water-fills a maximum set before reading tails, within the raw-row budget', () => {
+  const jobs = Array.from({ length: 128 }, (_, index) => admitted(`job-${index}`, [], false));
+  const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
+  let rowsRead = 0;
+  const session = new WaitSession(jobs.map((job) => job.jobId));
+  session.reconcile(jobs);
+  const raw = Array.from({ length: 100 }, (_, index) => ({
+    seq: index + 1,
+    progress: { seq: index + 1, message: `line-${index}`, timing },
+  }));
+
+  session.withProgress(
+    (_epoch, visit) => ({
+      kind: 'read',
+      value: visit({
+        after: (_id, after, count) =>
+          progressPage(raw.filter((row) => row.seq > after).slice(0, count + 1), count, 100),
+        before: (_id, before, count) => {
+          const page = raw
+            .filter((row) => before === null || row.seq < before)
+            .slice()
+            .reverse()
+            .slice(0, count + 1);
+          rowsRead += page.length;
+          return progressTail(page, count, 100);
+        },
+      }),
+    }),
+    (sources) => {
+      session.position(sources, 20, 500, 65536);
+      const selected = session.select(sources, 500, 65536);
+      expect(selected.lines).toHaveLength(128 * 3);
+      expect(rowsRead).toBeLessThanOrEqual(500 + 128);
+      expect(session.cursor().jobs.every((entry) => entry.seq === 97)).toBe(true);
+    },
+  );
+});

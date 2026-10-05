@@ -1,3 +1,5 @@
+import type { ProgressSource } from './wait/contract.js';
+import { visitJobProgress } from './read-queries.js';
 import { sameEpoch } from '../store/epoch/identity.js';
 import { hasReadableTerminalDetail } from './terminal/identity.js';
 import type { Database } from '../store/db.js';
@@ -547,8 +549,12 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId);
   }
 
-  readJobEvents(jobId: string, terminalOnly = false, afterSeq = 0, window?: { tail?: number; limit?: number }) {
-    return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq, window);
+  readJobEvents(jobId: string, terminalOnly = false, afterSeq = 0) {
+    return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq);
+  }
+
+  visitProgress<T>(read: (source: ProgressSource) => T): T {
+    return visitJobProgress(this.db, this, read);
   }
 
   observeJobAbsence(jobId: string): boolean {

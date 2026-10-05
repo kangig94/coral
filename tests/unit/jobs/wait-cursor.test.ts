@@ -88,14 +88,11 @@ it.each([64, 128])('encodes %i jobs at maximum frontiers under the authenticated
   for (const shared of [true, false]) {
     const cursor = {
       version: 'jobs.wait.v3' as const,
-      epochs: Array.from({ length: shared ? 1 : count }, (_, i) => ({
-        token: waitEpochToken(`/absolute/epoch/${i}`),
-        watermark: Number.MAX_SAFE_INTEGER,
-        lineOffset: 0xffffffff,
-      })),
       jobs: Array.from({ length: count }, (_, i) => ({
         hash: waitJobHash(`job-${i}`),
-        epoch: shared ? 0 : i,
+        epoch: waitEpochToken(`/absolute/epoch/${shared ? 0 : i}`),
+        seq: Number.MAX_SAFE_INTEGER,
+        lineOffset: 0xffffffff,
         flags: 3,
       })),
     };
@@ -112,22 +109,22 @@ it('round trips unresolved entries and rejects malformed v3 flags, ordinals, len
   const { waitEpochToken, waitJobHash } = await import('#src/jobs/wait/cursor.js');
   const cursor = {
     version: 'jobs.wait.v3' as const,
-    epochs: [{ token: waitEpochToken('e'), watermark: 17, lineOffset: 3 }],
+
     jobs: [
-      { hash: waitJobHash('a'), epoch: 0, flags: 3 },
-      { hash: waitJobHash('u'), epoch: 255, flags: 0 },
+      { hash: waitJobHash('a'), epoch: waitEpochToken('e'), seq: 17, lineOffset: 3, flags: 3 },
+      { hash: waitJobHash('u'), epoch: null, seq: 0, lineOffset: 0, flags: 4 },
     ],
   };
   expect(decodeSerializedWaitCursor(serializeWaitCursor(cursor))).toEqual({ kind: 'decoded', cursor });
-  expect(waitCursorForJobs(cursor, ['u'])).toEqual({ version: 'jobs.wait.v3', epochs: [], jobs: [cursor.jobs[1]] });
+  expect(waitCursorForJobs(cursor, ['u'])).toEqual({ version: 'jobs.wait.v3', jobs: [cursor.jobs[1]] });
   expect(waitCursorForJobs(cursor, ['a'])).toEqual({ ...cursor, jobs: [cursor.jobs[0]] });
   for (const bad of [
     { ...cursor, jobs: [{ ...cursor.jobs[0], flags: 8 }] },
     { ...cursor, jobs: [{ ...cursor.jobs[1], flags: 1 }] },
     { ...cursor, jobs: [{ ...cursor.jobs[0], epoch: 1 }] },
     { ...cursor, jobs: [cursor.jobs[0], cursor.jobs[0]] },
-    { ...cursor, epochs: [cursor.epochs[0], cursor.epochs[0]] },
-    { ...cursor, epochs: [{ ...cursor.epochs[0], watermark: Number.MAX_SAFE_INTEGER + 1 }] },
+    { ...cursor, jobs: [{ ...cursor.jobs[0], flags: 2 }] },
+    { ...cursor, jobs: [{ ...cursor.jobs[0], seq: Number.MAX_SAFE_INTEGER + 1 }] },
   ])
     expect(decodeWaitCursor(bad).kind).toBe('rejected');
   expect(decodeSerializedWaitCursor(serializeWaitCursor(cursor).slice(0, -1)).kind).toBe('rejected');
@@ -193,4 +190,27 @@ it('uses lineage identity for V3 tokens and V2 positions across address spelling
   expect(decodeWaitCursor(cursor).kind).toBe('decoded');
   expect(waitEpochPosition(cursor.positions, alias)).toBe(12);
   expect(waitCursorForJobs(cursor, ['job'])).toEqual(cursor);
+});
+
+it('uses the exact v3 layout bound and rejects unpositioned nonzero frontiers', async () => {
+  const { waitJobHash, waitEpochToken } = await import('#src/jobs/wait/cursor.js');
+  const cursor = {
+    version: 'jobs.wait.v3' as const,
+    jobs: Array.from({ length: 128 }, (_, i) => ({
+      hash: waitJobHash('j' + i),
+      epoch: waitEpochToken('e' + i),
+      seq: Number.MAX_SAFE_INTEGER,
+      lineOffset: 0xffffffff,
+      flags: 3,
+    })),
+  };
+  expect(serializeWaitCursor(cursor)).toHaveLength(6504);
+  const shared = { ...cursor, jobs: cursor.jobs.map((entry) => ({ ...entry, epoch: cursor.jobs[0].epoch })) };
+  expect(Buffer.from(serializeWaitCursor(shared).split(':')[1], 'base64url')).toHaveLength(2836);
+  expect(decodeWaitCursor({ ...cursor, jobs: [{ ...cursor.jobs[0], seq: 1, lineOffset: 0, flags: 4 }] }).kind).toBe(
+    'rejected',
+  );
+  const bytes = Buffer.from(serializeWaitCursor(cursor).split(':')[1], 'base64url');
+  bytes[1] = 0;
+  expect(decodeSerializedWaitCursor('jobs.wait.v3:' + bytes.toString('base64url')).kind).toBe('rejected');
 });

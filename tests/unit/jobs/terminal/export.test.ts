@@ -7,7 +7,7 @@ import { workflowRegistry } from '#src/workflow/events.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { dirname } from 'node:path';
 import { WaitSession } from '#src/jobs/wait/session.js';
-import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { trustedJobRetentionCutoff } from '#src/jobs/retention-clock.js';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -411,7 +411,7 @@ describe('terminal export owner', () => {
     f.db.prepare('DELETE FROM events WHERE seq = 1').run();
     f.store.ensureResultArtifact(f.jobId);
     expect(existsSync(f.resultPath)).toBe(false);
-    expect(f.index.resultDurable(f.jobId)).toBe(false);
+    expect(f.index.resultDurable(f.jobId)).toBe(true);
     for (const terminalAge of [
       { kind: 'known', terminalAt: TERMINAL_EXPORT_CUTOFF - 1 },
       { ...record.terminalAge, epochKey: 'other' },
@@ -584,8 +584,9 @@ it('does not recapture an already saved unknown terminal age', () => {
   writeFileSync(f.locationPath, JSON.stringify(stored));
   const prepare = vi.spyOn(f.db, 'prepare');
   const owner = f.store.getResultExportOwner();
-  for (let n = 0; n < 20; n++) expect(owner.progressRetentionExpired(f.jobId)).toBeUndefined();
-  expect(prepare.mock.calls.some(([sql]) => /COUNT|ORDER BY ts DESC/.test(sql))).toBe(false);
+  for (let n = 0; n < 20; n++) expect(owner.progressRetentionExpired(f.jobId)).toBe(false);
+  expect(prepare.mock.calls.some(([sql]) => /COUNT/.test(sql))).toBe(false);
+  expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge.kind).toBe('unknown');
 });
 
 it('reports contradictory accepted source facts as unusable without promising a retry', () => {
@@ -645,24 +646,38 @@ it('an untrusted cutoff reports its own cause and preserves settled causes', () 
   });
 });
 
-it('preserves the confirmed absent-directory rule for an unknown-age legacy crash residue', () => {
-  const f = fixture();
-  f.complete();
-  const location = f.index.read(f.jobId)!;
-  vi.spyOn(f.index, 'read').mockReturnValue({ ...location, terminalAge: undefined });
-  vi.spyOn(f.index, 'terminalEligibility').mockReturnValue({
-    kind: 'unknown',
-    age: 'unknown',
-    ageUnproven: true,
-    sourceReadable: true,
-    cutoffTrusted: true,
-    publicationAuthorized: false,
-  });
-  f.runtime.storage.mkdirSync(f.runtime.paths.coral.exports.jobsRoot + '/' + f.jobId, { recursive: true });
-  writeFileSync(f.resultPath + '.stage-crashed', 'unfinished publication');
-  expect(f.index.resultDurable(f.jobId)).toBe(false);
-  expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).not.toHaveProperty('resultPath');
-});
+it.each(['absent-dir', 'missing-file', 'zero-byte'])(
+  'discharges unknown-age legacy %s only after a non-failed source read',
+  (variant) => {
+    const f = fixture();
+    f.complete();
+    const location = f.index.read(f.jobId)!;
+    vi.spyOn(f.index, 'read').mockReturnValue({ ...location, terminalAge: undefined });
+    vi.spyOn(f.index, 'terminalEligibility').mockReturnValue({
+      kind: 'unknown',
+      age: 'unknown',
+      ageUnproven: true,
+      sourceReadable: true,
+      cutoffTrusted: true,
+      publicationAuthorized: false,
+    });
+    if (variant !== 'absent-dir')
+      f.runtime.storage.mkdirSync(f.runtime.paths.coral.exports.jobsRoot + '/' + f.jobId, { recursive: true });
+    if (variant === 'zero-byte') writeFileSync(f.resultPath, '');
+    expect(f.index.resultDurable(f.jobId)).toBe(true);
+    vi.mocked(f.index.terminalEligibility).mockReturnValue({
+      kind: 'unknown',
+      age: 'unknown',
+      ageUnproven: true,
+      sourceReadable: true,
+      sourceReadFailed: true,
+      cutoffTrusted: true,
+      publicationAuthorized: false,
+    });
+    expect(f.index.resultDurable(f.jobId)).toBe(false);
+    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).not.toHaveProperty('resultPath');
+  },
+);
 
 it('unchanged workflow availability polls render the report once per read session', () => {
   const f = fixture('workflow');
@@ -719,9 +734,7 @@ it('rechecks a deferred source age after clock trust returns and the terminal ex
   });
   f.advance(30 * 86_400_000);
   expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({
-    kind: 'failed',
-    cause: 'terminal-age-unknown',
-    retryScheduled: false,
+    kind: 'retained-away',
   });
 });
 
@@ -768,6 +781,7 @@ it('a busy legacy source stays repair-pending through a middle poll', () => {
   session.reconcile([a]);
   session.acknowledge(a);
   busy = true;
+  writeFileSync(f.epoch.path, 'changed source stamp');
   a.availability = owner.observeResultAvailability(f.jobId);
   session.reconcile([a]);
   expect(selectWaitSnapshot(session).cursor.jobs[0].flags).toBe(3);
@@ -1023,11 +1037,12 @@ it('an evicted repair failure remains failed with bounded in-memory evidence', (
   });
   for (const id of ['a', 'b', 'c']) expect(() => owner.ensureResultMarkdownArtifact(id)).toThrow();
   expect((owner as unknown as { failures: Set<string> }).failures.size).toBe(2);
-  expect(owner.observeResultAvailability('a')).toMatchObject({
-    kind: 'failed',
-    cause: 'repair-failed',
-    retryScheduled: true,
-  });
+  for (const id of ['a', 'b', 'c'])
+    expect(owner.observeResultAvailability(id)).toMatchObject({
+      kind: 'failed',
+      cause: 'repair-failed',
+      retryScheduled: true,
+    });
 });
 
 it('reuses source eligibility when an evicted location view is decoded again', () => {
@@ -1065,4 +1080,30 @@ it('availability and progress expiry reuse retained validation while publication
   expect(inspected).not.toHaveBeenCalled();
   owner.publishTerminalResult(f.jobId);
   expect(inspected).toHaveBeenCalled();
+});
+
+it('settles a readable terminal whose owner cannot capture it without a repair loop', async () => {
+  const f = fixture();
+  f.complete();
+  const retained = f.index.read(f.jobId)!;
+  const prepare = vi.fn();
+  const owner = new TerminalResultExportOwner({
+    runtime: f.runtime,
+    jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+    location: () => ({ ...retained, disposition: 'unresolved', detail: { kind: 'absent' }, terminalSeq: undefined }),
+    withSource: (_id, read) => read(f.db, f.store),
+    prepareTerminal: prepare,
+  });
+  expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
+  owner.hintRepair(f.jobId);
+  await owner.repairPass([], { canContinue: () => true, record: vi.fn() }, true);
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
+    kind: 'failed',
+    cause: 'repair-failed',
+    retryScheduled: false,
+  });
+  owner.hintRepair(f.jobId);
+  await owner.repairPass([], { canContinue: () => true, record: vi.fn() }, true);
+  expect(prepare).toHaveBeenCalledOnce();
+  expect(existsSync(f.resultPath)).toBe(false);
 });

@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { dirname } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { describe, expect, it, vi, afterEach } from 'vitest';
@@ -218,6 +219,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       const session = new WaitSession([f.jobId]);
       session.reconcile([admission]);
       session.acknowledge(admission);
+      session.observeEmpty([f.jobId]);
       expect(session.remaining()).toEqual([]);
       expect(session.artifactPending(f.jobId)).toBe(false);
       owner.hintRepair(f.jobId);
@@ -323,6 +325,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       const addressing = new JobAddressing(
         f.index,
         {
+          visitProgress: progressVisitFromDetails(() => null),
           epochKey: () => 'active',
           detail: () => null,
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -352,7 +355,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       f.close();
     }
   });
-  it('opens a provider source once for availability and uses saved age for progress retention', () => {
+  it("opens a provider source for availability and applies the progress owner's predicate", () => {
     const f = createTerminalExportFixture('provider', true);
     try {
       f.complete();
@@ -360,7 +363,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
       expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
       expect(owner.progressRetentionExpired(f.jobId)).toBe(false);
-      expect(open).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledTimes(2);
     } finally {
       vi.restoreAllMocks();
       f.close();
@@ -533,7 +536,7 @@ it('unknown-age discharge requires an observed source and cannot use a failed re
   }
 });
 
-it('keeps a pruned legacy terminal age unknown while allowing absent-export discharge', () => {
+it('proves expiry for a pruned legacy terminal and discharges the absent export', () => {
   const f = createTerminalExportFixture('provider', true);
   try {
     f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1000, precedingAt: TERMINAL_EXPORT_CUTOFF - 2000 });
@@ -542,10 +545,9 @@ it('keeps a pruned legacy terminal age unknown while allowing absent-export disc
     writeFileSync(f.locationPath, JSON.stringify(location));
     f.db.prepare("DELETE FROM events WHERE type <> 'job.terminal.recorded'").run();
     const eligibility = f.index.terminalEligibility(f.jobId);
-    expect(eligibility.kind).toBe('unknown');
+    expect(eligibility.kind).toBe('expired');
     expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
-      kind: 'failed',
-      cause: 'terminal-age-unknown',
+      kind: 'retained-away',
     });
     expect(f.index.resultDurable(f.jobId)).toBe(true);
   } finally {

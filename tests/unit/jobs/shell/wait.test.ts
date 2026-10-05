@@ -1,3 +1,4 @@
+import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -39,6 +40,10 @@ function fixture() {
     return handle;
   });
   const deps: WaitCoordinatorDeps = {
+    visitProgress: progressVisitFromEvents(
+      () => journal,
+      () => journal.at(-1)?.seq ?? 0,
+    ),
     time: runtime.time,
     eventBus,
     sessionManager: { get: () => ({ activeJobId, state: 'pending', providerContinuity: null }) } as never,
@@ -46,13 +51,13 @@ function fixture() {
     loadJobProjectionDetail: () => {
       const terminal = journal.find((event): event is JobTerminalEvent => event.type === 'terminal');
       return {
-        status,
+        status: { ...status, lastSeq: terminal?.seq },
         launch: null,
         runtime: null,
         exit: terminal ? { ...terminal.result, endTime: terminal.ts, diagnostics: { progressFaults: [] } } : null,
       };
     },
-    readJobEvents: () => journal,
+
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => journal.at(-1)?.seq ?? 0,
     resultJobsRoot: '/results',
@@ -97,7 +102,7 @@ describe('WaitCoordinator', () => {
         'job-1',
         Array.from({ length: 501 }, (_, i) => [i + 1, `line ${i}`]),
         false,
-      ).detail!.events,
+      ).detail.events,
     );
     let calls = 0;
     f.deps.observeCarriers = async () => [
@@ -113,8 +118,9 @@ describe('WaitCoordinator', () => {
     const addressing = new JobAddressing(
       index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => ({ ...admitted('job-1', [], false).detail, events: f.journal })),
         epochKey: () => 'epoch',
-        detail: () => ({ ...admitted('job-1', [], false).detail!, events: f.journal }),
+        detail: () => ({ ...admitted('job-1', [], false).detail, events: f.journal }),
         readWaitAdmission: (id, epoch, session) => f.wait.readWaitAdmission(id, epoch, session),
         readWaitAdmissions: (ids, epoch, session) => f.wait.readWaitAdmissions(ids, epoch, session),
         observeWaitCarriers: (ids, signal) => f.wait.observeWaitCarriers(ids, signal),
@@ -131,8 +137,8 @@ describe('WaitCoordinator', () => {
       timeoutSeconds: 1,
       cursor: {
         version: 'jobs.wait.v3',
-        epochs: [{ token: waitEpochToken('epoch'), watermark: 501, lineOffset: 0 }],
-        jobs: [{ hash: waitJobHash('job-1'), epoch: 0, flags: 0 }],
+
+        jobs: [{ hash: waitJobHash('job-1'), epoch: waitEpochToken('epoch'), seq: 501, lineOffset: 0, flags: 0 }],
       },
     });
     const next = stream.next();
@@ -152,7 +158,7 @@ describe('WaitCoordinator', () => {
         'job-1',
         Array.from({ length: 501 }, (_, i) => [i + 1, `line ${i}`]),
         false,
-      ).detail!.events,
+      ).detail.events,
     );
     let settled = false;
     const result = f.wait.waitStreamOnce('job-1', 1000).finally(() => {
@@ -176,7 +182,7 @@ describe('WaitCoordinator', () => {
         'job-1',
         Array.from({ length: 1001 }, (_, i) => [i + 1, `line ${i}`]),
         false,
-      ).detail!.events,
+      ).detail.events,
     );
     let settled = false;
     const result = f.wait.waitStreamOnce('job-1', 1000).finally(() => {
@@ -198,23 +204,27 @@ describe('WaitCoordinator', () => {
     let frontier = 0;
     f.deps.getCurrentJournalSeq = () => frontier;
     f.deps.loadJobProjectionDetail = (id) => ({
-      status: { ...admitted(id, [], false).detail!.status },
+      status: { ...admitted(id, [], false).detail.status },
       launch: null,
       runtime: null,
       exit: null,
     });
-    f.deps.readJobEvents = (id) => {
-      const events = admitted(id, committed ? [[id === 'a' ? 1 : 2, `${id} committed`]] : [], false).detail!.events;
-      if (id === 'a' && !committed) {
-        committed = true;
-        frontier = 2;
-      }
-      return events;
+    f.deps.visitProgress = (_epoch, visit) => {
+      const frozen = committed;
+      const source = progressVisitFromEvents(
+        (id) => admitted(id, frozen ? [[id === 'a' ? 1 : 2, `${id} committed`]] : [], false).detail.events,
+        () => (frozen ? 2 : 0),
+      );
+      const result = source('epoch', visit);
+      committed = true;
+      frontier = 2;
+      return result;
     };
     const events = [];
     for await (const event of f.wait.waitForJobs({ jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 0 }))
       events.push(event);
-    const cursor = events.at(-1)!.cursor;
+    const last = events.at(-1)!;
+    const cursor = 'cursor' in last ? last.cursor : undefined;
     for await (const event of f.wait.waitForJobs({
       jobIds: ['a', 'b'],
       supportsWaitV3: true,
@@ -261,8 +271,7 @@ describe('WaitCoordinator', () => {
 
   it('preserves workflow usage and session continuity in shared admission', () => {
     const f = fixture();
-    const detail = admitted('job-1').detail!;
-    f.deps.readJobEvents = () => detail.events;
+    const detail = admitted('job-1').detail;
     f.deps.getCurrentJournalSeq = () => detail.events.at(-1)?.seq ?? 0;
     const usage = { inputTokens: 123, outputTokens: 456 } as never;
     f.deps.aggregateWorkflowUsage = () => usage;
@@ -387,6 +396,10 @@ describe('WaitCoordinator', () => {
       };
       const journal: JobEvent[] = [terminal];
       const deps: WaitCoordinatorDeps = {
+        visitProgress: progressVisitFromEvents(
+          () => journal,
+          () => 1,
+        ),
         time: runtime.time,
         eventBus: new TypedEventBus(),
         sessionManager: {
@@ -400,7 +413,7 @@ describe('WaitCoordinator', () => {
             runtime: null,
             exit: { ...terminal.result, endTime: terminal.ts, diagnostics: { progressFaults: [] } },
           }) as never,
-        readJobEvents: () => journal,
+
         aggregateWorkflowUsage: () => undefined,
         getCurrentJournalSeq: () => 1,
         resultJobsRoot: '/results',
@@ -441,7 +454,7 @@ it('a missing internal job is a failed outcome after one read, without re-enteri
 it('reuses the active frontier and decodes only newly appended progress', () => {
   const f = fixture();
   const session = {};
-  const read = vi.spyOn(f.deps, 'readJobEvents');
+  const read = vi.spyOn(f.deps, 'visitProgress');
   for (let seq = 1; seq <= 1000; seq++)
     f.journal.push({
       ...f.terminal(),
@@ -461,8 +474,8 @@ it('reuses the active frontier and decodes only newly appended progress', () => 
   expect(read).not.toHaveBeenCalled();
   f.journal.push({ ...f.journal[0], seq: 1001 });
   const next = f.wait.readWaitAdmissions(['job-1'], 'epoch', session);
-  expect(read).toHaveBeenCalledExactlyOnceWith('job-1', 1000);
-  expect(next[0].detail?.events).toHaveLength(1001);
+  expect(read).not.toHaveBeenCalled();
+  expect(next[0].detail).not.toHaveProperty('events');
 });
 
 it('accepts v0.10.15 cursors without recorded membership and drains their full terminal backlog', async () => {
@@ -472,8 +485,12 @@ it('accepts v0.10.15 cursors without recorded membership and drains their full t
   const addressing = new JobAddressing(
     index,
     {
+      visitProgress: f.wait.visitProgress,
       epochKey: () => 'epoch',
-      detail: () => f.wait.readWaitAdmission('job-1', 'epoch').detail ?? null,
+      detail: () => {
+        const detail = f.wait.readWaitAdmission('job-1', 'epoch').detail;
+        return detail ? { ...detail, events: f.journal } : null;
+      },
       readWaitAdmissions: (ids, epoch, session) => f.wait.readWaitAdmissions(ids, epoch, session),
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
     },
@@ -510,15 +527,16 @@ it('accepts v0.10.15 cursors without recorded membership and drains their full t
 
 it('keeps independent incremental frontiers for separate wait sessions', () => {
   const f = fixture();
-  f.journal.push(...admitted('job-1', [[1, 'first']], false).detail!.events);
-  const read = vi.spyOn(f.deps, 'readJobEvents');
+  f.journal.push(...admitted('job-1', [[1, 'first']], false).detail.events);
+  const read = vi.spyOn(f.deps, 'visitProgress');
   const first = {};
   const second = {};
   const a = f.wait.readWaitAdmissions(['job-1'], 'e', first)[0];
   for (let poll = 0; poll < 20; poll++) f.wait.readWaitAdmissions(['job-1'], 'e', first);
   const b = f.wait.readWaitAdmissions(['job-1'], 'e', second)[0];
-  expect(read).toHaveBeenCalledTimes(2);
-  expect(a.detail?.events).not.toBe(b.detail?.events);
+  expect(read).not.toHaveBeenCalled();
+  expect(a.detail).not.toHaveProperty('events');
+  expect(b.detail).not.toHaveProperty('events');
 });
 
 it('observes availability once per terminal poll and emits one repair hint', () => {
@@ -534,6 +552,7 @@ it('observes availability once per terminal poll and emits one repair hint', () 
   const addressing = new JobAddressing(
     index.readOnlyView(),
     {
+      visitProgress: progressVisitFromDetails(() => null),
       epochKey: () => 'epoch',
       detail: () => null,
       readWaitAdmissions: (ids, epoch, session) => f.wait.readWaitAdmissions(ids, epoch, session),
@@ -554,16 +573,16 @@ it('observes availability once per terminal poll and emits one repair hint', () 
 it('reads projection and history once per unchanged admission frontier and preserves prior arrays', () => {
   const f = fixture();
   const projection = vi.spyOn(f.deps, 'loadJobProjectionDetail');
-  const events = vi.spyOn(f.deps, 'readJobEvents');
+  const events = vi.spyOn(f.deps, 'visitProgress');
   const session = {};
   const first = f.wait.readWaitAdmission('job-1', 'epoch', session);
   for (let poll = 0; poll < 40; poll++) f.wait.readWaitAdmission('job-1', 'epoch', session);
   expect(projection).toHaveBeenCalledTimes(1);
-  expect(events).toHaveBeenCalledTimes(1);
+  expect(events).not.toHaveBeenCalled();
   f.journal.push(f.terminal());
   f.wait.readWaitAdmission('job-1', 'epoch', session);
   expect(projection).toHaveBeenCalledTimes(2);
-  expect(first.detail!.events).toHaveLength(0);
+  expect(first.detail).not.toHaveProperty('events');
 });
 
 it.each([false, true])('internal waits answer missing only after explicit absence: %s', (explicitAbsence) => {
@@ -577,10 +596,10 @@ it.each([false, true])('internal waits answer missing only after explicit absenc
 
 it('does not keep active history in a coordinator-lifetime cache when no session is supplied', () => {
   const f = fixture();
-  f.journal.push(...admitted('job-1', [[1, 'first']], false).detail!.events);
-  const read = vi.spyOn(f.deps, 'readJobEvents');
+  f.journal.push(...admitted('job-1', [[1, 'first']], false).detail.events);
+  const read = vi.spyOn(f.deps, 'visitProgress');
   for (let poll = 0; poll < 3; poll++) f.wait.readWaitAdmissions(['job-1'], 'epoch');
-  expect(read).toHaveBeenCalledTimes(3);
+  expect(read).not.toHaveBeenCalled();
 });
 
 it('internal child wait reads its durable historical epoch', async () => {
@@ -598,9 +617,29 @@ it('isolates an unreadable active projection from its healthy sibling', () => {
   const f = fixture();
   f.deps.loadJobProjectionDetail = (jobId) => {
     if (jobId === 'damaged') throw new Error('location read denied');
-    return { status: admitted('job-1', [], false).detail!.status, launch: null, runtime: null, exit: null };
+    return { status: admitted('job-1', [], false).detail.status, launch: null, runtime: null, exit: null };
   };
   const admissions = f.wait.readWaitAdmissions(['damaged', 'job-1'], 'epoch', {});
   expect(admissions[0]).toMatchObject({ disposition: 'discovery-unknown', sourceRead: 'transient-unknown' });
   expect(admissions[1]).toMatchObject({ jobId: 'job-1', disposition: 'admitted' });
+});
+
+it('caches a terminal body per request while unrelated journal writes advance', () => {
+  const f = fixture();
+  f.journal.push(f.terminal());
+  f.terminalize();
+  let frontier = 1;
+  f.deps.getCurrentJournalSeq = () => frontier;
+  const projection = vi.spyOn(f.deps, 'loadJobProjectionDetail');
+  const availability = vi.spyOn(f.deps, 'observeResultAvailability');
+  const session = {};
+  const first = f.wait.readWaitAdmission('job-1', 'epoch', session);
+  for (let poll = 0; poll < 30; poll++) {
+    frontier++;
+    expect(f.wait.readWaitAdmission('job-1', 'epoch', session).detail).toBe(first.detail);
+  }
+  expect(projection).toHaveBeenCalledTimes(1);
+  expect(availability).toHaveBeenCalledTimes(31);
+  f.wait.readWaitAdmission('job-1', 'epoch', {});
+  expect(projection).toHaveBeenCalledTimes(2);
 });

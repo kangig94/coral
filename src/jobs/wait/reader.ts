@@ -1,3 +1,6 @@
+import type { WaitProgressLine } from './session.js';
+import { LegacyWaitDelivery } from './legacy.js';
+import type { ProgressVisit } from './contract.js';
 import { sameEpoch } from '../../store/epoch/identity.js';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { TimePort } from '../../infra/port-types.js';
@@ -11,6 +14,7 @@ type WaitReadInput = {
   time: TimePort;
   activeEpochKey: string;
   read: () => WaitAdmission[];
+  visit: ProgressVisit;
   internal?: boolean;
   observe?: (session: WaitSession, signal: AbortSignal) => void | Promise<void>;
 };
@@ -25,38 +29,47 @@ type DeliveryState = {
   progressLost: Set<string>;
 };
 
-function eventCursor(session: WaitSession, request: WaitStreamRequest) {
-  if (request.supportsWaitV3 !== true && request.supportsWaitV2 !== true)
-    request.onLegacyCursor?.(session.legacyCursor(false));
-  return request.supportsWaitV3 === true
-    ? session.cursor(session.remaining())
-    : request.supportsWaitV2 === true
-      ? session.legacyCursor(true)
-      : undefined;
+type FinalPayload =
+  | Omit<Extract<WaitStreamEvent, { type: 'terminal'; version: 'jobs.wait.v3' }>, 'version' | 'cursor' | 'exitCode'>
+  | Omit<Extract<WaitStreamEvent, { type: 'artifact' }>, 'version' | 'cursor' | 'exitCode'>
+  | { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[] };
+
+function finalWaitEvent(
+  session: WaitSession,
+  request: WaitStreamRequest,
+  legacy: LegacyWaitDelivery,
+  payload: FinalPayload,
+): WaitStreamEvent {
+  if (request.supportsWaitV3 === true)
+    return {
+      ...payload,
+      version: 'jobs.wait.v3',
+      cursor: session.cursor(session.remaining()),
+      exitCode: session.exitCode(),
+    };
+  if (request.supportsWaitV2 !== true) request.onLegacyCursor?.(legacy.cursor(false));
+  const cursor = request.supportsWaitV2 === true ? legacy.cursor(true) : undefined;
+  if (payload.type === 'waiting') return { ...payload, ...(cursor ? { cursor } : {}) };
+  if (payload.type === 'artifact' || payload.availability.kind !== 'available')
+    throw new WaitSessionError('wait_epoch_unsupported', 'This result requires a V3 reader.');
+  const { availability, ...terminal } = payload;
+  return { ...terminal, resultPath: availability.resultPath, ...(cursor ? { version: 'jobs.wait.v2', cursor } : {}) };
 }
 
-function waitingEvent(session: WaitSession, request: WaitStreamRequest): WaitStreamEvent {
-  const remaining = session.remaining();
+function waitingEvent(session: WaitSession, request: WaitStreamRequest, legacy: LegacyWaitDelivery): WaitStreamEvent {
   const unknown = session.unknownCarriers();
-  const cursor =
-    request.supportsWaitV3 === true
-      ? session.cursor(remaining)
-      : request.supportsWaitV2 === true
-        ? session.legacyCursor(true)
-        : undefined;
-  return {
+  return finalWaitEvent(session, request, legacy, {
     type: 'waiting',
-    waitingJobIds: remaining,
-    ...(request.supportsWaitV3 === true ? { version: 'jobs.wait.v3', exitCode: session.exitCode() } : {}),
-    ...(cursor?.version === undefined ? {} : { cursor }),
-    ...(unknown.length === 0 ? {} : { carrierUnknownJobIds: unknown }),
-  };
+    waitingJobIds: session.remaining(),
+    ...(unknown.length ? { carrierUnknownJobIds: unknown } : {}),
+  });
 }
 
 /** Unknown coverage cannot authorize finalization, even when the observer outlives the read. */
 export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<WaitStreamEvent> {
   const { request, time, activeEpochKey, read } = input;
   const session = new WaitSession(request.jobIds, request.cursor, activeEpochKey, input.internal);
+  const legacy = new LegacyWaitDelivery(session, activeEpochKey);
   const deadline = Number(time.monotonicNow()) + (request.timeoutSeconds ?? 600) * 1000;
   const controller = new AbortController();
   const signal = request.abortSignal ? AbortSignal.any([controller.signal, request.abortSignal]) : controller.signal;
@@ -70,6 +83,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
     progressLost: new Set(),
   };
   let observing = false;
+  let observation: Promise<void> | undefined;
   let lastObservation = -Infinity;
   let deadlineObserved = false;
   let crossedTimer = false;
@@ -80,42 +94,45 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       const admissions = read();
       const deferred = new Set(admissions.filter((job) => job.observationDeferred).map((job) => job.jobId));
       session.reconcile(admissions);
-      if (request.supportsWaitV3 !== true) validateLegacyAdmission(session);
-      if (!request.drainProgress && !input.internal && request.supportsWaitV3 === true) {
-        session.startAtTail(20, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
+      if (request.supportsWaitV3 !== true) {
+        legacy.reconcile();
+        validateLegacyAdmission(session);
       }
+      const bounded = !request.drainProgress && !input.internal && request.supportsWaitV3 === true;
+      const progress = session.withProgress(input.visit, (sources) => {
+        const selectedSources = request.supportsWaitV3 === true ? sources : legacy.sources(sources);
+        session.position(selectedSources, bounded ? 20 : null, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
+        return session.select(
+          selectedSources,
+          bounded ? WAIT_PROGRESS_LINES - state.progressLines : Infinity,
+          bounded ? WAIT_PROGRESS_BYTES - state.progressBytes : Infinity,
+        );
+      });
+      session.observeEmpty(progress.exhaustedJobIds);
       const now = Number(time.monotonicNow());
       const nearDeadline: boolean = now >= deadline - 250 && !deadlineObserved;
       if (!observing && (now - lastObservation >= 5000 || nearDeadline) && now < deadline) {
         observing = true;
         lastObservation = now;
         deadlineObserved ||= nearDeadline;
-        void observeCarriers(input, session, signal).finally(() => {
+        observation = observeCarriers(input, session, signal).finally(() => {
           observing = false;
         });
       }
       yield* admissionEvents(session, request, state);
       const terminals = pendingTerminals(session, request);
-      yield* progressEvents(session, request, state, terminals, input.internal === true);
-      if (yield* terminalEvents(session, request, terminals)) return;
+      yield* progressEvents(session, request, state, terminals, input.internal === true, progress.lines, legacy);
+      if (yield* terminalEvents(session, request, terminals, legacy)) return;
       yield* carrierEvents(session, request, state.absentReported);
       if (session.remaining().length === 0) {
-        if (request.supportsWaitV3 === true)
-          yield {
-            type: 'notice',
-            version: 'jobs.wait.v3',
-            message: 'Wait complete; no jobs remain.',
-            cursor: session.cursor([]),
-            exitCode: session.exitCode(),
-          };
-        else yield { type: 'waiting', waitingJobIds: [] };
+        yield waitingEvent(session, request, legacy);
         return;
       }
-      const unknownRead = session.allRemainingProgressUnknown();
+      const unknownRead = session.remaining().every((id) => session.progressState(id) === 'unknown');
       const observedUnknown = unknownRead && session.remaining().some((jobId) => !deferred.has(jobId));
       if (!unknownRead) unknownReadAttempts = 0;
       if (
-        (observedUnknown && unknownReadAttempts === retryDelays.length) ||
+        (!input.internal && observedUnknown && unknownReadAttempts === retryDelays.length) ||
         (!input.internal &&
           request.drainProgress !== true &&
           request.supportsWaitV3 === true &&
@@ -123,13 +140,27 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
         Number(time.monotonicNow()) >= deadline
       ) {
         if (input.internal && !crossedTimer) await time.sleep(0, { signal });
-        yield waitingEvent(session, request);
+        if (observing && observation && Number(time.monotonicNow()) < deadline) {
+          const observationDeadline = new AbortController();
+          const stop = new AbortController();
+          const timeout = time.sleep(Math.max(0, deadline - Number(time.monotonicNow())), { signal: stop.signal }).then(
+            () => observationDeadline.abort(),
+            () => undefined,
+          );
+          try {
+            await raceWithSignal(observation, AbortSignal.any([signal, observationDeadline.signal]), () => undefined);
+          } finally {
+            stop.abort();
+            void timeout;
+          }
+        }
+        yield waitingEvent(session, request, legacy);
         return;
       }
       await time
         .sleep(
           Math.min(
-            observedUnknown ? retryDelays[unknownReadAttempts++] : 250,
+            observedUnknown ? retryDelays[Math.min(unknownReadAttempts++, retryDelays.length - 1)] : 250,
             Math.max(0, deadline - Number(time.monotonicNow())),
           ),
           { signal },
@@ -154,7 +185,6 @@ async function observeCarriers(input: WaitReadInput, session: WaitSession, signa
 }
 
 function validateLegacyAdmission(session: WaitSession): void {
-  session.requireLegacyReplaySupport();
   const missing = session.admissions.filter((job) => job.disposition === 'missing').map((job) => job.jobId);
   if (missing.length > 0)
     throw new WaitSessionError(
@@ -185,8 +215,6 @@ function* admissionEvents(
         type: 'notice',
         version: 'jobs.wait.v3',
         message,
-        cursor: session.cursor(session.remaining()),
-        exitCode: session.exitCode(),
       };
   }
   for (const job of session.admissions) {
@@ -211,9 +239,7 @@ function* memberAdmissionEvents(
         version: 'jobs.wait.v3',
         jobId: job.jobId,
         disposition: job.disposition,
-        exitCode: session.exitCode(),
         message: job.message,
-        cursor: session.cursor(session.remaining()),
       };
   }
   if (job.sourceRead === 'settled-unreadable' && !state.notices.has(`unreadable:${job.jobId}`)) {
@@ -223,7 +249,6 @@ function* memberAdmissionEvents(
         type: 'notice',
         version: 'jobs.wait.v3',
         message: `Earlier progress for ${job.jobId} cannot be read by this build. ${job.message ?? 'This build cannot read its source; this job leaves the continuation after its retained outcome is delivered.'} Inspect coral-cli jobs detail ${job.jobId} --full.`,
-        cursor: session.cursor(session.remaining()),
       };
   }
   if (job.progressLost && !state.progressLost.has(job.jobId)) {
@@ -233,13 +258,12 @@ function* memberAdmissionEvents(
         type: 'notice',
         version: 'jobs.wait.v3',
         message: `earlier progress for ${job.jobId} is no longer kept`,
-        cursor: session.cursor(session.remaining()),
       };
   }
 }
 
 function terminalSeq(job: WaitAdmission): number {
-  return job.detail?.events.find((event) => event.type === 'terminal')?.seq ?? job.detail?.status.lastSeq ?? 0;
+  return job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0;
 }
 
 function pendingTerminals(session: WaitSession, request: WaitStreamRequest): WaitAdmission[] {
@@ -271,17 +295,13 @@ function* progressEvents(
   state: DeliveryState,
   terminals: WaitAdmission[],
   internal: boolean,
+  selected: WaitProgressLine[],
+  legacy: LegacyWaitDelivery,
 ): Generator<WaitStreamEvent> {
   const versionless = request.supportsWaitV3 !== true && request.supportsWaitV2 !== true;
   const nextTerminal = terminals.find((job) => !session.acknowledged(job.jobId));
   const terminalLimit = nextTerminal ? terminalSeq(nextTerminal) : Infinity;
-  const unread = session
-    .progress(
-      !internal && request.supportsWaitV3 === true && request.drainProgress !== true
-        ? WAIT_PROGRESS_LINES + 1
-        : Infinity,
-    )
-    .filter((line) => !versionless || !nextTerminal || line.seq <= terminalLimit);
+  const unread = selected.filter((line) => !versionless || !nextTerminal || line.seq <= terminalLimit);
   for (let index = 0; index < unread.length; ) {
     const first = unread[index];
     const group = [first];
@@ -303,35 +323,28 @@ function* progressEvents(
       (state.progressLines + group.length > WAIT_PROGRESS_LINES || state.progressBytes + bytes > WAIT_PROGRESS_BYTES)
     )
       break;
-    for (const line of group) session.consume(line);
+    for (const line of group) {
+      session.consume(line);
+      legacy.consume(line);
+    }
     state.progressLines += group.length;
     state.progressBytes += bytes;
     index += group.length;
-    const next = unread[index];
-    const lastInBatch =
-      !next ||
-      state.progressLines + 1 > WAIT_PROGRESS_LINES ||
-      state.progressBytes + Buffer.byteLength(shortenWaitLine(next.text)) > WAIT_PROGRESS_BYTES;
-    const cursor = request.supportsWaitV3 === true && !lastInBatch ? undefined : eventCursor(session, request);
-    yield {
-      type: 'progress',
+    if (request.supportsWaitV3 !== true && request.supportsWaitV2 !== true)
+      request.onLegacyCursor?.(legacy.cursor(false));
+    const progress = {
+      type: 'progress' as const,
       jobId: first.jobId,
       seq: first.seq,
       message: messages.join('\n'),
       timing: first.timing,
-      ...(request.supportsWaitV3 === true
-        ? { version: 'jobs.wait.v3', epochKey: first.epochKey, exitCode: session.exitCode() }
-        : request.supportsWaitV2 === true
-          ? { version: 'jobs.wait.v2', epochKey: first.epochKey }
-          : {}),
-      ...(cursor?.version === undefined ? {} : { cursor }),
     };
+    if (request.supportsWaitV3 === true)
+      yield { ...progress, version: 'jobs.wait.v3', entry: session.entry(first.jobId) };
+    else if (request.supportsWaitV2 === true)
+      yield { ...progress, version: 'jobs.wait.v2', epochKey: first.epochKey, cursor: legacy.cursor(true) };
+    else yield progress;
   }
-  if (versionless && nextTerminal && session.progress().some((line) => line.seq <= terminalLimit))
-    throw new WaitSessionError(
-      'wait_epoch_unsupported',
-      `This progress backlog requires a V3 reader; run coral-cli jobs detail ${nextTerminal.jobId}.`,
-    );
 }
 
 function terminalEvent(
@@ -339,17 +352,19 @@ function terminalEvent(
   request: WaitStreamRequest,
   job: WaitAdmission,
   result: NonNullable<NonNullable<WaitAdmission['detail']>['exit']>,
+  legacy: LegacyWaitDelivery,
 ): WaitStreamEvent {
-  const availability = job.availability;
+  const availability = job.availability ?? { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false };
   const { content, outcome, durationMs } = result;
-  const cursor = eventCursor(session, request);
-  return {
+  return finalWaitEvent(session, request, legacy, {
     type: 'terminal',
     jobId: job.jobId,
     seq: terminalSeq(job),
     result: { content, outcome, durationMs },
     usage: result.diagnostics.usage,
     continuity: job.continuity ?? null,
+    availability,
+    epochKey: job.epochKey,
     remainingJobIds:
       request.supportsWaitV3 === true
         ? session.remaining()
@@ -360,29 +375,15 @@ function terminalEvent(
                 (job.disposition === 'admitted' && !session.acknowledged(job.jobId)),
             )
             .map((job) => job.jobId),
-    ...(availability?.kind === 'available' ? { resultPath: availability.resultPath } : {}),
-    ...(request.supportsWaitV3 === true
-      ? {
-          version: 'jobs.wait.v3',
-          availability,
-          epochKey: job.epochKey,
-          cursor: session.cursor(session.remaining()),
-          exitCode: session.exitCode(),
-        }
-      : request.supportsWaitV2 === true
-        ? {
-            version: 'jobs.wait.v2',
-            epochKey: job.epochKey,
-            cursor: cursor?.version === 'jobs.wait.v2' ? cursor : undefined,
-          }
-        : {}),
-  };
+    ...(availability.kind === 'available' ? { resultPath: availability.resultPath } : {}),
+  });
 }
 
 function* terminalEvents(
   session: WaitSession,
   request: WaitStreamRequest,
   terminals: WaitAdmission[],
+  legacy: LegacyWaitDelivery,
 ): Generator<WaitStreamEvent, boolean> {
   for (const job of terminals) {
     if (!job.detail?.exit) continue;
@@ -402,9 +403,9 @@ function* terminalEvents(
         `Job ${job.jobId} has a final outcome but its result artifact is ${availability?.kind ?? 'unavailable'}. Run coral-cli jobs detail ${job.jobId}.`,
       );
     if (!session.acknowledged(job.jobId)) {
-      if (request.supportsWaitV3 !== true && session.progressHeld(job)) {
+      if (request.supportsWaitV3 !== true && legacy.held(job)) {
         const warningSeq = terminalSeq(job) - (request.supportsWaitV2 === true ? 0 : 1);
-        if (request.supportsWaitV2 !== true && session.legacyCursor(false).afterSeq >= warningSeq)
+        if (request.supportsWaitV2 !== true && legacy.cursor(false).afterSeq >= warningSeq)
           throw new WaitSessionError(
             'wait_epoch_unsupported',
             `Earlier progress for ${job.jobId} is held. Run coral-cli jobs detail ${job.jobId} to inspect its retained outcome.`,
@@ -421,27 +422,25 @@ function* terminalEvents(
             elapsedMs: job.detail.exit.durationMs,
           },
           ...(request.supportsWaitV2 === true
-            ? { version: 'jobs.wait.v2', epochKey: job.epochKey, cursor: session.legacyCursor(true) }
+            ? { version: 'jobs.wait.v2', epochKey: job.epochKey, cursor: legacy.cursor(true) }
             : {}),
         };
       }
       session.acknowledge(job);
-      yield terminalEvent(session, request, job, job.detail.exit);
+      if (request.supportsWaitV3 !== true && request.supportsWaitV2 !== true) legacy.terminal(job);
+      yield terminalEvent(session, request, job, job.detail.exit, legacy);
       return true;
     }
     if (session.artifactPending(job.jobId) && availability && availability.kind !== 'repair-pending') {
       if (request.supportsWaitV3 !== true)
         throw new WaitSessionError('wait_epoch_unsupported', `Run coral-cli jobs detail ${job.jobId}.`);
       session.settleArtifact(job.jobId);
-      yield {
+      yield finalWaitEvent(session, request, legacy, {
         type: 'artifact',
-        version: 'jobs.wait.v3',
         jobId: job.jobId,
         availability,
         remainingJobIds: session.remaining(),
-        cursor: session.cursor(session.remaining()),
-        exitCode: session.exitCode(),
-      };
+      });
       return true;
     }
   }
@@ -460,9 +459,7 @@ function* carrierEvents(
     absentReported.add(jobId);
     yield {
       type: 'interrupted',
-      ...(request.supportsWaitV3 === true
-        ? { version: 'jobs.wait.v3' as const, cursor: session.cursor(session.remaining()) }
-        : {}),
+      ...(request.supportsWaitV3 === true ? { version: 'jobs.wait.v3' as const } : {}),
       jobId,
       storedPhase: job.detail.status.phase,
       observedMaxJournalSeq: coverage.frontier,

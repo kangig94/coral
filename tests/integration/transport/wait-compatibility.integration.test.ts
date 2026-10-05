@@ -1,3 +1,4 @@
+import { progressVisitFromDetails, testProgressVisit, observeWaitRead } from '#tests/helpers/wait-progress.js';
 import { createRequire } from 'node:module';
 import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -96,17 +97,17 @@ function addressing(artifact: 'available' | 'repair-pending' | 'retained-away' |
     disposition: 'terminal' as const,
     terminalSeq: 1000,
     resultPath: '/available/result.md',
-    detail: { kind: 'recorded' as const, value: a.detail! },
+    detail: { kind: 'recorded' as const, value: a.detail },
   };
   // A retained terminal must contain every identity field used by the shipped validator.
-  a.detail!.status.result = {
-    content: a.detail!.exit!.content,
-    outcome: a.detail!.exit!.outcome,
-    durationMs: a.detail!.exit!.durationMs,
+  a.detail.status.result = {
+    content: a.detail.exit!.content,
+    outcome: a.detail.exit!.outcome,
+    durationMs: a.detail.exit!.durationMs,
   };
-  a.detail!.exit!.endTime = '2026-10-04T00:00:00Z';
-  a.detail!.status.updatedAt = a.detail!.exit!.endTime;
-  for (const event of a.detail!.events) {
+  a.detail.exit!.endTime = '2026-10-04T00:00:00Z';
+  a.detail.status.updatedAt = a.detail.exit!.endTime;
+  for (const event of a.detail.events) {
     event.ts = '2026-10-04T00:00:00Z';
     event.sessionId = null;
   }
@@ -118,9 +119,12 @@ function addressing(artifact: 'available' | 'repair-pending' | 'retained-away' |
       unknownLocationHolds: () => [],
     },
     {
+      visitProgress: progressVisitFromDetails((id: string) =>
+        id === 'b' ? admitted('b', [[2, 'active sibling']]).detail : id === 'a' && !historical ? a.detail : null,
+      ),
       epochKey: () => 'active-epoch',
       detail: (id: string) =>
-        id === 'b' ? admitted('b', [[2, 'active sibling']]).detail! : id === 'a' && !historical ? a.detail! : null,
+        id === 'b' ? admitted('b', [[2, 'active sibling']]).detail : id === 'a' && !historical ? a.detail : null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
     },
     () => false,
@@ -177,15 +181,18 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'])(
     if (tag === 'v0.10.15') {
       const a = admitted('a', [[100, 'later sibling progress']], true, 'epoch-E');
       const b = admitted('b', [[1, 'earlier progress']], true, 'epoch-E');
-      a.detail!.events.find((event) => event.type === 'terminal')!.seq = 200;
-      b.detail!.events.find((event) => event.type === 'terminal')!.seq = 3;
+      a.detail.events.find((event) => event.type === 'terminal')!.seq = 200;
+      a.detail.terminalSeq = 200;
+      b.detail.events.find((event) => event.type === 'terminal')!.seq = 3;
+      b.detail.terminalSeq = 3;
       let legacy: WaitCursor = { afterSeq: 0 };
       const first: WaitStreamEvent[] = [];
       for await (const event of readWaitSession({
         request: { jobIds: ['a', 'b'] },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [a, b],
+        read: observeWaitRead(() => [a, b]),
+        visit: testProgressVisit,
       })) {
         reader.parseWaitStreamEventValue(event);
         const rendered = reader.advanceWaitRenderCursor(legacy, event);
@@ -199,7 +206,8 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'])(
         request: { jobIds: ['a'], cursor: legacy },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [a],
+        read: observeWaitRead(() => [a]),
+        visit: testProgressVisit,
       });
       const resumedEvents: WaitStreamEvent[] = [];
       for await (const event of resumed) {
@@ -214,7 +222,8 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'])(
         request: { jobIds: ['a'], cursor: legacy },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [a],
+        read: observeWaitRead(() => [a]),
+        visit: testProgressVisit,
       })) {
         expect(reader.advanceWaitRenderCursor(legacy, event).shouldRender).toBe(true);
         next.push(event);
@@ -272,8 +281,10 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'])(
       request: { jobIds: ['a'], timeoutSeconds: 1, supportsWaitV2: tag !== 'v0.10.15' },
       time,
       activeEpochKey: 'active-epoch',
-      read: () =>
+      read: observeWaitRead(() =>
         closed ? [{ jobId: 'a', disposition: 'outcome-unrecoverable' }] : [admitted('a', [], false, 'old-epoch')],
+      ),
+      visit: testProgressVisit,
     });
     const next = changing.next();
     await flushMicrotasks(20);
@@ -339,7 +350,8 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'])(
       request: { jobIds: ['a'], supportsWaitV2: tag !== 'v0.10.15', timeoutSeconds: 0 },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => [job],
+      read: observeWaitRead(() => [job]),
+      visit: testProgressVisit,
     })) {
       const decoded = reader.parseWaitStreamEventValue(event);
       if (!decoded) continue;

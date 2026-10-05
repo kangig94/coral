@@ -8,6 +8,7 @@ import { decodeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { serializeWaitCursor, waitCursorForJobs } from '#src/jobs/wait/cursor.js';
 import { formatWaitWaiting } from '#src/cli/format/wait.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
+import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 
@@ -26,6 +27,7 @@ if (scenario === 'observer') {
       runtime: null,
       exit: null,
     }),
+    visitProgress: (_epoch, read) => ({kind: 'read', value: read({after: () => progressPage([], 500, 0), before: () => progressTail([], 20, 0)})}),
     readJobEvents: () => [],
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,

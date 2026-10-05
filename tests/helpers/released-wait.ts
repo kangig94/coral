@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { sharedFixture } from './shared-fixtures.js';
 type ReleasedWait = {
   parseWaitStreamEventValue(value: unknown): WaitStreamEvent;
-  advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEvent): { cursor: WaitCursor };
+  advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEvent): { cursor: WaitCursor; shouldRender: boolean };
   formatWaitTerminal(event: WaitStreamEvent, labels: null, embed: boolean): string;
   formatWaitWaiting(event: WaitStreamEvent, cursor: string, jobIds: string[]): string;
   serializeWaitCursor(cursor: WaitCursor): string;

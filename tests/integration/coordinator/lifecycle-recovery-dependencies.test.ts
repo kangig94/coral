@@ -191,3 +191,42 @@ it.each(['{damaged', '\0\0\0'])('isolates damaged preserved epoch identity %j at
     historical.close();
   }
 });
+
+it.each(['inventory', 'registration', 'reconciliation'] as const)(
+  'store-open recovery isolates a failed %s observation',
+  async (step) => {
+    const f = createTerminalExportFixture('provider', true);
+    const historical = await import('#src/jobs/historical-reader.js');
+    try {
+      if (step === 'inventory')
+        vi.spyOn(epochs, 'listStoreEpochs').mockImplementation(() => {
+          throw new Error('inventory unavailable');
+        });
+      if (step === 'registration')
+        vi.spyOn(historical, 'registerPresentHistoricalEpochs').mockImplementation(() => {
+          throw new Error('registration unavailable');
+        });
+      if (step === 'reconciliation')
+        vi.spyOn(f.index, 'reconcileUnknownLocationHolds').mockImplementation(() => {
+          throw new Error('held certificate unavailable');
+        });
+      const opened = vi.fn();
+      const input = {
+        runtime: f.runtime,
+        identity: { instanceId: 'test', buildSetId: 'test', pluginRoot: f.root },
+        jobLocationIndex: f.index,
+        providerHostTransfer: {},
+        getProgressStore: () => f.store,
+        readSuccessionJobs: () => [],
+        world: {},
+        onOpenedStore: opened,
+      } as unknown as Parameters<typeof createLifecycleRecoveryDependencies>[0];
+      expect(() => createLifecycleRecoveryDependencies(input).onStoreOpened?.(f.epoch)).not.toThrow();
+      expect(opened).toHaveBeenCalledExactlyOnceWith(f.epoch);
+      expect(f.store.readStatus(f.jobId)?.jobId).toBe(f.jobId);
+    } finally {
+      vi.restoreAllMocks();
+      f.close();
+    }
+  },
+);

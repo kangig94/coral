@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { createRealTimePort } from '#src/infra/time.js';
@@ -70,7 +71,7 @@ function makeProgressEvent(message = 'Still running'): Extract<WaitStreamEvent, 
 
 function makeTerminalEvent(
   result: Record<string, unknown> = {},
-  overrides: Partial<Extract<WaitStreamEvent, { type: 'terminal' }>> = {},
+  overrides: Partial<Extract<WaitStreamEvent, { type: 'terminal' }> & { version?: 'jobs.wait.v2' }> = {},
 ): Extract<WaitStreamEvent, { type: 'terminal' }> {
   return {
     type: 'terminal',
@@ -187,8 +188,32 @@ describe('cli follow', () => {
 
   afterEach(() => {
     process.exitCode = undefined;
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+  });
+
+  it('starts launch-follow without a synthetic cursor and derives its probe budget after readiness', async () => {
+    const { launchAndFollow } = await loadFollowModule();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    mockState.ensure.mockImplementation(async () => {
+      clock += 1200;
+      return makeBackend();
+    });
+    mockState.subscribe.mockResolvedValue(
+      makeSubscription(async function* () {
+        yield makeTerminalEvent();
+      }),
+    );
+    await expect(launchAndFollow(makeOptions())).resolves.toBe(0);
+    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({
+      kind: 'cli-invocation',
+      argv: [...process.argv.slice(0, 2), 'wait', 'jobs', 'job-1'],
+    });
+    expect(mockState.runHandoff.mock.calls[0][1].waitProbeRemainingMs()).toBe(588800);
+    expect(mockState.subscribe.mock.calls[0][1]).not.toHaveProperty('cursor');
   });
 
   it('resubscribes with the current cursor after a handover notice, without spending a retry', async () => {
@@ -300,8 +325,9 @@ it.each(['pending', 'burst', 'failed'] as const)(
     const owner = new JobAddressing(
       { time: createRealTimePort(), read: () => null, resultPathFor: () => '/r.md', unknownLocationHolds: () => [] },
       {
+        visitProgress: progressVisitFromDetails(() => a.detail),
         epochKey: () => 'active-epoch',
-        detail: () => a.detail!,
+        detail: () => a.detail,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
       },
       () => false,
@@ -353,7 +379,7 @@ it.each(['pending', 'burst', 'failed'] as const)(
           };
         },
       });
-      expect(code).toBe(scenario === 'failed' ? 42 : 0);
+      expect(code).toBe(scenario === 'failed' ? 42 : scenario === 'pending' ? 75 : 0);
       if (scenario === 'pending' || scenario === 'failed')
         expect(stdout).toContain('Run coral-cli wait jobs a --cursor jobs.wait.v3:');
       else expect(stdout).not.toContain('Run coral-cli wait');

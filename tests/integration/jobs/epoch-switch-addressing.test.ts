@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
@@ -154,6 +155,7 @@ describe('job addressing across a process-owned epoch switch', () => {
       const addressing = new JobAddressing(
         index,
         {
+          visitProgress: progressVisitFromDetails(() => null),
           epochKey: () => activeEpochKey,
           detail: () => null,
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -210,6 +212,9 @@ describe('job addressing across a process-owned epoch switch', () => {
       const addressing = new JobAddressing(
         index,
         {
+          visitProgress: progressVisitFromDetails((jobId) =>
+            jobId === 'new-live' ? (admitted(jobId, [], false, newEpochKey).detail ?? null) : null,
+          ),
           epochKey: () => newEpochKey,
           detail: (jobId) => (jobId === 'new-live' ? (admitted(jobId, [], false, newEpochKey).detail ?? null) : null),
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),

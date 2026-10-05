@@ -70,7 +70,7 @@ export type WaitStaleRecoveryHandler = (
 export type AwaitStepState = {
   pending: Map<string, LaunchedAtom>;
   results: Map<string, string>;
-  cursor: WaitCursor;
+  cursor: WaitCursor | undefined;
   lastActivityAt: Map<string, number>;
   staleRetries: Map<string, number>;
   expectedStaleAborts: Set<string>;
@@ -88,8 +88,8 @@ function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number
   return Math.max(1, Math.ceil(timeoutMs / 1000));
 }
 
-function cloneCursor(cursor?: WaitCursor): WaitCursor {
-  if (cursor === undefined) return { afterSeq: 0 };
+function cloneCursor(cursor?: WaitCursor): WaitCursor | undefined {
+  if (cursor === undefined) return undefined;
   if (cursor.version === 'jobs.wait.v3') return structuredClone(cursor);
   return cursor.version === 'jobs.wait.v2'
     ? {

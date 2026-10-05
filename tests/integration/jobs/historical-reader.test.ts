@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { linkSync, symlinkSync, unlinkSync, renameSync } from 'node:fs';
 import { observeProtectedEpoch } from '#src/store/epoch/protection.js';
 import { createStoreEpochSweepScheduler } from '#src/coordinator/composition/store-epoch-sweep-scheduler.js';
@@ -309,6 +310,7 @@ describe('historical job readers', () => {
     const addressing = new JobAddressing(
       index,
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'new:8',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -393,6 +395,7 @@ describe('historical job readers', () => {
     const addressing = new JobAddressing(
       index,
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'new:8',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -561,6 +564,7 @@ describe('historical job readers', () => {
     const addressing = new JobAddressing(
       index,
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'lineage-new:8',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -638,6 +642,7 @@ describe('historical job readers', () => {
     const addressing = new JobAddressing(
       index,
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'lineage-new:8',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -710,6 +715,7 @@ console.log('ready');`;
       const addressing = new JobAddressing(
         index,
         {
+          visitProgress: progressVisitFromDetails(() => null),
           epochKey: () => newEpochKey,
           detail: () => null,
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -805,6 +811,7 @@ process.stdin.on('data', (input) => {
     const addressing = new JobAddressing(
       index,
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => newEpochKey,
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -925,6 +932,7 @@ process.stdin.on('data', (input) => {
         const addressing = new JobAddressing(
           index,
           {
+            visitProgress: progressVisitFromDetails(() => null),
             epochKey: () => 'active',
             detail: () => null,
             abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -981,6 +989,7 @@ process.stdin.on('data', (input) => {
         const addressing = new JobAddressing(
           index,
           {
+            visitProgress: progressVisitFromDetails(() => null),
             epochKey: () => 'active',
             detail: () => null,
             abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -1038,6 +1047,7 @@ process.stdin.on('data', (input) => {
       const addressing = new JobAddressing(
         index,
         {
+          visitProgress: progressVisitFromDetails(() => null),
           epochKey: () => 'active',
           detail: () => null,
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -1169,6 +1179,7 @@ it('isolates invalid job reads, continues hydration after a recording failure an
   const addressing = new JobAddressing(
     index.readOnlyView(),
     {
+      visitProgress: progressVisitFromDetails(() => null),
       epochKey: () => 'another-epoch',
       detail: () => null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -1248,6 +1259,7 @@ describe('historical read dispositions', () => {
         const addressing = new JobAddressing(
           index.readOnlyView(),
           {
+            visitProgress: progressVisitFromDetails(() => null),
             epochKey: () => 'other',
             detail: () => null,
             abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -1259,10 +1271,10 @@ describe('historical read dispositions', () => {
         );
         const [admission] = addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true });
         expect(admission.progressUnknown, phase).not.toBe(true);
-        expect(admission.progressLost, phase).toBe(true);
+        expect(admission.progressLost, phase).toBe(false);
         const first = addressing.snapshot({ jobIds: [f.jobId] });
         expect(first.jobs[0].terminal, phase).toBeDefined();
-        expect(first.notices.join(' '), phase).toContain('no longer kept');
+        expect(first.notices.join(' '), phase).toContain('source retired');
         expect(first.remainingJobIds, phase).toEqual([]);
         expect(first.exitCode, phase).toBe(0);
         const events = [];
@@ -1313,6 +1325,7 @@ describe('historical read dispositions', () => {
         const addressing = new JobAddressing(
           f.index.readOnlyView(),
           {
+            visitProgress: progressVisitFromDetails(() => null),
             epochKey: () => 'other',
             detail: () => null,
             abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -1333,6 +1346,57 @@ describe('historical read dispositions', () => {
       }
     },
   );
+});
+
+it('caches historical terminal bodies per request despite unrelated journal appends', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    f.complete();
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    const originalOpen = f.runtime.storage.openSqliteDatabaseSync.bind(f.runtime.storage);
+    const sql: string[] = [];
+    vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync').mockImplementation((...args) => {
+      const db = originalOpen(...args);
+      const prepare = db.prepare.bind(db);
+      db.prepare = (query) => {
+        sql.push(query);
+        return prepare(query);
+      };
+      return db;
+    });
+    const reader = historicalSourceReader(f.index);
+    const session = {};
+    const first = reader(f.epochKey, [f.jobId], session);
+    if (first.kind !== 'read') throw new Error('Initial historical read failed');
+    const terminal = first.locations.get(f.jobId);
+    expect(terminal?.disposition).toBe('terminal');
+    for (let poll = 0; poll < 30; poll++) {
+      f.db
+        .prepare(
+          "INSERT INTO events(ts, type, stream_kind, stream_id, refs, body) VALUES (?, 'test.unrelated', 'project', 'unrelated', '{}', ?)",
+        )
+        .run(new Date(f.runtime.time.now()).toISOString(), Buffer.from('{}'));
+      const observed = reader(f.epochKey, [f.jobId], session);
+      expect(observed.kind === 'read' && observed.locations.get(f.jobId)).toBe(terminal);
+    }
+    expect(sql.filter((query) => /SELECT \* FROM projection_jobs WHERE/.test(query))).toHaveLength(1);
+    expect(sql.filter((query) => /SELECT seq, ts, type, body/.test(query))).toHaveLength(1);
+    const fresh = reader(f.epochKey, [f.jobId], {});
+    expect(fresh.kind === 'read' && fresh.locations.get(f.jobId)).not.toBe(terminal);
+    expect(sql.filter((query) => /SELECT \* FROM projection_jobs WHERE/.test(query))).toHaveLength(2);
+    expect(sql.filter((query) => /SELECT seq, ts, type, body/.test(query))).toHaveLength(2);
+  } finally {
+    vi.restoreAllMocks();
+    f.close();
+  }
 });
 
 it('gates unchanged historical polls and unresolved sweeps on the journal frontier', () => {
@@ -1377,7 +1441,7 @@ it('gates unchanged historical polls and unresolved sweeps on the journal fronti
     const changed = reader(f.epochKey, [f.jobId], session);
     expect(changed.kind === 'read' && changed.locations.get(f.jobId)?.detail.kind).toBe('recorded');
     expect(sql.filter((query) => /SELECT seq, ts, type, body/.test(query))).toHaveLength(1);
-    expect(sql.find((query) => /SELECT seq, ts, type, body/.test(query))).toContain('seq >');
+    expect(sql.find((query) => /SELECT seq, ts, type, body/.test(query))).toContain('MAX(seq)');
     refreshHistoricalEpochs(f.index);
     expect(certify).toHaveBeenCalledTimes(1);
     expect(sql.some((query) => /SELECT \* FROM projection_jobs ORDER BY/.test(query))).toBe(false);
@@ -1603,8 +1667,8 @@ it('does not retain history across historical reads without a session and leaves
     for (let read = 0; read < 3; read++) expect(readHistoricalSource(f.index, f.epochKey, [f.jobId]).kind).toBe('read');
     expect(open).toHaveBeenCalledTimes(3);
     const session = {};
-    const first = readHistoricalSource(f.index, f.epochKey, [f.jobId], session);
-    for (let poll = 0; poll < 40; poll++) readHistoricalSource(f.index, f.epochKey, [f.jobId], session);
+    const first = readHistoricalSource(f.index, f.epochKey, [f.jobId], session, true);
+    for (let poll = 0; poll < 40; poll++) readHistoricalSource(f.index, f.epochKey, [f.jobId], session, true);
     expect(open).toHaveBeenCalledTimes(44);
     if (first.kind !== 'read') throw new Error('read failed');
     const firstLocation = first.locations.get(f.jobId)!;
@@ -1614,11 +1678,11 @@ it('does not retain history across historical reads without a session and leaves
     const malformed = f.store.appendProgress(f.jobId, 'session-1', 'third');
     const row = f.db.prepare('SELECT body FROM events WHERE seq = ?').get(malformed) as { body: Uint8Array };
     f.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(Buffer.from('{broken'), malformed);
-    const failed = readHistoricalSource(f.index, f.epochKey, [f.jobId], session);
+    const failed = readHistoricalSource(f.index, f.epochKey, [f.jobId], session, true);
     expect(failed.kind === 'read' && failed.dispositions.get(f.jobId)).toBe('settled-unreadable');
     expect(firstLocation.detail.value.events).toEqual(originalEvents);
     f.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(row.body, malformed);
-    const repaired = readHistoricalSource(f.index, f.epochKey, [f.jobId], session);
+    const repaired = readHistoricalSource(f.index, f.epochKey, [f.jobId], session, true);
     if (repaired.kind !== 'read') throw new Error('read failed');
     const location = repaired.locations.get(f.jobId)!;
     expect(
@@ -1724,6 +1788,7 @@ it('delivers a historical sibling backlog and settles deterministic per-job deco
     const addressing = new JobAddressing(
       index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'another-epoch',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -1821,6 +1886,7 @@ it.each(['pending', 'decided'] as const)(
       const addressing = new JobAddressing(
         f.index,
         {
+          visitProgress: progressVisitFromDetails(() => null),
           epochKey: () => 'active',
           detail: () => null,
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -1952,6 +2018,7 @@ it('historical maintenance never rewrites an unregistered active-epoch hold', ()
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => f.epochKey,
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -2283,6 +2350,7 @@ describe('ordinary retirement keeps typos missing', () => {
       const addressing = new JobAddressing(
         index.readOnlyView(),
         {
+          visitProgress: progressVisitFromDetails(() => null),
           epochKey: () => 'new:8',
           detail: () => null,
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -2352,7 +2420,12 @@ describe('released hold reconciliation uses its path', () => {
     const afterOwnerClear = index.unknownLocationHolds();
     const addressing = new JobAddressing(
       index.readOnlyView(),
-      { epochKey: () => 'active', detail: () => null, abort: () => ({}) as never },
+      {
+        visitProgress: progressVisitFromDetails(() => null),
+        epochKey: () => 'active',
+        detail: () => null,
+        abort: () => ({}) as never,
+      },
       () => false,
       () => 'pending',
       undefined,
@@ -2636,6 +2709,7 @@ describe('historical maintenance budgets and retirement', () => {
     const addressing = new JobAddressing(
       restarted.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'active-key',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -2663,6 +2737,7 @@ describe('historical maintenance budgets and retirement', () => {
     const addressing = new JobAddressing(
       index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'active',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -2683,8 +2758,12 @@ describe('historical maintenance budgets and retirement', () => {
         read.mockClear();
         const admissions = addressing.admitWait(request);
         session.reconcile(admissions);
-        if (poll === 0) session.startAtTail(20, 500, 64 * 1024);
-        for (const line of session.progress()) {
+        const selection = session.withProgress(index.readOnlyView().visitProgress!, (sources) => {
+          session.position(sources, 20, 500, 64 * 1024);
+          return session.select(sources, 500, 64 * 1024);
+        });
+        session.observeEmpty(selection.exhaustedJobIds);
+        for (const line of selection.lines) {
           delivered.add(line.jobId);
           deliveredLines++;
           session.consume(line);
@@ -2700,7 +2779,7 @@ describe('historical maintenance budgets and retirement', () => {
       expect(delivered.size).toBe(40);
       expect(deliveredLines).toBe(40);
       expect(session.admissions.every((job) => job.disposition === 'admitted')).toBe(true);
-      expect(session.admissions.every((job) => !session.progressHeld(job))).toBe(true);
+      expect(session.admissions.every((job) => session.progressState(job.jobId) !== 'unknown')).toBe(true);
     } finally {
       read.mockRestore();
     }
@@ -2827,6 +2906,7 @@ describe('historical maintenance budgets and retirement', () => {
     const addressing = new JobAddressing(
       index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'active',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -2838,12 +2918,9 @@ describe('historical maintenance budgets and retirement', () => {
     );
     const request = { jobIds: ['ghost', 'job-3'], supportsWaitV3: true };
     seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, { remaining: 0 });
-    expect(addressing.admitWait(request).map((job) => job.disposition)).toEqual([
-      'discovery-unknown',
-      'discovery-unknown',
-    ]);
+    expect(addressing.admitWait(request).map((job) => job.disposition)).toEqual(['missing', 'admitted']);
     seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, { remaining: 1 });
-    expect(addressing.admitWait(request).map((job) => job.disposition)).toEqual(['missing', 'discovery-unknown']);
+    expect(addressing.admitWait(request).map((job) => job.disposition)).toEqual(['missing', 'admitted']);
     const changed = newRawDatabase(epoch.path);
     changed.exec(
       "INSERT INTO events (seq, ts, type, stream_kind, stream_id, body) SELECT (SELECT MAX(seq) + 1 FROM events), ts, type, stream_kind, 'ghost', body FROM events WHERE type = 'job.launch.requested' LIMIT 1",
@@ -2865,7 +2942,11 @@ describe('historical maintenance budgets and retirement', () => {
     const restarted = new JobLocationIndex(runtime, join(f.root, 'state'));
     const register = vi.spyOn(restarted, 'register');
     const budget = { remaining: 1 };
-    seedHistoricalEpoch(runtime, restarted, epoch, key, FP0, join(f.root, 'results'), storage, [], true, budget);
+    for (let slice = 0; slice < 4; slice++) {
+      budget.remaining = 1;
+      seedHistoricalEpoch(runtime, restarted, epoch, key, FP0, join(f.root, 'results'), storage, [], true, budget);
+      expect(budget.remaining).toBe(0);
+    }
     expect(register.mock.calls.map(([id]) => id)).toEqual(['live']);
     expect(restarted.unknownLocationHold(key)).toBeNull();
     expect(budget.remaining).toBe(0);
@@ -3051,7 +3132,7 @@ it('observes journal progress when file stamps collide in one timestamp tick', (
     }) as typeof f.runtime.storage.lstatSync);
     reader(f.epochKey, [f.jobId], session);
     f.store.appendProgress(f.jobId, 'session-1', 'after');
-    const observed = reader(f.epochKey, [f.jobId], session);
+    const observed = reader(f.epochKey, [f.jobId], session, true);
     spy.mockRestore();
     expect(observed.kind).toBe('read');
     if (observed.kind !== 'read') throw new Error('source unreadable');

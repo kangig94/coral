@@ -174,10 +174,14 @@ function closedReapingDirectoryRemovable(
     if (
       !validClosedReapingMarker(marker) ||
       !sameEpoch(
-        readEpochKey(runtime, {
-          ...resolvedStoreEpoch(dbDir, marker.epoch),
-          path: join(path, STORE_DATABASE_FILE_NAME),
-        }),
+        readEpochKey(
+          runtime,
+          {
+            ...resolvedStoreEpoch(dbDir, marker.epoch),
+            path: join(path, STORE_DATABASE_FILE_NAME),
+          },
+          5000,
+        ),
         marker.epochKey,
       ) ||
       observeStorePath(runtime.storage, epochDirectory(dbDir, marker.epoch)) !== 'absent' ||

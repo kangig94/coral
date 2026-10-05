@@ -1,3 +1,5 @@
+import type { SourceReadDisposition } from './session.js';
+import type { ProgressPage, TailPage } from './progress-page.js';
 import type { JobTerminal } from '../records.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { JobProgressTiming } from '../event-bodies.js';
@@ -10,11 +12,14 @@ export const WAIT_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
-export type WaitCursorV3 = {
-  version: 'jobs.wait.v3';
-  epochs: Array<{ token: string; watermark: number; lineOffset: number }>;
-  jobs: Array<{ hash: string; epoch: number; flags: number }>;
-};
+export type WaitCursorEntry = Readonly<{
+  hash: string;
+  epoch: string | null;
+  seq: number;
+  lineOffset: number;
+  flags: number;
+}>;
+export type WaitCursorV3 = Readonly<{ version: 'jobs.wait.v3'; jobs: readonly WaitCursorEntry[] }>;
 
 export type WaitCursor =
   | WaitCursorV3
@@ -67,77 +72,61 @@ type QueuedWaitEventBase = {
   timing: JobProgressTiming;
 };
 
+type ProgressWaitEvent = {
+  type: 'progress';
+  jobId: string;
+  seq: number;
+  message: string;
+  timing: JobProgressTiming;
+};
+type TerminalWaitEvent = {
+  type: 'terminal';
+  jobId: string;
+  seq: number;
+  remainingJobIds: string[];
+  result: JobTerminal;
+  continuity?: ContinuitySnapshot | null;
+  usage?: UsageSummary;
+};
+type FinalV3 = { version: 'jobs.wait.v3'; cursor: WaitCursorV3; exitCode: number };
+type LegacyCursor = {
+  version?: 'jobs.wait.v2';
+  epochKey?: string;
+  cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+};
 export type WaitStreamEvent =
-  | { type: 'notice'; version: 'jobs.wait.v3'; message: string; cursor?: WaitCursorV3; exitCode?: number }
+  | { type: 'notice'; version: 'jobs.wait.v3'; message: string }
   | {
       type: 'disposition';
       version: 'jobs.wait.v3';
       jobId: string;
-      exitCode?: number;
       disposition: Exclude<WaitAdmission['disposition'], 'admitted'>;
       message?: string;
-      cursor?: WaitCursorV3;
     }
-  | {
-      type: 'artifact';
-      version: 'jobs.wait.v3';
-      jobId: string;
-      availability: ResultAvailability;
-      remainingJobIds: string[];
-      cursor: WaitCursorV3;
-      exitCode: number;
-    }
-  | {
-      type: 'progress';
-      exitCode?: number;
-      jobId: string;
-      seq: number;
-      message: string;
-      timing: JobProgressTiming;
-      version?: 'jobs.wait.v2' | 'jobs.wait.v3';
-      epochKey?: string;
-      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
-    }
-  | (QueuedWaitEventBase & {
-      jobKind: 'provider';
-      sessionId: string;
-      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
-    })
-  | (QueuedWaitEventBase & {
-      jobKind: 'workflow';
-      workflowId: string;
-      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
-    })
-  | (QueuedWaitEventBase & {
-      jobKind: 'kb';
-      systemTaskId: string;
-      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
-    })
-  | {
-      type: 'terminal';
-      jobId: string;
-      seq: number;
-      remainingJobIds: string[];
-      resultPath?: string;
-      availability?: ResultAvailability;
-      exitCode?: number;
-      result: JobTerminal;
-      version?: 'jobs.wait.v2' | 'jobs.wait.v3';
-      continuity?: ContinuitySnapshot | null;
-      usage?: UsageSummary;
-      epochKey?: string;
-      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
-    }
+  | (FinalV3 & { type: 'artifact'; jobId: string; availability: ResultAvailability; remainingJobIds: string[] })
+  | (ProgressWaitEvent & { version: 'jobs.wait.v3'; entry: WaitCursorEntry })
+  | (ProgressWaitEvent & LegacyCursor)
+  | (QueuedWaitEventBase & { jobKind: 'provider'; sessionId: string })
+  | (QueuedWaitEventBase & { jobKind: 'workflow'; workflowId: string })
+  | (QueuedWaitEventBase & { jobKind: 'kb'; systemTaskId: string })
+  | (TerminalWaitEvent & FinalV3 & { availability: ResultAvailability; resultPath?: string; epochKey?: string })
+  | (TerminalWaitEvent & LegacyCursor & { resultPath: string; availability?: never; exitCode?: never })
   | CarrierInterruptedWaitEvent
+  | (FinalV3 & { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[] })
   | {
       type: 'waiting';
       waitingJobIds: string[];
-      version?: 'jobs.wait.v3';
-      exitCode?: number;
-      cursor?: Exclude<WaitCursor, { afterSeq: number }>;
-      /** Unknown carrier IDs must be sorted, and empty coverage must omit this field. */
+      version?: never;
+      exitCode?: never;
+      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
       carrierUnknownJobIds?: string[];
     };
+
+export function isFinalWaitEvent(
+  event: WaitStreamEvent,
+): event is Extract<WaitStreamEvent, { type: 'terminal' | 'artifact' | 'waiting' }> {
+  return event.type === 'terminal' || event.type === 'artifact' || event.type === 'waiting';
+}
 
 /**
  * A handover notice may be sent only to a subscriber that declared `supportsHandover`; others would read the
@@ -156,7 +145,6 @@ export type CarrierInterruptedWaitEvent = {
   observation: { kind: 'carrier_interrupted'; reason: 'carrier_absent' };
   continuity: 'unavailable';
   outcome: 'unknown';
-  cursor?: Exclude<WaitCursor, { afterSeq: number }>;
 };
 
 export type WaitCarrierCoverage = {
@@ -166,6 +154,7 @@ export type WaitCarrierCoverage = {
 };
 
 export interface JobWaitPort {
+  visitProgress?: ProgressVisit;
   readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
   readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
@@ -174,3 +163,12 @@ export interface JobWaitPort {
   waitForOutcomes?(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
 }
+
+export interface ProgressSource {
+  after(jobId: string, afterSeq: number, rows: number): ProgressPage;
+  before(jobId: string, beforeSeq: number | null, rows: number): TailPage;
+}
+export type ProgressVisitResult<T> =
+  | { kind: 'read'; value: T }
+  | { kind: 'unreadable'; disposition: Exclude<SourceReadDisposition, 'readable'>; reason?: string };
+export type ProgressVisit = <T>(epochKey: string, read: (source: ProgressSource) => T) => ProgressVisitResult<T>;

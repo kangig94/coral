@@ -1,3 +1,4 @@
+import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { it, expect, vi } from 'vitest';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
@@ -18,6 +19,10 @@ it.each(['direct', 'v2', 'live'])(
     const time = createRealTimePort();
     const pollTimer = vi.spyOn(time, 'setTimeout');
     const wait = new WaitCoordinator({
+      visitProgress: progressVisitFromEvents(
+        () => [],
+        () => 0,
+      ),
       time,
       eventBus: { on: () => {}, off: () => {} },
       sessionManager: { get: () => null },
@@ -28,7 +33,7 @@ it.each(['direct', 'v2', 'live'])(
         runtime: null,
         exit: null,
       }),
-      readJobEvents: () => [],
+
       aggregateWorkflowUsage: () => undefined,
       getCurrentJournalSeq: () => 0,
       resultJobsRoot: '/unused',
@@ -51,6 +56,7 @@ it.each(['direct', 'v2', 'live'])(
         unknownLocationHolds: () => [],
       } as never,
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'epoch-1',
         observeWaitCarriers: (ids, signal) => wait.observeWaitCarriers(ids, signal),
         detail: () => null,

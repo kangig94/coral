@@ -80,12 +80,21 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
     }
     onOpenedStore(openStore);
     if (openStore.path !== ':memory:') {
-      const epochs = listStoreEpochs(runtime);
-      registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, encodeResolvedStoreEpoch(runtime, openStore), {
-        remaining: 0,
-      });
-      const present: string[] = [encodeResolvedStoreEpoch(runtime, openStore)];
+      let epochs: ReturnType<typeof listStoreEpochs> = [];
       let inventoryComplete = true;
+      try {
+        epochs = listStoreEpochs(runtime);
+      } catch (error) {
+        inventoryComplete = false;
+        writeAuditEvent('historical_inventory_unavailable', { reason: formatError(error) }, 'warn');
+      }
+      const active = encodeResolvedStoreEpoch(runtime, openStore);
+      try {
+        registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, active, { remaining: 0 });
+      } catch (error) {
+        writeAuditEvent('historical_registration_unavailable', { reason: formatError(error) }, 'warn');
+      }
+      const present: string[] = [active];
       for (const epoch of epochs) {
         try {
           const key = epoch.epochKey ?? (epoch.resolved ? inspectResolvedStoreEpochKey(runtime, epoch.resolved) : null);
@@ -95,7 +104,11 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
           inventoryComplete = false;
         }
       }
-      jobLocationIndex.reconcileUnknownLocationHolds(present, inventoryComplete);
+      try {
+        jobLocationIndex.reconcileUnknownLocationHolds(present, inventoryComplete);
+      } catch (error) {
+        writeAuditEvent('historical_holds_unavailable', { reason: formatError(error) }, 'warn');
+      }
     }
   };
 }

@@ -1,3 +1,4 @@
+import type { ProgressVisit } from '../../jobs/wait/contract.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobEvent, LaunchReadiness } from '../../jobs/records.js';
@@ -67,6 +68,9 @@ export class JobWaitService {
       await iterator.return?.();
     }
   }
+
+  visitProgress: ProgressVisit = (epoch, read) =>
+    this.deps.waitCoordinator.visitProgress?.(epoch, read) ?? { kind: 'unreadable', disposition: 'transient-unknown' };
 
   readWaitAdmissions(jobIds: readonly string[], epochKey: string, session?: object) {
     return this.deps.waitCoordinator.readWaitAdmissions?.(jobIds, epochKey, session) ?? [];

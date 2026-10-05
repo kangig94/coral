@@ -1,3 +1,5 @@
+import { LegacyWaitDelivery } from './wait/legacy.js';
+import type { ProgressVisit } from './wait/contract.js';
 import { epochIdentity, sameEpoch } from '../store/epoch/identity.js';
 import { sourceReadFailureDisposition } from './source-read.js';
 import { serializeWaitCursor, decodeWaitCursor, waitEpochToken } from './wait/cursor.js';
@@ -23,6 +25,7 @@ import {
 export interface ActiveJobAccess {
   epochKey(): string | null;
   detail(jobId: string): JobDetailResponse | null;
+  visitProgress?: ProgressVisit;
   readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
   readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
@@ -61,15 +64,17 @@ function historicalDisposition(
   closure: 'pending' | 'decided',
   read: HistoricalSourceRead,
   jobId: string,
+  fullHistory = false,
 ): HistoricalDisposition {
   const sourceRead =
     read.kind === 'unreadable'
       ? read.disposition
       : (read.dispositions?.get(jobId) ?? (read.unreadableJobs?.has(jobId) ? 'settled-unreadable' : 'readable'));
   const observed = read.kind === 'read' ? read.locations.get(jobId) : null;
-  const location = hasObservedTerminalDetail(retained)
-    ? retained
-    : (observed ?? { ...retained, disposition: 'unresolved' as const, detail: { kind: 'absent' as const } });
+  const location =
+    (!fullHistory || !observed) && hasObservedTerminalDetail(retained)
+      ? retained
+      : (observed ?? { ...retained, disposition: 'unresolved' as const, detail: { kind: 'absent' as const } });
   const message =
     read.kind === 'unreadable' && read.reason !== undefined
       ? epochHoldReason(read.reason, sourceRead === 'transient-unknown')
@@ -106,8 +111,8 @@ export class JobAddressing {
     active: ActiveJobAccess,
     preEpochHistoryExists: PreEpochHistoryProbe,
     historicalClosure: HistoricalClosureProbe,
-    readHistorical: HistoricalSourceReader = (epochKey, jobIds, session) =>
-      locations.readHistorical?.(epochKey, jobIds, session) ?? {
+    readHistorical: HistoricalSourceReader = (epochKey, jobIds, session, fullHistory) =>
+      locations.readHistorical?.(epochKey, jobIds, session, fullHistory) ?? {
         kind: 'unreadable',
         disposition: 'transient-unknown',
         reason: 'Source observation is unavailable; retry when its owner becomes reachable',
@@ -145,13 +150,14 @@ export class JobAddressing {
       .join(' ');
   }
 
-  private historicalLocation(location: JobLocation): HistoricalDisposition {
+  private historicalLocation(location: JobLocation, fullHistory = false): HistoricalDisposition {
     const retained = this.locations.read(location.jobId) ?? location;
     return historicalDisposition(
       retained,
       this.historicalClosure(retained.epochKey),
-      this.readHistorical(retained.epochKey, [retained.jobId]),
+      this.readHistorical(retained.epochKey, [retained.jobId], undefined, fullHistory),
       retained.jobId,
+      fullHistory,
     );
   }
 
@@ -174,7 +180,15 @@ export class JobAddressing {
     if (existing !== null) return existing;
     const detail = this.active.detail(jobId);
     const epochKey = activeEpochKey ?? this.active.epochKey() ?? ':memory:';
-    if (detail === null) return null;
+    if (detail === null) {
+      for (const hold of this.locations.unknownLocationHolds()) {
+        if (!hold.epochKey || sameEpoch(hold.epochKey, epochKey)) continue;
+        const read = this.readHistorical(hold.epochKey, [jobId]);
+        const found = read.kind === 'read' ? read.locations.get(jobId) : null;
+        if (found) return found;
+      }
+      return null;
+    }
     return {
       version: 'v1',
       jobId,
@@ -229,7 +243,7 @@ export class JobAddressing {
         };
     }
     const observed = historical
-      ? this.historicalLocation(location)
+      ? this.historicalLocation(location, true)
       : { location, kind: 'admitted' as const, message: undefined };
     if (observed.kind !== 'admitted')
       return { kind: observed.kind, jobId, epochKey: location.epochKey, message: observed.message };
@@ -424,6 +438,15 @@ export class JobAddressing {
         this.readHistorical(epochKey, jobIds, request),
       ]),
     );
+    for (const jobId of unknownIds) {
+      for (const source of historical.values()) {
+        const found = source.kind === 'read' ? source.locations.get(jobId) : null;
+        if (found) {
+          locations.set(jobId, found);
+          break;
+        }
+      }
+    }
     const activeAdmissions = new Map(
       (
         this.active.readWaitAdmissions?.(
@@ -481,11 +504,11 @@ export class JobAddressing {
           disposition: 'admitted',
           sourceRead: admission?.sourceRead ?? 'readable',
           epochKey: location.epochKey,
-          ...(detail === null ? {} : { detail }),
+          ...(detail === null || detail === undefined ? {} : { detail: waitDetail(detail) }),
           ...(detail?.exit
             ? {
                 availability,
-                progressLost: this.progressRetentionExpired?.(jobId) ?? availability?.kind === 'retained-away',
+                progressLost: this.progressRetentionExpired?.(jobId) === true,
               }
             : {}),
         };
@@ -511,28 +534,22 @@ export class JobAddressing {
           epochKey: location.epochKey,
           sourceRead,
           message,
-          ...(accepted.detail.kind === 'recorded' ? { detail: accepted.detail.value } : {}),
+          ...(accepted.detail.kind === 'recorded' ? { detail: waitDetail(accepted.detail.value) } : {}),
           progressUnknown: sourceRead === 'transient-unknown',
           progressLost: false,
         };
-      const observed = source.kind === 'read' ? source.locations.get(jobId) : null;
       const detail = accepted.detail.kind === 'recorded' ? accepted.detail.value : undefined;
-      const events =
-        source.kind === 'read' && observed?.detail.kind === 'recorded'
-          ? observed.detail.value.events
-          : (detail?.events ?? []).filter((event) => event.type === 'terminal');
       const availability = this.availability(jobId, request);
       return {
         jobId,
         disposition: 'admitted',
         epochKey: location.epochKey,
-        ...(detail ? { detail: { ...detail, events } } : {}),
+        ...(detail ? { detail: waitDetail(detail) } : {}),
         availability,
         sourceRead,
         message,
         progressUnknown: sourceRead === 'transient-unknown',
-        progressLost:
-          sourceRead === 'retired' || (this.progressRetentionExpired?.(jobId) ?? availability.kind === 'retained-away'),
+        progressLost: this.progressRetentionExpired?.(jobId) === true,
       };
     });
   }
@@ -592,7 +609,7 @@ export class JobAddressing {
     try {
       const session = new WaitSession(request.jobIds, cursor, activeEpochKey);
       session.reconcile(admissions);
-      if (request.supportsWaitV3 !== true) session.requireLegacyReplaySupport();
+      if (request.supportsWaitV3 !== true) new LegacyWaitDelivery(session, activeEpochKey).reconcile();
     } catch (error) {
       if (error instanceof WaitSessionError)
         return { code: error.code as WaitCursorError['code'], message: error.message };
@@ -601,13 +618,18 @@ export class JobAddressing {
     return null;
   }
 
+  private readonly visitProgress: ProgressVisit = (epoch, read) =>
+    sameEpoch(epoch, this.active.epochKey() ?? ':memory:')
+      ? (this.active.visitProgress?.(epoch, read) ?? { kind: 'unreadable', disposition: 'transient-unknown' })
+      : (this.locations.visitProgress?.(epoch, read) ?? { kind: 'unreadable', disposition: 'transient-unknown' });
+
   snapshot(request: WaitSnapshotRequest): WaitSnapshot {
     const admissions = this.admitWait(request, false);
     const error = this.validateWait({ ...request, supportsWaitV3: true, admissions });
     if (error) throw new WaitSessionError(error.code, error.message);
     const session = new WaitSession(request.jobIds, request.cursor, this.waitEpoch(request));
     session.reconcile(admissions);
-    return selectWaitSnapshot(session, request.cursor === undefined ? (request.lines ?? 20) : undefined);
+    return selectWaitSnapshot(session, request.lines ?? 20, this.visitProgress);
   }
 
   async *waitStream(request: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
@@ -619,6 +641,7 @@ export class JobAddressing {
       request,
       time: this.locations.time,
       activeEpochKey,
+      visit: this.visitProgress,
       read: () => {
         const admissions = firstRead && request.admissions ? request.admissions : this.admitWait(request, !firstRead);
         firstRead = false;
@@ -638,4 +661,18 @@ export class JobAddressing {
       },
     });
   }
+}
+
+function waitDetail(
+  detail: NonNullable<WaitAdmission['detail']> | JobDetailResponse,
+): NonNullable<WaitAdmission['detail']> {
+  return {
+    status: detail.status,
+    exit: detail.exit,
+    readiness: detail.readiness,
+    terminalSeq:
+      'events' in detail
+        ? (detail.events.find((event) => event.type === 'terminal')?.seq ?? detail.status.lastSeq)
+        : detail.terminalSeq,
+  };
 }

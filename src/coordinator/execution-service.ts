@@ -1,3 +1,4 @@
+import type { ProgressVisit } from '../jobs/wait/contract.js';
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
@@ -115,7 +116,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       eventBus: this.eventBus,
       time: this.runtime.time,
       loadJobProjectionDetail: deps.loadJobProjectionDetail,
-      readJobEvents: deps.readJobEvents,
+
+      visitProgress: deps.visitProgress,
       aggregateWorkflowUsage: deps.aggregateWorkflowUsage,
       subscribeJobEvents: deps.subscribeJobEvents,
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
@@ -320,6 +322,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness> {
     return this.waitService.awaitLaunch(jobId, timeoutMs);
   }
+
+  visitProgress: ProgressVisit = (epoch, read) => this.waitService.visitProgress(epoch, read);
 
   readWaitAdmissions(jobIds: readonly string[], epochKey: string, session?: object) {
     return this.waitService.readWaitAdmissions?.(jobIds, epochKey, session) ?? [];

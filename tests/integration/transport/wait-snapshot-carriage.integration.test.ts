@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, symlinkSync } from 'node:fs';
@@ -34,6 +35,7 @@ import { parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) await close();
 });
@@ -202,6 +204,7 @@ describe('actual wait carriage', () => {
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'other',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -319,11 +322,12 @@ describe('actual wait carriage', () => {
       const jobs = Array.from({ length: count }, (_, i) => admitted(`j${i}`, [], false, `/tmp/epoch-${i}`));
       const session = new WaitSession(jobs.map((job) => job.jobId));
       session.reconcile(jobs);
-      const cursor = session.cursor();
-      for (const epoch of cursor.epochs) {
-        epoch.watermark = Number.MAX_SAFE_INTEGER;
-        epoch.lineOffset = 0xffffffff;
-      }
+      const cursor = {
+        ...session.cursor(),
+        jobs: session
+          .cursor()
+          .jobs.map((entry) => ({ ...entry, flags: 0, seq: Number.MAX_SAFE_INTEGER, lineOffset: 0xffffffff })),
+      };
       const p = ports();
       p.jobs.scopeCheck = () => ({ valid: jobs.map((job) => job.jobId), missing: [], mismatch: [] });
       p.jobs.admitWait = () => jobs;
@@ -382,6 +386,11 @@ describe('actual wait carriage', () => {
     },
   );
   it.each(['drains', 'expires'])('wait SSE backpressure %s through a bounded, resumable carriage', async (mode) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    let blockedReady!: () => void;
+    const blockedPromise = new Promise<void>((resolve) => {
+      blockedReady = resolve;
+    });
     const p = ports();
     const job = admitted('a', [], false);
     const session = new WaitSession(['a']);
@@ -406,6 +415,7 @@ describe('actual wait carriage', () => {
       res.write = ((data: string) => {
         if (!blocked && data.includes('event: waiting')) {
           blocked = true;
+          blockedReady();
           if (mode === 'drains')
             setTimeout(() => {
               write(data);
@@ -450,6 +460,8 @@ describe('actual wait carriage', () => {
       req.on('error', reject);
       req.end(JSON.stringify({ jobIds: ['a'], projectRoot: '/tmp', supportsWaitV3: true, timeoutSeconds: 1 }));
     });
+    await blockedPromise;
+    await vi.advanceTimersByTimeAsync(25);
     await expect(response).resolves.toEqual(expect.any(String));
     const body = await response;
     await responseClosed;
@@ -464,6 +476,7 @@ describe('actual wait carriage', () => {
       expect(body).toContain('last completely received cursor');
       expect(body).not.toContain('id: ');
     }
+    vi.useRealTimers();
   });
 
   it('advertises V3 only with a working snapshot and validates its admission, artifact and continuation contracts', async () => {
@@ -511,6 +524,14 @@ describe('actual wait carriage', () => {
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(
+          (id) =>
+            ({
+              ...f.store.loadJobProjectionDetail(id),
+              events: f.store.readJobEvents(id),
+              readiness: 'ready',
+            }) as JobDetailResponse,
+        ),
         epochKey: () => f.epochKey,
         detail: (id) =>
           ({
@@ -607,4 +628,28 @@ it('HTTP sends a typed mid-stream error and canonicalizes the admission scope', 
   expect(body).toContain('event: error');
   expect(body).toContain('wait_epoch_unsupported');
   expect(p.jobs.admitWait).toHaveBeenCalledWith(expect.objectContaining({ projectRoot: f.root }));
+});
+
+it('an oversized IPC snapshot returns each unchanged subset command as a temporary refusal', async () => {
+  const f = createTerminalExportFixture();
+  cleanup.push(() => f.close());
+  const p = ports();
+  p.jobs.scopeCheck = () => ({ valid: ['a', 'b'], missing: [], mismatch: [] });
+  p.jobs.snapshot = () => ({ padding: 'x'.repeat(2 * 1024 * 1024) }) as never;
+  const listener = createIpcServer(p);
+  cleanup.push(() => closeIpcServer(listener));
+  const socketPath = join(f.root, 'oversized.sock');
+  await new Promise<void>((resolve) => listener.server.listen(socketPath, resolve));
+  const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
+  const cursor = { afterSeq: 42 };
+  await expect(
+    client.request('jobs.wait.snapshot', { jobIds: ['a', 'b'], cursor, projectRoot: f.root }),
+  ).rejects.toMatchObject({
+    data: {
+      code: 'wait_snapshot_too_large',
+      message: expect.stringContaining(
+        `coral-cli wait jobs 'a' --now --cursor ${serializeWaitCursor(cursor)}; coral-cli wait jobs 'b' --now --cursor ${serializeWaitCursor(cursor)}`,
+      ),
+    },
+  });
 });

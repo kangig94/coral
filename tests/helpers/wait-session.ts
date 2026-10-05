@@ -1,3 +1,4 @@
+import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { WaitAdmission } from '#src/jobs/wait/session.js';
 
 export function admitted(
@@ -6,7 +7,7 @@ export function admitted(
   terminal = true,
   epochKey = 'epoch-E',
   failed = false,
-): WaitAdmission {
+): WaitAdmission & { detail: JobDetailResponse } {
   const result = {
     content: `${jobId} result`,
     outcome: failed ? { kind: 'provider_exit', code: 42 } : { kind: 'completed' },
@@ -32,6 +33,7 @@ export function admitted(
         phase: terminal ? (failed ? 'error' : 'completed') : 'running',
         lastSeq: 1000,
       },
+      terminalSeq: terminal ? 1000 : undefined,
       exit: terminal ? { ...result, diagnostics: { progressFaults: [] } } : null,
       events: [
         ...messages.map(([seq, message]) => ({

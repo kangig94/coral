@@ -38,20 +38,27 @@ beforeAll(() => {
 
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
-it('publishes two processes × 4 writes of 1 KB without failed writes or invalid files', async () => {
-  const target = join(directory, 'concurrent.json');
-  writeFileSync(target, JSON.stringify({ padding: 'x'.repeat(1024), writer: 0, i: 0 }));
-  const results = await Promise.all(
-    [1, 2].map(() =>
-      runFile(process.execPath, [fixture, join(directory, 'real.cjs'), target, 'concurrent'], {
-        env: env(),
-        timeout: 90_000,
-      }),
-    ),
-  );
-  for (const result of results) expect(JSON.parse(result.stdout)).toEqual({ failed: 0, invalid: 0, count: 4 });
-  expect(readdirSync(directory).filter((name) => name.includes('.stage-'))).toEqual([]);
-});
+it.each(['real', 'shared'])(
+  'four processes × 32 writes of 64 KB expose shared-stage contention: %s',
+  async (variant) => {
+    const target = join(directory, 'concurrent.json');
+    writeFileSync(target, JSON.stringify({ padding: 'x'.repeat(64 * 1024), writer: 0, i: 0 }));
+    const results = await Promise.all(
+      [1, 2, 3, 4].map(() =>
+        runFile(process.execPath, [fixture, join(directory, `${variant}.cjs`), target, 'concurrent'], {
+          env: env(),
+          timeout: 90_000,
+        }),
+      ),
+    );
+    const totals = results.map(
+      (result) => JSON.parse(result.stdout) as { failed: number; invalid: number; count: number },
+    );
+    if (variant === 'real') for (const result of totals) expect(result).toEqual({ failed: 0, invalid: 0, count: 32 });
+    else expect(totals.some((result) => result.failed > 0 || result.invalid > 0)).toBe(true);
+    expect(readdirSync(directory).filter((name) => name.includes('.stage-'))).toEqual([]);
+  },
+);
 
 it.each(['real', 'shared'])('held-fd corruption control: %s', (variant) => {
   const target = join(directory, `${variant}-held.json`);

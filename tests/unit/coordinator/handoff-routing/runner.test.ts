@@ -132,7 +132,7 @@ async function createHandoffRuntime(): Promise<Runtime> {
     ...actual,
     ids: { ...actual.ids, uuid: runtimeUuid },
     process: { ...actual.process, readProcessIncarnation },
-    storage: { ...actual.storage, existsSync: () => true },
+    storage: { ...actual.storage, existsSync: () => true, readFileSync: () => '--print-wait-invocation-contract' },
     time,
     env: {
       ...actual.env,
@@ -208,7 +208,10 @@ function childThatExits(code: number | null, signal: NodeJS.Signals | null): Chi
   child.unref = vi.fn();
   queueMicrotask(() => {
     child.emit('spawn');
-    queueMicrotask(() => child.emit('exit', code, signal));
+    queueMicrotask(() => {
+      child.emit('exit', code, signal);
+      child.emit('close', code, signal);
+    });
   });
   return child;
 }
@@ -233,6 +236,7 @@ beforeEach(() => {
   mockState.readBuildFlavor.mockReset().mockReturnValue('prod');
   mockState.resolveStrictBundleIdentity.mockReset().mockReturnValue({ ok: true, manifest: invokingManifest });
   mockState.spawn.mockReset();
+  mockState.execFile.mockReset();
   mockState.publishGenerationCoordinatedHandoffRoutingTransitions
     .mockReset()
     .mockResolvedValue({ kind: 'committed', sequence: 1 });
@@ -499,6 +503,7 @@ describe('handoff-routing/runner', () => {
     });
 
     child.emit('exit', 0, null);
+    child.emit('close', 0, null);
 
     await expect(result).resolves.toMatchObject({
       kind: 'delegated-startup',
@@ -594,4 +599,92 @@ it('keeps a v3 launch-follow cursor in this CLI when the selected released targe
   });
   expect(mockState.spawn).not.toHaveBeenCalled();
   expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
+});
+
+it('keeps the monitor IPC listener through close when delivery follows exit', async () => {
+  const save = vi.fn();
+  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
+    return childThatExits(0, null);
+  });
+  mockState.spawn.mockImplementation(() => {
+    const child = childThatStaysAlive();
+    queueMicrotask(() =>
+      queueMicrotask(() => {
+        child.emit('exit', 0, null);
+        queueMicrotask(() => {
+          child.emit('message', {
+            type: 'wait-delivery',
+            continuation: 'exact continuation',
+            complete: true,
+            delivered: true,
+            exitCode: 42,
+          });
+          child.emit('close', 0, null);
+        });
+      }),
+    );
+    return child;
+  });
+  await runHandoff(cliOperation('wait', 'jobs', 'a'), {
+    pluginRoot: '/plugin/root',
+    waitInvocation: {
+      mode: 'bounded',
+      signal: new AbortController().signal,
+      originalCommand: 'coral-cli wait jobs a',
+      remainingMs: () => 5000,
+      cleanupRemainingMs: () => 5000,
+      saveContinuation: save,
+    },
+  });
+  expect(save).toHaveBeenCalledExactlyOnceWith('exact continuation', true, true, 42);
+});
+
+it('does not execute a released CLI preflight when its source has no contract flag', async () => {
+  vi.spyOn(runtime.storage, 'readFileSync').mockReturnValue('released CLI without a monitor contract');
+  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, '{}'));
+    return childThatExits(0, null);
+  });
+  const result = await runHandoff(cliOperation('wait', 'jobs', 'a'), {
+    pluginRoot: '/plugin/root',
+    waitInvocation: {
+      mode: 'bounded',
+      signal: new AbortController().signal,
+      originalCommand: 'coral-cli wait jobs a',
+      remainingMs: () => 5000,
+      cleanupRemainingMs: () => 5000,
+      saveContinuation: vi.fn(),
+    },
+  });
+  expect(result).toMatchObject({
+    kind: 'run-current',
+    reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' },
+  });
+  expect(mockState.execFile).not.toHaveBeenCalled();
+  expect(mockState.spawn).not.toHaveBeenCalled();
+  expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
+});
+
+it('uses the remaining launch-follow invocation budget for its contract probe', async () => {
+  vi.useFakeTimers();
+  const probeChild = childThatStaysAlive();
+  probeChild.kill = vi.fn(() => true);
+  const started = deferred();
+  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
+    setTimeout(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })), 1500);
+    started.resolve();
+    return probeChild;
+  });
+  mockState.spawn.mockImplementation(() => childThatExits(0, null));
+  const result = runHandoff(cliOperation('wait', 'jobs', 'a'), {
+    pluginRoot: '/plugin/root',
+    waitProbeRemainingMs: () => 4200,
+  });
+  void result.catch(() => undefined);
+  await started.promise;
+  (runtime.time as VirtualTime).tick(1500);
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(probeChild.kill).not.toHaveBeenCalled();
+  await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-success' } });
 });

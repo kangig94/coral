@@ -66,6 +66,7 @@ import type {
   PublicationOutcome,
   SelectedHandoffDisposition,
 } from './status.js';
+import { CLI_HANDOFF_GUARD_ENV } from './wait-invocation.js';
 
 // A CLI's pre-dispatch budget: how long it waits for an incumbent's health before dispatching without one. It
 // is not a wire timeout and must not be retuned to track one — and could not be shared with one in any case,
@@ -73,7 +74,6 @@ import type {
 const INCUMBENT_HEALTH_PROBE_TIMEOUT_MS = 3_000;
 const STDOUT_HANDOFF_DRAIN_TIMEOUT_MS = 3_000;
 const BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS = 100;
-import { CLI_HANDOFF_GUARD_ENV } from './wait-invocation.js';
 
 const handoffSuccessBrand: unique symbol = Symbol('HandoffSuccess');
 const cliHandoffGuardSchema = z.enum(['0', '1']).optional();
@@ -334,6 +334,7 @@ export type RunHandoffOptions = Readonly<{
   time?: TimePort;
   signal?: AbortSignal;
   waitInvocation?: WaitInvocationHandoff;
+  waitProbeRemainingMs?: () => number;
   activeSelectionTarget?: ValidatedHandoffTarget;
   onSelectionPublicationIncident?: (incident: HandoffPublicationIncident) => void;
 }>;
@@ -346,6 +347,7 @@ export type ChildEnding = Readonly<{
 type ObservedChild = Readonly<{
   spawned: Promise<void>;
   ending: Promise<ChildEnding>;
+  closed: Promise<ChildEnding>;
 }>;
 
 /**
@@ -606,7 +608,12 @@ function observeChild(child: ChildProcess): ObservedChild {
   });
   void endingPromise.catch(() => undefined);
 
-  return { spawned: spawnedPromise, ending: endingPromise };
+  const closed = new Promise<ChildEnding>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  void closed.catch(() => undefined);
+  return { spawned: spawnedPromise, ending: endingPromise, closed };
 }
 
 function handoffSuccess(version: string): HandoffSuccess {
@@ -1209,6 +1216,12 @@ function supportsWaitInvocation(
   invocation: Pick<WaitInvocationHandoff, 'signal' | 'remainingMs' | 'cleanupRemainingMs'>,
   runtime: Runtime,
 ): Promise<boolean | null> {
+  try {
+    if (!runtime.storage.readFileSync(target, 'utf-8').includes(WAIT_INVOCATION_CONTRACT_ARGUMENT))
+      return Promise.resolve(false);
+  } catch {
+    return Promise.resolve(null);
+  }
   return new Promise((resolveContract) => {
     let cancelling = false;
     const finish = (supported: boolean | null) => {
@@ -1265,7 +1278,7 @@ function bindMonitorChild(
   invocation: WaitInvocationHandoff,
   runtime: Runtime,
 ): void {
-  invocation.monitorEnding = observation.ending;
+  invocation.monitorEnding = observation.closed;
   let terminate: NodeJS.Timeout | undefined;
   const onMessage = (message: unknown) => {
     if (
@@ -1312,7 +1325,7 @@ function bindMonitorChild(
   child.on('message', onMessage);
   invocation.signal.addEventListener('abort', cancel, { once: true });
   if (invocation.signal.aborted) cancel();
-  void observation.ending
+  void observation.closed
     .finally(() => {
       clearTimeout(terminate);
       child.off('message', onMessage);
@@ -1424,7 +1437,10 @@ async function executeResolvedHandoff(
           ),
         };
       }
-      const outcome = handoffOutcome(execution.manifest.version, await childObservation.ending);
+      const outcome = handoffOutcome(
+        execution.manifest.version,
+        await (waitInvocation ? childObservation.closed : childObservation.ending),
+      );
       return { kind: 'delegated', version: execution.manifest.version, outcome };
     }
     default:
@@ -1465,13 +1481,16 @@ export async function runHandoff(
 
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
   const needsV3 = operation.kind === 'wait-jobs' && operation.serializedCursor.startsWith('jobs.wait.v3:');
-  if (routing.kind === 'handoff' && (options.waitInvocation !== undefined || needsV3)) {
+  if (
+    routing.kind === 'handoff' &&
+    (options.waitInvocation !== undefined || needsV3 || options.waitProbeRemainingMs !== undefined)
+  ) {
     const execution = withValidatedHandoffTarget(routing.target);
     execution.assertExecutable();
     const target = join(execution.bundleDir, CLI_BUNDLE_FILE);
     const probe = options.waitInvocation ?? {
       signal: options.signal ?? new AbortController().signal,
-      remainingMs: () => 1000,
+      remainingMs: options.waitProbeRemainingMs ?? (() => 0),
       cleanupRemainingMs: () => 100,
     };
     const supported = await supportsWaitInvocation(target, probe, runtime);

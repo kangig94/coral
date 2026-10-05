@@ -1,3 +1,4 @@
+import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it } from 'vitest';
 
 import { planCarrierWaitEvents, type CarrierWaitObservation } from '#src/jobs/shell/wait.js';
@@ -58,6 +59,10 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
   const stuck = new Promise<never>(() => {});
   let calls = 0;
   const wait = new WaitCoordinator({
+    visitProgress: progressVisitFromEvents(
+      () => [],
+      () => 0,
+    ),
     time,
     eventBus: { on: () => {}, off: () => {} },
     sessionManager: { get: () => null },
@@ -68,7 +73,7 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
       runtime: null,
       exit: null,
     }),
-    readJobEvents: () => [],
+
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,
     resultJobsRoot: '/unused',

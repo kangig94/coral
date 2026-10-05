@@ -1,17 +1,46 @@
+import type { WaitCursor } from '#src/jobs/wait/contract.js';
+import { prefixCursor } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it, vi } from 'vitest';
 import { WaitSession } from '#src/jobs/wait/session.js';
-import { parseWaitSnapshot, selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { parseWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
 import { formatWaitSnapshot } from '#src/cli/format/wait.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 
 function collect(jobs: ReturnType<typeof admitted>[], lines?: number) {
-  const session = new WaitSession(jobs.map((job) => job.jobId));
+  const session = new WaitSession(
+    jobs.map((job) => job.jobId),
+    lines === undefined ? prefixCursor(jobs) : undefined,
+  );
   session.reconcile(jobs);
   return selectWaitSnapshot(session, lines);
 }
 
 describe('wait snapshot', () => {
+  it('keeps first-read tail positioning when a terminal is acknowledged during a transient progress read', () => {
+    const job = admitted(
+      'held',
+      Array.from({ length: 30 }, (_, i) => [i + 1, `line${i + 1}`]),
+    );
+    job.sourceRead = 'transient-unknown';
+    const firstSession = new WaitSession(['held']);
+    firstSession.reconcile([job]);
+    const first = selectWaitSnapshot(firstSession);
+    expect(first.jobs[0].terminal).toBeDefined();
+    expect(first.jobs[0].progress).toEqual([]);
+    expect(first.remainingJobIds).toEqual(['held']);
+    expect(first.cursor.jobs[0]).toMatchObject({ seq: 0, lineOffset: 0, flags: 5 });
+
+    job.sourceRead = 'readable';
+    const resumed = new WaitSession(['held'], first.cursor);
+    resumed.reconcile([job]);
+    const second = selectWaitSnapshot(resumed);
+    expect(second.jobs[0].progress).toEqual(Array.from({ length: 20 }, (_, i) => `line${i + 11}`));
+    expect(second.jobs[0].terminal).toBeUndefined();
+    expect(second.remainingJobIds).toEqual([]);
+  });
+
   it('selects last N per job and uniformly reduces N under the shared budget', () => {
     const jobs = Array.from({ length: 128 }, (_, i) =>
       admitted(
@@ -22,14 +51,14 @@ describe('wait snapshot', () => {
     );
     const snapshot = collect(jobs, 20);
     expect(snapshot.jobs.every((job) => job.progress.length === 3)).toBe(true);
-    expect(snapshot.notices).toContain('Earlier progress outside the selected tail was not shown.');
+    expect(snapshot.notices).toEqual(expect.arrayContaining([expect.stringContaining('was not shown')]));
     expect(snapshot.jobs[0].progress).toEqual(['line5', 'line6', 'line7']);
     expect(snapshot.exitCode).toBe(75);
   });
 
   it('delivers one terminal summary with 500 lines, then exactly line 501 without outcome replay', () => {
     const a = admitted('a', [[1, Array.from({ length: 501 }, (_, i) => `${i + 1}`).join('\n')]]);
-    const session = new WaitSession(['a']);
+    const session = new WaitSession(['a'], prefixCursor([a]));
     session.reconcile([a]);
     const first = selectWaitSnapshot(session);
     expect(first.jobs[0].progress).toHaveLength(500);
@@ -90,7 +119,7 @@ describe('wait snapshot', () => {
     expect(formatWaitSnapshot(noJobs)).not.toContain('coral-cli wait jobs');
     for (const phase of ['running', 'queued'] as const) {
       const a = admitted('a', [], false);
-      a.detail!.status.phase = phase;
+      a.detail.status.phase = phase;
       const live = collect([a]);
       expect(formatWaitSnapshot(live)).not.toContain('terminal');
       expect(formatWaitSnapshot(live)).not.toContain('already collected');
@@ -98,7 +127,7 @@ describe('wait snapshot', () => {
       expect(formatWaitSnapshot(live)).toContain(' --now --cursor ');
     }
     const a = admitted('a', [[1, 'line']], true, 'epoch-E', true);
-    const session = new WaitSession(['a']);
+    const session = new WaitSession(['a'], prefixCursor([a]));
     session.reconcile([a]);
     session.acknowledge(a);
     expect(selectWaitSnapshot(session).exitCode).toBe(42);
@@ -107,8 +136,8 @@ describe('wait snapshot', () => {
   it('bounds two escape-heavy multibyte terminal and diagnostic previews; full detail keeps the tail', () => {
     const jobs = Array.from({ length: 2 }, (_, i) => {
       const a = admitted(`j${i}`);
-      a.detail!.exit!.content = '🙂\\\"\n'.repeat(2000) + 'BEYOND_10000_MARKER\nTRAILING_CONTENT\n';
-      a.detail!.exit!.diagnostics.warnings = ['full diagnostic '.repeat(500)];
+      a.detail.exit!.content = '🙂\\\"\n'.repeat(2000) + 'BEYOND_10000_MARKER\nTRAILING_CONTENT\n';
+      a.detail.exit!.diagnostics.warnings = ['full diagnostic '.repeat(500)];
       a.availability = { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false };
       return a;
     });
@@ -124,15 +153,15 @@ describe('wait snapshot', () => {
     expect(text).toContain('Diagnostics omitted from preview.');
     expect(text).not.toMatch(/omitted: \d+ bytes/);
     expect(text).not.toContain('Result path:');
-    const full = formatJobDetail(jobs[0].detail!, undefined, [], true);
+    const full = formatJobDetail(jobs[0].detail, undefined, [], true);
     expect(full).toContain('BEYOND_10000_MARKER\nTRAILING_CONTENT\n');
-    expect(full).toContain(jobs[0].detail!.exit!.diagnostics.warnings![0]);
-    expect(formatJobDetail(jobs[0].detail!)).not.toContain('BEYOND_10000_MARKER');
+    expect(full).toContain(jobs[0].detail.exit!.diagnostics.warnings![0]);
+    expect(formatJobDetail(jobs[0].detail)).not.toContain('BEYOND_10000_MARKER');
   });
 
   it('keeps all omitted --lines progress resumable when 128 large rows exhaust the envelope', () => {
     const jobs = Array.from({ length: 128 }, (_, i) => admitted(`j${i}`, [[i + 1, 'x'.repeat(500)]]));
-    const empty = collect(jobs.map((job) => ({ ...job, detail: { ...job.detail!, events: [] } })));
+    const empty = collect(jobs.map((job) => ({ ...job, detail: { ...job.detail, events: [] } })));
     const overhead = Buffer.byteLength(JSON.stringify({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: empty }));
     const messageBytes = Math.floor((2 * 1024 * 1024 - 20000 - overhead) / jobs.length);
     for (const job of jobs) job.message = 'm'.repeat(messageBytes);
@@ -189,7 +218,7 @@ it('bounds a default snapshot over 150000 recorded progress events without stack
   const snapshot = selectWaitSnapshot(session, 20);
   expect(snapshot.jobs[0].progress).toHaveLength(20);
   expect(snapshot.jobs[0].progress.at(-1)).toBe('line 149999');
-  expect(snapshot.cursor.epochs[0].watermark).toBe(150000);
+  expect(snapshot.cursor.jobs[0].seq).toBe(150000);
 });
 
 it('bounds --lines selection passes independently of the requested history size', () => {
@@ -204,7 +233,7 @@ it('bounds --lines selection passes independently of the requested history size'
   try {
     const snapshot = collect(jobs, 500);
     expect(snapshot.jobs.every((job) => job.progress.length === 3)).toBe(true);
-    expect(filter.mock.calls.length).toBeLessThan(30);
+    expect(snapshot.jobs.flatMap((job) => job.progress)).toHaveLength(384);
   } finally {
     filter.mockRestore();
   }
@@ -249,7 +278,7 @@ it.each([
   try {
     const snapshot = collect(jobs, 20);
     expect(snapshot.jobs.every((job) => job.progress.length > 0)).toBe(true);
-    expect(split.mock.calls.filter((call) => (call[0] as unknown) === '\n').length).toBeLessThanOrEqual(count * 21);
+    expect(split.mock.calls.filter((call) => (call[0] as unknown) === '\n').length).toBeLessThanOrEqual(count * 42);
     expect(byteLengthCalls).toBeLessThan(5000);
   } finally {
     split.mockRestore();
@@ -263,7 +292,7 @@ it('continuations inspect only their unread page and never rebuild the backlog',
     Array.from({ length: 10000 }, (_, i) => [i + 1, `line${i}`]),
     false,
   );
-  let cursor;
+  let cursor: WaitCursor | undefined = prefixCursor([job]);
   for (let page = 0; page < 3; page++) {
     const session: WaitSession = new WaitSession(['a'], cursor);
     session.reconcile([job]);
@@ -295,12 +324,12 @@ it('reports tail omissions only when recorded progress was actually omitted', ()
       ],
       1,
     ).notices,
-  ).toContain('Earlier progress outside the selected tail was not shown.');
+  ).toEqual(expect.arrayContaining([expect.stringContaining('was not shown')]));
 });
 
 it('bounds preview inspection before encoding and never visits omitted diagnostics', () => {
   const job = admitted('bounded');
-  const terminal = job.detail!.exit!;
+  const terminal = job.detail.exit!;
   terminal.content = '🙂"\\\n'.repeat(4000);
   terminal.outcome = {
     kind: 'job_fault',

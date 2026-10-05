@@ -1,14 +1,18 @@
+import type { WaitAdmission } from './session.js';
 import { createHash } from 'node:crypto';
 import { epochIdentity, sameEpoch } from '../../store/epoch/identity.js';
 import { isRecord } from '../../infra/json.js';
-import type { WaitCursor, WaitCursorV3 } from './contract.js';
+import type { WaitCursor, WaitCursorV3, WaitCursorEntry } from './contract.js';
 
 export function serializeWaitCursor(cursor: WaitCursor): string {
   if (cursor.version === 'jobs.wait.v3') return encodeWaitCursorV3(cursor);
   return Buffer.from(JSON.stringify(cursor)).toString('base64url');
 }
 
-export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor {
+export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor;
+export function waitCursorForJobs(cursor: WaitCursor | undefined, jobIds: readonly string[]): WaitCursor | undefined;
+export function waitCursorForJobs(cursor: WaitCursor | undefined, jobIds: readonly string[]): WaitCursor | undefined {
+  if (!cursor) return undefined;
   if (cursor.version === 'jobs.wait.v3') return filterWaitCursorV3(cursor, jobIds);
   const deliveredJobIds = cursor.deliveredJobIds?.filter((id) => jobIds.includes(id));
   if (cursor.version === undefined)
@@ -127,7 +131,7 @@ export const WAIT_CURSOR_REPLAY_NOTICE =
 
 export const ACKNOWLEDGED_FLAG = 1;
 export const ARTIFACT_PENDING_FLAG = 2;
-export const TAIL_PENDING_FLAG = 4;
+export const UNPOSITIONED_FLAG = 4;
 
 const V3_PREFIX = 'jobs.wait.v3:';
 const MAX_CURSOR_BYTES = 8192;
@@ -147,70 +151,54 @@ export function waitJobHash(jobId: string): string {
   return createHash('sha256').update(jobId).digest().subarray(0, 8).toString('hex');
 }
 
+function validEntry(value: unknown): value is WaitCursorEntry {
+  if (!isRecord(value) || Object.keys(value).length !== 5) return false;
+  const { hash, epoch, seq, lineOffset, flags } = value;
+  return (
+    typeof hash === 'string' &&
+    /^[a-f0-9]{16}$/.test(hash) &&
+    (epoch === null || (typeof epoch === 'string' && /^[a-f0-9]{32}$/.test(epoch))) &&
+    Number.isSafeInteger(seq) &&
+    (seq as number) >= 0 &&
+    Number.isInteger(lineOffset) &&
+    (lineOffset as number) >= 0 &&
+    (lineOffset as number) <= 0xffffffff &&
+    Number.isInteger(flags) &&
+    (flags as number) >= 0 &&
+    (flags as number) <= 7 &&
+    (epoch !== null || flags === UNPOSITIONED_FLAG) &&
+    (((flags as number) & UNPOSITIONED_FLAG) === 0 || (seq === 0 && lineOffset === 0)) &&
+    (((flags as number) & ARTIFACT_PENDING_FLAG) === 0 || ((flags as number) & ACKNOWLEDGED_FLAG) !== 0)
+  );
+}
+
 function validV3(value: Record<string, unknown>): boolean {
-  if (Object.keys(value).some((key) => !['version', 'epochs', 'jobs'].includes(key))) return false;
-  if (
-    !Array.isArray(value.epochs) ||
-    !Array.isArray(value.jobs) ||
-    value.epochs.length > 128 ||
-    value.jobs.length > 128
-  )
-    return false;
-  const tokens = new Set<string>();
-  for (const epoch of value.epochs) {
-    if (
-      !isRecord(epoch) ||
-      Object.keys(epoch).length !== 3 ||
-      typeof epoch.token !== 'string' ||
-      !/^[a-f0-9]{32}$/.test(epoch.token) ||
-      tokens.has(epoch.token) ||
-      !Number.isSafeInteger(epoch.watermark) ||
-      (epoch.watermark as number) < 0 ||
-      !Number.isInteger(epoch.lineOffset) ||
-      (epoch.lineOffset as number) < 0 ||
-      (epoch.lineOffset as number) > 0xffffffff
-    )
-      return false;
-    tokens.add(epoch.token);
-  }
-  const hashes = new Set<string>();
-  for (const job of value.jobs) {
-    if (
-      !isRecord(job) ||
-      Object.keys(job).length !== 3 ||
-      typeof job.hash !== 'string' ||
-      !/^[a-f0-9]{16}$/.test(job.hash) ||
-      hashes.has(job.hash) ||
-      !Number.isInteger(job.epoch) ||
-      (job.epoch !== UNRESOLVED_EPOCH && ((job.epoch as number) < 0 || (job.epoch as number) >= value.epochs.length)) ||
-      !Number.isInteger(job.flags) ||
-      (job.flags as number) < 0 ||
-      (job.flags as number) > (ACKNOWLEDGED_FLAG | ARTIFACT_PENDING_FLAG | TAIL_PENDING_FLAG) ||
-      (job.epoch === UNRESOLVED_EPOCH && job.flags !== 0 && job.flags !== TAIL_PENDING_FLAG) ||
-      (((job.flags as number) & ARTIFACT_PENDING_FLAG) !== 0 && ((job.flags as number) & ACKNOWLEDGED_FLAG) === 0)
-    )
-      return false;
-    hashes.add(job.hash);
-  }
-  return true;
+  return (
+    Object.keys(value).length === 2 &&
+    Array.isArray(value.jobs) &&
+    value.jobs.length <= 128 &&
+    value.jobs.every(validEntry) &&
+    new Set(value.jobs.map((job) => job.hash)).size === value.jobs.length
+  );
 }
 
 export function encodeWaitCursorV3(cursor: WaitCursorV3): string {
   if (!validV3(cursor)) throw new Error('wait_cursor_malformed');
-  const bytes = Buffer.alloc(4 + cursor.epochs.length * 28 + cursor.jobs.length * 10);
-  bytes.set([3, 0, cursor.jobs.length, cursor.epochs.length]);
+  const epochs = [...new Set(cursor.jobs.flatMap((job) => (job.epoch === null ? [] : [job.epoch])))];
+  const bytes = Buffer.alloc(4 + epochs.length * 16 + cursor.jobs.length * 22);
+  bytes.set([3, 1, cursor.jobs.length, epochs.length]);
   let offset = 4;
-  for (const epoch of cursor.epochs) {
-    bytes.set(Buffer.from(epoch.token, 'hex'), offset);
-    bytes.writeBigUInt64BE(BigInt(epoch.watermark), offset + 16);
-    bytes.writeUInt32BE(epoch.lineOffset, offset + 24);
-    offset += 28;
+  for (const epoch of epochs) {
+    bytes.set(Buffer.from(epoch, 'hex'), offset);
+    offset += 16;
   }
   for (const job of cursor.jobs) {
     bytes.set(Buffer.from(job.hash, 'hex'), offset);
-    bytes[offset + 8] = job.epoch;
+    bytes[offset + 8] = job.epoch === null ? UNRESOLVED_EPOCH : epochs.indexOf(job.epoch);
     bytes[offset + 9] = job.flags;
-    offset += 10;
+    bytes.writeBigUInt64BE(BigInt(job.seq), offset + 10);
+    bytes.writeUInt32BE(job.lineOffset, offset + 18);
+    offset += 22;
   }
   const encoded = V3_PREFIX + bytes.toString('base64url');
   if (Buffer.byteLength(encoded) > MAX_CURSOR_BYTES) throw new Error('wait_cursor_malformed');
@@ -226,68 +214,75 @@ function decodeBinaryV3(raw: string): WaitCursorDecoded {
     bytes.toString('base64url') !== encoded ||
     bytes.length < 4 ||
     bytes[0] !== 3 ||
-    bytes[1] !== 0 ||
-    bytes.length !== 4 + bytes[3] * 28 + bytes[2] * 10
+    bytes[1] !== 1 ||
+    bytes[2] > 128 ||
+    bytes[3] > 128 ||
+    bytes.length !== 4 + bytes[3] * 16 + bytes[2] * 22
   )
     return rejected('wait_cursor_malformed');
-  const cursor: WaitCursorV3 = { version: 'jobs.wait.v3', epochs: [], jobs: [] };
+  const epochs: string[] = [];
   let offset = 4;
-  for (let i = 0; i < bytes[3]; i++, offset += 28) {
-    cursor.epochs.push({
-      token: bytes.subarray(offset, offset + 16).toString('hex'),
-      watermark: Number(bytes.readBigUInt64BE(offset + 16)),
-      lineOffset: bytes.readUInt32BE(offset + 24),
-    });
-  }
-  for (let i = 0; i < bytes[2]; i++, offset += 10) {
-    cursor.jobs.push({
+  for (let i = 0; i < bytes[3]; i++, offset += 16) epochs.push(bytes.subarray(offset, offset + 16).toString('hex'));
+  if (new Set(epochs).size !== epochs.length) return rejected('wait_cursor_malformed');
+  const jobs: WaitCursorEntry[] = [];
+  for (let i = 0; i < bytes[2]; i++, offset += 22) {
+    const ordinal = bytes[offset + 8];
+    if (ordinal !== UNRESOLVED_EPOCH && ordinal >= epochs.length) return rejected('wait_cursor_malformed');
+    jobs.push({
       hash: bytes.subarray(offset, offset + 8).toString('hex'),
-      epoch: bytes[offset + 8],
+      epoch: ordinal === UNRESOLVED_EPOCH ? null : epochs[ordinal],
       flags: bytes[offset + 9],
+      seq: Number(bytes.readBigUInt64BE(offset + 10)),
+      lineOffset: bytes.readUInt32BE(offset + 18),
     });
   }
-  return decodeWaitCursor(cursor);
+  return decodeWaitCursor({ version: 'jobs.wait.v3', jobs });
 }
 
 export function filterWaitCursorV3(cursor: WaitCursorV3, jobIds: readonly string[]): WaitCursorV3 {
   const hashes = new Set(jobIds.map(waitJobHash));
-  const jobs = cursor.jobs.filter((job) => hashes.has(job.hash));
-  const ordinals = [...new Set(jobs.map((job) => job.epoch).filter((epoch) => epoch !== UNRESOLVED_EPOCH))];
-  return {
-    version: 'jobs.wait.v3',
-    epochs: ordinals.map((ordinal) => ({ ...cursor.epochs[ordinal] })),
-    jobs: jobs.map((job) => ({
-      ...job,
-      epoch: job.epoch === UNRESOLVED_EPOCH ? UNRESOLVED_EPOCH : ordinals.indexOf(job.epoch),
-    })),
-  };
+  return { version: 'jobs.wait.v3', jobs: cursor.jobs.filter((job) => hashes.has(job.hash)) };
 }
 
-/** A request's frontier belongs to the recorded member, never to a newly discovered sibling. */
-export function waitReadPosition(
-  request: { cursor?: WaitCursor; supportsWaitV3?: boolean; drainProgress?: boolean; lines?: number },
-  jobId: string,
-  epochKey: string,
-): { afterSeq: number; tail?: number; limit?: number } {
-  const cursor = request.cursor;
-  if (cursor?.version === 'jobs.wait.v3') {
-    const member = cursor.jobs.find((job) => job.hash === waitJobHash(jobId));
-    if (member && (member.flags & TAIL_PENDING_FLAG) !== 0) return { afterSeq: 0, tail: request.lines ?? 20 };
-    const epoch = member && member.epoch !== UNRESOLVED_EPOCH ? cursor.epochs[member.epoch] : undefined;
-    return {
-      afterSeq:
-        epoch && epoch.token === waitEpochToken(epochKey)
-          ? Math.max(0, epoch.watermark - Number(epoch.lineOffset > 0))
-          : 0,
-      ...(request.drainProgress ? {} : { limit: 501 }),
-    };
-  }
-  if (cursor?.version === 'jobs.wait.v2')
-    return {
-      afterSeq: sameEpoch(cursor.locations[jobId], epochKey) ? (waitEpochPosition(cursor.positions, epochKey) ?? 0) : 0,
-    };
-  if (cursor) return { afterSeq: cursor.afterSeq };
-  return request.supportsWaitV3 && !request.drainProgress
-    ? { afterSeq: 0, tail: request.lines ?? 20 }
-    : { afterSeq: 0 };
+export function upsertWaitCursorEntry(cursor: WaitCursor | undefined, entry: WaitCursorEntry): WaitCursorV3 {
+  const jobs = cursor?.version === 'jobs.wait.v3' ? [...cursor.jobs] : [];
+  const index = jobs.findIndex((job) => job.hash === entry.hash);
+  if (index === -1) jobs.push(entry);
+  else jobs[index] = entry;
+  return { version: 'jobs.wait.v3', jobs };
+}
+
+export function legacyWaitEntries(
+  cursor: WaitCursor | undefined,
+  admissions: readonly WaitAdmission[],
+  activeEpochKey?: string,
+): WaitCursorEntry[] {
+  return admissions.map((job) => {
+    const hash = waitJobHash(job.jobId);
+    const epoch = job.epochKey ? waitEpochToken(job.epochKey) : null;
+    if (cursor?.version === 'jobs.wait.v3') {
+      const saved = cursor.jobs.find((entry) => entry.hash === hash);
+      if (saved) return saved;
+    } else if (epoch !== null && cursor) {
+      const known =
+        cursor.version === 'jobs.wait.v2'
+          ? sameEpoch(cursor.locations[job.jobId], job.epochKey)
+          : sameEpoch(job.epochKey, activeEpochKey) &&
+            (cursor.admittedJobIds === undefined || cursor.admittedJobIds.includes(job.jobId));
+      if (known)
+        return {
+          hash,
+          epoch,
+          seq:
+            cursor.version === 'jobs.wait.v2'
+              ? (waitEpochPosition(cursor.positions, job.epochKey as string) ?? 0)
+              : cursor.afterSeq,
+          lineOffset: 0,
+          flags: cursor.deliveredJobIds?.includes(job.jobId)
+            ? ACKNOWLEDGED_FLAG | (job.availability?.kind === 'repair-pending' ? ARTIFACT_PENDING_FLAG : 0)
+            : 0,
+        };
+    }
+    return { hash, epoch, seq: 0, lineOffset: 0, flags: UNPOSITIONED_FLAG };
+  });
 }

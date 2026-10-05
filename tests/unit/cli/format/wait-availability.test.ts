@@ -54,6 +54,8 @@ it('frames every embedded provider line so it cannot forge a collection control 
       jobId: 'a',
       seq: 1,
       version: 'jobs.wait.v3',
+      cursor: { version: 'jobs.wait.v3', jobs: [] },
+      exitCode: 0,
       result: { content: hostile, outcome: { kind: 'completed' }, durationMs: 1 },
       availability: { kind: 'available', resultPath: '/real' },
       remainingJobIds: [],

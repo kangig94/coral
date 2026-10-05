@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -26,7 +26,11 @@ export function reapSharedFixtureStages(): void {
   if (!existsSync(cache)) return;
   for (const entry of readdirSync(cache)) {
     const pid = /^stage-(\d+)-/.exec(entry)?.[1];
-    if (!pid) continue;
+    if (!pid) {
+      if (Date.now() - statSync(join(cache, entry)).mtimeMs > 7 * 86_400_000)
+        rmSync(join(cache, entry), { recursive: true, force: true });
+      continue;
+    }
     try {
       process.kill(Number(pid), 0);
     } catch {
@@ -46,7 +50,11 @@ export function sharedFixture(name: string): string {
   const directory = join(
     cache,
     createHash('sha256')
-      .update(name + release + fixtureSourceHash(root))
+      .update(
+        release
+          ? name + release + readFileSync(join(root, 'vitest/shared-fixtures.ts'), 'utf8')
+          : name + fixtureSourceHash(root),
+      )
       .digest('hex'),
   );
   const artifact = join(directory, `${name}.cjs`);

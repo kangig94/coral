@@ -83,7 +83,7 @@ function probeRetainedEpochOpen(
   if (opened === null || epoch === undefined || opened.build.buildSetId !== manifest.buildSetId)
     return RETAINED_EPOCH_EXIT.controllerMismatch;
   try {
-    if (epoch.lineageKey === undefined || !sameEpoch(readEpochKey(runtime, epoch), epoch.lineageKey))
+    if (epoch.lineageKey === undefined || !sameEpoch(readEpochKey(runtime, epoch, 5000), epoch.lineageKey))
       return RETAINED_EPOCH_EXIT.epochUnsettled;
     const db = openReadOnlyStoreDatabase(runtime, {
       storeFormat,

@@ -31,6 +31,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const NOW = '2026-04-19T00:00:00.000Z';
 const TEST_NAMESPACE = 'test-ns';
@@ -150,7 +151,7 @@ function createWorkflowExecutionPort(
           : 'afterSeq' in req.cursor
             ? req.cursor.afterSeq
             : req.cursor.version === 'jobs.wait.v3'
-              ? Math.max(0, ...req.cursor.epochs.map((epoch) => epoch.watermark))
+              ? Math.max(0, ...req.cursor.jobs.map((job) => job.seq))
               : Math.max(0, ...Object.values(req.cursor.positions)),
         100,
       );
@@ -485,4 +486,3 @@ describe('journal commit atomicity invariant', () => {
     }
   });
 });
-import { seedTestSessionProjection } from '#tests/helpers/session.js';

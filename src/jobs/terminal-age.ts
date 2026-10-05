@@ -24,5 +24,14 @@ export function readIntactJobTerminalAge(
 ): number | 'unknown' | 'regression' {
   if (cutoff === null) return 'unknown';
   const age = readJobTerminalAge(db, terminal);
-  return typeof age === 'number' && age < cutoff ? 'unknown' : age;
+  if (typeof age === 'number') return age;
+  if (age !== 'regression') return age;
+  const newest = db
+    .prepare<
+      [string, number],
+      { ts: string }
+    >("SELECT ts FROM events WHERE stream_kind = 'job' AND stream_id = ? AND seq <= ? ORDER BY ts DESC LIMIT 1")
+    .get(terminal.stream_id, terminal.seq);
+  const newestAt = newest ? Date.parse(newest.ts) : NaN;
+  return Number.isFinite(newestAt) && newestAt < cutoff ? newestAt : age;
 }

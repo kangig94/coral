@@ -1,3 +1,4 @@
+import type { ProgressVisit } from '../jobs/wait/contract.js';
 import type { WaitAdmission } from '../jobs/wait/session.js';
 import type { ResultAvailability } from '../jobs/terminal/export.js';
 import type {
@@ -96,7 +97,8 @@ export type ExecutionServiceDeps = {
   };
   coordinatorCommit: CommitEventsFn;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  readJobEvents: (jobId: string, afterSeq?: number) => JobEvent[];
+  visitProgress: ProgressVisit;
+
   aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;
   subscribeJobEvents: (options: {
     afterSeq: number;

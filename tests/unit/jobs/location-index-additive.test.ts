@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { loadReleasedWait } from '#tests/helpers/released-wait.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -645,6 +646,7 @@ it('reuses validated retained copies for a maximum snapshot and admission set un
   const addressing = new JobAddressing(
     index.readOnlyView(),
     {
+      visitProgress: progressVisitFromDetails(() => null),
       epochKey: () => 'active',
       detail: () => null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -683,4 +685,30 @@ it('reuses validated retained copies for a maximum snapshot and admission set un
   stored.detail.exit.content = 'changed and contradictory';
   writeFileSync(path, JSON.stringify(stored));
   expect(index.read(ids[0])?.detail.kind).toBe('unreadable');
+});
+
+it('maintenance inventory reads cannot evict the wait location cache', () => {
+  const f = fixture();
+  const view = f.index.readOnlyView();
+  f.index.register('waited', 'epoch', { projectRoot: f.root, workDir: f.root, jobKind: 'provider' });
+  const waited = view.read('waited');
+  for (let index = 0; index < 140; index++)
+    f.index.register(`maintenance-${index}`, 'epoch', { projectRoot: f.root, workDir: f.root, jobKind: 'provider' });
+  for (let index = 0; index < 140; index++) f.index.read(`maintenance-${index}`);
+  const read = vi.spyOn(runtime.storage, 'readFileSync');
+  expect(view.read('waited')).toBe(waited);
+  expect(read).not.toHaveBeenCalled();
+});
+
+it('finds a released alias directory created after an empty epoch lookup', () => {
+  const { root, index } = fixture();
+  const full = JSON.stringify({ storeRoot: '/real/store', epoch: '7', lineageKey: 'lineage:7' });
+  const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
+  expect(index.revision(full)).toBe(0);
+  const directory = join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256(alias));
+  runtime.storage.mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, 'revision.v1.json'), JSON.stringify({ version: 'v1', epochKey: alias, revision: 7 }));
+  expect(index.revision(full)).toBe(7);
+  index.holdUnknownLocations(full, 'recovered alias', true);
+  expect(new JobLocationIndex(runtime, root).unknownLocationHold(alias)).toBe('recovered alias');
 });

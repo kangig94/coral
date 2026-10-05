@@ -58,6 +58,7 @@ export function createCoordinatorRequestPorts(input: {
     {
       epochKey: currentJobEpochKey,
       detail: activeJobDetail,
+      visitProgress: (_epoch, read) => ({ kind: 'read', value: getProgressStore().visitProgress(read) }),
       readWaitAdmissions: (jobIds, epochKey, session) =>
         services.getExecutionService(readOnlyInvocationContext).readWaitAdmissions?.(jobIds, epochKey, session) ?? [],
       observeWaitCarriers: (jobIds, signal) =>

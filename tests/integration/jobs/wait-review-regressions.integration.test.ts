@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { expect, it } from 'vitest';
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { initTestJob } from '#tests/helpers/session.js';
@@ -31,6 +32,7 @@ it('reads same-epoch members at one cut when a writer commits between member rea
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'new-epoch',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -50,8 +52,13 @@ it('reads same-epoch members at one cut when a writer commits between member rea
     );
     const cursor = {
       version: 'jobs.wait.v3' as const,
-      epochs: [{ token: waitEpochToken(f.epochKey), watermark: 0, lineOffset: 0 }],
-      jobs: ['job-1', 'job-2'].map((id) => ({ hash: waitJobHash(id), epoch: 0, flags: 0 })),
+      jobs: ['job-1', 'job-2'].map((id) => ({
+        hash: waitJobHash(id),
+        epoch: waitEpochToken(f.epochKey),
+        seq: 0,
+        lineOffset: 0,
+        flags: 0,
+      })),
     };
     const first = addressing.snapshot({ jobIds: ['job-1', 'job-2'], supportsWaitV3: true, cursor });
     const next = addressing.snapshot({ jobIds: ['job-1', 'job-2'], supportsWaitV3: true, cursor: first.cursor });
@@ -119,6 +126,7 @@ it('does not acknowledge a retained terminal committed after the historical prog
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'new-epoch',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -140,7 +148,7 @@ it('does not acknowledge a retained terminal committed after the historical prog
     expect(first.jobs[0].terminal).toBeUndefined();
     expect(first.remainingJobIds).toEqual([f.jobId]);
     const next = addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true, cursor: first.cursor });
-    expect(next.jobs[0].progress).toEqual(['late progress']);
+    expect([...first.jobs[0].progress, ...next.jobs[0].progress]).toEqual(['late progress']);
     expect(next.jobs[0].terminal?.outcomeKind).toBe('completed');
   } finally {
     f.close();

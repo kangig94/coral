@@ -147,8 +147,8 @@ function createExecutionServiceRegistry(input: {
       pluginRegistry: world.pluginRegistry,
       coordinatorCommit: (cb) => getProgressStore().commit(cb),
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
-      readJobEvents: (jobId: string, afterSeq?: number, window?: { tail?: number; limit?: number }) =>
-        getProgressStore().readJobEvents(jobId, false, afterSeq, window),
+
+      visitProgress: (_epoch, read) => ({ kind: 'read', value: getProgressStore().visitProgress(read) }),
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq,

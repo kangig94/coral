@@ -4,7 +4,6 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import ts from 'typescript';
-
 function body(source: string, name: string, replacement: string): string {
   const file = ts.createSourceFile('probe.ts', source, ts.ScriptTarget.Latest, true);
   const node = file.statements.find(
@@ -14,25 +13,34 @@ function body(source: string, name: string, replacement: string): string {
   if (!node?.body) throw new Error(`No body for ${name}`);
   return source.slice(0, node.body.getStart(file)) + `{ ${replacement} }` + source.slice(node.body.end);
 }
-
 function transformWait(source: string, path: string): string {
   if (path.endsWith('/cli/wait-invocation.ts')) {
-    source = source
-      .replace('const WAIT_BUDGET_MS = 590_000', 'const WAIT_BUDGET_MS = 450')
-      .replace('const WAIT_CLEANUP_MS = 10_000', 'const WAIT_CLEANUP_MS = 100')
-      .replace('const SNAPSHOT_BUDGET_MS = 30_000', 'const SNAPSHOT_BUDGET_MS = 450')
-      .replace('const SNAPSHOT_CLEANUP_MS = 1_000', 'const SNAPSHOT_CLEANUP_MS = 100');
+    source = replaceLiteral(
+      replaceLiteral(
+        replaceLiteral(
+          replaceLiteral(source, 'const WAIT_BUDGET_MS = 590_000', 'const WAIT_BUDGET_MS = 450'),
+          'const WAIT_CLEANUP_MS = 10_000',
+          'const WAIT_CLEANUP_MS = 100',
+        ),
+        'const SNAPSHOT_BUDGET_MS = 30_000',
+        'const SNAPSHOT_BUDGET_MS = 450',
+      ),
+      'const SNAPSHOT_CLEANUP_MS = 1_000',
+      'const SNAPSHOT_CLEANUP_MS = 100',
+    );
   }
   if (path.endsWith('/cli/follow.ts'))
-    source = source.replace('deadlineMs - performance.now() <= 1000', 'deadlineMs - performance.now() <= 1');
+    source = replaceLiteral(source, 'deadlineMs - performance.now() <= 1000', 'deadlineMs - performance.now() <= 1');
   if (path.endsWith('/handoff-routing/runner.ts')) {
-    source = source.replace(
+    source = replaceLiteral(
+      source,
       '  return new Promise((resolveContract) => {',
       "  if (!['old-target', 'old-hanging-target'].includes(process.env.WAIT_PROBE_SCENARIO)) return Promise.resolve(true); return new Promise((resolveContract) => {",
     );
     source = body(source, 'resolveHandoffRoutingForOperation', 'return globalThis.waitProbe.routing();');
     source = body(source, 'publishHandoffTransition', 'return globalThis.waitProbe.publication(transition);');
-    source = source.replace(
+    source = replaceLiteral(
+      source,
       'const childObservation = observeChild(child);',
       'process.stderr.write(`OWNED_MONITOR:${child.pid}\\nHANDOFF_BUDGET:${JSON.parse(spawnOptions.env[WAIT_INVOCATION_CONTEXT_ENV]).remainingMs}\\n`); const childObservation = observeChild(child);',
     );
@@ -46,48 +54,52 @@ function transformWait(source: string, path: string): string {
     );
   }
   if (path.endsWith('/ipc/ensure.ts')) source = body(source, 'ensure', 'return globalThis.waitProbe.ensure();');
-
   return source;
 }
 function transformPhase(source: string, path: string, variant: string): string {
   if (variant === 'unbounded-observer' && path.endsWith('/jobs/wait/reader.ts'))
-    source = source.replace(
-      'void observeCarriers(input, session, signal).finally(',
-      'await observeCarriers(input, session, signal).finally(',
+    source = replaceLiteral(
+      source,
+      'observing = true;',
+      'await observeCarriers(input, session, signal); observing = true;',
     );
   if (variant === 'ungated-handover' && path.endsWith('/http/handler.ts')) {
     source =
       "import { raceWithSignal } from '../../infra/promise-signal.js';\n" +
-      source
-        .replace(
+      replaceLiteral(
+        replaceLiteral(
+          source,
           'const handoverSignal = request.supportsHandover === true ? undefined : deps.jobs.waitHandoverSignal();',
           'const handoverSignal = undefined;',
-        )
-        .replace(
-          'const next = await iterator.next();',
-          "const next = await raceWithSignal(iterator.next(), deps.jobs.waitHandoverSignal(), () => ({ done: false, value: { type: 'handover' } }));",
-        );
+        ),
+        'const next = await iterator.next();',
+        "const next = await raceWithSignal(iterator.next(), deps.jobs.waitHandoverSignal(), () => ({ done: false, value: { type: 'handover' } }));",
+      );
   }
   if (variant === 'include-missing' && path.endsWith('/jobs/wait/session.ts'))
-    source = source.replace(
+    source = replaceLiteral(
+      source,
       "job.disposition === 'discovery-unknown' ||",
       "job.disposition === 'missing' || job.disposition === 'discovery-unknown' ||",
     );
   if (variant === 'property-decoder' && path.endsWith('/jobs/wait/cursor.ts'))
-    source = source.replace(
+    source = replaceLiteral(
+      source,
       "if (!isRecord(value)) return rejected('wait_cursor_malformed');",
       "if (!isRecord(value)) return rejected('wait_cursor_malformed'); if ('afterSeq' in value) return { kind: 'decoded', cursor: value as WaitCursor };",
     );
-
   return source;
 }
 function transformAtomic(source: string, path: string, variant: string): string {
   if (variant === 'shared')
-    source = source
-      .replace('`${path}.stage-${process.pid}-${++durableStageCounter}-${randomUUID()}`', '`${path}.tmp`')
-      .replaceAll("openSync(tempPath, 'wx'", "openSync(tempPath, 'w'");
+    source = replaceLiteral(
+      source,
+      '`${path}.stage-${process.pid}-${++durableStageCounter}-${randomUUID()}`',
+      '`${path}.tmp`',
+    ).replaceAll("openSync(tempPath, 'wx'", "openSync(tempPath, 'w'");
   if (variant === 'sweep')
-    source = source.replace(
+    source = replaceLiteral(
+      source,
       '  let ownsStage = false;',
       `
             for (const sibling of readdirSync(parent)) {
@@ -96,15 +108,20 @@ function transformAtomic(source: string, path: string, variant: string): string 
             }
             let ownsStage = false;`,
     );
-
   return source;
 }
-
 export async function buildSharedFixture(name: string, directory: string): Promise<void> {
   const root = resolve('.');
   mkdirSync(directory, { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'));
-  const entries = new Map<string, { path: string; family?: string; variant?: string }>();
+  const entries = new Map<
+    string,
+    {
+      path: string;
+      family?: string;
+      variant?: string;
+    }
+  >();
   const add = (name: string, path: string, family?: string, variant?: string): void => {
     entries.set(name, { path, family, variant });
   };
@@ -184,7 +201,8 @@ ${extra}`,
             if (extname(path) === '.sql') return { contents: source, loader: 'text' };
             if (entry.family === 'wait') source = transformWait(source, path);
             if (entry.family === 'phase') source = transformPhase(source, path, entry.variant!);
-            if (entry.family === 'atomic') source = transformAtomic(source, path, entry.variant!);
+            if (entry.family === 'atomic' && path.endsWith('/runtime/real.ts'))
+              source = transformAtomic(source, path, entry.variant!);
             if (entry.family === 'publisher' && path.endsWith('/runtime/real.ts')) {
               const start = source.indexOf('function writeAtomicDurableSyncNode(');
               const stage = source.indexOf('    fd = null;', start);
@@ -193,8 +211,7 @@ ${extra}`,
             if (entry.family === 'kb' && path.endsWith('/kb-daemon/runtime-host.ts'))
               source += '\nexport { createKbDaemonProgressStore };\n';
             if (path.endsWith('/wait-invocation/cli.mjs'))
-              source = source
-                .replace('await runCli();', 'void runCli();')
+              source = replaceLiteral(source, 'await runCli();', 'void runCli();')
                 .replaceAll('pause(250)', 'pause(150)')
                 .replaceAll(', 0, 0, 850)', ', 0, 0, 450)');
             if (path.endsWith('/wait-lifetime/phase-a.mjs')) {
@@ -213,7 +230,6 @@ ${extra}`,
   rmSync(join(directory, 'holder.ts'), { force: true });
   rmSync(join(directory, 'maintenance.ts'), { force: true });
 }
-
 if (process.argv[1]?.endsWith('/shared-fixtures.ts')) {
   const [name, pending, destination] = process.argv.slice(2);
   const stage = join(dirname(pending), basename(pending).replace(/^stage-\d+-/, `stage-${process.pid}-`));
@@ -228,4 +244,9 @@ if (process.argv[1]?.endsWith('/shared-fixtures.ts')) {
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
+}
+
+export function replaceLiteral(source: string, search: string, replacement: string): string {
+  if (!source.includes(search)) throw new Error(`Fixture patch did not match: ${search}`);
+  return source.replace(search, replacement);
 }

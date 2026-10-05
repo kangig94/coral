@@ -1,3 +1,4 @@
+import { testProgressVisit, observeWaitRead } from '#tests/helpers/wait-progress.js';
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
@@ -10,7 +11,8 @@ import { expect, it, vi, afterEach } from 'vitest';
 import { readWaitSession } from '#src/jobs/wait/reader.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
 import type { WaitAdmission } from '#src/jobs/wait/session.js';
-import { selectWaitSnapshot, parseWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { parseWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 
@@ -40,7 +42,8 @@ it('does not rebuild history for each delivered event cursor', async () => {
         request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [job],
+        read: observeWaitRead(() => [job]),
+        visit: testProgressVisit,
       }),
     );
     expect(events.filter((event) => event.type === 'progress')).toHaveLength(20);
@@ -61,7 +64,8 @@ it('drains a legacy terminal backlog and closes an acknowledged continuation wit
         request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 0, cursor },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [job],
+        read: observeWaitRead(() => [job]),
+        visit: testProgressVisit,
       }),
     );
   const first = await read();
@@ -79,7 +83,8 @@ it('keeps completed live coverage when a later refresh outlives the deadline', a
     request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
     time,
     activeEpochKey: 'epoch-E',
-    read: () => [admitted('a', [], false)],
+    read: observeWaitRead(() => [admitted('a', [], false)]),
+    visit: testProgressVisit,
     observe: (session) => {
       if (++calls === 1) session.observeCoverage(['a'], [], 3);
       else return new Promise<void>(() => {});
@@ -112,7 +117,8 @@ it('refuses a legacy membership replay before delivering any member', async () =
         },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [admitted('a', [], false), admitted('b', [[10, 'unread b']])],
+        read: observeWaitRead(() => [admitted('a', [], false), admitted('b', [[10, 'unread b']])]),
+        visit: testProgressVisit,
       }))
         events.push(event);
     })(),
@@ -125,7 +131,8 @@ it('refuses a legacy partially missing batch before delivering its successful si
     request: { jobIds: ['a', 'ghost'], supportsWaitV2: true, timeoutSeconds: 0 },
     time: createRealTimePort(),
     activeEpochKey: 'epoch-E',
-    read: () => [admitted('a'), { jobId: 'ghost', disposition: 'missing' }],
+    read: observeWaitRead(() => [admitted('a'), { jobId: 'ghost', disposition: 'missing' }]),
+    visit: testProgressVisit,
   });
   await expect(stream.next()).rejects.toMatchObject({
     code: 'jobs_not_found',
@@ -140,7 +147,8 @@ it('refuses a missing legacy member discovered during streaming', async () => {
     request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 1 },
     time,
     activeEpochKey: 'epoch-E',
-    read: () => (missing ? [{ jobId: 'a', disposition: 'missing' }] : [admitted('a', [], false)]),
+    read: observeWaitRead(() => (missing ? [{ jobId: 'a', disposition: 'missing' }] : [admitted('a', [], false)])),
+    visit: testProgressVisit,
   });
   const next = stream.next();
   const assertion = expect(next).rejects.toMatchObject({ code: 'jobs_not_found' });
@@ -158,7 +166,8 @@ it('refreshes carrier coverage from live to unknown within the original deadline
     request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
     time,
     activeEpochKey: 'epoch-E',
-    read: () => [admitted('a', [], false)],
+    read: observeWaitRead(() => [admitted('a', [], false)]),
+    visit: testProgressVisit,
     observe: (session) => {
       session.observeCoverage(['a'], ++calls === 1 ? [] : ['a'], 0);
     },
@@ -183,7 +192,8 @@ it('keeps one cancellable carrier observation in flight and ignores its late rep
     request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
     time,
     activeEpochKey: 'epoch-E',
-    read: () => [admitted('a', [], false)],
+    read: observeWaitRead(() => [admitted('a', [], false)]),
+    visit: testProgressVisit,
     observe: async (session, signal) => {
       calls++;
       observedSignal = signal;
@@ -225,7 +235,8 @@ it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
           request: { jobIds: ['a', 'u'], supportsWaitV3: true },
           time: createRealTimePort(),
           activeEpochKey: 'epoch-E',
-          read: () => unresolved,
+          read: observeWaitRead(() => unresolved),
+          visit: testProgressVisit,
         }),
       );
       cursor = events.find((event) => event.type === 'terminal')!.cursor as WaitCursorV3;
@@ -237,18 +248,22 @@ it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
           request: { jobIds: ['a', 'u'], supportsWaitV3: true, cursor, timeoutSeconds: 0 },
           time: createRealTimePort(),
           activeEpochKey: 'epoch-E',
-          read: () => joined,
+          read: observeWaitRead(() => joined),
+          visit: testProgressVisit,
         }),
       );
       expect(events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual([
         'u below 100',
-        'a100',
       ]);
       expect(events.filter((event) => event.type === 'terminal')).toEqual([]);
-      expect(events.find((event) => event.type === 'notice')).toMatchObject({
-        message: expect.stringContaining('membership changed'),
-      });
-      cursor = events.at(-1)!.cursor as WaitCursorV3;
+      expect(events.some((event) => event.type === 'notice' && event.message.includes('membership changed'))).toBe(
+        false,
+      );
+      cursor = (
+        'cursor' in events.at(-1)!
+          ? (events.at(-1)! as Extract<WaitStreamEvent, { type: 'waiting' }>).cursor
+          : undefined
+      ) as WaitCursorV3;
     } else {
       const session = new WaitSession(['a', 'u'], cursor);
       session.reconcile(joined);
@@ -256,7 +271,7 @@ it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
       expect(snapshot.jobs[1].progress).toEqual(['u below 100']);
       expect(snapshot.jobs[0].alreadyCollected).toBe(true);
       expect(snapshot.jobs[0].terminal).toBeUndefined();
-      expect(snapshot.notices).toEqual(expect.arrayContaining([expect.stringContaining('membership changed')]));
+      expect(snapshot.notices.some((notice) => notice.includes('membership changed'))).toBe(false);
       cursor = snapshot.cursor;
     }
     expect(cursor.jobs.some((job) => job.flags === 3)).toBe(true);
@@ -274,7 +289,8 @@ it('delivers a second terminal after an acknowledged sibling and returns the set
       request: { jobIds: ['a', 'b'], cursor: session.cursor(), supportsWaitV3: true },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => [a, b],
+      read: observeWaitRead(() => [a, b]),
+      visit: testProgressVisit,
     }),
   );
   expect(events.filter((event) => event.type === 'terminal')).toEqual([
@@ -292,7 +308,8 @@ it.each(['delayed', 'throws'])(
       request: { jobIds: ['a'], timeoutSeconds: 1, supportsWaitV3: true },
       time,
       activeEpochKey: 'epoch-E',
-      read: () => [a],
+      read: observeWaitRead(() => [a]),
+      visit: testProgressVisit,
       observe: () => {
         if (observer === 'throws') throw new Error('observer failed');
       },
@@ -322,7 +339,8 @@ it('returns artifact settlement without replaying the terminal and re-evaluates 
       request: { jobIds: ['a'], cursor: session.cursor(), supportsWaitV3: true },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => [a],
+      read: observeWaitRead(() => [a]),
+      visit: testProgressVisit,
     }),
   );
   expect(events).toEqual([
@@ -339,8 +357,10 @@ it('returns artifact settlement without replaying the terminal and re-evaluates 
     request: { jobIds: ['u'], supportsWaitV3: true, timeoutSeconds: 1 },
     time,
     activeEpochKey: 'epoch-E',
-    read: () =>
+    read: observeWaitRead(() =>
       closure ? [{ jobId: 'u', disposition: 'outcome-unrecoverable' }] : [admitted('u', [], false, 'old-epoch')],
+    ),
+    visit: testProgressVisit,
   });
   const next = stream.next();
   await flushMicrotasks(20);
@@ -349,7 +369,7 @@ it('returns artifact settlement without replaying the terminal and re-evaluates 
   await flushMicrotasks(20);
   await expect(next).resolves.toMatchObject({ value: { type: 'disposition', disposition: 'outcome-unrecoverable' } });
   await expect(stream.next()).resolves.toMatchObject({
-    value: { type: 'notice', message: 'Wait complete; no jobs remain.', exitCode: 1 },
+    value: { type: 'waiting', waitingJobIds: [], exitCode: 1 },
   });
   await stream.return(undefined);
 });
@@ -366,7 +386,11 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
     request: { jobIds: ['a', 'u'], supportsWaitV3: true, timeoutSeconds: 1, cursor: saved },
     time,
     activeEpochKey: 'epoch-E',
-    read: () => [a, resolved ? admitted('u', [[2, 'u2']], false) : { jobId: 'u', disposition: 'discovery-unknown' }],
+    read: observeWaitRead(() => [
+      a,
+      resolved ? admitted('u', [[2, 'u2']], false) : { jobId: 'u', disposition: 'discovery-unknown' },
+    ]),
+    visit: testProgressVisit,
   });
   expect((await stream.next()).value).toMatchObject({ type: 'disposition', disposition: 'discovery-unknown' });
   const next = stream.next();
@@ -374,12 +398,12 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
   resolved = true;
   time.tick(250);
   await flushMicrotasks(20);
-  expect((await next).value).toMatchObject({ type: 'notice', message: expect.stringContaining('membership changed') });
-  expect((await stream.next()).value).toMatchObject({ type: 'progress', jobId: 'u', message: 'u2' });
-  expect((await stream.next()).value).toMatchObject({
-    type: 'progress',
-    jobId: 'a',
-    message: 'a100',
+  expect((await next).value).toMatchObject({ type: 'progress', jobId: 'u', message: 'u2' });
+  const final = stream.next();
+  await flushMicrotasks(20);
+  time.tick(1000);
+  expect((await final).value).toMatchObject({
+    type: 'waiting',
     cursor: { jobs: [expect.objectContaining({ flags: 3 }), expect.objectContaining({ flags: 0 })] },
   });
   await stream.return(undefined);
@@ -399,6 +423,7 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
         seq: 1,
         result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
         remainingJobIds: [],
+        resultPath: '/r/a',
       },
       'input-cursor',
       true,
@@ -419,7 +444,8 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
       request: { jobIds: ['live-job'], supportsWaitV3: true, timeoutSeconds: 590 },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => (++reads === 1 ? [job] : [backlog]),
+      read: observeWaitRead(() => (++reads === 1 ? [job] : [backlog])),
+      visit: testProgressVisit,
       observe: async (session, signal) => {
         observations++;
         if (observations === 1) session.observeCoverage(['live-job'], [], 601);
@@ -440,7 +466,8 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
       request: { jobIds: ['live-job'], supportsWaitV3: true, timeoutSeconds: 0.3 },
       time,
       activeEpochKey: 'epoch-E',
-      read: () => [job],
+      read: observeWaitRead(() => [job]),
+      visit: testProgressVisit,
       observe: (session) => {
         if (++observations === 1) session.observeCoverage(['live-job'], [], 10);
         else throw new Error('unobservable');
@@ -472,7 +499,8 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
       request: { jobIds: ['a', 'b'], supportsWaitV3: true },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => jobs,
+      read: observeWaitRead(() => jobs),
+      visit: testProgressVisit,
     });
     expect((await stream.next()).value).toMatchObject({
       type: 'terminal',
@@ -491,13 +519,12 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
       request: { jobIds: ['a'], cursor: first.cursor(), supportsWaitV3: true },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => [job],
+      read: observeWaitRead(() => [job]),
+      visit: testProgressVisit,
     });
     const events = [];
     for await (const event of stream) events.push(event);
-    expect(events).toEqual([
-      expect.objectContaining({ type: 'notice', message: 'Wait complete; no jobs remain.', exitCode: 0 }),
-    ]);
+    expect(events).toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: [], exitCode: 0 })]);
     expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, 'invalid')).toBe('Wait complete; no jobs remain.');
   });
   it('accepts additive coordinator response fields while rejecting terminal data on carrier interruptions', () => {
@@ -566,12 +593,13 @@ it('internal outcomes drain every progress line before completion without a page
     internal: true,
     time: new VirtualTime(),
     activeEpochKey: 'epoch-E',
-    read: () => [
+    read: observeWaitRead(() => [
       admitted(
         'a',
         Array.from({ length: 501 }, (_, index) => [index + 1, `line ${index}`]),
       ),
-    ],
+    ]),
+    visit: testProgressVisit,
   }))
     events.push(event);
   expect(events.filter((event) => event.type === 'progress')).toHaveLength(501);
@@ -586,7 +614,8 @@ it('crosses a timer boundary before returning an immediate internal deadline wit
     internal: true,
     time,
     activeEpochKey: 'epoch-E',
-    read: () => [admitted('a', [], false)],
+    read: observeWaitRead(() => [admitted('a', [], false)]),
+    visit: testProgressVisit,
   });
   let returned = false;
   const next = stream.next().then((event) => {
@@ -619,7 +648,8 @@ it('settles a retired artifact silently after a legacy terminal was acknowledged
         },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [job],
+        read: observeWaitRead(() => [job]),
+        visit: testProgressVisit,
       }),
     ),
   ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: [] })]);
@@ -639,7 +669,8 @@ it('retries an unknown historical read on a bounded schedule, then exits 75 unre
       request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 590 },
       time: { ...createRealTimePort(), monotonicNow: () => monotonic, sleep },
       activeEpochKey: 'epoch-E',
-      read,
+      read: observeWaitRead(read),
+      visit: testProgressVisit,
     }),
   );
   expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([250, 1000, 5000]);
@@ -657,7 +688,8 @@ it('keeps a multiline child message in one internal progress event', async () =>
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
       internal: true,
-      read: () => [admitted('a', [[1, 'first\nsecond\nthird']])],
+      read: observeWaitRead(() => [admitted('a', [[1, 'first\nsecond\nthird']])]),
+      visit: testProgressVisit,
     }),
   );
   expect(events.filter((event) => event.type === 'progress')).toMatchObject([
@@ -687,18 +719,19 @@ it('preserves a terminal sibling backlog across a transient epoch hold in stream
       request: { jobIds: ['A', 'U'], supportsWaitV3: true, timeoutSeconds: 0 },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-NEW',
-      read: () => [a, u],
+      read: observeWaitRead(() => [a, u]),
+      visit: testProgressVisit,
     }),
   );
-  expect(events.find((event) => event.type === 'terminal')).toMatchObject({ remainingJobIds: ['A', 'U'] });
+  expect(events.find((event) => event.type === 'terminal')).toMatchObject({ remainingJobIds: ['U'] });
   expect(
-    events.some((event) => event.type === 'notice' && event.message.includes('A') && event.message.includes('is held')),
+    events.some((event) => event.type === 'notice' && event.message.includes('U') && event.message.includes('is held')),
   ).toBe(true);
   const session = new WaitSession(['A', 'U']);
   session.reconcile([a, u]);
   const snapshot = selectWaitSnapshot(session, 20);
-  expect(snapshot.remainingJobIds).toEqual(['A', 'U']);
-  expect(snapshot.notices.some((notice) => notice.includes('A') && notice.includes('is held'))).toBe(true);
+  expect(snapshot.remainingJobIds).toEqual(['U']);
+  expect(snapshot.notices.some((notice) => notice.includes('U') && notice.includes('is held'))).toBe(true);
 });
 
 it('does not shorten a live sibling window after transient source retries', async () => {
@@ -722,7 +755,8 @@ it('does not shorten a live sibling window after transient source retries', asyn
         },
       },
       activeEpochKey: 'epoch-A',
-      read: () => [live, unknown],
+      read: observeWaitRead(() => [live, unknown]),
+      visit: testProgressVisit,
       observe: (session) => session.observeCoverage(['LIVE'], [], 1),
     }),
   );
@@ -745,8 +779,9 @@ it('does not let a versionless terminal overtake a repair-pending terminal or sk
     [r, 40],
     [s, 60],
   ] as const) {
-    job.detail!.events = job.detail!.events.map((event) => (event.type === 'terminal' ? { ...event, seq } : event));
-    job.detail!.status.lastSeq = seq;
+    job.detail.events = job.detail.events.map((event) => (event.type === 'terminal' ? { ...event, seq } : event));
+    job.detail.status.lastSeq = seq;
+    job.detail.terminalSeq = seq;
   }
   r.availability = { kind: 'repair-pending', ageUncertain: false };
   const t = admitted(
@@ -763,7 +798,8 @@ it('does not let a versionless terminal overtake a repair-pending terminal or sk
         request: { jobIds: ['R', 'S', 'T'], timeoutSeconds: 1 },
         time,
         activeEpochKey: 'epoch-E',
-        read: () => [r, s, t],
+        read: observeWaitRead(() => [r, s, t]),
+        visit: testProgressVisit,
       }),
     ),
   ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: ['R', 'S', 'T'] })]);
@@ -773,7 +809,8 @@ it('does not let a versionless terminal overtake a repair-pending terminal or sk
       request: { jobIds: ['R', 'S', 'T'], timeoutSeconds: 1, cursor: { afterSeq: 0 } },
       time,
       activeEpochKey: 'epoch-E',
-      read: () => [r, s, t],
+      read: observeWaitRead(() => [r, s, t]),
+      visit: testProgressVisit,
     }),
   );
   expect(second.find((event) => event.type === 'terminal')).toMatchObject({ jobId: 'R', seq: 40 });
@@ -782,7 +819,8 @@ it('does not let a versionless terminal overtake a repair-pending terminal or sk
       request: { jobIds: ['S', 'T'], timeoutSeconds: 1, cursor: { afterSeq: 40 } },
       time,
       activeEpochKey: 'epoch-E',
-      read: () => [s, t],
+      read: observeWaitRead(() => [s, t]),
+      visit: testProgressVisit,
     }),
   );
   expect(third.find((event) => event.type === 'progress')).toMatchObject({ jobId: 'T', seq: 50 });
@@ -799,7 +837,8 @@ it('settles a permanently unreadable retained outcome after delivery instead of 
       request: { jobIds: ['h'], supportsWaitV3: true, timeoutSeconds: 0 },
       time: createRealTimePort(),
       activeEpochKey: 'new',
-      read: () => [job],
+      read: observeWaitRead(() => [job]),
+      visit: testProgressVisit,
     }),
   );
   expect(first.find((event) => event.type === 'terminal')).toMatchObject({ exitCode: 0, remainingJobIds: [] });
@@ -835,7 +874,8 @@ it.each(['v0.10.15', 'v0.10.17'] as const)('delivers a 600-line backlog through 
     request,
     time: createRealTimePort(),
     activeEpochKey: 'epoch-E',
-    read: () => [job],
+    read: observeWaitRead(() => [job]),
+    visit: testProgressVisit,
   })) {
     const event = released.parseWaitStreamEventValue(wire);
     cursor = released.advanceWaitRenderCursor(cursor, event).cursor;
@@ -861,7 +901,8 @@ it('waits resumably for a v0.10.15 pending artifact without returning later sibl
         request: { jobIds: ['a', 'b'], timeoutSeconds: 0 },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [a, b],
+        read: observeWaitRead(() => [a, b]),
+        visit: testProgressVisit,
       }),
     ),
   ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: ['a', 'b'] })]);
@@ -876,11 +917,12 @@ it('a settled source ends a wait on the first poll without a continuation', asyn
       request: { jobIds: ['U'], supportsWaitV3: true },
       time: createRealTimePort(),
       activeEpochKey: 'active',
-      read,
+      read: observeWaitRead(read),
+      visit: testProgressVisit,
     }),
   );
   expect(read).toHaveBeenCalledTimes(1);
-  expect(events.at(-1)).toMatchObject({ type: 'notice', exitCode: 1, cursor: { jobs: [] } });
+  expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 1, cursor: { jobs: [] } });
 });
 
 it('rate limits idle carrier observation across forty polls', async () => {
@@ -890,7 +932,8 @@ it('rate limits idle carrier observation across forty polls', async () => {
     request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 10 },
     time,
     activeEpochKey: 'epoch-E',
-    read: () => [admitted('a', [], false)],
+    read: observeWaitRead(() => [admitted('a', [], false)]),
+    visit: testProgressVisit,
     observe,
   });
   const next = stream.next();
@@ -916,11 +959,12 @@ it('admitted, unknown, admitted retains one acknowledged terminal in a resumed s
       request: { jobIds: ['a'], supportsWaitV3: true, cursor: middle.cursor(), timeoutSeconds: 0 },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => [a],
+      read: observeWaitRead(() => [a]),
+      visit: testProgressVisit,
     }),
   );
   expect(events.filter((event) => event.type === 'terminal')).toEqual([]);
-  expect(events.at(-1)).toMatchObject({ type: 'notice', exitCode: 0 });
+  expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 0 });
 });
 
 it('a fresh bounded poll selects every job tail across a shared epoch without intervening backlog', async () => {
@@ -941,7 +985,8 @@ it('a fresh bounded poll selects every job tail across a shared epoch without in
       request: { jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 0 },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => jobs,
+      read: observeWaitRead(() => jobs),
+      visit: testProgressVisit,
     }),
   );
   const progress = events.filter((event) => event.type === 'progress');
@@ -961,10 +1006,10 @@ describe('discovery retry preserves interleaved progress', () => {
   it('preserves unread progress after one transient member read failure', async () => {
     const cursor: WaitCursorV3 = {
       version: 'jobs.wait.v3',
-      epochs: [{ token: waitEpochToken('epoch-E'), watermark: 4, lineOffset: 0 }],
+
       jobs: [
-        { hash: waitJobHash('a'), epoch: 0, flags: 0 },
-        { hash: waitJobHash('b'), epoch: 0, flags: 0 },
+        { hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
+        { hash: waitJobHash('b'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
       ],
     };
     let poll = 0;
@@ -995,7 +1040,8 @@ describe('discovery retry preserves interleaved progress', () => {
         request: { jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 2, cursor },
         time: advancingTime(),
         activeEpochKey: 'epoch-E',
-        read: () => (++poll === 1 ? [a, bUnknown] : [a, b]),
+        read: observeWaitRead(() => (++poll === 1 ? [a, bUnknown] : [a, b])),
+        visit: testProgressVisit,
       }),
     );
     const progress = events.filter((e) => e.type === 'progress').map((e) => e.message);
@@ -1014,10 +1060,10 @@ describe('unknown first member preserves continuation', () => {
   it('uses live epoch positions when the first member is transiently unknown', async () => {
     const cursor: WaitCursorV3 = {
       version: 'jobs.wait.v3',
-      epochs: [{ token: waitEpochToken('epoch-E'), watermark: 4, lineOffset: 0 }],
+
       jobs: [
-        { hash: waitJobHash('u'), epoch: 0, flags: 0 },
-        { hash: waitJobHash('a'), epoch: 0, flags: 0 },
+        { hash: waitJobHash('u'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
+        { hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
       ],
     };
     const a = admitted(
@@ -1040,11 +1086,12 @@ describe('unknown first member preserves continuation', () => {
           request: { jobIds: ['u', 'a'], supportsWaitV3: true, timeoutSeconds: 1, cursor: c },
           time: advancingTime(),
           activeEpochKey: 'epoch-E',
-          read: () => [u, a],
+          read: observeWaitRead(() => [u, a]),
+          visit: testProgressVisit,
         }),
       );
     const first = await run(cursor);
-    expect(first.filter((e) => e.type === 'progress')).toEqual([]);
+    expect(first.filter((e) => e.type === 'progress').map((e) => e.message)).toEqual(['a-5', 'a-6']);
     const last = first.at(-1) as Extract<WaitStreamEvent, { type: 'waiting' }>;
 
     if (last.cursor?.version !== 'jobs.wait.v3') throw new Error('missing v3 continuation');
@@ -1058,10 +1105,11 @@ describe('unknown first member preserves continuation', () => {
         request: { jobIds: ['u', 'a'], supportsWaitV3: true, timeoutSeconds: 0, cursor: secondLast.cursor },
         time: advancingTime(),
         activeEpochKey: 'epoch-E',
-        read: () => [admitted('u', [], false), a],
+        read: observeWaitRead(() => [admitted('u', [], false), a]),
+        visit: testProgressVisit,
       }),
     );
-    expect(recovered.filter((e) => e.type === 'progress').map((e) => e.message)).toEqual(['a-5', 'a-6']);
+    expect(recovered.filter((e) => e.type === 'progress').map((e) => e.message)).toEqual([]);
   });
 });
 
@@ -1080,7 +1128,8 @@ describe('bounded tail selection excludes older history', () => {
       request: { jobIds: ['A', 'B'], supportsWaitV3: true, timeoutSeconds: 1, ...(cursor ? { cursor } : {}) },
       time,
       activeEpochKey: 'epoch-E',
-      read,
+      read: observeWaitRead(read),
+      visit: testProgressVisit,
     }))
       events.push(event);
     return events;
@@ -1138,7 +1187,13 @@ it.each(['v0.10.15', 'v0.10.17', 'v0.10.18'] as const)(
         const request = { ...(parsed as object), timeoutSeconds: 0 } as never;
         const read = () =>
           collect(
-            readWaitSession({ request, time: createRealTimePort(), activeEpochKey: 'epoch-E', read: () => [job] }),
+            readWaitSession({
+              request,
+              time: createRealTimePort(),
+              activeEpochKey: 'epoch-E',
+              read: observeWaitRead(() => [job]),
+              visit: testProgressVisit,
+            }),
           );
         if (availability.kind === 'failed') {
           await expect(read()).rejects.toMatchObject({
@@ -1159,7 +1214,13 @@ it.each(['v0.10.15', 'v0.10.17', 'v0.10.18'] as const)(
         expect(text).toContain('(cursor: ');
         job.availability = { kind: 'available', resultPath: '/results/a' } as never;
         const repaired = await collect(
-          readWaitSession({ request, time: createRealTimePort(), activeEpochKey: 'epoch-E', read: () => [job] }),
+          readWaitSession({
+            request,
+            time: createRealTimePort(),
+            activeEpochKey: 'epoch-E',
+            read: observeWaitRead(() => [job]),
+            visit: testProgressVisit,
+          }),
         );
         expect(released.parseWaitStreamEventValue(repaired.find((event) => event.type === 'terminal'))).toMatchObject({
           type: 'terminal',
@@ -1186,10 +1247,12 @@ it('mid-stream discovery unknown retains a legacy continuation', async () => {
         },
       },
       activeEpochKey: 'epoch-E',
-      read: () =>
+      read: observeWaitRead(() =>
         ++poll === 1
           ? [admitted('a', [], false)]
           : [{ jobId: 'a', disposition: 'discovery-unknown', sourceRead: 'transient-unknown' }],
+      ),
+      visit: testProgressVisit,
     }),
   );
   expect(events.at(-1)).toMatchObject({
@@ -1208,7 +1271,8 @@ it('legacy progress preserves released bytes including overlong lines', async ()
         request: { jobIds: ['a'], supportsWaitV2, timeoutSeconds: 0 },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [job],
+        read: observeWaitRead(() => [job]),
+        visit: testProgressVisit,
       }),
     );
     expect(events.find((event) => event.type === 'progress')).toMatchObject({ message });
@@ -1224,7 +1288,8 @@ it.each([false, true])('refuses every failed artifact for a released reader, ret
         request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 0 },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [job],
+        read: observeWaitRead(() => [job]),
+        visit: testProgressVisit,
       }),
     ),
   ).rejects.toMatchObject({
@@ -1239,7 +1304,8 @@ it('released terminal keeps a transient sibling in the remaining batch', async (
       request: { jobIds: ['a', 'b'], supportsWaitV2: true, timeoutSeconds: 0 },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => [admitted('a'), { jobId: 'b', disposition: 'discovery-unknown' }],
+      read: observeWaitRead(() => [admitted('a'), { jobId: 'b', disposition: 'discovery-unknown' }]),
+      visit: testProgressVisit,
     }),
   );
   expect(events.at(-1)).toMatchObject({ type: 'terminal', remainingJobIds: ['b'] });
@@ -1251,12 +1317,13 @@ it('launch follow drains early progress rather than selecting a tail', async () 
       request: { jobIds: ['a'], supportsWaitV3: true, drainProgress: true, timeoutSeconds: 0 },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => [
+      read: observeWaitRead(() => [
         admitted(
           'a',
           Array.from({ length: 21 }, (_, i) => [i + 1, `early-${i}`]),
         ),
-      ],
+      ]),
+      visit: testProgressVisit,
     }),
   );
   expect(events.filter((e) => e.type === 'progress')).toHaveLength(21);
@@ -1264,8 +1331,8 @@ it('launch follow drains early progress rather than selecting a tail', async () 
 
 it('windows snapshot content and diagnostics before encoding', () => {
   const job = admitted('a');
-  job.detail!.exit!.content = 'a"\\🙂\n'.repeat(100_000);
-  job.detail!.exit!.diagnostics.warnings = ['w'.repeat(1_000_000)];
+  job.detail.exit!.content = 'a"\\🙂\n'.repeat(100_000);
+  job.detail.exit!.diagnostics.warnings = ['w'.repeat(1_000_000)];
   const session = new WaitSession(['a']);
   session.reconcile([job]);
   const stringify = vi.spyOn(JSON, 'stringify');
@@ -1298,7 +1365,8 @@ it('states held progress before delivering a legacy terminal', async () => {
       request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 0 },
       time: createRealTimePort(),
       activeEpochKey: 'epoch-E',
-      read: () => [a],
+      read: observeWaitRead(() => [a]),
+      visit: testProgressVisit,
     }),
   );
   expect(events[0]).toMatchObject({ type: 'progress', message: expect.stringContaining('was not shown') });
@@ -1319,7 +1387,7 @@ it('cursorless snapshot omission retains the current tail watermark', () => {
   session.reconcile([job]);
   const snapshot = selectWaitSnapshot(session, 1);
   expect(snapshot.jobs[0].progress).toEqual([]);
-  expect(snapshot.cursor.epochs[0].watermark).toBe(29);
+  expect(snapshot.cursor.jobs[0].seq).toBe(29);
 });
 
 it('settles a failed artifact silently after a legacy terminal was acknowledged', async () => {
@@ -1341,7 +1409,8 @@ it('settles a failed artifact silently after a legacy terminal was acknowledged'
         },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [job],
+        read: observeWaitRead(() => [job]),
+        visit: testProgressVisit,
       }),
     ),
   ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: [] })]);
@@ -1354,12 +1423,13 @@ it('does not spend unknown-read retries on a deferred poll', async () => {
       request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 20 },
       time: advancingTime(),
       activeEpochKey: 'epoch-E',
-      read: () => {
+      read: observeWaitRead(() => {
         poll++;
         if (poll === 1) return [{ jobId: 'a', disposition: 'discovery-unknown' }];
         if (poll < 5) return [{ jobId: 'a', disposition: 'discovery-unknown', observationDeferred: true }];
         return [admitted('a')];
-      },
+      }),
+      visit: testProgressVisit,
     }),
   );
   expect(events.some((event) => event.type === 'terminal')).toBe(true);
@@ -1375,7 +1445,8 @@ it('gives a legacy cursor without a warning sequence slot a runnable held-progre
         request: { jobIds: ['a'], cursor: { afterSeq: 999 }, timeoutSeconds: 0 },
         time: createRealTimePort(),
         activeEpochKey: 'epoch-E',
-        read: () => [job],
+        read: observeWaitRead(() => [job]),
+        visit: testProgressVisit,
       }),
     ),
   ).rejects.toMatchObject({
@@ -1393,13 +1464,13 @@ it('carries the failed set code on the last progress batch before stream closure
         timeoutSeconds: 0,
         cursor: {
           version: 'jobs.wait.v3',
-          epochs: [{ token: waitEpochToken('epoch-E'), watermark: 4, lineOffset: 0 }],
-          jobs: [{ hash: waitJobHash('a'), epoch: 0, flags: 1 }],
+
+          jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 1 }],
         },
       },
       time: new VirtualTime(),
       activeEpochKey: 'epoch-E',
-      read: () => [
+      read: observeWaitRead(() => [
         admitted(
           'a',
           [
@@ -1410,10 +1481,12 @@ it('carries the failed set code on the last progress batch before stream closure
           'epoch-E',
           true,
         ),
-      ],
+      ]),
+      visit: testProgressVisit,
     }),
   );
-  expect(events.find((event) => event.type === 'progress')).toMatchObject({ exitCode: 42, cursor: { jobs: [] } });
+  expect(events.find((event) => event.type === 'progress')).not.toHaveProperty('exitCode');
+  expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 42, cursor: { jobs: [] } });
 });
 
 it('carries the refused set code before the completion notice', async () => {
@@ -1422,10 +1495,13 @@ it('carries the refused set code before the completion notice', async () => {
       request: { jobIds: ['ghost'], supportsWaitV3: true, timeoutSeconds: 0 },
       time: new VirtualTime(),
       activeEpochKey: 'epoch-E',
-      read: () => [{ jobId: 'ghost', disposition: 'missing' }],
+      read: observeWaitRead(() => [{ jobId: 'ghost', disposition: 'missing' }]),
+      visit: testProgressVisit,
     }),
   );
-  expect(events[0]).toMatchObject({ type: 'disposition', exitCode: 1 });
+  expect(events[0]).toMatchObject({ type: 'disposition' });
+  expect(events[0]).not.toHaveProperty('exitCode');
+  expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 1 });
 });
 
 it('applies a cursorless tail when a member first becomes readable', async () => {
@@ -1435,7 +1511,7 @@ it('applies a cursorless tail when a member first becomes readable', async () =>
     request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
     time,
     activeEpochKey: 'epoch-E',
-    read: () =>
+    read: observeWaitRead(() =>
       ++polls === 1
         ? [{ jobId: 'a', disposition: 'discovery-unknown' }]
         : [
@@ -1445,6 +1521,8 @@ it('applies a cursorless tail when a member first becomes readable', async () =>
               false,
             ),
           ],
+    ),
+    visit: testProgressVisit,
   });
   const result = collect(stream);
   await flushMicrotasks(20);
@@ -1493,7 +1571,7 @@ it.each([false, true])('settles delivered legacy artifacts silently (v2=%s)', as
       },
       time,
       activeEpochKey: 'epoch-E',
-      read: () => {
+      read: observeWaitRead(() => {
         const settled = ++polls > 1;
         return [
           {
@@ -1504,7 +1582,8 @@ it.each([false, true])('settles delivered legacy artifacts silently (v2=%s)', as
           },
           admitted('b', [], settled),
         ];
-      },
+      }),
+      visit: testProgressVisit,
     }),
   );
   await flushMicrotasks(20);
@@ -1515,13 +1594,13 @@ it.each([false, true])('settles delivered legacy artifacts silently (v2=%s)', as
   expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'b', remainingJobIds: [] });
 });
 
-it('attaches a V3 cursor only to the last progress event in the batch', async () => {
+it('attaches its job entry to every V3 progress event', async () => {
   const events = await collect(
     readWaitSession({
       request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
       time: new VirtualTime(),
       activeEpochKey: 'epoch-E',
-      read: () => [
+      read: observeWaitRead(() => [
         admitted(
           'a',
           [
@@ -1530,12 +1609,14 @@ it('attaches a V3 cursor only to the last progress event in the batch', async ()
           ],
           false,
         ),
-      ],
+      ]),
+      visit: testProgressVisit,
     }),
   );
   const progress = events.filter((event) => event.type === 'progress');
   expect(progress[0]).not.toHaveProperty('cursor');
-  expect(progress.at(-1)).toHaveProperty('cursor');
+  expect(progress.every((event) => 'entry' in event)).toBe(true);
+  expect(progress.every((event) => !('cursor' in event) && !('exitCode' in event))).toBe(true);
   expect(progress.every((event) => parseWaitStreamEventValue(event) !== null)).toBe(true);
 });
 
@@ -1544,13 +1625,14 @@ it('bounds terminal-boundary searches independently of a versionless progress ba
     'a',
     Array.from({ length: 64 }, (_, i) => [i + 1, `line-${i}`]),
   );
-  const find = vi.spyOn(job.detail!.events, 'find');
+  const find = vi.spyOn(job.detail.events, 'find');
   const events = await collect(
     readWaitSession({
       request: { jobIds: ['a'], timeoutSeconds: 0 },
       time: new VirtualTime(),
       activeEpochKey: 'epoch-E',
-      read: () => [job],
+      read: observeWaitRead(() => [job]),
+      visit: testProgressVisit,
     }),
   );
   expect(events.filter((event) => event.type === 'progress')).toHaveLength(64);
@@ -1564,17 +1646,32 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
     let rows = 0;
     let reads = 0;
     const coordinator = new WaitCoordinator({
+      visitProgress: (_epoch, visit) => {
+        reads++;
+        return {
+          kind: 'read',
+          value: f.store.visitProgress((source) =>
+            visit({
+              after: (id, after, count) => {
+                const page = source.after(id, after, count);
+                rows += page.rows.length;
+                return page;
+              },
+              before: (id, before, count) => {
+                const page = source.before(id, before, count);
+                rows += page.rows.length;
+                return page;
+              },
+            }),
+          ),
+        };
+      },
       sessionManager: { get: () => null } as never,
       launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
       eventBus: { on() {}, off() {} } as never,
       time: f.runtime.time,
       loadJobProjectionDetail: (id) => f.store.loadJobProjectionDetail(id),
-      readJobEvents: (id, after, window) => {
-        reads++;
-        const result = f.store.readJobEvents(id, false, after, window);
-        rows += result.length;
-        return result;
-      },
+
       aggregateWorkflowUsage: () => undefined,
       subscribeJobEvents: () => (async function* () {})(),
       getCurrentJournalSeq: () => (f.db.prepare('SELECT MAX(seq) AS seq FROM events').get() as { seq: number }).seq,
@@ -1585,6 +1682,7 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {
+        visitProgress: coordinator.visitProgress,
         epochKey: () => f.epochKey,
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -1599,10 +1697,14 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
     const admittedRequest = Object.assign(request, { admissions: addressing.admitWait(request) });
     const events = await collect(addressing.waitStream(admittedRequest));
     expect(reads).toBe(1);
-    expect(rows).toBeLessThanOrEqual(21);
+    expect(rows).toBeLessThanOrEqual(41);
     const last = events.at(-1)!;
     rows = 0;
-    const resumed = addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true, cursor: last.cursor });
+    const resumed = addressing.snapshot({
+      jobIds: [f.jobId],
+      supportsWaitV3: true,
+      cursor: 'cursor' in last ? last.cursor : undefined,
+    });
     expect(resumed.jobs[0].progress).toEqual([]);
     expect(rows).toBe(0);
   } finally {
@@ -1622,7 +1724,8 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'] as const)(
           request: { jobIds: ['a'], supportsWaitV2: tag !== 'v0.10.15', timeoutSeconds: 0 },
           time: new VirtualTime(),
           activeEpochKey: 'epoch-E',
-          read: () => [job],
+          read: observeWaitRead(() => [job]),
+          visit: testProgressVisit,
         }),
       );
       const text = events
@@ -1653,7 +1756,13 @@ it.each([false, true])('a legacy failed artifact refuses only its affected job, 
     },
   };
   const events = await collect(
-    readWaitSession({ request, time: new VirtualTime(), activeEpochKey: 'epoch-E', read: () => [a, failed] }),
+    readWaitSession({
+      request,
+      time: new VirtualTime(),
+      activeEpochKey: 'epoch-E',
+      read: observeWaitRead(() => [a, failed]),
+      visit: testProgressVisit,
+    }),
   );
   const terminal = events.find((event) => event.type === 'terminal')!;
   cursor = terminal.cursor ?? cursor;
@@ -1664,8 +1773,191 @@ it.each([false, true])('a legacy failed artifact refuses only its affected job, 
         request: { ...request, cursor },
         time: new VirtualTime(),
         activeEpochKey: 'epoch-E',
-        read: () => [a, failed],
+        read: observeWaitRead(() => [a, failed]),
+        visit: testProgressVisit,
       }),
     ),
   ).rejects.toThrow('coral-cli jobs detail b');
+});
+
+it.each(['terminal', 'artifact', 'budget', 'deadline', 'all-refused', 'all-done'] as const)(
+  '%s stream has exactly one final event, last, and non-final events carry no completion fields',
+  async (kind) => {
+    const job = admitted(
+      'a',
+      kind === 'budget' ? Array.from({ length: 600 }, (_, index) => [index + 1, `line-${index}`]) : [],
+      kind !== 'deadline' && kind !== 'budget',
+    );
+    let cursor: WaitCursorV3 | undefined;
+    if (kind === 'artifact' || kind === 'all-done')
+      cursor = {
+        version: 'jobs.wait.v3',
+        jobs: [
+          {
+            hash: waitJobHash('a'),
+            epoch: waitEpochToken('epoch-E'),
+            seq: 0,
+            lineOffset: 0,
+            flags: kind === 'artifact' ? 3 : 1,
+          },
+        ],
+      };
+    const events = await collect(
+      readWaitSession({
+        request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0, drainProgress: true, cursor },
+        time: new VirtualTime(),
+        activeEpochKey: 'epoch-E',
+        read: observeWaitRead(() => (kind === 'all-refused' ? [{ jobId: 'a', disposition: 'missing' }] : [job])),
+        visit: testProgressVisit,
+      }),
+    );
+    const { isFinalWaitEvent } = await import('#src/jobs/wait/contract.js');
+    expect(events.filter(isFinalWaitEvent)).toHaveLength(1);
+    expect(isFinalWaitEvent(events.at(-1)!)).toBe(true);
+    for (const event of events.filter((event) => !isFinalWaitEvent(event))) {
+      expect(event).not.toHaveProperty('exitCode');
+      expect(event).not.toHaveProperty('cursor');
+    }
+    expect(events.at(-1)?.type).toBe(kind === 'terminal' ? 'terminal' : kind === 'artifact' ? 'artifact' : 'waiting');
+  },
+);
+
+it('rejects completion fields on V3 progress and notices, and incomplete finals', () => {
+  const entry = { hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 1, lineOffset: 0, flags: 0 };
+  const progress = {
+    type: 'progress',
+    version: 'jobs.wait.v3',
+    jobId: 'a',
+    seq: 1,
+    message: 'line',
+    timing: { origin: 'runtime', originAt: '', emittedAt: '', elapsedMs: 0 },
+    entry,
+  };
+  expect(() => parseWaitStreamEventValue({ ...progress, exitCode: 0 })).toThrow();
+  expect(() =>
+    parseWaitStreamEventValue({
+      type: 'notice',
+      version: 'jobs.wait.v3',
+      message: 'notice',
+      cursor: { version: 'jobs.wait.v3', jobs: [] },
+    }),
+  ).toThrow();
+  expect(() =>
+    parseWaitStreamEventValue({
+      type: 'waiting',
+      version: 'jobs.wait.v3',
+      waitingJobIds: [],
+      cursor: { version: 'jobs.wait.v3', jobs: [] },
+    }),
+  ).toThrow();
+});
+
+it('an internal discuss-style waiter survives the bounded transient retry schedule', async () => {
+  const time = new VirtualTime();
+  let readable = false;
+  let settled = false;
+  const events: WaitStreamEvent[] = [];
+  const run = (async () => {
+    for await (const event of readWaitSession({
+      request: { jobIds: ['a'], timeoutSeconds: 20 },
+      internal: true,
+      time,
+      activeEpochKey: 'epoch-E',
+      read: observeWaitRead(() =>
+        readable
+          ? [admitted('a')]
+          : [{ jobId: 'a', disposition: 'discovery-unknown', sourceRead: 'transient-unknown' }],
+      ),
+      visit: testProgressVisit,
+    }))
+      events.push(event);
+    settled = true;
+  })();
+  await flushMicrotasks(30);
+  for (let poll = 0; poll < 32; poll++) {
+    time.tick(250);
+    await flushMicrotasks(30);
+  }
+  expect(settled).toBe(false);
+  expect(events.some((event) => event.type === 'terminal' || event.type === 'waiting')).toBe(false);
+  readable = true;
+  for (let poll = 0; poll < 20 && !settled; poll++) {
+    time.tick(250);
+    await flushMicrotasks(30);
+  }
+  await run;
+  expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'a' });
+});
+
+it.each([0, 1, 2, 3, 4, 5])(
+  'the released v0.10.17 fold resumes each full message exactly after cut %i',
+  async (cut) => {
+    const released = await loadReleasedWait('v0.10.17', []);
+    const a = admitted('a', [
+      [1, 'a-one\na-two'],
+      [3, 'a-three'],
+    ]);
+    const b = admitted('b', [
+      [2, 'b-one\nb-two'],
+      [4, 'b-three'],
+    ]);
+    a.detail.terminalSeq = 5;
+    b.detail.terminalSeq = 6;
+    a.detail.events[a.detail.events.length - 1].seq = 5;
+    b.detail.events[b.detail.events.length - 1].seq = 6;
+    let cursor: WaitCursor | undefined;
+    const printed: string[] = [];
+    const fold = (event: WaitStreamEvent) => {
+      const parsed = released.parseWaitStreamEventValue(event);
+      const decision = released.advanceWaitRenderCursor(cursor ?? { afterSeq: 0 }, parsed);
+      cursor = decision.cursor;
+      if (decision.shouldRender && event.type === 'progress') printed.push(event.message);
+    };
+    const stream = () =>
+      readWaitSession({
+        request: { jobIds: ['a', 'b'], supportsWaitV2: true, timeoutSeconds: 0, cursor },
+        activeEpochKey: 'epoch-E',
+        time: new VirtualTime(),
+        read: observeWaitRead(() => [a, b]),
+        visit: testProgressVisit,
+      });
+    const first = stream();
+    for (let index = 0; index < cut; index++) {
+      const next = await first.next();
+      if (next.done) break;
+      fold(next.value);
+    }
+    await first.return(undefined);
+    for (let requests = 0; requests < 3; requests++) for await (const event of stream()) fold(event);
+    expect(printed).toEqual(['a-one\na-two', 'b-one\nb-two', 'a-three', 'b-three']);
+  },
+);
+
+it('v2 terminal acknowledgement preserves message delivery position and renders every held-member warning', async () => {
+  const released = await loadReleasedWait('v0.10.17', []);
+  const a = { ...admitted('a', [], true), sourceRead: 'transient-unknown' as const };
+  const b = { ...admitted('b', [], true), sourceRead: 'transient-unknown' as const };
+  a.detail.terminalSeq = 4;
+  b.detail.terminalSeq = 3;
+  let cursor: WaitCursor = { afterSeq: 0 };
+  const warnings: string[] = [];
+  const read = async (jobs: (typeof a)[]) => {
+    for await (const event of readWaitSession({
+      request: { jobIds: jobs.map((job) => job.jobId), supportsWaitV2: true, timeoutSeconds: 0, cursor },
+      activeEpochKey: 'epoch-E',
+      time: new VirtualTime(),
+      read: observeWaitRead(() => jobs),
+      visit: testProgressVisit,
+    })) {
+      const decision = released.advanceWaitRenderCursor(cursor, released.parseWaitStreamEventValue(event));
+      cursor = decision.cursor;
+      if (decision.shouldRender && event.type === 'progress') warnings.push(event.message);
+    }
+  };
+  await read([a, b]);
+  expect(cursor).toMatchObject({ version: 'jobs.wait.v2', positions: { 'epoch-E': 0 }, deliveredJobIds: ['a'] });
+  await read([b]);
+  expect(warnings).toHaveLength(2);
+  expect(warnings[0]).toContain('Earlier progress for a is held');
+  expect(warnings[1]).toContain('Earlier progress for b is held');
 });

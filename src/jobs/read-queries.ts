@@ -1,3 +1,6 @@
+import type { ProgressPage, TailPage } from './wait/progress-page.js';
+import { progressPage, progressTail, type RawProgressRow } from './wait/progress-page.js';
+import type { ProgressSource } from './wait/contract.js';
 import type { Database } from '../store/db.js';
 import type { HostRef, UsageSummary } from '../providers/contract.js';
 
@@ -25,6 +28,12 @@ import {
   PROJECTION_JOB_COLUMNS,
   type ProjectionJobStoredRow,
 } from './projection-row.js';
+import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
+import { decodeEventRefs, rowToCoralEvent } from '../store/envelope.js';
+import { prepareCached, sqlPlaceholders } from '../store/db.js';
+import { readLatestEvent } from '../store/event-queries.js';
+import type { EventsRow } from '../store/schema.js';
+import { aggregateWorkflowUsage } from './workflow-usage.js';
 
 export type JobProjectionDetail = {
   status: JobStatus | null;
@@ -32,12 +41,6 @@ export type JobProjectionDetail = {
   runtime: JobRuntime | null;
   exit: JobExit | null;
 };
-import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
-import { decodeEventRefs, rowToCoralEvent } from '../store/envelope.js';
-import { prepareCached, sqlPlaceholders } from '../store/db.js';
-import { readLatestEvent } from '../store/event-queries.js';
-import type { EventsRow } from '../store/schema.js';
-import { aggregateWorkflowUsage } from './workflow-usage.js';
 
 type JobLaunchProjection = JobLaunch;
 
@@ -673,23 +676,13 @@ export function readJobEvents(
   ctx: StoreReadContext,
   terminalOnly = false,
   afterSeq = 0,
-  window?: { tail?: number; limit?: number },
 ): JobEvent[] {
   const rows = prepareCached<[string, number], EventsRow>(
     db,
-    `SELECT * FROM events
-     WHERE stream_id = ? AND seq > ?
-       AND ${terminalOnly ? "type = 'job.terminal.recorded'" : "type IN ('job.progress.emitted', 'job.terminal.recorded')"}
-     ORDER BY seq ${window?.tail !== undefined ? 'DESC' : 'ASC'}${window ? ` LIMIT ${Math.max(1, Math.min(501, (window.tail ?? window.limit ?? 500) + 1))}` : ''}`,
+    `SELECT * FROM events WHERE stream_id = ? AND seq > ?
+      AND ${terminalOnly ? "type = 'job.terminal.recorded'" : "type IN ('job.progress.emitted', 'job.terminal.recorded')"}
+      ORDER BY seq ASC`,
   ).all(jobId, afterSeq);
-  if (window?.tail !== undefined) rows.reverse();
-  if (window && !terminalOnly && !rows.some((row) => row.type === 'job.terminal.recorded')) {
-    const terminal = prepareCached<[string], EventsRow>(
-      db,
-      "SELECT * FROM events WHERE stream_id = ? AND type = 'job.terminal.recorded' ORDER BY seq DESC LIMIT 1",
-    ).get(jobId);
-    if (terminal) rows.push(terminal);
-  }
 
   const projection = readProjectionRow(db, jobId);
   const sessionId = projection?.session_id ?? null;
@@ -745,4 +738,59 @@ export function readJobEvents(
   }
 
   return events;
+}
+
+function rawProgressRows(rows: readonly EventsRow[], ctx: StoreReadContext): RawProgressRow[] {
+  return rows.map((row) => {
+    rowToCoralEvent(row, null);
+    const body = decodeBody(row, jobProgressBodySchema, ctx);
+    return {
+      seq: row.seq,
+      ...(body.kind === 'message' ? { progress: { seq: row.seq, message: body.message, timing: body.timing } } : {}),
+    };
+  });
+}
+
+export function readJobProgressPage(
+  db: Database,
+  jobId: string,
+  ctx: StoreReadContext,
+  afterSeq: number,
+  rows: number,
+  sourceFrontier: number,
+): ProgressPage {
+  const raw = prepareCached<[string, number, number], EventsRow>(
+    db,
+    "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+  ).all(jobId, afterSeq, rows + 1);
+  return progressPage(rawProgressRows(raw, ctx), rows, sourceFrontier);
+}
+
+export function readJobProgressTail(
+  db: Database,
+  jobId: string,
+  ctx: StoreReadContext,
+  beforeSeq: number | null,
+  rows: number,
+  sourceFrontier: number,
+): TailPage {
+  const raw = prepareCached<[string, number, number], EventsRow>(
+    db,
+    "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
+  ).all(jobId, beforeSeq ?? Number.MAX_SAFE_INTEGER, rows + 1);
+  return progressTail(rawProgressRows(raw, ctx), rows, sourceFrontier);
+}
+
+export function visitJobProgress<T>(db: Database, ctx: StoreReadContext, read: (source: ProgressSource) => T): T {
+  const owned = !db.isTransaction;
+  if (owned) db.exec('BEGIN');
+  try {
+    const frontier = db.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
+    return read({
+      after: (id, after, rows) => readJobProgressPage(db, id, ctx, after, rows, frontier),
+      before: (id, before, rows) => readJobProgressTail(db, id, ctx, before, rows, frontier),
+    });
+  } finally {
+    if (owned) db.exec('ROLLBACK');
+  }
 }

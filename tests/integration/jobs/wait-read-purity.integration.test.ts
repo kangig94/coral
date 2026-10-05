@@ -1,3 +1,4 @@
+import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { waitEpochToken } from '#src/jobs/wait/cursor.js';
 import { encodeResolvedStoreEpoch, protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/index.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
@@ -49,12 +50,16 @@ function fixture(historical = false) {
   };
   const owner = f.store.getResultExportOwner();
   const wait = new WaitCoordinator({
+    visitProgress: progressVisitFromEvents(
+      (id) => f.store.readJobEvents(id),
+      () => f.db.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0,
+    ),
     sessionManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     eventBus: f.store.getEventBus(),
     time: f.runtime.time,
     loadJobProjectionDetail: (id) => f.store.loadJobProjectionDetail(id),
-    readJobEvents: (id) => f.store.readJobEvents(id),
+
     aggregateWorkflowUsage: () => undefined,
     subscribeJobEvents: () => ({ async *[Symbol.asyncIterator]() {} }),
     getCurrentJournalSeq: () =>
@@ -368,6 +373,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const addressing = new JobAddressing(
       restarted.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => null),
         epochKey: () => 'next-epoch',
         detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -433,6 +439,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {
+        visitProgress: progressVisitFromDetails(() => kb),
         epochKey: () => null,
         detail: () => kb,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
@@ -460,6 +467,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
       'resultPathFor',
       'time',
       'unknownLocationHolds',
+      'visitProgress',
     ]);
   });
 });

@@ -1,3 +1,4 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { waitEpochToken } from '#src/jobs/wait/cursor.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -74,10 +75,17 @@ async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: o
           : [],
     } as never,
     {
+      visitProgress: progressVisitFromDetails((jobId: string) => {
+        if (scope.missing.includes(jobId) || unrecoverable.includes(jobId)) return null;
+        const detail = admitted(jobId, [], false, 'e').detail;
+        detail.status.projectRoot = PROJECT_ROOT;
+        detail.status.workDir = PROJECT_ROOT;
+        return detail;
+      }),
       epochKey: () => 'e',
       detail: (jobId: string) => {
         if (scope.missing.includes(jobId) || unrecoverable.includes(jobId)) return null;
-        const detail = admitted(jobId, [], false, 'e').detail!;
+        const detail = admitted(jobId, [], false, 'e').detail;
         detail.status.projectRoot = PROJECT_ROOT;
         detail.status.workDir = PROJECT_ROOT;
         return detail;

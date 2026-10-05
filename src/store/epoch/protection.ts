@@ -328,7 +328,11 @@ export function observeProtectedEpoch(
     }
     if (
       !sameEpoch(
-        readEpochKey(runtime, { storeRoot: dirname(protectedPath), epoch, path: join(protectedPath, 'store.db') }),
+        readEpochKey(
+          runtime,
+          { storeRoot: dirname(protectedPath), epoch, path: join(protectedPath, 'store.db') },
+          5000,
+        ),
         epochKey,
       )
     )

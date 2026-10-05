@@ -1,6 +1,6 @@
+import type { ProgressVisit } from '../wait/contract.js';
 import { sourceReadFailureDisposition } from '../source-read.js';
-import { sameEpoch } from '../../store/epoch/identity.js';
-import { waitReadPosition } from '../wait/cursor.js';
+import { epochIdentity, sameEpoch } from '../../store/epoch/identity.js';
 import { readWaitSession } from '../wait/reader.js';
 import type { WaitAdmission } from '../wait/session.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
@@ -70,7 +70,8 @@ export interface WaitCoordinatorDeps {
   eventBus: JobEventBus;
   time: TimePort;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  readJobEvents: (jobId: string, afterSeq?: number, window?: { tail?: number; limit?: number }) => JobEvent[];
+
+  visitProgress: ProgressVisit;
   aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;
   subscribeJobEvents: (options: {
     afterSeq: number;
@@ -146,14 +147,6 @@ export function planCarrierWaitEvents(
   }
   return { interrupted, unknownJobIds: unknownJobIds.sort() };
 }
-
-type WaitEventFrontier = {
-  epochKey: string;
-  frontier: number;
-  events: JobEvent[];
-  terminal?: JobTerminalEvent;
-  admission?: WaitAdmission;
-};
 
 export class WaitCoordinator {
   private readonly deps: WaitCoordinatorDeps;
@@ -336,7 +329,13 @@ export class WaitCoordinator {
     return { ...observed, frontier: signal.aborted ? 0 : this.deps.getCurrentJournalSeq() };
   }
 
-  private readonly eventFrontiers = new WeakMap<object, Map<string, WaitEventFrontier>>();
+  private readonly terminalBodies = new WeakMap<object, Map<string, NonNullable<WaitAdmission['detail']>>>();
+  private readonly metadataAdmissions = new WeakMap<
+    object,
+    Map<string, { frontier: number; admission: WaitAdmission }>
+  >();
+
+  visitProgress: ProgressVisit = (epoch, read) => this.deps.visitProgress(epoch, read);
 
   readWaitAdmission(
     jobId: string,
@@ -344,47 +343,39 @@ export class WaitCoordinator {
     session?: object,
     frontier = this.deps.getCurrentJournalSeq(),
   ): WaitAdmission {
-    const frontiers = (session ? this.eventFrontiers.get(session) : undefined) ?? new Map<string, WaitEventFrontier>();
-    if (session) this.eventFrontiers.set(session, frontiers);
-    let cached = frontiers.get(jobId);
-    if (cached && sameEpoch(cached.epochKey, epochKey) && cached.frontier === frontier && cached.admission) {
-      const admission = cached.admission;
-      if (!admission.detail?.exit) return admission;
+    const cache =
+      (session ? this.metadataAdmissions.get(session) : undefined) ??
+      new Map<string, { frontier: number; admission: WaitAdmission }>();
+    if (session) this.metadataAdmissions.set(session, cache);
+    const saved = cache.get(jobId);
+    const cached = saved?.admission;
+    if (cached && sameEpoch(cached.epochKey, epochKey) && (cached.detail?.exit || saved?.frontier === frontier)) {
+      if (!cached.detail?.exit) return cached;
       const availability = this.deps.observeResultAvailability(jobId, session);
       if (availability.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
-      return { ...admission, availability };
+      const key = JSON.stringify([epochIdentity(epochKey), jobId, cached.detail.terminalSeq]);
+      return {
+        ...cached,
+        detail: session ? (this.terminalBodies.get(session)?.get(key) ?? cached.detail) : cached.detail,
+        availability,
+      };
     }
     const projected = this.deps.loadJobProjectionDetail(jobId);
-    if (!projected.status) {
-      const observed = this.deps.readJobEvents(jobId);
-      return observed.length === 0 && cached === undefined && this.deps.observeJobAbsence?.(jobId) === true
+    if (!projected.status)
+      return this.deps.observeJobAbsence?.(jobId) === true
         ? { jobId, disposition: 'missing', sourceRead: 'readable' }
         : { jobId, disposition: 'admitted', epochKey, sourceRead: 'transient-unknown' };
-    }
-    if (!cached || !sameEpoch(cached.epochKey, epochKey) || cached.frontier > frontier) {
-      cached = { epochKey, frontier: -1, events: [] };
-    }
-    if (cached.frontier !== frontier) {
-      const request = session && 'jobIds' in session ? (session as WaitStreamRequest) : undefined;
-      const position = request ? waitReadPosition(request, jobId, epochKey) : { afterSeq: 0 };
-      const afterSeq = Math.max(position.afterSeq, cached.frontier, 0);
-      const observed =
-        position.tail !== undefined || position.limit !== undefined
-          ? this.deps.readJobEvents(jobId, afterSeq, position)
-          : this.deps.readJobEvents(jobId, afterSeq);
-      const appended = observed.filter(
-        (event) => (event.seq > afterSeq || (event.type === 'terminal' && !cached.terminal)) && event.seq <= frontier,
-      );
-      cached.events = [...cached.events, ...appended];
-      cached.terminal ??= appended.find((event): event is JobTerminalEvent => event.type === 'terminal');
-      cached.frontier =
-        position.limit !== undefined && appended.filter((event) => event.type === 'progress').length >= position.limit
-          ? Math.max(afterSeq, ...appended.filter((event) => event.type === 'progress').map((event) => event.seq))
-          : frontier;
-      frontiers.set(jobId, cached);
-    }
-    const events = cached.events;
-    const terminal = cached.terminal;
+    const terminal: JobTerminalEvent | undefined = projected.exit
+      ? {
+          type: 'terminal',
+          jobId,
+          sessionId: projected.status.sessionId,
+          seq: projected.status.lastSeq ?? 0,
+          ts: projected.exit.endTime ?? projected.status.updatedAt,
+          result: projected.exit,
+          usage: projected.exit.diagnostics.usage,
+        }
+      : undefined;
     const exit =
       projected.exit && terminal
         ? {
@@ -400,12 +391,17 @@ export class WaitCoordinator {
       disposition: 'admitted',
       sourceRead: 'readable',
       epochKey,
-      detail: { status: projected.status, events, readiness: 'ready', exit },
+      detail: { status: projected.status, terminalSeq: projected.status.lastSeq, readiness: 'ready', exit },
       availability,
       continuity: this.readQueryContinuity(jobId, projected.status),
       ...(projected.status.phase === 'queued' && !exit ? { queued: this.queuedWaitEvent(projected.status) } : {}),
     };
-    cached.admission = admission;
+    if (session && admission.detail?.exit) {
+      const bodies = this.terminalBodies.get(session) ?? new Map();
+      bodies.set(JSON.stringify([epochIdentity(epochKey), jobId, admission.detail.terminalSeq]), admission.detail);
+      this.terminalBodies.set(session, bodies);
+    }
+    cache.set(jobId, { frontier, admission });
     return admission;
   }
 
@@ -425,6 +421,7 @@ export class WaitCoordinator {
       internal,
       time: this.deps.time,
       activeEpochKey: epochKey,
+      visit: this.deps.visitProgress,
       read: () =>
         internal && this.deps.internalWaitAdmissions
           ? this.deps.internalWaitAdmissions(req.jobIds, req)

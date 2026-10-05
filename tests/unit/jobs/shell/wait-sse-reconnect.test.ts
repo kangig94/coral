@@ -1,3 +1,4 @@
+import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import type { UsageSummary } from '#src/providers/contract.js';
@@ -175,12 +176,16 @@ describe('wait SSE reconnect', () => {
     appendProgress('progress-1');
 
     const coordinator = new WaitCoordinator({
+      visitProgress: progressVisitFromEvents(
+        (targetJobId) => readJobEvents(db, targetJobId, progressStore),
+        () => (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
+      ),
       sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,
       time: runtime.time,
       loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
-      readJobEvents: (targetJobId) => readJobEvents(db, targetJobId, progressStore),
+
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(db, workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
@@ -365,19 +370,23 @@ describe('wait SSE reconnect', () => {
 
     let terminalInjected = false;
     const coordinator = new WaitCoordinator({
+      visitProgress: progressVisitFromEvents(
+        (targetJobId) => {
+          const events = readJobEvents(db, targetJobId, progressStore);
+          if (!terminalInjected) {
+            terminalInjected = true;
+            commitTerminal();
+          }
+          return events;
+        },
+        () => (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
+      ),
       sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,
       time: runtime.time,
       loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
-      readJobEvents: (targetJobId) => {
-        const events = readJobEvents(db, targetJobId, progressStore);
-        if (!terminalInjected) {
-          terminalInjected = true;
-          commitTerminal();
-        }
-        return events;
-      },
+
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(db, workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>

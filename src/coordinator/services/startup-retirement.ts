@@ -185,7 +185,9 @@ function prepareRetainedControllerHandoffForLineage(
 ): Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null {
   const current = inspectCurrentStore(runtime);
   const currentEpoch =
-    current.kind === 'current' && sameEpoch(readEpochKey(runtime, current.epoch), lineageKey) ? current.epoch : null;
+    current.kind === 'current' && sameEpoch(readEpochKey(runtime, current.epoch, 5000), lineageKey)
+      ? current.epoch
+      : null;
   let epoch: ResolvedStoreEpoch | null;
   try {
     epoch =

@@ -8,7 +8,7 @@ import * as ensure from '#src/transport/ipc/ensure.js';
 import { IpcLifecycleRefusal } from '#src/transport/ipc/client.js';
 import { WaitInvocation, installWaitInvocation } from '#src/cli/wait-invocation.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
-import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { selectWaitSnapshot, prefixCursor } from '#tests/helpers/wait-progress.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 
 let invocation: WaitInvocation | undefined;
@@ -40,9 +40,9 @@ it('refuses --now locally on an older coordinator without opening a subscription
 
 it('commits only a complete validated snapshot, preserves --now, and cannot acknowledge a malformed response', async () => {
   const a = admitted('a', [[1, Array.from({ length: 501 }, (_, i) => `${i}`).join('\n')]]);
-  const session = new WaitSession(['a']);
+  const session = new WaitSession(['a'], prefixCursor([a]));
   session.reconcile([a]);
-  const snapshot = selectWaitSnapshot(session);
+  const snapshot = selectWaitSnapshot(session, 501);
   const client = { snapshotJobsWait: vi.fn().mockResolvedValue(snapshot) };
   vi.spyOn(dispatch, 'makeClient').mockReturnValue(client as never);
   let output = '';
