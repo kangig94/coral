@@ -12,7 +12,7 @@ import { readDiscoveryRecordDisposition } from '#src/infra/backend-discovery.js'
 import { currentLaunchStatus, readLaunchStatus } from '#src/infra/launch-status.js';
 import { attemptExclusiveFileLockSync, createSharedFileLockSync } from '#src/infra/fs-lock.js';
 import { supervisorLockPath } from '#src/infra/path/coordinator.js';
-import { validatedRunningBuildRoot } from '#src/infra/retained-build-root.js';
+import { validatedRunningBuildRoot } from '#src/infra/installed-build-root.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type * as nodeProcessModule from '#src/infra/node-process.js';
 import { startReplacementSupervisor } from '#src/runtime/supervisor-loss.js';
@@ -24,7 +24,7 @@ vi.mock('#src/infra/backend-discovery.js', () => ({
 vi.mock('#src/infra/upgrade-intent.js', () => ({ readUpgradeIntent: vi.fn(() => ({ kind: 'absent' })) }));
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
-vi.mock('#src/infra/retained-build-root.js', () => ({ validatedRunningBuildRoot: vi.fn(() => '/fixture') }));
+vi.mock('#src/infra/installed-build-root.js', () => ({ validatedRunningBuildRoot: vi.fn(() => '/fixture') }));
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof fsModule>();
   return { ...original, existsSync: (path: string) => path.startsWith('/fixture') || original.existsSync(path) };

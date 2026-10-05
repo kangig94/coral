@@ -299,6 +299,8 @@ describe('real-process provider host transfer', () => {
     const world = createTransferWorld();
     const { oldFixture, incumbentPid, jobId, hosts, waiter } = await startProxiedJob(world);
 
+    expect(existsSync(join(world.home, '.coral', 'gen2', 'builds'))).toBe(false);
+
     const { newerFixture, acceptedOwners } = await upgradeTo(world, incumbentPid);
     expect(buildSetIdOf(newerFixture)).not.toBe(buildSetIdOf(oldFixture));
     expect(acceptedOwners).toEqual(expect.arrayContaining(['provider-proxy-sets', 'provider-operations']));
@@ -320,5 +322,6 @@ describe('real-process provider host transfer', () => {
     expect(detail).not.toMatch(/interrupted/iu);
     expect(readFileSync(join(world.home, '.coral', 'exports', 'jobs', jobId, 'result.md'), 'utf8')).toContain('done');
     expect(hostsAlive(hosts)).toBe(true);
+    expect(existsSync(join(world.home, '.coral', 'gen2', 'builds'))).toBe(false);
   }, 240_000);
 });

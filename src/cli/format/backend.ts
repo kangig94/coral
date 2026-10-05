@@ -848,7 +848,7 @@ export function formatBackendStatus(
               : launchHold.boundedExit === undefined
                 ? 'Coordinator launch is held by conflicting controller evidence. The supervisor revalidates controller evidence.'
                 : 'Coordinator launch observed unreadable controller evidence. Selection retries for at most 2000ms, then launches the original candidate while preserving the refused artifacts.'
-            : `Coordinator launch requires build ${launchHold.controller}${launchHold.requestId === undefined ? '' : ` for request ${launchHold.requestId}`}. Last observation: ${launchHold.observation ?? 'no eligible build'}. The supervisor revalidates installed and retained builds or a change in required controller evidence.`,
+            : `Coordinator launch requires build ${launchHold.controller}${launchHold.requestId === undefined ? '' : ` for request ${launchHold.requestId}`}. Last observation: ${launchHold.observation ?? 'no eligible build'}. The supervisor revalidates installed builds or a change in required controller evidence.`,
         );
         break;
       case 'observation-unavailable':

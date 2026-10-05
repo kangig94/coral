@@ -1,5 +1,3 @@
-import { dirname, join } from 'node:path';
-
 import { type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { probeProcessIncarnation } from '../infra/node-process.js';
 import { compareProductVersions } from '../infra/product-version.js';
@@ -12,7 +10,7 @@ import { incumbentLiveness } from './incumbent.js';
 import { type OwnerHandle } from './ownership.js';
 import { pendingExecutable, pendingIntent } from './pending-upgrade.js';
 import { createRepairBridge } from './repair-bridge.js';
-import { validatedBuild } from './selection.js';
+import { installedBuild } from '../infra/installed-build-root.js';
 import { type SupervisorLaunchMemory, type LaunchProcess, type LaunchReservation } from './state.js';
 
 export type ReconcileInheritedInput = {
@@ -94,7 +92,7 @@ async function reconcileInheritedChild(
     const incumbentManifest =
       slot.buildSetId === originalManifest.buildSetId
         ? originalManifest
-        : validatedBuild(join(dirname(runDir), 'builds', slot.buildSetId));
+        : (installedBuild(slot.buildSetId)?.manifest ?? null);
     const intent = pendingIntent(runDir);
     if (
       repairBridge !== null &&

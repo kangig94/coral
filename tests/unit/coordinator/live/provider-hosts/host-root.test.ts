@@ -29,18 +29,18 @@ const input = {
 };
 
 describe('provider host root ownership', () => {
-  it('compiles byte-identical Claude specs and fingerprints in different bundles using the retained placement root', () => {
-    const config = { pluginRoot: '/plugin/cache', retainedHostRoot: () => '/retained/build' };
+  it('compiles byte-identical Claude specs and fingerprints from the installed running root', () => {
+    const config = { pluginRoot: '/plugin/cache' };
     vi.stubGlobal('__PLUGIN_ROOT__', config.pluginRoot);
     vi.stubGlobal('__BUNDLE_DIR__', '/plugin/cache/bridge');
     const coordinator = claudeAppServerLifecycle.compileStableHost(
       claudeAppServerLifecycle.planHost({
         ...input,
         access: TEST_CLAUDE_ACCESS,
-        hostRoot: providerProxyPlacement(config.retainedHostRoot()).hostRoot,
+        hostRoot: providerProxyPlacement().hostRoot,
       }),
     );
-    vi.stubGlobal('__BUNDLE_DIR__', '/retained/build/bridge');
+    vi.stubGlobal('__BUNDLE_DIR__', '/plugin/cache/bridge');
     const proxy = claudeAppServerLifecycle.compileStableHost(
       claudeAppServerLifecycle.planHost({
         ...input,
@@ -49,15 +49,15 @@ describe('provider host root ownership', () => {
       }),
     );
     expect(JSON.stringify(coordinator)).toBe(JSON.stringify(proxy));
-    expect(coordinator.args).toEqual(['/retained/build/bridge/coral-claude-appserver.cjs']);
+    expect(coordinator.args).toEqual(['/plugin/cache/bridge/coral-claude-appserver.cjs']);
     expect(hostFingerprintFromSpec(coordinator)).toBe(hostFingerprintFromSpec(proxy));
   });
 
-  it('uses the coordinator bundle for local placement and the plugin root when no retained root exists', () => {
+  it('uses the coordinator running bundle for proxy placement', () => {
     vi.stubGlobal('__PLUGIN_ROOT__', '/installed');
     vi.stubGlobal('__BUNDLE_DIR__', '/running/bridge');
     expect(localProviderHostRoot()).toBe('/running/bridge');
-    expect(providerProxyPlacement(null).hostRoot).toBe('/running/bridge');
+    expect(providerProxyPlacement().hostRoot).toBe('/running/bridge');
   });
 
   it('keeps the external Codex executable identity independent of either bundle root', () => {
@@ -77,22 +77,23 @@ it('uses the actual local bundle directory when it is a development build rather
     claudeAppServerLifecycle.planHost({
       ...input,
       access: TEST_CLAUDE_ACCESS,
-      hostRoot: localProviderHostRoot(),
+      hostRoot: providerProxyPlacement().hostRoot,
     }),
   );
+  expect(providerProxyPlacement().entrypoint).toBeNull();
   expect(spec.args).toEqual(['/development/clients/build/coral-claude-appserver.cjs']);
 });
 
-it('keeps one retained placement after ambient bundle changes and derives the spawn from that value', () => {
+it('keeps one running placement after ambient bundle changes', () => {
   vi.stubGlobal('__PLUGIN_ROOT__', '/installed');
   vi.stubGlobal('__BUNDLE_DIR__', '/coordinator/build');
-  const placement = providerProxyPlacement('/retained/build');
+  const placement = providerProxyPlacement();
   vi.stubGlobal('__BUNDLE_DIR__', '/later/bundle');
   expect(placement).toEqual({
-    hostRoot: '/retained/build/bridge',
-    entrypoint: '/retained/build/bridge/coral-backend.cjs',
+    hostRoot: '/coordinator/build',
+    entrypoint: null,
   });
-  expect(providerProxyPlacement(null)).toEqual({ hostRoot: '/later/bundle', entrypoint: null });
+  expect(providerProxyPlacement()).toEqual({ hostRoot: '/later/bundle', entrypoint: null });
 });
 it('guards an unbuilt source run and supports compiled dist output', () => {
   vi.stubGlobal('__PLUGIN_ROOT__', undefined);

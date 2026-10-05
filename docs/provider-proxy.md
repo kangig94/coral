@@ -1,11 +1,11 @@
 # Provider proxy operations
 
 The coordinator resolves one immutable proxy placement at world assembly. The placement owner is
-`coordinator/live/provider-hosts/host-root.ts`: a retained build supplies its `bridge` spec root and
-`coral-backend.cjs` entrypoint together. Without a retained root the spec uses the coordinator's running
-bundle and the guardian keeps the running `argv[1]` entrypoint. Retained-root validation is performed
-once, never synchronously hashed at launch. Local compilation uses the bundle-manifest owner, including
-source-mode guards and compiled `dist/` fallback. Local fallback recompiles for its own placement.
+`coordinator/live/provider-hosts/host-root.ts`: proxy specs use the coordinator's running bundle,
+and the guardian uses its running `argv[1]` entrypoint, including development builds in `clients/build`.
+The coordinator and proxy therefore compile Claude specs from the same root. Local compilation uses
+the bundle-manifest owner, including source-mode guards and compiled `dist/` fallback. Local fallback
+recompiles for its own placement.
 
 `providers/host-identity.ts` owns executable keys and fingerprints for both processes. Before opening a
 host, the proxy compares the compiled stable spec fingerprint with its capsule. A mismatch returns the

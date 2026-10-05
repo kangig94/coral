@@ -4,7 +4,6 @@ import { join } from 'node:path';
 
 import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
-import { validatedRetainedBuildRoot } from '../../infra/retained-build-root.js';
 import { currentSuccessionAttemptChild } from '../succession/attempt-child.js';
 import { acceptedControllerTransferHandsCapsule } from '../succession/provider-host-transfer.js';
 import { ProviderRegistry } from '../../providers/registry.js';
@@ -512,7 +511,7 @@ function createWorldProviderHosts(input: WorldProviderHostInput) {
       carrierBlocksRetirement,
       proxySetAcquisition: {
         pluginRoot,
-        placement: providerProxyPlacement(validatedRetainedBuildRoot(runtime, buildSetId)),
+        placement: providerProxyPlacement(),
         identity: { instanceId, buildSetId, flavor },
         operationRegistry,
         custody: providerCustody,
