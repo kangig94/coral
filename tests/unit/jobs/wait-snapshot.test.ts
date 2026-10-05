@@ -116,12 +116,13 @@ describe('wait snapshot', () => {
     expect(Buffer.byteLength(JSON.stringify({ jsonrpc: '2.0', id: 1, result: snapshot }))).toBeLessThan(
       2 * 1024 * 1024,
     );
-    expect(
-      snapshot.jobs.every((job) => job.terminal!.contentOmittedBytes > 0 && job.terminal!.diagnosticOmittedBytes > 0),
-    ).toBe(true);
+    expect(snapshot.jobs.every((job) => job.terminal!.contentOmitted && job.terminal!.diagnosticOmitted)).toBe(true);
     expect(parseWaitSnapshot(snapshot)).toEqual(snapshot);
     const text = formatWaitSnapshot(snapshot);
     expect(text).toContain('coral-cli jobs detail j0 --full');
+    expect(text).toContain('Content omitted from preview.');
+    expect(text).toContain('Diagnostics omitted from preview.');
+    expect(text).not.toMatch(/omitted: \d+ bytes/);
     expect(text).not.toContain('Result path:');
     const full = formatJobDetail(jobs[0].detail!, undefined, [], true);
     expect(full).toContain('BEYOND_10000_MARKER\nTRAILING_CONTENT\n');
@@ -295,4 +296,75 @@ it('reports tail omissions only when recorded progress was actually omitted', ()
       1,
     ).notices,
   ).toContain('Earlier progress outside the selected tail was not shown.');
+});
+
+it('bounds preview inspection before encoding and never visits omitted diagnostics', () => {
+  const job = admitted('bounded');
+  const terminal = job.detail!.exit!;
+  terminal.content = '🙂"\\\n'.repeat(4000);
+  terminal.outcome = {
+    kind: 'job_fault',
+    fault: {
+      kind: 'wrapper_crashed',
+      cause: {
+        message: 'message'.repeat(4000),
+        stack: 'stack'.repeat(4000),
+      },
+    },
+  };
+  terminal.diagnostics.warnings = Array.from({ length: 100 }, () => 'warning'.repeat(4000));
+  Object.defineProperty(terminal.diagnostics.warnings, 8, {
+    get: () => {
+      throw new Error('Visited omitted warning');
+    },
+  });
+  terminal.diagnostics.progressFaults = Array.from({ length: 100 }, () => ({
+    kind: 'recovery_parse_failed',
+    cause: {
+      message: 'fault'.repeat(4000),
+      stack: 'stack'.repeat(4000),
+    },
+  }));
+  Object.defineProperty(terminal.diagnostics.progressFaults, 8, {
+    get: () => {
+      throw new Error('Visited omitted fault');
+    },
+  });
+  const byteLength = vi.spyOn(Buffer, 'byteLength');
+  const stringify = vi.spyOn(JSON, 'stringify');
+  try {
+    const snapshot = collect([job]);
+    const summary = snapshot.jobs[0].terminal!;
+    expect(summary).toMatchObject({ contentOmitted: true, diagnosticOmitted: true });
+    expect(summary.contentPreview).toContain('[preview shortened: content omitted]');
+    expect(summary.contentPreview).not.toMatch(/bytes omitted|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    expect(byteLength.mock.calls.every(([value]) => typeof value !== 'string' || value.length < 10000)).toBe(true);
+    expect(stringify.mock.calls.every(([value]) => typeof value !== 'string' || value.length <= 2048)).toBe(true);
+    expect(parseWaitSnapshot(snapshot)).toEqual(snapshot);
+  } finally {
+    byteLength.mockRestore();
+    stringify.mockRestore();
+  }
+});
+
+it('reports complete previews without omission and rejects the old exact-count shape', () => {
+  const snapshot = collect([admitted('complete')]);
+  expect(snapshot.jobs[0].terminal).toMatchObject({ contentOmitted: false, diagnosticOmitted: false });
+  const terminal = snapshot.jobs[0].terminal!;
+  const { contentOmitted: _content, diagnosticOmitted: _diagnostic, ...rest } = terminal;
+  expect(() =>
+    parseWaitSnapshot({
+      ...snapshot,
+      jobs: [
+        {
+          ...snapshot.jobs[0],
+          terminal: {
+            ...rest,
+            contentOmittedBytes: 0,
+            diagnosticOmittedBytes: 0,
+          },
+        },
+      ],
+    }),
+  ).toThrow();
 });

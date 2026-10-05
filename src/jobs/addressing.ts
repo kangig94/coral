@@ -9,7 +9,7 @@ import type { AbortDecision } from './contracts/abort-registry.js';
 import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
 import { type HistoricalSourceRead, type HistoricalSourceReader } from './historical-reader.js';
 import { LocationObservationDeferred, type JobLocationView, type JobLocation } from './location-index.js';
-import { hasReadableTerminalDetail } from './terminal/identity.js';
+import { hasObservedTerminalDetail } from './terminal/identity.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse } from './records.js';
 import { type ResultAvailability } from './terminal/export.js';
@@ -67,14 +67,14 @@ function historicalDisposition(
       ? read.disposition
       : (read.dispositions?.get(jobId) ?? (read.unreadableJobs?.has(jobId) ? 'settled-unreadable' : 'readable'));
   const observed = read.kind === 'read' ? read.locations.get(jobId) : null;
-  const location = hasReadableTerminalDetail(retained)
+  const location = hasObservedTerminalDetail(retained)
     ? retained
     : (observed ?? { ...retained, disposition: 'unresolved' as const, detail: { kind: 'absent' as const } });
   const message =
     read.kind === 'unreadable' && read.reason !== undefined
       ? epochHoldReason(read.reason, sourceRead === 'transient-unknown')
       : undefined;
-  if (hasReadableTerminalDetail(location)) return { kind: 'admitted', location, sourceRead, message };
+  if (hasObservedTerminalDetail(location)) return { kind: 'admitted', location, sourceRead, message };
   if (sourceRead === 'settled-unreadable' || sourceRead === 'retired')
     return {
       kind: 'outcome-unreadable',
@@ -266,7 +266,7 @@ export class JobAddressing {
       if (location !== null) historical.set(jobId, this.historicalLocation(location));
     }
     const historicalTerminal = [...historical]
-      .filter(([, classified]) => hasReadableTerminalDetail(classified.location))
+      .filter(([, classified]) => hasObservedTerminalDetail(classified.location))
       .map(([jobId]) => jobId);
     const unrecoverable = historicalIds.filter((jobId) => historical.get(jobId)?.kind === 'outcome-unrecoverable');
     const unreadable = historicalIds.filter((jobId) => historical.get(jobId)?.kind === 'outcome-unreadable');
@@ -504,7 +504,7 @@ export class JobAddressing {
           sourceRead,
           message,
         };
-      if (!hasReadableTerminalDetail(accepted))
+      if (!hasObservedTerminalDetail(accepted))
         return {
           jobId,
           disposition: 'admitted',

@@ -1049,3 +1049,20 @@ it('reuses source eligibility when an evicted location view is decoded again', (
   expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
   expect(withSource).toHaveBeenCalledTimes(observations);
 });
+
+it('availability and progress expiry reuse retained validation while publication still checks full copies', () => {
+  const f = fixture();
+  f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1 });
+  const location = f.index.read(f.jobId)!;
+  if (location.detail.kind !== 'recorded' || !location.detail.value.exit) throw new Error('Expected retained exit');
+  const exit = location.detail.value.exit;
+  const content = exit.content;
+  Object.defineProperty(exit, 'content', { configurable: true, get: () => content });
+  const inspected = vi.spyOn(exit, 'content', 'get');
+  const owner = f.store.getResultExportOwner();
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'retained-away' });
+  expect(owner.progressRetentionExpired(f.jobId)).toBe(true);
+  expect(inspected).not.toHaveBeenCalled();
+  owner.publishTerminalResult(f.jobId);
+  expect(inspected).toHaveBeenCalled();
+});

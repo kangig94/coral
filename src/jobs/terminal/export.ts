@@ -20,7 +20,7 @@ import { setImmediate } from 'node:timers/promises';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobTerminal } from '../records.js';
 import type { JobLocation } from '../location-index.js';
-import { hasReadableTerminalDetail, sameTerminal } from './identity.js';
+import { hasObservedTerminalDetail, hasReadableTerminalDetail, sameTerminal } from './identity.js';
 import { readAcceptedTerminal } from './source.js';
 import { terminalEligibility, type TerminalEligibility } from '../export-retention.js';
 import { trustedJobRetentionCutoff, resolveJobRetentionMs } from '../retention-clock.js';
@@ -292,13 +292,14 @@ export class TerminalResultExportOwner {
       : this.input.withSource(jobId, read);
   }
 
-  private eligibility(jobId: string, observeSource = true): TerminalEligibility {
+  private eligibility(jobId: string, observeSource = true, readOnly = false): TerminalEligibility {
     return terminalEligibility(
       this.input.runtime,
       this.publicationLocation ?? this.input.location(jobId),
       (read) => this.withSource(jobId, (db) => read(db)),
       observeSource,
       this.publicationTerminal,
+      readOnly,
     );
   }
 
@@ -313,7 +314,7 @@ export class TerminalResultExportOwner {
 
   private available(jobId: string): boolean {
     const location = this.input.location(jobId);
-    if (!location || !hasReadableTerminalDetail(location) || location.resultPath === undefined) return false;
+    if (!location || !hasObservedTerminalDetail(location) || location.resultPath === undefined) return false;
     return this.readableFile(location.resultPath);
   }
 
@@ -378,7 +379,7 @@ export class TerminalResultExportOwner {
 
   /** Availability observation never synchronizes or repairs storage. */
   progressRetentionExpired(jobId: string): boolean | undefined {
-    const kind = this.eligibility(jobId, false).kind;
+    const kind = this.eligibility(jobId, false, true).kind;
     return kind === 'unknown' || kind === 'regression' ? undefined : kind === 'expired';
   }
 
@@ -399,7 +400,7 @@ export class TerminalResultExportOwner {
       previous.identity === location.storedIdentity &&
       (!previous.eligibility.ageDeferred || trustedJobRetentionCutoff(this.input.runtime) === null)
     ) {
-      const current = this.eligibility(jobId, false);
+      const current = this.eligibility(jobId, false, true);
       if (current.kind === 'expired') return current;
       const cutoff = trustedJobRetentionCutoff(this.input.runtime);
       const age = previous.eligibility.age;
@@ -421,7 +422,7 @@ export class TerminalResultExportOwner {
           (kind === 'inside' || previous.eligibility.regressionAuthorized === true),
       };
     }
-    const eligibility = this.eligibility(jobId);
+    const eligibility = this.eligibility(jobId, true, true);
     if (session && location && stamp !== null && !eligibility.sourceReadFailed) {
       const cache = this.observedEligibility.get(session) ?? new Map();
       cache.set(jobId, { stamp, identity: location.storedIdentity, eligibility });
@@ -458,7 +459,7 @@ export class TerminalResultExportOwner {
       if (retry === true) return { kind: 'repair-pending', ageUncertain: true };
       return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, unverifiedResultPath };
     }
-    if (!hasReadableTerminalDetail(location))
+    if (!hasObservedTerminalDetail(location))
       return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false };
     if (this.available(jobId))
       return { kind: 'available', resultPath: location.resultPath ?? resultPathFor(this.input.jobsRoot, jobId) };

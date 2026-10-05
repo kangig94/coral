@@ -69,9 +69,9 @@ export type WaitTerminalSummary = {
   exitCode: number;
   durationMs: number;
   contentPreview: string;
-  contentOmittedBytes: number;
+  contentOmitted: boolean;
   diagnosticPreview: string;
-  diagnosticOmittedBytes: number;
+  diagnosticOmitted: boolean;
 };
 export type WaitSnapshotJob = {
   jobId: string;

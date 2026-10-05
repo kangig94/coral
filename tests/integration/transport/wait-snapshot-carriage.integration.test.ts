@@ -238,9 +238,7 @@ describe('actual wait carriage', () => {
     const snapshot = parseWaitSnapshot(await response);
     expect(snapshot.jobs).toHaveLength(2);
     expect(
-      snapshot.jobs.every(
-        (job) => job.terminal && job.terminal.contentOmittedBytes > 0 && job.terminal.diagnosticOmittedBytes > 0,
-      ),
+      snapshot.jobs.every((job) => job.terminal && job.terminal.contentOmitted && job.terminal.diagnosticOmitted),
     ).toBe(true);
     expect(Buffer.byteLength(JSON.stringify({ kind: 'response', id: 1, result: snapshot }))).toBeLessThan(
       2 * 1024 * 1024,

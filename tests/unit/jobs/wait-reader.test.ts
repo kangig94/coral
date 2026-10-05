@@ -1270,7 +1270,7 @@ it('windows snapshot content and diagnostics before encoding', () => {
   session.reconcile([job]);
   const stringify = vi.spyOn(JSON, 'stringify');
   const snapshot = selectWaitSnapshot(session);
-  expect(snapshot.jobs[0].terminal!.contentOmittedBytes).toBeGreaterThan(0);
+  expect(snapshot.jobs[0].terminal!.contentOmitted).toBe(true);
   expect(stringify.mock.calls.every(([v]) => typeof v !== 'string' || v.length <= 4096)).toBe(true);
   expect(
     stringify.mock.calls.every(

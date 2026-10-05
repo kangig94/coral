@@ -27,7 +27,12 @@ import {
   resultRepairFailuresFor,
   type WorkflowReportPort,
 } from './terminal/export.js';
-import { hasReadableTerminalDetail, sameTerminal, validatedTerminal } from './terminal/identity.js';
+import {
+  hasObservedTerminalDetail,
+  hasReadableTerminalDetail,
+  sameTerminal,
+  validatedTerminal,
+} from './terminal/identity.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
 import { readJobTerminalAge } from './terminal-age.js';
 import { trustedJobRetentionCutoff } from './retention-clock.js';
@@ -206,7 +211,7 @@ function viewLocation(stored: StoredJobLocation): JobLocation {
     parsed.data.exit !== null ||
     parsed.data.status.result !== undefined ||
     parsed.data.events.some((event) => event.type === 'terminal');
-  return terminalPresent && !hasReadableTerminalDetail(location)
+  return terminalPresent && !hasObservedTerminalDetail(location)
     ? { ...identity, detail: { kind: 'unreadable' } }
     : location;
 }
@@ -287,10 +292,12 @@ export class JobLocationIndex {
   readonly time: TimePort;
   private readonly root: string;
   private locationsStamp: string | undefined;
-  private readonly storedLocations = new Map<
-    string,
-    { stamp: string; raw: string; stored: StoredJobLocation; view: JobLocation }
-  >();
+  /**
+   * Read validation follows the stat stamp; same-tick, same-size inode reuse can defeat it.
+   * The LRU holds one maximum wait set (128 records); eviction requires a fresh observation.
+   * Publication and repair retain their full terminal comparisons.
+   */
+  private readonly storedLocations = new Map<string, { stamp: string; stored: StoredJobLocation; view: JobLocation }>();
   private readonly epochRevisions = new Map<string, number>();
   private readonly certificates = new Map<string, { stamp: string; value: JobLocationCertificate | null }>();
   private locationsUnreadable: Array<{ file: string; epochKey: string | null }> = [];
@@ -399,19 +406,18 @@ export class JobLocationIndex {
     try {
       const stat = this.runtime.storage.lstatSync(path, { bigint: true });
       const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`;
-      const raw = this.runtime.storage.readFileSync(path, 'utf-8');
       const cached = this.storedLocations.get(jobId);
-      if (cached?.stamp === stamp && cached.raw === raw) {
+      if (cached?.stamp === stamp) {
         this.storedLocations.delete(jobId);
         this.storedLocations.set(jobId, cached);
         return cached.stored;
       }
+      const raw = this.runtime.storage.readFileSync(path, 'utf-8');
       const stored = locationSchema.parse(JSON.parse(raw));
       if (stored) {
         this.storedLocations.delete(jobId);
         this.storedLocations.set(jobId, {
           stamp,
-          raw,
           stored,
           view: Object.defineProperties(viewLocation(stored), {
             storedIdentity: { value: createHash('sha256').update(raw).digest('hex') },
@@ -419,7 +425,7 @@ export class JobLocationIndex {
           }),
         });
         const oldest = this.storedLocations.keys().next().value;
-        if (this.storedLocations.size > 32 && oldest !== undefined) this.storedLocations.delete(oldest);
+        if (this.storedLocations.size > 128 && oldest !== undefined) this.storedLocations.delete(oldest);
       }
       return stored;
     } catch (error) {
@@ -605,9 +611,9 @@ export class JobLocationIndex {
           storedIdentity: { value: createHash('sha256').update(raw).digest('hex') },
           storedStamp: { value: stamp },
         });
-        this.storedLocations.set(jobId, { raw, stamp, stored: location, view });
+        this.storedLocations.set(jobId, { stamp, stored: location, view });
         const oldest = this.storedLocations.keys().next().value;
-        if (this.storedLocations.size > 32 && oldest !== undefined) this.storedLocations.delete(oldest);
+        if (this.storedLocations.size > 128 && oldest !== undefined) this.storedLocations.delete(oldest);
         this.advanceRevision(current.epochKey);
       }
       return viewLocation(location);

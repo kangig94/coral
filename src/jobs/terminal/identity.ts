@@ -93,3 +93,25 @@ export function hasReadableTerminalDetail(location: JobLocation): boolean {
     validatedTerminal(detail, location.jobId, location.epochKey, location.terminalSeq) !== null
   );
 }
+
+const observedTerminals = new WeakMap<JobLocation, JobTerminalEvent | null>();
+
+/** Read observations live only as long as the stored location view that owns them. */
+export function readRetainedTerminal(location: JobLocation): JobTerminalEvent | null {
+  if (observedTerminals.has(location)) return observedTerminals.get(location) ?? null;
+  const terminal =
+    location.disposition === 'terminal' &&
+    location.terminalSeq !== undefined &&
+    location.detail.kind === 'recorded' &&
+    location.detail.value.status.projectRoot === location.subject.projectRoot &&
+    location.detail.value.status.workDir === location.subject.workDir &&
+    location.detail.value.status.jobKind === location.subject.jobKind
+      ? validatedTerminal(location.detail.value, location.jobId, location.epochKey, location.terminalSeq)
+      : null;
+  observedTerminals.set(location, terminal);
+  return terminal;
+}
+
+export function hasObservedTerminalDetail(location: JobLocation): boolean {
+  return readRetainedTerminal(location) !== null;
+}

@@ -12,9 +12,9 @@ function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value));
 }
 
-function preview(text: string, budget: number): { text: string; omitted: number } {
+function preview(text: string, budget: number): { text: string; omitted: boolean } {
   const window = text.slice(0, budget);
-  if (window.length === text.length && encodedBytes(window) <= budget) return { text, omitted: 0 };
+  if (window.length === text.length && encodedBytes(window) <= budget) return { text, omitted: false };
   let start = 0;
   let end = window.length;
   while (start < end) {
@@ -24,8 +24,7 @@ function preview(text: string, budget: number): { text: string; omitted: number 
   }
   if (start > 0 && /[\uD800-\uDBFF]/.test(text[start - 1])) start--;
   const selected = text.slice(0, start);
-  const omitted = Buffer.byteLength(text) - Buffer.byteLength(selected);
-  return { text: `${selected}[preview shortened: ${omitted} bytes omitted]`, omitted };
+  return { text: `${selected}[preview shortened: content omitted]`, omitted: true };
 }
 
 /** Summary delivery acknowledges the outcome, independently of progress or full text retrieval. */
@@ -75,30 +74,46 @@ function terminalSummary(
   terminal: NonNullable<NonNullable<WaitAdmission['detail']>['exit']>,
 ): WaitTerminalSummary {
   const content = preview(terminal.content, 2048);
-  let diagnosticOmitted = 0;
-  const warnings = terminal.diagnostics.warnings?.slice(0, 8).map((warning) => {
-    const selected = preview(warning, 256);
-    diagnosticOmitted += selected.omitted;
-    return selected.text;
-  });
-  for (const warning of terminal.diagnostics.warnings?.slice(8) ?? []) diagnosticOmitted += Buffer.byteLength(warning);
-  const diagnostics = { ...terminal.diagnostics, warnings };
-  const outcome = { ...terminal.outcome };
-  if ('note' in outcome && outcome.note !== undefined) {
-    const selected = preview(outcome.note, 256);
-    outcome.note = selected.text;
-    diagnosticOmitted += selected.omitted;
+  let diagnosticOmitted = false;
+  function boundedDiagnostic(value: unknown, depth = 0): unknown {
+    if (typeof value === 'string') {
+      const selected = preview(value, 256);
+      diagnosticOmitted ||= selected.omitted;
+      return selected.text;
+    }
+    if (value === null || typeof value !== 'object') return value;
+    if (depth === 4) {
+      diagnosticOmitted = true;
+      return '[preview omitted]';
+    }
+    if (Array.isArray(value)) {
+      diagnosticOmitted ||= value.length > 8;
+      return value.slice(0, 8).map((item) => boundedDiagnostic(item, depth + 1));
+    }
+    const selected: Record<string, unknown> = {};
+    let count = 0;
+    for (const key in value) {
+      if (count++ === 8) {
+        diagnosticOmitted = true;
+        break;
+      }
+      selected[key] = boundedDiagnostic((value as Record<string, unknown>)[key], depth + 1);
+    }
+    return selected;
   }
-  const diagnostic = preview(JSON.stringify({ outcome, diagnostics }), 2048);
+  const diagnostic = preview(
+    JSON.stringify(boundedDiagnostic({ outcome: terminal.outcome, diagnostics: terminal.diagnostics })),
+    2048,
+  );
   return {
     seq: detail.events.find((event) => event.type === 'terminal')?.seq ?? detail.status.lastSeq ?? 0,
     outcomeKind: terminal.outcome.kind,
     exitCode: waitTerminalExitCode(terminal),
     durationMs: terminal.durationMs,
     contentPreview: content.text,
-    contentOmittedBytes: content.omitted,
+    contentOmitted: content.omitted,
     diagnosticPreview: diagnostic.text,
-    diagnosticOmittedBytes: diagnosticOmitted + diagnostic.omitted,
+    diagnosticOmitted: diagnosticOmitted || diagnostic.omitted,
   };
 }
 
@@ -153,9 +168,9 @@ function fitSnapshotResponse(
   if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) > WAIT_SNAPSHOT_BYTES) {
     for (const job of snapshot.jobs) {
       if (job.terminal) {
-        job.terminal.contentOmittedBytes += Buffer.byteLength(job.terminal.contentPreview);
+        job.terminal.contentOmitted = true;
         job.terminal.contentPreview = '[preview omitted: response size budget]';
-        job.terminal.diagnosticOmittedBytes += Buffer.byteLength(job.terminal.diagnosticPreview);
+        job.terminal.diagnosticOmitted = true;
         job.terminal.diagnosticPreview = '[diagnostics omitted: response size budget]';
       }
     }
@@ -231,9 +246,9 @@ const waitSnapshotSchema = z
                 exitCode: z.number().int().min(0).max(255),
                 durationMs: z.number().nonnegative(),
                 contentPreview: z.string(),
-                contentOmittedBytes: z.number().int().nonnegative(),
+                contentOmitted: z.boolean(),
                 diagnosticPreview: z.string(),
-                diagnosticOmittedBytes: z.number().int().nonnegative(),
+                diagnosticOmitted: z.boolean(),
               })
               .strip()
               .optional(),

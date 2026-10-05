@@ -2,7 +2,7 @@ import { waitReadPosition, waitEpochToken } from './wait/cursor.js';
 import type { WaitStreamRequest } from './wait/contract.js';
 import { epochIdentity, sameEpoch } from '../store/epoch/identity.js';
 import { setImmediate } from 'node:timers/promises';
-import { hasReadableTerminalDetail } from './terminal/identity.js';
+import { hasObservedTerminalDetail, hasReadableTerminalDetail } from './terminal/identity.js';
 import type { SourceReadDisposition } from './wait/session.js';
 import { HistoricalDecodeError, sourceReadFailureDisposition } from './source-read.js';
 import { dirname, join } from 'node:path';
@@ -940,7 +940,7 @@ export function readHistoricalSource(
             : { terminalSeq: terminal.seq, resultPath: resultPathFor(source.jobsRoot, jobId) }),
           detail: { kind: 'recorded', value: { ...detail, epochKey } },
         };
-        if (terminal !== undefined && !hasReadableTerminalDetail(location))
+        if (terminal !== undefined && !hasObservedTerminalDetail(location))
           throw new HistoricalDecodeError('Historical job terminal cannot be decoded');
         locations.set(jobId, location);
         readCache.set(jobId, {

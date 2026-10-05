@@ -177,16 +177,13 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
         ? `Outcome: ${terminal.outcomeKind}; exit ${terminal.exitCode}; duration ${terminal.durationMs} ms`
         : undefined,
       terminal ? `Content preview:\n${frameWaitContent(terminal.contentPreview)}` : undefined,
-      terminal?.contentOmittedBytes ? `Content omitted: ${terminal.contentOmittedBytes} bytes` : undefined,
+      terminal?.contentOmitted ? 'Content omitted from preview.' : undefined,
       terminal ? `Diagnostic preview:\n${frameWaitContent(terminal.diagnosticPreview)}` : undefined,
-      terminal?.diagnosticOmittedBytes ? `Diagnostics omitted: ${terminal.diagnosticOmittedBytes} bytes` : undefined,
+      terminal?.diagnosticOmitted ? 'Diagnostics omitted from preview.' : undefined,
       job.availability && (!job.alreadyCollected || job.artifactFollowUp)
         ? formatResultAvailability(job.availability, job.artifactFollowUp)
         : undefined,
-      terminal &&
-      (terminal.contentOmittedBytes > 0 ||
-        terminal.diagnosticOmittedBytes > 0 ||
-        job.availability?.kind !== 'available')
+      terminal && (terminal.contentOmitted || terminal.diagnosticOmitted || job.availability?.kind !== 'available')
         ? `Full retained outcome: ${renderJobsOperatorCommand({ kind: 'jobs-detail-full', jobId: job.jobId })}`
         : undefined,
     ]);

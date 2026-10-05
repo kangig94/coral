@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -538,7 +539,7 @@ afterEach(() => {
   for (const f of cacheFixtures.splice(0)) f.close();
 });
 describe('bounded location cache', () => {
-  it('a full maintenance-style scan retains at most 32 terminal records', () => {
+  it('a full maintenance-style scan retains at most 128 terminal records', () => {
     const f = cacheFixture();
     cacheFixtures.push(f);
     f.complete({ terminal: { content: 'x'.repeat(100_000), outcome: { kind: 'completed' }, durationMs: 1 } });
@@ -569,11 +570,11 @@ describe('bounded location cache', () => {
         recordKB: Math.round(template.length / 1000),
       }),
     );
-    expect(cached).toBeLessThanOrEqual(32);
+    expect(cached).toBeLessThanOrEqual(128);
   });
 });
 
-it('observes replacement bytes even when inode and all coarse timestamps collide', () => {
+it('reuses a read observation when the entire stored stat stamp is unchanged', () => {
   const { root, index } = fixture();
   const jobId = 'coarse-stamp';
   index.register(jobId, 'lineage-1:1', {
@@ -589,7 +590,7 @@ it('observes replacement bytes even when inode and all coarse timestamps collide
   );
   expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/first');
   writeFileSync(path, readFileSync(path, 'utf8').replaceAll('/workspace/first', '/workspace/other'));
-  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/other');
+  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/first');
 });
 
 it('imports terminal readability only from its owner', async () => {
@@ -617,4 +618,69 @@ it('resolves the hold and revision through the identity shared by lineage encodi
   expect(restarted.locationsFor(alias).map((job) => job.jobId)).toEqual(['job']);
   restarted.clearUnknownLocations(alias);
   expect(index.unknownLocationHold(full)).toBeNull();
+});
+
+it('reuses validated retained copies for a maximum snapshot and admission set until the stamp changes', () => {
+  const { root, index } = fixture();
+  const detail = terminalDetail('retained-0');
+  const directory = join(root, 'job-locations.v1', 'jobs');
+  runtime.storage.mkdirSync(directory, { recursive: true });
+  const ids = Array.from({ length: 128 }, (_, i) => `retained-${i}`);
+  for (const jobId of ids) {
+    const value = JSON.parse(JSON.stringify(detail).replaceAll('retained-0', jobId));
+    writeFileSync(
+      join(directory, `${Buffer.from(jobId).toString('base64url')}.json`),
+      JSON.stringify({
+        version: 'v1',
+        jobId,
+        epochKey: 'retired',
+        terminalSeq: 2,
+        disposition: 'terminal',
+        subject: { projectRoot: '/workspace/project', workDir: '/workspace/project', jobKind: 'provider' },
+        detail: value,
+      }),
+    );
+    expect(index.read(jobId)?.detail.kind).toBe('recorded');
+  }
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      epochKey: () => 'active',
+      detail: () => null,
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'decided',
+    () => ({ kind: 'unreadable', disposition: 'retired' }),
+    () => ({ kind: 'retained-away', retentionDays: 14 }),
+  );
+  const read = vi.spyOn(runtime.storage, 'readFileSync');
+  const parse = vi.spyOn(JSON, 'parse');
+  const location = index.read(ids[0])!;
+  if (location.detail.kind !== 'recorded') throw new Error('Expected retained detail');
+  const exit = location.detail.value.exit!;
+  const text = exit.content;
+  Object.defineProperty(exit, 'content', { configurable: true, get: () => text });
+  const content = vi.spyOn(exit, 'content', 'get');
+  // An accessor counts full-copy validation independently of file reads.
+  try {
+    for (let request = 0; request < 2; request++) {
+      expect(addressing.snapshot({ jobIds: ids, projectRoot: '/workspace/project' }).jobs).toHaveLength(128);
+      expect(
+        addressing
+          .admitWait({ jobIds: ids, projectRoot: '/workspace/project', supportsWaitV3: true })
+          .every((job) => job.disposition === 'admitted'),
+      ).toBe(true);
+    }
+    expect(read.mock.calls.filter(([file]) => String(file).startsWith(directory))).toHaveLength(0);
+    expect(parse).not.toHaveBeenCalled();
+    expect(content).toHaveBeenCalledTimes(2);
+  } finally {
+    content.mockRestore();
+  }
+  const path = join(directory, `${Buffer.from(ids[0]).toString('base64url')}.json`);
+  const stored = JSON.parse(readFileSync(path, 'utf8'));
+  stored.detail.exit.content = 'changed and contradictory';
+  writeFileSync(path, JSON.stringify(stored));
+  expect(index.read(ids[0])?.detail.kind).toBe('unreadable');
 });

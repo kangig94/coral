@@ -20,7 +20,7 @@ import { readJobTerminalAge } from './terminal-age.js';
 
 import type { JobTerminal } from './records.js';
 import type { JobLocation } from './location-index.js';
-import { validatedTerminal, sameTerminal } from './terminal/identity.js';
+import { readRetainedTerminal, validatedTerminal, sameTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal } from './terminal/source.js';
 import { readIntactJobTerminalAge } from './terminal-age.js';
 import { sourceReadFailureDisposition } from './source-read.js';
@@ -54,6 +54,7 @@ export function terminalEligibility(
   withSource: <T>(read: (db: Database) => T) => T | null,
   observeSource = true,
   sourceTerminal?: { accepted: EventsRow; terminal: JobTerminal },
+  readOnly = false,
 ): TerminalEligibility {
   const cutoff = trustedJobRetentionCutoff(runtime);
   const denied = {
@@ -70,7 +71,9 @@ export function terminalEligibility(
     location.terminalSeq === undefined
   )
     return denied;
-  const terminal = validatedTerminal(location.detail.value, location.jobId, location.epochKey, location.terminalSeq);
+  const terminal = readOnly
+    ? readRetainedTerminal(location)
+    : validatedTerminal(location.detail.value, location.jobId, location.epochKey, location.terminalSeq);
   if (!terminal) return denied;
   const saved = terminalAgeSchema.safeParse(location.terminalAge);
   const matches =
