@@ -72,9 +72,14 @@ export class WaitInvocation implements WaitInvocationHandoff {
   private continuation: string | undefined;
   private continuationFlushed = false;
   private continuationFlushPending = false;
+  private snapshotOutputPending = false;
   private readonly delegated: boolean;
   private readonly onSigint = () => {
-    if (!this.continuationFlushed) this.stop();
+    if (!this.continuationFlushed && !this.signal.aborted) this.stop();
+    else if (this.signal.aborted) {
+      this.flushContinuation(true);
+      process.exit(75);
+    }
   };
   private readonly onMessage = (message: unknown) => {
     if (isRecord(message) && message.type === 'wait-cancel') this.stop();
@@ -169,7 +174,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
   }
 
   flushContinuation(force = false): void {
-    if (this.continuationFlushed || this.delegated) return;
+    if (this.continuationFlushed || this.delegated || this.snapshotOutputPending) return;
     if (!force && this.continuation !== undefined) {
       if (this.continuationFlushPending) return;
       this.continuationFlushPending = true;
@@ -182,6 +187,22 @@ export class WaitInvocation implements WaitInvocationHandoff {
       this.continuation ??
         `${this.mode === 'snapshot' ? 'coordinator not ready; snapshot admission did not complete.' : 'Wait admission did not complete; monitoring ended.'}\nRun ${this.originalCommand}\n`,
     );
+  }
+
+  async writeSnapshotOutput(output: string, continuation: string): Promise<void> {
+    this.check();
+    this.snapshotOutputPending = true;
+    const write = new Promise<void>((resolve, reject) => {
+      process.stdout.write(output, (error) => {
+        this.snapshotOutputPending = false;
+        if (error) reject(new WaitOutputError(error, this.originalCommand));
+        else {
+          this.saveContinuation(continuation, true);
+          resolve();
+        }
+      });
+    });
+    await this.run(() => write);
   }
 
   dispose(force = false): void {

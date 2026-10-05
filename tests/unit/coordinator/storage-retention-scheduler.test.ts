@@ -69,6 +69,11 @@ afterEach(async () => {
 });
 function fixture(f = createRetentionFixture(), getProgressStore = () => f.store) {
   if (!fixtures.includes(f)) fixtures.push(f);
+  const fixedWall = f.runtime.time.now;
+  const originalMonotonic = f.runtime.time.monotonicNow;
+  const start = originalMonotonic();
+  f.runtime.time.now = () =>
+    fixedWall() + (f.runtime.time.monotonicNow === originalMonotonic ? Number(originalMonotonic() - start) : 0);
   const statuses: RetentionRunStatus[] = [];
   const scheduler = createStorageRetentionScheduler({
     runtime: f.runtime,
@@ -89,7 +94,7 @@ function fixture(f = createRetentionFixture(), getProgressStore = () => f.store)
 }
 
 describe('storage retention schedule', () => {
-  it('coalesces poll hints and honors the failed repair owner backoff', async () => {
+  it('coalesces repeated hints for one failed job while preserving automatic backoff', async () => {
     const { f, scheduler } = fixture();
     const repair = vi.spyOn(f.store.getResultExportOwner(), 'repairPass').mockImplementation(async (_ids, budget) => {
       budget.record({ kind: 'failed', subject: 'job-pending', reason: 'ENOSPC' });
@@ -100,7 +105,7 @@ describe('storage retention schedule', () => {
       f.store.getResultExportOwner().hintRepair('job-pending');
       await vi.advanceTimersByTimeAsync(250);
     }
-    expect(repair).toHaveBeenCalledTimes(1);
+    expect(repair).toHaveBeenCalledTimes(2);
     expect(owners.exports).toHaveBeenCalledTimes(1);
   });
   it('uses the wall-clock cutoff across idle restarts without a boot anchor', async () => {
@@ -640,4 +645,19 @@ it('rebinds repair hints when lifecycle recovery starts with a replacement progr
   expect(repair).toHaveBeenCalledOnce();
   await scheduler.stop();
   expect(detach).toHaveBeenLastCalledWith(null);
+});
+
+it('a new read hint expedites repair while the failed owner already has fastDue', async () => {
+  const { f, scheduler } = fixture();
+  const owner = f.store.getResultExportOwner();
+  const repair = vi.spyOn(owner, 'repairPass').mockImplementation(async (_ids, budget) => {
+    budget.record({ kind: 'failed', subject: 'failed-job', reason: 'ENOSPC' });
+  });
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(repair).toHaveBeenCalledTimes(1);
+  owner.hintRepair('newly-read-job');
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(repair).toHaveBeenCalledTimes(2);
+  expect(owners.exports).toHaveBeenCalledTimes(1);
 });

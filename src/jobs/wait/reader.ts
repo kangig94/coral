@@ -99,7 +99,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
           };
         return;
       }
-      const unknownRead = session.admissions.some((job) => job.progressUnknown);
+      const unknownRead = session.allRemainingProgressUnknown();
       if (!unknownRead) unknownReadAttempts = 0;
       if (
         (unknownRead && unknownReadAttempts === retryDelays.length) ||
@@ -191,13 +191,13 @@ function* memberAdmissionEvents(
         cursor: session.cursor(session.remaining()),
       };
   }
-  if (job.progressUnknown && !state.notices.has(`unreadable:${job.jobId}`)) {
+  if (job.sourceRead === 'settled-unreadable' && !state.notices.has(`unreadable:${job.jobId}`)) {
     state.notices.add(`unreadable:${job.jobId}`);
     if (request.supportsWaitV3 === true)
       yield {
         type: 'notice',
         version: 'jobs.wait.v3',
-        message: `Earlier progress for ${job.jobId} could not be read. Bounded waits retry after 250 ms, 1 s and 5 s, then exit 75 unresolved with a cursor. Inspect coral-cli jobs detail ${job.jobId} --full.`,
+        message: `Earlier progress for ${job.jobId} cannot be read by this build. ${job.message ?? 'The source needs repair or a compatible build; this job leaves the continuation after its retained outcome is delivered.'} Inspect coral-cli jobs detail ${job.jobId} --full.`,
         cursor: session.cursor(session.remaining()),
       };
   }
@@ -347,7 +347,10 @@ function* terminalEvents(
     if (!job.detail?.exit) continue;
     const availability = job.availability;
     if (session.acknowledged(job.jobId) && !session.artifactPending(job.jobId)) continue;
-    if (request.supportsWaitV3 !== true && availability?.kind === 'repair-pending') continue;
+    if (request.supportsWaitV3 !== true && availability?.kind === 'repair-pending') {
+      if (request.supportsWaitV2 !== true) return false;
+      continue;
+    }
     if (request.supportsWaitV3 !== true && availability?.kind !== 'available')
       throw new WaitSessionError(
         'wait_epoch_unsupported',

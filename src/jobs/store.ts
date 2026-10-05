@@ -21,7 +21,7 @@ import { listJobProjections, loadJobProjectionDetail, readJobEvents } from './re
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
 import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } from './terminal/export.js';
-import { hasReadableTerminalDetail, type JobLocationIndex, type JobLocation } from './location-index.js';
+import { type JobLocationIndex, type JobLocation } from './location-index.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
 import { readIntactJobTerminalAge } from './terminal-age.js';
 import { trustedJobRetentionCutoff } from './retention-clock.js';
@@ -577,31 +577,10 @@ export class JobStore implements JobProgressStore {
       prepareTerminal: (jobId) => {
         const index = this.exportLocations;
         const location = index?.read(jobId);
-        if (
-          !index ||
-          !location ||
-          (hasReadableTerminalDetail(location) && location.terminalAge !== undefined) ||
-          index.unknownLocationHold(location.epochKey)
-        )
-          return;
-        withTerminalSource(this.runtime, location.epochKey, (db) => {
-          const accepted = readAcceptedTerminal(db, jobId);
-          if (!accepted) return;
-          const projected = loadJobProjectionDetail(db, jobId, this);
-          if (!projected.status || !projected.exit) return;
-          index.recordTerminal(
-            jobId,
-            {
-              status: projected.status,
-              exit: projected.exit,
-              events: readJobEvents(db, jobId, this),
-              readiness: deriveLaunchReadiness(projected),
-            },
-            location.resultPath ?? index.resultPathFor(jobId),
-            accepted.seq,
-            db,
-          );
-        });
+        if (!index || !location) return;
+        withTerminalSource(this.runtime, location.epochKey, (db) =>
+          index.prepareTerminal(jobId, db, location.epochKey, this.runtime.paths.coral.exports.jobsRoot),
+        );
       },
       location: (jobId): JobLocation | null => {
         if (this.exportLocations) return this.exportLocations.read(jobId);

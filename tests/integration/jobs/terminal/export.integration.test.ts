@@ -203,6 +203,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       const admission = {
         jobId: f.jobId,
         disposition: 'admitted' as const,
+        sourceRead: 'readable' as const,
         epochKey: f.epochKey,
         detail: location.detail.value,
         availability,
@@ -216,7 +217,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       owner.ensureResultMarkdownArtifact(f.jobId);
       expect(wake).toHaveBeenCalled();
       expect(existsSync(f.resultPath)).toBe(false);
-      f.advance(1001);
+      f.advance(300_001);
       await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
       expect(existsSync(f.resultPath)).toBe(true);
     } finally {
@@ -312,7 +313,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
         },
         () => false,
         () => 'decided',
-        () => ({ kind: 'read', locations: new Map([[f.jobId, observed]]) }),
+        () => ({ kind: 'read', dispositions: new Map(), locations: new Map([[f.jobId, observed]]) }),
         (id) => f.store.getResultExportOwner().observeResultAvailability(id),
       );
       expect(addressing.snapshot({ jobIds: [f.jobId] }).jobs[0]).toMatchObject({
@@ -327,7 +328,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
     const f = createTerminalExportFixture();
     try {
       const { readHistoricalSource } = await import('#src/jobs/historical-reader.js');
-      expect(readHistoricalSource(f.index.readOnlyView(), f.epochKey, [f.jobId])).toEqual({
+      expect(readHistoricalSource(f.index.readOnlyView(), f.epochKey, [f.jobId])).toMatchObject({
         kind: 'unreadable',
         retired: true,
       });
@@ -361,14 +362,14 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       owner.hintRepair(f.jobId);
       owner.hintRepair(f.jobId);
       expect(wake).toHaveBeenCalledTimes(1);
-      f.advance(1001);
+      f.advance(300_001);
       await owner.repairPass([], { canContinue: () => true, record: () => {} });
       expect(existsSync(f.resultPath)).toBe(true);
     } finally {
       f.close();
     }
   });
-  it('keeps an inaccessible protected terminal source pending until observation recovers', () => {
+  it('settles a permission-denied terminal source until observation recovers', () => {
     const f = createTerminalExportFixture('provider', true);
     try {
       f.complete();
@@ -383,7 +384,8 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       }) as typeof stat);
       const owner = f.store.getResultExportOwner();
       expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
-        kind: 'repair-pending',
+        kind: 'failed',
+        retryScheduled: false,
         ageUncertain: true,
       });
       vi.restoreAllMocks();
@@ -472,9 +474,9 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
         await fire();
         expect(existsSync(f.resultPath)).toBe(false);
         expect(timers.some((t) => t.ms <= 1000)).toBe(true);
-        f.advance(5000);
+        f.advance(300_000);
         for (let i = 0; i < 5; i++) owner.hintRepair(f.jobId);
-        f.advance(1001);
+        f.advance(300_001);
         expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
         owner.hintRepair(f.jobId);
         await fire();
@@ -554,7 +556,7 @@ it('leaves an untrusted hydration capture absent so a later trusted owner can re
     f.jump(120_000);
     f.store.ensureResultArtifact(f.jobId);
     expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toBeUndefined();
-    f.advance(5_000);
+    f.advance(300_000);
     f.store.ensureResultArtifact(f.jobId);
     expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge.kind).toBe('known');
     expect(existsSync(f.resultPath)).toBe(true);
@@ -576,4 +578,54 @@ it('cannot discharge an absent legacy directory while the cutoff is untrusted', 
   } finally {
     f.close();
   }
+});
+
+const closeFixtures: ReturnType<typeof createTerminalExportFixture>[] = [];
+afterEach(() => {
+  for (const f of closeFixtures.splice(0)) f.close();
+});
+
+it('settles deterministic source failures and retries only transient source contention', () => {
+  const f = createTerminalExportFixture('provider', true);
+  closeFixtures.push(f);
+  f.complete();
+  const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
+  const owner = f.store.getResultExportOwner();
+  for (const code of ['EACCES', 'SQLITE_BUSY']) {
+    open.mockImplementation(() => {
+      throw Object.assign(new Error(code === 'SQLITE_BUSY' ? 'database is locked' : 'permission denied'), { code });
+    });
+    expect(owner.observeResultAvailability(f.jobId)).toMatchObject(
+      code === 'SQLITE_BUSY' ? { kind: 'repair-pending' } : { kind: 'failed', retryScheduled: false },
+    );
+  }
+});
+
+it('repairs post-commit terminal recording under a permanent active epoch hold', async () => {
+  const f = createTerminalExportFixture('provider', true);
+  closeFixtures.push(f);
+  commitJobTerminal(f.store, f.jobId, 'session-1', {
+    content: 'canonical held result',
+    outcome: { kind: 'completed' },
+    durationMs: 1,
+  });
+  f.index.holdUnknownLocations(f.epochKey, 'post-commit recording failed', false);
+  const owner = f.store.getResultExportOwner();
+  await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
+  expect(f.index.read(f.jobId)?.disposition).toBe('terminal');
+  expect(readFileSync(f.resultPath, 'utf8')).toBe('canonical held result\n');
+});
+
+it('observes an unchanged in-window unavailable terminal source once per wait session', () => {
+  const f = createTerminalExportFixture('provider', true);
+  closeFixtures.push(f);
+  f.complete();
+  const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
+  const owner = f.store.getResultExportOwner();
+  const session = {};
+  for (let poll = 0; poll < 40; poll++)
+    expect(owner.observeResultAvailability(f.jobId, session).kind).toBe('repair-pending');
+  expect(open).toHaveBeenCalledTimes(1);
+  f.removeSource();
+  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'failed', retryScheduled: false });
 });

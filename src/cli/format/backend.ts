@@ -1174,8 +1174,6 @@ function formatFinalizedDisposition(disposition: FinalizedDisposition): string {
       switch (disposition.reason.kind) {
         case 'routing':
           return `continued current (${disposition.reason.basis.kind})`;
-        case 'handoff-abandoned-contract':
-          return 'continued current after the selected CLI refused the monitor budget contract';
         case 'handoff-abandoned-stdout':
           return 'continued current after stdout drain prevented delegation';
         default:

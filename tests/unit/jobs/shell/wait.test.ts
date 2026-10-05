@@ -115,8 +115,8 @@ describe('WaitCoordinator', () => {
       {
         epochKey: () => 'epoch',
         detail: () => ({ ...admitted('job-1', [], false).detail!, events: f.journal }),
-        readWaitAdmission: (id, epoch) => f.wait.readWaitAdmission(id, epoch),
-        readWaitAdmissions: (ids, epoch) => f.wait.readWaitAdmissions(ids, epoch),
+        readWaitAdmission: (id, epoch, session) => f.wait.readWaitAdmission(id, epoch, session),
+        readWaitAdmissions: (ids, epoch, session) => f.wait.readWaitAdmissions(ids, epoch, session),
         observeWaitCarriers: (ids, signal) => f.wait.observeWaitCarriers(ids, signal),
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
       },
@@ -432,6 +432,7 @@ it('a missing internal job is a failed outcome after one read, without re-enteri
   const f = fixture();
   const load = vi.fn(() => ({ status: null, launch: null, runtime: null, exit: null }));
   f.deps.loadJobProjectionDetail = load;
+  f.deps.observeJobAbsence = () => true;
   const wait = new WaitCoordinator(f.deps);
   await expect(wait.waitStreamOnce('missing', 1000)).rejects.toThrow('missing');
   expect(load).toHaveBeenCalledTimes(1);
@@ -439,6 +440,7 @@ it('a missing internal job is a failed outcome after one read, without re-enteri
 
 it('reuses the active frontier and decodes only newly appended progress', () => {
   const f = fixture();
+  const session = {};
   const read = vi.spyOn(f.deps, 'readJobEvents');
   for (let seq = 1; seq <= 1000; seq++)
     f.journal.push({
@@ -453,12 +455,12 @@ it('reuses the active frontier and decodes only newly appended progress', () => 
         elapsedMs: 0,
       },
     });
-  f.wait.readWaitAdmissions(['job-1'], 'epoch');
+  f.wait.readWaitAdmissions(['job-1'], 'epoch', session);
   read.mockClear();
-  for (let poll = 0; poll < 20; poll++) f.wait.readWaitAdmissions(['job-1'], 'epoch');
+  for (let poll = 0; poll < 20; poll++) f.wait.readWaitAdmissions(['job-1'], 'epoch', session);
   expect(read).not.toHaveBeenCalled();
   f.journal.push({ ...f.journal[0], seq: 1001 });
-  const next = f.wait.readWaitAdmissions(['job-1'], 'epoch');
+  const next = f.wait.readWaitAdmissions(['job-1'], 'epoch', session);
   expect(read).toHaveBeenCalledExactlyOnceWith('job-1', 1000);
   expect(next[0].detail?.events).toHaveLength(1001);
 });
@@ -472,7 +474,7 @@ it('accepts v0.10.15 cursors without recorded membership and drains their full t
     {
       epochKey: () => 'epoch',
       detail: () => f.wait.readWaitAdmission('job-1', 'epoch').detail ?? null,
-      readWaitAdmissions: (ids, epoch) => f.wait.readWaitAdmissions(ids, epoch),
+      readWaitAdmissions: (ids, epoch, session) => f.wait.readWaitAdmissions(ids, epoch, session),
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
     },
     () => false,
@@ -547,4 +549,36 @@ it('observes availability once per terminal poll and emits one repair hint', () 
   for (let poll = 0; poll < 20; poll++) addressing.admitWait(request);
   expect(observe).toHaveBeenCalledTimes(20);
   expect(hint).toHaveBeenCalledTimes(20);
+});
+
+it('reads projection and history once per unchanged admission frontier and preserves prior arrays', () => {
+  const f = fixture();
+  const projection = vi.spyOn(f.deps, 'loadJobProjectionDetail');
+  const events = vi.spyOn(f.deps, 'readJobEvents');
+  const session = {};
+  const first = f.wait.readWaitAdmission('job-1', 'epoch', session);
+  for (let poll = 0; poll < 40; poll++) f.wait.readWaitAdmission('job-1', 'epoch', session);
+  expect(projection).toHaveBeenCalledTimes(1);
+  expect(events).toHaveBeenCalledTimes(1);
+  f.journal.push(f.terminal());
+  f.wait.readWaitAdmission('job-1', 'epoch', session);
+  expect(projection).toHaveBeenCalledTimes(2);
+  expect(first.detail!.events).toHaveLength(0);
+});
+
+it.each([false, true])('internal waits answer missing only after explicit absence: %s', (explicitAbsence) => {
+  const f = fixture();
+  f.deps.loadJobProjectionDetail = () => ({ status: null, launch: null, runtime: null, exit: null });
+  f.deps.observeJobAbsence = () => explicitAbsence;
+  const admission = f.wait.readWaitAdmission('transferred', 'new-epoch', {});
+  expect(admission.disposition).toBe(explicitAbsence ? 'missing' : 'admitted');
+  if (!explicitAbsence) expect(admission.sourceRead).toBe('transient-unknown');
+});
+
+it('does not keep active history in a coordinator-lifetime cache when no session is supplied', () => {
+  const f = fixture();
+  f.journal.push(...admitted('job-1', [[1, 'first']], false).detail!.events);
+  const read = vi.spyOn(f.deps, 'readJobEvents');
+  for (let poll = 0; poll < 3; poll++) f.wait.readWaitAdmissions(['job-1'], 'epoch');
+  expect(read).toHaveBeenCalledTimes(3);
 });

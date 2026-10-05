@@ -208,6 +208,7 @@ it.each(['routing', 'selection publication', 'terminal publication', 'delegation
   async () => {
     vi.useFakeTimers();
     const stdout: string[] = [];
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
     const handlers = process.listeners('SIGINT');
     vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
       stdout.push(chunk.toString());
@@ -229,6 +230,7 @@ it.each(['routing', 'selection publication', 'terminal publication', 'delegation
       const result = parseProgramWithHandoff(program, argv);
       process.emit('SIGINT');
       process.emit('SIGINT');
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
       await expect(result).resolves.toEqual({ kind: 'handoff-exit', exitCode: 75 });
       expect(action).not.toHaveBeenCalled();
       expect(stdout.join('')).toContain('admission did not complete');

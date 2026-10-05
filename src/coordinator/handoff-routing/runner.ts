@@ -1105,17 +1105,11 @@ function terminalRecordingFor(continuation: HandoffContinuationResult): Terminal
             },
           };
         case 'handoff-abandoned':
+          if (continuation.reason.reason !== 'stdout-drain-incomplete')
+            throw new Error('Contract rejection must be observed before routing-status recording.');
           return {
             kind: 'publish',
-            disposition: {
-              kind: 'continued-current',
-              reason: {
-                kind:
-                  continuation.reason.reason === 'stdout-drain-incomplete'
-                    ? 'handoff-abandoned-stdout'
-                    : 'handoff-abandoned-contract',
-              },
-            },
+            disposition: { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } },
           };
         case 'handoff-not-applicable':
           throw new Error('Display-only handoff continuations cannot enter routing-status recording.');
@@ -1364,12 +1358,6 @@ async function executeResolvedHandoff(
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : CLI_BUNDLE_FILE;
       const target = join(execution.bundleDir, executable);
       execution.assertExecutable();
-      if (waitInvocation !== undefined) {
-        const supported = await supportsWaitInvocation(target, waitInvocation, runtime);
-        if (supported === null) throw new WaitInvocationReadinessError(waitInvocation.originalCommand);
-        if (!supported)
-          return { kind: 'run-current', reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' } };
-      }
       if (signal?.aborted) throw signal.reason;
       const sentinel = join(dirname(process.argv[1] ?? ''), 'coral-sentinel.cjs');
       if (operation.kind === 'backend-startup' && !runtime.storage.existsSync(sentinel))
@@ -1466,6 +1454,21 @@ export async function runHandoff(
   }
 
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
+  if (routing.kind === 'handoff' && options.waitInvocation !== undefined) {
+    const execution = withValidatedHandoffTarget(routing.target);
+    execution.assertExecutable();
+    const target = join(execution.bundleDir, CLI_BUNDLE_FILE);
+    const supported = await supportsWaitInvocation(target, options.waitInvocation, runtime);
+    if (supported === null) throw new WaitInvocationReadinessError(options.waitInvocation.originalCommand);
+    if (!supported)
+      return {
+        kind: 'recording-not-applicable',
+        continuationWithoutRecording: {
+          kind: 'run-current',
+          reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' },
+        },
+      };
+  }
   const recordingApplicable =
     operation.kind !== 'cli-invocation' ||
     classifyHandoffRoutingStatusOperatorInvocation(operation.argv).kind === 'not-routing-status';

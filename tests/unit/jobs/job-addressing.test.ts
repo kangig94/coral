@@ -146,6 +146,7 @@ it.each([0, -3_600_000, 3_600_000])('bounds historical waiting across a %s ms wa
     workDir: '/workspace/project',
     jobKind: 'provider',
   });
+  index.holdUnknownLocations('lineage-old:7', 'temporary source read failure', true);
   const iterator = historicalAddressing(index).waitStream({ jobIds: ['old'], timeoutSeconds: 1, supportsWaitV2: true });
   const result = iterator.next();
   await flushMicrotasks();
@@ -221,7 +222,7 @@ it('keeps retryable unknown IDs in a direct continuation and re-admits them afte
   await admitted.return(undefined);
 });
 
-it('does not admit an active location when its launch append never became accepted', () => {
+it('holds an unaccepted active launch until write-owned recovery observes its explicit absence', () => {
   const { index } = fixture();
   index.register('never-accepted', 'active', {
     projectRoot: '/workspace/project',
@@ -241,9 +242,11 @@ it('does not admit an active location when its launch append never became accept
     () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
   );
   const snapshot = addressing.snapshot({ jobIds: ['never-accepted'] });
-  expect(snapshot.jobs[0].disposition).toBe('missing');
-  expect(snapshot.remainingJobIds).toEqual([]);
-  expect(snapshot.exitCode).toBe(1);
+  expect(snapshot.jobs[0].disposition).toBe('admitted');
+  expect(snapshot.remainingJobIds).toEqual(['never-accepted']);
+  expect(snapshot.exitCode).toBe(75);
+  index.retireNeverAccepted('never-accepted', 'active');
+  expect(addressing.snapshot({ jobIds: ['never-accepted'] })).toMatchObject({ remainingJobIds: [], exitCode: 1 });
 });
 
 it('keeps an unreadable historical progress backlog pending and recovers it on the continuation', () => {
@@ -268,7 +271,7 @@ it('keeps an unreadable historical progress backlog pending and recovers it on t
     () => false,
     () => 'decided',
     () => {
-      if (!readable) return { kind: 'unreadable' };
+      if (!readable) return { kind: 'unreadable', disposition: 'transient-unknown' };
       const location = index.read(jobId);
       if (!location) throw new Error('missing fixture location');
       const progress = {
@@ -287,6 +290,7 @@ it('keeps an unreadable historical progress backlog pending and recovers it on t
       };
       return {
         kind: 'read',
+        dispositions: new Map([[jobId, 'readable']]),
         locations: new Map([
           [
             jobId,
@@ -302,10 +306,121 @@ it('keeps an unreadable historical progress backlog pending and recovers it on t
   );
   const first = addressing.snapshot({ jobIds: [jobId] });
   expect(first.remainingJobIds).toEqual([jobId]);
-  expect(first.notices.join('\n')).toContain('could not be read');
+  expect(first.notices.join('\n')).toContain('progress held');
   readable = true;
   const second = addressing.snapshot({ jobIds: [jobId], cursor: first.cursor });
   expect(second.jobs[0].progress).toEqual(['unread backlog']);
   expect(second.jobs[0].terminal).toBeUndefined();
   expect(second.remainingJobIds).toEqual([]);
 });
+
+it.each([false, true])(
+  'pins the admitted active epoch when its accessor becomes temporarily unobservable mid-wait, indexed: %s',
+  (indexed) => {
+    const { index } = fixture();
+    if (indexed)
+      index.register('known', 'active', {
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
+      });
+    let epoch: string | null = 'active';
+    const addressing = new JobAddressing(
+      index.readOnlyView(),
+      {
+        epochKey: () => epoch,
+        detail: () => detail('known', 'running'),
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => 'pending',
+      undefined,
+      () => ({ kind: 'available', resultPath: '/result' }),
+    );
+    const request = { jobIds: ['known'], supportsWaitV3: true };
+    expect(addressing.admitWait(request)[0]).toMatchObject({ disposition: 'admitted', epochKey: 'active' });
+    epoch = null;
+    expect(addressing.admitWait(request)[0]).toMatchObject({
+      disposition: 'admitted',
+      epochKey: 'active',
+      detail: { status: { phase: 'running' } },
+    });
+    expect(addressing.validateWait(request)).toBeNull();
+  },
+);
+
+it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as const)(
+  'carries %s through historical admission, remaining work and snapshot with an epoch sibling',
+  (sourceRead) => {
+    const { root, index } = fixture();
+    for (const id of ['A', 'U']) {
+      index.register(id, 'historical', {
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
+      });
+      const retained = detail(id, 'completed');
+      index.recordTerminal(id, retained, join(root, `${id}.md`), 12);
+    }
+    const a = index.read('A');
+    const u = index.read('U');
+    if (!a || !u) throw new Error('missing fixture');
+    const observedA =
+      a.detail.kind === 'recorded'
+        ? {
+            ...a,
+            detail: {
+              kind: 'recorded' as const,
+              value: {
+                ...a.detail.value,
+                events: [
+                  {
+                    type: 'progress' as const,
+                    jobId: 'A',
+                    sessionId: null,
+                    seq: 10,
+                    ts: '',
+                    message: 'sibling backlog',
+                    timing: { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 },
+                  },
+                  ...a.detail.value.events,
+                ],
+              },
+            },
+          }
+        : a;
+    const addressing = new JobAddressing(
+      index.readOnlyView(),
+      {
+        epochKey: () => 'current',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => 'pending',
+      () => ({
+        kind: 'read',
+        locations: new Map([
+          ['A', observedA],
+          ['U', u],
+        ]),
+        dispositions: new Map([
+          ['A', 'readable'],
+          ['U', sourceRead],
+        ]),
+      }),
+      (id) => ({ kind: 'available', resultPath: join(root, `${id}.md`) }),
+    );
+    const admissions = addressing.admitWait({ jobIds: ['A', 'U'], supportsWaitV3: true });
+    expect(admissions[1].sourceRead).toBe(sourceRead);
+    const snapshot = addressing.snapshot({ jobIds: ['A', 'U'] });
+    expect(snapshot.remainingJobIds).toEqual(sourceRead === 'transient-unknown' ? ['A', 'U'] : []);
+    expect(snapshot.jobs[0].progress).toEqual(sourceRead === 'transient-unknown' ? [] : ['sibling backlog']);
+    if (sourceRead === 'transient-unknown') expect(snapshot.notices.join(' ')).toContain('A: progress held');
+    if (sourceRead === 'settled-unreadable') {
+      expect(snapshot.notices.join(' ')).toContain('cannot be read by this build');
+      expect(snapshot.notices.join(' ')).not.toContain('no longer kept');
+    }
+    if (sourceRead === 'retired') expect(snapshot.notices.join(' ')).toContain('no longer kept');
+  },
+);

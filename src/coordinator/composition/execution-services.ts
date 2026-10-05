@@ -90,6 +90,7 @@ type CreateExecutionServicesDeps = {
   runtime: Runtime;
   getActiveEpochPath?: () => string | null;
   currentJobEpochKey?: () => string | null;
+  observeJobAbsence?: (jobId: string) => boolean;
   bundleHash: string;
   backendNamespace: string;
   settlementRefusalRecorder: SettlementRefusalRecorder;
@@ -150,7 +151,9 @@ function createExecutionServiceRegistry(input: {
       subscribeJobEvents,
       getCurrentJournalSeq,
       currentJobEpochKey: input.deps.currentJobEpochKey,
-      observeResultAvailability: (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
+      observeJobAbsence: input.deps.observeJobAbsence,
+      observeResultAvailability: (jobId, session) =>
+        getProgressStore().getResultExportOwner().observeResultAvailability(jobId, session),
       hintResultRepair: (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
       appServerProxyRoute: createAppServerProxyRoute({
         hostManager: world.providerHostManager,

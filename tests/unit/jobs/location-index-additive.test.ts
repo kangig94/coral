@@ -422,3 +422,75 @@ it('reuses an unchanged decided certificate and invalidates it on another owner 
   writer.certify('epoch', 2);
   expect(index.certificate('epoch')?.jobIds).toEqual(['a', 'b']);
 });
+
+it('stores no non-terminal progress body and writes no progress revision', () => {
+  const { index } = fixture();
+  const jobId = 'running';
+  index.register(jobId, 'epoch', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const detail = terminalDetail(jobId);
+  detail.status.phase = 'running';
+  delete detail.status.result;
+  detail.exit = null;
+  detail.events = [];
+  const writes = vi.spyOn(runtime.storage, 'writeAtomicDurableSync');
+  for (let seq = 1; seq <= 100; seq++) {
+    detail.status.lastSeq = seq;
+    detail.events.push({
+      type: 'progress',
+      jobId,
+      sessionId: 'session-1',
+      seq,
+      ts: detail.status.updatedAt,
+      message: 'progress body'.repeat(100),
+      timing: { origin: 'runtime', originAt: '', emittedAt: '', elapsedMs: seq },
+    });
+    index.recordObserved(jobId, detail);
+  }
+  expect(writes).toHaveBeenCalledTimes(100);
+  expect(writes.mock.calls.some(([path]) => path.endsWith('revision.v1.json'))).toBe(false);
+  expect(index.read(jobId)?.detail).toMatchObject({ kind: 'recorded', value: { events: [] } });
+});
+
+it('does not rewrite a released terminal detail merely to add its derivable epochKey', () => {
+  const { root, index } = fixture();
+  const jobId = 'finished';
+  index.register(jobId, 'epoch', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const detail = terminalDetail(jobId);
+  index.recordTerminal(jobId, detail, '/result', 2);
+  const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+  const stored = JSON.parse(readFileSync(path, 'utf8'));
+  delete stored.detail.epochKey;
+  writeFileSync(path, JSON.stringify(stored));
+  const writes = vi.spyOn(runtime.storage, 'writeAtomicDurableSync');
+  index.recordTerminal(jobId, detail, '/result', 2);
+  expect(writes).not.toHaveBeenCalled();
+});
+
+it('invalidates a reused inode stamp when file birth time changes', () => {
+  const { root, index } = fixture();
+  const jobId = 'stamp-job';
+  index.register(jobId, 'lineage-1:1', {
+    projectRoot: '/workspace/first',
+    workDir: '/workspace/first',
+    jobKind: 'provider',
+  });
+  const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+  const originalStat = runtime.storage.lstatSync(path, { bigint: true });
+  let birthtimeNs = 1n;
+  const lstat = runtime.storage.lstatSync.bind(runtime.storage);
+  vi.spyOn(runtime.storage, 'lstatSync').mockImplementation((file, options) =>
+    file === path ? { ...originalStat, birthtimeNs } : lstat(file, options),
+  );
+  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/first');
+  writeFileSync(path, readFileSync(path, 'utf8').replaceAll('/workspace/first', '/workspace/other'));
+  birthtimeNs = 2n;
+  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/other');
+});

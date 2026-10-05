@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { DatabaseSync } from 'node:sqlite';
 import {
   existsSync,
@@ -733,4 +734,41 @@ it('claims a regular quarantine coordinate and retains its payload', () => {
   expect(result.kind).toBe('quarantined');
   expect(existsSync(path)).toBe(false);
   expect(readFileSync(quarantinePath, 'utf-8')).toBe('routing status evidence');
+});
+
+it('decodes a freshly written continuation with the released v0.10.17 strict decoder branches', async () => {
+  const path = databasePath();
+  const selected = await committed(path, [selection('released-reader', 1)]);
+  await committed(path, [terminal('released-reader', 2, selected.sequence)]);
+  // Copied inline from v0.10.17:src/coordinator/handoff-routing/status.ts.
+  // This fixture uses the released same-build-set routing basis branch.
+  const releasedBasis = z
+    .object({
+      kind: z.literal('same-build-set'),
+      buildSetId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+    })
+    .strict()
+    .readonly();
+  const releasedContinuation = z
+    .object({
+      kind: z.literal('continued-current'),
+      reason: z.union([
+        z
+          .object({ kind: z.literal('routing'), basis: releasedBasis })
+          .strict()
+          .readonly(),
+        z
+          .object({ kind: z.literal('handoff-abandoned-stdout') })
+          .strict()
+          .readonly(),
+      ]),
+    })
+    .strict()
+    .readonly();
+  const record = records(path).find((row) => row.eventKind === 'continuation-finalized')!;
+  expect(releasedContinuation.safeParse(record.disposition).success).toBe(true);
+  expect(
+    releasedContinuation.safeParse({ kind: 'continued-current', reason: { kind: 'handoff-abandoned-contract' } })
+      .success,
+  ).toBe(false);
 });

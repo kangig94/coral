@@ -15,6 +15,7 @@ export function admitted(
   return {
     jobId,
     disposition: 'admitted',
+    sourceRead: 'readable',
     epochKey,
     availability: { kind: 'available', resultPath: `/results/${jobId}` },
     detail: {

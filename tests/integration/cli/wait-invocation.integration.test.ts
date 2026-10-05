@@ -67,9 +67,12 @@ beforeAll(async () => {
                     .replace('const WAIT_CLEANUP_MS = 10_000', 'const WAIT_CLEANUP_MS = 200')
                     .replace('const SNAPSHOT_BUDGET_MS = 30_000', 'const SNAPSHOT_BUDGET_MS = 600')
                     .replace('const SNAPSHOT_CLEANUP_MS = 1_000', 'const SNAPSHOT_CLEANUP_MS = 200');
-                  if (variant === 'no-backstop') source = source.replace('process.exit(75)', 'undefined');
+                  if (variant === 'no-backstop') source = source.replaceAll('process.exit(75)', 'undefined');
                   if (variant === 'monitor-abort')
-                    source = source.replace('if (!this.continuationFlushed) this.stop();', 'undefined;');
+                    source = source.replace(
+                      'if (!this.continuationFlushed && !this.signal.aborted) this.stop();\n    else if (this.signal.aborted) {\n      this.flushContinuation(true);\n      process.exit(75);\n    }',
+                      'undefined;',
+                    );
                 }
                 if (path.endsWith('/cli/follow.ts'))
                   source = source.replace(

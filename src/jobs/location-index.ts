@@ -28,7 +28,12 @@ import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { jobsRegistry } from './events.js';
 import type { Database } from '../store/db.js';
 import { terminalEligibility, type TerminalEligibility } from './export-retention.js';
-import { type HistoricalSourceRead, readHistoricalSource, type HistoricalSourceReader } from './historical-reader.js';
+import {
+  type HistoricalSourceRead,
+  readHistoricalJobDetail,
+  readHistoricalSource,
+  type HistoricalSourceReader,
+} from './historical-reader.js';
 import type { RetentionRunBudget } from '../store/retention-outcome.js';
 
 const subjectSchema = z
@@ -202,17 +207,17 @@ const omittedDetailKeys: Record<string, readonly string[]> = {
 function preserveStoredDetail<T>(stored: unknown, next: T, path = ''): T {
   if (Array.isArray(next)) {
     const previous = Array.isArray(stored) ? stored : [];
+    const bySeq = new Map(
+      previous
+        .filter(
+          (candidate) =>
+            typeof candidate === 'object' && candidate !== null && 'seq' in candidate && 'type' in candidate,
+        )
+        .map((candidate) => [`${candidate.seq}:${candidate.type}`, candidate]),
+    );
     return next.map((item, index) => {
       const event = typeof item === 'object' && item !== null && 'seq' in item && 'type' in item;
-      const matching = event
-        ? previous.find(
-            (candidate) =>
-              typeof candidate === 'object' &&
-              candidate !== null &&
-              candidate.seq === item.seq &&
-              candidate.type === item.type,
-          )
-        : previous[index];
+      const matching = event ? bySeq.get(`${item.seq}:${item.type}`) : previous[index];
       return preserveStoredDetail(matching, item, `${path}[]`);
     }) as T;
   }
@@ -325,7 +330,7 @@ export class JobLocationIndex {
     const path = this.jobPath(jobId);
     try {
       const stat = this.runtime.storage.lstatSync(path, { bigint: true });
-      const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+      const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`;
       const cached = this.storedLocations.get(jobId);
       if (cached?.stamp === stamp) return cached.stored;
       const stored = optionalJson(this.runtime, path, locationSchema);
@@ -484,7 +489,7 @@ export class JobLocationIndex {
         terminalSeq,
         resultPath,
         ...(retainedAge === undefined ? {} : { terminalAge: retainedAge }),
-        detail: preserveStoredDetail(current.detail, { ...detail, epochKey: current.epochKey, events: [terminal] }),
+        detail: preserveStoredDetail(current.detail, { ...detail, events: [terminal] }),
       };
       if (!isDeepStrictEqual(current, location)) {
         atomicJson(this.runtime, this.jobPath(jobId), location);
@@ -502,11 +507,10 @@ export class JobLocationIndex {
       if (current === null || current.disposition === 'terminal') return;
       const location = {
         ...current,
-        detail: preserveStoredDetail(current.detail, detail),
+        detail: preserveStoredDetail(current.detail, { ...detail, events: [] }),
       };
       if (!isDeepStrictEqual(current, location)) {
         atomicJson(this.runtime, this.jobPath(jobId), location);
-        this.advanceRevision(current.epochKey);
       }
     });
   }
@@ -656,7 +660,7 @@ export class JobLocationIndex {
     this.epochRevisions.set(epochKey, revision);
     const dir = join(this.root, 'jobs');
     const stat = this.runtime.storage.existsSync(dir) ? this.runtime.storage.lstatSync(dir, { bigint: true }) : null;
-    const stamp = stat ? `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}` : 'absent';
+    const stamp = stat ? `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}` : 'absent';
     if (this.locationsStamp !== stamp) {
       this.locationsByEpoch.clear();
       const scan = this.scan();
@@ -699,7 +703,9 @@ export class JobLocationIndex {
   certificate(epochKey: string): JobLocationCertificate | null {
     const path = this.epochPath(epochKey, 'certificate.v1.json');
     const stat = this.runtime.storage.existsSync(path) ? this.runtime.storage.lstatSync(path, { bigint: true }) : null;
-    const stamp = stat ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : 'absent';
+    const stamp = stat
+      ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`
+      : 'absent';
     let cached = this.certificates.get(epochKey);
     if (cached?.stamp !== stamp) {
       cached = { stamp, value: optionalJson(this.runtime, path, certificateSchema) };
@@ -774,30 +780,27 @@ export class JobLocationIndex {
       workflowReport: this.workflowReport,
       failures: this.resultRepairFailures,
       hydrationRetry: () => this.unknownLocationHolds().find((hold) => hold.epochKey === epochKey)?.retryScheduled,
-      prepareTerminal: (jobId) => {
-        const current = this.read(jobId);
-        if (
-          this.unknownLocationHold(epochKey) !== null ||
-          (current && hasReadableTerminalDetail(current) && current.terminalAge !== undefined)
-        )
-          return;
-        const read = this.readHistorical(epochKey, [jobId]);
-        const location = read.kind === 'read' ? read.locations.get(jobId) : null;
-        if (location && hasReadableTerminalDetail(location) && location.detail.kind === 'recorded')
-          this.recordTerminal(
-            jobId,
-            location.detail.value,
-            location.resultPath ?? resultPathFor(jobsRoot, jobId),
-            location.terminalSeq ?? 0,
-            db,
-          );
-      },
+      prepareTerminal: (jobId) => this.prepareTerminal(jobId, db, epochKey, jobsRoot),
       location: (jobId) => this.read(jobId),
       withSource: (jobId, read) => {
         if (this.read(jobId)?.epochKey !== epochKey) throw new Error('Source epoch identity cannot be confirmed');
         return read(db, ctx);
       },
     });
+  }
+
+  prepareTerminal(jobId: string, db: Database, epochKey: string, jobsRoot: string): void {
+    const current = this.read(jobId);
+    if (
+      !current ||
+      current.epochKey !== epochKey ||
+      (hasReadableTerminalDetail(current) && current.terminalAge !== undefined)
+    )
+      return;
+    const detail = readHistoricalJobDetail(db, jobId);
+    const terminal = detail?.events.find((event) => event.type === 'terminal');
+    if (!detail?.exit || !terminal) return;
+    this.recordTerminal(jobId, detail, current.resultPath ?? resultPathFor(jobsRoot, jobId), terminal.seq, db);
   }
 
   terminalEligibility(jobId: string): TerminalEligibility {

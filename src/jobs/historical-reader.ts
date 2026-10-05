@@ -1,3 +1,5 @@
+import type { SourceReadDisposition } from './wait/session.js';
+import { sourceReadFailureDisposition, sourceReadStamp } from './source-read.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -112,6 +114,7 @@ type HistoricalEpochSource = {
   readonly storage: StoragePort;
   readonly attempts: number;
   readCache?: WeakMap<object, Map<string, HistoricalReadFrontier>>;
+  observations?: WeakMap<object, { stamp: string; result: Extract<HistoricalSourceRead, { kind: 'read' }> }>;
   sweep?: { revision: number; frontier: number };
   retired?: boolean;
 };
@@ -140,12 +143,7 @@ function holdSeedFailure(
   attempts: number,
   deterministicData = true,
 ): string {
-  const deterministic =
-    deterministicData &&
-    (error instanceof z.ZodError ||
-      error instanceof SyntaxError ||
-      (error instanceof Error &&
-        /not a database|database disk image is malformed|no such (table|column)/i.test(error.message)));
+  const deterministic = deterministicData && sourceReadFailureDisposition(error) === 'settled-unreadable';
   const reason =
     error instanceof z.ZodError
       ? 'Retained store data cannot be decoded by this build'
@@ -160,8 +158,36 @@ function holdSeedFailure(
   return message;
 }
 export function retryUnknownHistoricalEpochs(index: JobLocationIndex): void {
-  for (const [epochKey, source] of historicalSources.get(index) ?? []) {
+  const sources = historicalSources.get(index);
+  for (const hold of index.unknownLocationHolds()) {
+    if (!hold.retryScheduled || sources?.has(hold.epochKey)) continue;
+    const absent = index.historicalSourceState(hold.epochKey) === 'absent';
+    index.holdUnknownLocations(
+      hold.epochKey,
+      absent
+        ? 'Source retired; no further seed retry is scheduled'
+        : 'No source reader is registered; use a compatible build or restore the source before retrying',
+      false,
+    );
+  }
+  for (const [epochKey, source] of sources ?? []) {
     try {
+      const lineageKey =
+        decodeResolvedStoreEpoch(source.runtime, epochKey)?.lineageKey ?? source.originalEpoch.lineageKey ?? epochKey;
+      const epoch =
+        observeProtectedEpoch(
+          { storage: source.storage },
+          source.originalEpoch.canonicalStoreRoot ?? source.originalEpoch.storeRoot,
+          lineageKey,
+        ) ??
+        observeResolvedStoreEpoch({ storage: source.storage }, epochKey) ??
+        source.originalEpoch;
+      if (observeStorePath(source.storage, epoch.path) === 'absent') {
+        index.holdUnknownLocations(epochKey, 'Source retired; no further seed retry is scheduled', false);
+        source.retired = true;
+        source.readCache = undefined;
+        continue;
+      }
       if (!index.unknownLocationHolds().some((hold) => hold.epochKey === epochKey && hold.retryScheduled)) continue;
       void seedHistoricalEpoch(
         source.runtime,
@@ -302,7 +328,7 @@ function historicalDetail(
     const usage = aggregateWorkflowUsage(db as Database, row.job_id);
     if (usage !== undefined) diagnostics.usage = usage;
   }
-  const renderedEvents: JobEvent[] = previous?.detail.events ?? [];
+  const renderedEvents: JobEvent[] = [...(previous?.detail.events ?? [])];
   for (const event of events) {
     if (previous && event.seq <= previous.frontier) continue;
     if (event.type === 'job.progress.emitted') {
@@ -479,6 +505,7 @@ export function seedHistoricalEpoch(
     }
     if (recordingError !== undefined) throw recordingError;
     index.clearUnknownLocations(epochKey);
+    source.sweep = { revision: index.revision(epochKey), frontier: highWaterSeq };
     if (!certifyRetiredEpoch) return { kind: 'uncertified', knownJobIds: [...observed] };
     const certificate = index.certify(epochKey, highWaterSeq);
     return certificate === null
@@ -499,9 +526,30 @@ export function seedHistoricalEpoch(
   }
 }
 
+/** SELECT * and the historical decoder support both released projection fingerprints. */
+export function readHistoricalJobDetail(db: SqliteDatabasePort | Database, jobId: string): JobDetailResponse | null {
+  const raw = db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(jobId);
+  if (raw === undefined) return null;
+  return historicalDetail(
+    db as SqliteDatabasePort,
+    olderProjectionSchema.parse(raw),
+    readEvents(db as SqliteDatabasePort, jobId),
+  );
+}
+
 export type HistoricalSourceRead =
-  | Readonly<{ kind: 'read'; locations: ReadonlyMap<string, JobLocation | null>; unreadableJobs?: ReadonlySet<string> }>
-  | Readonly<{ kind: 'unreadable'; retired?: boolean }>;
+  | Readonly<{
+      kind: 'read';
+      locations: ReadonlyMap<string, JobLocation | null>;
+      dispositions: ReadonlyMap<string, SourceReadDisposition>;
+      unreadableJobs?: ReadonlySet<string>;
+    }>
+  | Readonly<{
+      kind: 'unreadable';
+      disposition: Exclude<SourceReadDisposition, 'readable'>;
+      reason?: string;
+      retired?: boolean;
+    }>;
 
 export type HistoricalSourceReader = (
   epochKey: string,
@@ -514,13 +562,27 @@ export function readHistoricalSource(
   view: JobLocationView,
   epochKey: string,
   jobIds: readonly string[],
-  session: object = view,
+  session?: object,
 ): HistoricalSourceRead {
   const source = historicalSources.get(view)?.get(epochKey);
   if (source === undefined)
-    return { kind: 'unreadable', ...(view.historicalSourceState?.(epochKey) === 'absent' ? { retired: true } : {}) };
-  if (source.retired) return { kind: 'unreadable', retired: true };
-  if (readers[source.fingerprint] === undefined) return { kind: 'unreadable', retired: true };
+    return view.historicalSourceState?.(epochKey) === 'absent'
+      ? { kind: 'unreadable', disposition: 'retired', retired: true }
+      : {
+          kind: 'unreadable',
+          disposition:
+            view.unknownLocationHolds().find((hold) => hold.epochKey === epochKey)?.retryScheduled === true
+              ? 'transient-unknown'
+              : 'settled-unreadable',
+          reason: 'Source epoch is not registered in this build',
+        };
+  if (source.retired) return { kind: 'unreadable', disposition: 'retired', retired: true };
+  if (readers[source.fingerprint] === undefined)
+    return {
+      kind: 'unreadable',
+      disposition: 'settled-unreadable',
+      reason: 'Unsupported store fingerprint; use a build that supports this source',
+    };
   let release: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
@@ -532,22 +594,43 @@ export function readHistoricalSource(
         source.originalEpoch.lineageKey ?? epochKey,
       ) ??
       source.originalEpoch;
-    if (observeStorePath(source.storage, epoch.path) === 'absent') return { kind: 'unreadable', retired: true };
+    if (observeStorePath(source.storage, epoch.path) === 'absent')
+      return { kind: 'unreadable', disposition: 'retired', retired: true };
+    const stamp = session ? sourceReadStamp(source.storage, epoch.path) : null;
+    const observation = session ? source.observations?.get(session) : undefined;
+    if (
+      stamp !== null &&
+      observation?.stamp === stamp &&
+      jobIds.every((jobId) => observation.result.locations.has(jobId))
+    ) {
+      return {
+        ...observation.result,
+        locations: new Map(jobIds.map((jobId) => [jobId, observation.result.locations.get(jobId) ?? null])),
+      };
+    }
     release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), STORE_LOCK_FILE_NAME));
     const identity = epochKey.startsWith('{')
       ? inspectResolvedStoreEpochKey({ storage: source.storage }, epoch)
       : inspectEpochKey({ storage: source.storage }, epoch);
-    if (identity !== epochKey) return { kind: 'unreadable', retired: identity !== null };
+    if (identity !== epochKey)
+      return {
+        kind: 'unreadable',
+        disposition: 'settled-unreadable',
+        reason: 'Source epoch identity cannot be confirmed; restore its identity before retrying',
+      };
     db = source.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true });
     db.exec('BEGIN');
     const frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
-    source.readCache ??= new WeakMap();
-    const readCache = source.readCache.get(session) ?? new Map<string, HistoricalReadFrontier>();
-    source.readCache.set(session, readCache);
+    if (session) source.readCache ??= new WeakMap();
+    const readCache =
+      (session ? source.readCache?.get(session) : undefined) ?? new Map<string, HistoricalReadFrontier>();
+    if (session && source.readCache) source.readCache.set(session, readCache);
     const locations = new Map<string, JobLocation | null>();
     const unreadableJobs = new Set<string>();
+    const dispositions = new Map<string, SourceReadDisposition>();
     for (const jobId of jobIds) {
       try {
+        dispositions.set(jobId, 'readable');
         const cached = readCache.get(jobId);
         if (cached?.frontier === frontier) {
           locations.set(jobId, cached.location);
@@ -601,13 +684,29 @@ export function readHistoricalSource(
           ),
           location,
         });
-      } catch {
+      } catch (error) {
+        dispositions.set(jobId, sourceReadFailureDisposition(error));
         unreadableJobs.add(jobId);
       }
     }
-    return { kind: 'read', locations, unreadableJobs };
-  } catch {
-    return { kind: 'unreadable' };
+    const result = { kind: 'read', locations, dispositions, unreadableJobs } as const;
+    if (
+      session &&
+      stamp !== null &&
+      sourceReadStamp(source.storage, epoch.path) === stamp &&
+      unreadableJobs.size === 0
+    ) {
+      source.observations ??= new WeakMap();
+      source.observations.set(session, { stamp, result });
+    }
+    return result;
+  } catch (error) {
+    const hold = view.unknownLocationHolds().find((hold) => hold.epochKey === epochKey);
+    return {
+      kind: 'unreadable',
+      disposition: hold?.retryScheduled === false ? 'settled-unreadable' : sourceReadFailureDisposition(error),
+      reason: error instanceof Error ? error.message : 'Source cannot be read; repair the source before retrying',
+    };
   } finally {
     db?.close();
     release?.();
@@ -673,7 +772,17 @@ export function refreshHistoricalEpoch(
     const frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
     const revision = index.revision(epochKey);
     if (jobIds.length === 0 && source.sweep?.revision === revision && source.sweep.frontier === frontier) return 'read';
-    const requested = new Set(jobIds.length ? jobIds : index.locationsFor(epochKey).map((location) => location.jobId));
+    const incremental = jobIds.length === 0 && source.sweep?.revision === revision;
+    const requested = new Set(
+      jobIds.length
+        ? jobIds
+        : incremental
+          ? db
+              .prepare("SELECT DISTINCT stream_id FROM events WHERE stream_kind = 'job' AND seq > ?")
+              .all(source.sweep?.frontier ?? 0)
+              .map((row) => z.object({ stream_id: z.string() }).parse(row).stream_id)
+          : index.locationsFor(epochKey).map((location) => location.jobId),
+    );
     let failed = false;
     for (const jobId of [...requested]) {
       const location = index.read(jobId);
@@ -692,7 +801,17 @@ export function refreshHistoricalEpoch(
           raw,
         );
         requested.delete(jobId);
-        const detail = historicalDetail(db, row, readEvents(db, row.job_id));
+        const appended = readEvents(db, row.job_id, source.sweep?.frontier ?? 0);
+        if (source.sweep && appended.length === 0 && !isTerminalPhase(row.phase)) continue;
+        const events =
+          isTerminalPhase(row.phase) || appended.some((event) => event.type === 'job.terminal.recorded')
+            ? readEvents(db, row.job_id)
+            : appended;
+        const detail = historicalDetail(
+          db,
+          { ...row, work_dir: canonicalWorkDirWireSchema.nullable().parse(row.work_dir ?? location.subject.workDir) },
+          events,
+        );
         const terminal = [...detail.events].reverse().find((event) => event.type === 'terminal');
         if (!isTerminalPhase(detail.status.phase) || detail.exit === null || terminal === undefined) {
           index.recordObserved(row.job_id, detail);

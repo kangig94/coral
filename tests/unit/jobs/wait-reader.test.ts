@@ -615,6 +615,7 @@ it('settles an acknowledged legacy terminal before refusing unavailable artifact
 
 it('retries an unknown historical read on a bounded schedule, then exits 75 unresolved', async () => {
   const a = admitted('a', [], false);
+  a.sourceRead = 'transient-unknown';
   a.progressUnknown = true;
   let monotonic = 0n;
   const sleep = vi.fn(async (ms: number) => {
@@ -651,4 +652,151 @@ it('keeps a multiline child message in one internal progress event', async () =>
     { seq: 1, message: 'first\nsecond\nthird' },
   ]);
   expect(events.filter((event) => event.type === 'progress')).toHaveLength(1);
+});
+
+it('preserves a terminal sibling backlog across a transient epoch hold in stream and snapshot', async () => {
+  const a = admitted(
+    'A',
+    [
+      [10, 'A progress 10'],
+      [11, 'A progress 11'],
+    ],
+    true,
+    'epoch-H',
+  );
+  const u = {
+    ...admitted('U', [], false, 'epoch-H'),
+    detail: undefined,
+    sourceRead: 'transient-unknown' as const,
+    progressUnknown: true,
+  };
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['A', 'U'], supportsWaitV3: true, timeoutSeconds: 0 },
+      time: createRealTimePort(),
+      activeEpochKey: 'epoch-NEW',
+      read: () => [a, u],
+    }),
+  );
+  expect(events.find((event) => event.type === 'terminal')).toMatchObject({ remainingJobIds: ['A', 'U'] });
+  expect(
+    events.some(
+      (event) => event.type === 'notice' && event.message.includes('A') && event.message.includes('progress held'),
+    ),
+  ).toBe(true);
+  const session = new WaitSession(['A', 'U']);
+  session.reconcile([a, u]);
+  const snapshot = selectWaitSnapshot(session, 20);
+  expect(snapshot.remainingJobIds).toEqual(['A', 'U']);
+  expect(snapshot.notices.some((notice) => notice.includes('A') && notice.includes('progress held'))).toBe(true);
+});
+
+it('does not shorten a live sibling window after transient source retries', async () => {
+  let mono = 0n;
+  const live = admitted('LIVE', [], false, 'epoch-A');
+  const unknown: WaitAdmission = {
+    jobId: 'X',
+    disposition: 'admitted',
+    epochKey: 'epoch-H',
+    sourceRead: 'transient-unknown',
+    progressUnknown: true,
+  };
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['LIVE', 'X'], supportsWaitV3: true, timeoutSeconds: 589 },
+      time: {
+        ...createRealTimePort(),
+        monotonicNow: () => mono,
+        sleep: async (ms) => {
+          mono += BigInt(ms);
+        },
+      },
+      activeEpochKey: 'epoch-A',
+      read: () => [live, unknown],
+      observe: (session) => session.observeCoverage(['LIVE'], [], 1),
+    }),
+  );
+  expect(mono).toBe(589000n);
+  expect(events.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: ['LIVE', 'X'] });
+});
+
+it('does not let a versionless terminal overtake a repair-pending terminal or skip sibling progress', async () => {
+  let mono = 0n;
+  const time = {
+    ...createRealTimePort(),
+    monotonicNow: () => mono,
+    sleep: async (ms: number) => {
+      mono += BigInt(ms);
+    },
+  };
+  const r = admitted('R');
+  const s = admitted('S');
+  for (const [job, seq] of [
+    [r, 40],
+    [s, 60],
+  ] as const) {
+    job.detail!.events = job.detail!.events.map((event) => (event.type === 'terminal' ? { ...event, seq } : event));
+    job.detail!.status.lastSeq = seq;
+  }
+  r.availability = { kind: 'repair-pending', ageUncertain: false };
+  const t = admitted(
+    'T',
+    [
+      [50, 'T fifty'],
+      [70, 'T seventy'],
+    ],
+    false,
+  );
+  const first = await collect(
+    readWaitSession({
+      request: { jobIds: ['R', 'S', 'T'], timeoutSeconds: 1 },
+      time,
+      activeEpochKey: 'epoch-E',
+      read: () => [r, s, t],
+    }),
+  );
+  expect(first.some((event) => event.type === 'terminal')).toBe(false);
+  expect(first.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: ['R', 'S', 'T'] });
+  r.availability = { kind: 'available', resultPath: '/r' };
+  const second = await collect(
+    readWaitSession({
+      request: { jobIds: ['R', 'S', 'T'], timeoutSeconds: 1, cursor: { afterSeq: 0 } },
+      time,
+      activeEpochKey: 'epoch-E',
+      read: () => [r, s, t],
+    }),
+  );
+  expect(second.find((event) => event.type === 'terminal')).toMatchObject({ jobId: 'R', seq: 40 });
+  const third = await collect(
+    readWaitSession({
+      request: { jobIds: ['S', 'T'], timeoutSeconds: 1, cursor: { afterSeq: 40 } },
+      time,
+      activeEpochKey: 'epoch-E',
+      read: () => [s, t],
+    }),
+  );
+  expect(third.find((event) => event.type === 'progress')).toMatchObject({ jobId: 'T', seq: 50 });
+});
+
+it('settles a permanently unreadable retained outcome after delivery instead of keeping it in every continuation', async () => {
+  const job = {
+    ...admitted('h', [], true, 'epoch-OLD'),
+    sourceRead: 'settled-unreadable' as const,
+    progressUnknown: true,
+  };
+  const first = await collect(
+    readWaitSession({
+      request: { jobIds: ['h'], supportsWaitV3: true, timeoutSeconds: 0 },
+      time: createRealTimePort(),
+      activeEpochKey: 'new',
+      read: () => [job],
+    }),
+  );
+  expect(first.find((event) => event.type === 'terminal')).toMatchObject({ exitCode: 0, remainingJobIds: [] });
+  const session = new WaitSession(['h']);
+  session.reconcile([job]);
+  const snapshot = selectWaitSnapshot(session);
+  expect(snapshot).toMatchObject({ exitCode: 0, remainingJobIds: [] });
+  expect(snapshot.notices.join(' ')).toContain('cannot be read by this build');
+  expect(snapshot.notices.join(' ')).not.toContain('no longer kept');
 });

@@ -3,26 +3,32 @@ import type { TimePort } from '../infra/port-types.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLOCK_JUMP_TOLERANCE_MS = 60_000;
-const CLOCK_SAMPLE_MAX_AGE_MS = 60_000;
-const CLOCK_SETTLE_MS = 1000;
-const clocks = new WeakMap<TimePort, { wall: number; monotonic: bigint; untrustedUntil: bigint }>();
+const CLOCK_DRIFT_RATIO = 0.12;
+const CLOCK_SETTLE_MS = 5 * 60_000;
+const clocks = new WeakMap<TimePort, { wall: number; monotonic: bigint; untrusted: boolean }>();
 
 export function resolveJobRetentionMs(raw: string | undefined): number {
   const days = raw === undefined ? NaN : Number(raw);
   return (Number.isSafeInteger(days) && days > 0 ? days : 14) * DAY_MS;
 }
 
-/** All owners share the wall/monotonic guard, including indexes outside the scheduler. */
+/** Keep a long baseline across idle periods; suspend and clock jumps defer every retention owner alike. */
 export function trustedJobRetentionCutoff(runtime: Pick<Runtime, 'time' | 'env'>): number | null {
   const wall = runtime.time.now();
   const monotonic = runtime.time.monotonicNow();
-  const previous = clocks.get(runtime.time);
-  const elapsed = previous ? Number(monotonic - previous.monotonic) : 0;
-  let untrustedUntil = previous?.untrustedUntil ?? 0n;
-  if (previous && elapsed <= CLOCK_SAMPLE_MAX_AGE_MS && wall - previous.wall - elapsed > CLOCK_JUMP_TOLERANCE_MS)
-    untrustedUntil = monotonic + BigInt(CLOCK_SETTLE_MS);
-  clocks.set(runtime.time, { wall, monotonic, untrustedUntil });
-  return Number.isFinite(wall) && monotonic >= untrustedUntil
-    ? wall - resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS')) - CLOCK_JUMP_TOLERANCE_MS
-    : null;
+  if (!Number.isFinite(wall)) return null;
+  let baseline = clocks.get(runtime.time);
+  if (!baseline) {
+    baseline = { wall, monotonic, untrusted: false };
+    clocks.set(runtime.time, baseline);
+  }
+  const elapsed = Number(monotonic - baseline.monotonic);
+  const offsetChange = wall - baseline.wall - elapsed;
+  if (elapsed < 0 || Math.abs(offsetChange) > CLOCK_JUMP_TOLERANCE_MS + Math.max(0, elapsed) * CLOCK_DRIFT_RATIO) {
+    clocks.set(runtime.time, { wall, monotonic, untrusted: true });
+    return null;
+  }
+  if (baseline.untrusted && elapsed < CLOCK_SETTLE_MS) return null;
+  baseline.untrusted = false;
+  return wall - resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS')) - CLOCK_JUMP_TOLERANCE_MS;
 }

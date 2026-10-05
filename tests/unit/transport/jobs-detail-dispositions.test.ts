@@ -84,7 +84,7 @@ async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: o
     } as never,
     () => unknown === 'pre-epoch-history',
     () => 'decided',
-    () => ({ kind: 'read', locations: new Map(unrecoverable.map((id) => [id, null])) }),
+    () => ({ kind: 'read', dispositions: new Map(), locations: new Map(unrecoverable.map((id) => [id, null])) }),
     () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
   );
   const validateWait = vi.isMockFunction(supplied.validateWait)

@@ -12,18 +12,35 @@ export type WaitDisposition =
   | 'outcome-unrecoverable'
   | 'scope-mismatch';
 
-export type WaitAdmission = {
+/** Source reads settle per job; only a retryable observation holds an epoch prefix.
+ * readable: observed success; transient-unknown: busy/lock contention or retryScheduled hold;
+ * settled-unreadable: decode/parse, unsupported fingerprint, identity/lock failure or permanent hold;
+ * retired: observed source retirement.
+ */
+export type SourceReadDisposition = 'readable' | 'transient-unknown' | 'settled-unreadable' | 'retired';
+
+export function sourceReadDisposition(job: WaitAdmission): SourceReadDisposition {
+  return job.sourceRead ?? 'readable';
+}
+
+type WaitAdmissionDetail = {
   jobId: string;
-  disposition: WaitDisposition;
   message?: string;
   epochKey?: string;
   detail?: JobDetailResponse;
   availability?: ResultAvailability;
   continuity?: ContinuitySnapshot | null;
+  sourceRead?: SourceReadDisposition;
   progressLost?: boolean;
   progressUnknown?: boolean;
   queued?: Extract<WaitStreamEvent, { type: 'queued' }>;
 };
+
+export type WaitAdmission = WaitAdmissionDetail &
+  (
+    | { disposition: 'admitted'; sourceRead: SourceReadDisposition }
+    | { disposition: Exclude<WaitDisposition, 'admitted'> }
+  );
 
 export type WaitProgressLine = {
   jobId: string;
@@ -122,12 +139,40 @@ export class WaitSession {
       this.admissionById.set(admission.jobId, admission);
       this.reconcileMember(admission);
       const events = admission.detail?.events;
-      const shape = `${admission.epochKey}:${events?.length}:${events?.at(-1)?.seq}:${admission.progressUnknown}`;
+      const shape = `${admission.epochKey}:${events?.length}:${events?.at(-1)?.seq}:${sourceReadDisposition(admission)}`;
       if (this.historyShape.get(admission.jobId) !== shape) {
         this.historyShape.set(admission.jobId, shape);
         this.progressLines = undefined;
       }
     }
+    for (const job of admissions) {
+      if (!this.progressHeld(job)) continue;
+      const notice = `Earlier progress for ${job.jobId}: progress held until this epoch can be read. If all remaining work is progress-unknown, the bounded read retries after 250 ms, 1 s and 5 s, then exit 75; retry the continuation after the source lock is released or its scheduled repair completes.`;
+      if (!this.notices.includes(notice)) this.notices.push(notice);
+    }
+  }
+
+  progressHeld(job: WaitAdmission): boolean {
+    return (
+      job.disposition === 'admitted' &&
+      this.admissions.some(
+        (member) =>
+          member.disposition === 'admitted' &&
+          member.epochKey === job.epochKey &&
+          sourceReadDisposition(member) === 'transient-unknown',
+      )
+    );
+  }
+
+  allRemainingProgressUnknown(): boolean {
+    const remaining = this.remaining();
+    return (
+      remaining.length > 0 &&
+      remaining.every((id) => {
+        const job = this.admissionById.get(id);
+        return job?.disposition === 'discovery-unknown' || (job !== undefined && this.progressHeld(job));
+      })
+    );
   }
 
   private validateEpochTokens(admissions: WaitAdmission[]): void {
@@ -280,7 +325,7 @@ export class WaitSession {
     const result: WaitProgressLine[] = [];
     this.unreadByJob.clear();
     for (const [epochKey, position] of this.epochs) {
-      if (this.admissions.some((job) => job.epochKey === epochKey && job.progressUnknown)) continue;
+      if (this.admissions.some((job) => job.epochKey === epochKey && this.progressHeld(job))) continue;
       const lines: WaitProgressLine[] = [];
       for (const job of this.admissions) {
         if (job.disposition !== 'admitted' || job.epochKey !== epochKey) continue;
@@ -351,7 +396,7 @@ export class WaitSession {
     } else this.progressLines = undefined;
   }
   requireLegacyReplaySupport(): void {
-    if (this.notices.length > 0)
+    if (this.notices.some((notice) => notice.startsWith('Collection membership changed')))
       throw new WaitSessionError(
         'wait_cursor_epoch_required',
         'Collection membership changed; rerun the wait without its cursor to collect earlier progress.',
@@ -361,7 +406,7 @@ export class WaitSession {
   skipEarlierProgress(): void {
     this.progressLines = [];
     this.progressHead = 0;
-    const blockedEpochs = new Set(this.admissions.filter((job) => job.progressUnknown).map((job) => job.epochKey));
+    const blockedEpochs = new Set(this.admissions.filter((job) => this.progressHeld(job)).map((job) => job.epochKey));
     for (const job of this.admissions) if (!blockedEpochs.has(job.epochKey)) this.unreadByJob.delete(job.jobId);
     for (const admission of this.admissions) {
       if (!admission.epochKey || admission.disposition !== 'admitted') continue;
@@ -382,7 +427,7 @@ export class WaitSession {
             (!job.detail?.exit ||
               !this.acknowledged(job.jobId) ||
               this.artifactPending(job.jobId) ||
-              job.progressUnknown === true ||
+              this.progressHeld(job) ||
               (this.unreadByJob.get(job.jobId) ?? 0) > 0)),
       )
       .map((job) => job.jobId);

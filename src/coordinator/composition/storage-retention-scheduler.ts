@@ -401,9 +401,10 @@ export function createStorageRetentionScheduler(input: {
         hintOwner = currentOwner;
         hintOwner?.onRepairHint(() => {
           const owner = owners.get('result-repair');
-          if (!owner || owner.fastDue !== null || outstandingOwners.has('result-repair')) return;
+          if (!owner || outstandingOwners.has('result-repair')) return;
           const now = runtime.time.monotonicNow();
-          owner.fastDue = now > lastRepairRun + 1000n ? now : lastRepairRun + 1000n;
+          const hintedDue = now > lastRepairRun + 1000n ? now : lastRepairRun + 1000n;
+          owner.fastDue = owner.fastDue === null || hintedDue < owner.fastDue ? hintedDue : owner.fastDue;
           repairHinted = true;
           if (timer !== null) {
             runtime.time.clearTimeout(timer);

@@ -1,3 +1,4 @@
+import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait/cursor.js';
 import { Command } from 'commander';
 import { afterEach, expect, it, vi } from 'vitest';
 import { registerSessionCommands } from '#src/cli/commands/session.js';
@@ -218,7 +219,8 @@ it('describes a reset snapshot cursor as a latest progress tail', async () => {
     return true;
   }) as never);
   await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--now', '--cursor', 'malformed']);
-  expect(output).toContain('this snapshot shows the latest progress tail');
-  expect(output).not.toContain('from the start');
+  expect(output).toContain('This snapshot shows the latest progress tail');
+  expect(output).toContain(WAIT_CURSOR_REPLAY_NOTICE);
+  expect(output).toContain('from the start');
   expect(output).toContain('line-29');
 });

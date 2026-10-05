@@ -21,6 +21,7 @@ import type { JobLocation } from './location-index.js';
 import { validatedTerminal, sameTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal } from './terminal/source.js';
 import { readIntactJobTerminalAge } from './terminal-age.js';
+import { sourceReadFailureDisposition } from './source-read.js';
 import { trustedJobRetentionCutoff } from './retention-clock.js';
 
 const terminalAgeSchema = z.object({
@@ -35,6 +36,7 @@ export type TerminalEligibility = Readonly<{
   age: number | 'unknown' | 'regression';
   sourceReadable: boolean;
   sourceReadFailed?: boolean;
+  sourceReadTransient?: boolean;
   sourceContradictory?: boolean;
   ageUnproven?: boolean;
   publicationAuthorized: boolean;
@@ -79,6 +81,7 @@ export function terminalEligibility(
         : 'unknown';
   let sourceReadable = false;
   let sourceReadFailed = false;
+  let sourceReadTransient = false;
   let sourceContradictory = false;
   if (observeSource && !(cutoff !== null && typeof age === 'number' && age < cutoff)) {
     try {
@@ -96,8 +99,9 @@ export function terminalEligibility(
         sourceReadable = true;
         if (location.terminalAge === undefined) age = readIntactJobTerminalAge(db, accepted, cutoff);
       });
-    } catch {
+    } catch (error) {
       sourceReadFailed = true;
+      sourceReadTransient = sourceReadFailureDisposition(error) === 'transient-unknown';
     }
   }
   const kind = cutoff === null ? 'unknown' : typeof age === 'number' ? (age < cutoff ? 'expired' : 'inside') : age;
@@ -107,6 +111,7 @@ export function terminalEligibility(
     age,
     sourceReadable,
     sourceReadFailed,
+    sourceReadTransient,
     sourceContradictory,
     ageUnproven: location.terminalAge === undefined || (matches && saved.data.kind === 'unknown'),
     cutoffTrusted: cutoff !== null,

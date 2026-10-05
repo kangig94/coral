@@ -50,14 +50,14 @@ export function selectWaitSnapshot(session: WaitSession, lines?: number): WaitSn
 function snapshotJob(session: WaitSession, admission: WaitAdmission, notices: string[]): WaitSnapshotJob {
   const { jobId, disposition, message, detail, availability } = admission;
   const row: WaitSnapshotJob = { jobId, disposition, ...(message === undefined ? {} : { message }), progress: [] };
+  if (admission.progressLost) notices.push(`earlier progress for ${jobId} is no longer kept`);
   if (disposition !== 'admitted') return row;
   row.epochToken = session.cursor([jobId]).epochs[0]?.token;
   row.phase = detail?.status.phase ?? 'unresolved';
-  if (admission.progressUnknown)
+  if (admission.sourceRead === 'settled-unreadable')
     notices.push(
-      `Earlier progress for ${jobId} could not be read. Snapshot exits 75 unresolved; its bounded wait continuation retries after 250 ms, 1 s and 5 s. Inspect coral-cli jobs detail ${jobId} --full.`,
+      `Earlier progress for ${jobId} cannot be read by this build. ${admission.message ?? 'This job leaves the continuation after its retained outcome is delivered.'} Inspect coral-cli jobs detail ${jobId} --full.`,
     );
-  if (admission.progressLost) notices.push(`earlier progress for ${jobId} is no longer kept`);
   if (detail?.exit) {
     row.availability = availability;
     row.alreadyCollected = session.acknowledged(jobId);

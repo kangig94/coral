@@ -1,3 +1,5 @@
+import { observeResolvedStoreEpoch } from '../../store/epoch/index.js';
+import { sourceReadFailureDisposition, sourceReadStamp } from '../source-read.js';
 import { dirname, join } from 'node:path';
 
 import type { Database } from '../../store/db.js';
@@ -30,9 +32,12 @@ function unavailableForEligibility(eligibility: TerminalEligibility, retentionDa
       kind: 'retained-away',
       retentionDays,
     };
+  if (eligibility.sourceReadFailed)
+    return eligibility.sourceReadTransient
+      ? { kind: 'repair-pending', ageUncertain: true }
+      : { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, ageUncertain: true };
   if (!eligibility.cutoffTrusted)
     return { kind: 'repair-pending', ageUncertain: eligibility.age === 'unknown' || eligibility.age === 'regression' };
-  if (eligibility.sourceReadFailed) return { kind: 'repair-pending', ageUncertain: true };
   if (eligibility.sourceContradictory) return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false };
   if (eligibility.age === 'unknown')
     return { kind: 'failed', cause: 'terminal-age-unknown', retryScheduled: false, ageUncertain: true };
@@ -242,7 +247,31 @@ export class TerminalResultExportOwner {
     return this.eligibility(jobId, false).kind === 'expired';
   }
 
-  observeResultAvailability(jobId: string): ResultAvailability {
+  private readonly observedEligibility = new WeakMap<
+    object,
+    Map<string, { stamp: string; location: JobLocation; eligibility: TerminalEligibility }>
+  >();
+
+  private observeEligibility(jobId: string, session?: object): TerminalEligibility {
+    const location = this.input.location(jobId);
+    const epoch = session && location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
+    const stamp = epoch ? sourceReadStamp(this.input.runtime.storage, epoch.path) : null;
+    const previous = session ? this.observedEligibility.get(session)?.get(jobId) : undefined;
+    if (stamp !== null && previous?.stamp === stamp && previous.location === location) {
+      const current = this.eligibility(jobId, false);
+      if (current.kind === 'expired' || !current.cutoffTrusted) return current;
+      return previous.eligibility;
+    }
+    const eligibility = this.eligibility(jobId);
+    if (session && location && stamp !== null && !eligibility.sourceReadFailed) {
+      const cache = this.observedEligibility.get(session) ?? new Map();
+      cache.set(jobId, { stamp, location, eligibility });
+      this.observedEligibility.set(session, cache);
+    }
+    return eligibility;
+  }
+
+  observeResultAvailability(jobId: string, session?: object): ResultAvailability {
     const location = this.input.location(jobId);
     if (!location || location.disposition !== 'terminal') {
       const retry = this.input.hydrationRetry?.(jobId);
@@ -260,8 +289,10 @@ export class TerminalResultExportOwner {
           this.input.withSource(jobId, (db) => readAcceptedTerminal(db, jobId) !== null)
         )
           return { kind: 'repair-pending', ageUncertain: true };
-      } catch {
-        return { kind: 'repair-pending', ageUncertain: true };
+      } catch (error) {
+        return sourceReadFailureDisposition(error) === 'transient-unknown'
+          ? { kind: 'repair-pending', ageUncertain: true }
+          : { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, ageUncertain: true };
       }
       return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, unverifiedResultPath };
     }
@@ -269,7 +300,7 @@ export class TerminalResultExportOwner {
       return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false };
     if (this.available(jobId))
       return { kind: 'available', resultPath: location.resultPath ?? resultPathFor(this.input.jobsRoot, jobId) };
-    const eligibility = this.eligibility(jobId);
+    const eligibility = this.observeEligibility(jobId, session);
     const unavailable = unavailableForEligibility(
       eligibility,
       resolveJobRetentionMs(this.input.runtime.env.get('CORAL_JOBS_RETENTION_DAYS')) / 86_400_000,
@@ -390,9 +421,10 @@ export class TerminalResultExportOwner {
   }
 
   private async repairCandidate(jobId: string, budget: RetentionRunBudget): Promise<void> {
-    const state = this.observeResultAvailability(jobId);
-    if (state.kind !== 'repair-pending' && !(state.kind === 'failed' && state.retryScheduled)) return;
     try {
+      if (budget.canMutate?.() !== false) this.input.prepareTerminal?.(jobId);
+      const state = this.observeResultAvailability(jobId);
+      if (state.kind !== 'repair-pending' && !(state.kind === 'failed' && state.retryScheduled)) return;
       if (budget.canMutate?.() !== false) this.ensureResultMarkdownArtifact(jobId);
       const after = this.observeResultAvailability(jobId);
       if (after.kind === 'repair-pending') budget.record({ kind: 'kept', subject: jobId, reason: 'repair-pending' });

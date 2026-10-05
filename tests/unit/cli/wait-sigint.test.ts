@@ -180,6 +180,7 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
 
 it('two SIGINTs end a monitor without calling abort', async () => {
   capture();
+  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
   const budget = invocation();
   const abortJobs = vi.fn();
   const code = followJobs({
@@ -196,6 +197,7 @@ it('two SIGINTs end a monitor without calling abort', async () => {
   process.emit('SIGINT');
   expect(await code).toBe(75);
   expect(abortJobs).not.toHaveBeenCalled();
+  expect(exit).toHaveBeenCalledExactlyOnceWith(75);
 });
 
 it('a stdout drain cannot outlive the invocation or advance an undelivered cursor', async () => {
@@ -438,4 +440,43 @@ it('terminates a repeated cursor-reset refusal after retrying without the cursor
   ).toBe(1);
   expect(connect).toHaveBeenCalledTimes(2);
   expect(emitError).toHaveBeenCalledOnce();
+});
+
+it.each([false, true])('honors a second SIGINT after a canceled invocation disposes, flushed: %s', (flushed) => {
+  vi.useFakeTimers();
+  capture();
+  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+  const budget = invocation();
+  budget.stop();
+  if (flushed) budget.flushContinuation(true);
+  budget.dispose();
+  process.emit('SIGINT');
+  expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+});
+
+it('does not print a second continuation when a snapshot write callback crosses its watchdog', async () => {
+  vi.useFakeTimers();
+  const budget = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
+  invocations.push(budget);
+  let output = '';
+  let finish!: (error?: Error | null) => void;
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: (error?: Error | null) => void) => {
+    output += text;
+    if (text !== '') finish = callback!;
+    else callback?.();
+    return true;
+  }) as never);
+  const write = budget.writeSnapshotOutput(
+    'Snapshot\nRun coral-cli wait jobs a --now --cursor advanced\n',
+    'Run coral-cli wait jobs a --now --cursor advanced\n',
+  );
+  const observed = write.catch((error) => error);
+  await vi.advanceTimersByTimeAsync(30000);
+  budget.flushContinuation(true);
+  expect(output.match(/Run coral-cli/g)).toHaveLength(1);
+  finish();
+  await observed;
+  budget.flushContinuation(true);
+  expect(output).not.toContain('admission did not complete');
+  expect(output.match(/Run coral-cli/g)).toHaveLength(1);
 });

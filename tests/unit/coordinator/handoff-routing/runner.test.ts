@@ -511,3 +511,29 @@ describe('handoff-routing/runner', () => {
     });
   });
 });
+
+it('writes no shared routing record when a newer target fails the wait contract probe', async () => {
+  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(Object.assign(new Error('unsupported contract'), { code: 2 }), ''));
+    return childThatExits(2, null);
+  });
+  const result = await runHandoffResult(cliOperation('wait', 'jobs', 'a'), {
+    pluginRoot: '/plugin/root',
+    waitInvocation: {
+      mode: 'bounded',
+      signal: new AbortController().signal,
+      originalCommand: 'coral-cli wait jobs a',
+      remainingMs: () => 10000,
+      cleanupRemainingMs: () => 11000,
+      saveContinuation: vi.fn(),
+    },
+  });
+  expect(result).toMatchObject({
+    kind: 'recording-not-applicable',
+    continuationWithoutRecording: {
+      kind: 'run-current',
+      reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' },
+    },
+  });
+  expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
+});

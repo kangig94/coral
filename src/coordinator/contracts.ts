@@ -105,7 +105,8 @@ export type ExecutionServiceDeps = {
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
   currentJobEpochKey?: () => string | null;
-  observeResultAvailability: (jobId: string) => ResultAvailability;
+  observeJobAbsence?: (jobId: string) => boolean;
+  observeResultAvailability: (jobId: string, session?: object) => ResultAvailability;
   hintResultRepair?: (jobId: string) => void;
   /** Tries to route an app-server operation through a live provider proxy set (W2.3). Optional because most
    *  compositions (every test, and any coordinator with no live set) never wire it — `LaunchOrchestrator`

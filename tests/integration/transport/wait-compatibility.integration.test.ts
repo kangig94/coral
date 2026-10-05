@@ -148,7 +148,7 @@ function addressing(artifact: 'available' | 'repair-pending' | 'retained-away' |
     },
     () => false,
     () => 'decided',
-    () => ({ kind: 'read', locations: new Map([['a', location]]) }),
+    () => ({ kind: 'read', dispositions: new Map(), locations: new Map([['a', location]]) }),
     () => availability,
   );
 }

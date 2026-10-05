@@ -584,6 +584,8 @@ export function createCoordinatorCore(
     runtime,
     getActiveEpochPath: () => core.state.selectedStoreEpochPath,
     currentJobEpochKey: core.currentJobEpochKey,
+    observeJobAbsence: (jobId) =>
+      core.jobLocationIndex.read(jobId) === null && core.jobLocationIndex.unknownLocationHolds().length === 0,
     bundleHash: world.identity.bundleHash,
     backendNamespace: world.namespace,
     settlementRefusalRecorder,

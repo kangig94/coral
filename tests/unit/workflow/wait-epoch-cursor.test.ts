@@ -196,6 +196,7 @@ it('a workflow child missing from the real reader fails its atom after one proje
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     loadJobProjectionDetail: load,
     readJobEvents: () => [],
+    observeJobAbsence: () => true,
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,
     currentJobEpochKey: () => 'real-epoch',

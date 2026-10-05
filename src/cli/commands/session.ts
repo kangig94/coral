@@ -1,3 +1,4 @@
+import { WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
 import { decodeSerializedWaitCursor } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
@@ -210,11 +211,11 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       if (opts.cursor !== undefined) {
         const decoded = decodeSerializedWaitCursor(opts.cursor);
         if (decoded.kind === 'decoded') cursor = decoded.cursor;
-        else process.stdout.write(`Collection cursor was reset; this snapshot shows the latest progress tail.\n`);
+        else process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE} This snapshot shows the latest progress tail.\n`);
       }
       const reset = () => {
         cursor = undefined;
-        process.stdout.write(`Collection cursor was reset; this snapshot shows the latest progress tail.\n`);
+        process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE} This snapshot shows the latest progress tail.\n`);
       };
       const read = () =>
         client.snapshotJobsWait(
@@ -256,12 +257,14 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         );
       }
       const output = formatWaitSnapshot(snapshot) + '\n';
+      const continuation =
+        formatWaitContinuation(snapshot.remainingJobIds, serializeWaitCursor(snapshot.cursor), true) + '\n';
       const write = () =>
         new Promise<void>((resolve, reject) =>
           process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
         );
       try {
-        await (invocation ? invocation.run(write) : write());
+        await (invocation ? invocation.writeSnapshotOutput(output, continuation) : write());
       } catch (error) {
         if (error instanceof WaitInvocationEnded) throw error;
         throw new WaitOutputError(
@@ -270,10 +273,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
             `coral-cli wait jobs ${jobIds.join(' ')} --now${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
         );
       }
-      invocation?.saveContinuation(
-        formatWaitContinuation(snapshot.remainingJobIds, serializeWaitCursor(snapshot.cursor), true) + '\n',
-        true,
-      );
+
       process.exitCode = snapshot.exitCode;
       return;
     }

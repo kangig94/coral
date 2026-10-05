@@ -2,7 +2,7 @@ import { JobAddressing } from '#src/jobs/addressing.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { describe, expect, it, vi } from 'vitest';
-import { WaitSession } from '#src/jobs/wait/session.js';
+import { WaitSession, type SourceReadDisposition } from '#src/jobs/wait/session.js';
 import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 
@@ -151,7 +151,7 @@ it.each([false, true])(
       { epochKey: () => 'active', detail: () => null } as never,
       () => false,
       () => 'decided',
-      () => ({ kind: 'unreadable', retired: true }),
+      () => ({ kind: 'unreadable', disposition: 'retired', retired: true }),
       () => ({ kind: 'retained-away', retentionDays: 14 }),
     );
     const snapshot = reader.snapshot({ jobIds: ['h'], projectRoot: '/tmp' });
@@ -159,8 +159,8 @@ it.each([false, true])(
     expect(snapshot.notices).toContain('earlier progress for h is no longer kept');
     if (corrupt) {
       expect(snapshot.jobs[0].terminal).toBeUndefined();
-      expect(snapshot.remainingJobIds).toEqual(['h']);
-      expect(snapshot.exitCode).toBe(75);
+      expect(snapshot.remainingJobIds).toEqual([]);
+      expect(snapshot.exitCode).toBe(1);
     } else expect(snapshot.jobs[0].terminal).toBeDefined();
   },
 );
@@ -263,13 +263,14 @@ it('versionless membership evidence never acknowledges a terminal before deliver
 
 it('holds the shared progress frontier while one member history is unreadable', () => {
   const a = admitted('a');
+  a.sourceRead = 'transient-unknown';
   a.progressUnknown = true;
   const b = admitted('b', [[5, 'sibling backlog']]);
   const session = new WaitSession(['a', 'b']);
   session.reconcile([a, b]);
   const first = selectWaitSnapshot(session, 20);
   expect(first.jobs[1].progress).toEqual([]);
-  expect(first.remainingJobIds).toEqual(['a']);
+  expect(first.remainingJobIds).toEqual(['a', 'b']);
   expect(first.cursor.epochs[0].watermark).toBe(0);
   const resumed = new WaitSession(['a', 'b'], first.cursor);
   resumed.reconcile([admitted('a', [[3, 'recovered backlog']]), b]);
@@ -277,3 +278,34 @@ it('holds the shared progress frontier while one member history is unreadable', 
   expect(next.jobs.map((job) => job.progress)).toEqual([['recovered backlog'], ['sibling backlog']]);
   expect(next.remainingJobIds).toEqual([]);
 });
+
+it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as const)(
+  'keeps sibling progress and settles %s after retained outcome delivery',
+  (sourceRead: SourceReadDisposition) => {
+    const a = admitted(
+      'A',
+      [
+        [10, 'a-ten'],
+        [11, 'a-eleven'],
+      ],
+      true,
+      'epoch-H',
+    );
+    const u = { ...admitted('U', [], true, 'epoch-H'), sourceRead };
+    const session = new WaitSession(['A', 'U']);
+    session.reconcile([a, u]);
+    session.acknowledge(a);
+    session.acknowledge(u);
+    if (sourceRead === 'transient-unknown') {
+      expect(session.progress()).toEqual([]);
+      expect(session.remaining()).toEqual(['A', 'U']);
+      expect(session.notices.some((notice) => notice.includes('A') && notice.includes('progress held'))).toBe(true);
+      expect(session.cursor(session.remaining()).epochs[0].watermark).toBe(0);
+    } else {
+      expect(session.progress().map((line) => line.text)).toEqual(['a-ten', 'a-eleven']);
+      expect(session.remaining()).toEqual(['A']);
+      for (const line of session.progress()) session.consume(line);
+      expect(session.remaining()).toEqual([]);
+    }
+  },
+);
