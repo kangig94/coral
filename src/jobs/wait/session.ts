@@ -10,11 +10,13 @@ export type WaitDisposition =
   | 'discovery-unknown'
   | 'pre-epoch-history'
   | 'outcome-unrecoverable'
+  | 'outcome-unreadable'
+  | 'discovery-unreadable'
   | 'scope-mismatch';
 
 /** Source reads settle per job; only a retryable observation holds an epoch prefix.
  * readable: observed success; transient-unknown: busy/lock contention or retryScheduled hold;
- * settled-unreadable: decode/parse, unsupported fingerprint, identity/lock failure or permanent hold;
+ * settled-unreadable: decode/parse, unsupported fingerprint or an owner-settled hold;
  * retired: observed source retirement.
  */
 export type SourceReadDisposition = 'readable' | 'transient-unknown' | 'settled-unreadable' | 'retired';
@@ -215,8 +217,8 @@ export class WaitSession {
         epochKey === this.activeEpochKey &&
         (this.internal ||
           legacy.afterSeq === 0 ||
-          (legacy.admittedJobIds === undefined && legacy.deliveredJobIds === undefined) ||
-          (legacy.admittedJobIds ?? legacy.deliveredJobIds)?.includes(jobId) === true));
+          legacy.admittedJobIds === undefined ||
+          legacy.admittedJobIds?.includes(jobId) === true));
     const inputPosition =
       inputEpoch ??
       (legacy?.version === 'jobs.wait.v2' && legacy.positions[epochKey] !== undefined

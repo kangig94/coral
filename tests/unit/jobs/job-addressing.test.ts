@@ -1,3 +1,4 @@
+import { retryUnknownHistoricalEpochs } from '#src/jobs/historical-reader.js';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -424,3 +425,85 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
     if (sourceRead === 'retired') expect(snapshot.notices.join(' ')).toContain('no longer kept');
   },
 );
+
+it('historical maintenance never settles an active recovery hold', () => {
+  const { index } = fixture();
+  const key = 'active';
+  index.holdUnknownLocations(key, 'database is locked', true);
+  const before = index.unknownLocationHolds();
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      epochKey: () => key,
+      detail: () => null,
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+    undefined,
+    () => ({ kind: 'repair-pending', ageUncertain: true }),
+  );
+  for (let i = 0; i < 50; i++) retryUnknownHistoricalEpochs(index);
+  expect(index.unknownLocationHolds()).toEqual(before);
+  expect(addressing.unknownJobDisposition()).toBe('not-found');
+  expect(addressing.unknownJobCaveat()).toBe('');
+});
+
+it.each(['pending', 'decided'] as const)(
+  'settled source with %s closure agrees across wait, detail and abort',
+  (closure) => {
+    const { index } = fixture();
+    index.register('U', 'old', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'active',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => closure,
+      () => ({ kind: 'unreadable', disposition: 'settled-unreadable', reason: 'bounded attempts exhausted' }),
+      () => ({ kind: 'repair-pending', ageUncertain: true }),
+    );
+    expect(addressing.admitWait({ jobIds: ['U'], supportsWaitV3: true })).toMatchObject([
+      { disposition: 'outcome-unreadable' },
+    ]);
+    expect(addressing.detail('U')).toMatchObject({ kind: 'outcome-unreadable' });
+    const snapshot = addressing.snapshot({ jobIds: ['U'] });
+    expect(snapshot.exitCode).toBe(1);
+    expect(snapshot.remainingJobIds).toEqual([]);
+    expect(addressing.abort(['U'])).toMatchObject({ kind: 'answered', result: { refused: [{ jobId: 'U' }] } });
+  },
+);
+
+it('isolates a schema-incompatible location from readable siblings', () => {
+  const { root, index } = fixture();
+  index.register('bad', 'old', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from('bad').toString('base64url')}.json`);
+  const raw = JSON.parse(runtime.storage.readFileSync(path, 'utf-8')) as Record<string, unknown>;
+  writeFileSync(path, JSON.stringify({ ...raw, version: 'future' }));
+  const addressing = new JobAddressing(
+    index,
+    {
+      epochKey: () => 'active',
+      detail: (id) => (id === 'good' ? detail('good', 'completed') : null),
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+    undefined,
+    () => ({ kind: 'available', resultPath: '/r.md' }),
+  );
+  const admissions = addressing.admitWait({ jobIds: ['good', 'bad'], supportsWaitV3: true });
+  expect(admissions).toMatchObject([{ disposition: 'admitted' }, { disposition: 'discovery-unreadable' }]);
+  expect(addressing.snapshot({ jobIds: ['good', 'bad'] })).toMatchObject({ exitCode: 1, remainingJobIds: [] });
+});

@@ -33,6 +33,7 @@ const jobWaitFieldsSchema = z
     supportsInterrupted: z.boolean().optional(),
     supportsWaitV2: z.boolean().optional(),
     supportsWaitV3: z.boolean().optional(),
+    drainProgress: z.boolean().optional(),
     // A subscriber that omits this reads a clean end as final, so it must never be sent a handover notice.
     supportsHandover: z.boolean().optional(),
   })
@@ -56,6 +57,7 @@ export const jobWaitSnapshotSchema = jobWaitFieldsSchema
     supportsHandover: true,
     supportsWaitV2: true,
     supportsWaitV3: true,
+    drainProgress: true,
   })
   .extend({ lines: z.number().int().min(1).max(500).optional() })
   .superRefine((value, ctx) => {
@@ -74,16 +76,20 @@ export const JOBS_WAIT_EXTENSIONS = [
   'supportsWaitV2',
   'supportsHandover',
   'supportsWaitV3',
+  'drainProgress',
 ] as const;
 
 export function jobsWaitExtensions(jobs: Pick<RpcPorts['jobs'], 'snapshot' | 'admitWait'>): readonly string[] {
-  return JOBS_WAIT_EXTENSIONS.filter((flag) => flag !== 'supportsWaitV3' || (jobs.snapshot && jobs.admitWait));
+  return JOBS_WAIT_EXTENSIONS.filter(
+    (flag) => (flag !== 'supportsWaitV3' && flag !== 'drainProgress') || (jobs.snapshot && jobs.admitWait),
+  );
 }
 
 export type JobsWaitFields = Readonly<{
   jobIds: readonly string[];
   projectRoot: string;
   timeoutSeconds?: number;
+  drainProgress?: boolean;
   cursor?: WaitCursor;
 }>;
 
@@ -109,8 +115,14 @@ export function jobsWaitRequest(
     projectRoot: fields.projectRoot,
     ...(fields.timeoutSeconds === undefined ? {} : { timeoutSeconds: fields.timeoutSeconds }),
     ...(cursor === undefined ? {} : { cursor }),
+    ...(fields.drainProgress === true && extensions.includes('drainProgress') ? { drainProgress: true } : {}),
     // This CLI can render `interrupted`; advertise it only to a coordinator that accepts the field.
-    ...Object.fromEntries(JOBS_WAIT_EXTENSIONS.filter((flag) => extensions.includes(flag)).map((flag) => [flag, true])),
+    ...Object.fromEntries(
+      JOBS_WAIT_EXTENSIONS.filter((flag) => flag !== 'drainProgress' && extensions.includes(flag)).map((flag) => [
+        flag,
+        true,
+      ]),
+    ),
   };
 }
 

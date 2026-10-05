@@ -11,7 +11,8 @@ export type WaitCursorError = Readonly<{
     | 'job_pre_epoch_history'
     | 'transient'
     | 'scope_mismatch'
-    | 'job_outcome_unrecoverable';
+    | 'job_outcome_unrecoverable'
+    | 'job_outcome_unreadable';
   message: string;
   detail?: { jobs: string[]; disposition?: string };
   remediation?: string;
@@ -25,7 +26,8 @@ export type JobDetailLookup =
       epochKey: string;
     }>
   | Readonly<{
-      kind: 'outcome-unrecoverable';
+      kind: 'outcome-unrecoverable' | 'outcome-unreadable';
+      message?: string;
       jobId: string;
       epochKey: string;
     }>

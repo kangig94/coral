@@ -1408,11 +1408,11 @@ let durableStageCounter = 0;
 function writeAtomicDurableSyncNode(
   path: string,
   data: StorageData,
-  options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean },
+  options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean; stagePath?: string },
 ): boolean {
   const mode = options?.mode;
   const parent = dirname(path);
-  const tempPath = `${path}.stage-${process.pid}-${++durableStageCounter}-${randomUUID()}`;
+  const tempPath = options?.stagePath ?? `${path}.stage-${process.pid}-${++durableStageCounter}-${randomUUID()}`;
   mkdirSync(parent, { recursive: true });
 
   let fd: number | null = null;

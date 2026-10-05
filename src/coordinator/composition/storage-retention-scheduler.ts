@@ -272,8 +272,7 @@ export function createStorageRetentionScheduler(input: {
               db,
               runtime,
               cutoff,
-              eligibility: (id) =>
-                input.jobLocations.read(id) === null ? undefined : input.jobLocations.terminalEligibility(id),
+              eligibility: (id) => input.jobLocations.exportDeletionEligibility(id),
               afterId: readCursor('exports', mutate),
               budget,
               jobState: (id) => readExportJobState(db, progressStore, id),
@@ -401,7 +400,7 @@ export function createStorageRetentionScheduler(input: {
         hintOwner = currentOwner;
         hintOwner?.onRepairHint(() => {
           const owner = owners.get('result-repair');
-          if (!owner || outstandingOwners.has('result-repair')) return;
+          if (!owner) return;
           const now = runtime.time.monotonicNow();
           const hintedDue = now > lastRepairRun + 1000n ? now : lastRepairRun + 1000n;
           owner.fastDue = owner.fastDue === null || hintedDue < owner.fastDue ? hintedDue : owner.fastDue;

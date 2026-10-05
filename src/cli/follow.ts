@@ -84,6 +84,7 @@ type FollowConnectionRequest = Readonly<{
   jobIds: readonly string[];
   cursor?: WaitCursor;
   timeoutSeconds: number;
+  drainProgress: boolean;
   signal: AbortSignal;
   onCursorReset: () => void;
 }>;
@@ -371,6 +372,7 @@ async function connectFollowStream(
       throw new WaitInvocationEnded();
     }
     const connection = await options.connect({
+      drainProgress: options.reconnectPolicy === 'until-terminal',
       jobIds: state.remainingJobIds,
       ...(state.sendCursor || serializedCursor(state.currentCursor) !== undefined
         ? { cursor: state.currentCursor }
@@ -516,15 +518,27 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
       serializeWaitCursor(waitCursorForJobs(state.currentCursor, remaining)),
       remaining,
     ) + '\n';
-  const delivery = emitWaitEvent(event, cursor, jobLabels, remaining, options.render, causeRenderer.render, () => {
-    options.invocation?.saveContinuation(
-      savedContinuation,
-      event.type === 'terminal' ||
-        event.type === 'waiting' ||
-        event.type === 'artifact' ||
-        (event.type === 'notice' && event.exitCode !== undefined),
-    );
-  }).catch((error: unknown) => {
+  const renderedEvent =
+    options.reconnectPolicy === 'until-terminal' && event.type === 'terminal'
+      ? { ...event, remainingJobIds: [], exitCode: toExitCode(event.result) }
+      : event;
+  const delivery = emitWaitEvent(
+    renderedEvent,
+    cursor,
+    jobLabels,
+    renderedEvent.type === 'terminal' ? renderedEvent.remainingJobIds : remaining,
+    options.render,
+    causeRenderer.render,
+    () => {
+      options.invocation?.saveContinuation(
+        savedContinuation,
+        event.type === 'terminal' ||
+          event.type === 'waiting' ||
+          event.type === 'artifact' ||
+          (event.type === 'notice' && event.exitCode !== undefined),
+      );
+    },
+  ).catch((error: unknown) => {
     throw new WaitOutputError(error, followOriginalCommand(options));
   });
   if (options.reconnectPolicy === 'bounded') {
@@ -549,6 +563,7 @@ function followEventDecision(event: WaitStreamEvent, context: FollowContext): Fo
     return { kind: 'exit', code: event.exitCode };
   }
   if (event.type === 'terminal') {
+    if (options.reconnectPolicy === 'until-terminal') return { kind: 'exit', code: toExitCode(event.result) };
     const exitCode = event.exitCode ?? toExitCode(event.result);
     if (exitCode !== 0) return { kind: 'exit', code: exitCode };
     state.remainingJobIds = [...event.remainingJobIds];
@@ -821,7 +836,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         abandoned: results.flatMap((result) => result.abandoned ?? []),
       };
     },
-    connect: async ({ jobIds, cursor, timeoutSeconds, signal, onCursorReset }) => {
+    connect: async ({ jobIds, cursor, timeoutSeconds, signal, onCursorReset, drainProgress }) => {
       let backend;
       try {
         backend = await ensure('jobs.wait', options.pluginRoot);
@@ -858,7 +873,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         subscription: await backend.subscribe<unknown>(
           'jobs.wait',
           jobsWaitRequest(
-            { jobIds, timeoutSeconds, projectRoot: options.projectRoot, ...(cursor ? { cursor } : {}) },
+            { jobIds, timeoutSeconds, drainProgress, projectRoot: options.projectRoot, ...(cursor ? { cursor } : {}) },
             backend.jobsWaitExtensions,
             onCursorReset,
           ),

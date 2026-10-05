@@ -1,3 +1,5 @@
+import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
+import type { JobDetailResponse } from '#src/jobs/records.js';
 import { encodeResolvedStoreEpoch } from '#src/store/epoch/observation.js';
 import { protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/protection.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
@@ -1063,4 +1065,72 @@ it.each([
   } finally {
     f.close();
   }
+});
+
+describe('retired legacy exports', () => {
+  function detail(jobId: string, ts: string): JobDetailResponse {
+    const result = { content: 'done', outcome: { kind: 'completed' as const }, durationMs: 1 };
+    return {
+      status: {
+        jobId,
+        owner: { kind: 'provider-session', id: 's' },
+        sessionId: 's',
+        provider: 'claude',
+        projectRoot: '/w/p',
+        workDir: canonicalWorkDirWireSchema.parse('/w/p'),
+        backendNamespace: 't',
+        jobKind: 'provider',
+        phase: 'completed',
+        updatedAt: ts,
+        result,
+      },
+      events: [{ type: 'terminal', jobId, sessionId: 's', seq: 2, ts, result }],
+      readiness: 'ready',
+      exit: { ...result, diagnostics: { progressFaults: [] }, endTime: ts },
+    } as JobDetailResponse;
+  }
+
+  async function run(useAuthority: boolean) {
+    const f = createRetentionFixture();
+    fixtures.push(f);
+    const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+    const storeRoot = join(f.baseDir, 'store');
+    const retiredKey = JSON.stringify({ storeRoot, epoch: '1', path: join(storeRoot, 'epoch-1', 'store.db') });
+    const jobId = 'legacy-job';
+    // a v0.10.15-17 terminal location record (no terminalAge) whose epoch has since retired
+    index.register(jobId, retiredKey, { projectRoot: '/w/p', workDir: '/w/p', jobKind: 'provider' });
+    index.recordTerminal(
+      jobId,
+      detail(jobId, '2026-01-01T00:00:00.000Z'),
+      join(f.runtime.paths.coral.exports.jobsRoot, jobId, 'result.md'),
+      2,
+    );
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, jobId);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'result.md'), 'old result');
+    utimesSync(join(path, 'result.md'), 1, 1);
+    utimesSync(path, 1, 1);
+    for (let i = 0; i < 5; i++)
+      await pruneJobExports({
+        db: f.db,
+        runtime: f.runtime,
+        cutoff: RETENTION_CUTOFF,
+        afterId: '',
+        budget: f.budget,
+        jobState: () => ({ kind: 'absent' }),
+        resultHold: (id) => index.exportResultRetention(id, null),
+        mutate: (op) => op(),
+        ...(useAuthority
+          ? { eligibility: (id: string) => (index.read(id) === null ? undefined : index.exportDeletionEligibility(id)) }
+          : {}),
+      });
+    return existsSync(path);
+  }
+
+  it('a retired-epoch legacy export (terminal ~9 months old) is eventually reclaimed', async () => {
+    const base = await run(false);
+    const branch = await run(true);
+    expect(base).toBe(false);
+    expect(branch).toBe(false);
+  });
 });

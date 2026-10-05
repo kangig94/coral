@@ -156,7 +156,7 @@ it.each([false, true])(
     );
     const snapshot = reader.snapshot({ jobIds: ['h'], projectRoot: '/tmp' });
     expect(snapshot.jobs[0].progress).toEqual([]);
-    expect(snapshot.notices).toContain('earlier progress for h is no longer kept');
+    if (!corrupt) expect(snapshot.notices).toContain('earlier progress for h is no longer kept');
     if (corrupt) {
       expect(snapshot.jobs[0].terminal).toBeUndefined();
       expect(snapshot.remainingJobIds).toEqual([]);
@@ -182,14 +182,14 @@ it('translates a released acknowledgement into pending artifact collection witho
   expect(snapshot.cursor.jobs[0].flags).toBe(3);
 });
 
-it('unrecorded versionless membership replays progress while keeping recorded terminal acknowledgements', () => {
+it('versionless acknowledgements do not invent a membership reset', () => {
   const a = admitted('a', [[100, 'a100']]);
   const u = admitted('u', [[2, 'u2']], false);
   const session = new WaitSession(['a', 'u'], { afterSeq: 100, deliveredJobIds: ['a'] }, 'epoch-E');
   session.reconcile([a, u]);
-  expect(session.progress().map((line) => line.text)).toEqual(['u2', 'a100']);
+  expect(session.progress().map((line) => line.text)).toEqual([]);
   expect(session.acknowledged('a')).toBe(true);
-  expect(session.notices).toEqual([expect.stringContaining('membership changed')]);
+  expect(session.notices).toEqual([]);
 });
 
 it.each([
@@ -309,3 +309,19 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
     }
   },
 );
+
+it('a versionless deliveredJobIds list acknowledges terminals without declaring membership', () => {
+  const session = new WaitSession(['b'], { afterSeq: 50, deliveredJobIds: ['a'] }, 'epoch-E');
+  session.reconcile([
+    admitted(
+      'b',
+      [
+        [40, 'already seen'],
+        [60, 'next'],
+      ],
+      false,
+    ),
+  ]);
+  expect(session.notices).toEqual([]);
+  expect(session.progress().map((line) => line.text)).toEqual(['next']);
+});

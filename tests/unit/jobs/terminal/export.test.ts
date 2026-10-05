@@ -1,6 +1,11 @@
+import { trustedJobRetentionCutoff } from '#src/jobs/retention-clock.js';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { observeTerminalResultExports } from '#src/jobs/terminal/export.js';
+import {
+  TerminalResultExportOwner,
+  type WorkflowReportPort,
+  observeTerminalResultExports,
+} from '#src/jobs/terminal/export.js';
 import { formatResultAvailability } from '#src/cli/format/result-availability.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
@@ -53,15 +58,12 @@ describe('terminal export owner', () => {
     expect(readFileSync(f.resultPath, 'utf8')).toBe('canonical result\n');
   });
 
-  it('does not promise repair for a permanently held unresolved epoch', () => {
+  it('observes the source before applying a permanent location hold', () => {
     const f = fixture();
     f.complete();
     f.index.markUncertified(f.jobId);
     f.index.holdUnknownLocations(f.epochKey, 'retained-controller-recovery-unavailable');
-    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
-      kind: 'failed',
-      retryScheduled: false,
-    });
+    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
   });
   it.each([1, 2, 'deadline'] as const)(
     'repairs an unhinted tail despite persistent failed retries with a %s pass budget',
@@ -494,7 +496,9 @@ describe('terminal export owner', () => {
     expect(sync).not.toHaveBeenCalled();
     f.jump(86_400_000);
     expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
-      kind: 'repair-pending',
+      kind: 'failed',
+      cause: 'cutoff-untrusted',
+      retryScheduled: true,
     });
     f.store.ensureResultArtifact(f.jobId);
     expect(existsSync(f.resultPath)).toBe(false);
@@ -532,15 +536,15 @@ it('never promises result repair for a source with no accepted terminal', async 
   expect(record).not.toHaveBeenCalled();
 });
 
-it('labels an existing file from an uncertified held epoch as unverified', () => {
+it('keeps source-backed hydration pending even with an unverified artifact', () => {
   const f = fixture();
   f.complete();
   f.store.publishTerminalResult(f.jobId);
   f.index.markUncertified(f.jobId);
   f.index.holdUnknownLocations(f.epochKey, 'retained-controller-recovery-unavailable');
   const state = f.store.getResultExportOwner().observeResultAvailability(f.jobId);
-  expect(state).toMatchObject({ kind: 'failed', retryScheduled: false, unverifiedResultPath: f.resultPath });
-  expect(formatResultAvailability(state)).toContain(`Unverified result path: ${f.resultPath}`);
+  expect(state).toMatchObject({ kind: 'repair-pending', ageUncertain: true });
+  expect(formatResultAvailability(state)).not.toContain('Result path:');
 });
 
 it('a hinted repair pass never enumerates the full location inventory', async () => {
@@ -585,4 +589,139 @@ it('reports contradictory accepted source facts as unusable without promising a 
     cause: 'terminal-unusable',
     retryScheduled: false,
   });
+});
+
+it('a source terminal dominates its maintenance hold when location hydration failed', () => {
+  const f = fixture();
+  f.complete();
+  f.index.markUncertified(f.jobId);
+  f.index.holdUnknownLocations(f.epochKey, 'location recording unavailable', false);
+  expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toEqual({
+    kind: 'repair-pending',
+    ageUncertain: true,
+  });
+});
+
+it('an untrusted cutoff reports its own cause and preserves settled causes', () => {
+  const f = fixture();
+  f.complete();
+  const owner = f.store.getResultExportOwner();
+  trustedJobRetentionCutoff(f.runtime);
+  const wall = f.runtime.time.now();
+  f.runtime.time.now = () => wall + 6 * 60 * 60 * 1000;
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
+    kind: 'failed',
+    cause: 'cutoff-untrusted',
+    retryScheduled: true,
+  });
+  expect(formatResultAvailability(owner.observeResultAvailability(f.jobId))).toContain('five minutes');
+  const original = f.index.read(f.jobId)!;
+  vi.spyOn(f.index, 'read').mockReturnValue({ ...original, terminalAge: undefined });
+  const closedOwner = new TerminalResultExportOwner({
+    runtime: f.runtime,
+    jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+    location: (id) => f.index.read(id),
+    withSource: () => null,
+  });
+  expect(closedOwner.observeResultAvailability(f.jobId)).toMatchObject({
+    kind: 'failed',
+    cause: 'terminal-age-unknown',
+    retryScheduled: false,
+  });
+});
+
+it('preserves the confirmed absent-directory rule for an unknown-age legacy crash residue', () => {
+  const f = fixture();
+  f.complete();
+  const location = f.index.read(f.jobId)!;
+  vi.spyOn(f.index, 'read').mockReturnValue({ ...location, terminalAge: undefined });
+  vi.spyOn(f.index, 'terminalEligibility').mockReturnValue({
+    kind: 'unknown',
+    age: 'unknown',
+    ageUnproven: true,
+    sourceReadable: true,
+    cutoffTrusted: true,
+    publicationAuthorized: false,
+  });
+  f.runtime.storage.mkdirSync(f.runtime.paths.coral.exports.jobsRoot + '/' + f.jobId, { recursive: true });
+  writeFileSync(f.resultPath + '.stage-crashed', 'unfinished publication');
+  expect(f.index.resultDurable(f.jobId)).toBe(false);
+  expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).not.toHaveProperty('resultPath');
+});
+
+it('unchanged workflow availability polls render the report once per read session', () => {
+  const f = fixture('workflow');
+  f.complete();
+  writeFileSync(f.epoch.path, 'source stamp');
+  const owner = f.store.getResultExportOwner();
+  const input = (owner as unknown as { input: { workflowReport: WorkflowReportPort } }).input;
+  const report = vi.spyOn(input, 'workflowReport');
+  const session = {};
+  for (let i = 0; i < 40; i++) owner.observeResultAvailability(f.jobId, session);
+  expect(report).toHaveBeenCalledTimes(1);
+});
+
+it('a repair scan skips terminal preparation for already recorded age evidence', async () => {
+  const f = fixture();
+  f.complete();
+  const owner = f.store.getResultExportOwner();
+  const input = (owner as unknown as { input: { prepareTerminal?: (id: string) => void } }).input;
+  const prepare = vi.spyOn(input, 'prepareTerminal');
+  await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
+  expect(prepare).not.toHaveBeenCalled();
+});
+
+it('rechecks clock trust without forgetting cached source facts', () => {
+  const f = fixture();
+  f.complete();
+  writeFileSync(f.epoch.path, 'source stamp');
+  const session = {};
+  const owner = f.store.getResultExportOwner();
+  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+  f.jump(60001);
+  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({
+    kind: 'failed',
+    cause: 'cutoff-untrusted',
+    retryScheduled: true,
+  });
+  f.advance(300000);
+  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+});
+
+it('rechecks a deferred source age after clock trust returns and the terminal expires', () => {
+  const f = fixture();
+  f.complete();
+  writeFileSync(f.epoch.path, 'source stamp');
+  const location = f.index.read(f.jobId)!;
+  vi.spyOn(f.index, 'read').mockReturnValue({ ...location, terminalAge: undefined });
+  const session = {};
+  const owner = f.store.getResultExportOwner();
+  f.jump(60001);
+  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({
+    kind: 'failed',
+    cause: 'cutoff-untrusted',
+    retryScheduled: true,
+  });
+  f.advance(30 * 86_400_000);
+  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'retained-away' });
+});
+
+it('a settled source owner ends artifact retry after a retained terminal read fails', () => {
+  const f = fixture();
+  f.complete();
+  const owner = new TerminalResultExportOwner({
+    runtime: f.runtime,
+    jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+    location: (id) => f.index.read(id),
+    withSource: () => {
+      throw new Error('unable to open database file');
+    },
+    hydrationRetry: () => false,
+  });
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
+    kind: 'failed',
+    cause: 'terminal-unusable',
+    retryScheduled: false,
+  });
+  expect(f.index.read(f.jobId)?.disposition).toBe('terminal');
 });

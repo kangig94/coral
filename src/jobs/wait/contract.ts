@@ -37,6 +37,7 @@ export interface WaitStreamRequest extends WaitRequest {
   abortSignal?: AbortSignal;
   supportsWaitV2?: boolean;
   supportsWaitV3?: boolean;
+  drainProgress?: boolean;
   admissions?: WaitAdmission[];
   onLegacyCursor?: (cursor: Extract<WaitCursor, { afterSeq: number }>) => void;
   onCoverage?: (jobIds: readonly string[], unknownJobIds: readonly string[], frontier: number) => void;

@@ -128,7 +128,7 @@ export async function parseProgramWithHandoff(
   };
   try {
     const outcome = invocation === undefined ? await dispatch() : await invocation.run(dispatch);
-    if (outcome?.kind === 'handoff-exit' && outcome.exitCode === 75) invocation?.flushContinuation();
+    if (outcome?.kind === 'handoff-exit' && outcome.exitCode === 75) invocation?.flushSavedContinuation();
     await invocation?.flushOutput();
     return outcome;
   } catch (error: unknown) {

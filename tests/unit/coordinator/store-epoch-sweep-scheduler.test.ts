@@ -8,6 +8,7 @@ import {
 } from '#src/jobs/historical-reader.js';
 
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type * as HistoricalReader from '#src/jobs/historical-reader.js';
 import type * as StoreEpoch from '#src/store/epoch/index.js';
 
@@ -94,6 +95,47 @@ it('wakes the sweep on historical hydration hints and removes the listener on st
     expect(subscribe).toHaveBeenLastCalledWith(f.index, null);
   } finally {
     await scheduler.stop();
+    f.close();
+  }
+});
+
+it('still runs retirement when one historical source throws', async () => {
+  vi.useFakeTimers();
+  const actual = await vi.importActual<typeof HistoricalReader>('#src/jobs/historical-reader.js');
+  const epochs = await import('#src/store/epoch/index.js');
+  const f = createTerminalExportFixture();
+  const broken = {
+    ...f.runtime.storage,
+    lstatSync: () => {
+      throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    },
+  };
+  actual.seedHistoricalEpoch(
+    f.runtime,
+    f.index,
+    f.epoch,
+    JSON.stringify(f.epoch),
+    currentCoralStoreFormat().fingerprint,
+    f.runtime.paths.coral.exports.jobsRoot,
+    broken,
+  );
+  expect(f.index.unknownLocationHolds()).toMatchObject([{ retryScheduled: true }]);
+  vi.mocked(refreshHistoricalEpochs).mockImplementation(actual.refreshHistoricalEpochs);
+  const scheduler = createStoreEpochSweepScheduler({
+    runtime: f.runtime,
+    world: { log: vi.fn() },
+    jobLocationIndex: f.index,
+    selectedStoreEpochKey: () => f.epochKey,
+    onOpen: vi.fn(),
+    closeProxySetForEpochClosure: vi.fn(),
+  });
+  try {
+    scheduler.schedule(f.epoch);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(epochs.sweepStoreEpochsPostReady).toHaveBeenCalledOnce();
+  } finally {
+    await scheduler.stop();
+    vi.mocked(refreshHistoricalEpochs).mockReset();
     f.close();
   }
 });

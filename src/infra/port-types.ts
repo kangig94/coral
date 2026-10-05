@@ -120,7 +120,7 @@ export interface StorageMutationPort {
   writeAtomicDurableSync(
     path: string,
     data: StorageData,
-    options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean },
+    options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean; stagePath?: string },
   ): boolean;
   syncDirectoryDurableSync(path: string): boolean;
   chmodSync(path: string, mode: number): void;

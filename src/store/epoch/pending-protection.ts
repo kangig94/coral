@@ -1,5 +1,5 @@
 import { type Runtime } from '../../runtime/ports.js';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { observeStorePath } from '../path-observation.js';
 import { protectStoreEpoch, StoreEpochOpenerHeldError } from './protection.js';
@@ -140,7 +140,16 @@ export function recordPendingProtection(
       reason,
       recordedAt: new Date(runtime.time.now()).toISOString(),
     };
-    if (!runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 }))
+    if (
+      !runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record)}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+        stagePath: join(
+          dirname(pendingProtectionDirectory(runtime)),
+          `.pending-protection-stage-${runtime.env.pid()}-${runtime.ids.uuid()}`,
+        ),
+      })
+    )
       throw new Error('Pending protection record could not be written durably.');
     return { kind: 'recorded' };
   } catch (cause: unknown) {

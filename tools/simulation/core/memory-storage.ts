@@ -1004,13 +1004,14 @@ export class InMemoryStorage implements StoragePort {
   writeAtomicDurableSync(
     path: string,
     data: StorageData,
-    options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean },
+    options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean; stagePath?: string },
   ): boolean {
     const normalized = normalizePathForStorage(path);
     const parent = parentPath(normalized);
     this.mkdirSync(parent, { recursive: true });
 
-    const tempPath = `${normalized}.stage-${process.pid}-${++this.durableStageCounter}-${this.nextIno}`;
+    const tempPath =
+      options?.stagePath ?? `${normalized}.stage-${process.pid}-${++this.durableStageCounter}-${this.nextIno}`;
     let fd: number | null = null;
     let ownsStage = false;
     try {

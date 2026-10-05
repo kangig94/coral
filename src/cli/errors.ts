@@ -1,4 +1,4 @@
-import { WaitInvocationReadinessError } from './wait-invocation-context.js';
+import { WaitInvocationReadinessError } from '../infra/wait-invocation-context.js';
 import { CommanderError } from 'commander';
 import { ZodError } from 'zod';
 

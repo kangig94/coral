@@ -1,3 +1,4 @@
+import { hasReadableTerminalDetail } from './terminal/identity.js';
 import type { Database } from '../store/db.js';
 import { join } from 'node:path';
 
@@ -547,6 +548,13 @@ export class JobStore implements JobProgressStore {
     return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq);
   }
 
+  observeJobAbsence(jobId: string): boolean {
+    return (
+      this.db.prepare("SELECT 1 FROM events WHERE stream_kind = 'job' AND stream_id = ? LIMIT 1").get(jobId) ===
+      undefined
+    );
+  }
+
   private resultExports: TerminalResultExportOwner | null = null;
   private exportLocations: JobLocationIndex | null = null;
   private workflowReport?: WorkflowReportPort;
@@ -577,7 +585,7 @@ export class JobStore implements JobProgressStore {
       prepareTerminal: (jobId) => {
         const index = this.exportLocations;
         const location = index?.read(jobId);
-        if (!index || !location) return;
+        if (!index || !location || (hasReadableTerminalDetail(location) && location.terminalAge !== undefined)) return;
         withTerminalSource(this.runtime, location.epochKey, (db) =>
           index.prepareTerminal(jobId, db, location.epochKey, this.runtime.paths.coral.exports.jobsRoot),
         );
@@ -590,6 +598,10 @@ export class JobStore implements JobProgressStore {
         if (!accepted) return null;
         if (!this.localTerminalAges.has(jobId) && trustedJobRetentionCutoff(this.runtime) !== null) {
           const age = readIntactJobTerminalAge(this.db, accepted, trustedJobRetentionCutoff(this.runtime));
+          if (this.localTerminalAges.size >= 1024) {
+            const oldest = this.localTerminalAges.keys().next().value;
+            if (oldest !== undefined) this.localTerminalAges.delete(oldest);
+          }
           this.localTerminalAges.set(jobId, {
             epochKey: ':memory:',
             terminalSeq: accepted.seq,
@@ -614,7 +626,7 @@ export class JobStore implements JobProgressStore {
             kind: 'recorded',
             value: {
               status: detail.status,
-              events: this.readJobEvents(jobId),
+              events: this.readJobEvents(jobId, true),
               exit: detail.exit,
               readiness: deriveLaunchReadiness(detail),
             },

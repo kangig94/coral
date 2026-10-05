@@ -18,8 +18,13 @@ import { jobDiagnosticsSchema, jobTerminalSchema, jobTerminalRecordedBodySchema 
 import { observeResolvedStoreEpoch } from '../store/epoch/observation.js';
 import { observeStorePath } from '../store/path-observation.js';
 import { protectedStoreEpochRoot } from '../store/epoch/protection.js';
-import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } from './terminal/export.js';
-import { sameTerminal, validatedTerminal } from './terminal/identity.js';
+import {
+  TerminalResultExportOwner,
+  resultPathFor,
+  resultRepairFailuresFor,
+  type WorkflowReportPort,
+} from './terminal/export.js';
+import { hasReadableTerminalDetail, sameTerminal, validatedTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
 import { readIntactJobTerminalAge, readJobTerminalAge } from './terminal-age.js';
 import { trustedJobRetentionCutoff } from './retention-clock.js';
@@ -236,22 +241,7 @@ function preserveStoredDetail<T>(stored: unknown, next: T, path = ''): T {
   return result as T;
 }
 
-export function hasReadableTerminalDetail(location: JobLocation): boolean {
-  if (
-    location.disposition !== 'terminal' ||
-    location.terminalSeq === undefined ||
-    location.detail.kind !== 'recorded'
-  ) {
-    return false;
-  }
-  const detail = location.detail.value;
-  return (
-    detail.status.projectRoot === location.subject.projectRoot &&
-    detail.status.workDir === location.subject.workDir &&
-    detail.status.jobKind === location.subject.jobKind &&
-    validatedTerminal(detail, location.jobId, location.epochKey, location.terminalSeq) !== null
-  );
-}
+export { hasReadableTerminalDetail } from './terminal/identity.js';
 export type JobLocationSubject = Readonly<{ projectRoot: string; workDir: string | null; jobKind: JobKind }>;
 export type JobLocationController = z.infer<typeof controllerSchema>;
 export type JobLocationCertificate = z.infer<typeof certificateSchema>;
@@ -274,7 +264,9 @@ function optionalJson<T>(runtime: Runtime, path: string, schema: z.ZodType<T>): 
 }
 
 export class JobLocationIndex {
-  readonly resultRepairFailures = new Set<string>();
+  get resultRepairFailures(): Set<string> {
+    return resultRepairFailuresFor(this);
+  }
   readonly time: TimePort;
   private readonly root: string;
   private locationsStamp: string | undefined;
@@ -505,9 +497,19 @@ export class JobLocationIndex {
     this.withRevisionLock(existing.epochKey, () => {
       const current = this.readStored(jobId);
       if (current === null || current.disposition === 'terminal') return;
+      const retained = viewLocation(current);
       const location = {
         ...current,
-        detail: preserveStoredDetail(current.detail, { ...detail, events: [] }),
+        detail: preserveStoredDetail(current.detail, {
+          ...detail,
+          events: [
+            ...new Map(
+              [...(retained.detail.kind === 'recorded' ? retained.detail.value.events : []), ...detail.events].map(
+                (event) => [`${event.seq}:${event.type}`, event],
+              ),
+            ).values(),
+          ].sort((a, b) => a.seq - b.seq),
+        }),
       };
       if (!isDeepStrictEqual(current, location)) {
         atomicJson(this.runtime, this.jobPath(jobId), location);
@@ -801,6 +803,16 @@ export class JobLocationIndex {
     const terminal = detail?.events.find((event) => event.type === 'terminal');
     if (!detail?.exit || !terminal) return;
     this.recordTerminal(jobId, detail, current.resultPath ?? resultPathFor(jobsRoot, jobId), terminal.seq, db);
+  }
+
+  exportDeletionEligibility(jobId: string): TerminalEligibility | undefined {
+    const location = this.read(jobId);
+    if (
+      location === null ||
+      (location.terminalAge === undefined && this.historicalSourceState(location.epochKey) === 'absent')
+    )
+      return undefined;
+    return this.terminalEligibility(jobId);
   }
 
   terminalEligibility(jobId: string): TerminalEligibility {

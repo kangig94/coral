@@ -39,7 +39,9 @@ export type TerminalEligibility = Readonly<{
   sourceReadTransient?: boolean;
   sourceContradictory?: boolean;
   ageUnproven?: boolean;
+  ageDeferred?: boolean;
   publicationAuthorized: boolean;
+  regressionAuthorized?: boolean;
   cutoffTrusted: boolean;
 }>;
 
@@ -114,7 +116,9 @@ export function terminalEligibility(
     sourceReadTransient,
     sourceContradictory,
     ageUnproven: location.terminalAge === undefined || (matches && saved.data.kind === 'unknown'),
+    ageDeferred: cutoff === null && location.terminalAge === undefined && sourceReadable,
     cutoffTrusted: cutoff !== null,
+    regressionAuthorized,
     publicationAuthorized: cutoff !== null && sourceReadable && (kind === 'inside' || regressionAuthorized),
   };
 }

@@ -19,11 +19,11 @@ import { errorMessage } from '../../infra/error-format.js';
 import { setImmediate } from 'node:timers/promises';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobTerminal } from '../records.js';
-import { hasReadableTerminalDetail, type JobLocation } from '../location-index.js';
-import { sameTerminal } from './identity.js';
+import type { JobLocation } from '../location-index.js';
+import { hasReadableTerminalDetail, sameTerminal } from './identity.js';
 import { readAcceptedTerminal } from './source.js';
 import { terminalEligibility, type TerminalEligibility } from '../export-retention.js';
-import { resolveJobRetentionMs } from '../retention-clock.js';
+import { trustedJobRetentionCutoff, resolveJobRetentionMs } from '../retention-clock.js';
 import type { RetentionRunBudget } from '../../store/retention-outcome.js';
 
 function unavailableForEligibility(eligibility: TerminalEligibility, retentionDays: number): ResultAvailability | null {
@@ -32,24 +32,22 @@ function unavailableForEligibility(eligibility: TerminalEligibility, retentionDa
       kind: 'retained-away',
       retentionDays,
     };
-  if (eligibility.sourceReadFailed)
-    return eligibility.sourceReadTransient
-      ? { kind: 'repair-pending', ageUncertain: true }
-      : { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, ageUncertain: true };
-  if (!eligibility.cutoffTrusted)
-    return { kind: 'repair-pending', ageUncertain: eligibility.age === 'unknown' || eligibility.age === 'regression' };
+  if (eligibility.sourceReadFailed && !eligibility.sourceReadTransient)
+    return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, ageUncertain: true };
   if (eligibility.sourceContradictory) return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false };
-  if (eligibility.age === 'unknown')
+  if (eligibility.age === 'unknown' && !eligibility.ageDeferred)
     return { kind: 'failed', cause: 'terminal-age-unknown', retryScheduled: false, ageUncertain: true };
-  if (!eligibility.sourceReadable)
+  if (!eligibility.sourceReadable && !eligibility.sourceReadFailed)
     return {
       kind: 'failed',
       cause: 'source-epoch-retired',
       retryScheduled: false,
       ageUncertain: eligibility.age === 'regression',
     };
-  if (!eligibility.publicationAuthorized)
+  if (eligibility.age === 'regression' && !eligibility.regressionAuthorized && !eligibility.sourceReadFailed)
     return { kind: 'failed', cause: 'terminal-clock-regression', retryScheduled: false, ageUncertain: true };
+  if (!eligibility.cutoffTrusted) return { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true };
+  if (eligibility.sourceReadFailed) return { kind: 'repair-pending', ageUncertain: true };
   return null;
 }
 
@@ -169,6 +167,17 @@ export type ResultAvailability =
       unverifiedResultPath?: string;
     }>;
 
+const repairFailures = new WeakMap<object, Set<string>>();
+
+export function resultRepairFailuresFor(ownerScope: object): Set<string> {
+  let failures = repairFailures.get(ownerScope);
+  if (!failures) {
+    failures = new Set<string>();
+    repairFailures.set(ownerScope, failures);
+  }
+  return failures;
+}
+
 export class TerminalResultExportOwner {
   private readonly failures: Set<string>;
   private readonly hints = new Set<string>();
@@ -217,6 +226,33 @@ export class TerminalResultExportOwner {
     return this.readableFile(location.resultPath);
   }
 
+  private readonly observedWorkflowReports = new WeakMap<
+    object,
+    Map<string, { stamp: string; location: JobLocation; readable: boolean }>
+  >();
+
+  private workflowReadable(jobId: string, session?: object): boolean {
+    const location = this.input.location(jobId);
+    const epoch = session && location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
+    const stamp = epoch ? sourceReadStamp(this.input.runtime.storage, epoch.path) : null;
+    const cache = session ? this.observedWorkflowReports.get(session) : undefined;
+    const previous = cache?.get(jobId);
+    if (stamp !== null && previous?.stamp === stamp && previous.location === location) return previous.readable;
+    const readable = this.render(jobId) !== null;
+    if (session && stamp !== null && location) {
+      const next = cache ?? new Map();
+      next.set(jobId, { stamp, location, readable });
+      this.observedWorkflowReports.set(session, next);
+    }
+    return readable;
+  }
+
+  private prepareTerminal(jobId: string): void {
+    const location = this.input.location(jobId);
+    if (location && hasReadableTerminalDetail(location) && location.terminalAge !== undefined) return;
+    this.input.prepareTerminal?.(jobId);
+  }
+
   private render(jobId: string): string | null {
     const location = this.input.location(jobId);
     if (!location || !hasReadableTerminalDetail(location)) return null;
@@ -257,10 +293,26 @@ export class TerminalResultExportOwner {
     const epoch = session && location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
     const stamp = epoch ? sourceReadStamp(this.input.runtime.storage, epoch.path) : null;
     const previous = session ? this.observedEligibility.get(session)?.get(jobId) : undefined;
-    if (stamp !== null && previous?.stamp === stamp && previous.location === location) {
+    if (
+      stamp !== null &&
+      previous?.stamp === stamp &&
+      previous.location === location &&
+      (!previous.eligibility.ageDeferred || trustedJobRetentionCutoff(this.input.runtime) === null)
+    ) {
       const current = this.eligibility(jobId, false);
-      if (current.kind === 'expired' || !current.cutoffTrusted) return current;
-      return previous.eligibility;
+      if (current.kind === 'expired') return current;
+      const cutoff = trustedJobRetentionCutoff(this.input.runtime);
+      const age = previous.eligibility.age;
+      const kind = cutoff === null ? 'unknown' : typeof age === 'number' ? (age < cutoff ? 'expired' : 'inside') : age;
+      return {
+        ...previous.eligibility,
+        kind,
+        cutoffTrusted: cutoff !== null,
+        publicationAuthorized:
+          cutoff !== null &&
+          previous.eligibility.sourceReadable &&
+          (kind === 'inside' || previous.eligibility.regressionAuthorized === true),
+      };
     }
     const eligibility = this.eligibility(jobId);
     if (session && location && stamp !== null && !eligibility.sourceReadFailed) {
@@ -274,26 +326,22 @@ export class TerminalResultExportOwner {
   observeResultAvailability(jobId: string, session?: object): ResultAvailability {
     const location = this.input.location(jobId);
     if (!location || location.disposition !== 'terminal') {
-      const retry = this.input.hydrationRetry?.(jobId);
       const path = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
       const unverifiedResultPath = this.readableFile(path) ? path : undefined;
+      try {
+        if (this.input.withSource(jobId, (db) => readAcceptedTerminal(db, jobId) !== null))
+          return { kind: 'repair-pending', ageUncertain: true };
+      } catch (error) {
+        const retry = this.input.hydrationRetry?.(jobId);
+        if (retry !== false && sourceReadFailureDisposition(error) === 'transient-unknown')
+          return { kind: 'repair-pending', ageUncertain: true };
+      }
+      const retry = this.input.hydrationRetry?.(jobId);
       if (retry === false)
         return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, unverifiedResultPath };
       if (this.failures.has(jobId))
         return { kind: 'failed', cause: 'repair-failed', retryScheduled: true, unverifiedResultPath };
       if (retry === true) return { kind: 'repair-pending', ageUncertain: true };
-      try {
-        if (
-          location &&
-          this.input.prepareTerminal &&
-          this.input.withSource(jobId, (db) => readAcceptedTerminal(db, jobId) !== null)
-        )
-          return { kind: 'repair-pending', ageUncertain: true };
-      } catch (error) {
-        return sourceReadFailureDisposition(error) === 'transient-unknown'
-          ? { kind: 'repair-pending', ageUncertain: true }
-          : { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, ageUncertain: true };
-      }
       return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, unverifiedResultPath };
     }
     if (!hasReadableTerminalDetail(location))
@@ -301,6 +349,8 @@ export class TerminalResultExportOwner {
     if (this.available(jobId))
       return { kind: 'available', resultPath: location.resultPath ?? resultPathFor(this.input.jobsRoot, jobId) };
     const eligibility = this.observeEligibility(jobId, session);
+    if (eligibility.sourceReadFailed && this.input.hydrationRetry?.(jobId) === false)
+      return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, ageUncertain: true };
     const unavailable = unavailableForEligibility(
       eligibility,
       resolveJobRetentionMs(this.input.runtime.env.get('CORAL_JOBS_RETENTION_DAYS')) / 86_400_000,
@@ -308,7 +358,7 @@ export class TerminalResultExportOwner {
     if (unavailable) return unavailable;
     if (this.failures.has(jobId)) return { kind: 'failed', cause: 'repair-failed', retryScheduled: true };
     try {
-      if (location.subject.jobKind === 'workflow' && this.render(jobId) === null)
+      if (location.subject.jobKind === 'workflow' && !this.workflowReadable(jobId, session))
         return { kind: 'failed', cause: 'workflow-facts-unavailable', retryScheduled: false };
     } catch {
       return { kind: 'repair-pending', ageUncertain: true };
@@ -317,17 +367,17 @@ export class TerminalResultExportOwner {
   }
 
   /** Callers supply identity; all publication bytes come from the accepted source terminal. */
-  publishTerminalResult(jobId: string, newlyAppendedSeq?: number): string {
-    return this.publish(jobId, false, newlyAppendedSeq);
+  publishTerminalResult(jobId: string, _newlyAppendedSeq?: number): string {
+    return this.publish(jobId, false);
   }
 
   ensureResultMarkdownArtifact(jobId: string): string {
     return this.publish(jobId, true);
   }
 
-  private publish(jobId: string, repair: boolean, newlyAppendedSeq?: number): string {
+  private publish(jobId: string, repair: boolean): string {
     try {
-      this.input.prepareTerminal?.(jobId);
+      this.prepareTerminal(jobId);
     } catch (error) {
       this.failures.add(jobId);
       if (repair) this.hints.add(jobId);
@@ -342,20 +392,14 @@ export class TerminalResultExportOwner {
     const availability = this.observeResultAvailability(jobId);
     if (
       availability.kind !== 'repair-pending' &&
-      !(availability.kind === 'failed' && availability.retryScheduled && availability.cause === 'repair-failed')
+      !(
+        availability.kind === 'failed' &&
+        availability.retryScheduled &&
+        (availability.cause === 'repair-failed' || availability.cause === 'cutoff-untrusted')
+      )
     )
       return targetPath;
-    const authorized = (): boolean => {
-      const eligibility = this.eligibility(jobId);
-      if (eligibility.publicationAuthorized) return true;
-      return (
-        !repair &&
-        newlyAppendedSeq !== undefined &&
-        this.input.location(jobId)?.terminalSeq === newlyAppendedSeq &&
-        !eligibility.cutoffTrusted &&
-        eligibility.sourceReadable
-      );
-    };
+    const authorized = (): boolean => this.eligibility(jobId).publicationAuthorized;
     try {
       this.input.withSource(jobId, () => {
         const markdown = this.render(jobId);
@@ -422,7 +466,7 @@ export class TerminalResultExportOwner {
 
   private async repairCandidate(jobId: string, budget: RetentionRunBudget): Promise<void> {
     try {
-      if (budget.canMutate?.() !== false) this.input.prepareTerminal?.(jobId);
+      if (budget.canMutate?.() !== false) this.prepareTerminal(jobId);
       const state = this.observeResultAvailability(jobId);
       if (state.kind !== 'repair-pending' && !(state.kind === 'failed' && state.retryScheduled)) return;
       if (budget.canMutate?.() !== false) this.ensureResultMarkdownArtifact(jobId);

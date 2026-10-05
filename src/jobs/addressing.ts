@@ -1,3 +1,4 @@
+import { sourceReadFailureDisposition } from './source-read.js';
 import { serializeWaitCursor, decodeWaitCursor } from './wait/cursor.js';
 import { WaitSession, WaitSessionError, type WaitAdmission, type WaitSnapshot } from './wait/session.js';
 import { selectWaitSnapshot } from './wait/snapshot.js';
@@ -5,7 +6,7 @@ import { readWaitSession } from './wait/reader.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
 import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
-import { type HistoricalSourceReader } from './historical-reader.js';
+import { type HistoricalSourceRead, type HistoricalSourceReader } from './historical-reader.js';
 import { hasReadableTerminalDetail, type JobLocationView, type JobLocation } from './location-index.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse } from './records.js';
@@ -37,6 +38,44 @@ export type PreEpochHistoryProbe = () => boolean;
  * finalization.
  */
 export type HistoricalClosureProbe = (epochKey: string) => 'pending' | 'decided';
+
+type HistoricalDisposition = Readonly<{
+  kind: 'admitted' | 'outcome-unrecoverable' | 'outcome-unreadable';
+  location: JobLocation;
+  sourceRead: NonNullable<WaitAdmission['sourceRead']>;
+  message?: string;
+}>;
+
+function historicalDisposition(
+  retained: JobLocation,
+  closure: 'pending' | 'decided',
+  read: HistoricalSourceRead,
+  jobId: string,
+): HistoricalDisposition {
+  const sourceRead =
+    read.kind === 'unreadable'
+      ? read.disposition
+      : (read.dispositions?.get(jobId) ?? (read.unreadableJobs?.has(jobId) ? 'settled-unreadable' : 'readable'));
+  const observed = read.kind === 'read' ? read.locations.get(jobId) : null;
+  const location = hasReadableTerminalDetail(retained)
+    ? retained
+    : (observed ?? { ...retained, disposition: 'unresolved' as const, detail: { kind: 'absent' as const } });
+  const message = read.kind === 'unreadable' ? read.reason : undefined;
+  if (hasReadableTerminalDetail(location)) return { kind: 'admitted', location, sourceRead, message };
+  if (sourceRead === 'settled-unreadable' || sourceRead === 'retired')
+    return {
+      kind: 'outcome-unreadable',
+      location,
+      sourceRead,
+      message:
+        sourceRead === 'retired'
+          ? 'Source retired and retained copy unusable; no build can recover the outcome'
+          : `Epoch ${retained.epochKey}: ${message ?? "this build cannot decode this job's journal; neither known nor shown absent"}`,
+    };
+  if (closure === 'decided' && sourceRead === 'readable' && read.kind === 'read' && read.locations.has(jobId))
+    return { kind: 'outcome-unrecoverable', location, sourceRead, message: 'No terminal was recorded before closure' };
+  return { kind: 'admitted', location, sourceRead, message };
+}
 
 export class JobAddressing {
   private readonly activeEpochs = new WeakMap<object, string>();
@@ -74,41 +113,37 @@ export class JobAddressing {
     this.progressRetentionExpired = progressRetentionExpired;
   }
 
-  unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown' {
-    if (this.locations.unknownLocationHolds().some((hold) => hold.retryScheduled)) return 'discovery-unknown';
+  unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown' | 'discovery-unreadable' {
+    const holds = this.locations
+      .unknownLocationHolds()
+      .filter((hold) => hold.epochKey !== (this.active.epochKey() ?? ':memory:'));
+    if (holds.some((hold) => hold.retryScheduled)) return 'discovery-unknown';
+    if (holds.length > 0) return 'discovery-unreadable';
     return this.preEpochHistoryExists() ? 'pre-epoch-history' : 'not-found';
   }
 
   unknownJobCaveat(): string {
     return this.locations
       .unknownLocationHolds()
+      .filter((hold) => hold.epochKey !== (this.active.epochKey() ?? ':memory:'))
       .map((hold) => `Unreadable epoch ${hold.epochKey}: ${hold.reason}.`)
       .join(' ');
   }
 
-  private historicalLocation(location: JobLocation): { location: JobLocation; outcomeUnrecoverable: boolean } {
+  private historicalLocation(location: JobLocation): HistoricalDisposition {
     const retained = this.locations.read(location.jobId) ?? location;
-    if (hasReadableTerminalDetail(retained)) return { location: retained, outcomeUnrecoverable: false };
-    const closure = this.historicalClosure(retained.epochKey);
-    const read = this.readHistorical(retained.epochKey, [retained.jobId]);
-    if (read.kind === 'unreadable')
-      return {
-        location: { ...retained, disposition: 'unresolved', detail: { kind: 'absent' } },
-        outcomeUnrecoverable: false,
-      };
-    const observed = read.locations.get(retained.jobId);
-    if (observed && hasReadableTerminalDetail(observed)) return { location: observed, outcomeUnrecoverable: false };
-    return {
-      location: observed ?? { ...retained, disposition: 'unresolved', detail: { kind: 'absent' } },
-      outcomeUnrecoverable:
-        closure === 'decided' && read.locations.has(retained.jobId) && !read.unreadableJobs?.has(retained.jobId),
-    };
+    return historicalDisposition(
+      retained,
+      this.historicalClosure(retained.epochKey),
+      this.readHistorical(retained.epochKey, [retained.jobId]),
+      retained.jobId,
+    );
   }
 
   private outcomeUnrecoverableLocation(location: JobLocation): boolean {
     return (
       location.epochKey !== (this.active.epochKey() ?? ':memory:') &&
-      this.historicalLocation(location).outcomeUnrecoverable
+      this.historicalLocation(location).kind === 'outcome-unrecoverable'
     );
   }
 
@@ -178,8 +213,11 @@ export class JobAddressing {
           ...(active.exit === null ? {} : { availability: this.availability(jobId) }),
         };
     }
-    const observed = historical ? this.historicalLocation(location) : { location, outcomeUnrecoverable: false };
-    if (observed.outcomeUnrecoverable) return { kind: 'outcome-unrecoverable', jobId, epochKey: location.epochKey };
+    const observed = historical
+      ? this.historicalLocation(location)
+      : { location, kind: 'admitted' as const, message: undefined };
+    if (observed.kind !== 'admitted')
+      return { kind: observed.kind, jobId, epochKey: location.epochKey, message: observed.message };
     const latest = observed.location;
     if (!historical && latest.disposition === 'unresolved') {
       return { kind: 'unresolved', jobId, epochKey: latest.epochKey };
@@ -206,9 +244,16 @@ export class JobAddressing {
         ? this.active.abort(activeIds)
         : { kind: 'answered' as const, result: { aborted: [], notFound: [] } };
     if (active.kind !== 'answered') return active;
-    const unrecoverableAfterRefresh = this.outcomeUnrecoverable(historicalIds);
-    const historicalTerminal = historicalIds.filter((jobId) => this.location(jobId)?.disposition === 'terminal');
-    const unrecoverable = unrecoverableAfterRefresh.filter((jobId) => !historicalTerminal.includes(jobId));
+    const historical = new Map<string, HistoricalDisposition>();
+    for (const jobId of historicalIds) {
+      const location = this.location(jobId);
+      if (location !== null) historical.set(jobId, this.historicalLocation(location));
+    }
+    const historicalTerminal = [...historical]
+      .filter(([, classified]) => hasReadableTerminalDetail(classified.location))
+      .map(([jobId]) => jobId);
+    const unrecoverable = historicalIds.filter((jobId) => historical.get(jobId)?.kind === 'outcome-unrecoverable');
+    const unreadable = historicalIds.filter((jobId) => historical.get(jobId)?.kind === 'outcome-unreadable');
     const refused = [
       ...(active.result.refused ?? []),
       ...(preEpochHistory
@@ -219,6 +264,11 @@ export class JobAddressing {
               'A job that ran before store epochs has no details this build can read; another id may never have been a job. Do not retry.',
           }))
         : []),
+      ...unreadable.map((jobId) => ({
+        jobId,
+        reason: 'job_outcome_unreadable',
+        nextStep: "Coral cannot read this job's outcome and nothing here will change that; nothing to stop.",
+      })),
       ...unrecoverable.map((jobId) => ({
         jobId,
         reason: 'historical_outcome_unrecoverable',
@@ -229,7 +279,10 @@ export class JobAddressing {
     const held = [
       ...(active.result.held ?? []),
       ...historicalIds
-        .filter((jobId) => !historicalTerminal.includes(jobId) && !unrecoverable.includes(jobId))
+        .filter(
+          (jobId) =>
+            !historicalTerminal.includes(jobId) && !unrecoverable.includes(jobId) && !unreadable.includes(jobId),
+        )
         .map((jobId) => ({
           jobId,
           reason: 'historical_owner_unresolved',
@@ -265,7 +318,23 @@ export class JobAddressing {
 
   admitWait(request: WaitStreamRequest): WaitAdmission[] {
     const activeEpochKey = this.waitEpoch(request);
-    const locations = new Map(request.jobIds.map((jobId) => [jobId, this.location(jobId, activeEpochKey)]));
+    const failures = new Map<string, WaitAdmission>();
+    const locations = new Map(
+      request.jobIds.map((jobId) => {
+        try {
+          return [jobId, this.location(jobId, activeEpochKey)] as const;
+        } catch (error) {
+          const sourceRead = sourceReadFailureDisposition(error);
+          failures.set(jobId, {
+            jobId,
+            sourceRead,
+            disposition: sourceRead === 'settled-unreadable' ? 'discovery-unreadable' : 'discovery-unknown',
+            message: error instanceof Error ? error.message : 'Location record cannot be read by this build',
+          });
+          return [jobId, null] as const;
+        }
+      }),
+    );
     const epochMembers = new Map<string, string[]>();
     for (const [jobId, location] of locations) {
       if (!location) continue;
@@ -284,6 +353,8 @@ export class JobAddressing {
       ),
     );
     return request.jobIds.map((jobId): WaitAdmission => {
+      const failure = failures.get(jobId);
+      if (failure) return failure;
       const location = locations.get(jobId) ?? null;
       if (location === null) {
         const unknown = this.unknownJobDisposition();
@@ -336,51 +407,29 @@ export class JobAddressing {
       const closure = closures.get(location.epochKey);
       const source = historical.get(location.epochKey);
       if (!source) throw new Error(`Missing historical read for epoch ${location.epochKey}`);
-      const retained = location;
-      const sourceRead =
-        source.kind === 'unreadable'
-          ? (source.disposition ?? (source.retired ? 'retired' : 'transient-unknown'))
-          : (source.dispositions?.get(jobId) ??
-            (source.unreadableJobs?.has(jobId) ? 'settled-unreadable' : 'readable'));
-      const settled = sourceRead === 'settled-unreadable' || sourceRead === 'retired';
-      const message = source.kind === 'unreadable' ? source.reason : undefined;
-      const observed = source.kind === 'read' ? source.locations.get(jobId) : null;
-      const accepted = hasReadableTerminalDetail(retained)
-        ? retained
-        : source.kind === 'read' && observed?.detail.kind === 'recorded'
-          ? observed
-          : null;
-      if (!accepted || !hasReadableTerminalDetail(accepted)) {
-        if (
-          settled ||
-          (closure === 'decided' &&
-            source.kind === 'read' &&
-            source.locations.has(jobId) &&
-            !source.unreadableJobs?.has(jobId))
-        )
-          return {
-            jobId,
-            disposition: 'outcome-unrecoverable',
-            epochKey: location.epochKey,
-            sourceRead,
-            progressLost: sourceRead === 'retired',
-            message:
-              message ??
-              'No retained outcome can be recovered from this source; repair it or use a compatible build before retrying.',
-          };
+      const classified = historicalDisposition(location, closure ?? 'pending', source, jobId);
+      const { sourceRead, message } = classified;
+      const accepted = classified.location;
+      if (classified.kind !== 'admitted')
+        return {
+          jobId,
+          disposition: classified.kind,
+          epochKey: location.epochKey,
+          sourceRead,
+          message,
+        };
+      if (!hasReadableTerminalDetail(accepted))
         return {
           jobId,
           disposition: 'admitted',
           epochKey: location.epochKey,
-          ...(source.kind === 'read' && observed?.detail.kind === 'recorded' && !observed.detail.value.exit
-            ? { detail: observed.detail.value }
-            : {}),
           sourceRead,
           message,
+          ...(accepted.detail.kind === 'recorded' ? { detail: accepted.detail.value } : {}),
           progressUnknown: sourceRead === 'transient-unknown',
           progressLost: false,
         };
-      }
+      const observed = source.kind === 'read' ? source.locations.get(jobId) : null;
       const detail = accepted.detail.kind === 'recorded' ? accepted.detail.value : undefined;
       const events =
         source.kind === 'read' && observed?.detail.kind === 'recorded'
@@ -426,7 +475,9 @@ export class JobAddressing {
               ? 'scope_mismatch'
               : refusal.disposition === 'pre-epoch-history'
                 ? 'job_pre_epoch_history'
-                : 'job_outcome_unrecoverable',
+                : refusal.disposition === 'outcome-unreadable' || refusal.disposition === 'discovery-unreadable'
+                  ? 'job_outcome_unreadable'
+                  : 'job_outcome_unrecoverable',
           message: `Job ${refusal.jobId}: ${refusal.disposition}. ${refusal.message ?? ''} Read coral-cli jobs detail ${refusal.jobId}.`,
           detail: { jobs: admissions.filter((job) => job.disposition === refusal.disposition).map((job) => job.jobId) },
         };

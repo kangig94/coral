@@ -305,27 +305,20 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
     await flushMicrotasks(20);
     await expect(next).rejects.toMatchObject({ code: 'wait_epoch_unsupported' });
     for (const availability of ['repair-pending', 'failed', 'retained-away'] as const) {
-      if (availability === 'repair-pending') {
-        const pending: WaitStreamEvent[] = [];
-        for await (const event of addressing(availability).waitStream({ ...request, timeoutSeconds: 0 } as never)) {
+      if (availability !== 'repair-pending') {
+        const alreadyAcknowledged: WaitStreamEvent[] = [];
+        for await (const event of addressing(availability).waitStream(
+          jobsWaitRequest(
+            { jobIds: ['a'], projectRoot: '/tmp', cursor: acknowledged, timeoutSeconds: 0 },
+            flags,
+          ) as never,
+        )) {
           reader.parseWaitStreamEventValue(event);
-          pending.push(event);
+          alreadyAcknowledged.push(event);
         }
-        expect(pending.find((event) => event.type === 'waiting')).toMatchObject({ waitingJobIds: ['a'] });
-        expect(pending.some((event) => event.type === 'terminal')).toBe(false);
-        continue;
+        expect(alreadyAcknowledged.filter((event) => event.type === 'terminal')).toEqual([]);
+        expect(alreadyAcknowledged.filter((event) => event.type === 'waiting')).toEqual([]);
       }
-      const alreadyAcknowledged: WaitStreamEvent[] = [];
-      for await (const event of addressing(availability).waitStream(
-        jobsWaitRequest(
-          { jobIds: ['a'], projectRoot: '/tmp', cursor: acknowledged, timeoutSeconds: 0 },
-          flags,
-        ) as never,
-      )) {
-        reader.parseWaitStreamEventValue(event);
-        alreadyAcknowledged.push(event);
-      }
-      expect(alreadyAcknowledged.filter((event) => event.type === 'terminal')).toEqual([]);
       let refusal: unknown;
       try {
         for await (const event of addressing(availability).waitStream(request as never))

@@ -269,3 +269,19 @@ it('prints the relayed continuation when a delegated bounded monitor exits 75', 
   expect(output).toContain('Run coral-cli wait jobs a --cursor C1');
   expect(output.match(/Still waiting/g)).toHaveLength(1);
 });
+
+it('does not append a parent remediation after the delegated child error', async () => {
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, callback?: (error?: Error) => void) => {
+    output += chunk;
+    callback?.();
+    return true;
+  }) as never);
+  mockState.runHandoff.mockImplementation(async () => {
+    process.stdout.write('Child readiness error. Run the child command.\n');
+    return recorded({ kind: 'delegated', version: '2.3.4', outcome: { kind: 'handoff-exit', exitCode: 75 } });
+  });
+  const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
+  await parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a']);
+  expect(output).toBe('Child readiness error. Run the child command.\n');
+});

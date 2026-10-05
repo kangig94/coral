@@ -1,3 +1,4 @@
+import { loadReleasedWait } from '#tests/helpers/released-wait.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -423,7 +424,7 @@ it('reuses an unchanged decided certificate and invalidates it on another owner 
   expect(index.certificate('epoch')?.jobIds).toEqual(['a', 'b']);
 });
 
-it('stores no non-terminal progress body and writes no progress revision', () => {
+it('preserves released progress meaning without changing its revision', () => {
   const { index } = fixture();
   const jobId = 'running';
   index.register(jobId, 'epoch', {
@@ -452,7 +453,7 @@ it('stores no non-terminal progress body and writes no progress revision', () =>
   }
   expect(writes).toHaveBeenCalledTimes(100);
   expect(writes.mock.calls.some(([path]) => path.endsWith('revision.v1.json'))).toBe(false);
-  expect(index.read(jobId)?.detail).toMatchObject({ kind: 'recorded', value: { events: [] } });
+  expect(index.read(jobId)?.detail).toMatchObject({ kind: 'recorded', value: { events: detail.events } });
 });
 
 it('does not rewrite a released terminal detail merely to add its derivable epochKey', () => {
@@ -493,4 +494,40 @@ it('invalidates a reused inode stamp when file birth time changes', () => {
   writeFileSync(path, readFileSync(path, 'utf8').replaceAll('/workspace/first', '/workspace/other'));
   birthtimeNs = 2n;
   expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/other');
+});
+
+it('retains incremental nonterminal progress for the real rolled-back v0.10.17 reader', async () => {
+  const { root, index } = fixture();
+  const released = await loadReleasedWait('v0.10.17', directories);
+  index.register('live', 'epoch', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const value = terminalDetail('live');
+  value.exit = null;
+  value.status.phase = 'running';
+  delete value.status.result;
+  const timing = {
+    origin: 'runtime',
+    originAt: value.status.updatedAt,
+    emittedAt: value.status.updatedAt,
+    elapsedMs: 1,
+  } as const;
+  const progress = (seq: number, message: string) => ({
+    type: 'progress' as const,
+    jobId: 'live',
+    sessionId: 'session-1',
+    seq,
+    ts: value.status.updatedAt,
+    message,
+    timing,
+  });
+  index.recordObserved('live', { ...value, events: [progress(1, 'first')] });
+  index.recordObserved('live', { ...value, events: [progress(2, 'second')] });
+  const rolledBack = new released.JobLocationIndex!(runtime, root);
+  expect(rolledBack.read('live')?.detail).toMatchObject({
+    kind: 'recorded',
+    value: { events: [expect.objectContaining({ message: 'first' }), expect.objectContaining({ message: 'second' })] },
+  });
 });

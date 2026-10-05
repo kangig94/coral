@@ -1,3 +1,5 @@
+import { loadReleasedWait } from '#tests/helpers/released-wait.js';
+import { rmSync } from 'node:fs';
 import { expect, it, vi, afterEach } from 'vitest';
 
 import { readWaitSession } from '#src/jobs/wait/reader.js';
@@ -43,7 +45,7 @@ it('does not rebuild history for each delivered event cursor', async () => {
   }
 });
 
-it('closes a v2 progress-only tail and preserves the delivered cursor membership', async () => {
+it('drains a legacy terminal backlog before delivery and never emits empty waiting', async () => {
   const job = admitted(
     'a',
     Array.from({ length: 600 }, (_, i) => [i + 1, `line-${i}`]),
@@ -58,12 +60,9 @@ it('closes a v2 progress-only tail and preserves the delivered cursor membership
       }),
     );
   const first = await read();
-  const second = await read(first.find((event) => event.type === 'terminal')!.cursor);
-  expect(second.at(-1)).toMatchObject({
-    type: 'waiting',
-    waitingJobIds: [],
-    cursor: { locations: { a: 'epoch-E' }, deliveredJobIds: ['a'] },
-  });
+  expect(first.filter((event) => event.type === 'progress')).toHaveLength(600);
+  expect(first.at(-1)).toMatchObject({ type: 'terminal', remainingJobIds: [] });
+  expect(await read(first.find((event) => event.type === 'terminal')!.cursor)).toEqual([]);
 });
 
 it('keeps completed live coverage when a later refresh outlives the deadline', async () => {
@@ -610,7 +609,7 @@ it('settles an acknowledged legacy terminal before refusing unavailable artifact
       read: () => [job],
     }),
   );
-  expect(events.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: [] });
+  expect(events).toEqual([]);
 });
 
 it('retries an unknown historical read on a bounded schedule, then exits 75 unresolved', async () => {
@@ -747,16 +746,16 @@ it('does not let a versionless terminal overtake a repair-pending terminal or sk
     ],
     false,
   );
-  const first = await collect(
-    readWaitSession({
-      request: { jobIds: ['R', 'S', 'T'], timeoutSeconds: 1 },
-      time,
-      activeEpochKey: 'epoch-E',
-      read: () => [r, s, t],
-    }),
-  );
-  expect(first.some((event) => event.type === 'terminal')).toBe(false);
-  expect(first.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: ['R', 'S', 'T'] });
+  await expect(
+    collect(
+      readWaitSession({
+        request: { jobIds: ['R', 'S', 'T'], timeoutSeconds: 1 },
+        time,
+        activeEpochKey: 'epoch-E',
+        read: () => [r, s, t],
+      }),
+    ),
+  ).rejects.toMatchObject({ code: 'wait_epoch_unsupported' });
   r.availability = { kind: 'available', resultPath: '/r' };
   const second = await collect(
     readWaitSession({
@@ -799,4 +798,76 @@ it('settles a permanently unreadable retained outcome after delivery instead of 
   expect(snapshot).toMatchObject({ exitCode: 0, remainingJobIds: [] });
   expect(snapshot.notices.join(' ')).toContain('cannot be read by this build');
   expect(snapshot.notices.join(' ')).not.toContain('no longer kept');
+});
+
+const releasedDirectories: string[] = [];
+afterEach(() => {
+  for (const directory of releasedDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
+it.each(['v0.10.15', 'v0.10.17'] as const)('delivers a 600-line backlog through the real %s reader', async (tag) => {
+  const released = await loadReleasedWait(tag, releasedDirectories);
+  const job = admitted(
+    'a',
+    Array.from({ length: 600 }, (_, i) => [i + 1, `line-${i}`]),
+  );
+  const request = {
+    jobIds: ['a'],
+    projectRoot: '/tmp',
+    timeoutSeconds: 1,
+    supportsInterrupted: true,
+    ...(tag === 'v0.10.17' ? { supportsWaitV2: true, supportsHandover: true } : {}),
+  };
+  released.jobWaitSchema.parse(request);
+  let cursor: WaitCursor = { afterSeq: 0 };
+  let lines = 0;
+  for await (const wire of readWaitSession({
+    request,
+    time: createRealTimePort(),
+    activeEpochKey: 'epoch-E',
+    read: () => [job],
+  })) {
+    const event = released.parseWaitStreamEventValue(wire);
+    cursor = released.advanceWaitRenderCursor(cursor, event).cursor;
+    if (event.type === 'progress') lines += event.message.split('\n').length;
+    if (event.type === 'terminal') {
+      expect(lines).toBe(600);
+      expect(event.remainingJobIds).toEqual([]);
+      expect(released.formatWaitTerminal(event, null, false)).not.toContain('Run coral-cli wait');
+    }
+    if (event.type === 'waiting') expect(event.waitingJobIds.length).toBeGreaterThan(0);
+  }
+  expect(lines).toBe(600);
+  if (tag === 'v0.10.17' && cursor.version !== 'jobs.wait.v3') expect(cursor.deliveredJobIds).toContain('a');
+});
+
+it('refuses a v0.10.15 pending artifact rather than immediately returning later sibling progress', async () => {
+  const a = admitted('a', [], true);
+  a.availability = { kind: 'repair-pending', ageUncertain: false };
+  const b = admitted('b', [[2000, 'b later line']], false);
+  await expect(
+    collect(
+      readWaitSession({
+        request: { jobIds: ['a', 'b'], timeoutSeconds: 30 },
+        time: createRealTimePort(),
+        activeEpochKey: 'epoch-E',
+        read: () => [a, b],
+      }),
+    ),
+  ).rejects.toMatchObject({ code: 'wait_epoch_unsupported' });
+});
+
+it('a settled source ends a wait on the first poll without a continuation', async () => {
+  const read = vi.fn((): WaitAdmission[] => [
+    { jobId: 'U', disposition: 'outcome-unreadable', sourceRead: 'settled-unreadable' },
+  ]);
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['U'], supportsWaitV3: true },
+      time: createRealTimePort(),
+      activeEpochKey: 'active',
+      read,
+    }),
+  );
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(events.at(-1)).toMatchObject({ type: 'notice', exitCode: 1, cursor: { jobs: [] } });
 });

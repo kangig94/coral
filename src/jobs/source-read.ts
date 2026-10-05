@@ -4,22 +4,13 @@ import type { StoragePort } from '../infra/port-types.js';
 import { STORE_LOCK_FILE_NAME } from '../store/epoch/index.js';
 import type { SourceReadDisposition } from './wait/session.js';
 
-/** Permission, identity and format failures require intervention; contention has an automatic exit. */
+export class HistoricalDecodeError extends Error {}
+
+/** Only the job decoder can settle a read; source failures belong to the epoch's maintenance owner. */
 export function sourceReadFailureDisposition(error: unknown): Exclude<SourceReadDisposition, 'readable' | 'retired'> {
-  if (error instanceof z.ZodError || error instanceof SyntaxError) return 'settled-unreadable';
-  if (error instanceof Error) {
-    const code = 'code' in error ? error.code : undefined;
-    if (
-      code === 'EACCES' ||
-      code === 'EPERM' ||
-      code === 'ENOENT' ||
-      /not a database|database disk image is malformed|no such (table|column)|malformed|cannot be decoded|identity|unsupported/i.test(
-        error.message,
-      )
-    )
-      return 'settled-unreadable';
-  }
-  return 'transient-unknown';
+  return error instanceof z.ZodError || error instanceof SyntaxError || error instanceof HistoricalDecodeError
+    ? 'settled-unreadable'
+    : 'transient-unknown';
 }
 
 /** Cache only an observed read in its session, and invalidate on journal, guard or identity replacement. */

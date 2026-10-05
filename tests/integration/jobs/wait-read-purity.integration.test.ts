@@ -385,7 +385,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     check();
     const raw = JSON.parse(readFileSync(f.locationPath, 'utf8')) as Record<string, unknown>;
     writeFileSync(f.locationPath, JSON.stringify({ ...raw, detail: undefined }));
-    expect(addressing.detail(f.jobId)).toMatchObject({ kind: 'unresolved' });
+    expect(addressing.detail(f.jobId)).toMatchObject({ kind: 'outcome-unreadable' });
     expect(restarted.resultsReleased(f.epochKey)).toBe(false);
   });
 
@@ -405,7 +405,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const disposition = f.addressing.unknownJobDisposition();
     const caveat = f.addressing.unknownJobCaveat();
     check();
-    expect(disposition).toBe(retryScheduled ? 'discovery-unknown' : 'not-found');
+    expect(disposition).toBe(retryScheduled ? 'discovery-unknown' : 'discovery-unreadable');
     expect(caveat).toContain(f.epochKey);
   });
 
@@ -459,4 +459,33 @@ describe('Phase D wait read purity (Revision S3)', () => {
       'unknownLocationHolds',
     ]);
   });
+});
+
+it.each(['missing', 'malformed'] as const)('maintenance repairs a %s guard after a pure transient read', (guard) => {
+  const f = fixture(true);
+  commitJobTerminal(f.store, f.jobId, 'session-1', {
+    content: 'journal terminal',
+    outcome: { kind: 'completed' },
+    durationMs: 1,
+  });
+  const lock = join(f.epochDir, '.lock');
+  if (guard === 'missing') rmSync(lock);
+  else writeFileSync(lock, 'malformed guard');
+  let check = measure(f);
+  expect(f.addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true })[0]).toMatchObject({
+    disposition: 'admitted',
+    sourceRead: 'transient-unknown',
+  });
+  check();
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
+  refreshHistoricalEpochs(f.index);
+  expect(existsSync(lock)).toBe(true);
+  check = measure(f);
+  expect(f.addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true })[0]).toMatchObject({
+    disposition: 'admitted',
+    sourceRead: 'readable',
+    detail: { exit: { content: 'journal terminal' } },
+  });
+  check();
 });

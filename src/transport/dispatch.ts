@@ -1034,6 +1034,15 @@ function unknownJobsAnswer(
       503,
     );
   }
+  if (rpcPorts.jobs.unknownJobDisposition() === 'discovery-unreadable')
+    return unary(
+      {
+        code: 'job_outcome_unreadable',
+        message: `Job discovery is unreadable: ${caveat}`,
+        detail: { jobs: [...jobIds], disposition: 'discovery-unreadable' },
+      },
+      409,
+    );
   if (rpcPorts.jobs.unknownJobDisposition() === 'pre-epoch-history') {
     return unary(
       {
@@ -1113,7 +1122,7 @@ async function executeJobsDetailCatalogRequest({
 
   const detail = rpcPorts.jobs.detail(parsed.jobId);
   if (!detail) {
-    if (rpcPorts.jobs.unknownJobDisposition() === 'discovery-unknown')
+    if (['discovery-unknown', 'discovery-unreadable'].includes(rpcPorts.jobs.unknownJobDisposition()))
       return unknownJobsAnswer(rpcPorts, [parsed.jobId]);
     const caveat = rpcPorts.jobs.unknownJobCaveat?.();
     return unary(
@@ -1124,6 +1133,15 @@ async function executeJobsDetailCatalogRequest({
   if ('kind' in detail && detail.kind === 'pre-epoch-history') {
     return unknownJobsAnswer(rpcPorts, [parsed.jobId]);
   }
+  if ('kind' in detail && detail.kind === 'outcome-unreadable')
+    return unary(
+      {
+        code: 'job_outcome_unreadable',
+        message: `Job ${parsed.jobId}: outcome-unreadable. ${detail.message ?? 'The source cannot be read; this coordinator will not re-read it before its next start.'}`,
+        detail: { epochKey: detail.epochKey },
+      },
+      409,
+    );
   if ('kind' in detail && detail.kind === 'outcome-unrecoverable') {
     return unary(
       {
@@ -1138,8 +1156,7 @@ async function executeJobsDetailCatalogRequest({
     return unary(
       {
         code: 'job_unresolved',
-        message: `Job ${parsed.jobId} remains addressable while its retained epoch is recovered.`,
-        remediation: 'Retry shortly; recovery is automatic.',
+        message: `Job ${parsed.jobId} remains unresolved; a scheduled maintenance retry or the next coordinator start will re-read its epoch.`,
         detail: { epochKey: detail.epochKey },
       },
       409,
@@ -1172,12 +1189,14 @@ async function executeJobsWaitCatalogRequest({
     supportsInterrupted?: boolean;
     supportsWaitV2?: boolean;
     supportsWaitV3?: boolean;
+    drainProgress?: boolean;
     supportsHandover?: boolean;
   };
   const waitRequest = {
     ...parsed,
     supportsWaitV2: parsed.supportsWaitV2 === true,
     supportsWaitV3: parsed.supportsWaitV3 === true,
+    drainProgress: parsed.drainProgress === true,
     supportsInterrupted: parsed.supportsInterrupted === true,
     supportsHandover: parsed.supportsHandover === true,
   } satisfies CanonicalWaitStreamRequest;
@@ -1196,7 +1215,7 @@ async function executeJobsWaitCatalogRequest({
         ? 503
         : cursorError.code === 'scope_mismatch'
           ? 403
-          : cursorError.code === 'job_outcome_unrecoverable'
+          : cursorError.code === 'job_outcome_unrecoverable' || cursorError.code === 'job_outcome_unreadable'
             ? 409
             : cursorError.code === 'jobs_not_found' || cursorError.code === 'job_pre_epoch_history'
               ? 404

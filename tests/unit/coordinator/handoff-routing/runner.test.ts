@@ -298,7 +298,7 @@ describe('handoff-routing/runner', () => {
         expect(options).not.toHaveProperty('signal');
         expect(options).not.toHaveProperty('timeout');
         if (trigger === 'abort') controller.abort();
-        else await vi.advanceTimersByTimeAsync(3000);
+        else await vi.advanceTimersByTimeAsync(10000);
         expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
         await vi.advanceTimersByTimeAsync(749);
         expect(child.kill).toHaveBeenCalledOnce();
@@ -536,4 +536,35 @@ it('writes no shared routing record when a newer target fails the wait contract 
     },
   });
   expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
+});
+
+it('allows a slow supported wait contract to use the existing invocation budget', async () => {
+  vi.useFakeTimers();
+  vi.spyOn(runtime.time, 'setTimeout').mockImplementation((callback, delay) => setTimeout(callback, delay));
+  vi.spyOn(runtime.time, 'clearTimeout').mockImplementation((handle) => clearTimeout(handle as NodeJS.Timeout));
+  const child = childThatStaysAlive();
+  child.kill = vi.fn(() => true);
+  const started = deferred();
+  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
+    setTimeout(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })), 3500);
+    started.resolve();
+    return child;
+  });
+  mockState.spawn.mockImplementation(() => childThatExits(0, null));
+  const result = runHandoff(cliOperation('wait', 'jobs', 'a'), {
+    pluginRoot: '/plugin/root',
+    waitInvocation: {
+      mode: 'bounded',
+      signal: new AbortController().signal,
+      originalCommand: 'coral-cli wait jobs a',
+      remainingMs: () => 10000,
+      cleanupRemainingMs: () => 11000,
+      saveContinuation: vi.fn(),
+    },
+  });
+  void result.catch(() => undefined);
+  await started.promise;
+  await vi.advanceTimersByTimeAsync(3500);
+  expect(child.kill).not.toHaveBeenCalled();
+  await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-success' } });
 });

@@ -184,20 +184,20 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       f.close();
     }
   });
-  it('exempts first post-commit publication but keeps repair pending until a large-step window ends', async () => {
-    const f = createTerminalExportFixture();
+  it('defers first post-commit publication and repair until a large-step window ends', async () => {
+    const f = createTerminalExportFixture('provider', true);
     try {
       trustedJobRetentionCutoff(f.runtime);
       f.jump(86400000);
       const seq = f.complete();
       f.store.getResultExportOwner().publishTerminalResult(f.jobId, seq);
-      expect(existsSync(f.resultPath)).toBe(true);
-      rmSync(f.resultPath);
+      expect(existsSync(f.resultPath)).toBe(false);
       const owner = f.store.getResultExportOwner();
       const wake = vi.fn();
       owner.onRepairHint(wake);
-      const availability = owner.observeResultAvailability(f.jobId);
-      expect(availability.kind).toBe('repair-pending');
+      const observation = {};
+      const availability = owner.observeResultAvailability(f.jobId, observation);
+      expect(availability).toMatchObject({ kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true });
       const location = f.index.read(f.jobId);
       if (location?.detail.kind !== 'recorded') throw new Error('missing terminal');
       const admission = {
@@ -211,13 +211,14 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       const session = new WaitSession([f.jobId]);
       session.reconcile([admission]);
       session.acknowledge(admission);
-      expect(session.remaining()).toEqual([f.jobId]);
-      expect(session.artifactPending(f.jobId)).toBe(true);
+      expect(session.remaining()).toEqual([]);
+      expect(session.artifactPending(f.jobId)).toBe(false);
       owner.hintRepair(f.jobId);
       owner.ensureResultMarkdownArtifact(f.jobId);
       expect(wake).toHaveBeenCalled();
       expect(existsSync(f.resultPath)).toBe(false);
       f.advance(300_001);
+      expect(owner.observeResultAvailability(f.jobId, observation)).toMatchObject({ kind: 'repair-pending' });
       await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
       expect(existsSync(f.resultPath)).toBe(true);
     } finally {
@@ -247,12 +248,20 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       f.close();
     }
   });
-  it('publishes a newly appended terminal after a backwards clock step', () => {
+  it('defers a newly appended terminal after a backwards clock step until clock trust returns', () => {
     const f = createTerminalExportFixture();
     try {
       trustedJobRetentionCutoff(f.runtime);
       f.jump(-86400000);
       const seq = f.complete();
+      f.store.getResultExportOwner().publishTerminalResult(f.jobId, seq);
+      expect(existsSync(f.resultPath)).toBe(false);
+      expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
+        kind: 'failed',
+        cause: 'cutoff-untrusted',
+        retryScheduled: true,
+      });
+      f.advance(300_001);
       f.store.getResultExportOwner().publishTerminalResult(f.jobId, seq);
       expect(existsSync(f.resultPath)).toBe(true);
     } finally {
@@ -350,7 +359,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       f.close();
     }
   });
-  it('keeps repair pending through a large clock step and coalesces repair hints', async () => {
+  it('defers repair through a large clock step and coalesces repair hints', async () => {
     const f = createTerminalExportFixture();
     try {
       f.complete();
@@ -358,7 +367,11 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       const wake = vi.fn();
       owner.onRepairHint(wake);
       f.jump(86400000);
-      expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
+      expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
+        kind: 'failed',
+        cause: 'cutoff-untrusted',
+        retryScheduled: true,
+      });
       owner.hintRepair(f.jobId);
       owner.hintRepair(f.jobId);
       expect(wake).toHaveBeenCalledTimes(1);
@@ -369,7 +382,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       f.close();
     }
   });
-  it('settles a permission-denied terminal source until observation recovers', () => {
+  it('keeps a permission-denied terminal source pending until its owner settles or observation recovers', () => {
     const f = createTerminalExportFixture('provider', true);
     try {
       f.complete();
@@ -384,8 +397,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       }) as typeof stat);
       const owner = f.store.getResultExportOwner();
       expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
-        kind: 'failed',
-        retryScheduled: false,
+        kind: 'repair-pending',
         ageUncertain: true,
       });
       vi.restoreAllMocks();
@@ -469,7 +481,11 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
         rmSync(f.resultPath, { force: true });
         f.jump(86400000);
         const owner = f.store.getResultExportOwner();
-        expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
+        expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
+          kind: 'failed',
+          cause: 'cutoff-untrusted',
+          retryScheduled: true,
+        });
         owner.hintRepair(f.jobId);
         await fire();
         expect(existsSync(f.resultPath)).toBe(false);
@@ -585,7 +601,7 @@ afterEach(() => {
   for (const f of closeFixtures.splice(0)) f.close();
 });
 
-it('settles deterministic source failures and retries only transient source contention', () => {
+it('keeps source-level failures pending until the epoch write owner settles its retry', () => {
   const f = createTerminalExportFixture('provider', true);
   closeFixtures.push(f);
   f.complete();
@@ -595,10 +611,10 @@ it('settles deterministic source failures and retries only transient source cont
     open.mockImplementation(() => {
       throw Object.assign(new Error(code === 'SQLITE_BUSY' ? 'database is locked' : 'permission denied'), { code });
     });
-    expect(owner.observeResultAvailability(f.jobId)).toMatchObject(
-      code === 'SQLITE_BUSY' ? { kind: 'repair-pending' } : { kind: 'failed', retryScheduled: false },
-    );
+    expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
   }
+  f.index.holdUnknownLocations(f.epochKey, 'Source probes exhausted; re-read at next coordinator start', false);
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'failed', retryScheduled: false });
 });
 
 it('repairs post-commit terminal recording under a permanent active epoch hold', async () => {

@@ -140,3 +140,30 @@ it('retains the export owner, pending hints and listener when recovery reuses th
   store.getResultExportOwner().hintRepair('second');
   expect(listener).toHaveBeenCalledTimes(2);
 });
+
+it('epoch-less terminal availability bounds age evidence and reads only the terminal', () => {
+  const { store } = createStore();
+  for (let i = 0; i < 1025; i++) {
+    const id = `local-${i}`;
+    initProviderJob(store, id, id);
+    commitJobTerminal(store, id, id, { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
+    store.getResultExportOwner().observeResultAvailability(id);
+  }
+  const read = vi.spyOn(store, 'readJobEvents');
+  store.getResultExportOwner().observeResultAvailability('local-1024');
+  expect(read.mock.calls.every(([, terminalOnly]) => terminalOnly === true)).toBe(true);
+  expect((store as unknown as { localTerminalAges: Map<string, unknown> }).localTerminalAges.size).toBeLessThanOrEqual(
+    1024,
+  );
+});
+
+it('proves a registered but never accepted active job absent from the live journal', () => {
+  const { runtime, store } = createStore();
+  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  index.register('never-accepted', 'active:1', { projectRoot: '/workspace', workDir: null, jobKind: 'provider' });
+  expect(store.observeJobAbsence('never-accepted')).toBe(true);
+  initProviderJob(store, 'accepted', 'session');
+  expect(store.observeJobAbsence('accepted')).toBe(false);
+  store.getDb().prepare('DELETE FROM projection_jobs WHERE job_id = ?').run('accepted');
+  expect(store.observeJobAbsence('accepted')).toBe(false);
+});

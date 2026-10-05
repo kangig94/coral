@@ -88,7 +88,6 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       if (yield* terminalEvents(session, request, terminals)) return;
       yield* carrierEvents(session, request, state.absentReported);
       if (session.remaining().length === 0) {
-        if (request.supportsWaitV2 === true && request.supportsWaitV3 !== true) yield waitingEvent(session, request);
         if (request.supportsWaitV3 === true)
           yield {
             type: 'notice',
@@ -103,7 +102,10 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       if (!unknownRead) unknownReadAttempts = 0;
       if (
         (unknownRead && unknownReadAttempts === retryDelays.length) ||
-        (!input.internal && session.hasProgress()) ||
+        (!input.internal &&
+          request.drainProgress !== true &&
+          request.supportsWaitV3 === true &&
+          session.hasProgress()) ||
         Number(time.monotonicNow()) >= deadline
       ) {
         if (input.internal && !crossedTimer) await time.sleep(0, { signal });
@@ -197,7 +199,7 @@ function* memberAdmissionEvents(
       yield {
         type: 'notice',
         version: 'jobs.wait.v3',
-        message: `Earlier progress for ${job.jobId} cannot be read by this build. ${job.message ?? 'The source needs repair or a compatible build; this job leaves the continuation after its retained outcome is delivered.'} Inspect coral-cli jobs detail ${job.jobId} --full.`,
+        message: `Earlier progress for ${job.jobId} cannot be read by this build. ${job.message ?? 'This build cannot read its source; this job leaves the continuation after its retained outcome is delivered.'} Inspect coral-cli jobs detail ${job.jobId} --full.`,
         cursor: session.cursor(session.remaining()),
       };
   }
@@ -262,17 +264,9 @@ function* progressEvents(
     }
     const bytes = group.reduce((sum, line) => sum + Buffer.byteLength(line.text), 0);
     if (
-      request.supportsWaitV2 === true &&
-      request.supportsWaitV3 !== true &&
-      (group.length > WAIT_PROGRESS_LINES || bytes > WAIT_PROGRESS_BYTES)
-    )
-      throw new WaitSessionError(
-        'wait_epoch_unsupported',
-        `Progress for ${first.jobId} requires a V3 reader; run coral-cli jobs detail ${first.jobId}.`,
-      );
-    if (
       !internal &&
-      !versionless &&
+      request.drainProgress !== true &&
+      request.supportsWaitV3 === true &&
       (state.progressLines + group.length > WAIT_PROGRESS_LINES || state.progressBytes + bytes > WAIT_PROGRESS_BYTES)
     )
       break;
@@ -318,7 +312,12 @@ function terminalEvent(
     result: { content, outcome, durationMs },
     usage: result.diagnostics.usage,
     continuity: job.continuity ?? null,
-    remainingJobIds: session.remaining(),
+    remainingJobIds:
+      request.supportsWaitV3 === true
+        ? session.remaining()
+        : session.admissions
+            .filter((job) => job.disposition === 'admitted' && !session.acknowledged(job.jobId))
+            .map((job) => job.jobId),
     ...(availability?.kind === 'available' ? { resultPath: availability.resultPath } : {}),
     ...(request.supportsWaitV3 === true
       ? {
@@ -347,10 +346,11 @@ function* terminalEvents(
     if (!job.detail?.exit) continue;
     const availability = job.availability;
     if (session.acknowledged(job.jobId) && !session.artifactPending(job.jobId)) continue;
-    if (request.supportsWaitV3 !== true && availability?.kind === 'repair-pending') {
-      if (request.supportsWaitV2 !== true) return false;
-      continue;
-    }
+    if (request.supportsWaitV3 !== true && availability?.kind === 'repair-pending')
+      throw new WaitSessionError(
+        'wait_epoch_unsupported',
+        `Job ${job.jobId} has a final outcome whose pending result artifact cannot be represented by this CLI. Run coral-cli jobs detail ${job.jobId}.`,
+      );
     if (request.supportsWaitV3 !== true && availability?.kind !== 'available')
       throw new WaitSessionError(
         'wait_epoch_unsupported',

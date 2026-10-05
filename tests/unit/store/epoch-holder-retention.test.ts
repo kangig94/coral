@@ -1,9 +1,11 @@
+import { loadReleasedWait } from '#tests/helpers/released-wait.js';
+import { rmSync } from 'node:fs';
+import { crashHolderPublication } from '#tests/helpers/crash-holder-publication.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, lstatSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { pruneStoreEpochHolders, registerStoreEpochHolder } from '#src/store/epoch/holder.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
-import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { sweepStoreEpochsPostReady } from '#src/store/epoch/post-ready-sweep.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
 import { acquireSharedFileLockSync, attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
@@ -38,7 +40,7 @@ describe('epoch holder retention', () => {
       process: {
         ...f.runtime.process,
         observeLiveness: (pid: number) =>
-          pid === 101 ? ('absent' as const) : pid === 102 ? ('alive' as const) : ('unknown' as const),
+          pid === 102 ? ('alive' as const) : pid === 103 ? ('unknown' as const) : ('absent' as const),
       },
     };
     try {
@@ -59,6 +61,7 @@ describe('epoch holder retention', () => {
   it('unregisters its marker on ordinary close and keeps unknown malformed markers during retries', async () => {
     const f = fixture();
     const root = f.runtime.paths.coral.store.dbDir;
+    mkdirSync(join(root, 'epoch-1'));
     let released = 0;
     registerStoreEpochHolder(
       f.runtime,
@@ -81,7 +84,7 @@ describe('epoch holder retention', () => {
 });
 
 it.each(['retention', 'post-ready'] as const)(
-  'cleans only absent-owner holder publication stages (%s)',
+  'holder stages stay invisible and retire with their epoch (%s)',
   async (cleanup) => {
     const f = fixture();
     const root = f.runtime.paths.coral.store.dbDir;
@@ -90,32 +93,21 @@ it.each(['retention', 'post-ready'] as const)(
       process: {
         ...f.runtime.process,
         observeLiveness: (pid: number) =>
-          pid === 101 ? ('absent' as const) : pid === 102 ? ('alive' as const) : ('unknown' as const),
+          pid === 102 ? ('alive' as const) : pid === 103 ? ('unknown' as const) : ('absent' as const),
       },
     };
     const selected = { storeRoot: root, epoch: '1', path: join(root, 'epoch-1', 'store.db') };
-    const dead = join(root, '.epoch-holder-dead.json.tmp');
-    let released = 0;
-    const publisher = {
-      ...runtime,
-      env: { ...runtime.env, pid: () => 101 },
-      storage: {
-        ...runtime.storage,
-        writeAtomicDurableSync: (_path: string, data: string | Uint8Array) => {
-          writeFileSync(dead, data);
-          throw new Error('publisher exited before rename');
-        },
-      },
-    };
-    expect(() =>
-      registerStoreEpochHolder(publisher, selected, newRawDatabase(':memory:'), () => {
-        released++;
-      }),
-    ).toThrow('publisher exited');
-    expect(released).toBe(1);
+    const dead = crashHolderPublication(f.baseDir, root);
     if (cleanup === 'retention') await pruneStoreEpochHolders(runtime, f.budget, (operation) => operation());
     else expect(await sweepStoreEpochsPostReady(runtime, selected)).toBe('complete');
-    expect(existsSync(dead)).toBe(false);
+    expect(existsSync(dead)).toBe(true);
+    writeFileSync(dead, '{');
+    expect(await sweepStoreEpochsPostReady(runtime, selected)).toBe('complete');
+    const reaping = join(root, '.reaping-holder-crash');
+    renameSync(join(root, 'epoch-1'), reaping);
+    expect(existsSync(join(reaping, basename(dead)))).toBe(true);
+    expect(await sweepStoreEpochsPostReady(runtime, selected)).toBe('complete');
+    expect(existsSync(reaping)).toBe(false);
     for (const [name, value] of [
       ['live', JSON.stringify({ epoch: '1', pid: 102 })],
       ['unknown', JSON.stringify({ epoch: '1', pid: 103 })],
@@ -212,3 +204,62 @@ it('keeps a holder marker replaced by a symlink after its owner is observed abse
   expect(existsSync(outside)).toBe(true);
   expect(f.outcomes).toContainEqual({ kind: 'failed', subject: marker, reason: 'holder-entry-identity-changed' });
 });
+
+it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'] as const)(
+  'released %s scanners ignore a real crashed holder stage and reclaim its retired epoch',
+  async (tag) => {
+    const f = fixture();
+    const dirs: string[] = [];
+    const released = await loadReleasedWait(tag, dirs);
+    const runtime = { ...f.runtime, process: { ...f.runtime.process, observeLiveness: () => 'absent' as const } };
+    const root = f.runtime.paths.coral.store.dbDir;
+    const selected = { storeRoot: root, epoch: '1', path: join(root, 'epoch-1', 'store.db') };
+    try {
+      const first = crashHolderPublication(f.baseDir, root);
+      if (released.pruneStoreEpochHolders)
+        await released.pruneStoreEpochHolders(runtime, f.budget, (operation) => operation());
+      else expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
+      expect(existsSync(first)).toBe(true);
+      writeFileSync(first, '{');
+      expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
+      if (tag === 'v0.10.15') {
+        expect(
+          await released.sweepStoreEpochsPostReady!(runtime, {
+            ...selected,
+            epoch: '2',
+            path: join(root, 'epoch-2', 'store.db'),
+          }),
+        ).toBe('complete');
+        expect(existsSync(first)).toBe(false);
+      } else {
+        const firstReaping = join(root, '.reaping-holder-first');
+        renameSync(join(root, 'epoch-1'), firstReaping);
+        expect(existsSync(join(firstReaping, basename(first)))).toBe(true);
+        expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
+        expect(existsSync(firstReaping)).toBe(false);
+      }
+      f.runtime.storage.unlinkSync(join(f.baseDir, 'node_modules'));
+      const second = crashHolderPublication(f.baseDir, root);
+      expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
+      expect(existsSync(second)).toBe(true);
+      if (tag === 'v0.10.15') {
+        expect(
+          await released.sweepStoreEpochsPostReady!(runtime, {
+            ...selected,
+            epoch: '2',
+            path: join(root, 'epoch-2', 'store.db'),
+          }),
+        ).toBe('complete');
+        expect(existsSync(second)).toBe(false);
+      } else {
+        const secondReaping = join(root, '.reaping-holder-second');
+        renameSync(join(root, 'epoch-1'), secondReaping);
+        expect(existsSync(join(secondReaping, basename(second)))).toBe(true);
+        expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
+        expect(existsSync(secondReaping)).toBe(false);
+      }
+    } finally {
+      for (const directory of dirs) rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);

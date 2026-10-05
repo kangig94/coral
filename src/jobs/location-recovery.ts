@@ -7,7 +7,6 @@ import { jobLaunchRequestBodySchema } from './launch.js';
 import type { RecoverySubject } from '../recovery/containment.js';
 import type { RecoverySourceFactoryPlan } from '../recovery/source-registry.js';
 import { jobLocationRecoverySource } from './location-recovery-source.js';
-import { refreshHistoricalEpochs } from './historical-reader.js';
 
 type LaunchIdentityRow = {
   stream_id: string;
@@ -109,7 +108,6 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
     if (recoveryError !== undefined) throw recoveryError;
     index.clearUnknownLocations(epochKey);
     void index.certify(epochKey, highWaterSeq);
-    refreshHistoricalEpochs(index);
   } catch (error: unknown) {
     index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error), true);
     for (const location of index.locationsFor(epochKey)) index.markUnresolved(location.jobId);
@@ -134,7 +132,11 @@ export function createJobLocationRecoveryRetryPlan(
         return { kind: 'advanced', outcome: 'settled', facts: [], detail: 'Job location inventory recovered.' };
       },
       onFault: (fault) => {
-        index.holdUnknownLocations(epochKey, String(fault.error), false);
+        index.holdUnknownLocations(
+          epochKey,
+          `${String(fault.error)}; recovery will re-run at the next coordinator start`,
+          false,
+        );
         return { kind: 'quarantine', detail: String(fault.error) };
       },
     },

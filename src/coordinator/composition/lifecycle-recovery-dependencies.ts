@@ -79,7 +79,8 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
     }
     onOpenedStore(openStore);
     if (openStore.path !== ':memory:') {
-      for (const historical of listStoreEpochs(runtime)) {
+      const epochs = listStoreEpochs(runtime);
+      for (const historical of epochs) {
         if (
           historical.role !== 'protected' ||
           historical.resolved === null ||
@@ -99,6 +100,19 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
           runtime.paths.coral.exports.jobsRoot,
           runtime.storage,
         );
+      }
+      const present = new Set(epochs.map((epoch) => epoch.epochKey));
+      for (const epoch of epochs)
+        if (epoch.resolved !== null) present.add(encodeResolvedStoreEpoch(runtime, epoch.resolved));
+      present.add(encodeResolvedStoreEpoch(runtime, openStore));
+      present.add(readOrCreateEpochKey(runtime, openStore));
+      for (const hold of jobLocationIndex.unknownLocationHolds()) {
+        if (!present.has(hold.epochKey))
+          jobLocationIndex.holdUnknownLocations(
+            hold.epochKey,
+            'Source retired; this coordinator will not re-read it before its next start',
+            false,
+          );
       }
     }
   };

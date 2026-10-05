@@ -1,3 +1,4 @@
+import type { JobLocation } from '../location-index.js';
 import { z } from 'zod';
 import { jobTerminalSchema } from './result.js';
 import { isDeepStrictEqual } from 'node:util';
@@ -73,4 +74,21 @@ export function validatedTerminal(
   )
     return null;
   return terminal;
+}
+
+export function hasReadableTerminalDetail(location: JobLocation): boolean {
+  if (
+    location.disposition !== 'terminal' ||
+    location.terminalSeq === undefined ||
+    location.detail.kind !== 'recorded'
+  ) {
+    return false;
+  }
+  const detail = location.detail.value;
+  return (
+    detail.status.projectRoot === location.subject.projectRoot &&
+    detail.status.workDir === location.subject.workDir &&
+    detail.status.jobKind === location.subject.jobKind &&
+    validatedTerminal(detail, location.jobId, location.epochKey, location.terminalSeq) !== null
+  );
 }

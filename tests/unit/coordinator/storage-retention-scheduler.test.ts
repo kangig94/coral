@@ -661,3 +661,28 @@ it('a new read hint expedites repair while the failed owner already has fastDue'
   expect(repair).toHaveBeenCalledTimes(2);
   expect(owners.exports).toHaveBeenCalledTimes(1);
 });
+
+it('re-arms repair when a new hint arrives during an outstanding pass', async () => {
+  const { f, scheduler } = fixture();
+  const owner = f.store.getResultExportOwner();
+  const passes: string[][] = [];
+  let release: () => void = () => {};
+  const hints = (owner as unknown as { hints: Set<string> }).hints;
+  vi.spyOn(owner, 'repairPass').mockImplementation(async () => {
+    const snapshot = [...hints];
+    passes.push(snapshot);
+    for (const id of snapshot) hints.delete(id);
+    if (snapshot.includes('job-a'))
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+  });
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  owner.hintRepair('job-a');
+  await vi.advanceTimersByTimeAsync(1500);
+  owner.hintRepair('job-b');
+  release();
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(passes.some((pass) => pass.includes('job-b'))).toBe(true);
+});

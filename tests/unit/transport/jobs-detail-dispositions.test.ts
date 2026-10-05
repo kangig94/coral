@@ -65,8 +65,8 @@ async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: o
         unknown === 'discovery-unknown' || supplied.unknownJobCaveat
           ? [
               {
-                epochKey: unknown === 'not-found' ? 'permanently-lost' : 'e',
-                reason: unknown === 'not-found' ? 'retained-store-root-missing' : 'recovery retry pending',
+                epochKey: unknown === 'discovery-unknown' ? 'historical' : 'permanently-lost',
+                reason: unknown === 'discovery-unknown' ? 'recovery retry pending' : 'retained-store-root-missing',
                 retryScheduled: unknown === 'discovery-unknown',
               },
             ]
@@ -101,14 +101,31 @@ async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: o
 }
 
 describe('jobs.detail retained-epoch dispositions', () => {
-  it('should tell the caller an unresolved job recovers on its own and is worth retrying', async () => {
+  it('names maintenance or the next start as the unresolved job read exit', async () => {
     const result = await detailFor({ kind: 'unresolved', jobId: 'job-1', epochKey: 'lineage:7' });
 
     expect(result).toMatchObject({
       kind: 'unary',
-      body: { code: 'job_unresolved', remediation: expect.stringContaining('recovery is automatic') as unknown },
+      body: {
+        code: 'job_unresolved',
+        message: expect.stringContaining('scheduled maintenance retry or the next coordinator start') as unknown,
+      },
     });
     expect(errorCodeToExit('job_unresolved', 409)).toBe(75);
+  });
+
+  it('reports an unreadable outcome as final for this coordinator lifetime', async () => {
+    const result = await detailFor({ kind: 'outcome-unreadable', jobId: 'job-1', epochKey: 'lineage:7' });
+    expect(result).toMatchObject({
+      kind: 'unary',
+      statusCode: 409,
+      body: {
+        code: 'job_outcome_unreadable',
+        message: expect.stringContaining('next start'),
+        detail: { epochKey: 'lineage:7' },
+      },
+    });
+    expect(errorCodeToExit('job_outcome_unreadable', 409)).toBe(1);
   });
 
   it('should report an unreadable recorded detail distinctly from an unresolved job', async () => {
@@ -279,7 +296,7 @@ it.each([false, true])('keeps retryable unknown discovery resumable in a legacy 
     {
       scopeCheck: () => ({ valid: ids, mismatch: [], missing: ['unknown'] }),
       unknownJobDisposition: () => 'discovery-unknown',
-      unknownJobCaveat: () => 'Unreadable epoch e: recovery retry pending.',
+      unknownJobCaveat: () => 'Unreadable epoch historical: recovery retry pending.',
     },
   );
   expect(result).toMatchObject({
@@ -294,22 +311,25 @@ it.each([false, true])('keeps retryable unknown discovery resumable in a legacy 
   expect(errorCodeToExit('transient', 503)).toBe(75);
 });
 
-it('answers a typo as missing with the permanent unreadable-epoch caveat', async () => {
+it('answers a typo as discovery-unreadable with the permanent epoch caveat', async () => {
   const result = await execute(
     'jobs.wait',
     { jobIds: ['typo'] },
     {
       scopeCheck: () => ({ valid: ['typo'], mismatch: [], missing: ['typo'] }),
-      unknownJobDisposition: () => 'not-found',
+      unknownJobDisposition: () => 'discovery-unreadable',
       unknownJobCaveat: () => 'Unreadable epoch permanently-lost: retained-store-root-missing.',
     },
   );
   expect(result).toMatchObject({
     kind: 'unary',
-    statusCode: 404,
-    body: { code: 'jobs_not_found', message: expect.stringContaining('permanently-lost: retained-store-root-missing') },
+    statusCode: 409,
+    body: {
+      code: 'job_outcome_unreadable',
+      message: expect.stringContaining('permanently-lost: retained-store-root-missing'),
+    },
   });
-  expect(errorCodeToExit('jobs_not_found', 404)).toBe(1);
+  expect(errorCodeToExit('job_outcome_unreadable', 409)).toBe(1);
 });
 
 it('keeps the singular missing-job detail code when an epoch caveat is present', async () => {

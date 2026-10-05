@@ -231,6 +231,8 @@ const waitStreamEventSchema = z
           'discovery-unknown',
           'pre-epoch-history',
           'outcome-unrecoverable',
+          'outcome-unreadable',
+          'discovery-unreadable',
           'scope-mismatch',
         ]),
         message: z.string().optional(),

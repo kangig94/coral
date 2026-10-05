@@ -1,3 +1,7 @@
+import { JobAddressing } from '#src/jobs/addressing.js';
+import { admitted } from '#tests/helpers/wait-session.js';
+import { createRealTimePort } from '#src/infra/time.js';
+import { jobsWaitRequest, jobWaitSchema, JOBS_WAIT_EXTENSIONS } from '#src/transport/rpc/jobs.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
@@ -282,3 +286,78 @@ describe('cli follow', () => {
     expect(process.off).toHaveBeenCalledWith('SIGINT', expect.any(Function));
   });
 });
+
+it.each(['pending', 'burst', 'failed'] as const)(
+  'launch-and-follow drains and returns the terminal code (%s)',
+  async (scenario) => {
+    const a = admitted(
+      'a',
+      scenario === 'burst' ? Array.from({ length: 600 }, (_, i) => [i + 1, `foreground-line-${i}`]) : [],
+      true,
+      'active-epoch',
+      scenario === 'failed',
+    );
+    const owner = new JobAddressing(
+      { time: createRealTimePort(), read: () => null, resultPathFor: () => '/r.md', unknownLocationHolds: () => [] },
+      {
+        epochKey: () => 'active-epoch',
+        detail: () => a.detail!,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => 'decided',
+      undefined,
+      () =>
+        scenario === 'pending' || scenario === 'failed'
+          ? { kind: 'repair-pending', ageUncertain: false }
+          : { kind: 'available', resultPath: '/r.md' },
+    );
+    let stdout = '';
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      callback?: () => void,
+    ) => {
+      stdout += toText(chunk);
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    try {
+      const { followJobs } = await loadFollowModule();
+      const code = await followJobs({
+        start: {
+          kind: 'launch',
+          launchResult: { kind: 'provider-session', jobId: 'a', sessionId: 's', launchState: 'running' },
+        },
+        reconnectPolicy: 'until-terminal',
+        projectRoot: '/tmp',
+        render: { isTTY: false, columns: 80, embed: false, verbose: false },
+        emitError: (error) => {
+          throw error;
+        },
+        connect: async ({ jobIds, cursor, signal, onCursorReset, drainProgress }) => {
+          const raw = jobsWaitRequest(
+            { jobIds, projectRoot: '/tmp', timeoutSeconds: 1, cursor, drainProgress },
+            JOBS_WAIT_EXTENSIONS,
+            onCursorReset,
+          );
+          const parsed = jobWaitSchema.parse(raw);
+          const stream = owner.waitStream({ ...parsed, abortSignal: signal });
+          return {
+            kind: 'subscription',
+            subscription: {
+              close: async () => {
+                await stream.return(undefined);
+              },
+              [Symbol.asyncIterator]: () => stream,
+            },
+          };
+        },
+      });
+      expect(code).toBe(scenario === 'failed' ? 42 : 0);
+      expect(stdout).not.toContain('Run coral-cli wait');
+      if (scenario === 'burst') expect(stdout).toContain('foreground-line-599');
+    } finally {
+      write.mockRestore();
+    }
+  },
+);

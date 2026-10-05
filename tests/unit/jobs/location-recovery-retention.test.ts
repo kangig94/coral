@@ -34,7 +34,10 @@ it('recovers terminals without loading progress and writes nothing on an unchang
   expect(read).toHaveBeenCalledWith('terminal', true);
   expect(read).toHaveBeenCalledWith('live');
   expect(index.read('terminal')?.detail).toMatchObject({ kind: 'recorded', value: { events: [{ type: 'terminal' }] } });
-  expect(index.read('live')?.detail).toMatchObject({ kind: 'recorded', value: { events: [] } });
+  expect(index.read('live')?.detail).toMatchObject({
+    kind: 'recorded',
+    value: { events: [{ type: 'progress', message: 'progress' }] },
+  });
   expect(f.store.readJobEvents('live').filter((event) => event.type === 'progress')).toHaveLength(1);
   const write = vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync');
   recoverJobLocations(index, 'epoch', f.store);
@@ -45,7 +48,12 @@ it('recovers terminals without loading progress and writes nothing on an unchang
   expect(f.store.readJobEvents('live').filter((event) => event.type === 'progress')).toHaveLength(2);
   expect(index.read('live')?.detail).toMatchObject({
     kind: 'recorded',
-    value: { events: [] },
+    value: {
+      events: [
+        { type: 'progress', message: 'progress' },
+        { type: 'progress', message: 'later' },
+      ],
+    },
   });
 });
 

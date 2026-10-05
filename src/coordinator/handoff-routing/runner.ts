@@ -3,7 +3,7 @@ import {
   WAIT_INVOCATION_CONTEXT_ENV,
   WAIT_INVOCATION_CONTRACT_ARGUMENT,
   type WaitInvocationHandoff,
-} from '../../cli/wait-invocation-context.js';
+} from '../../infra/wait-invocation-context.js';
 import { isRecord } from '../../infra/json.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import { gracefulKill } from '../../infra/process-supervision.js';
@@ -1252,7 +1252,7 @@ function supportsWaitInvocation(
       if ('settlement' in termination) void termination.settlement.then(() => finish(null));
       else finish(null);
     };
-    const timeout = runtime.time.setTimeout(cancel, Math.max(1, Math.min(3_000, Math.ceil(invocation.remainingMs()))));
+    const timeout = runtime.time.setTimeout(cancel, Math.max(1, Math.ceil(invocation.remainingMs())));
     invocation.signal.addEventListener('abort', cancel, { once: true });
     if (invocation.signal.aborted) cancel();
   });

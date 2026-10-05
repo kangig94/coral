@@ -1,9 +1,10 @@
+import { hasReadableTerminalDetail } from './terminal/identity.js';
 import type { SourceReadDisposition } from './wait/session.js';
-import { sourceReadFailureDisposition, sourceReadStamp } from './source-read.js';
+import { HistoricalDecodeError, sourceReadFailureDisposition, sourceReadStamp } from './source-read.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
-import { acquireSharedFileLockNoRepairSync, acquireSharedFileLockSync } from '../infra/fs-lock.js';
+import { acquireSharedFileLockNoRepairSync, createSharedFileLockSync } from '../infra/fs-lock.js';
 import type { SqliteDatabasePort, StoragePort } from '../infra/port-types.js';
 import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
@@ -17,7 +18,6 @@ import {
 import { inspectEpochKey } from '../store/epoch/key.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import {
-  hasReadableTerminalDetail,
   type JobLocationIndex,
   type JobLocationSubject,
   type JobLocationView,
@@ -112,7 +112,8 @@ type HistoricalEpochSource = {
   readonly fingerprint: string;
   readonly jobsRoot: string;
   readonly storage: StoragePort;
-  readonly attempts: number;
+  attempts: number;
+  refreshAttempts: number;
   readCache?: WeakMap<object, Map<string, HistoricalReadFrontier>>;
   observations?: WeakMap<object, { stamp: string; result: Extract<HistoricalSourceRead, { kind: 'read' }> }>;
   sweep?: { revision: number; frontier: number };
@@ -136,7 +137,7 @@ export function hintHistoricalHydration(index: JobLocationIndex, jobId: string):
   hydrationListeners.get(index)?.(location.epochKey);
 }
 
-function holdSeedFailure(
+function holdSourceFailure(
   index: JobLocationIndex,
   epochKey: string,
   error: unknown,
@@ -153,42 +154,28 @@ function holdSeedFailure(
   const retryScheduled = !deterministic && attempts < 3;
   const message = retryScheduled
     ? reason
-    : `${reason}; no reachable clearing event${deterministic ? '' : ' after 3 seed attempts'}`;
+    : `${reason}; this coordinator will not re-read it before its next start${deterministic ? '' : ' after 3 maintenance attempts'}`;
   index.holdUnknownLocations(epochKey, message, retryScheduled);
   return message;
 }
 export function retryUnknownHistoricalEpochs(index: JobLocationIndex): void {
   const sources = historicalSources.get(index);
-  for (const hold of index.unknownLocationHolds()) {
-    if (!hold.retryScheduled || sources?.has(hold.epochKey)) continue;
-    const absent = index.historicalSourceState(hold.epochKey) === 'absent';
-    index.holdUnknownLocations(
-      hold.epochKey,
-      absent
-        ? 'Source retired; no further seed retry is scheduled'
-        : 'No source reader is registered; use a compatible build or restore the source before retrying',
-      false,
-    );
-  }
   for (const [epochKey, source] of sources ?? []) {
+    if (source.retired) continue;
     try {
-      const lineageKey =
-        decodeResolvedStoreEpoch(source.runtime, epochKey)?.lineageKey ?? source.originalEpoch.lineageKey ?? epochKey;
-      const epoch =
-        observeProtectedEpoch(
-          { storage: source.storage },
-          source.originalEpoch.canonicalStoreRoot ?? source.originalEpoch.storeRoot,
-          lineageKey,
-        ) ??
-        observeResolvedStoreEpoch({ storage: source.storage }, epochKey) ??
-        source.originalEpoch;
+      if (index.unknownLocationHolds().find((hold) => hold.epochKey === epochKey)?.retryScheduled === false) continue;
+      const epoch = resolveHistoricalAddress(source, epochKey);
       if (observeStorePath(source.storage, epoch.path) === 'absent') {
         index.holdUnknownLocations(epochKey, 'Source retired; no further seed retry is scheduled', false);
         source.retired = true;
         source.readCache = undefined;
         continue;
       }
-      if (!index.unknownLocationHolds().some((hold) => hold.epochKey === epochKey && hold.retryScheduled)) continue;
+      if (
+        source.attempts === 0 ||
+        !index.unknownLocationHolds().some((hold) => hold.epochKey === epochKey && hold.retryScheduled)
+      )
+        continue;
       void seedHistoricalEpoch(
         source.runtime,
         index,
@@ -198,8 +185,12 @@ export function retryUnknownHistoricalEpochs(index: JobLocationIndex): void {
         source.jobsRoot,
         source.storage,
       );
-    } catch {
-      // One held epoch must not prevent retrying others.
+    } catch (error) {
+      try {
+        holdSourceFailure(index, epochKey, error, ++source.attempts, false);
+      } catch {
+        // One held epoch must not prevent retrying others.
+      }
     }
   }
 }
@@ -378,6 +369,24 @@ function historicalDetail(
   };
 }
 
+function resolveHistoricalAddress(source: HistoricalEpochSource, epochKey: string): ResolvedStoreEpoch {
+  const { originalEpoch, storage } = source;
+  const lineageKey =
+    decodeResolvedStoreEpoch(source.runtime, epochKey)?.lineageKey ?? originalEpoch.lineageKey ?? epochKey;
+  return (
+    observeProtectedEpoch({ storage }, originalEpoch.canonicalStoreRoot ?? originalEpoch.storeRoot, lineageKey) ??
+    observeResolvedStoreEpoch({ storage }, epochKey) ??
+    originalEpoch
+  );
+}
+
+function verifyHistoricalIdentity(source: HistoricalEpochSource, epochKey: string, epoch: ResolvedStoreEpoch): void {
+  const identity = epochKey.startsWith('{')
+    ? inspectResolvedStoreEpochKey({ storage: source.storage }, epoch)
+    : inspectEpochKey({ storage: source.storage }, epoch);
+  if (identity !== epochKey) throw new Error('Source epoch identity cannot be confirmed');
+}
+
 export function seedHistoricalEpoch(
   runtime: Pick<Runtime, 'storage' | 'ids' | 'env'>,
   index: JobLocationIndex,
@@ -397,6 +406,7 @@ export function seedHistoricalEpoch(
     jobsRoot,
     storage,
     attempts: (sources.get(epochKey)?.attempts ?? 0) + 1,
+    refreshAttempts: sources.get(epochKey)?.refreshAttempts ?? 0,
   };
   sources.set(epochKey, source);
   historicalSources.set(index, sources);
@@ -405,11 +415,9 @@ export function seedHistoricalEpoch(
   }
   let addressedEpoch: ResolvedStoreEpoch;
   try {
-    const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey ?? epoch.lineageKey ?? epochKey;
-    addressedEpoch =
-      observeProtectedEpoch({ storage }, epoch.canonicalStoreRoot ?? epoch.storeRoot, lineageKey) ?? epoch;
+    addressedEpoch = resolveHistoricalAddress(source, epochKey);
   } catch (error: unknown) {
-    holdSeedFailure(index, epochKey, error, source.attempts, false);
+    holdSourceFailure(index, epochKey, error, source.attempts, false);
     for (const location of index.locationsFor(epochKey))
       if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
     return {
@@ -426,18 +434,25 @@ export function seedHistoricalEpoch(
     if (reader === undefined || observeStorePath(storage, dbPath) === 'absent') {
       index.holdUnknownLocations(
         epochKey,
-        reader === undefined ? 'unsupported-store-fingerprint' : 'retained-store-root-missing',
+        reader === undefined
+          ? `Store fingerprint ${fingerprint} cannot be read by this build; this coordinator will not re-read it before its next start`
+          : 'Source retired and retained copy unusable',
       );
       for (const location of index.locationsFor(epochKey))
         if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
       return {
         kind: 'unrecoverable-retained',
         knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
-        reason: reader === undefined ? 'unsupported-store-fingerprint' : 'retained-store-root-missing',
+        reason:
+          reader === undefined
+            ? `Store fingerprint ${fingerprint} cannot be read by this build; this coordinator will not re-read it before its next start`
+            : 'Source retired and retained copy unusable',
       };
     }
-    releaseLock = acquireSharedFileLockSync(join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME));
+    releaseLock = createSharedFileLockSync(join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME));
+    verifyHistoricalIdentity(source, epochKey, addressedEpoch);
     db = storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
+    db.exec('BEGIN');
     const rows = reader(db);
     const highWaterSeq = z
       .object({ seq: z.number().int().nonnegative() })
@@ -505,6 +520,8 @@ export function seedHistoricalEpoch(
     }
     if (recordingError !== undefined) throw recordingError;
     index.clearUnknownLocations(epochKey);
+    source.attempts = 0;
+    source.refreshAttempts = 0;
     source.sweep = { revision: index.revision(epochKey), frontier: highWaterSeq };
     if (!certifyRetiredEpoch) return { kind: 'uncertified', knownJobIds: [...observed] };
     const certificate = index.certify(epochKey, highWaterSeq);
@@ -512,7 +529,7 @@ export function seedHistoricalEpoch(
       ? { kind: 'unrecoverable-retained', knownJobIds: [...observed], reason: 'known-jobs-unresolved' }
       : { kind: 'complete', jobIds: certificate.jobIds };
   } catch (error: unknown) {
-    holdSeedFailure(index, epochKey, error, source.attempts);
+    holdSourceFailure(index, epochKey, error, source.attempts);
     for (const location of index.locationsFor(epochKey))
       if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
     return {
@@ -571,9 +588,9 @@ export function readHistoricalSource(
       : {
           kind: 'unreadable',
           disposition:
-            view.unknownLocationHolds().find((hold) => hold.epochKey === epochKey)?.retryScheduled === true
-              ? 'transient-unknown'
-              : 'settled-unreadable',
+            view.unknownLocationHolds().find((hold) => hold.epochKey === epochKey)?.retryScheduled === false
+              ? 'settled-unreadable'
+              : 'transient-unknown',
           reason: 'Source epoch is not registered in this build',
         };
   if (source.retired) return { kind: 'unreadable', disposition: 'retired', retired: true };
@@ -581,19 +598,12 @@ export function readHistoricalSource(
     return {
       kind: 'unreadable',
       disposition: 'settled-unreadable',
-      reason: 'Unsupported store fingerprint; use a build that supports this source',
+      reason: `Store fingerprint ${source.fingerprint} cannot be read by this build`,
     };
   let release: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
-    const epoch =
-      observeResolvedStoreEpoch({ storage: source.storage }, epochKey) ??
-      observeProtectedEpoch(
-        { storage: source.storage },
-        source.originalEpoch.canonicalStoreRoot ?? source.originalEpoch.storeRoot,
-        source.originalEpoch.lineageKey ?? epochKey,
-      ) ??
-      source.originalEpoch;
+    const epoch = resolveHistoricalAddress(source, epochKey);
     if (observeStorePath(source.storage, epoch.path) === 'absent')
       return { kind: 'unreadable', disposition: 'retired', retired: true };
     const stamp = session ? sourceReadStamp(source.storage, epoch.path) : null;
@@ -609,15 +619,7 @@ export function readHistoricalSource(
       };
     }
     release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), STORE_LOCK_FILE_NAME));
-    const identity = epochKey.startsWith('{')
-      ? inspectResolvedStoreEpochKey({ storage: source.storage }, epoch)
-      : inspectEpochKey({ storage: source.storage }, epoch);
-    if (identity !== epochKey)
-      return {
-        kind: 'unreadable',
-        disposition: 'settled-unreadable',
-        reason: 'Source epoch identity cannot be confirmed; restore its identity before retrying',
-      };
+    verifyHistoricalIdentity(source, epochKey, epoch);
     db = source.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true });
     db.exec('BEGIN');
     const frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
@@ -641,7 +643,7 @@ export function readHistoricalSource(
         const events = [...(prior?.events ?? []), ...readEvents(db, jobId, prior?.frontier ?? 0)];
         if (raw === undefined) {
           if (events.some((event) => event.type === 'job.terminal.recorded'))
-            throw new Error('Historical job terminal cannot be decoded');
+            throw new HistoricalDecodeError('Historical job terminal cannot be decoded');
           locations.set(jobId, null);
           readCache.set(jobId, { frontier, events, location: null });
           continue;
@@ -674,7 +676,7 @@ export function readHistoricalSource(
           detail: { kind: 'recorded', value: { ...detail, epochKey } },
         };
         if (terminal !== undefined && !hasReadableTerminalDetail(location))
-          throw new Error('Historical job terminal cannot be decoded');
+          throw new HistoricalDecodeError('Historical job terminal cannot be decoded');
         locations.set(jobId, location);
         readCache.set(jobId, {
           frontier,
@@ -704,8 +706,13 @@ export function readHistoricalSource(
     const hold = view.unknownLocationHolds().find((hold) => hold.epochKey === epochKey);
     return {
       kind: 'unreadable',
-      disposition: hold?.retryScheduled === false ? 'settled-unreadable' : sourceReadFailureDisposition(error),
-      reason: error instanceof Error ? error.message : 'Source cannot be read; repair the source before retrying',
+      disposition: hold?.retryScheduled === false ? 'settled-unreadable' : 'transient-unknown',
+      reason:
+        hold?.retryScheduled === false
+          ? hold.reason
+          : error instanceof Error
+            ? error.message
+            : 'Source cannot be read; its owner will probe it on the next maintenance pass',
     };
   } finally {
     db?.close();
@@ -719,23 +726,35 @@ export function historicalSourceReader(index: JobLocationIndex): HistoricalSourc
 
 /** Hydration belongs to lifecycle owners before source retirement. */
 export function refreshHistoricalEpochs(index: JobLocationIndex): void {
-  const sources = historicalSources.get(index);
-  for (const [epochKey, source] of sources ?? []) {
+  for (const [epochKey, source] of historicalSources.get(index) ?? []) {
     if (source.retired) continue;
-    const epoch = observeResolvedStoreEpoch({ storage: source.storage }, epochKey) ?? source.originalEpoch;
-    if (observeStorePath(source.storage, epoch.path) === 'absent') {
-      index.holdUnknownLocations(epochKey, 'retained-store-root-missing', false);
-      source.retired = true;
-      source.readCache = undefined;
-      continue;
+    try {
+      if (index.unknownLocationHolds().find((hold) => hold.epochKey === epochKey)?.retryScheduled === false) continue;
+      const epoch = resolveHistoricalAddress(source, epochKey);
+      if (observeStorePath(source.storage, epoch.path) === 'absent') {
+        index.holdUnknownLocations(epochKey, 'Source retired and retained copy unusable', false);
+        source.retired = true;
+        source.readCache = undefined;
+        continue;
+      }
+      if (index.certificate(epochKey) !== null) continue;
+      const locations = source.sweep?.revision === index.revision(epochKey) ? [] : index.locationsFor(epochKey);
+      const result = refreshHistoricalEpoch(
+        index,
+        epochKey,
+        locations.map((location) => location.jobId),
+      );
+      if (result.kind === 'read') {
+        source.refreshAttempts = 0;
+        index.clearUnknownLocations(epochKey);
+      } else holdSourceFailure(index, epochKey, new Error(result.reason), ++source.refreshAttempts, false);
+    } catch (error) {
+      try {
+        holdSourceFailure(index, epochKey, error, ++source.refreshAttempts, false);
+      } catch {
+        // A failed hold write must not stop other epochs or the retirement sweep.
+      }
     }
-    if (index.certificate(epochKey) !== null) continue;
-    const locations = source.sweep?.revision === index.revision(epochKey) ? [] : index.locationsFor(epochKey);
-    refreshHistoricalEpoch(
-      index,
-      epochKey,
-      locations.map((location) => location.jobId),
-    );
   }
 }
 
@@ -743,35 +762,33 @@ export function refreshHistoricalEpoch(
   index: JobLocationIndex,
   epochKey: string,
   jobIds: readonly string[],
-): 'read' | 'unreadable' {
+): { kind: 'read' } | { kind: 'unreadable'; reason: string } {
   const source = historicalSources.get(index)?.get(epochKey);
-  if (source === undefined) return 'unreadable';
-  if (index.unknownLocationHold(epochKey) !== null) return 'unreadable';
+  if (source === undefined) return { kind: 'unreadable', reason: 'Source is not registered' };
+  const hold = index.unknownLocationHolds().find((hold) => hold.epochKey === epochKey);
+  if (hold?.retryScheduled === false) return { kind: 'unreadable', reason: hold.reason };
   let addressedEpoch: ResolvedStoreEpoch;
   try {
-    const { runtime, originalEpoch } = source;
-    const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey ?? originalEpoch.lineageKey ?? epochKey;
-    addressedEpoch =
-      observeProtectedEpoch(
-        { storage: source.storage },
-        originalEpoch.canonicalStoreRoot ?? originalEpoch.storeRoot,
-        lineageKey,
-      ) ?? originalEpoch;
-  } catch {
-    return 'unreadable';
+    addressedEpoch = resolveHistoricalAddress(source, epochKey);
+  } catch (error) {
+    return { kind: 'unreadable', reason: error instanceof Error ? error.message : 'Source address cannot be observed' };
   }
   const reader = readers[source.fingerprint];
   const dbPath = addressedEpoch.path;
-  if (reader === undefined || !source.storage.existsSync(dbPath)) return 'unreadable';
+  if (reader === undefined || observeStorePath(source.storage, dbPath) !== 'present')
+    return { kind: 'unreadable', reason: 'Source is absent or its fingerprint is unsupported' };
 
   let releaseLock: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
-    releaseLock = acquireSharedFileLockSync(join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME), 0);
+    releaseLock = createSharedFileLockSync(join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME));
+    verifyHistoricalIdentity(source, epochKey, addressedEpoch);
     db = source.storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
+    db.exec('BEGIN');
     const frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
     const revision = index.revision(epochKey);
-    if (jobIds.length === 0 && source.sweep?.revision === revision && source.sweep.frontier === frontier) return 'read';
+    if (jobIds.length === 0 && source.sweep?.revision === revision && source.sweep.frontier === frontier)
+      return { kind: 'read' };
     const incremental = jobIds.length === 0 && source.sweep?.revision === revision;
     const requested = new Set(
       jobIds.length
@@ -787,9 +804,8 @@ export function refreshHistoricalEpoch(
     for (const jobId of [...requested]) {
       const location = index.read(jobId);
       if (
-        location === null ||
-        location.epochKey !== epochKey ||
-        (location.disposition === 'terminal' && hasReadableTerminalDetail(location))
+        location !== null &&
+        (location.epochKey !== epochKey || (location.disposition === 'terminal' && hasReadableTerminalDetail(location)))
       ) {
         requested.delete(jobId);
         continue;
@@ -809,9 +825,22 @@ export function refreshHistoricalEpoch(
             : appended;
         const detail = historicalDetail(
           db,
-          { ...row, work_dir: canonicalWorkDirWireSchema.nullable().parse(row.work_dir ?? location.subject.workDir) },
+          {
+            ...row,
+            work_dir: canonicalWorkDirWireSchema
+              .nullable()
+              .parse(row.work_dir ?? location?.subject.workDir ?? row.project_root),
+          },
           events,
         );
+        if (location === null) {
+          index.register(jobId, epochKey, {
+            projectRoot: detail.status.projectRoot,
+            workDir: detail.status.workDir,
+            jobKind: detail.status.jobKind,
+          });
+          index.markUnresolved(jobId);
+        }
         const terminal = [...detail.events].reverse().find((event) => event.type === 'terminal');
         if (!isTerminalPhase(detail.status.phase) || detail.exit === null || terminal === undefined) {
           index.recordObserved(row.job_id, detail);
@@ -835,19 +864,20 @@ export function refreshHistoricalEpoch(
         failed = true;
       }
     }
-    if (failed) return 'unreadable';
+    if (failed) return { kind: 'unreadable', reason: 'Historical source could not be decoded or retained' };
     for (const jobId of requested) {
-      if (readEvents(db, jobId).some((event) => event.type === 'job.terminal.recorded')) return 'unreadable';
+      if (readEvents(db, jobId).some((event) => event.type === 'job.terminal.recorded'))
+        return { kind: 'unreadable', reason: 'Historical source could not be decoded or retained' };
     }
     const highWaterSeq = z
       .object({ seq: z.number().int().nonnegative() })
       .parse(db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()).seq;
     index.certify(epochKey, highWaterSeq);
     source.sweep = { revision: index.revision(epochKey), frontier };
-    return 'read';
-  } catch {
+    return { kind: 'read' };
+  } catch (error) {
     // An unreadable refresh cannot certify absence or void an earlier terminal certificate.
-    return 'unreadable';
+    return { kind: 'unreadable', reason: error instanceof Error ? error.message : 'Historical source cannot be read' };
   } finally {
     db?.close();
     releaseLock?.();

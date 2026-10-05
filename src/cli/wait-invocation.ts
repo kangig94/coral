@@ -7,7 +7,7 @@ import {
   WAIT_INVOCATION_CONTEXT_ENV,
   type WaitInvocationHandoff,
   type WaitInvocationMode,
-} from './wait-invocation-context.js';
+} from '../infra/wait-invocation-context.js';
 
 const WAIT_BUDGET_MS = 590_000;
 const WAIT_CLEANUP_MS = 10_000;
@@ -171,6 +171,10 @@ export class WaitInvocation implements WaitInvocationHandoff {
       });
     if (this.continuationFlushed) await flush();
     else await this.run(flush);
+  }
+
+  flushSavedContinuation(): void {
+    if (this.continuation !== undefined) this.flushContinuation();
   }
 
   flushContinuation(force = false): void {
